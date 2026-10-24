@@ -329,6 +329,9 @@ async def _dispatch_to_runtime(
     max_budget_usd: Decimal | None,
     timeout: float,
     ctx: ExecutionContext | None = None,
+    pin: tuple[str, str] | None = None,
+    route_honoured: bool = False,
+    task_type: str | None = None,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime*, walking the configured model fallback chain.
 
@@ -355,6 +358,12 @@ async def _dispatch_to_runtime(
       edited, staged, or committed files, and retrying the identical prompt
       on the next model would run against that half-modified tree with no
       snapshot or reset.
+
+    *pin* is forwarded to every attempt's ``_run_agent_process()`` call, so a
+    failed terminal result is billed under the same runtime-attribution
+    predicate a successful one would get (see ``_run_agent_process()``).
+    *route_honoured*/*task_type* are forwarded the same way, for the same
+    reason on the routed-spend side.
     """
     _raise_if_budget_cap_unsupported(runtime, max_budget_usd)
     tree_changed = False
@@ -377,6 +386,9 @@ async def _dispatch_to_runtime(
                 max_budget_usd=attempt_budget,
                 timeout=attempt_timeout,
                 ctx=ctx,
+                pin=pin,
+                route_honoured=route_honoured,
+                task_type=task_type,
             )
         except Exception:
             if baseline is not None:
@@ -596,6 +608,9 @@ async def _run_agent_process(
     max_budget_usd: Decimal | None,
     timeout: float | None,
     ctx: ExecutionContext | None = None,
+    pin: tuple[str, str] | None = None,
+    route_honoured: bool = False,
+    task_type: str | None = None,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime* and wait for its terminal result.
 
@@ -622,6 +637,23 @@ async def _run_agent_process(
     produces no incremental output anywhere (content events were parsed and
     discarded), leaving the dashboard run log silent until the whole step
     finishes.
+
+    *pin*, when given, is the role-level model pin ``_apply_runtime_model_pin()``
+    resolved for this dispatch. A failed terminal result is billed with the
+    same runtime-attribution predicate the success path applies (see
+    ``_dispatch_to_runtime()`` and ``_attribute_pinned_result()``), so a
+    failed turn never lands in a different CostRecord bucket than an
+    otherwise-identical successful one would have.
+
+    *route_honoured*/*task_type* mirror the success path's own
+    ``result.routed_task_type_model`` tagging (``dispatch_command()``/
+    ``dispatch_prompt()``, right after ``_dispatch_to_runtime()`` returns): a
+    failed turn that dispatch resolved onto a configured ``llm.routing[task_type]``
+    route is billed into ``ctx.routed_spend`` the same way a successful one
+    would be, instead of silently landing in the step's base-model
+    CostRecord. Only applies when *pin* is ``None``, matching the callers'
+    own precedence (a role-level runtime pin always outranks a task-type
+    route).
     """
     # Marks the spawned agent as an autonomous pipeline dispatch, distinct
     # from a human's own interactive session or the dashboard's one-off
@@ -708,6 +740,36 @@ async def _run_agent_process(
 
     if result is not None:
         detail = result.text.strip() or "agent reported a terminal failure with no detail"
+        if ctx is not None:
+            # The agent still spent real money before reporting a terminal
+            # failure (run #998: all four findings fixed, then an error turn).
+            # Billing it here, rather than discarding it along with the raised
+            # error, keeps per-run/per-issue budget caps accurate for a
+            # productive-but-ultimately-failing dispatch. Tagged with the same
+            # predicate the success path applies (_dispatch_to_runtime()'s
+            # ``not runtime.honours_model_override`` branch, and
+            # _attribute_pinned_result()'s pinned branch): a model-honouring
+            # runtime's failed turn with no pin is billed like an unpinned
+            # successful one (provider cost_source, not the runtime bucket),
+            # since untagging it unconditionally here previously misattributed
+            # it to a provider that never ran.
+            if not runtime.honours_model_override:
+                result.runtime_name = runtime.name
+                if result.model:
+                    ctx.runtime_model = result.model
+                    ctx.runtime_model_reason = f"runtime:{runtime.name} reported model"
+                else:
+                    ctx.runtime_model = runtime.name
+                    ctx.runtime_model_reason = f"runtime:{runtime.name} reported no model"
+            elif pin is not None:
+                result.runtime_name = runtime.name
+                ctx.runtime_model = result.model or pin[0]
+                ctx.runtime_model_reason = pin[1]
+            routed_reason = None
+            if pin is None and route_honoured and task_type is not None:
+                result.routed_task_type_model = model
+                routed_reason = f"task_type:{task_type} routed to {model}"
+            ctx.add_usage(result, routed_reason=routed_reason)
     else:
         # Stdout-first, matching the documented "Failure capture must prefer
         # stdout's structured error over stderr" decision
@@ -846,6 +908,9 @@ async def dispatch_command(
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
         ctx=ctx,
+        pin=pin,
+        route_honoured=route_honoured,
+        task_type=task_type,
     )
     _attribute_pinned_result(result, runtime, ctx, pin)
     if route_honoured:
@@ -919,6 +984,9 @@ async def dispatch_prompt(
         max_budget_usd=max_budget_usd,
         timeout=resolved_timeout,
         ctx=ctx,
+        pin=pin,
+        route_honoured=route_honoured,
+        task_type=task_type,
     )
     _attribute_pinned_result(result, runtime, ctx, pin)
     if route_honoured:

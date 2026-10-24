@@ -2685,7 +2685,9 @@ class TestValidateStep:
         assert result.success
         assert "1 fix attempt" in result.summary
         mock_invoke.assert_awaited_once()
-        assert "missing type hints" in mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][1])
+        prompt = mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][1])
+        assert "missing type hints" in prompt
+        assert "fix(core): address pre-push hook violations" in prompt
 
     async def test_fails_after_max_attempts(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep

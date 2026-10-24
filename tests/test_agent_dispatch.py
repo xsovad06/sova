@@ -15,7 +15,7 @@ from sova.core.agent_dispatch import AgentRuntimeUnavailableError, dispatch_comm
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, AgentRuntime
-from sova.llm.errors import BillingError, LLMTimeoutError, RateLimitError
+from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, RateLimitError
 from sova.llm.models import LLMResult, StreamEvent
 
 
@@ -490,7 +490,9 @@ class _ErrorResultRuntime(_StubRuntime):
 
     def parse_output(self, line: str) -> StreamEvent | None:
         if line == "__RESULT__":
-            failed = LLMResult(text="rate_limit exceeded", model="stub-model", stop_reason="error")
+            failed = LLMResult(
+                text="rate_limit exceeded", model="stub-model", stop_reason="error", cost_usd=Decimal("0.05")
+            )
             return StreamEvent(type="result", text=failed.text, result=failed)
         return super().parse_output(line)
 
@@ -552,6 +554,134 @@ class TestRuntimeFailureHandling:
                 await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
 
 
+class TestRuntimeFailureAttribution:
+    """A failed turn's spend is billed with the same runtime-attribution
+    predicate a successful one gets (``_dispatch_to_runtime()``'s
+    ``not runtime.honours_model_override`` branch and
+    ``_attribute_pinned_result()``'s pinned branch), not unconditionally.
+
+    Before this, every failed dispatch was tagged ``result.runtime_name``
+    regardless of runtime, so an unpinned model-honouring runtime's failure
+    (e.g. Claude Code with no role-level pin) landed in the step's runtime
+    CostRecord bucket, unlike how an otherwise-identical successful turn
+    bills (PR #1305 review).
+    """
+
+    async def test_unpinned_model_honouring_runtime_failure_is_not_tagged(self, tmp_path: Path) -> None:
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        runtime = _ErrorResultRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(),
+        ):
+            with pytest.raises(RateLimitError):
+                await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert ctx.cost_usd == Decimal("0.05")
+        assert ctx.runtime_usage is None
+        assert ctx.runtime_cost_usd == Decimal("0")
+        assert ctx.runtime_model is None
+
+    async def test_model_ignoring_runtime_failure_is_tagged(self, tmp_path: Path) -> None:
+        """Codex-like runtime: tagged the same way its successful turn would be."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        runtime = _ModelIgnoringErrorResultRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(),
+        ):
+            with pytest.raises(LLMInvocationError, match="codex turn failed"):
+                await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert ctx.cost_usd == Decimal("0.05")
+        assert ctx.runtime_cost_usd == Decimal("0.05")
+        assert ctx.runtime_model == "codex"
+        assert ctx.runtime_model_reason == "runtime:codex reported no model"
+
+    async def test_pinned_model_honouring_runtime_failure_is_tagged(self, tmp_path: Path) -> None:
+        """A role-level runtime pin must retain attribution on the failure path too."""
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        runtime = _ErrorResultRuntime(_StubProcess(stdout=["__RESULT__"]))
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(roles=RolesConfig(developer_runtime_model="claude-sonnet-5")),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(model="routed-model"),
+        ):
+            with pytest.raises(RateLimitError):
+                await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert ctx.cost_usd == Decimal("0.05")
+        assert ctx.runtime_cost_usd == Decimal("0.05")
+        assert ctx.runtime_model == "stub-model"
+        assert ctx.runtime_model_reason == "role:developer runtime pin->claude-sonnet-5"
+
+    async def test_routed_model_failure_is_billed_to_routed_spend(self, tmp_path: Path) -> None:
+        """PR #1305 review: a failed turn dispatch resolved onto a configured
+        llm.routing[task_type] route must split spend the same way a
+        successful one would (``routed_task_type_model``/``routed_spend``),
+        instead of silently landing in the step's base-model CostRecord."""
+        runtime = _ErrorResultRuntime(_StubProcess(stdout=["__RESULT__"]))
+        with patch.object(
+            runtime, "_probe_models", AsyncMock(return_value=["claude-opus-5", "claude-haiku-4-5-20251001"])
+        ):
+            await runtime.list_available_models()
+
+        cfg = ProjectConfig(
+            llm=LLMConfig(routing={"validate": "claude-haiku-4-5-20251001"}, resolve_tier_aliases=False)
+        )
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=cfg,
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            patch(
+                "sova.core.agent_dispatch.client.prepare_invocation",
+                new_callable=AsyncMock,
+                return_value=(cfg, "claude-haiku-4-5-20251001", 30.0),
+            ),
+        ):
+            with pytest.raises(RateLimitError):
+                await dispatch_prompt(
+                    _ToolStep(), "fix it", model="dev-model", task_type="validate", cwd=tmp_path, ctx=ctx
+                )
+
+        assert ctx.runtime_model is None
+        bucket = ctx.routed_spend["stub-model"]
+        assert bucket.reason == "task_type:validate routed to claude-haiku-4-5-20251001"
+        assert bucket.cost_usd == Decimal("0.05")
+
+
 class TestFailureDetailPrefersStdoutOverStderr:
     """Matches the documented 'Failure capture must prefer stdout's structured
     error over stderr' decision: the CLI writes its real error to stdout,
@@ -567,7 +697,7 @@ class TestFailureDetailPrefersStdoutOverStderr:
             patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
             _stub_preflight(),
         ):
-            with pytest.raises(Exception, match="Auth failed: invalid API key") as excinfo:
+            with pytest.raises(LLMInvocationError, match="Auth failed: invalid API key") as excinfo:
                 await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
         assert "Warning: model deprecated" not in str(excinfo.value)
 
@@ -580,7 +710,7 @@ class TestFailureDetailPrefersStdoutOverStderr:
             patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
             _stub_preflight(),
         ):
-            with pytest.raises(Exception, match="real error: bad config") as excinfo:
+            with pytest.raises(LLMInvocationError, match="real error: bad config") as excinfo:
                 await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
         assert "Warning: deprecated flag" not in str(excinfo.value)
 
@@ -868,6 +998,16 @@ class _ModelIgnoringRuntimeNoModel(_ModelIgnoringRuntime):
         if not line.strip():
             return None
         return StreamEvent(type="content", text=line)
+
+
+class _ModelIgnoringErrorResultRuntime(_ModelIgnoringRuntime):
+    """Model-ignoring runtime (like Codex) whose terminal result reports a failed turn."""
+
+    def parse_output(self, line: str) -> StreamEvent | None:
+        if line == "__RESULT__":
+            failed = LLMResult(text="codex turn failed", model="", stop_reason="error", cost_usd=Decimal("0.05"))
+            return StreamEvent(type="result", text=failed.text, result=failed)
+        return super().parse_output(line)
 
 
 class TestHonoursModelOverrideSkipsChainWalk:
