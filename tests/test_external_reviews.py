@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,40 @@ def _make_ctx(**kwargs: Any) -> ExecutionContext:
     }
     defaults.update(kwargs)
     return ExecutionContext(**defaults)
+
+
+@contextmanager
+def _patch_external_fetches(
+    *,
+    sonar: list[ExternalFinding] | None = None,
+    threads: _ThreadsResult | None = None,
+    coverage: CoverageReport | None = None,
+) -> Iterator[None]:
+    """Patch the three fetchers ``AddressExternalFindingsStep.execute`` gathers from.
+
+    Each default is the "nothing found" answer: no SonarCloud issues, no unresolved
+    CodeRabbit threads, and coverage above the required threshold.
+    """
+    if coverage is None:
+        coverage = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
+    with (
+        patch(
+            "sova.adapters.external_reviews.fetch_sonarcloud_issues",
+            new_callable=AsyncMock,
+            return_value=[] if sonar is None else sonar,
+        ),
+        patch(
+            "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+            new_callable=AsyncMock,
+            return_value=coverage,
+        ),
+        patch(
+            "sova.adapters.external_reviews._fetch_coderabbit_threads",
+            new_callable=AsyncMock,
+            return_value=_ThreadsResult() if threads is None else threads,
+        ),
+    ):
+        yield
 
 
 def _ext_config(**kwargs: Any) -> ExternalReviewsConfig:
@@ -248,6 +284,21 @@ class TestFormatFindings:
     def test_empty_findings_returns_empty(self) -> None:
         assert format_findings_for_prompt([]) == ""
 
+    def test_instructed_commit_message_carries_a_scope(self) -> None:
+        """A scopeless message the agent copies is rejected by invariants/commit-format.sh."""
+        result = format_findings_for_prompt(
+            [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import")]
+        )
+        assert "'fix(<scope>): address <tool> finding in <file>'" in result
+        assert "'fix: " not in result
+
+    def test_scope_guidance_is_project_neutral(self) -> None:
+        """This prompt runs against whatever project SOVA is installed into, so it must
+        not point at this repository's own invariants/commit-format.sh or examples."""
+        result = format_findings_for_prompt([ExternalFinding("coderabbit", "sova/git/branch.py", 10, "MAJOR", "Bug")])
+        assert "invariants/commit-format.sh" not in result
+        assert "commit-scope convention" in result
+
 
 class TestWaitForExternalReviewsStep:
     async def test_can_skip_when_disabled(self) -> None:
@@ -406,6 +457,226 @@ class TestAddressExternalFindingsStep:
         assert "2 external finding" in result.summary
         mock_resolve.assert_awaited_once()
 
+    async def test_execute_commit_message_has_valid_scope(self) -> None:
+        """The fallback commit message must use a scope invariants/commit-format.sh accepts."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        mock_llm = AsyncMock()
+        mock_llm.cost_usd = Decimal("0.05")
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch("sova.core.agent_dispatch.dispatch_prompt", new_callable=AsyncMock, return_value=mock_llm),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.git.operations.push", new_callable=AsyncMock),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        mock_commit.assert_awaited_once()
+        assert mock_commit.call_args[0][0].startswith("fix(core):")
+
+    async def test_execute_dispatch_failure_with_pushed_edits_continues_pipeline(self) -> None:
+        """A RuntimeError from dispatch_prompt must still commit/push detected edits.
+
+        When that push actually reaches the PR branch, the step reports
+        success (naming the dispatch failure in its summary) rather than
+        ending the run: monitor_ci and handoff_to_reviewer still need to run
+        against the commit that was just pushed. It must still not resolve
+        CodeRabbit threads for findings that were never fully addressed, and
+        the fallback commit message must be distinguishable from the
+        success-path message.
+        """
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        cr = _ThreadsResult(
+            findings=[ExternalFinding("coderabbit", "sova/cli.py", 20, "MAJOR", "Bug", "PRRT_abc")],
+            thread_ids=["PRRT_abc"],
+        )
+        with (
+            _patch_external_fetches(sonar=sonar, threads=cr),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                # The agent edited a file before the dispatch failure: both
+                # diff checks in _detect_changes() must see it.
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        assert "agent dispatch failed" in result.summary
+        mock_commit.assert_awaited_once()
+        assert mock_commit.call_args[0][0] == "fix(core): preserve partial external review fixes after agent failure"
+        mock_push.assert_awaited_once()
+        mock_resolve.assert_not_awaited()
+
+    async def test_execute_dispatch_failure_preserved_still_bills_the_step_result(self) -> None:
+        """A dispatch that spent real money before failing must not report $0.
+
+        agent_dispatch._run_agent_process() bills a failed turn's reported
+        cost via ctx.add_usage() before raising, so ctx.cost_usd already
+        reflects it by the time execute() catches the error. The returned
+        StepResult.cost_usd must carry that same amount: it is what
+        StepExecution.cost_usd (surfaced on the run-detail dashboard) and the
+        per-step CostRecord are built from, and defaulting to 0 here would
+        make a productive-but-failing dispatch look free.
+        """
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+
+        async def _bill_then_fail(*_args: Any, **_kwargs: Any) -> None:
+            ctx.cost_usd += Decimal("1.23")
+            raise RuntimeError("agent dispatch failed")
+
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=_bill_then_fail,
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch("sova.git.operations.push", new_callable=AsyncMock),
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        assert result.cost_usd == Decimal("1.23")
+
+    async def test_execute_dispatch_failure_with_committed_but_unpushed_edits_reports_failure(self) -> None:
+        """A commit that never reached the remote must not be treated as pipeline-continuable."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch(
+                "sova.git.operations.push",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("remote rejected"),
+            ) as mock_push,
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert not result.success
+        assert "agent dispatch failed" in (result.summary + (result.error or ""))
+        mock_commit.assert_awaited_once()
+        mock_push.assert_awaited_once()
+
+    async def test_execute_dispatch_failure_with_no_changes_skips_commit_and_push(self) -> None:
+        """A dispatch failure with no detected edits must not commit or push."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout=""),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert not result.success
+        mock_commit.assert_not_awaited()
+        mock_push.assert_not_awaited()
+
+    async def test_apply_fixes_dispatch_failure_commit_error_does_not_mask_original(self) -> None:
+        """A failed preservation commit must not hide the dispatch error, nor trigger a push."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test", pr_number=94)
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch(
+                "sova.git.operations.commit",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("commit failed"),
+            ),
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            try:
+                await step._apply_fixes(ctx, "prompt")
+                raised = None
+            except RuntimeError as exc:
+                raised = exc
+
+        assert raised is not None
+        assert str(raised) == "agent dispatch failed"
+        # The commit raised, so HEAD never moved and the edits are still only
+        # on disk. Force-pushing here would rewrite the remote with nothing new
+        # to show for it, so the push must be skipped entirely.
+        mock_push.assert_not_awaited()
+
     async def test_execute_captures_addressed_findings_on_ctx(self) -> None:
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
@@ -535,6 +806,7 @@ class TestAddressExternalFindingsStep:
             mock_run.side_effect = [
                 _shell_result(stdout="1 file changed"),  # git diff --stat HEAD
                 _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout=""),  # git status --porcelain
                 _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
             ]
 
@@ -558,6 +830,7 @@ class TestAddressExternalFindingsStep:
             mock_run.side_effect = [
                 _shell_result(stdout=""),  # git diff --stat HEAD
                 _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout=""),  # git status --porcelain
                 _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline (2 commits)
             ]
 
@@ -580,6 +853,7 @@ class TestAddressExternalFindingsStep:
             mock_run.side_effect = [
                 _shell_result(stdout=""),  # git diff --stat HEAD
                 _shell_result(stdout="1 file changed"),  # git diff --cached --stat
+                _shell_result(stdout=""),  # git status --porcelain
                 _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline
             ]
 
@@ -587,6 +861,438 @@ class TestAddressExternalFindingsStep:
 
             assert has_changes is True
             assert new_commits is True
+
+    async def test_detect_changes_finds_untracked_files_only(self) -> None:
+        """A brand-new file moves neither diff, so only `git status` can see it."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? tests/test_new_module.py\n"),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is True
+            assert new_commits is False
+
+    async def test_detect_changes_ignores_mirrored_agent_infrastructure(self) -> None:
+        """A worktree whose only untracked content is a mirrored skills directory
+        (e.g. `.agents/skills/<something>`, copied in by ensure_claude_artifacts on
+        every run) must read as "no changes": none of it is the agent's own work."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? .agents/skills/source-command-extract-knowledge/\n"),
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is False
+            assert new_commits is False
+
+    async def test_validate_output_passes_when_only_mirrored_infrastructure_is_untracked(self) -> None:
+        """The gate must not fail on pure mirror churn, no commit or push involved."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, branch_name="feat/test")
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? .claude/skills/design-taste/\n"),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            result = await AddressExternalFindingsStep().validate_output(ctx)
+
+        assert result.passed
+
+    async def test_check_uncommitted_changes_fails_closed_when_status_query_fails(self) -> None:
+        """A failed underlying git query reports checked=False, has_changes=True."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(returncode=1, stderr="index.lock"),  # git status --porcelain (failed)
+            ]
+
+            check = await step._check_uncommitted_changes(ctx)
+
+        assert check.checked is False
+        assert check.has_changes is True
+
+    async def test_validate_output_fails_when_status_check_unverifiable(self) -> None:
+        """An unverifiable worktree state must fail the gate, never pass it silently."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, branch_name="feat/test")
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(returncode=1, stderr="index.lock"),  # git status --porcelain (failed)
+            ]
+
+            result = await AddressExternalFindingsStep().validate_output(ctx)
+
+        assert not result.passed
+        assert "Could not verify" in (result.reason or "")
+
+    async def test_detect_changes_ignores_non_untracked_status_lines(self) -> None:
+        """Only `??` lines are new files; a tracked ` M` line is already a diff."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout=" M sova/app.py\n"),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is False
+            assert new_commits is False
+
+    async def test_detect_changes_treats_failed_status_call_as_unverifiable(self) -> None:
+        """A failed `git status` is genuinely unknown, so it must fail closed as "has changes",
+        never be read as "clean" (failure must not look like success)."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? x.py", returncode=1),  # git status --porcelain (failed)
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, _ = await step._detect_changes(ctx, 1)
+
+            assert has_changes is True
+
+    async def test_persist_changes_commits_and_pushes_untracked_only_edits(self) -> None:
+        """An agent that only created files must still have that work committed and pushed."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+            ) as mock_run,
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? tests/test_new_module.py\n"),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits, pushed = await step._persist_changes(ctx, 1, message="fix(core): test")
+
+        assert has_changes is True
+        assert new_commits is False
+        assert pushed is True
+        mock_commit.assert_awaited_once()
+        mock_push.assert_awaited_once()
+
+    async def test_persist_changes_skips_push_when_commit_fails(self) -> None:
+        """A failed commit leaves HEAD where it was, so there is nothing to publish."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch(
+                "sova.git.operations.commit",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("refusing to commit suspicious files"),
+            ),
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            has_changes, _, pushed = await step._persist_changes(ctx, 1, message="fix(core): test")
+
+        assert has_changes is True
+        assert pushed is False
+        mock_push.assert_not_awaited()
+
+    async def test_persist_changes_pushes_agent_commits_even_when_commit_fails(self) -> None:
+        """The agent's own commits are already on HEAD; a failed fallback commit must not strand them."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+            ) as mock_run,
+            patch(
+                "sova.git.operations.commit",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("commit failed"),
+            ),
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            mock_run.side_effect = [
+                _shell_result(stdout="1 file changed"),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout=""),  # git status --porcelain
+                _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits, pushed = await step._persist_changes(ctx, 1, message="fix(core): test")
+
+        assert has_changes is True
+        assert new_commits is True
+        assert pushed is True
+        mock_push.assert_awaited_once()
+
+    async def test_persist_changes_push_failure_is_swallowed(self) -> None:
+        """A push failure is logged, not raised: the commit is already durable locally."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout="1 file changed"),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch(
+                "sova.git.operations.push",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("remote rejected"),
+            ) as mock_push,
+        ):
+            has_changes, _, pushed = await step._persist_changes(ctx, 1, message="fix(core): test")
+
+        assert has_changes is True
+        assert pushed is False
+        mock_push.assert_awaited_once()
+
+    async def test_apply_fixes_preservation_oserror_does_not_mask_dispatch_error(self) -> None:
+        """_detect_changes shells out, so an OSError there must not replace the dispatch failure."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test", pr_number=94)
+        step = AddressExternalFindingsStep()
+
+        with (
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout=""),
+            ),
+            patch.object(
+                AddressExternalFindingsStep,
+                "_persist_changes",
+                new_callable=AsyncMock,
+                side_effect=OSError("git binary not found"),
+            ),
+        ):
+            try:
+                await step._apply_fixes(ctx, "prompt")
+                raised: BaseException | None = None
+            except BaseException as exc:  # noqa: BLE001 (the test asserts on the exact type)
+                raised = exc
+
+        assert isinstance(raised, RuntimeError)
+        assert str(raised) == "agent dispatch failed"
+
+    async def test_execute_preservation_oserror_still_reports_the_dispatch_failure(self) -> None:
+        """execute() catches RuntimeError only, so a leaked OSError would crash the step."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                # The pre-dispatch commit count succeeds; the worktree only
+                # disappears while the post-failure preservation probes it.
+                side_effect=[_shell_result(stdout=""), OSError("cwd is gone")],
+            ),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert not result.success
+        assert "agent dispatch failed" in (result.summary + (result.error or ""))
+
+    async def test_execute_dispatch_failure_preserves_untracked_only_edits(self) -> None:
+        """New files created before the dispatch failed are committed and pushed, not discarded,
+        and the step continues the pipeline since the push reached the PR branch."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+
+        async def fake_run(*args: Any, **kwargs: Any) -> ShellResult:
+            if "status" in args:
+                return _shell_result(stdout="?? tests/test_new_module.py\n")
+            return _shell_result(stdout="")
+
+        with (
+            _patch_external_fetches(sonar=sonar),
+            patch(
+                "sova.core.agent_dispatch.dispatch_prompt",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("agent dispatch failed"),
+            ),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                side_effect=fake_run,
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        mock_commit.assert_awaited_once()
+        assert mock_commit.call_args[0][0].startswith("fix(core):")
+        mock_push.assert_awaited_once()
+
+    async def test_validate_output_fails_on_leftover_untracked_file(self) -> None:
+        """The gate and _detect_changes share one definition of "uncommitted"."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, branch_name="feat/test")
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="?? tests/test_new_module.py\n"),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            result = await AddressExternalFindingsStep().validate_output(ctx)
+
+        assert not result.passed
+        assert "Uncommitted" in (result.reason or "")
+
+    async def test_validate_output_passes_on_a_clean_committed_worktree(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, branch_name="feat/test")
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout=""),  # git status --porcelain
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            result = await AddressExternalFindingsStep().validate_output(ctx)
+
+        assert result.passed
+
+    async def test_validate_output_fails_without_commits_ahead_of_base(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, branch_name="feat/test")
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+            return_value=_shell_result(stdout=""),
+        ):
+            result = await AddressExternalFindingsStep().validate_output(ctx)
+
+        assert not result.passed
+        assert "No commits" in (result.reason or "")
 
 
 class TestFetchSonarCloudCoverageIssues:
@@ -693,6 +1399,34 @@ class TestFormatCoverageFindings:
         result = format_coverage_findings_for_prompt(report, diff_files=["sova/app.py", "sova/cli.py"])
         assert "sova/app.py" in result
         assert "sova/cli.py" in result
+
+    def test_instructed_commit_message_carries_a_scope(self) -> None:
+        """A scopeless message the agent copies is rejected by invariants/commit-format.sh."""
+        report = CoverageReport(coverage_pct=Decimal("65.7"), required_pct=Decimal("80.0"), findings=[])
+        result = format_coverage_findings_for_prompt(report)
+        assert "'test(<scope>): cover uncovered paths in <module>'" in result
+        assert "'test: " not in result
+
+    def test_scope_guidance_is_project_neutral(self) -> None:
+        """The prompt runs against whatever project SOVA is installed into, so it must
+        not point at this repository's own invariants/commit-format.sh or examples."""
+        report = CoverageReport(coverage_pct=Decimal("65.7"), required_pct=Decimal("80.0"), findings=[])
+        result = format_coverage_findings_for_prompt(report)
+        assert "invariants/commit-format.sh" not in result
+        assert "sova/utils" not in result
+        assert "commit-scope convention" in result
+
+    def test_both_prompts_share_one_scope_rule(self) -> None:
+        """Two wordings of the same rule is how they drift apart."""
+        from sova.adapters.external_reviews import _COMMIT_SCOPE_GUIDANCE
+
+        report = CoverageReport(coverage_pct=Decimal("65.7"), required_pct=Decimal("80.0"), findings=[])
+        coverage = format_coverage_findings_for_prompt(report)
+        findings = format_findings_for_prompt(
+            [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import")]
+        )
+        assert _COMMIT_SCOPE_GUIDANCE in coverage
+        assert _COMMIT_SCOPE_GUIDANCE in findings
 
 
 class TestAddressExternalFindingsWithCoverage:

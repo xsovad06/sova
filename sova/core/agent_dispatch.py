@@ -708,6 +708,17 @@ async def _run_agent_process(
 
     if result is not None:
         detail = result.text.strip() or "agent reported a terminal failure with no detail"
+        if ctx is not None:
+            # The agent still spent real money before reporting a terminal
+            # failure (run #998: all four findings fixed, then an error turn).
+            # Billing it here, rather than discarding it along with the raised
+            # error, keeps per-run/per-issue budget caps accurate for a
+            # productive-but-ultimately-failing dispatch. Tagged the same way
+            # the success path tags it (result.runtime_name = runtime.name),
+            # so this spend lands in the step's runtime CostRecord bucket
+            # rather than being misattributed to a provider that never ran.
+            result.runtime_name = runtime.name
+            ctx.add_usage(result)
     else:
         # Stdout-first, matching the documented "Failure capture must prefer
         # stdout's structured error over stderr" decision
