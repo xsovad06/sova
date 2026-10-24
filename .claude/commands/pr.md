@@ -254,27 +254,93 @@ These phases run after the PR is created/updated. They enable autonomous operati
     If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push (`git push --force-with-lease`) before proceeding to step 15: otherwise CI runs against the old commit and step 17 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
 
 15. **Wait for CI pipeline**:
-    Wait for every required check on the PR, not just one matched workflow
+    Wait for every check that gates the PR, not just one matched workflow
     run: `gh run list` only sees runs it triggered directly, so a check that
     arrives as a mirrored commit status (e.g. SonarCloud, which posts via
     `.github/workflows/sonarcloud.yml` after CI's coverage artifact lands)
     or from any other separate workflow can still be pending, or can later
     fail, after the one run `gh run list` matched already passed. `gh pr
-    checks --required` is scoped to the PR's current head by GitHub itself,
-    so it needs no SHA matching and cannot return a stale or unrelated run:
+    checks` is scoped to the PR's current head by GitHub itself, so it needs
+    no SHA matching and cannot return a stale or unrelated run.
+
+    The wait covers the required checks when the base branch has any, and
+    every check on the PR head when it has none: a repository without branch
+    protection (e.g. a private repository on a plan that offers none) has no
+    required checks, so `gh pr checks --required` prints `no required checks
+    reported` and exits 1 on every call. `gh` also exits non-zero while a
+    check is pending (8) or failing (1) and still prints the JSON then, so the
+    block decides from `gh`'s message, never from the exit code alone. Right
+    after a push GitHub may not have registered any check yet (`no checks
+    reported`): that is a reason to keep polling, and an empty check list is
+    never a pass. While the head has no check, the block also lists the
+    workflow runs for the head commit. A head with neither a check nor a run
+    after about 2 minutes (5 consecutive polls; registering normally takes
+    seconds) never triggered CI, most often because the workflows' path
+    filters exclude every changed file (e.g. a docs-only change), so the block
+    stops there instead of waiting out the budget. A workflow file error or an
+    exhausted Actions budget still creates a (failed) run, so it never ends
+    that way. The block polls every 30 seconds, at most 16 times, and ends by
+    printing one verdict line:
     ```bash
     PR_NUM=$(gh pr view --json number --jq .number) || { echo "Unable to resolve the PR number" >&2; exit 1; }
-    gh pr checks "$PR_NUM" --required --json name,bucket,link
+    ERR_FILE=$(mktemp) || { echo "Unable to create a temp file: STOP" >&2; exit 1; }
+    trap 'rm -f "$ERR_FILE"' EXIT
+    NO_CI_POLLS=0
+    for i in $(seq 1 16); do
+      SCOPE=required
+      CHECKS_JSON=$(gh pr checks "$PR_NUM" --required --json name,bucket,link 2>"$ERR_FILE")
+      if grep -q "no required checks reported" "$ERR_FILE"; then
+        SCOPE=all
+        CHECKS_JSON=$(gh pr checks "$PR_NUM" --json name,bucket,link 2>"$ERR_FILE")
+      fi
+      grep -q "no checks reported" "$ERR_FILE" && CHECKS_JSON="[]"
+      # TOTAL, PENDING, then NOT_PASSED: every bucket that is neither pass, skipping, pending nor cancel.
+      STATS=$(jq -r 'if type != "array" then error("not a check list") else
+        [length, ([.[] | select(.bucket == "pending")] | length),
+         ([.[] | select(.bucket != "pass" and .bucket != "skipping" and .bucket != "pending" and .bucket != "cancel")] | length),
+         ([.[] | select(.bucket == "cancel")] | length)] | @tsv end' <<<"$CHECKS_JSON" 2>/dev/null) && [ -n "$STATS" ] \
+        || { echo "Unable to read the PR's checks: $(cat "$ERR_FILE")" >&2; exit 1; }
+      IFS=$'\t' read -r TOTAL PENDING NOT_PASSED CANCELED <<<"$STATS"
+      jq -r '.[] | "\(.bucket)\t\(.name)\t\(.link)"' <<<"$CHECKS_JSON"
+      if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+        if [ "$NOT_PASSED" -gt 0 ]; then echo "CI FAILED ($SCOPE checks): $NOT_PASSED of $TOTAL did not pass"
+        elif [ "$CANCELED" -gt 0 ]; then echo "CI CANCELED ($SCOPE checks): $CANCELED of $TOTAL canceled"
+        else echo "CI PASSED ($SCOPE checks): all $TOTAL passed or were skipped"; fi
+        exit 0
+      fi
+      NO_CI_POLLS_BEFORE=$NO_CI_POLLS
+      NO_CI_POLLS=0
+      if [ "$TOTAL" -eq 0 ]; then
+        # Count only polls that confirmed zero runs; a failed lookup proves nothing and restarts the grace.
+        RUNS=unknown
+        HEAD_SHA=$(gh pr view "$PR_NUM" --json headRefOid --jq .headRefOid 2>/dev/null) \
+          && RUNS_JSON=$(gh run list --commit "$HEAD_SHA" --json status,conclusion,workflowName 2>/dev/null) \
+          && RUNS=$(jq -er 'length' <<<"$RUNS_JSON" 2>/dev/null) || RUNS=unknown
+        if [ "$RUNS" = unknown ]; then echo "Unable to list the workflow runs for the PR head"
+        elif [ "$RUNS" -eq 0 ]; then NO_CI_POLLS=$((NO_CI_POLLS_BEFORE + 1))
+        else jq -r '.[] | "run\t\(.status)\t\(.conclusion)\t\(.workflowName)"' <<<"$RUNS_JSON"; fi
+        if [ "$NO_CI_POLLS" -ge 5 ]; then
+          echo "NO CI TRIGGERED: no check and no workflow run for head $HEAD_SHA after 2 minutes"
+          exit 0
+        fi
+      fi
+      [ "$i" -lt 16 ] && sleep 30
+    done
+    if [ "$TOTAL" -eq 0 ]; then echo "NO CHECKS: none reported on the PR head, though a workflow run exists for it or could not be listed"
+    else echo "CI PENDING ($SCOPE checks): $PENDING of $TOTAL still pending"; fi
     ```
-    Poll every 30 seconds until every required check's `bucket` is `pass`, `fail`, `cancel`, or `skipping` (none left `pending`). Max wait: 30 minutes (a full test suite routinely runs longer than 15).
+    Max wait: 30 minutes in total (a full test suite routinely runs longer than 15).
 
-    **Run each wait as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every poll call, and keep each call to at most 16 polls of 30 seconds (8 minutes). When a call ends with any required check still pending, start another call the same way, until every required check completes or the 30 minute total is used up. Re-resolve `PR_NUM` at the top of each call, since each one is a fresh shell.
+    **Run each wait as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every call of the block above; its 16 polls of 30 seconds keep one call to about 8 minutes. When a call ends with `CI PENDING` or `NO CHECKS`, run the same block again as a new call, until it prints another verdict or the 30 minute total is used up. The block re-resolves `PR_NUM` itself, since each call is a fresh shell.
 
-16. **Handle CI result**:
-    - **All required checks have bucket `pass` or `skipping`**: continue to step 17 (a `skipping` required check, e.g. a path-filtered workflow, is treated as satisfied).
-    - **Any required check fails**: fetch logs for each failing check (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
-    - **Any required check is canceled**: treat as a non-success state, not a pass. Report it and re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled required check.
-    - **Any required check still pending after max wait**: report the current statuses and the PR URL. Suggest the user check back later.
+16. **Handle CI result** (the verdict line of the last step 15 call; "checks" below means the scope it names: the required checks, or every check when the repository requires none):
+    - **`CI PASSED`**: every check has bucket `pass` or `skipping`; continue to step 17 (a `skipping` check, e.g. a path-filtered workflow, is treated as satisfied).
+    - **`CI FAILED`**: fetch logs for each check listed with a bucket other than `pass`, `skipping` or `cancel` (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
+    - **`CI CANCELED`**: treat as a non-success state, not a pass. Report it and re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled check.
+    - **`CI PENDING` once the 30 minute total is used up**: report the current statuses and the PR URL. Suggest the user check back later.
+    - **`NO CI TRIGGERED`**: no CI ran for this head commit, most likely because the workflows' path filters exclude every changed file. The step 9 local checks are the only verification this change gets. Say exactly that in the report (and in the PR when you comment on CI), never "CI passed", then continue to step 17.
+    - **`NO CHECKS` once the 30 minute total is used up**: a workflow run exists for the head (or could not be listed) but no check ever registered on it. Report the runs the block listed and the PR URL. Do not continue to step 17: an empty check list is never a pass.
+    - **The block stops with `Unable to read the PR's checks`**: a `gh` or network failure, not a CI result. Run the block again; if it fails the same way twice, stop and report the error.
 
 17. **Self-review the PR diff**:
     Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
