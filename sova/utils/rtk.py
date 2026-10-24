@@ -10,10 +10,18 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _RTK_COMMAND = "rtk hook claude"
-_RTK_HOOK = {
-    "type": "command",
-    "command": _RTK_COMMAND,
-}
+_LEGACY_RTK_COMMAND = "rtk"
+_RTK_MATCHER = "Bash"
+
+
+def _rtk_entry() -> dict:
+    """Return a new RTK PreToolUse entry in the matcher format Claude Code requires.
+
+    Claude Code rejects the whole settings.json, permissions included, when a
+    PreToolUse entry has no ``hooks`` list, so the command is never written as
+    a bare top-level entry.
+    """
+    return {"matcher": _RTK_MATCHER, "hooks": [{"type": "command", "command": _RTK_COMMAND}]}
 
 
 def is_rtk_available() -> bool:
@@ -25,8 +33,10 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
     """Inject the RTK PreToolUse hook into .claude/settings.json.
 
     Uses read-modify-write with dedup to avoid destroying user config.
-    Upgrades legacy ``"rtk"`` entries to ``"rtk hook claude"`` in-place.
-    Returns True if the hook was added or upgraded, False if already current or error.
+    Rewrites flat RTK entries into the matcher format in place and upgrades
+    legacy ``"rtk"`` entries to ``"rtk hook claude"``; other entries are left
+    untouched. Returns True if the hook was added, rewritten or upgraded,
+    False if already current or error.
     """
     settings_path = claude_dir / "settings.json"
 
@@ -53,16 +63,16 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
             logger.warning("Unexpected type for PreToolUse in settings.json: skipping RTK hook injection")
             return False
 
-        upgraded = _upgrade_legacy_entries(pre_tool_use)
-        if upgraded:
-            settings_path.write_text(json.dumps(data, indent=2) + "\n")
-            return True
+        changed = _nest_flat_entries(pre_tool_use)
+        changed = _upgrade_legacy_entries(pre_tool_use) or changed
+        if not any(_is_rtk_entry(h) for h in pre_tool_use):
+            pre_tool_use.append(_rtk_entry())
+            changed = True
 
-        if any(_is_rtk_entry(h) for h in pre_tool_use):
+        if not changed:
             logger.debug("RTK hook already present in settings.json")
             return False
 
-        pre_tool_use.append(_RTK_HOOK)
         settings_path.write_text(json.dumps(data, indent=2) + "\n")
         return True
     except OSError as exc:
@@ -113,11 +123,48 @@ def remove_rtk_hook(claude_dir: Path) -> bool:
         return False
 
 
-def _is_rtk_entry(hook: dict) -> bool:
-    """Check if a hook dict is a current-format RTK entry.
+def _is_flat_rtk_entry(hook: dict) -> bool:
+    """Check if a hook dict is an RTK command written as a bare top-level entry."""
+    if not isinstance(hook, dict) or "hooks" in hook:
+        return False
+    return hook.get("command") in (_RTK_COMMAND, _LEGACY_RTK_COMMAND)
 
-    Matches the flat format (``{"command": "rtk hook claude"}``) and
-    the nested matcher format (``{"matcher": "Bash", "hooks": [{"command": "rtk hook claude"}]}``).
+
+def _nest_flat_entries(entries: list) -> bool:
+    """Rewrite flat RTK entries into the matcher format, keeping exactly one RTK entry.
+
+    The first flat entry is wrapped in place, keeping any keys the user added
+    (``timeout``, their own ``matcher``), unless a nested RTK entry already
+    exists; every other flat RTK entry is dropped, since a duplicate would run
+    the hook twice. Returns True if any entry was rewritten or dropped.
+    """
+    flat_indexes = [index for index, entry in enumerate(entries) if _is_flat_rtk_entry(entry)]
+    if not flat_indexes:
+        return False
+
+    has_nested = any(
+        not _is_flat_rtk_entry(entry) and (_is_rtk_entry(entry) or _is_legacy_rtk_entry(entry)) for entry in entries
+    )
+    first = flat_indexes[0]
+    if not has_nested:
+        flat = entries[first]
+        hook = {key: value for key, value in flat.items() if key != "matcher"}
+        hook.setdefault("type", "command")
+        hook["command"] = _RTK_COMMAND
+        entries[first] = {"matcher": flat.get("matcher", _RTK_MATCHER), "hooks": [hook]}
+        flat_indexes = flat_indexes[1:]
+
+    for index in reversed(flat_indexes):
+        del entries[index]
+    return True
+
+
+def _is_rtk_entry(hook: dict) -> bool:
+    """Check if a hook dict is an RTK entry running the current ``rtk hook claude`` command.
+
+    Matches the nested matcher format (``{"matcher": "Bash", "hooks": [{"command": "rtk hook claude"}]}``)
+    and the flat format (``{"command": "rtk hook claude"}``), which Claude Code rejects and which is
+    recognized only so it can be rewritten or removed.
     """
     if not isinstance(hook, dict):
         return False
@@ -135,30 +182,28 @@ def _is_legacy_rtk_entry(hook: dict) -> bool:
     if not isinstance(hook, dict):
         return False
     cmd = hook.get("command")
-    if cmd == "rtk":
+    if cmd == _LEGACY_RTK_COMMAND:
         return True
     nested = hook.get("hooks")
     if isinstance(nested, list):
-        return any(isinstance(h, dict) and h.get("command") == "rtk" for h in nested)
+        return any(isinstance(h, dict) and h.get("command") == _LEGACY_RTK_COMMAND for h in nested)
     return False
 
 
 def _upgrade_legacy_entries(entries: list) -> bool:
-    """Replace legacy ``"rtk"`` entries with ``"rtk hook claude"`` in-place.
+    """Replace legacy ``"rtk"`` commands inside nested entries with ``"rtk hook claude"`` in-place.
 
+    Flat legacy entries are handled by :func:`_nest_flat_entries`, which runs first.
     Returns True if any entries were upgraded.
     """
     upgraded = False
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        if entry.get("command") == "rtk":
-            entry["command"] = _RTK_COMMAND
-            upgraded = True
         nested = entry.get("hooks")
         if isinstance(nested, list):
             for h in nested:
-                if isinstance(h, dict) and h.get("command") == "rtk":
+                if isinstance(h, dict) and h.get("command") == _LEGACY_RTK_COMMAND:
                     h["command"] = _RTK_COMMAND
                     upgraded = True
     return upgraded

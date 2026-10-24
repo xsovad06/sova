@@ -8,6 +8,10 @@ from unittest.mock import patch
 
 from sova.utils.rtk import inject_rtk_hook, is_rtk_available, remove_rtk_hook
 
+# The only PreToolUse entry shape Claude Code accepts: an entry without a
+# "hooks" list makes it reject the whole settings.json.
+_NESTED_RTK = {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
+
 # is_rtk_available
 
 
@@ -30,7 +34,7 @@ def test_inject_creates_settings_file(tmp_path: Path) -> None:
     assert result is True
 
     settings = json.loads((tmp_path / "settings.json").read_text())
-    assert settings["hooks"]["PreToolUse"] == [{"type": "command", "command": "rtk hook claude"}]
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
 
 
 def test_inject_merges_into_existing_settings(tmp_path: Path) -> None:
@@ -51,23 +55,102 @@ def test_inject_merges_into_existing_settings(tmp_path: Path) -> None:
     hooks = settings["hooks"]["PreToolUse"]
     assert len(hooks) == 2
     assert hooks[0] == {"type": "command", "command": "my-hook"}
-    assert hooks[1] == {"type": "command", "command": "rtk hook claude"}
+    assert hooks[1] == _NESTED_RTK
 
 
 def test_inject_idempotent(tmp_path: Path) -> None:
-    """Inject skips if RTK hook already present."""
+    """A second inject leaves the file byte-for-byte unchanged."""
+    assert inject_rtk_hook(tmp_path) is True
+    first = (tmp_path / "settings.json").read_text()
+
+    assert inject_rtk_hook(tmp_path) is False
+    assert (tmp_path / "settings.json").read_text() == first
+
+
+def test_inject_nests_flat_entry(tmp_path: Path) -> None:
+    """A flat RTK entry is rewritten in place into the matcher format."""
     existing = {
+        "permissions": {"allow": ["Bash(*)"]},
         "hooks": {
-            "PreToolUse": [{"type": "command", "command": "rtk hook claude"}],
+            "PreToolUse": [
+                {"matcher": "Edit", "hooks": [{"type": "command", "command": "lint-hook"}]},
+                {"type": "command", "command": "rtk hook claude"},
+                {"type": "command", "command": "my-flat-hook"},
+            ],
+            "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "after"}]}],
         },
     }
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
-    result = inject_rtk_hook(tmp_path)
-    assert result is False
+    assert inject_rtk_hook(tmp_path) is True
 
     settings = json.loads((tmp_path / "settings.json").read_text())
-    assert len(settings["hooks"]["PreToolUse"]) == 1
+    assert settings["permissions"] == {"allow": ["Bash(*)"]}
+    assert settings["hooks"]["PreToolUse"] == [
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": "lint-hook"}]},
+        _NESTED_RTK,
+        {"type": "command", "command": "my-flat-hook"},
+    ]
+    assert settings["hooks"]["PostToolUse"] == existing["hooks"]["PostToolUse"]
+    assert inject_rtk_hook(tmp_path) is False
+
+
+def test_inject_nests_flat_entry_keeping_its_extra_keys(tmp_path: Path) -> None:
+    """Keys a user added to a flat entry (timeout, own matcher) survive the rewrite."""
+    existing = {
+        "hooks": {
+            "PreToolUse": [{"matcher": "Bash|Read", "type": "command", "command": "rtk hook claude", "timeout": 30}],
+        },
+    }
+    (tmp_path / "settings.json").write_text(json.dumps(existing))
+
+    assert inject_rtk_hook(tmp_path) is True
+
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [
+        {"matcher": "Bash|Read", "hooks": [{"type": "command", "command": "rtk hook claude", "timeout": 30}]},
+    ]
+
+
+def test_inject_drops_flat_duplicate_of_nested_entry(tmp_path: Path) -> None:
+    """A flat RTK entry next to a nested one is dropped, so the hook never runs twice."""
+    existing = {
+        "hooks": {
+            "PreToolUse": [
+                _NESTED_RTK,
+                {"type": "command", "command": "rtk hook claude"},
+                {"type": "command", "command": "rtk"},
+            ],
+        },
+    }
+    (tmp_path / "settings.json").write_text(json.dumps(existing))
+
+    assert inject_rtk_hook(tmp_path) is True
+
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
+
+
+def test_inject_collapses_several_flat_entries_into_one(tmp_path: Path) -> None:
+    """Several flat RTK entries become a single nested entry at the first one's position."""
+    existing = {
+        "hooks": {
+            "PreToolUse": [
+                {"type": "command", "command": "rtk"},
+                {"matcher": "Edit", "hooks": [{"type": "command", "command": "lint-hook"}]},
+                {"type": "command", "command": "rtk hook claude"},
+            ],
+        },
+    }
+    (tmp_path / "settings.json").write_text(json.dumps(existing))
+
+    assert inject_rtk_hook(tmp_path) is True
+
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [
+        _NESTED_RTK,
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": "lint-hook"}]},
+    ]
 
 
 def test_inject_idempotent_nested_format(tmp_path: Path) -> None:
@@ -107,7 +190,7 @@ def test_inject_adds_hooks_key_to_existing_file(tmp_path: Path) -> None:
     assert result is True
 
     settings = json.loads((tmp_path / "settings.json").read_text())
-    assert settings["hooks"]["PreToolUse"] == [{"type": "command", "command": "rtk hook claude"}]
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
     assert settings["permissions"] == {"allow": ["Read"]}
 
 
@@ -131,6 +214,27 @@ def test_remove_when_present(tmp_path: Path) -> None:
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings["hooks"]["PreToolUse"] == [{"type": "command", "command": "my-hook"}]
+
+
+def test_remove_nested_entry(tmp_path: Path) -> None:
+    """Remove strips a nested RTK entry and leaves other entries alone."""
+    other = {"matcher": "Edit", "hooks": [{"type": "command", "command": "lint-hook"}]}
+    existing = {"hooks": {"PreToolUse": [other, _NESTED_RTK]}}
+    (tmp_path / "settings.json").write_text(json.dumps(existing))
+
+    assert remove_rtk_hook(tmp_path) is True
+
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [other]
+
+
+def test_remove_after_inject_cleans_up(tmp_path: Path) -> None:
+    """Uninstall removes exactly what install wrote."""
+    assert inject_rtk_hook(tmp_path) is True
+    assert remove_rtk_hook(tmp_path) is True
+
+    settings = json.loads((tmp_path / "settings.json").read_text())
+    assert "hooks" not in settings
 
 
 def test_remove_cleans_empty_structures(tmp_path: Path) -> None:
@@ -225,7 +329,7 @@ def test_configure_rtk_injects_when_available(tmp_path: Path) -> None:
         _configure_rtk(cfg, claude_dir)
 
     settings = json.loads((claude_dir / "settings.json").read_text())
-    assert any(h.get("command") == "rtk hook claude" for h in settings["hooks"]["PreToolUse"])
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
 
 
 def test_configure_rtk_skips_when_disabled(tmp_path: Path) -> None:
@@ -369,7 +473,7 @@ def test_is_legacy_rtk_entry() -> None:
 
 
 def test_inject_upgrades_legacy_entry(tmp_path: Path) -> None:
-    """inject_rtk_hook upgrades legacy 'rtk' entries to 'rtk hook claude'."""
+    """inject_rtk_hook upgrades a flat legacy 'rtk' entry to a nested 'rtk hook claude' one."""
     existing = {
         "hooks": {
             "PreToolUse": [{"type": "command", "command": "rtk"}],
@@ -381,9 +485,7 @@ def test_inject_upgrades_legacy_entry(tmp_path: Path) -> None:
     assert result is True
 
     settings = json.loads((tmp_path / "settings.json").read_text())
-    hooks = settings["hooks"]["PreToolUse"]
-    assert len(hooks) == 1
-    assert hooks[0]["command"] == "rtk hook claude"
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
 
 
 def test_inject_upgrades_nested_legacy_entry(tmp_path: Path) -> None:
@@ -401,8 +503,7 @@ def test_inject_upgrades_nested_legacy_entry(tmp_path: Path) -> None:
     assert result is True
 
     settings = json.loads((tmp_path / "settings.json").read_text())
-    nested_hooks = settings["hooks"]["PreToolUse"][0]["hooks"]
-    assert nested_hooks[0]["command"] == "rtk hook claude"
+    assert settings["hooks"]["PreToolUse"] == [_NESTED_RTK]
 
 
 def test_inject_idempotent_after_upgrade(tmp_path: Path) -> None:

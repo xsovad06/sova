@@ -277,6 +277,57 @@ class TestInstallCompletenessChecks:
         assert "missing" in perm_check.detail.lower()
         assert "sova install --update" in perm_check.detail
 
+    def test_check_install_completeness_passes_matcher_format_hooks(self, tmp_path: Path) -> None:
+        """Hook entries in the matcher format pass the settings hooks check."""
+        _scaffold_install_artifacts(tmp_path)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings = json.loads(settings_path.read_text())
+        settings["hooks"] = {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}],
+        }
+        settings_path.write_text(json.dumps(settings))
+
+        checks = _check_install_completeness(tmp_path)
+        hooks_check = next(c for c in checks if c.name == "settings hooks")
+        assert hooks_check.passed is True
+        assert hooks_check.required is False
+
+    def test_check_install_completeness_flags_flat_hook_entry(self, tmp_path: Path) -> None:
+        """A hook entry without a hooks list fails: Claude Code then ignores the whole settings.json."""
+        _scaffold_install_artifacts(tmp_path)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings = json.loads(settings_path.read_text())
+        settings["hooks"] = {
+            "PreToolUse": [{"type": "command", "command": "rtk hook claude"}],
+            "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "after"}]}],
+        }
+        settings_path.write_text(json.dumps(settings))
+
+        checks = _check_install_completeness(tmp_path)
+        hooks_check = next(c for c in checks if c.name == "settings hooks")
+        assert hooks_check.passed is False
+        assert "PreToolUse" in hooks_check.detail
+        assert "PostToolUse" not in hooks_check.detail
+        assert "sova install --update" in hooks_check.detail
+
+    def test_check_install_completeness_flags_unparseable_settings_for_hooks(self, tmp_path: Path) -> None:
+        """An unparseable settings.json fails the hooks check instead of passing as if it had no hooks."""
+        _scaffold_install_artifacts(tmp_path)
+        (tmp_path / ".claude" / "settings.json").write_text("{broken")
+
+        checks = _check_install_completeness(tmp_path)
+        hooks_check = next(c for c in checks if c.name == "settings hooks")
+        assert hooks_check.passed is False
+
+    def test_check_install_completeness_without_settings_passes_hooks(self, tmp_path: Path) -> None:
+        """No settings.json means no hooks to reject."""
+        _scaffold_install_artifacts(tmp_path)
+        (tmp_path / ".claude" / "settings.json").unlink()
+
+        checks = _check_install_completeness(tmp_path)
+        hooks_check = next(c for c in checks if c.name == "settings hooks")
+        assert hooks_check.passed is True
+
 
 # ---------------------------------------------------------------------------
 # Remaining check helpers
