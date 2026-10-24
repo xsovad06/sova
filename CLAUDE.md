@@ -117,16 +117,13 @@ If you installed RTK after running `sova install`, add the hook manually to `.cl
 {
   "hooks": {
     "PreToolUse": [
-      {
-        "type": "command",
-        "command": "rtk hook claude"
-      }
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
     ]
   }
 }
 ```
 
-**Important**: The command must be `"rtk hook claude"`, not just `"rtk"`. The bare `rtk` command prints help and blocks tool calls.
+**Important**: The command must be `"rtk hook claude"`, not just `"rtk"`. The bare `rtk` command prints help and blocks tool calls. Keep the `matcher`/`hooks` wrapper, or Claude Code ignores the whole file (`sova install --update` repairs it).
 
 ### Configuration
 
