@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_components.html" import priority_icon %}
 {% block title %}Supervisor - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
@@ -37,6 +36,7 @@
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#fab387"></span> Handoff</span>
         <span class="text-gray-700 mx-0.5">|</span>
+        <span class="flex items-center gap-1">{{ priority_icon('blocker', '12') }} Blocker</span>
         <span class="flex items-center gap-1">{{ priority_icon('critical', '12') }} Critical</span>
         <span class="flex items-center gap-1">{{ priority_icon('high', '12') }} High</span>
         <span class="flex items-center gap-1">{{ priority_icon('medium', '12') }} Med</span>
@@ -269,17 +269,17 @@ function prStateColor(prState) {
 
 // Priority configuration: colors for backward compatibility
 const PRIORITY_CONFIG = {
-  critical: { color: '#f38ba8' },
-  high:     { color: '#fab387' },
-  medium:   { color: '#f9e2af' },
-  low:      { color: '#6c7086' }
+  blocker:   { color: '#ff5630' },
+  critical:  { color: '#f38ba8' },
+  high:      { color: '#fab387' },
+  medium:    { color: '#f9e2af' },
+  low:       { color: '#6c7086' },
+  undefined: { color: '#585b70' }
 };
 
 function priorityColor(priority) {
   return PRIORITY_CONFIG[priority]?.color || null;
 }
-
-const _PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
 function zoomOut() { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 0.74); }
@@ -642,8 +642,9 @@ function renderGraph(data) {
   msMap.forEach(nodes => nodes.sort((a, b) => {
     const td = (tierMap[a.id] ?? 0) - (tierMap[b.id] ?? 0);
     if (td !== 0) return td;
-    const pa = _PRIORITY_ORDER[a.priority || ''] ?? 99;
-    const pb = _PRIORITY_ORDER[b.priority || ''] ?? 99;
+    const order = _priorityRankMap();
+    const pa = order[a.priority || ''] ?? 99;
+    const pb = order[b.priority || ''] ?? 99;
     const pd = pa - pb;
     return pd !== 0 ? pd : a.id - b.id;
   }));
@@ -1131,7 +1132,7 @@ function renderGraph(data) {
         .attr('width', ICON_SIZE)
         .attr('height', ICON_SIZE)
         .attr('opacity', 0.9);
-      icon.append('title').text(`Priority: ${n.priority || 'undefined'}`);
+      icon.append('title').text(`Priority: ${priorityDisplayName(n.priority)}`);
     }
 
     // Epic badge at bottom-left (similar to PR badge)

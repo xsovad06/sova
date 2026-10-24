@@ -4238,38 +4238,8 @@ class TestPhaseOrder:
         assert _extract_phase_order("  Phase 3: v0.1") == 3
 
 
-class TestLabelPriority:
-    """Tests for _extract_label_priority with spaced and compact label formats."""
-
-    def test_spaced_priority_high(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: high"]) == 1
-
-    def test_spaced_priority_critical(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: critical"]) == 0
-
-    def test_compact_priority_medium(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority:medium"]) == 2
-
-    def test_no_priority_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["type: feature", "area: accounts"]) == 99
-
-    def test_priority_ordering(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: critical"]) < _extract_label_priority(["priority: high"])
-        assert _extract_label_priority(["priority: high"]) < _extract_label_priority(["priority: low"])
-
-
 class TestQueueServiceEnrichment:
-    """Tests for NEEDS_SPEC inclusion and JIRA priority sorting in queue_service."""
+    """Tests for NEEDS_SPEC inclusion and recommended actions in queue_service."""
 
     def test_needs_spec_in_actionable_states(self) -> None:
         from sova.adapters.base import TaskState
@@ -4295,16 +4265,6 @@ class TestQueueServiceEnrichment:
         from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
 
         assert _RECOMMENDED_ACTION[TaskState.RESEARCHED] == "review_spec"
-
-    def test_jira_priority_order_critical_before_minor(self) -> None:
-        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
-
-        assert _JIRA_PRIORITY_ORDER["Critical"] < _JIRA_PRIORITY_ORDER["Minor"]
-
-    def test_jira_priority_order_major_before_trivial(self) -> None:
-        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
-
-        assert _JIRA_PRIORITY_ORDER["Major"] < _JIRA_PRIORITY_ORDER["Trivial"]
 
 
 class TestEnrichSpecStatus:
@@ -19024,6 +18984,88 @@ class TestPlannerCreateIssues:
         assert len(data["created"]) == 2
         assert len(data["errors"]) == 1
         assert data["errors"][0]["title"] == "Task 2"
+
+    async def test_create_issues_jira_project_sends_no_labels(self, client: AsyncClient) -> None:
+        """Jira rejects any label containing a space; a Jira-configured project
+        must not forward the GitHub-style 'area: x' / 'priority: y' strings
+        the client used to build itself.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from sova.adapters.base import Task, TaskState
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        cfg.task_source.type = "jira"
+
+        mock_adapter = AsyncMock()
+        mock_adapter.create_issue.return_value = Task(id="200", title="feat(cli): new cmd", state=TaskState.BACKLOG)
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            resp = await client.post(
+                "/api/agents/planner/create-issues",
+                json={
+                    "tasks": [
+                        {
+                            "title": "feat(cli): new cmd",
+                            "description": "A new command",
+                            "component": "cli",
+                            "priority": "high",
+                        },
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        assert mock_adapter.create_issue.call_count == 1
+        _, kwargs = mock_adapter.create_issue.call_args
+        assert kwargs["labels"] is None
+
+
+class TestPlannerTaskLabels:
+    """Direct unit tests for _planner_task_labels(), the function that turns
+    a planner-proposed task into GitHub label strings. Only the endpoint-level
+    behavior (Jira sends no labels) was covered before; these pin the
+    GitHub-side label construction and its validation against the catalog.
+    """
+
+    def test_github_component_and_priority(self) -> None:
+        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+
+        task = PlannedTaskRequest(title="t", component="dashboard", priority="high")
+        assert _planner_task_labels(task, is_github=True) == ["area: dashboard", "priority: high"]
+
+    def test_github_unknown_component_dropped(self) -> None:
+        """A component outside the catalog's area vocabulary (e.g. the planner
+        LLM echoing a prompt example that isn't a real area) is dropped and
+        logged rather than becoming a label gh will reject the whole issue
+        creation over.
+        """
+        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+
+        task = PlannedTaskRequest(title="t", component="orchestrator", priority="high")
+        assert _planner_task_labels(task, is_github=True) == ["priority: high"]
+
+    def test_github_unknown_priority_dropped(self) -> None:
+        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+
+        task = PlannedTaskRequest(title="t", component="dashboard", priority="urgent")
+        assert _planner_task_labels(task, is_github=True) == ["area: dashboard"]
+
+    def test_github_no_fields_returns_none(self) -> None:
+        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+
+        task = PlannedTaskRequest(title="t")
+        assert _planner_task_labels(task, is_github=True) is None
+
+    def test_non_github_returns_none(self) -> None:
+        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+
+        task = PlannedTaskRequest(title="t", component="dashboard", priority="high")
+        assert _planner_task_labels(task, is_github=False) is None
 
 
 class TestHandoffIssueFilter:

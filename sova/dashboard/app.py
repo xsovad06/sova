@@ -9,6 +9,7 @@ Supports two modes:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -34,12 +35,14 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
+from sova.adapters.priority import Priority
 from sova.config.registry import has_projects, list_projects
 from sova.dashboard.routers import (
     agents,
@@ -577,6 +580,33 @@ def _check_scheduler_health(project_dir: Path) -> str | None:
         return "fail"
 
 
+def priority_icon(priority: str | None, size: str = "16") -> Markup:
+    """Jinja global: render a priority icon ``<img>`` tag.
+
+    Registered as a global function (rather than a ``_components.html``
+    macro import) so every template can call it directly, and so the
+    icon/display-name mapping has one source of truth: `Priority`.
+    """
+    try:
+        level = Priority(str(priority).strip().lower()) if priority else Priority.UNDEFINED
+    except ValueError:
+        level = Priority.UNDEFINED
+    return Markup(
+        f'<img src="/static/priority/{level.icon}.svg" alt="{level.display_name} priority" '
+        f'width="{size}" height="{size}" class="inline-block align-middle" loading="lazy">'
+    )
+
+
+def priorities_json() -> Markup:
+    """Jinja global: JSON payload for `window.SOVA_PRIORITIES` (see base.html).
+
+    Lets dashboard JS build its icon/rank lookups from the same registry
+    instead of maintaining a hand-kept copy that can drift from it.
+    """
+    payload = [{"value": p.value, "rank": p.rank, "display_name": p.display_name, "icon": p.icon} for p in Priority]
+    return Markup(json.dumps(payload))
+
+
 def create_app(
     *,
     project_dir: Path | None = None,
@@ -1046,6 +1076,8 @@ def create_app(
         return awareness_service.is_awareness_enabled(_get_ctx_project_dir())
 
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+    templates.env.globals["priority_icon"] = priority_icon
+    templates.env.globals["priorities_json"] = priorities_json
 
     if is_multi:
         _setup_multi_project(app, templates)

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
+from sova.adapters.priority import Priority
 from sova.supervisor.dependency_graph import DependencyGraph, is_epic
 
 
@@ -17,12 +18,14 @@ def _task(
     state: TaskState = TaskState.BACKLOG,
     labels: list[str] | None = None,
 ) -> Task:
+    labels = labels or []
     return Task(
         id=str(issue_id),
         title=title or f"Issue #{issue_id}",
         body=body,
         state=state,
-        labels=labels or [],
+        labels=labels,
+        priority=Priority.from_labels(labels),
     )
 
 

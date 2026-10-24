@@ -284,8 +284,8 @@ function renderQueueCard(item) {
 
   var typeBadge = issueTypeBadge(item.issue_type);
 
-  var priority = _extractPriority(item.labels || []);
-  var priorityIcon = '<img src="' + priorityIconUrl(priority) + '" alt="' + escapeHtml(priority || 'undefined') + ' priority" width="14" height="14" class="inline-block align-middle shrink-0">';
+  var priority = item.issue_priority;
+  var priorityIcon = '<img src="' + priorityIconUrl(priority) + '" alt="' + escapeHtml(priorityDisplayName(priority)) + ' priority" width="14" height="14" class="inline-block align-middle shrink-0">';
 
   var displayLabels = (item.labels || []).filter(function(l) {
     return l.indexOf('agent:') !== 0 && l.indexOf('priority:') !== 0 && l.indexOf('role:') !== 0;

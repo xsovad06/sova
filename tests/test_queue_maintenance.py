@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.adapters.base import AdapterError, Task, TaskState
+from sova.adapters.priority import Priority
 from sova.config.models import NetworkGuardConfig, SupervisorConfig
 from sova.supervisor.dependency_graph import DependencyGraph, invalidate_graph_cache
 from sova.supervisor.gates import BlockReason
@@ -52,7 +53,13 @@ def _make_tasks(
 ) -> list[Task]:
     labels_map = labels_map or {}
     return [
-        Task(id=str(issue_id), title=f"Task #{issue_id}", state=state, labels=labels_map.get(issue_id, []))
+        Task(
+            id=str(issue_id),
+            title=f"Task #{issue_id}",
+            state=state,
+            labels=labels_map.get(issue_id, []),
+            priority=Priority.from_labels(labels_map.get(issue_id, [])),
+        )
         for issue_id, state in state_map.items()
     ]
 
@@ -264,6 +271,68 @@ class TestDiscoverReady:
         )
         result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
         assert result == (10, 20, 30)
+
+    def test_blocker_outranks_critical_and_undefined_sorts_last(self) -> None:
+        task_map = {
+            10: TaskState.RESEARCHED,
+            30: TaskState.RESEARCHED,
+            40: TaskState.RESEARCHED,
+            50: TaskState.RESEARCHED,
+        }
+        task_objects = _make_task_objects(
+            task_map,
+            labels_map={
+                10: ["priority: low"],
+                # 30 has no priority label: resolves to undefined, ranks after low.
+                40: ["priority: critical"],
+                50: ["priority: blocker"],
+            },
+        )
+        # blocker's id (50) is greater than critical's id (40), so if blocker and
+        # critical were ever given the same rank, the issue-number tiebreak would
+        # sort critical (40) before blocker (50), yielding a different order than
+        # the one asserted below. A rank bug can't hide behind the tiebreak here.
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        assert result == (50, 40, 10, 30)
+
+    def test_explicit_undefined_label_ranks_with_implicit_undefined(self) -> None:
+        """An issue explicitly labelled 'priority: undefined' (the label humans
+        and /sprint-plan apply) must rank identically to an unlabelled issue,
+        tiebroken by issue number, not fall into a different rank bucket."""
+        task_map = {10: TaskState.RESEARCHED, 20: TaskState.RESEARCHED, 30: TaskState.RESEARCHED}
+        task_objects = _make_task_objects(
+            task_map,
+            labels_map={
+                10: ["priority: low"],
+                20: ["priority: undefined"],
+                # 30 has no priority label at all: resolves to undefined implicitly.
+            },
+        )
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        assert result == (10, 20, 30)
+
+    def test_sort_key_reads_task_priority_field_not_labels(self) -> None:
+        """The sort key reads Task.priority directly (set at the origin
+        adapter), never Priority.from_labels(task.labels) itself. A Task
+        built with labels but a default-constructed (UNDEFINED) priority
+        field must sort as undefined even though its labels say otherwise:
+        this is the realistic regression for any Task built outside the
+        GitHub/Jira adapters (e.g. a Task that forgets to set priority)."""
+        task_objects = {
+            10: Task(id="10", title="Low via field", state=TaskState.RESEARCHED, labels=["priority: low"]),
+            20: Task(
+                id="20",
+                title="Looks blocker but priority field left default",
+                state=TaskState.RESEARCHED,
+                labels=["priority: blocker"],
+            ),
+        }
+        task_map = {10: TaskState.RESEARCHED, 20: TaskState.RESEARCHED}
+        assert task_objects[20].priority == Priority.UNDEFINED
+        result = _discover_ready([], task_map, max_queue_size=10, task_objects=task_objects)
+        # 20's labels claim 'blocker', but its priority field defaulted to
+        # UNDEFINED, so it sorts after 10 (low), not before it.
+        assert result == (10, 20)
 
     def test_skips_human_only_issues(self) -> None:
         task_map = {10: TaskState.RESEARCHED, 20: TaskState.RESEARCHED}

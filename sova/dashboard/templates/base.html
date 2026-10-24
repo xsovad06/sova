@@ -203,6 +203,7 @@
   <script>
     window.SOVA_PROJECT_SLUG = "{{ project_slug if project_slug is defined else '' }}";
     window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api" : "/api";
+    window.SOVA_PRIORITIES = {{ priorities_json() }};
   </script>
   <!-- Resource monitoring widget -->
   <div id="resource-widget" class="resource-widget" style="display:none">
