@@ -54,46 +54,12 @@ _RECOMMENDED_ACTION: dict[TaskState, str] = {
     TaskState.HUMAN_ONLY: "triage",
 }
 
-_PRIORITY_LABEL_ORDER: dict[str, int] = {
-    "priority:critical": 0,
-    "priority:high": 1,
-    "priority:medium": 2,
-    "priority:low": 3,
-}
-
 
 def _milestone_badge(milestone: str) -> str:
     """Extract short badge label from milestone title (e.g. 'P3: v0.1 ...' -> 'P3')."""
     if not milestone:
         return "--"
     return milestone.split(":")[0].strip()[:8]
-
-
-_JIRA_PRIORITY_ORDER: dict[str, int] = {
-    "Blocker": 0,
-    "Critical": 0,
-    "Highest": 0,
-    "Major": 1,
-    "High": 1,
-    "Normal": 1,
-    "Medium": 1,
-    "Minor": 2,
-    "Low": 2,
-    "Trivial": 3,
-    "Lowest": 3,
-}
-
-
-def _extract_label_priority(labels: list[str]) -> int:
-    """Extract numeric priority from priority: labels. Lower = higher priority.
-
-    Handles both spaced ("priority: high") and compact ("priority:high") formats.
-    """
-    for label in labels:
-        normalized = label.replace(" ", "")
-        if normalized in _PRIORITY_LABEL_ORDER:
-            return _PRIORITY_LABEL_ORDER[normalized]
-    return 99
 
 
 _PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
@@ -168,6 +134,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "state": t.state.value,
                 "priority": priority,
                 "priority_label": _milestone_badge(t.milestone),
+                "issue_priority": t.priority.value,
                 "phase_order": phase_order,
                 "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
                 # Copied, not aliased: t.labels/assignees/components are the
@@ -238,8 +205,7 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
         key=lambda t: (
             _STATE_PRIORITY.get(t.state, 99),
             _extract_phase_order(t.milestone),
-            _extract_label_priority(t.labels),
-            _JIRA_PRIORITY_ORDER.get(t.metadata.get("jira_priority", ""), 99),
+            t.priority.rank,
             t.metadata.get("created_at", "9999"),
         )
     )

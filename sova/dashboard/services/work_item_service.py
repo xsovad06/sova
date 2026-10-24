@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from sova.adapters.priority import Priority
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
 )
@@ -224,6 +225,7 @@ def _build_task_item(
         labels=task.get("labels", []),
         priority=task.get("priority", 99),
         priority_label=task.get("priority_label", ""),
+        issue_priority=task.get("issue_priority", Priority.UNDEFINED.value),
         last_run=task.get("last_run"),
         created_at=task.get("created_at", ""),
         assignees=task.get("assignees", []),
@@ -282,6 +284,7 @@ def _build_pr_item(
         labels=pr.get("labels", []),
         priority=-2,
         priority_label="",
+        issue_priority=Priority.from_labels(pr.get("labels", [])).value,
         last_run=None,
         created_at="",
         assignees=pr.get("assignees", []),
@@ -665,6 +668,7 @@ def _build_item(**kwargs: object) -> dict:
         "labels": kwargs["labels"],
         "priority": kwargs["priority"],
         "priority_label": kwargs["priority_label"],
+        "issue_priority": kwargs["issue_priority"],
         "last_run": kwargs["last_run"],
         "created_at": kwargs["created_at"],
         "assignees": kwargs["assignees"],

@@ -1368,26 +1368,42 @@ initGlobalBatch();
    12. PRIORITY ICONS
    ============================================================ */
 
-// Keep in sync with priority_map in _components.html
-var _PRIORITY_ICON_MAP = {
-  critical: 'critical',
-  high: 'high',
-  medium: 'medium',
-  low: 'low'
-};
+// Sourced from window.SOVA_PRIORITIES (rendered server-side from the single
+// Priority registry in sova/adapters/priority.py), not a hand-kept copy.
+// Built once: the callers are sort comparators, so rebuilding per comparison
+// would walk the registry O(n log n) times per render. Only a non-empty
+// result is cached: home.html/setup.html load this script without
+// base.html's SOVA_PRIORITIES bootstrap, so an early call there must not
+// permanently pin an empty map for the rest of the page's lifetime.
+var _priorityRanks = null;
+var _priorityNames = null;
+
+function _priorityRankMap() {
+  if (!_priorityRanks || !Object.keys(_priorityRanks).length) {
+    _priorityRanks = {};
+    (window.SOVA_PRIORITIES || []).forEach(function(entry) { _priorityRanks[entry.value] = entry.rank; });
+  }
+  return _priorityRanks;
+}
+
+function _priorityDisplayNameMap() {
+  if (!_priorityNames || !Object.keys(_priorityNames).length) {
+    _priorityNames = {};
+    (window.SOVA_PRIORITIES || []).forEach(function(entry) { _priorityNames[entry.value] = entry.display_name; });
+  }
+  return _priorityNames;
+}
 
 function priorityIconUrl(priority) {
   var p = (priority || '').toString().toLowerCase().trim();
-  var iconName = _PRIORITY_ICON_MAP[p] || 'undefined';
-  return '/static/priority/' + iconName + '.svg';
+  var ranks = _priorityRankMap();
+  return '/static/priority/' + (Object.prototype.hasOwnProperty.call(ranks, p) ? p : 'undefined') + '.svg';
 }
 
-function _extractPriority(labels) {
-  for (var i = 0; i < (labels || []).length; i++) {
-    var l = labels[i];
-    if (l.indexOf('priority:') === 0) return l.replace('priority: ', '').replace('priority:', '').trim();
-  }
-  return '';
+function priorityDisplayName(priority) {
+  var p = (priority || '').toString().toLowerCase().trim();
+  var names = _priorityDisplayNameMap();
+  return Object.prototype.hasOwnProperty.call(names, p) ? names[p] : 'Undefined';
 }
 
 /* ============================================================

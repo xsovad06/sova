@@ -1,9 +1,13 @@
-"""Label and priority helpers shared by `dependency_graph.py` and `suitability.py`.
+"""Label helpers shared by `dependency_graph.py` and `suitability.py`.
 
 Kept in a separate leaf module (no imports of either) so that `dependency_graph`
 can import the classifier in `suitability.py` and vice versa without a circular
 import: both of those modules import from here instead of from each other for
 these pure, graph-independent helpers.
+
+Priority parsing is not here: it lives in `sova.adapters.priority.Priority`
+(a leaf module shared by both trackers), reached via `Priority.from_labels()`
+or the already-parsed `task.priority`.
 """
 
 from __future__ import annotations
@@ -74,22 +78,3 @@ def local_assessment_applies(labels: list[str]) -> bool:
         and not is_interactive_recommended(labels)
         and not is_epic(labels)
     )
-
-
-_VALID_PRIORITIES: frozenset[str] = frozenset({"critical", "high", "medium", "low"})
-
-
-def extract_priority(labels: list[str]) -> str:
-    """Return the priority level from a list of labels, or '' if none found.
-
-    Recognises labels of the form 'priority: <level>' (case-insensitive).
-    Only the four canonical levels (critical/high/medium/low) are returned;
-    unknown values are ignored so stale or mis-spelled labels don't surface.
-    """
-    for label in labels:
-        lower = label.lower().strip()
-        if lower.startswith("priority:"):
-            value = lower[len("priority:") :].strip()
-            if value in _VALID_PRIORITIES:
-                return value
-    return ""

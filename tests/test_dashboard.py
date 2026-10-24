@@ -4139,38 +4139,8 @@ class TestPhaseOrder:
         assert _extract_phase_order("  Phase 3: v0.1") == 3
 
 
-class TestLabelPriority:
-    """Tests for _extract_label_priority with spaced and compact label formats."""
-
-    def test_spaced_priority_high(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: high"]) == 1
-
-    def test_spaced_priority_critical(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: critical"]) == 0
-
-    def test_compact_priority_medium(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority:medium"]) == 2
-
-    def test_no_priority_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["type: feature", "area: accounts"]) == 99
-
-    def test_priority_ordering(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_label_priority
-
-        assert _extract_label_priority(["priority: critical"]) < _extract_label_priority(["priority: high"])
-        assert _extract_label_priority(["priority: high"]) < _extract_label_priority(["priority: low"])
-
-
 class TestQueueServiceEnrichment:
-    """Tests for NEEDS_SPEC inclusion and JIRA priority sorting in queue_service."""
+    """Tests for NEEDS_SPEC inclusion and recommended actions in queue_service."""
 
     def test_needs_spec_in_actionable_states(self) -> None:
         from sova.adapters.base import TaskState
@@ -4196,16 +4166,6 @@ class TestQueueServiceEnrichment:
         from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
 
         assert _RECOMMENDED_ACTION[TaskState.RESEARCHED] == "review_spec"
-
-    def test_jira_priority_order_critical_before_minor(self) -> None:
-        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
-
-        assert _JIRA_PRIORITY_ORDER["Critical"] < _JIRA_PRIORITY_ORDER["Minor"]
-
-    def test_jira_priority_order_major_before_trivial(self) -> None:
-        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
-
-        assert _JIRA_PRIORITY_ORDER["Major"] < _JIRA_PRIORITY_ORDER["Trivial"]
 
 
 class TestEnrichSpecStatus:

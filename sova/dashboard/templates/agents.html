@@ -492,8 +492,9 @@ function _sortWorkItems(a, b) {
   var ta = _stateSortTier(a), tb = _stateSortTier(b);
   if (ta !== tb) return ta - tb;
   if (a.priority !== b.priority) return a.priority - b.priority;
-  var pa = _priorityOrder[_extractPriority(a.labels)];
-  var pb = _priorityOrder[_extractPriority(b.labels)];
+  var order = _priorityRankMap();
+  var pa = order[a.issue_priority];
+  var pb = order[b.issue_priority];
   return (pa === undefined ? 99 : pa) - (pb === undefined ? 99 : pb);
 }
 
@@ -506,8 +507,6 @@ function collapseTasks() {
   _expansionTier = 0;
   renderTaskCards();
 }
-
-var _priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function _renderHandoffBtn(ha, issueNumber) {
   var cls = _actionStyles[ha.style] || _actionStyles.warning;
@@ -557,8 +556,8 @@ function _renderActionBtn(action, issueKey) {
 function renderTaskCard(item) {
   var issueKey = item.issue_number || ('pr:' + item.pr_number);
   var isRunning = item.state === 'agent_running';
-  var p = _extractPriority(item.labels);
-  var priorityIcon = p ? '<img src="' + priorityIconUrl(p) + '" alt="' + escapeHtml(p) + ' priority" width="16" height="16" class="inline-block align-middle shrink-0">' : '';
+  var p = item.issue_priority;
+  var priorityIcon = '<img src="' + priorityIconUrl(p) + '" alt="' + escapeHtml(priorityDisplayName(p)) + ' priority" width="16" height="16" class="inline-block align-middle shrink-0">';
 
   var handoffActions = item.handoff_actions || [];
   var isSpecReview = item.state === 'spec_review';
@@ -1707,11 +1706,15 @@ function _submitPlannerIssues(runId, handoffIssue) {
   checks.forEach(function(cb) {
     if (cb.checked) {
       var idx = parseInt(cb.getAttribute('data-idx'), 10);
-      if (allTasks[idx]) {
+      var task = allTasks[idx];
+      if (task) {
+        var labels = [];
+        if (task.component) labels.push('area: ' + task.component);
+        if (task.priority) labels.push('priority: ' + task.priority);
         selected.push({
-          title: allTasks[idx].title,
-          description: allTasks[idx].description,
-          labels: allTasks[idx].component ? ['area:' + allTasks[idx].component] : null,
+          title: task.title,
+          description: task.description,
+          labels: labels.length ? labels : null,
         });
       }
     }
