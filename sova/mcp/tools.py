@@ -9,7 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from sova.config.loader import load_config
 from sova.llm.client import invoke_command
@@ -46,11 +47,27 @@ def _validate_project_dir(project_dir: str, allowed_root: Path | None) -> Path:
     return resolved
 
 
-def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
+def _resolve_caller_dir(project_dir: str, allowed_root: Path | None) -> Path:
+    """``_validate_project_dir``, with its rejection reported to the MCP client.
+
+    mcp 2.x sends a client only a ``ToolError``'s text: any other exception
+    reaches it as a bare "Error executing tool <name>", with the detail kept in
+    the server log. A missing or out-of-bounds project path is the calling
+    model's to correct, so that message must reach it. Nothing else is
+    converted: a config that fails to load or an error inside the command run
+    stays opaque, since its text can carry internal detail.
+    """
+    try:
+        return _validate_project_dir(project_dir, allowed_root)
+    except (ValueError, FileNotFoundError, NotADirectoryError) as e:
+        raise ToolError(str(e)) from e
+
+
+def register_tools(server: MCPServer, *, project_dir: Path | None = None) -> None:
     """Register all SOVA tools on the given MCP server.
 
     Args:
-        server: The FastMCP server to register tools on.
+        server: The MCPServer to register tools on.
         project_dir: If provided, tools are bound to this project directory
             and the ``project_dir`` parameter is removed from tool signatures.
             Paths are also constrained to stay within this root.
@@ -73,7 +90,7 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
         project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
         if issue_number <= 0:
-            raise ValueError(f"Invalid issue number: {issue_number}. Must be positive.")
+            raise ToolError(f"Invalid issue number: {issue_number}. Must be positive.")
         effective = project_dir or (str(bound_dir) if bound_dir else ".")
         return await _run_command("/develop", str(issue_number), effective, allowed_root=allowed_root)
 
@@ -129,7 +146,7 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
         project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
         if pr_number <= 0:
-            raise ValueError(f"Invalid PR number: {pr_number}. Must be positive.")
+            raise ToolError(f"Invalid PR number: {pr_number}. Must be positive.")
         effective = project_dir or (str(bound_dir) if bound_dir else ".")
         return await _run_command("/address-pr", str(pr_number), effective, allowed_root=allowed_root)
 
@@ -163,12 +180,13 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
 
 async def _run_command(command: str, args: str, project_dir: str, *, allowed_root: Path | None = None) -> str:
     """Run a SOVA command via the LLM client and return the result text."""
-    resolved = _validate_project_dir(project_dir, allowed_root)
+    resolved = _resolve_caller_dir(project_dir, allowed_root)
 
     try:
         config = load_config(resolved)
-    except Exception as e:  # noqa: BLE001 (config boundary: any failure becomes a ValueError with context)
-        raise ValueError(f"Failed to load SOVA config from {resolved}: {e}") from e
+    except Exception as e:  # noqa: BLE001 (config boundary, any failure is logged and re-raised opaque to the client)
+        log.warning("mcp.config_load_failed", project_dir=str(resolved), error=str(e), exc_info=True)
+        raise RuntimeError(f"Failed to load SOVA config from {resolved}: {e}") from e
 
     log.info("mcp.run_command", command=command, args=args, project_dir=str(resolved))
 
@@ -195,7 +213,7 @@ async def _run_command(command: str, args: str, project_dir: str, *, allowed_roo
 
 def _read_project_context(project_dir: str, *, allowed_root: Path | None = None) -> str:
     """Read project context files and return their contents."""
-    resolved = _validate_project_dir(project_dir, allowed_root)
+    resolved = _resolve_caller_dir(project_dir, allowed_root)
     sections: list[str] = []
 
     context_files = [

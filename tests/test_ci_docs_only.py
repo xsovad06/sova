@@ -915,7 +915,7 @@ class TestSonarCloudWorkflowGate:
         -Dsonar.pullrequest.* parameters, decorating a closed PR instead of
         updating main's own branch analysis.
         """
-        block = _between(sonar_text, "- name: Resolve PR for this run's head commit", "- uses: actions/checkout@v4")
+        block = _between(sonar_text, "- name: Resolve PR for this run's head commit", "- uses: actions/checkout@")
         assert (
             "if: github.event.workflow_run.conclusion == 'success' "
             "&& github.event.workflow_run.event == 'pull_request'" in block
@@ -1240,22 +1240,27 @@ class TestSonarCloudWorkflowGate:
         assert "run-id: ${{ github.event.workflow_run.id }}" in block
         assert "name: coverage-xml" in block
 
+    def test_has_exactly_one_checkout(self, sonar_text: str) -> None:
+        """The checkout lookups match "actions/checkout@" without a version, so a
+        Dependabot bump cannot break them; that is only unambiguous with one checkout."""
+        assert sonar_text.count("actions/checkout@") == 1
+
     def test_checkout_uses_workflow_run_head_sha(self, sonar_text: str) -> None:
         """The scan must analyze the triggering run's actual head commit."""
-        block = _between(sonar_text, "actions/checkout@v4", "Fetch trusted sonar-project.properties")
+        block = _between(sonar_text, "actions/checkout@", "Fetch trusted sonar-project.properties")
         assert "ref: ${{ github.event.workflow_run.head_sha }}" in block
 
     def test_checkout_is_gated_on_coverage_present_and_preserves_the_artifact(self, sonar_text: str) -> None:
         """The clone must be skipped on the docs-only path, and never delete the downloaded artifact."""
-        block = _between(sonar_text, "actions/checkout@v4", "Fetch trusted sonar-project.properties")
+        block = _between(sonar_text, "actions/checkout@", "Fetch trusted sonar-project.properties")
         assert "if: steps.coverage.outputs.present == 'true'" in block
         # The artifact is downloaded outside $GITHUB_WORKSPACE (runner.temp), so
         # this checkout's default clean behavior cannot delete it.
         assert "path: ${{ runner.temp }}/sova-coverage" in sonar_text
         # The checkout must come after the download+classify steps, not before,
         # so the cheap classification can skip the clone entirely.
-        assert sonar_text.index("Download coverage report") < sonar_text.index("actions/checkout@v4")
-        assert sonar_text.index("Classify the downloaded artifact") < sonar_text.index("actions/checkout@v4")
+        assert sonar_text.index("Download coverage report") < sonar_text.index("actions/checkout@")
+        assert sonar_text.index("Classify the downloaded artifact") < sonar_text.index("actions/checkout@")
 
     def test_fork_properties_are_fetched_from_base_branch(self, sonar_text: str) -> None:
         """A fork PR's own sonar-project.properties must not be trusted wholesale."""
