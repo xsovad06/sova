@@ -10,52 +10,13 @@ Used in the address-review pipeline in place of CommitStep.
 
 from __future__ import annotations
 
-import re
-
-from sova.agents.registry import artifact_exclusion_prefixes
 from sova.core.agent_dispatch import dispatch_command
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.git.artifact_exclusions import EXCLUDED_PATHSPECS as _EXCLUDED_PATHSPECS
+from sova.git.artifact_exclusions import IGNORABLE_UNTRACKED_RE as _IGNORABLE_UNTRACKED_RE
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
-
-# `.claude/` and `.sova/` hold agent infrastructure the pipeline itself writes
-# into the worktree (ensure_claude_artifacts mirrors commands, rules and skills
-# from the primary checkout on every run), so churn there is inherited state,
-# never the agent's own output. Counting it made every address-review run pause
-# whenever the primary checkout was dirty: 17 gate failures before #1090.
-# `artifact_exclusion_prefixes()` adds every registered RuntimeAdapter's own
-# mirrored directory (e.g. Codex's `.agents/skills/`) on top of those two, so a
-# future adapter's skills mirror can't reopen the same failure mode for a new,
-# not-yet-hand-listed directory. Every prefix here is a whole directory
-# (trailing `/`): `_mirror_runtime_skills()` copies an adapter's entire skills
-# directory into the worktree, including hand-authored content sharing it under
-# a plain name, so the exclusion has to cover the whole directory too, not just
-# the SOVA-managed, name-prefixed subtree within it.
-_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
-_IGNORABLE_UNTRACKED_RE = re.compile(
-    "|".join(rf"^{re.escape(prefix)}" for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
-)
-
-
-def _pathspec_exclude(prefix: str) -> str:
-    """Build a git pathspec excluding *prefix*.
-
-    A bare name-prefix (no trailing ``/``, e.g. ``.agents/skills/sova-``) needs
-    a trailing ``*`` to exclude everything under matching directories: git's
-    default (non-literal) pathspec wildcard matching already treats ``*`` as
-    matching any characters including ``/``, so no explicit ``:(glob)`` magic
-    is required.
-    """
-    if prefix.endswith("/"):
-        return f":(exclude){prefix}"
-    return f":(exclude){prefix}*"
-
-
-# Pathspecs excluded from the "did the agent leave work uncommitted?" checks.
-# _IGNORABLE_UNTRACKED_RE above already applies the same rule to untracked
-# files, and DevelopStep._NON_SUBSTANTIVE_RE applies it to change detection.
-_EXCLUDED_PATHSPECS = tuple(_pathspec_exclude(prefix) for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
 
 log = get_logger(component="step.rearrange_commits")
 

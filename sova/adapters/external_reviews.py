@@ -23,6 +23,19 @@ _CHECK_NAMES: dict[str, str] = {
     "coderabbit": "CodeRabbit",
 }
 
+# Shared by both prompt builders below so the two can never describe the commit
+# scope rule differently. Worded project-neutrally: this module builds a prompt
+# for an agent working inside whatever project SOVA is installed into, which
+# may have no invariants/commit-format.sh (or any file by that name) and no
+# sova/git or sova/utils directories of its own, so naming this repository's
+# own scope list or examples here would point the agent at conventions that
+# don't exist in its actual target project.
+_COMMIT_SCOPE_GUIDANCE = (
+    "<scope> must match this repository's own commit-scope convention: follow any "
+    "commitlint config, pre-push hook, or contributor guide it ships, and otherwise "
+    "mirror the scope used by recent commits touching the same area"
+)
+
 
 @dataclass
 class ExternalFinding:
@@ -281,7 +294,8 @@ def format_coverage_findings_for_prompt(
         "   - Use `unittest.mock.patch` to trigger error conditions\n"
         "   - Name tests descriptively: `test_<function>_<scenario>`\n"
         "3. Place tests in the appropriate `tests/test_*.py` file\n"
-        "4. Stage and commit with message like 'test: cover uncovered paths in <module>'\n"
+        "4. Stage and commit with a message like 'test(<scope>): cover uncovered paths in <module>'. "
+        f"{_COMMIT_SCOPE_GUIDANCE}\n"
         "5. Only add tests. Do NOT modify production code unless other findings also require it\n"
     )
 
@@ -461,7 +475,8 @@ def format_findings_for_prompt(findings: list[ExternalFinding]) -> str:
         "1. Read the file at the indicated location\n"
         "2. Apply the fix\n"
         "3. Stage and commit the changes with a message like "
-        "'fix: address <tool> finding in <file>'\n\n"
+        "'fix(<scope>): address <tool> finding in <file>'. "
+        f"{_COMMIT_SCOPE_GUIDANCE}\n\n"
         "If a finding is a false positive that cannot be fixed, skip it.\n"
         "Do not modify test files unless the finding specifically targets them.\n"
     )

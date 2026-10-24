@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sova.agents.registry import artifact_exclusion_prefixes
+from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES, pathspec_exclude
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
@@ -26,20 +26,6 @@ log = get_logger(component="git.worktree")
 
 WORKTREE_DIR = ".claude/worktrees"
 
-# `.claude/` and `.sova/` hold agent infrastructure the pipeline itself mirrors
-# into the worktree (ensure_claude_artifacts); `artifact_exclusion_prefixes()`
-# adds every registered RuntimeAdapter's own mirrored skills directory on top.
-# None of it is the agent's own work, so a timeout/SIGTERM must not stage it
-# as "partial work" (issue #1260; same exclusion logic as
-# sova/core/steps/rearrange_commits.py and sova/core/steps/develop.py, kept in
-# sync by sharing the same artifact_exclusion_prefixes() registry call).
-_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
-
-
-def _exclude_rooted(prefix: str) -> str:
-    """Pathspec excluding a whole directory rooted at the worktree root."""
-    return f":(exclude){prefix}"
-
 
 def _exclude_anywhere(name: str) -> str:
     """Pathspec excluding *name* (file or directory, with its contents) at any depth."""
@@ -49,12 +35,14 @@ def _exclude_anywhere(name: str) -> str:
 # Keep `git add -A` from ever staging a suspicious path or mirrored agent
 # artifact in the first place, rather than staging the whole tree (including
 # arbitrarily large `.venv`/`node_modules` trees in a project that doesn't
-# gitignore them) and cleaning up one path at a time afterward.
+# gitignore them) and cleaning up one path at a time afterward. None of
+# RUNTIME_ARTIFACT_PREFIXES's entries is the agent's own work, so a
+# timeout/SIGTERM must not stage it as "partial work" (issue #1260).
 _PRESERVE_ADD_EXCLUDE_PATHSPECS: tuple[str, ...] = tuple(
     pattern
     for name in sorted(SUSPICIOUS_PATHS)
     for pattern in (_exclude_anywhere(name), _exclude_anywhere(f"{name}/**"))
-) + tuple(_exclude_rooted(prefix) for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
+) + tuple(pathspec_exclude(prefix) for prefix in sorted(RUNTIME_ARTIFACT_PREFIXES))
 
 
 async def preserve_partial_work(work_dir: Path | None, reason: str) -> bool:

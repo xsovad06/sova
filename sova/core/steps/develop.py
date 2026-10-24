@@ -15,10 +15,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sova.agents.registry import artifact_exclusion_prefixes
 from sova.core.agent_dispatch import dispatch_command, dispatch_prompt
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
 from sova.utils.logging import get_logger
@@ -210,16 +210,11 @@ def _check_timeout_for_remaining(ctx: ExecutionContext, configured_timeout: int)
     return max(1, min(configured_timeout, int(ctx.step_time_remaining) - _CHECK_TIMEOUT_SAFETY_MARGIN_SECONDS))
 
 
-# Keep the runtime-artifact-prefix alternatives in sync with
-# rearrange_commits.py's _IGNORABLE_UNTRACKED_RE/_EXCLUDED_PATHSPECS: both
-# derive from the same artifact_exclusion_prefixes() registry so a future
-# RuntimeAdapter's own mirrored directory is excluded everywhere at once.
-_RUNTIME_ARTIFACT_PREFIXES = frozenset({".claude/", ".sova/"}) | artifact_exclusion_prefixes()
 _NON_SUBSTANTIVE_RE = re.compile(
     r"(?:"
     r"Pipfile\.lock$|package-lock\.json$|yarn\.lock$|pnpm-lock\.yaml$|"
     r"poetry\.lock$|Gemfile\.lock$|composer\.lock$|Cargo\.lock$|go\.sum$|"
-    + "|".join(rf"^{re.escape(prefix)}" for prefix in sorted(_RUNTIME_ARTIFACT_PREFIXES))
+    + "|".join(rf"^{re.escape(prefix)}" for prefix in sorted(RUNTIME_ARTIFACT_PREFIXES))
     + r")"
 )
 

@@ -181,7 +181,13 @@ class TestValidateStepEndToEnd:
         async def _fake_fix(*_args: object, **_kwargs: object) -> LLMResult:
             # Simulate the LLM committing a fix: HEAD moves before the retry.
             await run(
-                "git", "commit", "-q", "--allow-empty", "-m", "fix: address pre-push hook violations", cwd=tmp_path
+                "git",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "fix(core): address pre-push hook violations",
+                cwd=tmp_path,
             )
             fixed_marker.write_text("1")
             return LLMResult(text="fixed", model="sonnet", cost_usd=Decimal("0.01"))
