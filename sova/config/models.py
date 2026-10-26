@@ -441,6 +441,33 @@ class CommitConfig(BaseSettings):
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
     branch_naming: Literal["conventional", "freeform"] = "conventional"
     pr_auto_link_issues: bool = True
+    # Substrings (case-insensitive, not regexes) that force an acceptance
+    # criterion's verdict to "owner" regardless of what the LLM reports,
+    # since such a criterion can never be satisfied by an autonomous agent.
+    # Deliberately excludes the bare nouns "interactive" and "manually": both
+    # are pervasive in ordinary feature prose (this repo's own
+    # "agent:interactive-recommended" label, "suitability.mode =
+    # 'interactive'", "Users can manually override the setting") and would
+    # force a fully-automatable, fully-implemented criterion to "owner" with
+    # no recovery path. Only requirement-phrased forms ("requires manual",
+    # "requires interactive", ...) assert that the criterion itself demands
+    # human action, rather than merely mentioning interactivity or a manual
+    # option as part of what was built.
+    owner_only_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "(interactive",
+            "(owner",
+            "(manual",
+            "human-only",
+            "owner-only",
+            "requires human",
+            "requires manual",
+            "requires interactive",
+            "manual step",
+            "interactive session",
+            "interactive confirmation",
+        ]
+    )
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMMIT_")
 
@@ -609,6 +636,7 @@ class PipelineDefinitions(BaseSettings):
             "rearrange_commits",
             "validate",
             "push",
+            "refresh_pr_body",
             "monitor_ci",
             "resolve_external_reviews",
             "extract_memory",

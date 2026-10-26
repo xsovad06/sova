@@ -127,7 +127,21 @@ class ConfidenceScoreStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.confidence_score", pr=ctx.pr_number)
 
-        diff_range = f"{ctx.base_branch}..HEAD"
+        # Refresh the remote-tracking ref before diffing against it: this step
+        # runs after external-review and CI steps, long enough after SyncStep's
+        # own fetch that the base branch can have advanced in the meantime. A
+        # fetch failure degrades to "scoring skipped" rather than diffing
+        # against a stale ref and silently scoring the wrong file set.
+        fetch_result = await run("git", "fetch", "origin", ctx.base_branch, cwd=ctx.working_dir)
+        if not fetch_result.success:
+            log.warning("step.confidence_score.base_fetch_failed", stderr=fetch_result.stderr[:200])
+            return StepResult(success=True, summary="Confidence scoring skipped: could not refresh base branch")
+
+        # The remote-tracking ref, not the local one: a long pipeline run (CI
+        # waits, review rounds) can leave the local base branch stale while
+        # origin/{base} advances, which would otherwise pollute the diff with
+        # the base's own unrelated commits.
+        diff_range = f"origin/{ctx.base_branch}...HEAD"
         files_result = await run("git", "diff", diff_range, "--name-only", cwd=ctx.working_dir)
         if not files_result.success:
             log.warning("step.confidence_score.diff_names_failed", stderr=files_result.stderr[:200])

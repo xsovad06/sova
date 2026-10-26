@@ -605,6 +605,7 @@ STEP_AREA_MAP: dict[str, str] = {
     "validate_tasks": "core",
     "fetch_task": "adapters",
     "create_pr": "adapters",
+    "refresh_pr_body": "adapters",
     "push": "adapters",
     "wait_for_external_reviews": "adapters",
     "address_external_findings": "adapters",

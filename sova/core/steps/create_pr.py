@@ -11,12 +11,24 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import TaskState
 from sova.config.models import TaskSourceConfig
 from sova.core.context import ExecutionContext
+from sova.core.steps._pr_body import (
+    _ISSUE_BODY_EXCERPT_LIMIT,
+    _UNAVAILABLE,
+    _jira_ticket_link,
+    build_prompt,
+    compose_body,
+    extract_acceptance_criteria,
+    process_llm_result,
+    truncate_diff,
+)
+from sova.core.steps._pr_body import (
+    title_from_branch as _title_from_branch,
+)
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.llm.client import invoke
 from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
-from sova.utils.markdown import strip_preamble
 from sova.utils.shell import run
 
 if TYPE_CHECKING:
@@ -27,10 +39,6 @@ if TYPE_CHECKING:
 
 log = get_logger(component="step.create_pr")
 
-_UNAVAILABLE = "(unavailable)"
-
-_ISSUE_BODY_EXCERPT_LIMIT = 500
-_DIFF_CONTENT_LIMIT = 8000
 _MAX_SUGGESTED_REVIEWERS = 2
 
 _CONVENTIONAL_RE = re.compile(
@@ -101,72 +109,6 @@ def _infer_scope(changed_files: list[str] | None) -> str:
     return max(order, key=lambda s: (counts[s], -order.index(s)))
 
 
-_PR_BODY_PROMPT_BASE = """\
-Generate a pull request description for the changes below. Output ONLY the \
-markdown body (no fences, no commentary, no preamble). Start directly with \
-the first heading. Do not use emojis or icons. Use this structure:
-
-## Summary
-3-5 bullet points: WHAT changed and WHY, folding in the file-by-file \
-breakdown (which files/areas each bullet touches) rather than repeating it \
-in a separate section.
-
-## Review guidance
-What should a reviewer focus on? Any trade-offs or shortcuts?
-
-## Test plan
-Name the specific test file(s) (and test names, where relevant) that cover \
-this change, and how they were run. Do not write a generic statement like \
-"tests were run" without naming which ones.
-
-IMPORTANT: Describe ONLY what the actual diff contains. The issue body shows \
-what was requested; the diff shows what was actually implemented. If there is \
-a gap between what was requested and what was implemented, note it explicitly. \
-Never describe changes that are not present in the diff.
-"""
-
-_PR_BODY_ISSUE_SECTION_GITHUB = """
-Closes #{issue_number}
-
----
-What was requested (Issue #{issue_number}: {issue_title}):
-
-{issue_body}
-
-"""
-
-_PR_BODY_ISSUE_SECTION_JIRA = """
-{jira_link}
-
-Do NOT use "Closes #N", "Fixes #N", or "Resolves #N" syntax.
-
----
-What was requested ({jira_key}: {issue_title}):
-
-{issue_body}
-
-"""
-
-_PR_BODY_NO_ISSUE_SECTION = """
----
-Task: {issue_title}
-
-"""
-
-_PR_BODY_CONTEXT = """\
-What was actually implemented:
-
-Commits on this branch:
-{commit_log}
-
-Files changed (summary):
-{diff_stat}
-
-Actual diff (patches):
-{diff_content}
-"""
-
-
 def _build_pr_title(
     task_title: str,
     issue_number: str | None,
@@ -199,45 +141,6 @@ def _build_pr_title(
 
     scope = _infer_scope(changed_files)
     return f"{commit_type}({scope}): {description}"
-
-
-def _jira_ticket_link(task_source: TaskSourceConfig, issue_number: str) -> str:
-    """Return a markdown JIRA ticket link for the PR body."""
-    return f"JIRA: {task_source.jira_browse_url(issue_number)}"
-
-
-def _closing_keyword_re(issue_number: str) -> re.Pattern[str]:
-    """Match a GitHub closing keyword for *issue_number*.
-
-    Covers every keyword form GitHub recognizes for auto-closing
-    (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved), not
-    just the present-tense forms: an LLM-generated Jira PR body that writes
-    "Fix #42" instead of "Fixes #42" previously kept a live GitHub
-    closing reference that this function was supposed to strip.
-
-    Requires the keyword immediately before the issue reference, not just the
-    bare ``#N`` substring: a stacked PR's body can legitimately mention
-    ``Closes #12`` for a different issue while still needing its own closing
-    line appended for ``ctx.issue_number``.
-    """
-    return re.compile(
-        rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#{re.escape(issue_number)}\b",
-        re.IGNORECASE,
-    )
-
-
-_BRANCH_PREFIX_RE = re.compile(r"^(?:feat|fix|refactor|chore)/")
-_ISSUE_PREFIX_RE = re.compile(r"^issue-\d+-?")
-_JIRA_KEY_PREFIX_RE = re.compile(r"^[A-Z]+-\d+-?")
-
-
-def _title_from_branch(branch: str) -> str:
-    """Extract a human-readable title from a branch name."""
-    raw = _BRANCH_PREFIX_RE.sub("", branch)
-    raw = _ISSUE_PREFIX_RE.sub("", raw)
-    raw = _JIRA_KEY_PREFIX_RE.sub("", raw)
-    title = raw.replace("-", " ").strip()
-    return title if title else "update"
 
 
 async def suggest_ldap_reviewers(
@@ -353,7 +256,11 @@ class CreatePRStep(BaseStep):
         Uses the merge-base (three-dot) diff rather than a direct comparison
         against the base branch's current tip, so a base branch that has
         advanced since this branch diverged does not pull base-only changes
-        into the PR's own changed-path list.
+        into the PR's own changed-path list. Diffs against the remote-tracking
+        ref (``origin/{base}``), not the local one, matching ``_generate_pr_body``
+        below and ``ConfidenceScoreStep``: a stale local base (this worktree's
+        branch was created before a later push to the base branch) would
+        otherwise mix the base's own commits into the scope inference input.
 
         Only the GitHub title path infers a scope; JIRA titles use a bracketed
         ticket key instead, so this skips the git call there. Fails open to an
@@ -363,7 +270,7 @@ class CreatePRStep(BaseStep):
         if ctx.config.task_source.is_jira:
             return []
         try:
-            result = await run("git", "diff", f"{ctx.base_branch}...HEAD", "--name-only", cwd=ctx.working_dir)
+            result = await run("git", "diff", f"origin/{ctx.base_branch}...HEAD", "--name-only", cwd=ctx.working_dir)
         except OSError:
             log.warning("step.create_pr.changed_files_failed", branch=ctx.branch_name, exc_info=True)
             return []
@@ -520,9 +427,18 @@ class CreatePRStep(BaseStep):
             log.warning("step.create_pr.trigger_coderabbit_failed", pr=pr_number, exc_info=True)
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
-        diff_range = f"{ctx.base_branch}..HEAD"
+        # Two deliberately different ranges: the three-dot form is the merge-base
+        # diff (what this branch changed), but for "git log" it is the symmetric
+        # difference, which would also list the base branch's own new commits.
+        # Both use the remote-tracking ref, not the local one, matching
+        # RefreshPrBodyStep and ConfidenceScoreStep: a stale local base (this
+        # worktree created before a later push to the base branch) would
+        # otherwise pollute both the body and the acceptance-criteria diff
+        # with the base's own commits since this branch's actual fork point.
+        diff_range = f"origin/{ctx.base_branch}...HEAD"
+        log_range = f"origin/{ctx.base_branch}..HEAD"
         log_result, diff_stat_result, diff_content_result = await asyncio.gather(
-            run("git", "log", diff_range, "--format=%h %s%n%b", "--no-merges", cwd=ctx.working_dir),
+            run("git", "log", log_range, "--format=%h %s%n%b", "--no-merges", cwd=ctx.working_dir),
             run("git", "diff", diff_range, "--stat", cwd=ctx.working_dir),
             run("git", "diff", diff_range, cwd=ctx.working_dir),
         )
@@ -530,72 +446,55 @@ class CreatePRStep(BaseStep):
         issue_body = ctx.task.body if ctx.task else ""
         commit_log = log_result.stdout.strip() if log_result.success else _UNAVAILABLE
         diff_stat = diff_stat_result.stdout.strip() if diff_stat_result.success else _UNAVAILABLE
-
         full_diff = diff_content_result.stdout.strip() if diff_content_result.success else _UNAVAILABLE
+        diff_content = truncate_diff(full_diff, diff_content_result.success)
 
-        # Handle empty diff explicitly
-        if diff_content_result.success and not full_diff:
-            diff_content = "(no changes detected)"
-        elif len(full_diff) > _DIFF_CONTENT_LIMIT:
-            truncated = full_diff[:_DIFF_CONTENT_LIMIT]
-            diff_content = truncated + f"\n\n... (diff truncated, showing first {_DIFF_CONTENT_LIMIT} chars)"
-        else:
-            diff_content = full_diff
-
-        ts = ctx.config.task_source
-
-        if ctx.has_issue:
-            truncated_body = truncate(issue_body or "(no description)", max_length=_ISSUE_BODY_EXCERPT_LIMIT)
-            if ts.is_jira:
-                jira_key = ts.jira_issue_key(ctx.issue_number)
-                jira_link = _jira_ticket_link(ts, ctx.issue_number)
-                middle = _PR_BODY_ISSUE_SECTION_JIRA.format(
-                    jira_link=jira_link,
-                    jira_key=jira_key,
-                    issue_title=task_title,
-                    issue_body=truncated_body,
-                )
-            else:
-                middle = _PR_BODY_ISSUE_SECTION_GITHUB.format(
-                    issue_number=ctx.issue_number,
-                    issue_title=task_title,
-                    issue_body=truncated_body,
-                )
-        else:
-            middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
-
-        prompt = (
-            _PR_BODY_PROMPT_BASE
-            + middle
-            + _PR_BODY_CONTEXT.format(
-                commit_log=commit_log,
-                diff_stat=diff_stat,
-                diff_content=diff_content,
-            )
+        prompt, criteria = build_prompt(
+            ctx,
+            task_title=task_title,
+            issue_body=issue_body,
+            commit_log=commit_log,
+            diff_stat=diff_stat,
+            diff_content=diff_content,
         )
 
         model = ctx.resolved_model or ctx.config.agent.model
         try:
             result = await invoke(prompt, model=model, task_type="pr_body", cwd=ctx.working_dir, timeout=120)
-        except RuntimeError:
-            log.warning("step.create_pr.body_generation_failed", fallback="structured")
+        except Exception:  # noqa: BLE001 (guard_prompt raises PromptInjectionError; fall back to the structured body)
+            log.warning("step.create_pr.body_generation_failed", fallback="structured", exc_info=True)
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
 
         ctx.add_usage(result)
-        body = strip_preamble(result.text)
-        if ctx.has_issue:
-            close_re = _closing_keyword_re(ctx.issue_number)
-            if ts.is_jira:
-                body = close_re.sub("", body)
-                jira_link = _jira_ticket_link(ts, ctx.issue_number)
-                if jira_link not in body:
-                    body += f"\n\n{jira_link}"
-            elif not close_re.search(body):
-                body += f"\n\nCloses #{ctx.issue_number}"
-        return body
+        sections_markdown, verdicts = process_llm_result(result.text, criteria, ctx.config.commit.owner_only_patterns)
+        diff_ok = log_result.success and diff_stat_result.success and diff_content_result.success
+        if verdicts and not diff_ok:
+            # The model still answered "met" for every criterion checkable
+            # only against the diff it never saw (git evidence unavailable):
+            # crediting that guess would violate the fail-toward-"Part of"
+            # rule the rest of this PR follows. A genuine "unmet"/"owner"
+            # verdict can still come from the issue text alone, so only
+            # "met" is demoted.
+            verdicts = [(text, "unknown" if verdict == "met" else verdict) for text, verdict in verdicts]
+
+        if not ctx.has_issue:
+            return sections_markdown
+
+        ts = ctx.config.task_source
+        jira_link = _jira_ticket_link(ts, ctx.issue_number) if ts.is_jira else ""
+        return compose_body(sections_markdown, ctx.issue_number, verdicts, is_jira=ts.is_jira, jira_link=jira_link)
 
     @staticmethod
     def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
+        """Build a structured PR body without an LLM, for when body generation fails.
+
+        The closing decision is computed deterministically from the issue's
+        acceptance criteria (via :func:`compose_body`), the same fail-toward-
+        "Part of #N" rule every other generation path follows: a criterion
+        that cannot be verified here (no LLM ran) must never be credited as
+        met, so any criteria present yield ``Part of #N`` rather than an
+        unconditional ``Closes #N``.
+        """
         ts = ctx.config.task_source
         lines = [
             "## Summary",
@@ -603,12 +502,6 @@ class CreatePRStep(BaseStep):
             f"Automated changes for: {task_title}",
             "",
         ]
-        if ctx.has_issue:
-            if ts.is_jira:
-                lines.append(_jira_ticket_link(ts, ctx.issue_number))
-            else:
-                lines.append(f"Closes #{ctx.issue_number}")
-            lines.append("")
 
         issue_body = (ctx.task.body if ctx.task else "") or ""
         stripped_body = issue_body.strip()
@@ -631,7 +524,21 @@ class CreatePRStep(BaseStep):
                 "```",
             ]
         )
-        return "\n".join(lines)
+        body = "\n".join(lines)
+        if not ctx.has_issue:
+            return body
+
+        if ts.is_jira:
+            jira_link = _jira_ticket_link(ts, ctx.issue_number)
+            return compose_body(body, ctx.issue_number, None, is_jira=True, jira_link=jira_link)
+
+        criteria = extract_acceptance_criteria(issue_body)
+        # "unknown", not "unmet": no LLM ran in this path, so no criterion
+        # was actually checked. "unmet" would claim the criteria were
+        # verified and found incomplete, which render_closing_block()
+        # reserves for a real model-reported verdict.
+        verdicts = [(c, "unknown") for c in criteria] if criteria else None
+        return compose_body(body, ctx.issue_number, verdicts, is_jira=False)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: PR number must have been extracted."""

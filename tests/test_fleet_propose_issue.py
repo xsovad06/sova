@@ -102,6 +102,7 @@ class TestStepAreaMap:
             "push",
             "rearrange_commits",
             "rebase",
+            "refresh_pr_body",
             "research",
             "resolve_external_reviews",
             "scan_project",

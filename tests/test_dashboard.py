@@ -13301,7 +13301,7 @@ class TestStepProgress:
         result = await get_step_progress(None, role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
-        assert result["total_steps"] == 10
+        assert result["total_steps"] == 11
 
     async def test_agent_step_with_pr_number_is_address_review(self) -> None:
         """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""
@@ -13409,7 +13409,7 @@ class TestStepProgress:
         result = await get_step_progress("ensure_worktree")
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
-        assert result["total_steps"] == 10
+        assert result["total_steps"] == 11
 
     async def test_planner_role_returns_planner_variant(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress

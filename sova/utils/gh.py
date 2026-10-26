@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section
 from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="utils.gh")
@@ -278,6 +279,18 @@ async def check_push_permission(
 
 
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+# "part of" is not a GitHub auto-close keyword; it is SOVA's own deterministic
+# marker for a PR that only partially satisfies an issue's acceptance
+# criteria (see sova/core/steps/_pr_body.py:render_closing_block). It still
+# links the PR to the issue, just without auto-closing it on merge. Checked
+# only after _CLOSES_RE finds nothing: this repo also uses "Part of #N" for
+# epic linkage, so a PR body that mentions an epic that way before its own
+# "Closes #N" must still resolve to the PR's own issue, not the epic. The
+# search itself is scoped to the "## Issue" section first (see
+# resolve_linked_issue()), the heading _pr_body.py always renders the PR's
+# own closing decision under, so an epic mention written earlier in
+# "## Summary" can never win a bare whole-body search.
+_PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 
 
 async def resolve_linked_issue(
@@ -286,7 +299,12 @@ async def resolve_linked_issue(
     repo: str,
     github_user: str | None = None,
 ) -> str | None:
-    """Extract the linked issue number from a PR body (e.g. 'Closes #26').
+    """Extract the linked issue number from a PR body (e.g. 'Closes #26' or 'Part of #26').
+
+    A "Part of" match is scoped to the ``## Issue`` section first, falling
+    back to the whole body only when that section is absent or has no match,
+    so a "Part of #<epic>" mention written earlier in ``## Summary`` never
+    wins over the PR's own issue rendered under ``## Issue``.
 
     Returns the issue number as a string, or None if no link is found.
     """
@@ -312,7 +330,7 @@ async def resolve_linked_issue(
         log.warning("gh.pr_body_parse_failed", pr=pr_number)
         return None
 
-    match = _CLOSES_RE.search(body)
+    match = _CLOSES_RE.search(body) or _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
     if match:
         issue_num = match.group(1)
         log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)

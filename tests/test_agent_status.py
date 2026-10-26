@@ -633,7 +633,7 @@ async def test_address_review_pipeline(session: AsyncSession):
     status = await _status_for(run.id)
     assert status is not None
     assert status.pipeline_variant == "address_review"
-    assert status.total_steps == 10
+    assert status.total_steps == 11
 
 
 @pytest.mark.asyncio

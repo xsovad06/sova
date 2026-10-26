@@ -181,7 +181,10 @@ Create a pull request for the current branch using the project's standard PR tem
    - The PR title MUST start with `[PROJECT_KEY-NUMBER]` followed by a human-readable description (NOT the branch name)
 
    **GitHub** (default):
-   - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
+   - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), fetch the issue body (`gh issue view 42 --json body`) and check its `## Acceptance Criteria` section against the actual diff on this branch:
+     - If every criterion is met by this PR (or the issue has no `## Acceptance Criteria` section at all), add a `## Issue` section containing `Closes #42`.
+     - If any criterion is unmet, marked owner/interactive/manual-only, or has an unknown/unparseable verdict (you cannot tell from the diff whether it was met), do NOT use `Closes #42`: add a `## Issue` section containing `Part of #42`, a blank line, `Not done in this PR:`, and a bullet for each unmet, owner-only, or unknown criterion instead. Reserve `Closes #42` for when every criterion is verified as met or the issue has no acceptance criteria at all. This mirrors the deterministic decision the autonomous pipeline makes from the same acceptance criteria (`sova/core/steps/_pr_body.py`); the two paths must agree, since a later `/address-pr` round reuses whichever decision is already in the body.
+     - Always place the decision under its own `## Issue` heading, not as trailing text inside another section, so a later `/address-pr` round can find and replace it without disturbing other sections.
 
    **Save the body to a file** so step 9 can check it and step 11 can submit it unchanged. Note the printed path: later shell blocks are fresh shells and must re-assign `BODY_FILE` to it.
    ```bash

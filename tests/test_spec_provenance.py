@@ -494,6 +494,18 @@ def test_replace_section_heading_not_found(tmp_path: Path) -> None:
     assert result == text
 
 
+def test_replace_section_heading_with_trailing_carriage_return(tmp_path: Path) -> None:
+    """A spec file with CRLF line endings must still have its heading found:
+    the trailing "[ \t]*$" class must also tolerate a "\r" before the "\n"
+    that re.MULTILINE's "$" anchors to."""
+    from sova.core.steps._spec_helpers import _replace_section
+
+    text = "# Spec\r\n\r\n## Design Decisions\r\nOld decisions.\r\n"
+    result = _replace_section(text, "Design Decisions", "New decisions.")
+    assert "New decisions." in result
+    assert "Old decisions." not in result
+
+
 def test_replace_section_last_section(tmp_path: Path) -> None:
     """Covers _replace_section when the target is the last section (no next heading)."""
     from sova.core.steps._spec_helpers import _replace_section
