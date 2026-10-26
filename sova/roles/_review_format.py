@@ -16,6 +16,20 @@ _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
 _SEVERITY_MEDIUM = 3
 
+# Spellings recognized for an issue's own "scope boundaries" section. Lives
+# here (not in triage.py, a role implementation) so that both triage.py's
+# QualityScore.has_scope_boundaries check and _review_comments.py's issue-
+# criteria extractor can import it without either depending on the other: a
+# dependency-free, mechanically-neutral home both already sit above. A new
+# spelling added once is then visible to both, rather than risking the two
+# silently drifting apart.
+SCOPE_BOUNDARY_HEADINGS: tuple[str, ...] = (
+    "Out of Scope / Constraints",
+    "Out of Scope",
+    "Constraints",
+    "Scope Boundaries",
+)
+
 
 def clamp_severity(severity: int) -> int:
     """Clamp severity to the 1-10 range."""

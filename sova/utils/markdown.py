@@ -12,6 +12,10 @@ def mask_fenced_blocks(text: str) -> str:
 
     Each character inside a fenced block is replaced with a space (newlines kept)
     so that character positions in the masked text map 1:1 to the original.
+    Invariant depended on by every caller: ``len(_strip_fenced_blocks(text)) ==
+    len(text)`` always, since masking never adds, removes, or reorders lines or
+    characters, only overwrites some of them with spaces. Callers that find an
+    offset on the masked copy may use it to slice the original text directly.
 
     Follows the GFM fenced-code-block rules: both backtick and tilde fences are
     recognized, and a closing fence must use the same character as the opener
@@ -70,6 +74,25 @@ def extract_section(text: str, heading: str, *, ignore_case: bool = False) -> st
     # Use positions found in the masked text to slice the original text
     section = text[start : start + next_heading.start()] if next_heading else text[start:]
     return section.strip()
+
+
+def remove_section(text: str, heading: str) -> str:
+    """Remove a ``## heading`` section (through the next ``## `` heading or EOF).
+
+    Returns *text* stripped and otherwise unchanged if the heading is absent,
+    matching the normalization of the found-and-removed path below so a caller
+    cannot observe different whitespace handling depending on whether a section
+    was actually removed. Ignores ``## `` lines inside fenced code blocks so
+    they are not treated as section boundaries.
+    """
+    masked = _strip_fenced_blocks(text)
+    pattern = rf"^## {re.escape(heading)}\s*$"
+    match = re.search(pattern, masked, re.MULTILINE)
+    if not match:
+        return text.strip()
+    next_heading = re.search(r"^## ", masked[match.end() :], re.MULTILINE)
+    end = match.end() + next_heading.start() if next_heading else len(masked)
+    return (text[: match.start()] + text[end:]).strip()
 
 
 def upsert_section(text: str, heading: str, content: str) -> str:
