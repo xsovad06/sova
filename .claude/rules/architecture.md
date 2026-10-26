@@ -156,6 +156,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - `_post_review()` must never raise; `_write_handoff()` must always run
 - Pipeline variant detection must gate on `current_step`
 - Roles must self-discover missing context
+- `ctx.task` has two independent fail-open fetches, one bounded and one not
 - PR deduplication in CreatePRStep
 - State-adopting steps must replicate all side effects
 - macOS notifications via terminal-notifier
@@ -275,6 +276,8 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A fix loop gets one cheap try and its escalation reason is step-scoped, never the run-wide one
 - One shared priority registry replaces per-tracker and per-consumer rank tables, and a default label must never be sent to a call that validates labels atomically
 - A PR's closing keyword is derived from acceptance-criteria verdicts, not emitted unconditionally, and a body refresh after address-review must target only the sections it generated
+- A non-current spec is degraded with a caveat, not dropped, and the stamp writer and the freshness checker must agree on exactly one frontmatter span
+- Every untrusted issue-body block interpolated into a review prompt is quoted through one shared nonce-delimiting helper, never some of them
 
 ## Cross-References (domain-specific details)
 

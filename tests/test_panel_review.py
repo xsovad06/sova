@@ -158,6 +158,18 @@ class TestBuildDimensionPrompt:
         prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], spec_sections=spec)
         assert "Some description" not in prompt
 
+    def test_includes_issue_criteria_regardless_of_spec(self) -> None:
+        task = Task(
+            id="42",
+            title="Test issue",
+            body="## Acceptance Criteria\n\n- [ ] Does the thing.\n",
+            state=TaskState.IN_REVIEW,
+        )
+        spec = {"Solution": "Do X"}
+        prompt = _build_dimension_prompt("correctness", task, "diff", ["a.py"], spec_sections=spec)
+        assert "Does the thing." in prompt
+        assert "follow this over Spec Context on any conflict" in prompt
+
     def test_includes_body_without_spec(self) -> None:
         prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"])
         assert "Some description" in prompt
@@ -762,6 +774,18 @@ class TestBuildCombinedPrompt:
     def test_severity_threshold_interpolated(self) -> None:
         prompt = _build_combined_prompt(["correctness"], _task(), "diff", ["a.py"], revise_at=4)
         assert "severity 4 or above block the PR" in prompt
+
+    def test_includes_issue_criteria_regardless_of_spec(self) -> None:
+        task = Task(
+            id="42",
+            title="Test issue",
+            body="## Out of Scope / Constraints\n\nDo NOT touch unrelated files.\n",
+            state=TaskState.IN_REVIEW,
+        )
+        spec = {"Solution": "Do X"}
+        prompt = _build_combined_prompt(["correctness"], task, "diff", ["a.py"], spec_sections=spec)
+        assert "Do NOT touch unrelated files." in prompt
+        assert "follow this over Spec Context on any conflict" in prompt
 
 
 # ---------------------------------------------------------------------------

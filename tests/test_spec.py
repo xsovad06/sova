@@ -11,6 +11,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, RolesConfig, SpecConfig
 from sova.core.context import ExecutionContext
+from sova.core.spec_utils import compute_issue_revision_hash
 from sova.core.steps.spec import (
     SpecStep,
     _build_spec_prompt,
@@ -21,6 +22,7 @@ from sova.core.steps.spec import (
     _make_slug,
     _research_says_implemented,
     _sanitize_issue_number,
+    _stamp_issue_revision,
     _text_has_open_questions,
 )
 from sova.dashboard.services.spec_service import find_spec_file
@@ -277,6 +279,41 @@ class TestExtractSpecContent:
         assert time.monotonic() - start < 2.0
 
 
+class TestStampIssueRevision:
+    def test_inserts_after_complexity_line(self) -> None:
+        content = "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo it.\n"
+        stamped = _stamp_issue_revision(content, "Test", "Body")
+        expected = compute_issue_revision_hash("Test", "Body")
+        assert f"**Issue revision**: {expected}" in stamped
+        # Inserted right after Complexity, before the next section.
+        complexity_idx = stamped.index("**Complexity**")
+        solution_idx = stamped.index("## Solution")
+        revision_idx = stamped.index("**Issue revision**")
+        assert complexity_idx < revision_idx < solution_idx
+
+    def test_falls_back_to_title_heading_without_complexity_line(self) -> None:
+        content = "# Spec: Test\n\n## Solution\n\nDo it.\n"
+        stamped = _stamp_issue_revision(content, "Test", "Body")
+        expected = compute_issue_revision_hash("Test", "Body")
+        assert f"**Issue revision**: {expected}" in stamped
+        title_idx = stamped.index("# Spec: Test")
+        solution_idx = stamped.index("## Solution")
+        revision_idx = stamped.index("**Issue revision**")
+        assert title_idx < revision_idx < solution_idx
+
+    def test_prepends_when_no_heading_at_all(self) -> None:
+        content = "## Solution\n\nDo it.\n"
+        stamped = _stamp_issue_revision(content, "Test", "Body")
+        expected = compute_issue_revision_hash("Test", "Body")
+        assert stamped.startswith(f"**Issue revision**: {expected}")
+
+    def test_hash_reflects_title_and_body(self) -> None:
+        content = "# Spec: Test\n\n**Complexity**: simple\n"
+        stamped = _stamp_issue_revision(content, "Different title", "Different body")
+        expected = compute_issue_revision_hash("Different title", "Different body")
+        assert f"**Issue revision**: {expected}" in stamped
+
+
 class TestFindSpecFile:
     def test_finds_matching_file(self, tmp_path: Path) -> None:
         specs_dir = tmp_path / ".claude" / "specs"
@@ -430,6 +467,38 @@ class TestSpecStep:
         spec_path = find_spec_file("42", project_dir=tmp_path)
         assert spec_path is not None
         assert "Add widget feature" in spec_path.read_text()
+
+    async def test_execute_stamps_issue_revision_hash(self, tmp_path: Path) -> None:
+        """Written spec carries an **Issue revision** line matching the issue's title/body."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        title, body = "Add widget feature", "Add a widget.\n\n**Complexity**: simple"
+        adapter.get_task.return_value = Task(id="42", title=title, body=body, state=TaskState.TRIAGED)
+        ctx = _make_ctx(
+            tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
+
+        step = SpecStep()
+        spec_text = (
+            "# Spec: Add widget feature\n\n"
+            "**Status**: draft\n**Complexity**: simple\n\n"
+            "## Solution\n\nAdd the widget.\n"
+        )
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=200
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            await step.execute(ctx)
+
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+        expected = compute_issue_revision_hash(title, body)
+        assert f"**Issue revision**: {expected}" in spec_path.read_text()
 
     async def test_execute_honors_researcher_model(self, tmp_path: Path) -> None:
         """roles.researcher_model drives this step, matching ResearchStep (#1129)."""

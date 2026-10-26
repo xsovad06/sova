@@ -22,6 +22,7 @@ from sova.config.models import TriageConfig
 from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError, validate_step_output
 from sova.core.schemas import get_triage_schema
+from sova.roles._review_format import SCOPE_BOUNDARY_HEADINGS
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended
 from sova.utils.logging import get_logger
@@ -135,9 +136,7 @@ def compute_quality_score(body: str) -> QualityScore:
     has_description = "detailed description" in headings
     has_acceptance_criteria = "acceptance criteria" in headings and "- [ ]" in body_lower
     has_files = any(h in headings for h in ("files / modules to change", "files to change", "files"))
-    has_scope = any(
-        h in headings for h in ("out of scope / constraints", "out of scope", "constraints", "scope boundaries")
-    )
+    has_scope = any(h.lower() in headings for h in SCOPE_BOUNDARY_HEADINGS)
     has_references = "references" in headings or bool(re.search(r"(?:#\d+|https?://|`[a-zA-Z_/]+\.\w+`)", body))
 
     # LLM leak detection: check line-initial patterns
@@ -171,7 +170,7 @@ def _collect_missing_sections(quality: QualityScore) -> list[str]:
         (quality.has_description, "## Detailed Description"),
         (quality.has_acceptance_criteria, "## Acceptance Criteria (with - [ ] checkboxes)"),
         (quality.has_files_to_change, "## Files / Modules to Change"),
-        (quality.has_scope_boundaries, "## Out of Scope / Constraints"),
+        (quality.has_scope_boundaries, f"## {SCOPE_BOUNDARY_HEADINGS[0]}"),
         (quality.has_references, "## References"),
     ]
     return [heading for present, heading in _SECTION_MAP if not present]

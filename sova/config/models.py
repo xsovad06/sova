@@ -352,6 +352,12 @@ class DevelopConfig(BaseSettings):
     # WorkflowEngine._step_timeout).
     step_timeout_normal: int = Field(2400, gt=0)
     step_timeout_complex: int = Field(3600, gt=0)
+    # Bounds the tracker round-trip DevelopStep falls back to when an earlier
+    # step (SyncStep/FetchTaskStep) was skipped from the pipeline and
+    # ctx.task is still None at spec-freshness-check time. DevelopStep
+    # otherwise does no network I/O of its own, so a hanging tracker call
+    # must not be able to silently eat into the step's own timeout budget.
+    task_fetch_timeout: int = Field(15, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
 

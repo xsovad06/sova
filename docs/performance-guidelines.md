@@ -19,6 +19,7 @@ All configurable timeouts cascade from SOVA config or env vars (`SOVA_` prefix).
 | Develop check phase | 600s | `develop.check_timeout` | `sova/config/models.py` |
 | Develop LLM fix | 600s | `develop.fix_timeout` | `sova/config/models.py` |
 | Develop max fix time | 1800s | `develop.max_fix_time` | `sova/config/models.py` |
+| Develop task fetch (spec-freshness fallback) | 15s | `develop.task_fetch_timeout` | `sova/config/models.py` |
 | Validate hook execution | 120s | `validation.hook_timeout` | `sova/config/models.py` |
 | Validate LLM fix | 600s | `validation.fix_timeout` | `sova/config/models.py` |
 | CI polling max wait | 1500s | `ci.max_wait` | `sova/config/models.py` |

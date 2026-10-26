@@ -2027,7 +2027,7 @@ class TestReviewerRole:
         spec_path.mkdir(parents=True, exist_ok=True)
         spec_file = spec_path / "42-test.md"
         spec_file.write_text(
-            "# Spec: Test\n\n## Solution\nDo X and Y.\n\n## Edge Cases\nHandle Z.\n\n## Other\nIgnored."
+            "# Spec: Test issue\n\n## Solution\nDo X and Y.\n\n## Edge Cases\nHandle Z.\n\n## Other\nIgnored."
         )
 
         captured_prompt = None
@@ -2653,6 +2653,11 @@ class TestReviewerGatherRepoContext:
 # ---------------------------------------------------------------------------
 
 
+def _spec_review_task(body: str = "") -> Task:
+    """Task stub for the spec-anchored review tests (issue #42, under review)."""
+    return Task(id="42", title="Test issue", body=body, state=TaskState.IN_REVIEW)
+
+
 class TestSpecAnchoredReview:
     def test_extract_spec_sections_complete(self) -> None:
         from sova.roles.reviewer import _extract_spec_sections
@@ -2931,7 +2936,7 @@ class TestSpecAnchoredReview:
 
         ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
         role = ReviewerRole()
-        result = role._load_spec_sections(ctx)
+        result = role._load_spec_sections(ctx, _spec_review_task())
         assert result is None
 
     def test_load_spec_sections_non_numeric_issue(self, tmp_path: Path) -> None:
@@ -2939,7 +2944,7 @@ class TestSpecAnchoredReview:
 
         ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99, issue_number="pr-42")
         role = ReviewerRole()
-        result = role._load_spec_sections(ctx)
+        result = role._load_spec_sections(ctx, _spec_review_task())
         assert result is None
 
     def test_load_spec_sections_uses_working_dir(self, tmp_path: Path) -> None:
@@ -2960,9 +2965,48 @@ class TestSpecAnchoredReview:
             project_dir=tmp_path / "nonexistent",
         )
         role = ReviewerRole()
-        result = role._load_spec_sections(ctx)
+        task = _spec_review_task()
+        result = role._load_spec_sections(ctx, task)
         assert result is not None
         assert "Solution" in result
+        assert "Do X." in result["Solution"]
+
+    def test_load_spec_sections_stale_degrades_with_caveat(self, tmp_path: Path) -> None:
+        """A spec whose **Issue revision** hash no longer matches the live issue is still used,
+        with an explicit caveat note, instead of being dropped outright."""
+        from sova.roles.reviewer import ReviewerRole
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec_file = specs_dir / "42-test.md"
+        spec_file.write_text("# Spec: Test issue\n**Issue revision**: deadbeef0000\n\n## Solution\nDo X.\n")
+
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
+        role = ReviewerRole()
+        task = _spec_review_task()
+        result = role._load_spec_sections(ctx, task)
+        assert result is not None
+        assert "Do X." in result["Solution"]
+        assert "Staleness Note" in result
+        assert "may be stale" in result["Staleness Note"]
+
+    def test_load_spec_sections_current_returns_sections(self, tmp_path: Path) -> None:
+        """A spec whose **Issue revision** hash matches the live issue loads normally."""
+        from sova.core.spec_utils import compute_issue_revision_hash
+        from sova.roles.reviewer import ReviewerRole
+
+        task = _spec_review_task(body="Some body")
+        digest = compute_issue_revision_hash(task.title, task.body)
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec_file = specs_dir / "42-test.md"
+        spec_file.write_text(f"# Spec: Test issue\n**Issue revision**: {digest}\n\n## Solution\nDo X.\n")
+
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
+        role = ReviewerRole()
+        result = role._load_spec_sections(ctx, task)
+        assert result is not None
         assert "Do X." in result["Solution"]
 
     def test_load_spec_sections_exception_returns_none(self, tmp_path: Path) -> None:
@@ -2978,8 +3022,9 @@ class TestSpecAnchoredReview:
             worktree_dir=tmp_path,
         )
         role = ReviewerRole()
+        task = _spec_review_task()
         with patch("sova.roles.reviewer.find_spec_file", side_effect=OSError("disk error")):
-            result = role._load_spec_sections(ctx)
+            result = role._load_spec_sections(ctx, task)
         assert result is None
 
     def test_compact_spec_ref_none(self) -> None:
