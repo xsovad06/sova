@@ -368,6 +368,24 @@ class TestParseLinkedIssue:
         body = "[ABC-123](https://jira.example.com/browse/ABC-123)"
         assert parse_linked_issue(body) == 123
 
+    def test_part_of_marker(self) -> None:
+        body = "Part of #42\n\nNot done in this PR:\n- Some thing"
+        assert parse_linked_issue(body) == 42
+
+    def test_closes_preferred_over_epic_part_of(self) -> None:
+        """ "Part of #N" is also this repo's epic-linkage marker, so a PR body
+        that mentions an epic that way before its own "Closes #N" must still
+        resolve to the PR's own issue, not the epic."""
+        body = "## Summary\n- Part of #1300 (epic rollout)\n\n## Issue\n\nCloses #42"
+        assert parse_linked_issue(body) == 42
+
+    def test_part_of_in_issue_section_preferred_over_epic_mention_in_summary(self) -> None:
+        """Neither "Part of" reference is a closing keyword, so the plain
+        whole-body search would otherwise return the epic mentioned first in
+        "## Summary" instead of the PR's own issue in "## Issue"."""
+        body = "## Summary\n- Part of #1300 rollout: adds the parser\n\n## Issue\n\nPart of #42"
+        assert parse_linked_issue(body) == 42
+
 
 class TestExtractLinkedIssue:
     def test_closing_references_preferred(self) -> None:
@@ -473,6 +491,12 @@ class TestExtractLinkedIssue:
             "headRefName": "feat/rhcloud-49651-stuff",
         }
         assert _extract_linked_issue(raw) is None
+
+    def test_part_of_links_without_closing_keyword(self) -> None:
+        """A 'Part of #N' PR (sova/core/steps/_pr_body.py) still links to its issue,
+        even though it is deliberately not a GitHub auto-close keyword."""
+        raw = {"closingIssuesReferences": [], "body": "Part of #42\n\nNot done in this PR:\n- Some thing"}
+        assert _extract_linked_issue(raw) == 42
 
     def test_body_preferred_over_title_jira_key(self) -> None:
         raw = {
@@ -1409,6 +1433,23 @@ class TestExtractAllLinkedIssues:
         raw = {"closingIssuesReferences": [], "body": "No issue here"}
         result = _extract_all_linked_issues(raw)
         assert result == []
+
+    def test_falls_back_to_title_and_branch_like_extract_linked_issue(self) -> None:
+        """A PR with no closingIssuesReferences and no body keyword (e.g. a
+        future 'Part of #N' phrasing this function doesn't recognize) must
+        still resolve via title/branch, matching _extract_linked_issue's
+        fallback chain rather than silently returning []."""
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "some fix",
+            "headRefName": "feat/issue-314",
+        }
+        assert _extract_all_linked_issues(raw) == [314]
+
+    def test_part_of_in_body_is_linked(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "Part of #88"}
+        assert _extract_all_linked_issues(raw) == [88]
 
 
 class TestSummarizeCiNoneState:

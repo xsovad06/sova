@@ -2416,7 +2416,7 @@ class TestCommitStep:
         mock_commit.assert_awaited_once()
         msg = mock_commit.call_args[0][0]
         assert "LLM provider abstraction" in msg
-        assert "Closes #42" in msg
+        assert "Refs #42" in msg
         assert mock_commit.call_args.kwargs["no_verify"] is False
 
     async def test_skips_hooks_when_budget_critically_low(self, tmp_path: Path) -> None:
@@ -2469,7 +2469,7 @@ class TestCommitStep:
         msg = mock_commit.call_args[0][0]
         assert msg.startswith("feat(core): validate commit messages")
         assert "feat(core): feat(core):" not in msg
-        assert "Closes #42" in msg
+        assert "Refs #42" in msg
 
     async def test_normalizes_scope_with_digits(self, tmp_path: Path) -> None:
         """Generated commit messages should normalize scopes containing digits."""
@@ -2494,7 +2494,7 @@ class TestCommitStep:
         assert result.success
         msg = mock_commit.call_args[0][0]
         assert msg.startswith("feat(core): validate commit messages")
-        assert "Closes #42" in msg
+        assert "Refs #42" in msg
 
     async def test_skips_when_already_committed(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
@@ -2608,7 +2608,7 @@ class TestCommitStep:
         assert result.success
         msg = mock_commit.call_args[0][0]
         assert "feat(core): issue 42" in msg
-        assert "Closes #42" in msg
+        assert "Refs #42" in msg
 
 
 class TestValidateStep:
@@ -4340,6 +4340,7 @@ class TestStepRegistry:
             "rearrange_commits",
             "validate",
             "push",
+            "refresh_pr_body",
             "monitor_ci",
             "resolve_external_reviews",
             "extract_memory",
@@ -7717,7 +7718,7 @@ class TestCommitStepJira:
         assert "Closes #" not in msg
 
     async def test_github_commit_message_unchanged(self, tmp_path: Path) -> None:
-        """GitHub projects should still produce Closes #N."""
+        """GitHub projects should produce Refs #N, not a GitHub closing keyword."""
         from sova.core.steps.commit import CommitStep
 
         ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
@@ -7738,7 +7739,8 @@ class TestCommitStepJira:
 
         assert result.success
         msg = mock_commit.call_args[0][0]
-        assert "Closes #42" in msg
+        assert "Refs #42" in msg
+        assert "Closes #" not in msg
         assert "JIRA:" not in msg
 
 
@@ -8692,8 +8694,9 @@ class TestSelfReviewStep:
 class TestConfidenceScoreStep:
     @staticmethod
     def _git_results() -> list[MagicMock]:
-        """Mock results for the step's three git calls: name-only, --stat, grouped diff."""
+        """Mock results for the step's four git calls: fetch, name-only, --stat, grouped diff."""
         return [
+            MagicMock(success=True, stdout=""),
             MagicMock(success=True, stdout="src/app.py\n"),
             MagicMock(success=True, stdout=" src/app.py | 5 +\n"),
             MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
@@ -8735,7 +8738,9 @@ class TestConfidenceScoreStep:
             tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
         )
 
-        result, mock_invoke, _ = await self._execute(ctx, git_results=[MagicMock(success=True, stdout="")])
+        result, mock_invoke, _ = await self._execute(
+            ctx, git_results=[MagicMock(success=True, stdout=""), MagicMock(success=True, stdout="")]
+        )
 
         assert result.success
         assert ctx.confidence_score == 100
@@ -8827,13 +8832,31 @@ class TestConfidenceScoreStep:
         assert ctx.confidence_score is None
         mock_invoke.assert_not_called()
 
-    async def test_execute_skips_when_diff_names_command_fails(self, tmp_path: Path) -> None:
+    async def test_execute_skips_when_base_fetch_fails(self, tmp_path: Path) -> None:
         ctx = _make_ctx(
             tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
         )
 
         result, mock_invoke, _ = await self._execute(
             ctx, git_results=[MagicMock(success=False, stdout="", stderr="git error")]
+        )
+
+        assert result.success
+        assert ctx.confidence_score is None
+        assert "skipped" in result.summary.lower()
+        mock_invoke.assert_not_called()
+
+    async def test_execute_skips_when_diff_names_command_fails(self, tmp_path: Path) -> None:
+        ctx = _make_ctx(
+            tmp_path, config=ProjectConfig(confidence={"enabled": True}), worktree_dir=tmp_path / "worktree"
+        )
+
+        result, mock_invoke, _ = await self._execute(
+            ctx,
+            git_results=[
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="", stderr="git error"),
+            ],
         )
 
         assert result.success
@@ -8849,6 +8872,7 @@ class TestConfidenceScoreStep:
         result, mock_invoke, _ = await self._execute(
             ctx,
             git_results=[
+                MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout="src/app.py\n"),
                 MagicMock(success=True, stdout=" src/app.py | 5 +\n"),
                 MagicMock(success=False, stdout="", stderr="git error"),

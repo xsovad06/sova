@@ -119,6 +119,51 @@ class TestExtractSection:
         assert "After fence." in result
         assert "echo hello" in result
 
+    def test_ignore_case_matches_differently_cased_heading(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "## acceptance criteria\nDo the thing.\n"
+        assert extract_section(text, "Acceptance Criteria", ignore_case=True) == "Do the thing."
+
+    def test_case_sensitive_by_default(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "## acceptance criteria\nDo the thing.\n"
+        assert extract_section(text, "Acceptance Criteria") == ""
+
+    def test_tolerates_extra_whitespace_after_hashes(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "##  Acceptance Criteria\nDo the thing.\n"
+        assert extract_section(text, "Acceptance Criteria") == "Do the thing."
+
+    def test_bare_hashes_do_not_borrow_the_next_line_as_a_heading(self) -> None:
+        """A bare "##" line has nothing after it, so it must never be read as
+        the start of an "Acceptance Criteria" section whose heading text
+        actually lives on the next line."""
+        from sova.utils.markdown import extract_section
+
+        text = "Intro\n##\nAcceptance Criteria\n- [ ] fake\n\n## Real\nx\n"
+        assert extract_section(text, "Acceptance Criteria") == ""
+
+    def test_tab_separated_following_heading_still_ends_the_section(self) -> None:
+        """The boundary search must tolerate the same "##" + tab separator as
+        the heading-match pattern itself, or a following heading written
+        with a tab is invisible and its content leaks into this section."""
+        from sova.utils.markdown import extract_section
+
+        text = "## Acceptance Criteria\n- [ ] A\n\n##\tOut of Scope\n- [ ] not a criterion\n"
+        assert extract_section(text, "Acceptance Criteria") == "- [ ] A"
+
+    def test_matches_heading_with_trailing_carriage_return(self) -> None:
+        """A body edited in the GitHub web UI uses CRLF line endings, so the
+        heading line ends in "\\r" before the "\\n" that re.MULTILINE's "$"
+        anchors to."""
+        from sova.utils.markdown import extract_section
+
+        text = "## Acceptance Criteria\r\n- [ ] A\r\n\r\n## Out of Scope\r\n- [ ] not a criterion\r\n"
+        assert extract_section(text, "Acceptance Criteria") == "- [ ] A"
+
 
 class TestUpsertSection:
     def test_appends_when_heading_missing(self) -> None:
@@ -185,6 +230,41 @@ class TestUpsertSection:
         result = upsert_section(text, "Confidence Score", "updated")
         assert "fake" not in result
         assert "updated" in result
+
+    def test_tab_separated_following_heading_does_not_lose_its_section(self) -> None:
+        """The boundary search must tolerate a "##" + tab following heading,
+        matching the heading-match pattern's own tolerance: otherwise the
+        following section is treated as part of this one's body and
+        overwritten wholesale instead of being left untouched."""
+        from sova.utils.markdown import upsert_section
+
+        text = "## Summary\nold\n\n##\tConfidence Score\n\n**85/100**\n"
+        result = upsert_section(text, "Summary", "new")
+        assert "new" in result
+        assert "Confidence Score" in result
+        assert "**85/100**" in result
+
+    def test_preserves_blank_line_before_the_next_heading(self) -> None:
+        """Splicing new content in must not glue it directly against the
+        next heading: the blank line that separated the two sections is part
+        of the document's formatting, not something upsert_section owns."""
+        from sova.utils.markdown import upsert_section
+
+        text = "## Summary\nold\n\n## Confidence Score\n\n**85/100**\n"
+        result = upsert_section(text, "Summary", "new")
+        assert "new\n\n## Confidence Score" in result
+
+    def test_replaces_existing_section_with_trailing_carriage_return(self) -> None:
+        """A body edited in the GitHub web UI uses CRLF line endings; the
+        existing heading must still be found and replaced in place rather
+        than appended as a duplicate."""
+        from sova.utils.markdown import upsert_section
+
+        text = "## Intro\r\nHello.\r\n\r\n## Confidence Score\r\n\r\nOld: 40/100\r\n\r\n## Footer\r\nBye."
+        result = upsert_section(text, "Confidence Score", "New: 90/100")
+        assert "Old: 40/100" not in result
+        assert "New: 90/100" in result
+        assert result.count("## Confidence Score") == 1
 
 
 class TestStripFencedBlocks:

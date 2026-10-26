@@ -901,6 +901,63 @@ class TestFindPRForIssue:
             assert result is not None
             assert result.number == 90
 
+    async def test_closing_keyword_preferred_over_epic_part_of_mention(self) -> None:
+        """ "Part of #N" is also this repo's own epic-linkage marker, so a
+        sub-issue's PR that merely mentions an epic that way must not be
+        chosen over another PR in the same result set that actually closes
+        it (otherwise the epic would appear to already have a PR, and a
+        real PR for it would never get created)."""
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 50,
+                    "url": "https://github.com/user/repo/pull/50",
+                    "body": "## Summary\n- Part of #1300 (epic rollout)",
+                    "headRefName": "feat/issue-73",
+                },
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "## Issue\n\nCloses #1300",
+                    "headRefName": "feat/issue-1300",
+                },
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("1300", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 82
+
+    async def test_epic_part_of_mention_in_summary_does_not_match(self) -> None:
+        """find_pr_for_issue(<epic>) must not adopt a sub-issue's PR that
+        merely mentions the epic in "## Summary": the epic is tracked, not
+        implemented by any single PR, and the "Part of" match is only valid
+        inside the PR's own "## Issue" section."""
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 9,
+                    "url": "https://github.com/user/repo/pull/9",
+                    "body": "## Summary\n- Part of #1300\n\n## Issue\n\nCloses #42",
+                    "headRefName": "feat/issue-42",
+                }
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(stdout=pr_json),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+            ]
+
+            result = await find_pr_for_issue("1300", repo="user/repo")
+
+            assert result is None
+
     async def test_skips_unrelated_pr(self) -> None:
         pr_json = json.dumps(
             [
@@ -990,6 +1047,29 @@ class TestFindPRForIssue:
             assert result is not None
             assert result.branch == "feat/issue-73"
 
+    async def test_finds_pr_by_part_of_keyword(self) -> None:
+        """A 'Part of #N' body (sova/core/steps/_pr_body.py) still dedups as linked,
+        even though it deliberately isn't a GitHub auto-close keyword. The branch
+        name here deliberately doesn't match the issue, so this only passes if
+        the body's "Part of" keyword alone is recognized."""
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "## Issue\n\nPart of #73\n\nNot done in this PR:\n- Some thing",
+                    "headRefName": "feat/some-other-branch",
+                }
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 82
+
     async def test_falls_back_to_branch_search_when_body_search_empty(self) -> None:
         """JIRA issues: body search fails (no #N), branch search finds the PR."""
         branch_pr_json = json.dumps(
@@ -1048,6 +1128,58 @@ class TestFindPRForIssue:
 
             assert result is None
             assert mock_run.call_count == 4
+
+
+class TestResolveLinkedIssue:
+    """resolve_linked_issue() (sova/utils/gh.py) must recognize 'Part of #N'
+    (sova/core/steps/_pr_body.py's own non-closing marker) alongside the
+    GitHub auto-close keywords, so /review-pr resolves to the right issue
+    for a PR that only partially satisfies its acceptance criteria."""
+
+    async def test_resolves_closes_keyword(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": "Closes #42"}))
+            result = await resolve_linked_issue(99, repo="user/repo")
+            assert result == "42"
+
+    async def test_resolves_part_of_marker(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(
+                stdout=json.dumps({"body": "Part of #42\n\nNot done in this PR:\n- Some thing"})
+            )
+            result = await resolve_linked_issue(99, repo="user/repo")
+            assert result == "42"
+
+    async def test_closes_preferred_over_epic_part_of_mention(self) -> None:
+        """ "Part of #N" also marks epic linkage in this repo; a PR's own
+        "Closes #N" must win over an epic mention elsewhere in the body."""
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(
+                stdout=json.dumps({"body": "## Summary\n- Part of #1300 (epic rollout)\n\n## Issue\n\nCloses #42"})
+            )
+            result = await resolve_linked_issue(99, repo="user/repo")
+            assert result == "42"
+
+    async def test_part_of_in_issue_section_preferred_over_epic_mention_in_summary(self) -> None:
+        """Neither "Part of" reference here is a closing keyword, so a bare
+        whole-body search would otherwise return the epic mentioned first in
+        "## Summary" instead of the PR's own issue rendered in "## Issue"."""
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(
+                stdout=json.dumps(
+                    {"body": "## Summary\n- Part of #1300 rollout: adds the parser\n\n## Issue\n\nPart of #42"}
+                )
+            )
+            result = await resolve_linked_issue(99, repo="user/repo")
+            assert result == "42"
 
 
 class TestGetPRStatus:
