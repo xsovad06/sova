@@ -103,11 +103,11 @@ def read_spec_sections(
 
 def _replace_section(text: str, heading: str, new_content: str) -> str:
     """Replace the content of an existing ## section in markdown text."""
-    from sova.utils.markdown import _strip_fenced_blocks
+    from sova.utils.markdown import mask_fenced_blocks
 
-    masked = _strip_fenced_blocks(text)
+    masked = mask_fenced_blocks(text)
 
-    pattern = rf"(^## {re.escape(heading)}\s*$)"
+    pattern = rf"(^##[ \t]+{re.escape(heading)}[ \t\r]*$)"
     match = re.search(pattern, masked, re.MULTILINE)
     if not match:
         return text
@@ -115,7 +115,7 @@ def _replace_section(text: str, heading: str, new_content: str) -> str:
     section_start = match.end()
 
     # Find the next ## heading using masked text (skips fenced blocks)
-    next_heading = re.search(r"^## ", masked[section_start:], re.MULTILINE)
+    next_heading = re.search(r"^##[ \t]", masked[section_start:], re.MULTILINE)
     if next_heading:
         section_end = section_start + next_heading.start()
     else:

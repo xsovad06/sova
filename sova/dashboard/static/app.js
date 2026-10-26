@@ -247,6 +247,7 @@ var _STEP_LABELS = {
   validate: 'Validating',
   push: 'Pushing',
   create_pr: 'Creating PR',
+  refresh_pr_body: 'Refreshing PR body',
   monitor_ci: 'CI checks',
   confidence_score: 'Scoring confidence',
   extract_memory: 'Extracting memory',
@@ -1487,7 +1488,7 @@ var STEP_LABELS = {
   commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
   wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
   monitor_ci: 'CI', confidence_score: 'Confidence', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
-  rebase: 'Rebase', address_review: 'Address', resolve_external_reviews: 'Resolve',
+  rebase: 'Rebase', address_review: 'Address', resolve_external_reviews: 'Resolve', refresh_pr_body: 'PR Body',
   handoff_to_user: 'Handoff', fetch_task: 'Fetch', research: 'Research', spec: 'Spec'
 };
 
@@ -1592,8 +1593,8 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var steps = PIPELINE_STEPS;
   var labels = STEP_LABELS;
   if (pipelineVariant === 'address_review') {
-    steps = ['ensure_worktree', 'rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_reviewer'];
-    labels = {ensure_worktree: 'Worktree', rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'};
+    steps = ['ensure_worktree', 'rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'refresh_pr_body', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_reviewer'];
+    labels = {ensure_worktree: 'Worktree', rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', refresh_pr_body: 'PR Body', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'};
   } else if (pipelineVariant === 'researcher') {
     steps = ['fetch_task', 'research', 'spec', 'extract_memory'];
     labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};

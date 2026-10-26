@@ -27,6 +27,7 @@ from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.push import PushStep
 from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 from sova.core.steps.rebase import RebaseStep
+from sova.core.steps.refresh_pr_body import RefreshPrBodyStep
 from sova.core.steps.research import ResearchStep
 from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 from sova.core.steps.scan_project import ScanProjectStep
@@ -86,6 +87,7 @@ def get_address_review_steps() -> list[BaseStep]:
         RearrangeCommitsStep(),
         ValidateStep(),
         PushStep(),
+        RefreshPrBodyStep(),
         MonitorCIStep(),
         ResolveExternalReviewsStep(),
         ExtractMemoryStep(),
@@ -159,6 +161,7 @@ STEP_REGISTRY: dict[str, type[BaseStep]] = {
         PushStep,
         RearrangeCommitsStep,
         RebaseStep,
+        RefreshPrBodyStep,
         ResearchStep,
         ResolveExternalReviewsStep,
         ScanProjectStep,
@@ -179,6 +182,7 @@ _ORDERING_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("create_worktree", "develop"),
     ("commit", "push"),
     ("push", "create_pr"),
+    ("push", "refresh_pr_body"),
 )
 
 

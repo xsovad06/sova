@@ -12,10 +12,23 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section
 
 log = get_logger(component="dashboard.pr_service")
 
-_ISSUE_LINK_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+# "part of" is SOVA's own deterministic marker for a PR that only partially
+# satisfies an issue's acceptance criteria (sova/core/steps/_pr_body.py);
+# it still links the PR to the issue, just without auto-closing it. Ranked
+# below the GitHub closing keywords, not folded into one alternation with
+# them: this repo also uses "Part of #N" for epic linkage (a sub-issue's PR
+# body can legitimately mention its epic that way before its own "Closes
+# #N"), and re.search would otherwise return the epic's number first. A
+# "Part of" search is also scoped to the code-controlled "## Issue" section
+# first (see parse_linked_issue()): that section is where _pr_body.py always
+# renders the PR's own closing decision, so a "Part of #<epic>" mention an
+# LLM wrote earlier in "## Summary" can never win a bare whole-body search.
+_CLOSING_KEYWORD_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+_PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
 _TITLE_ISSUE_RE = re.compile(r"[(\[]#(\d+)[)\]]")
@@ -84,12 +97,21 @@ _STATE_LABELS: dict[str, str] = {
 def parse_linked_issue(body: str | None) -> int | None:
     """Extract the first issue number from PR body.
 
-    Supports GitHub syntax (Closes/Fixes/Resolves #N) and JIRA syntax
-    ([PROJ-42](https://...) or JIRA: https://.../browse/PROJ-42).
+    Supports GitHub syntax (Closes/Fixes/Resolves/Part of #N) and JIRA syntax
+    ([PROJ-42](https://...) or JIRA: https://.../browse/PROJ-42). A closing
+    keyword outranks both JIRA syntax and "Part of #N": the latter can name
+    an epic elsewhere in the body rather than this PR's own issue.
+
+    The "Part of" search itself is scoped to the ``## Issue`` section first,
+    falling back to the whole body only when that section is absent (a
+    pre-migration body) or carries no match: ``_pr_body.py`` always renders
+    this PR's own closing decision there, while an epic mention written by
+    the LLM into ``## Summary`` comes earlier in the document and would
+    otherwise win a plain ``re.search`` over the PR's own issue.
     """
     if not body:
         return None
-    m = _ISSUE_LINK_RE.search(body)
+    m = _CLOSING_KEYWORD_RE.search(body)
     if m:
         return int(m.group(1))
     m = _JIRA_MARKDOWN_RE.search(body)
@@ -98,22 +120,21 @@ def parse_linked_issue(body: str | None) -> int | None:
     m = _JIRA_PLAIN_RE.search(body)
     if m:
         return int(m.group(1))
+    m = _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
+    if m:
+        return int(m.group(1))
     return None
 
 
-def _extract_linked_issue(raw: dict) -> int | None:
-    """Extract linked issue from closingIssuesReferences, PR body, title, or branch.
+def _title_or_branch_linked_issue(raw: dict) -> int | None:
+    """Fall back to the PR's own title or branch name for a linked issue number.
 
-    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs)
-    > body keywords (Closes/Fixes/Resolves #N, JIRA links)
-    > title (#N or [PROJ-N]) > branch (issue-N or PROJ-N).
+    Used only once closingIssuesReferences and body-keyword parsing have both
+    come up empty, by both :func:`_extract_linked_issue` and
+    :func:`_extract_all_linked_issues` so they can't disagree on a PR with no
+    closing reference and no body keyword (e.g. a ``Part of #N`` PR whose
+    body phrasing a future change misses).
     """
-    refs = raw.get("closingIssuesReferences") or []
-    if refs:
-        return refs[0].get("number")
-    from_body = parse_linked_issue(raw.get("body"))
-    if from_body is not None:
-        return from_body
     title = raw.get("title") or ""
     m = _TITLE_ISSUE_RE.search(title)
     if m:
@@ -131,15 +152,34 @@ def _extract_linked_issue(raw: dict) -> int | None:
     return None
 
 
+def _extract_linked_issue(raw: dict) -> int | None:
+    """Extract linked issue from closingIssuesReferences, PR body, title, or branch.
+
+    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs)
+    > body keywords (Closes/Fixes/Resolves/Part of #N, JIRA links)
+    > title (#N or [PROJ-N]) > branch (issue-N or PROJ-N).
+    """
+    refs = raw.get("closingIssuesReferences") or []
+    if refs:
+        return refs[0].get("number")
+    from_body = parse_linked_issue(raw.get("body"))
+    if from_body is not None:
+        return from_body
+    return _title_or_branch_linked_issue(raw)
+
+
 def _extract_all_linked_issues(raw: dict) -> list[int]:
-    """Return all issue numbers linked to a PR from closingIssuesReferences or body."""
+    """Return all issue numbers linked to a PR from closingIssuesReferences, body,
+    or (with the same fallback chain as :func:`_extract_linked_issue`) title/branch.
+    """
     refs = raw.get("closingIssuesReferences") or []
     if refs:
         return [r.get("number") for r in refs if r.get("number") is not None]
     single = parse_linked_issue(raw.get("body"))
     if single is not None:
         return [single]
-    return []
+    fallback = _title_or_branch_linked_issue(raw)
+    return [fallback] if fallback is not None else []
 
 
 def _summarize_ci(rollup: list[dict] | None) -> str:

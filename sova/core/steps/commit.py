@@ -114,7 +114,7 @@ class CommitStep(BaseStep):
             ts = ctx.config.task_source if ctx.config else None
             if ts and ts.is_jira:
                 return f"{normalized}\n\nJIRA: {ts.jira_browse_url(ctx.issue_number)}"
-            return f"{normalized}\n\nCloses #{ctx.issue_number}"
+            return f"{normalized}\n\nRefs #{ctx.issue_number}"
         return normalized
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

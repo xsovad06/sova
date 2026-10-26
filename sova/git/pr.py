@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section
 from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="git.pr")
@@ -264,10 +265,12 @@ async def _find_pr_for_issue_cached(
 async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
     """Find an open PR linked to an issue via gh CLI search.
 
-    Searches for PRs whose body contains 'Closes #N' (or variants) and
-    verifies the match to avoid false positives from free-text search.
-    Falls back to branch name search for JIRA issues where the body
-    contains 'RHCLOUD-N' instead of '#N'.
+    Searches for PRs whose body contains 'Closes #N' (or variants), whose
+    branch name matches, or whose body's own ``## Issue`` section contains
+    'Part of #N' (see :func:`_match_pr_results`), and verifies the match to
+    avoid false positives from free-text search. Falls back to branch name
+    search for JIRA issues where the body contains 'RHCLOUD-N' instead of
+    '#N'.
 
     Returns ``None`` both when no PR is found and when the lookup itself
     failed; use :func:`find_pr_for_issue_checked` when the caller must
@@ -362,16 +365,35 @@ def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None | object:
     except json.JSONDecodeError:
         return _SEARCH_FAILED
 
-    link_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
+    closing_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
+    # "part of" is SOVA's own deterministic marker for a PR that only
+    # partially satisfies an issue's acceptance criteria
+    # (sova/core/steps/_pr_body.py); it still links the PR for dedup purposes,
+    # just without auto-closing the issue on merge. Ranked below the closing
+    # keywords and the branch name, not folded into one pattern with them:
+    # this repo also uses "Part of #N" for epic linkage, so a sub-issue's PR
+    # that merely mentions its epic that way must not be mistaken for the
+    # epic's own PR while a stronger signal (a closing keyword or this
+    # PR's branch name) is available on some other PR in the result set.
+    # The match is additionally required to be inside the PR body's own
+    # "## Issue" section, not anywhere in the body: that is the heading
+    # compose_body() always renders this PR's own closing decision under, so
+    # an epic merely mentioned elsewhere (e.g. "## Summary") never qualifies,
+    # which is what makes find_pr_for_issue(<epic>) safe to call for an
+    # epic that is only tracked, never itself implemented by any PR.
+    part_of_pattern = re.compile(rf"part of\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
     branch_pattern = f"issue-{issue_num}"
 
+    part_of_match: dict | None = None
     for pr in prs:
         body = pr.get("body", "") or ""
         head = pr.get("headRefName", "") or ""
-        if link_pattern.search(body) or branch_pattern in head:
+        if closing_pattern.search(body) or branch_pattern in head:
             return PRInfo.from_gh_json(pr)
+        if part_of_match is None and part_of_pattern.search(extract_section(body, "Issue")):
+            part_of_match = pr
 
-    return None
+    return PRInfo.from_gh_json(part_of_match) if part_of_match is not None else None
 
 
 async def list_open_prs(*, repo: str, github_user: str = "", author: str | None = None) -> list[dict]:

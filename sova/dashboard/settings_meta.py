@@ -891,6 +891,15 @@ _REGISTRY: list[SettingMeta] = [
         "commit",
         "boolean",
     ),
+    SettingMeta(
+        "commit.owner_only_patterns",
+        "Owner-only criteria patterns",
+        "Plain, case-insensitive substrings (not regexes) marking an acceptance criterion as owner/manual-only, "
+        "forcing 'Part of #N' over 'Closes #N'. A short pattern like 'owner' alone will also match incidental "
+        "prose, so prefer a more specific phrase",
+        "commit",
+        "list",
+    ),
     # Triage
     SettingMeta(
         "triage.mode",

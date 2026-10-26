@@ -7,7 +7,7 @@ import re
 _FENCE_OPEN_RE = re.compile(r"^(`{3,}|~{3,})")
 
 
-def _strip_fenced_blocks(text: str) -> str:
+def mask_fenced_blocks(text: str) -> str:
     """Replace fenced code block contents with spaces, preserving byte offsets.
 
     Each character inside a fenced block is replaced with a space (newlines kept)
@@ -41,21 +41,32 @@ def _strip_fenced_blocks(text: str) -> str:
     return "\n".join(out_lines)
 
 
-def extract_section(text: str, heading: str) -> str:
+# Kept for callers that imported the pre-rename private name.
+_strip_fenced_blocks = mask_fenced_blocks
+
+
+def extract_section(text: str, heading: str, *, ignore_case: bool = False) -> str:
     """Extract the content of a markdown section (between ## heading and next ## or EOF).
 
     Ignores ``## `` lines inside fenced code blocks so they are not treated as
-    section boundaries.
+    section boundaries. Whitespace between ``##`` and *heading* is tolerated
+    unconditionally (e.g. ``##  Acceptance Criteria``); ``ignore_case=True``
+    additionally matches *heading* case-insensitively, for a heading whose
+    exact casing in source documents is not guaranteed. The separator uses
+    ``[ \\t]+`` rather than ``\\s+``: under ``re.MULTILINE``, ``\\s`` also
+    matches a newline, which would let a bare ``##`` line borrow the next
+    line's text as its heading.
     """
     # Build a "mask" with code fences blanked out for boundary detection
-    masked = _strip_fenced_blocks(text)
+    masked = mask_fenced_blocks(text)
 
-    pattern = rf"^## {re.escape(heading)}\s*$"
-    match = re.search(pattern, masked, re.MULTILINE)
+    pattern = rf"^##[ \t]+{re.escape(heading)}[ \t\r]*$"
+    flags = re.MULTILINE | (re.IGNORECASE if ignore_case else 0)
+    match = re.search(pattern, masked, flags)
     if not match:
         return ""
     start = match.end()
-    next_heading = re.search(r"^## ", masked[start:], re.MULTILINE)
+    next_heading = re.search(r"^##[ \t]", masked[start:], re.MULTILINE)
     # Use positions found in the masked text to slice the original text
     section = text[start : start + next_heading.start()] if next_heading else text[start:]
     return section.strip()
@@ -67,10 +78,12 @@ def upsert_section(text: str, heading: str, content: str) -> str:
     If the heading already exists, its body (up to the next ``## `` heading or
     EOF) is replaced in place, making repeated calls idempotent. Otherwise the
     section is appended to the end. Ignores ``## `` lines inside fenced code
-    blocks so they are not treated as section boundaries.
+    blocks so they are not treated as section boundaries. Tolerates the same
+    whitespace between ``##`` and *heading* as :func:`extract_section`, so the
+    two helpers always agree on what counts as the same heading.
     """
-    masked = _strip_fenced_blocks(text)
-    pattern = rf"^## {re.escape(heading)}\s*$"
+    masked = mask_fenced_blocks(text)
+    pattern = rf"^##[ \t]+{re.escape(heading)}[ \t\r]*$"
     match = re.search(pattern, masked, re.MULTILINE)
     new_section = f"## {heading}\n\n{content.strip()}\n"
 
@@ -78,9 +91,13 @@ def upsert_section(text: str, heading: str, content: str) -> str:
         sep = "\n\n" if text.strip() else ""
         return f"{text.rstrip()}{sep}{new_section}".strip() + "\n"
 
-    next_heading = re.search(r"^## ", masked[match.end() :], re.MULTILINE)
-    end = match.end() + next_heading.start() if next_heading else len(text)
-    return (text[: match.start()] + new_section + text[end:]).strip() + "\n"
+    next_heading = re.search(r"^##[ \t]", masked[match.end() :], re.MULTILINE)
+    if next_heading:
+        # Preserve the blank line that separated this section from the next
+        # heading, rather than splicing the new content directly against it.
+        end = match.end() + next_heading.start()
+        return (text[: match.start()] + new_section + "\n" + text[end:].lstrip("\n")).strip() + "\n"
+    return (text[: match.start()] + new_section).strip() + "\n"
 
 
 def strip_code_fences(text: str) -> str:
