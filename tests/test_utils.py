@@ -165,6 +165,94 @@ class TestExtractSection:
         assert extract_section(text, "Acceptance Criteria") == "- [ ] A"
 
 
+class TestRemoveSection:
+    def test_removes_section_through_next_heading(self) -> None:
+        from sova.utils.markdown import remove_section
+
+        text = "## Intro\nHello.\n\n## Research\nFindings.\n\n## Next\nOther stuff.\n"
+        result = remove_section(text, "Research")
+        assert "Findings." not in result
+        assert "## Intro\nHello." in result
+        assert "## Next\nOther stuff." in result
+
+    def test_missing_section_returns_unchanged(self) -> None:
+        from sova.utils.markdown import remove_section
+
+        text = "## Intro\nHello."
+        assert remove_section(text, "Missing") == text
+
+    def test_heading_inside_fenced_block_does_not_corrupt_offsets(self) -> None:
+        """A fenced example containing a literal "## Research" line, placed before
+        the real "## Research" section, must not shift the removal offsets:
+        ``_strip_fenced_blocks`` masks fence *content* in place (same length,
+        same line count) rather than shortening it, so positions found on the
+        masked copy still land correctly on the original text."""
+        from sova.utils.markdown import remove_section
+
+        text = (
+            "## Intro\n"
+            "Hello.\n\n"
+            "```markdown\n"
+            "## Research\n"
+            "fake section inside the fence\n"
+            "```\n\n"
+            "More intro text that must survive.\n\n"
+            "## Research\n"
+            "Real findings to remove.\n\n"
+            "## Next\n"
+            "Other stuff that must survive.\n"
+        )
+        result = remove_section(text, "Research")
+        assert "fake section inside the fence" in result
+        assert "More intro text that must survive." in result
+        assert "Real findings to remove." not in result
+        assert "Other stuff that must survive." in result
+        assert result.count("## Research") == 1
+
+    def test_removes_final_section_with_preceding_fence(self) -> None:
+        """When the removed section has no following ``## `` heading (EOF), the
+        preceding prose, including an earlier fenced block, must survive
+        byte-for-byte. Exercises the ``end = len(masked)`` branch (no next
+        heading found) together with a fence earlier in the text, pinning the
+        in-place-masking length invariant ``_strip_fenced_blocks`` depends on."""
+        from sova.utils.markdown import remove_section
+
+        text = (
+            "## Intro\n"
+            "Hello.\n\n"
+            "```markdown\n"
+            "## Research\n"
+            "fake section inside the fence\n"
+            "```\n\n"
+            "More intro text that must survive.\n\n"
+            "## Research\n"
+            "Real findings to remove, with no heading after this one.\n"
+        )
+        result = remove_section(text, "Research")
+        assert "fake section inside the fence" in result
+        assert "More intro text that must survive." in result
+        assert "Real findings to remove" not in result
+        assert result.count("## Research") == 1
+        assert result == (
+            "## Intro\n"
+            "Hello.\n\n"
+            "```markdown\n"
+            "## Research\n"
+            "fake section inside the fence\n"
+            "```\n\n"
+            "More intro text that must survive."
+        )
+
+    def test_missing_section_is_stripped_like_the_removed_path(self) -> None:
+        """The no-heading-found path and the found-and-removed path must apply the
+        same whitespace normalization, so a caller cannot observe different
+        behavior depending on whether a section actually existed."""
+        from sova.utils.markdown import remove_section
+
+        text = "\n\n## Intro\nHello.\n\n"
+        assert remove_section(text, "Missing") == text.strip()
+
+
 class TestUpsertSection:
     def test_appends_when_heading_missing(self) -> None:
         from sova.utils.markdown import upsert_section

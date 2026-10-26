@@ -23,7 +23,7 @@ from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError, validate_step_output
 from sova.core.schemas import get_review_schema
-from sova.core.spec_utils import find_spec_file
+from sova.core.spec_utils import SpecFreshness, check_spec_freshness, find_spec_file, spec_freshness_caveat
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines
@@ -116,6 +116,12 @@ log = get_logger(component="role.reviewer")
 # Terminal fallback when neither role config nor complexity routing resolves a
 # model (the reviewer is a standalone role, so ``ctx.complexity`` is usually None).
 _DEFAULT_REVIEW_MODEL = "sonnet"
+
+# Synthetic leading key ``_load_spec_sections`` inserts into its returned dict
+# when the spec is not current, carrying a caveat for both the review prompt
+# (rendered as its own "### Staleness Note" block) and ``_run_review`` (which
+# pops it back out to surface the same caveat into ``ReviewResult.summary``).
+_STALENESS_NOTE_HEADING = "Staleness Note"
 
 # Explicit allowlist for the optional repo-context sub-call's environment
 # (see ReviewerRole._gather_repo_context). Built up from scratch rather than
@@ -488,7 +494,8 @@ class ReviewerRole(AgentRole):
         repo_context: str = "",
     ) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
-        spec_sections = self._load_spec_sections(ctx)
+        spec_sections = self._load_spec_sections(ctx, task)
+        staleness_note = spec_sections.get(_STALENESS_NOTE_HEADING) if spec_sections else None
 
         if spec_sections:
             spec_chars = sum(len(v) for v in spec_sections.values())
@@ -505,17 +512,22 @@ class ReviewerRole(AgentRole):
             # separate, already-elaborate chunking path, and the feature
             # (opt-in sub-call) is deliberately scoped to the default
             # single-reviewer path.
-            return await self._run_panel_review(ctx, task, diff, files, spec_sections, addressed_findings)
+            result = await self._run_panel_review(ctx, task, diff, files, spec_sections, addressed_findings)
+        else:
+            result = await self._run_single_review(
+                ctx,
+                task,
+                diff,
+                files,
+                spec_sections,
+                addressed_findings=addressed_findings,
+                repo_context=repo_context,
+            )
 
-        return await self._run_single_review(
-            ctx,
-            task,
-            diff,
-            files,
-            spec_sections,
-            addressed_findings=addressed_findings,
-            repo_context=repo_context,
-        )
+        if staleness_note:
+            prefix = f"[Spec freshness: {staleness_note}]"
+            result.summary = f"{prefix} {result.summary}".strip() if result.summary else prefix
+        return result
 
     def _resolve_review_model(self, ctx: ExecutionContext) -> str:
         """Resolve the model for review work, honouring ``roles.reviewer_model``.
@@ -703,8 +715,15 @@ class ReviewerRole(AgentRole):
 
         return result
 
-    def _load_spec_sections(self, ctx: ExecutionContext) -> dict[str, str] | None:
-        """Load spec sections for intent-anchored review. Returns None if no spec exists."""
+    def _load_spec_sections(self, ctx: ExecutionContext, task: Task) -> dict[str, str] | None:
+        """Load spec sections for intent-anchored review. Returns None if no spec exists.
+
+        A non-current spec (stale or unmatched; see ``SpecFreshness``) is still
+        returned, with a leading ``"Staleness Note"`` entry carrying an explicit
+        caveat, rather than dropped outright: the hash covers the whole issue
+        body byte-for-byte, so a single checkbox edit would otherwise silently
+        remove the entire ``spec_alignment`` review dimension for no real reason.
+        """
         issue = ctx.issue_number
         if not issue or not str(issue).isdigit():
             return None
@@ -726,9 +745,16 @@ class ReviewerRole(AgentRole):
         except ValueError:
             log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
             return None
-        if sections:
-            log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
-        return sections or None
+        if not sections:
+            return None
+
+        freshness = check_spec_freshness(raw, task)
+        if freshness is not SpecFreshness.CURRENT:
+            log.warning("spec.not_current", issue=issue, path=str(path), freshness=freshness.value)
+            sections = {_STALENESS_NOTE_HEADING: spec_freshness_caveat(freshness), **sections}
+
+        log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
+        return sections
 
     async def _gather_repo_context(self, ctx: ExecutionContext, files: list[str]) -> str:
         """Optionally gather extra repository context via a read-only Codex sub-call.

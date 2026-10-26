@@ -12,6 +12,7 @@ correction, repeating until green or ``develop.max_fix_cycles`` exhausted.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -27,45 +28,155 @@ from sova.utils.shell import run
 log = get_logger(component="step.develop")
 
 
-def _load_spec_for_develop(ctx: ExecutionContext) -> str:
+async def _ensure_task(ctx: ExecutionContext) -> None:
+    """Populate ``ctx.task`` from the tracker if an earlier step did not.
+
+    ``SyncStep`` fetches the task fail-open, and a configured pipeline can omit
+    both it and ``FetchTaskStep``, so ``ctx.task`` can still be ``None`` here.
+    Every spec freshness check below needs it, and fails closed without it, so
+    try once more before giving up on the spec entirely. Bounded by
+    ``develop.task_fetch_timeout`` (default 15s; see ``DevelopConfig``).
+
+    Side effect, deliberately: the fetched task is written to ``ctx.task``
+    itself (not kept local to this step), so a later step that reads
+    ``ctx.task`` after DevelopStep runs sees it populated even though no
+    SyncStep/FetchTaskStep ran. ``ctx.has_issue`` gates the fallback the same
+    way it gates ``FetchTaskStep``'s own fetch (see ``fetch_task.py``), so the
+    two agree on when a tracker round-trip is possible at all.
+    """
+    if ctx.task is not None or not ctx.has_issue:
+        return
+    try:
+        ctx.task = await asyncio.wait_for(
+            ctx.adapter.get_task(ctx.issue_number), timeout=ctx.config.develop.task_fetch_timeout
+        )
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; callers fail closed)
+        log.warning("step.develop.task_fetch_failed", issue=ctx.issue_number, exc_info=True)
+
+
+def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
     """Load approved spec sections as compressed context for the develop step.
 
-    Returns the spec content string, or empty string if no approved spec exists.
+    Returns ``(content, note)``. ``content`` is the spec content string, or
+    empty string if no approved spec exists. ``note`` is empty when the spec
+    is current (or absent), and a short operator-visible note otherwise:
+    surfaced by ``DevelopStep.execute()`` into ``StepResult.summary`` so a
+    degraded spec is never silently invisible.
+
+    A non-current spec (stale, unmatched, or unverifiable; see
+    ``SpecFreshness``) is still used, with an explicit caveat prepended,
+    rather than dropped outright: the fingerprint covers the whole issue body
+    byte-for-byte, so a single checkbox edit or typo fix would otherwise
+    discard the entire spec as context for no real reason.
     """
     try:
-        from sova.core.spec_utils import read_spec
+        from sova.core.spec_utils import SpecFreshness, check_spec_freshness, read_spec, spec_freshness_caveat
         from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, extract_sections_from_text
 
         spec_data = read_spec(ctx.issue_number, ctx.project_dir)
         if spec_data is None or spec_data.get("status") != "approved":
-            return ""
+            return "", ""
 
-        content = extract_sections_from_text(spec_data["raw_content"], DEVELOP_SECTIONS)
-        if content:
-            log.info(
-                "step.develop.spec_compression",
+        raw_content = spec_data.get("raw_content") or ""
+        if not raw_content:
+            return "", ""
+
+        content = extract_sections_from_text(raw_content, DEVELOP_SECTIONS)
+        if not content:
+            return "", ""
+
+        note = ""
+        freshness = check_spec_freshness(raw_content, ctx.task)
+        if freshness is not SpecFreshness.CURRENT:
+            log.warning(
+                "spec.not_current",
                 issue=ctx.issue_number,
-                spec_chars=len(content),
+                path=spec_data.get("file_path"),
+                freshness=freshness.value,
             )
-        return content
+            caveat = spec_freshness_caveat(freshness)
+            content = f"{caveat}\n\n{content}"
+            note = f"spec may not reflect the current issue ({freshness.value})"
+
+        log.info(
+            "step.develop.spec_compression",
+            issue=ctx.issue_number,
+            spec_chars=len(content),
+        )
+        return content, note
     except (OSError, ValueError):
         log.debug("step.develop.spec_load_failed", exc_info=True)
-        return ""
+        return "", ""
 
 
 async def _append_implementation_notes(ctx: ExecutionContext) -> None:
-    """Summarize implementation deviations and append to spec (non-fatal)."""
-    try:
-        import asyncio
+    """Summarize implementation deviations and append to spec (non-fatal).
 
+    Develop already ran against whatever spec state ``_load_spec_for_develop``
+    saw at the start of this step. If the issue changed while the (long-running)
+    /develop dispatch was in flight, the spec is now stale by the time this
+    runs; a short stub is appended instead of writing nothing, so the spec is
+    never left with no record at all that an implementation happened against
+    it. The "unverifiable" case (no ``ctx.task`` to compare against) is left
+    unannotated: there is nothing concrete to report there.
+
+    The stub is skipped (never overwriting) when a real ``## Implementation
+    Notes`` section is already present: ``append_spec_section`` replaces an
+    existing section rather than appending to it, and this step can run more
+    than once per issue (retry, ``--force``, a second developer run in the
+    handoff chain), so writing the stub unconditionally would erase a prior
+    run's real provenance the first time the spec later looks non-current.
+    """
+    try:
+        from sova.core.spec_utils import SpecFreshness, check_spec_freshness, read_spec
         from sova.core.steps._spec_helpers import (
             SECTION_IMPLEMENTATION_NOTES,
             SPEC_PLAN_SECTIONS,
             append_spec_section,
-            read_spec_sections,
+            extract_sections_from_text,
         )
+        from sova.utils.markdown import extract_section
 
-        original_plan = read_spec_sections(ctx.issue_number, ctx.project_dir, SPEC_PLAN_SECTIONS)
+        spec_data = read_spec(ctx.issue_number, ctx.project_dir)
+        if spec_data is None:
+            return
+        raw_content = spec_data.get("raw_content") or ""
+        if not raw_content:
+            return
+        if ctx.task is None:
+            log.warning("spec.unverifiable", issue=ctx.issue_number, path=spec_data.get("file_path"))
+            return
+
+        freshness = check_spec_freshness(raw_content, ctx.task)
+        if freshness is not SpecFreshness.CURRENT:
+            log.warning(
+                "spec.not_current",
+                issue=ctx.issue_number,
+                path=spec_data.get("file_path"),
+                freshness=freshness.value,
+            )
+            if extract_section(raw_content, SECTION_IMPLEMENTATION_NOTES):
+                # Real notes from an earlier run already exist; never
+                # overwrite them with a content-free stub.
+                return
+            if freshness is SpecFreshness.STALE:
+                stub = (
+                    "The issue changed after this spec was written (issue-revision hash mismatch), "
+                    "so implementation notes were not generated against it. Development ran against "
+                    "the spec as it stood at the start of this step; review the current issue body "
+                    "for what changed."
+                )
+            else:
+                stub = (
+                    "This spec could not be matched to the current issue (legacy spec with no "
+                    "issue-revision marker, and its title no longer matches), so implementation "
+                    "notes were not generated against it. Development ran against the spec as it "
+                    "stood at the start of this step."
+                )
+            append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, stub, ctx.project_dir)
+            return
+
+        original_plan = extract_sections_from_text(raw_content, SPEC_PLAN_SECTIONS)
         if not original_plan:
             return
 
@@ -240,8 +351,10 @@ class DevelopStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.develop", issue=ctx.issue_number, cwd=str(ctx.working_dir))
 
+        await _ensure_task(ctx)
+
         args = ctx.issue_number
-        spec_context = _load_spec_for_develop(ctx)
+        spec_context, spec_note = _load_spec_for_develop(ctx)
         if spec_context:
             # Pass spec as inline context so the /develop agent uses it directly
             # instead of re-fetching the verbose issue body from GitHub.
@@ -294,6 +407,8 @@ class DevelopStep(BaseStep):
             checks_passed, check_summary = await self._run_inner_check_loop(ctx)
 
             summary = f"Development completed ({result.total_tokens} tokens)"
+            if spec_note:
+                summary += f"; {spec_note}"
             if check_summary:
                 summary += f"; {check_summary}"
 

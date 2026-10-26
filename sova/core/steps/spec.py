@@ -24,7 +24,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
-from sova.core.spec_utils import find_spec_file
+from sova.core.spec_utils import _frontmatter_span, compute_issue_revision_hash, find_spec_file
 from sova.core.steps._handoff_helpers import write_step_handoff
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import HandoffAction
@@ -118,6 +118,36 @@ def _extract_spec_content(text: str) -> str:
         return heading_match.group(1).strip()
 
     return text.strip()
+
+
+_COMPLEXITY_LINE_RE = re.compile(r"^\*\*Complexity\*\*:.*$", re.MULTILINE)
+_TITLE_HEADING_RE = re.compile(r"^# .*$", re.MULTILINE)
+
+
+def _stamp_issue_revision(content: str, title: str, body: str) -> str:
+    """Insert a ``**Issue revision**: <hash>`` line so ``spec_is_current()`` can detect staleness.
+
+    Inserted right after the ``**Complexity**`` line (the template's last
+    frontmatter line); falls back to right after the title heading for a
+    response that deviated from the template. Both anchors are searched only
+    within ``_frontmatter_span(content)`` (fence-masked, bounded to the text
+    before the first ``## `` heading): that is the exact region
+    ``spec_is_current()`` reads the marker from, so a complexity or title line
+    that lives inside a fenced example, or after the first ``## `` heading, is
+    never mistaken for the real anchor and the stamp is never written
+    somewhere the checker can't see it. When neither anchor is found in that
+    region the line is prepended instead of searching the rest of the
+    document, for the same reason.
+    """
+    revision_line = f"**Issue revision**: {compute_issue_revision_hash(title, body)}"
+    frontmatter = _frontmatter_span(content)
+    match = _COMPLEXITY_LINE_RE.search(frontmatter)
+    if match:
+        return content[: match.end()] + f"\n{revision_line}" + content[match.end() :]
+    match = _TITLE_HEADING_RE.search(frontmatter)
+    if match:
+        return content[: match.end()] + f"\n\n{revision_line}" + content[match.end() :]
+    return f"{revision_line}\n\n{content}"
 
 
 _SPEC_PROMPT_TEMPLATE = """\
@@ -342,6 +372,8 @@ class SpecStep(BaseStep):
                 error="LLM response was empty or could not be parsed into a spec",
                 cost_usd=result.cost_usd,
             )
+
+        spec_content = _stamp_issue_revision(spec_content, task.title, task.body or "")
 
         try:
             spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)

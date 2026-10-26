@@ -135,7 +135,7 @@ async def test_develop_appends_notes_on_success(tmp_path: Path) -> None:
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
@@ -173,7 +173,7 @@ async def test_develop_llm_failure_nonfatal(tmp_path: Path) -> None:
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
@@ -188,6 +188,220 @@ async def test_develop_llm_failure_nonfatal(tmp_path: Path) -> None:
     assert "Implementation Notes" not in spec_file.read_text()
 
 
+async def test_develop_notes_stale_spec_leaves_a_stub(tmp_path: Path) -> None:
+    """A spec whose **Issue revision** hash no longer matches the live issue gets a stub note.
+
+    Develop already ran against whatever the spec said before it went stale, so
+    writing nothing at all would leave no record that an implementation
+    happened against it. No LLM call is made for a stale spec, but a short stub
+    is appended instead of leaving the spec untouched.
+    """
+    from sova.core.steps.develop import _append_implementation_notes
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    original = "# Spec: Test task\n**Issue revision**: deadbeef0000\n\n## Solution\nPlan.\n"
+    spec_file.write_text(original)
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock()
+    mock_run = AsyncMock()
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    mock_invoke.assert_not_awaited()
+    content = spec_file.read_text()
+    assert content != original
+    assert "## Implementation Notes" in content
+    assert "changed after this spec was written" in content
+
+
+async def test_develop_notes_stale_spec_preserves_existing_real_notes(tmp_path: Path) -> None:
+    """A stale re-run must never overwrite real notes an earlier run already wrote.
+
+    DevelopStep can run more than once per issue (retry, ``--force``, a second
+    developer run in the handoff chain). ``append_spec_section`` replaces an
+    existing section rather than appending to it, so without this guard the
+    stub from a later stale run would erase the first run's real provenance.
+    """
+    from sova.core.steps.develop import _append_implementation_notes
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    original = (
+        "# Spec: Test task\n**Issue revision**: deadbeef0000\n\n## Solution\nPlan.\n\n"
+        "## Implementation Notes\nREAL NOTES: deviated by using X instead of Y.\n"
+    )
+    spec_file.write_text(original)
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock()
+    mock_run = AsyncMock()
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    mock_invoke.assert_not_awaited()
+    content = spec_file.read_text()
+    assert content == original
+    assert "REAL NOTES: deviated by using X instead of Y." in content
+    assert "changed after this spec was written" not in content
+
+
+async def test_develop_notes_unmatched_legacy_spec_leaves_a_distinct_stub(tmp_path: Path) -> None:
+    """A legacy spec with no issue-revision marker whose title no longer matches gets a
+    stub that says it could not be matched, not that the issue changed: there is no hash
+    proving a real change, only a title that no longer lines up."""
+    from sova.core.steps.develop import _append_implementation_notes
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    original = "# Spec: A different task entirely\n\n## Solution\nPlan.\n"
+    spec_file.write_text(original)
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock()
+    mock_run = AsyncMock()
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    mock_invoke.assert_not_awaited()
+    content = spec_file.read_text()
+    assert "## Implementation Notes" in content
+    assert "could not be matched to the current issue" in content
+    assert "changed after this spec was written" not in content
+
+
+async def test_develop_notes_skipped_when_task_unavailable(tmp_path: Path) -> None:
+    """With no ``ctx.task`` there is nothing to prove the spec current against, so it is not used.
+
+    ``SyncStep`` fetches the task fail-open and a configured pipeline can omit
+    it entirely, so ``ctx.task`` can still be ``None`` here. Failing closed
+    keeps a possibly-stale spec out of the implementation notes instead of
+    skipping the freshness check.
+    """
+    from sova.core.steps.develop import _append_implementation_notes
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    original = "# Spec: Test task\n\n## Solution\nPlan.\n"
+    spec_file.write_text(original)
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.task = None
+
+    mock_invoke = AsyncMock()
+    mock_run = AsyncMock()
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    mock_invoke.assert_not_awaited()
+    assert spec_file.read_text() == original
+
+
+def test_load_spec_for_develop_returns_content_for_current_spec(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    (specs_dir / "42-feature.md").write_text(
+        "# Spec: Test task\n**Status**: approved\n\n## Solution\nPlan the thing.\n"
+    )
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    content, note = _load_spec_for_develop(ctx)
+    assert "Plan the thing." in content
+    assert note == ""
+
+
+def test_load_spec_for_develop_degrades_with_caveat_without_task(tmp_path: Path) -> None:
+    """An approved spec whose freshness cannot be established is still used (degraded, not
+    dropped), with a caveat note surfaced for the StepResult summary."""
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    (specs_dir / "42-feature.md").write_text(
+        "# Spec: Test task\n**Status**: approved\n\n## Solution\nPlan the thing.\n"
+    )
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.task = None
+
+    content, note = _load_spec_for_develop(ctx)
+    assert "Plan the thing." in content
+    assert "could not be verified" in content
+    assert "unverifiable" in note
+
+
+async def test_ensure_task_fetches_when_missing(tmp_path: Path) -> None:
+    from sova.adapters.base import Task
+    from sova.core.steps.develop import _ensure_task
+
+    fetched = Task(id="42", title="Test task", body="Body", state="in_progress", labels=[], url="")
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.task = None
+    ctx.has_issue = True
+    ctx.adapter.get_task = AsyncMock(return_value=fetched)
+
+    await _ensure_task(ctx)
+
+    assert ctx.task is fetched
+
+
+async def test_ensure_task_keeps_existing_task(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _ensure_task
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    existing = ctx.task
+    ctx.has_issue = True
+    ctx.adapter.get_task = AsyncMock()
+
+    await _ensure_task(ctx)
+
+    assert ctx.task is existing
+    ctx.adapter.get_task.assert_not_awaited()
+
+
+async def test_ensure_task_noop_without_issue(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _ensure_task
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.task = None
+    ctx.has_issue = False
+    ctx.adapter.get_task = AsyncMock()
+
+    await _ensure_task(ctx)
+
+    assert ctx.task is None
+    ctx.adapter.get_task.assert_not_awaited()
+
+
+async def test_ensure_task_leaves_task_none_when_adapter_raises(tmp_path: Path) -> None:
+    """An adapter failure must not raise out of the step, and must not fake a task."""
+    from sova.core.steps.develop import _ensure_task
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    ctx.task = None
+    ctx.has_issue = True
+    ctx.adapter.get_task = AsyncMock(side_effect=RuntimeError("tracker down"))
+
+    await _ensure_task(ctx)
+
+    assert ctx.task is None
+
+
 async def test_develop_notes_use_extraction_routing_override(tmp_path: Path) -> None:
     """llm.routing['extraction'] overrides the default haiku model for implementation notes."""
     from sova.core.steps.develop import _append_implementation_notes
@@ -196,7 +410,7 @@ async def test_develop_notes_use_extraction_routing_override(tmp_path: Path) -> 
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
     ctx.config.llm.routing = {"extraction": "sonnet"}
@@ -227,7 +441,7 @@ async def test_develop_notes_default_haiku_when_no_override(tmp_path: Path) -> N
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
@@ -259,7 +473,7 @@ def test_reviewer_appends_rationale(tmp_path: Path) -> None:
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec: Feature\n\n## Solution\nPlan.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n")
 
     reviewer = ReviewerRole()
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
@@ -672,7 +886,7 @@ async def test_develop_notes_git_diff_fails(tmp_path: Path) -> None:
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
@@ -709,7 +923,7 @@ async def test_develop_notes_git_log_fails(tmp_path: Path) -> None:
     specs_dir = tmp_path / ".claude" / "specs"
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
-    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
+    spec_file.write_text("# Spec: Test task\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
@@ -1048,18 +1262,39 @@ def test_load_spec_for_develop_approved(tmp_path: Path) -> None:
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
     spec_file.write_text(
-        "# Spec: Feature\n**Status**: approved\n\n"
+        "# Spec: Test task\n**Status**: approved\n\n"
         "## Solution\nUse approach B.\n\n"
         "## Edge Cases\nHandle nulls.\n\n"
         "## Design Decisions\nChose REST.\n"
     )
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
-    result = _load_spec_for_develop(ctx)
+    content, note = _load_spec_for_develop(ctx)
 
-    assert "Use approach B" in result
-    assert "Handle nulls" in result
-    assert "Chose REST" in result
+    assert "Use approach B" in content
+    assert "Handle nulls" in content
+    assert "Chose REST" in content
+    assert note == ""
+
+
+def test_load_spec_for_develop_stale_degrades_with_caveat(tmp_path: Path) -> None:
+    """A spec whose **Issue revision** hash no longer matches the live issue is still used,
+    with an explicit caveat prepended, instead of being dropped outright."""
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text(
+        "# Spec: Test task\n**Status**: approved\n**Issue revision**: deadbeef0000\n\n## Solution\nUse approach B.\n"
+    )
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    content, note = _load_spec_for_develop(ctx)
+
+    assert "Use approach B" in content
+    assert "may be stale" in content
+    assert "stale" in note
 
 
 def test_load_spec_for_develop_draft_skipped(tmp_path: Path) -> None:
@@ -1071,18 +1306,20 @@ def test_load_spec_for_develop_draft_skipped(tmp_path: Path) -> None:
     spec_file.write_text("# Spec: Feature\n**Status**: draft\n\n## Solution\nDraft plan.\n")
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
-    result = _load_spec_for_develop(ctx)
+    content, note = _load_spec_for_develop(ctx)
 
-    assert result == ""
+    assert content == ""
+    assert note == ""
 
 
 def test_load_spec_for_develop_no_spec(tmp_path: Path) -> None:
     from sova.core.steps.develop import _load_spec_for_develop
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
-    result = _load_spec_for_develop(ctx)
+    content, note = _load_spec_for_develop(ctx)
 
-    assert result == ""
+    assert content == ""
+    assert note == ""
 
 
 def test_load_spec_for_develop_exception_returns_empty(tmp_path: Path) -> None:
@@ -1090,8 +1327,9 @@ def test_load_spec_for_develop_exception_returns_empty(tmp_path: Path) -> None:
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
     with patch("sova.dashboard.services.spec_service.read_spec", side_effect=OSError("disk error")):
-        result = _load_spec_for_develop(ctx)
-    assert result == ""
+        content, note = _load_spec_for_develop(ctx)
+    assert content == ""
+    assert note == ""
 
 
 # DevelopStep: execute passes spec context as args
@@ -1105,7 +1343,7 @@ async def test_develop_step_passes_spec_in_args(tmp_path: Path) -> None:
     specs_dir.mkdir(parents=True)
     spec_file = specs_dir / "42-feature.md"
     spec_file.write_text(
-        "# Spec: Feature\n**Status**: approved\n\n## Solution\nImplement caching.\n\n## Edge Cases\nHandle TTL.\n"
+        "# Spec: Test task\n**Status**: approved\n\n## Solution\nImplement caching.\n\n## Edge Cases\nHandle TTL.\n"
     )
 
     step = DevelopStep()
@@ -1234,6 +1472,7 @@ def _make_ctx(
     ctx.config.agent.max_budget = Decimal("5")
     ctx.config.check_cmd = ""
     ctx.config.develop.max_fix_cycles = 0
+    ctx.config.develop.task_fetch_timeout = 15
     ctx.config.llm.routing = {}
     ctx.config.security.prompt_guard_threshold = 0.7
 

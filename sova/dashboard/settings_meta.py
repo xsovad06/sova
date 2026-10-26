@@ -695,6 +695,14 @@ _REGISTRY: list[SettingMeta] = [
         "develop",
         "number",
     ),
+    SettingMeta(
+        "develop.task_fetch_timeout",
+        "Task fetch timeout (s)",
+        "Timeout for the tracker round-trip the develop step falls back to for its spec-freshness "
+        "check when an earlier sync step was skipped",
+        "develop",
+        "number",
+    ),
     # Validation
     SettingMeta(
         "validation.fix_timeout",
