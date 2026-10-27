@@ -33,6 +33,7 @@ from sova.git.pr import (
     get_pr_diff,
     get_pr_files,
     get_pr_status,
+    sha_has_workflow_runs,
 )
 from sova.git.rebase import (
     rebase_with_conflict_resolution,
@@ -69,6 +70,7 @@ __all__ = [
     "get_pr_diff",
     "get_pr_files",
     "get_pr_status",
+    "sha_has_workflow_runs",
     "MergeQueueStatus",
     "MergeResult",
     "delete_remote_branch",

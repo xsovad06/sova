@@ -802,6 +802,127 @@ class TestGetPrStatusForIssue:
         assert result["has_pr"] is True
         assert result["ci_status"] == "unknown"
 
+    async def test_empty_checks_with_workflow_run_reports_pending_not_none(self) -> None:
+        """An empty check list is ambiguous between "no CI configured" and
+        "checks have not registered yet" (get_ci_checks()'s own docstring).
+        work_state._unmet_merge_conditions() treats "none" as satisfying the
+        CI merge gate, so an uncorroborated "none" here would let a PR whose
+        checks are seconds from appearing pass the gate (#1314 CodeRabbit
+        review on PR #1317, Round 4 finding: fan-out gap in
+        _summarize_ci_checks()). A workflow run existing for the head SHA
+        must report "pending" instead."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
+
+        mock_pr = MagicMock(number=10)
+        mock_status = MagicMock(
+            number=10,
+            state="OPEN",
+            review_decision=None,
+            mergeable=True,
+            title="test",
+            url="http://x",
+            is_approved=False,
+            is_mergeable=True,
+        )
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery._load_repo_config",
+                return_value=("owner/repo", "user"),
+            ),
+            patch(
+                "sova.git.operations.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=mock_pr,
+            ),
+            patch(
+                "sova.git.operations.get_pr_status",
+                new_callable=AsyncMock,
+                return_value=mock_status,
+            ),
+            patch(
+                "sova.git.operations.get_ci_checks",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.git.operations.get_pr_head_sha",
+                new_callable=AsyncMock,
+                return_value="abc123def456",
+            ),
+            patch(
+                "sova.git.operations.sha_has_workflow_runs",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_runs,
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+            ),
+        ):
+            result = await get_pr_status_for_issue("42")
+        assert result["ci_status"] == "pending"
+        mock_runs.assert_awaited_once()
+
+    async def test_empty_checks_confirmed_by_no_workflow_run_reports_none(self) -> None:
+        """The counterpart to the above: a confirmed absence of any workflow
+        run for the head SHA is genuine "no CI", so "none" still stands."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
+
+        mock_pr = MagicMock(number=10)
+        mock_status = MagicMock(
+            number=10,
+            state="OPEN",
+            review_decision=None,
+            mergeable=True,
+            title="test",
+            url="http://x",
+            is_approved=False,
+            is_mergeable=True,
+        )
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery._load_repo_config",
+                return_value=("owner/repo", "user"),
+            ),
+            patch(
+                "sova.git.operations.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=mock_pr,
+            ),
+            patch(
+                "sova.git.operations.get_pr_status",
+                new_callable=AsyncMock,
+                return_value=mock_status,
+            ),
+            patch(
+                "sova.git.operations.get_ci_checks",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.git.operations.get_pr_head_sha",
+                new_callable=AsyncMock,
+                return_value="abc123def456",
+            ),
+            patch(
+                "sova.git.operations.sha_has_workflow_runs",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+            ),
+        ):
+            result = await get_pr_status_for_issue("42")
+        assert result["ci_status"] == "none"
+
 
 class TestTTLCache:
     @pytest.fixture(autouse=True)

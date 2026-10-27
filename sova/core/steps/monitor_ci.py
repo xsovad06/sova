@@ -30,6 +30,7 @@ from sova.git.operations import (
     get_ci_checks_for_sha,
     get_ci_failure_logs,
     get_pr_head_sha,
+    sha_has_workflow_runs,
 )
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import format_fix_llm_failure
@@ -42,6 +43,15 @@ log = get_logger(component="step.monitor_ci")
 
 _MAX_CI_FIX_ATTEMPTS = 3
 _CI_LOG_LIMIT = 12_000
+
+# Operator-facing wording for each _pr_confirms_no_checks() non-confirmation
+# reason, keyed by the reason string it returns.
+_NO_CHECKS_REASON_TEXT: dict[str, str] = {
+    "pr_reports_checks": "PR reports checks exist",
+    "pr_lookup_failed": "PR-level check lookup failed",
+    "run_without_checks": "a workflow run exists with no check yet",
+    "run_lookup_unreadable": "workflow-run lookup failed",
+}
 
 
 def _redact_logs(text: str) -> str:
@@ -111,14 +121,27 @@ class MonitorCIStep(BaseStep):
             return None
 
         if not checks:
+            # An empty list is ambiguous between "no CI configured" and "gh
+            # reported no checks because they haven't registered yet"
+            # (see get_ci_checks()'s docstring). Falling through to
+            # _poll_ci() applies the grace period and the two-source
+            # cross-check (_pr_confirms_no_checks) instead of passing on an
+            # uncorroborated empty result.
             log.info("step.monitor_ci.no_existing_checks")
-            return StepResult(success=True, summary="No new commits and no CI checks configured")
+            return None
 
         exclude = ctx.config.ci.exclude_checks
         if exclude:
             checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
         if not checks:
-            return StepResult(success=True, summary="No new commits and all CI checks excluded")
+            # Same registration-window ambiguity as the empty-list branch
+            # above: this fast path can run seconds after a real push (see
+            # module docstring), so an all-excluded result here is not yet
+            # distinguishable from "the other checks haven't registered".
+            # Fall through to _poll_ci(), whose all_excluded handling waits
+            # out the grace period before passing.
+            log.info("step.monitor_ci.no_existing_checks_all_excluded", patterns=exclude)
+            return None
 
         completed = [c for c in checks if c.is_completed]
         if len(completed) < len(checks):
@@ -148,28 +171,34 @@ class MonitorCIStep(BaseStep):
         push can never see a prior commit's stale, possibly-green checks.
         A SHA GitHub hasn't registered checks for yet is treated as pending:
         once the grace period elapses, an empty SHA-scoped result only
-        passes the step after the PR-level lookup confirms the PR genuinely
-        has no CI configured (through the same ``ci.exclude_checks``
-        filter), since the empty SHA-scoped result is itself ambiguous
-        between "no CI" and "not registered yet"; a PR-level fetch failure
-        during that cross-check is never read as "confirmed no CI", so an
-        outage there falls closed to continued polling rather than a silent
-        pass. A SHA GitHub has no record of at all (both the check-runs and
-        commit-status endpoints independently return 404/422; either one
-        succeeding proves the commit exists) fails only when the PR's own
-        head SHA is confirmed to be a different commit; a head that still
-        matches *expected_sha*, or one that could not be read at all
-        (transient gh/network failure), is not corroboration of a failed
-        push, so polling continues instead. If the PR head moves to a
-        different commit entirely (another actor pushed after this
-        pipeline's push), the step rebinds to the new head, resets the
+        passes the step after the cross-check confirms the PR genuinely has
+        no CI configured: the PR-level lookup must also report no checks
+        (through the same ``ci.exclude_checks`` filter) *and* GitHub must
+        have no workflow run recorded for the commit, since the empty
+        SHA-scoped result is itself ambiguous between "no CI" and "not
+        registered yet" and the PR-level lookup reads the same head commit.
+        A fetch failure in either half of that cross-check is never read as
+        "confirmed no CI", so an outage there falls closed to continued
+        polling rather than a silent pass. A SHA GitHub has no record of at
+        all (both the check-runs and commit-status endpoints independently
+        return 404/422; either one succeeding proves the commit exists)
+        fails only when the PR's own head SHA is confirmed to be a different
+        commit; a head that still matches *expected_sha*, or one that could
+        not be read at all (transient gh/network failure), is not
+        corroboration of a failed push, so polling continues instead. If the
+        PR head moves to a different commit entirely (another actor pushed
+        after this pipeline's push), the step rebinds to the new head, resets the
         no-checks grace clock (the freshly bound head has its own
         registration window), and keeps polling rather than failing the run
         over a benign event. A completed check set with nothing passing only
         fails the step when it contains a CANCELLED conclusion (the normal
         effect of a superseding push); an all-SKIPPED or all-NEUTRAL set is a
         deliberate non-blocking outcome and still passes. Falls back to the
-        PR-level lookup only when the local HEAD SHA cannot be resolved.
+        PR-level lookup only when the local HEAD SHA cannot be resolved; that
+        fallback is not exempt from the two-source cross-check either, since
+        it resolves the PR's current head via ``get_pr_head_sha`` to
+        corroborate against, and keeps polling (rather than passing
+        uncorroborated) when even that cannot be read.
         Elapsed time is measured from a real monotonic clock, not by
         counting polls, so extra API round trips per iteration never drift
         the loop past ``max_wait``.
@@ -238,25 +267,72 @@ class MonitorCIStep(BaseStep):
                 continue
 
             exclude = ctx.config.ci.exclude_checks
+            all_excluded = False
             if exclude:
                 before = len(checks)
                 checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
                 skipped = before - len(checks)
                 if skipped:
                     log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
+                    all_excluded = not checks
 
             if not checks:
-                if time.monotonic() - grace_start >= grace_period:
-                    if expected_sha and not await self._pr_confirms_no_checks(ctx):
+                grace_elapsed = time.monotonic() - grace_start >= grace_period
+                if all_excluded:
+                    if grace_elapsed:
+                        # Every check on this lookup matched ci.exclude_checks: the
+                        # checks are registered, just excluded, so there is no
+                        # registration ambiguity to corroborate against a workflow
+                        # run, and the run corroboration is skipped. The grace
+                        # period itself still applies: a poll this early could be
+                        # seeing only the excluded check because the rest haven't
+                        # registered yet, not because there are no others.
+                        log.info("step.monitor_ci.all_checks_excluded", elapsed=elapsed, patterns=exclude)
+                        return (
+                            StepResult(
+                                success=True,
+                                summary="No CI checks found (all excluded via ci.exclude_checks), proceeding",
+                            ),
+                            [],
+                        )
+                elif grace_elapsed:
+                    confirm_sha = expected_sha
+                    if not confirm_sha:
+                        # No local HEAD to bind to (e.g. an unresolvable
+                        # working tree): fall back to the PR's current head so
+                        # the cross-check still has a SHA to corroborate
+                        # against, rather than exempting this path from it.
+                        confirm_sha = await get_pr_head_sha(
+                            ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user
+                        )
+                    if not confirm_sha:
+                        log.info("step.monitor_ci.no_checks_head_unresolvable", elapsed=elapsed)
+                        self._write_heartbeat(
+                            ctx,
+                            f"CI poll: {elapsed}s/{max_wait}s elapsed, no checks registered yet "
+                            f"(PR head unresolvable, retrying)",
+                        )
+                        await asyncio.sleep(poll_interval)
+                        elapsed = int(time.monotonic() - start_time)
+                        continue
+                    # On the PR-level fallback path (expected_sha unresolved), `checks`
+                    # above is already this exact PR-level lookup, empty; reuse it
+                    # instead of making _pr_confirms_no_checks() re-fetch it.
+                    confirmed_none, reason = await self._pr_confirms_no_checks(
+                        ctx, confirm_sha, pr_checks=checks if not expected_sha else None
+                    )
+                    if not confirmed_none:
                         log.info(
                             "step.monitor_ci.sha_checks_not_registered",
                             elapsed=elapsed,
-                            sha=sha_short,
+                            sha=confirm_sha[:8],
+                            reason=reason,
                         )
+                        reason_text = _NO_CHECKS_REASON_TEXT.get(reason, "absence of CI not yet confirmed")
                         self._write_heartbeat(
                             ctx,
                             f"CI poll: {elapsed}s/{max_wait}s elapsed, no checks registered yet for "
-                            f"{sha_short} (PR reports checks exist)",
+                            f"{confirm_sha[:8]} ({reason_text})",
                         )
                         await asyncio.sleep(poll_interval)
                         elapsed = int(time.monotonic() - start_time)
@@ -420,30 +496,75 @@ class MonitorCIStep(BaseStep):
         return None if head_sha == expected_sha else head_sha
 
     @staticmethod
-    async def _pr_confirms_no_checks(ctx: ExecutionContext) -> bool:
-        """Whether the PR-level lookup also reports no (non-excluded) checks.
+    async def _pr_confirms_no_checks(
+        ctx: ExecutionContext, expected_sha: str, *, pr_checks: list[CICheck] | None = None
+    ) -> tuple[bool, str]:
+        """Whether the PR genuinely has no CI, not just no checks registered yet.
 
-        Used to disambiguate an empty SHA-scoped result: GitHub may simply
-        not have registered checks for this specific commit yet, which the
-        PR-level lookup (backed by ``gh pr checks``) can still see since it
-        is not SHA-bound. The PR-level result is filtered through the same
-        ``ci.exclude_checks`` patterns as the SHA-scoped list, otherwise a
-        project whose only checks are excluded would see this cross-check
-        report "the PR has checks" forever and poll until ``max_wait``.
-        Fails closed (returns False, i.e. "not confirmed empty") on a
-        PR-level fetch failure, since reading an unverified fetch failure as
-        "confirmed no CI" is the same silent pass this cross-check exists to
-        prevent, just moved behind one failed API call; the caller keeps
-        polling, with ``max_wait`` as the fail-closed terminal outcome.
+        Used to disambiguate an empty SHA-scoped result, which is itself
+        ambiguous between "this PR has no CI" and "GitHub has not
+        registered this commit's checks yet". Two independent answers have
+        to agree before the caller may read it as the former.
+
+        The first is the PR-level lookup (``gh pr checks``), which may
+        report checks the SHA-scoped endpoints have not caught up with. Its
+        result is filtered through the same ``ci.exclude_checks`` patterns
+        as the SHA-scoped list, otherwise a project whose only checks are
+        excluded would see this cross-check report "the PR has checks"
+        forever and poll until ``max_wait``.
+
+        The second is a workflow-run lookup for *expected_sha*. The
+        PR-level lookup reads the PR's head commit, the same commit the
+        SHA-scoped lookup reads, so on its own it corroborates nothing
+        during a registration race: both are empty for a commit whose
+        checks are seconds away from appearing. A workflow run record is
+        created when the workflow is triggered, ahead of the check runs it
+        reports, so "no check and no run" is the one combination that
+        confirms CI never started for this commit (the same corroboration
+        the ``/pr`` command's CI wait requires before it reports NO CI
+        TRIGGERED). A run that exists without any check is an anomaly, not
+        a pass, so the caller keeps polling.
+
+        Fails closed (returns ``(False, reason)``) whenever either lookup
+        fails, since reading an unverified fetch failure as "confirmed no
+        CI" is the same silent pass this cross-check exists to prevent, just
+        moved behind one failed API call; the caller keeps polling, with
+        ``max_wait`` as the fail-closed terminal outcome. *reason* is one of
+        ``"pr_reports_checks"``, ``"pr_lookup_failed"``,
+        ``"run_without_checks"``, or ``"run_lookup_unreadable"`` when the
+        verdict is ``False``, so a caller logging or reporting the
+        non-confirmation can say which of the four it was instead of
+        assuming the PR has checks. Empty when the verdict is ``True``.
+
+        *pr_checks*, when given, is used in place of a fresh PR-level
+        lookup: passed only by ``_poll_ci()``'s PR-level fallback path,
+        where the caller already made that identical ``get_ci_checks()``
+        call to produce the empty list it is now trying to corroborate, so
+        issuing it again would be a redundant round trip carrying no new
+        information. The workflow-run lookup below remains the only
+        independent half of the cross-check on that path. Always omitted
+        on the SHA-scoped path, where the PR-level lookup genuinely is
+        independent of the SHA-scoped one.
         """
-        pr_checks = await get_ci_checks(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        if pr_checks is None:
+            pr_checks = await get_ci_checks(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
         if pr_checks is None:
             log.warning("step.monitor_ci.pr_confirm_fetch_failed", pr=ctx.pr_number)
-            return False
+            return False, "pr_lookup_failed"
         exclude = ctx.config.ci.exclude_checks
         if exclude and pr_checks:
             pr_checks = [c for c in pr_checks if not any(pat in c.name for pat in exclude)]
-        return not pr_checks
+        if pr_checks:
+            return False, "pr_reports_checks"
+
+        has_runs = await sha_has_workflow_runs(expected_sha, repo=ctx.repo, github_user=ctx.config.github_user)
+        if has_runs is None:
+            log.warning("step.monitor_ci.workflow_runs_unreadable", pr=ctx.pr_number, sha=expected_sha[:8])
+            return False, "run_lookup_unreadable"
+        if has_runs:
+            log.info("step.monitor_ci.workflow_run_without_checks", pr=ctx.pr_number, sha=expected_sha[:8])
+            return False, "run_without_checks"
+        return True, ""
 
     @staticmethod
     async def _get_local_head_sha(ctx: ExecutionContext) -> str:

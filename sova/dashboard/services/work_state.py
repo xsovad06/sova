@@ -228,7 +228,7 @@ class PRFacts:
     mergeable: str  # "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
     # GitHub mergeStateStatus: CLEAN|BEHIND|BLOCKED|DIRTY|UNSTABLE|HAS_HOOKS|DRAFT|UNKNOWN, "" when not fetched
     merge_state: str
-    ci_status: str  # "" | "pending" | "running" | "passed" | "failed"
+    ci_status: str  # "" | "pending" | "running" | "passed" | "failed" | "none"
     head_sha: str
     sova_verdict: str | None  # "approve" | "revise" | "block" | "post_failed" | None
     sova_verdict_sha: str | None  # commit SHA the verdict was anchored to (#987)

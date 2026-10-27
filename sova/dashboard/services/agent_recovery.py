@@ -741,6 +741,22 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     try:
         checks = await get_ci_checks(pr_info.number, repo=repo, github_user=gh_user)
         ci_summary = _summarize_ci_checks(checks)
+        if ci_summary == "none":
+            # An empty check list is ambiguous between "no CI configured"
+            # and "checks have not registered yet" (see get_ci_checks()'s
+            # docstring). Corroborate with a workflow-run lookup before
+            # letting the merge gate in work_state.py treat "none" as
+            # satisfied: a run with no checks yet means "pending", and an
+            # unreadable lookup means "unknown", not a confirmed absence.
+            from sova.git.operations import get_pr_head_sha, sha_has_workflow_runs
+
+            head_sha = await get_pr_head_sha(pr_info.number, repo=repo, github_user=gh_user)
+            if head_sha:
+                has_runs = await sha_has_workflow_runs(head_sha, repo=repo, github_user=gh_user)
+                if has_runs is None:
+                    ci_summary = "unknown"
+                elif has_runs:
+                    ci_summary = "pending"
     except (RuntimeError, OSError):
         log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
 
