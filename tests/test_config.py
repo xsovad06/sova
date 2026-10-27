@@ -15,6 +15,7 @@ from sova.config.models import (
     AgentConfig,
     AtlassianMCPConfig,
     CIConfig,
+    CommitConfig,
     ConfidenceConfig,
     PipelineConfig,
     PipelineDefinitions,
@@ -1865,3 +1866,43 @@ class TestRoleRuntimeModel:
         from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 
         assert RUNTIME_MODEL_PIN_ROLES == frozenset({"developer"})
+
+
+class TestCommitConfigTypeScopeValidation:
+    """commit.types/commit.scopes entry validation (issue #1311).
+
+    A configured type must match commit_convention._LINE_RE's own type
+    group exactly, or an accepted config value could never validate a real
+    commit line. Scopes are deliberately looser: _LINE_RE's scope group
+    ("[^)]+") already accepts hyphens/underscores, so the config validator
+    must too, or a project with a real hyphenated/underscored convention
+    (api-gateway, health_score) could never configure it.
+    """
+
+    def test_digit_bearing_type_is_accepted_and_round_trips(self) -> None:
+        from sova.core.steps.commit_convention import is_valid_commit_line
+
+        config = CommitConfig(types=["a11y", "feat"], scopes=["web"])
+        assert "a11y" in config.types
+        assert is_valid_commit_line("a11y(web): fix contrast ratios", types=config.types, scopes=config.scopes)
+
+    def test_hyphenated_scope_is_accepted_and_round_trips(self) -> None:
+        from sova.core.steps.commit_convention import is_valid_commit_line
+
+        config = CommitConfig(types=["feat"], scopes=["api-gateway", "web"])
+        assert "api-gateway" in config.scopes
+        assert is_valid_commit_line("feat(api-gateway): add retries", types=config.types, scopes=config.scopes)
+
+    def test_underscored_scope_is_accepted_and_round_trips(self) -> None:
+        from sova.core.steps.commit_convention import is_valid_commit_line
+
+        config = CommitConfig(types=["feat"], scopes=["health_score"])
+        assert is_valid_commit_line("feat(health_score): add trend gate", types=config.types, scopes=config.scopes)
+
+    def test_hyphenated_type_is_still_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="commit.types"):
+            CommitConfig(types=["feat", "my-type"], scopes=["web"])
+
+    def test_capitalized_scope_is_still_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="commit.scopes"):
+            CommitConfig(types=["feat"], scopes=["Web"])
