@@ -88,6 +88,34 @@ class TestRefreshPrBodyStepSuccess:
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_prompt_never_requests_a_title_block(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        """This step only refreshes the body, never the title: the title
+        block build_prompt() offers must not even be requested here, rather
+        than being requested and then stripped off every response."""
+        from sova.core.steps._pr_body import TITLE_MARKER
+
+        mock_run.side_effect = _git_results(
+            "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
+        )
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- new summary\n\n## Review guidance\n- look here\n\n## Test plan\n- ran tests",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+        mock_get_body.return_value = "## Summary\nold\n\n## Review guidance\nold\n\n## Test plan\nold\n\nCloses #42\n"
+
+        ctx = _make_ctx(tmp_path)
+        await RefreshPrBodyStep().execute(ctx)
+
+        prompt = mock_invoke.call_args[0][0]
+        assert TITLE_MARKER not in prompt
+
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
     async def test_refetches_issue_body_for_up_to_date_criteria(
         self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
     ) -> None:

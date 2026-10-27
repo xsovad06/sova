@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskState
-from sova.config.models import TaskSourceConfig
+from sova.config.models import DEFAULT_COMMIT_SCOPES, DEFAULT_COMMIT_TYPES, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     _ISSUE_BODY_EXCERPT_LIMIT,
@@ -19,12 +19,23 @@ from sova.core.steps._pr_body import (
     compose_body,
     extract_acceptance_criteria,
     process_llm_result,
+    split_title_tail,
     truncate_diff,
 )
 from sova.core.steps._pr_body import (
     title_from_branch as _title_from_branch,
 )
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.commit_convention import (
+    MAX_LINE_LENGTH,
+    format_type_scope,
+    infer_scope_from_paths,
+    infer_type_from_paths,
+    is_valid_commit_line,
+    lowercase_first_letter,
+    match_type_prefix,
+    truncate_commit_line,
+)
 from sova.git import operations as git_ops
 from sova.llm.client import invoke
 from sova.utils.formatting import truncate
@@ -32,6 +43,8 @@ from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from sova.adapters.base import TaskAdapter
@@ -41,72 +54,20 @@ log = get_logger(component="step.create_pr")
 
 _MAX_SUGGESTED_REVIEWERS = 2
 
-_CONVENTIONAL_RE = re.compile(
-    r"^(feat|fix|refactor|test|docs|chore|ci)"
-    r"(?:\([^)]*\))?"
-    r":\s*",
-)
-
-# Valid conventional-commit scopes, kept in sync with invariants/commit-format.sh
-# (VALID_SCOPES) and AGENTS.md. A top-level sova/<dir> maps to its scope name.
-_VALID_SCOPES = frozenset(
-    {
-        "dashboard",
-        "commands",
-        "personas",
-        "invariants",
-        "knowledge",
-        "cli",
-        "docs",
-        "scheduler",
-        "ipc",
-        "adapters",
-        "roles",
-        "core",
-        "config",
-        "supervisor",
-        "mcp",
-        "monitoring",
-        "db",
-        "awareness",
-        "oversight",
-        "deps",
-    }
-)
 _DEFAULT_SCOPE = "core"
 
 
-def _infer_scope(changed_files: list[str] | None) -> str:
+def _infer_scope(changed_files: list[str] | None, scopes: Collection[str] | None = None) -> str:
     """Infer a conventional-commit scope from the PR's changed paths.
 
-    Maps each top-level ``sova/<dir>/`` path to ``<dir>`` when it names a valid
-    scope and returns the most frequently touched one. Falls back to
-    ``_DEFAULT_SCOPE`` ("core") for mixed, non-``sova``, or empty changes, so the
-    title always carries a scope that ``invariants/commit-format.sh`` accepts.
-    A single path outside ``sova/<valid-scope>/`` makes the whole change
-    "mixed" and falls back too, even when other paths are validly scoped:
-    a PR touching both ``sova/dashboard/app.py`` and ``README.md`` is not a
-    pure dashboard change. Ties resolve to the first scope seen, which keeps
-    the result deterministic.
+    Thin wrapper around :func:`~sova.core.steps.commit_convention.infer_scope_from_paths`
+    (shared with ``CommitStep``) defaulting *scopes* to ``DEFAULT_COMMIT_SCOPES``
+    (SOVA's own convention) when omitted, kept here so existing call sites and
+    tests can keep importing ``_infer_scope`` from this module.
     """
-    if not changed_files:
-        return _DEFAULT_SCOPE
-
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    for path in changed_files:
-        parts = path.strip().split("/")
-        if len(parts) < 3 or parts[0] != "sova" or parts[1] not in _VALID_SCOPES:
-            return _DEFAULT_SCOPE
-        scope = parts[1]
-        if scope not in counts:
-            order.append(scope)
-        counts[scope] = counts.get(scope, 0) + 1
-
-    if not counts:
-        return _DEFAULT_SCOPE
-    # Most-touched scope wins; ties break to the first one seen (order index).
-    return max(order, key=lambda s: (counts[s], -order.index(s)))
+    if scopes is None:
+        scopes = DEFAULT_COMMIT_SCOPES
+    return infer_scope_from_paths(changed_files, scopes, preferred=_DEFAULT_SCOPE)
 
 
 def _build_pr_title(
@@ -114,33 +75,47 @@ def _build_pr_title(
     issue_number: str | None,
     task_source: TaskSourceConfig | None = None,
     changed_files: list[str] | None = None,
+    scopes: Collection[str] | None = None,
+    types: Collection[str] | None = None,
 ) -> str:
     """Build a PR title from the task title, avoiding double conventional prefixes.
 
     For JIRA projects, prepends ``[PROJECT_KEY-NUMBER]`` so JIRA's GitHub
     integration auto-links the PR to the ticket.
 
-    For GitHub projects, the scope is inferred from *changed_files* (see
-    :func:`_infer_scope`) so the title is a valid ``type(scope): ...`` that
-    ``invariants/commit-format.sh`` accepts. The issue number is deliberately
-    not in the title: it is linked via ``Closes #N`` in the body, and a
-    ``feat(#N): ...`` title parses to an invalid scope that trips the
-    ``/integrate-pr`` silent-revert gate.
+    For GitHub projects, the scope is inferred from *changed_files* against
+    *scopes* (see :func:`_infer_scope`; defaults to SOVA's own convention
+    when *scopes* is omitted) so the title is a valid ``type(scope): ...``
+    that ``invariants/commit-format.sh`` accepts. The issue number is
+    deliberately not in the title: it is linked via ``Closes #N`` in the
+    body, and a ``feat(#N): ...`` title parses to an invalid scope that
+    trips the ``/integrate-pr`` silent-revert gate. When *task_title* carries
+    no existing type prefix, the type is likewise inferred from
+    *changed_files* (a docs-only or tests-only change gets "docs"/"test"
+    when the project configures them) before falling back to the project's
+    default type.
+
+    The result is lowercased after the colon and trimmed to 72 characters,
+    the same rules :func:`is_valid_commit_line` applies to the LLM-proposed
+    title this builder is the fallback for, so a verbatim issue title well
+    over the limit cannot reach the PR just because the LLM call failed.
     """
-    match = _CONVENTIONAL_RE.match(task_title)
+    resolved_types = types or DEFAULT_COMMIT_TYPES
+    match = match_type_prefix(task_title, resolved_types)
     if match:
-        commit_type = match.group(1)
+        commit_type = match.group("type")
         description = task_title[match.end() :]
     else:
-        commit_type = "feat"
+        commit_type = infer_type_from_paths(changed_files, resolved_types)
         description = task_title
+    description = lowercase_first_letter(description)
 
     if task_source and task_source.is_jira and issue_number:
         jira_key = f"[{task_source.jira_issue_key(issue_number)}]"
-        return f"{jira_key} {commit_type}: {description}"
+        return truncate_commit_line(f"{jira_key} {commit_type}: {description}")
 
-    scope = _infer_scope(changed_files)
-    return f"{commit_type}({scope}): {description}"
+    scope = _infer_scope(changed_files, scopes)
+    return truncate_commit_line(f"{format_type_scope(commit_type, scope)}: {description}")
 
 
 async def suggest_ldap_reviewers(
@@ -222,13 +197,25 @@ class CreatePRStep(BaseStep):
 
         task_title = await self._resolve_task_title(ctx)
         changed_files = await self._resolve_changed_files(ctx)
-        title = _build_pr_title(
-            task_title,
-            ctx.issue_number if ctx.has_issue else None,
-            task_source=ctx.config.task_source,
-            changed_files=changed_files,
-        )
-        body = await self._generate_pr_body(ctx, task_title)
+        ts = ctx.config.task_source
+        is_freeform = ctx.config.commit.pr_title_format == "freeform" and not (ts and ts.is_jira)
+        if is_freeform:
+            # A JIRA title always uses the bracketed "[KEY-N]" format
+            # regardless of pr_title_format (is_freeform is False for one),
+            # so this is reached only for a GitHub project that opted out of
+            # the conventional-commit title: no type(scope) prefix, no LLM
+            # candidate requested or validated against commit.types/.scopes.
+            fallback_title = truncate(task_title.strip() or "update", max_length=MAX_LINE_LENGTH)
+        else:
+            fallback_title = _build_pr_title(
+                task_title,
+                ctx.issue_number if ctx.has_issue else None,
+                task_source=ts,
+                changed_files=changed_files,
+                scopes=ctx.config.commit.scopes,
+                types=ctx.config.commit.types,
+            )
+        body, title = await self._generate_pr_body(ctx, task_title, fallback_title, request_title=not is_freeform)
 
         if ctx.config.coderabbit_quota.enabled:
             return await self._create_pr_throttled(ctx, title, body)
@@ -426,7 +413,9 @@ class CreatePRStep(BaseStep):
         except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("step.create_pr.trigger_coderabbit_failed", pr=pr_number, exc_info=True)
 
-    async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
+    async def _generate_pr_body(
+        self, ctx: ExecutionContext, task_title: str, fallback_title: str, *, request_title: bool = True
+    ) -> tuple[str, str]:
         # Two deliberately different ranges: the three-dot form is the merge-base
         # diff (what this branch changed), but for "git log" it is the symmetric
         # difference, which would also list the base branch's own new commits.
@@ -456,6 +445,7 @@ class CreatePRStep(BaseStep):
             commit_log=commit_log,
             diff_stat=diff_stat,
             diff_content=diff_content,
+            request_title=request_title,
         )
 
         model = ctx.resolved_model or ctx.config.agent.model
@@ -463,10 +453,18 @@ class CreatePRStep(BaseStep):
             result = await invoke(prompt, model=model, task_type="pr_body", cwd=ctx.working_dir, timeout=120)
         except Exception:  # noqa: BLE001 (guard_prompt raises PromptInjectionError; fall back to the structured body)
             log.warning("step.create_pr.body_generation_failed", fallback="structured", exc_info=True)
-            return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
+            return self._build_fallback_body(ctx, task_title, commit_log, diff_stat), fallback_title
 
         ctx.add_usage(result)
-        sections_markdown, verdicts = process_llm_result(result.text, criteria, ctx.config.commit.owner_only_patterns)
+        body_text, title_candidate = split_title_tail(result.text)
+        title = fallback_title
+        if (
+            request_title
+            and title_candidate
+            and is_valid_commit_line(title_candidate, types=ctx.config.commit.types, scopes=ctx.config.commit.scopes)
+        ):
+            title = title_candidate
+        sections_markdown, verdicts = process_llm_result(body_text, criteria, ctx.config.commit.owner_only_patterns)
         diff_ok = log_result.success and diff_stat_result.success and diff_content_result.success
         if verdicts and not diff_ok:
             # The model still answered "met" for every criterion checkable
@@ -478,11 +476,12 @@ class CreatePRStep(BaseStep):
             verdicts = [(text, "unknown" if verdict == "met" else verdict) for text, verdict in verdicts]
 
         if not ctx.has_issue:
-            return sections_markdown
+            return sections_markdown, title
 
         ts = ctx.config.task_source
         jira_link = _jira_ticket_link(ts, ctx.issue_number) if ts.is_jira else ""
-        return compose_body(sections_markdown, ctx.issue_number, verdicts, is_jira=ts.is_jira, jira_link=jira_link)
+        body = compose_body(sections_markdown, ctx.issue_number, verdicts, is_jira=ts.is_jira, jira_link=jira_link)
+        return body, title
 
     @staticmethod
     def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:

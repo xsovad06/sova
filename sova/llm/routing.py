@@ -44,6 +44,7 @@ TASK_TYPE_KEYS: frozenset[str] = frozenset(
         "triage",
         "extraction",
         "pr_body",
+        "commit_message",
         "develop",
         "develop_fix",
         "simplify",

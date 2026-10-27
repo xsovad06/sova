@@ -174,10 +174,17 @@ async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | Non
     checkout; staging there could capture the operator's own uncommitted
     edits on whatever branch they have checked out.
     """
+    from sova.core.steps.commit_convention import resolve_default_scope, resolve_default_type
     from sova.git.worktree import preserve_partial_work
 
     if ctx.worktree_dir is not None:
-        await preserve_partial_work(ctx.worktree_dir, "sigterm")
+        commit = ctx.config.commit
+        await preserve_partial_work(
+            ctx.worktree_dir,
+            "sigterm",
+            commit_type=resolve_default_type(commit.types, preferred="chore"),
+            scope=resolve_default_scope(commit.scopes),
+        )
 
     if task_run_id is None:
         return

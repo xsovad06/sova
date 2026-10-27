@@ -22,6 +22,7 @@ from sova.core.steps.base import (
     fix_attempt_routed_reason,
     resolve_fix_attempt_route,
 )
+from sova.core.steps.commit_convention import format_type_scope, resolve_default_scope, resolve_default_type
 from sova.git.operations import (
     CheckConclusion,
     CICheck,
@@ -780,11 +781,13 @@ class MonitorCIStep(BaseStep):
             log.warning("step.monitor_ci.stage_failed")
             return None
 
+        commit_type = resolve_default_type(ctx.config.commit.types, preferred="fix")
+        scope = resolve_default_scope(ctx.config.commit.scopes)
         commit = await run(
             "git",
             "commit",
             "-m",
-            "fix(core): address CI failures",
+            f"{format_type_scope(commit_type, scope)}: address CI failures",
             cwd=ctx.working_dir,
         )
         if commit.success:
@@ -938,6 +941,9 @@ class MonitorCIStep(BaseStep):
     ) -> str:
         check_names = ", ".join(c.name for c in failed_checks)
         task_title = ctx.task.title if ctx.task else f"Issue #{ctx.issue_number}"
+        commit_type = resolve_default_type(ctx.config.commit.types, preferred="fix")
+        scope = resolve_default_scope(ctx.config.commit.scopes)
+        example_subject = f"{format_type_scope(commit_type, scope)}: address CI failure in {check_names}"
 
         return (
             f"The following CI checks failed on PR #{ctx.pr_number} "
@@ -961,6 +967,6 @@ class MonitorCIStep(BaseStep):
             f"- Do not add AI co-author lines in commits\n"
             f"- Do not use emojis in code or comments\n\n"
             f"After fixing, stage and commit the changes with a message like "
-            f"'fix(core): address CI failure in {check_names}'. "
+            f"'{example_subject}'. "
             f"Do not modify CI configuration files unless that is genuinely the fix."
         )

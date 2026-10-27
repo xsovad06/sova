@@ -887,6 +887,22 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("commit.pr_title_format", "PR title format", "PR title style: conventional or freeform", "commit"),
     SettingMeta(
+        "commit.types",
+        "Commit types",
+        "Conventional-commit types accepted from an LLM-proposed commit subject or PR title "
+        "(defaults to SOVA's own convention: feat, fix, refactor, test, docs, chore, ci)",
+        "commit",
+        "list",
+    ),
+    SettingMeta(
+        "commit.scopes",
+        "Commit scopes",
+        "Conventional-commit scopes accepted from an LLM-proposed commit subject or PR title "
+        "(defaults to SOVA's own convention)",
+        "commit",
+        "list",
+    ),
+    SettingMeta(
         "commit.branch_naming",
         "Branch naming",
         "Branch name style: conventional (feat/fix/refactor) or freeform",

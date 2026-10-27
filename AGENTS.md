@@ -28,6 +28,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
 | `docs/jira-configuration-guide.md` | Jira Cloud setup, JQL filters, status mapping, troubleshooting |
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
+| `docs/commit-convention-setup.md` | Per-project commit types/scopes (`commit.types`, `commit.scopes`) used for generated commit subjects and PR titles |
 | `docs/codex-runtime-setup.md` | Codex agent runtime setup (`agent.runtime = "codex"`): auth, sandbox, rollback |
 
 ## Project Structure

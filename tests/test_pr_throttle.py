@@ -712,7 +712,7 @@ class TestCreatePRStepThrottle:
         mock_pr = PRInfo(number=10, url="https://github.com/o/r/pull/10")
         with (
             patch.object(step, "_try_adopt_existing_pr", new_callable=AsyncMock, return_value=None),
-            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value="body"),
+            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value=("body", "feat(core): test")),
             patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=mock_pr),
             patch.object(step, "_post_create_side_effects", new_callable=AsyncMock),
         ):
@@ -746,7 +746,7 @@ class TestCreatePRStepThrottle:
 
         with (
             patch.object(step, "_try_adopt_existing_pr", new_callable=AsyncMock, return_value=None),
-            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value="body"),
+            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value=("body", "feat(core): test")),
             patch.object(
                 step,
                 "_create_pr_throttled",
@@ -785,7 +785,7 @@ class TestCreatePRStepThrottle:
         mock_pr = PRInfo(number=10, url="url")
         with (
             patch.object(step, "_try_adopt_existing_pr", new_callable=AsyncMock, return_value=None),
-            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value="body"),
+            patch.object(step, "_generate_pr_body", new_callable=AsyncMock, return_value=("body", "feat(core): test")),
             patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=mock_pr),
             patch.object(step, "_post_create_side_effects", new_callable=AsyncMock),
         ):

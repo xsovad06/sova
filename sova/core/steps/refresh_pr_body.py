@@ -14,6 +14,7 @@ from sova.core.steps._pr_body import (
     compose_body,
     process_llm_result,
     split_sections,
+    split_title_tail,
     title_from_branch,
     truncate_diff,
 )
@@ -49,6 +50,7 @@ class RefreshPrBodyStep(BaseStep):
             commit_log=commit_log,
             diff_stat=diff_stat,
             diff_content=diff_content,
+            request_title=False,
         )
 
         model = ctx.resolved_model or ctx.config.agent.model
@@ -59,7 +61,12 @@ class RefreshPrBodyStep(BaseStep):
             return StepResult(success=True, summary=f"PR body refresh skipped (non-fatal): {exc}")
 
         ctx.add_usage(result)
-        sections = self._build_sections(ctx, result.text, criteria, resolved=resolved)
+        # This step only refreshes the PR body, never the title (a separate
+        # concern, untouched here): the title candidate build_prompt() also
+        # requested is discarded, after stripping its marker+line so it
+        # cannot leak into the regenerated body sections below.
+        llm_text, _title_candidate = split_title_tail(result.text)
+        sections = self._build_sections(ctx, llm_text, criteria, resolved=resolved)
         if not sections:
             log.warning("step.refresh_pr_body.no_sections", pr=ctx.pr_number)
             return StepResult(success=True, summary="PR body refresh skipped: LLM output had no sections")
