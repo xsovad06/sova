@@ -189,6 +189,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Adapter-type guards must not assume GitHub
 - CI failure auto-recovery in MonitorCIStep
 - A CI check lookup must bind to the SHA it polled for, not the PR
+- A CLI's non-zero exit is a result, not automatically a fetch failure
 - Guard against no-op pushes in LLM fix loops
 - Fix-loop LLM timeouts get a distinct marker, and the inner check loop stops before the outer step timeout kills it uncleanly, without stealing the runaway guard's pause/resume path
 - Failure capture must prefer stdout's structured error over stderr, and a bare exit code is never enough to triage

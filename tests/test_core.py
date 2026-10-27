@@ -5072,14 +5072,17 @@ class TestMonitorCIStep:
             patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
             patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
         ):
             mock_checks.return_value = []
             mock_pr_checks.return_value = []
+            mock_runs.return_value = False
             result = await step.execute(ctx)
 
         assert result.success
         assert "no ci checks" in result.summary.lower()
         mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        mock_runs.assert_awaited_once_with("abc123def456", repo=ctx.repo, github_user=ctx.config.github_user)
 
     async def test_sha_checks_not_registered_keeps_polling_when_pr_has_checks(self, tmp_path: Path) -> None:
         """An empty SHA-scoped result past the grace period must not pass the
@@ -5117,17 +5120,137 @@ class TestMonitorCIStep:
         assert not result.success
         assert "timed out" in result.summary.lower()
 
+    async def test_no_checks_reported_exit_passes_after_grace_period(self, tmp_path: Path) -> None:
+        """A PR whose workflows are all path-filtered away reports no checks
+        at all, which makes `gh pr checks` exit non-zero with "no checks
+        reported" on stderr. The PR-level cross-check must read that as a
+        confirmed empty list rather than a fetch failure, so the step
+        finishes right after the grace period instead of polling until
+        max_wait. Patches the shell call, not get_ci_checks, so the real
+        stderr mapping is exercised end to end (#1314)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.utils.shell import ShellResult
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        # Small enough that a regression (polling to max_wait) fails on the
+        # assertions below rather than on pytest's per-test timeout.
+        config.ci.max_wait = 5
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        no_checks = ShellResult(returncode=1, stdout="", stderr="no checks reported on the 'feat/x' branch\n")
+        no_runs = ShellResult(returncode=0, stdout="[]", stderr="")
+
+        async def fake_run(*args: str, **kwargs: object) -> ShellResult:
+            # The step makes two distinct gh calls here: the PR-level check
+            # lookup, and the workflow-run corroboration the empty result now
+            # requires. Dispatch on argv so each gets its real-world answer.
+            if args[:3] == ("gh", "run", "list"):
+                return no_runs
+            return no_checks
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_sha_checks,
+            patch("sova.git.pr.run", new_callable=AsyncMock, side_effect=fake_run) as mock_run,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_sha_checks.return_value = []
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "no ci checks" in result.summary.lower()
+        # One PR-level lookup plus one workflow-run lookup, no second poll: the
+        # step never waited out max_wait.
+        assert mock_run.await_count == 2
+        mock_sleep.assert_not_awaited()
+
+    async def test_workflow_run_without_checks_keeps_polling(self, tmp_path: Path) -> None:
+        """An empty check list is only "no CI" when GitHub also has no
+        workflow run for the commit. Both check lookups read the same head
+        commit, so during a registration race both are empty and the PR-level
+        half corroborates nothing; the run record, created when the workflow
+        is triggered, is what distinguishes "never triggered" from "not
+        registered yet". A run that exists with no check is an anomaly, not a
+        pass, so the step keeps polling (#1314 CodeRabbit review)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
+        ):
+            mock_checks.return_value = []
+            mock_pr_checks.return_value = []
+            mock_runs.return_value = True
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
+
+    async def test_workflow_run_lookup_failure_does_not_false_pass(self, tmp_path: Path) -> None:
+        """An unreadable workflow-run lookup is no evidence either way, so it
+        must fail closed exactly like the PR-level fetch failure does: reading
+        it as "CI never triggered" would reintroduce the silent pass the
+        corroboration exists to prevent (#1314 CodeRabbit review)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
+        ):
+            mock_checks.return_value = []
+            mock_pr_checks.return_value = []
+            mock_runs.return_value = None
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
+
     async def test_exclude_checks_matching_everything_passes_after_grace_period(self, tmp_path: Path) -> None:
         """When every check on both the SHA-scoped and PR-level lookups
         matches ci.exclude_checks, the no-checks cross-check must apply the
         same exclude patterns to the PR-level result, or a project whose
         only checks are excluded polls until max_wait instead of passing
-        after the grace period (#1175 CodeRabbit review: finding 1)."""
+        after the grace period (#1175 CodeRabbit review: finding 1). The
+        all-excluded short-circuit must still wait out the grace period
+        itself before passing, since an early poll cannot tell "every check
+        is excluded" from "only the excluded check has registered so far"
+        (#1314 CodeRabbit review on PR #1317, finding 1): a non-zero grace
+        period and an advancing clock confirm the pass is not returned on
+        the first poll."""
+        import itertools
+
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
         config.ci.exclude_checks = ["Konflux"]
-        config.ci.no_checks_grace_period = 0
+        config.ci.no_checks_grace_period = 120
+        config.ci.poll_interval = 30
+        config.ci.max_wait = 600
         ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
@@ -5137,13 +5260,56 @@ class TestMonitorCIStep:
             patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
             patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=itertools.count(0, 30)),
         ):
             mock_checks.return_value = [excluded]
             mock_pr_checks.return_value = [excluded]
+            mock_runs.return_value = True
             result = await step.execute(ctx)
 
         assert result.success
         assert "no ci checks" in result.summary.lower()
+        mock_runs.assert_not_called()
+        assert mock_sleep.await_count >= 1
+
+    async def test_exclude_checks_pre_grace_poll_still_sees_later_failure(self, tmp_path: Path) -> None:
+        """A poll that sees only the excluded check must not short-circuit
+        to a pass before a later poll's real check has had a chance to
+        register: all_excluded is computed from a single poll, and the
+        first poll runs at elapsed=0, squarely inside the check-registration
+        window the grace period exists to cover. Regression for the
+        probe in #1314 CodeRabbit review on PR #1317, finding 1: poll 1
+        returns only the excluded check, poll 2 returns the excluded check
+        plus a failing one, and the step must still fail."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["CodeRabbit"]
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 300
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        excluded.name = "CodeRabbit"
+        failing = MagicMock(is_completed=True, is_passed=False, is_failed=True)
+        failing.name = "Python Tests"
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [[excluded], [excluded, failing]]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "python tests" in result.summary.lower()
+        mock_runs.assert_not_called()
 
     async def test_pr_confirm_fetch_failure_does_not_false_pass(self, tmp_path: Path) -> None:
         """A transient failure of the PR-level cross-check lookup must not be
@@ -5173,6 +5339,78 @@ class TestMonitorCIStep:
 
         assert not result.success
         assert "timed out" in result.summary.lower()
+
+    async def test_pr_level_checks_excluded_still_requires_run_corroboration(self, tmp_path: Path) -> None:
+        """When the SHA-scoped lookup is genuinely empty but the PR-level
+        lookup still reports a check that ci.exclude_checks filters away,
+        _pr_confirms_no_checks() must not treat the PR-level exclusion alone
+        as confirmation: that combination is the registration-race
+        signature (the SHA-scoped endpoint hasn't caught up with the
+        PR-level one), not the legitimate all-excluded case, which short-
+        circuits earlier in _poll_ci()'s own all_excluded branch (#1314
+        CodeRabbit review on PR #1317, Round 4 finding 1). A workflow run
+        existing for the commit must keep the step polling instead of
+        passing."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["CodeRabbit"]
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        excluded.name = "CodeRabbit"
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock, return_value=[]),
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock, return_value=[excluded]),
+            patch(
+                "sova.core.steps.monitor_ci.sha_has_workflow_runs",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 0, 10, 10, 20]),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
+        mock_runs.assert_awaited()
+
+    async def test_no_checks_pr_level_fallback_reuses_fetch_for_cross_check(self, tmp_path: Path) -> None:
+        """On the PR-level fallback path (local HEAD unresolved), _poll_ci()
+        already fetched the PR-level check list to find it empty;
+        _pr_confirms_no_checks() must reuse that result instead of issuing
+        an identical get_ci_checks() call again, which would be a pure
+        redundant round trip with no new information (#1314 CodeRabbit
+        review on PR #1317, finding 4). The run lookup remains the only
+        independent half of the cross-check on this path."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value=""),
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.get_pr_head_sha", new_callable=AsyncMock) as mock_head_sha,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+        ):
+            mock_pr_checks.return_value = []
+            mock_head_sha.return_value = "abc123def456"
+            mock_runs.return_value = False
+            result, _ = await step._poll_ci(ctx)
+
+        assert result.success
+        mock_pr_checks.assert_awaited_once_with(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        mock_runs.assert_awaited_once()
 
     async def test_no_checks_waits_during_grace_period(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -5741,6 +5979,20 @@ class TestMonitorCIStep:
 class TestCheckExistingCI:
     """Tests for MonitorCIStep._check_existing_ci fast path."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_pr_head_verification(self):
+        """Several tests here fall through to _poll_ci() (the empty-list and
+        all-excluded branches both defer to it), which can reach
+        _find_pr_head_mismatch() -> get_pr_head_sha(). Default the PR-head
+        verification to agree with the "abc123def456" local head these tests
+        resolve, so they don't shell out to the real `gh` CLI (#1314
+        CodeRabbit review on PR #1317, Round 4 finding 2)."""
+        with patch(
+            "sova.core.steps.monitor_ci.get_pr_head_sha",
+            AsyncMock(return_value="abc123def456"),
+        ):
+            yield
+
     async def test_no_new_commits_all_passed(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -5801,18 +6053,70 @@ class TestCheckExistingCI:
         assert result.success
 
     async def test_no_new_commits_no_checks(self, tmp_path: Path) -> None:
+        """An empty check list on the fast path is ambiguous between "no CI
+        configured" and "not registered yet" (#1316 CodeRabbit review:
+        finding 2), so the fast path defers to _poll_ci()'s grace period and
+        cross-check rather than passing immediately. The local HEAD SHA is
+        explicitly stubbed as unresolvable (rather than relying on tmp_path
+        not being inside a git repository, #1314 CodeRabbit review: finding
+        4) so _poll_ci() falls back to the PR-level lookup; that fallback
+        still corroborates against the PR's head SHA (finding 3) before
+        passing once the (zeroed) grace period elapses."""
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(tmp_path, pr_number=10)
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         ctx.no_new_commits = True
         step = MonitorCIStep()
 
-        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value=""),
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_pr_head_sha", new_callable=AsyncMock) as mock_head_sha,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+        ):
             mock_checks.return_value = []
+            mock_head_sha.return_value = "abc123def456"
+            mock_runs.return_value = False
             result = await step.execute(ctx)
 
         assert result.success
         assert "no ci checks" in result.summary.lower() or "No new commits" in result.summary
+
+    async def test_no_new_commits_no_checks_does_not_false_pass_when_pr_has_checks(self, tmp_path: Path) -> None:
+        """Regression for the race the fast path used to miss: no_new_commits
+        is set right after a push, so an empty check list on this path can
+        mean the checks simply haven't registered yet. With a resolvable
+        head SHA, the fast path must defer to _poll_ci()'s cross-check
+        rather than passing immediately; a PR-level lookup that still
+        reports a check in flight must keep the step polling (#1316
+        CodeRabbit review: finding 2)."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        in_flight = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        in_flight.name = "CI"
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_sha_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.core.steps.monitor_ci.time.monotonic", side_effect=[0, 10, 20]),
+        ):
+            mock_pr_checks.side_effect = [[], [in_flight]]
+            mock_sha_checks.return_value = []
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
 
     async def test_no_new_commits_fetch_failure_falls_through(self, tmp_path: Path) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
@@ -5856,6 +6160,46 @@ class TestCheckExistingCI:
 
         assert result.success
         assert "1" in result.summary
+
+    async def test_no_new_commits_all_excluded_falls_through_to_poll(self, tmp_path: Path) -> None:
+        """The fast path's all-excluded result is the same registration-
+        window ambiguity as its empty-list case above: no_new_commits can be
+        set only seconds after a real push (CommitStep._handle_no_changes()
+        runs, then push, then this step), so it must defer to _poll_ci()
+        instead of passing immediately (#1314 CodeRabbit review on PR
+        #1317, finding 2). Regression: the PR-level lookup here sees only
+        the excluded check, but a genuinely failing check shows up on the
+        next SHA-scoped poll, and the step must still fail."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["CodeRabbit"]
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 300
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(tmp_path, pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        excluded.name = "CodeRabbit"
+        failing = MagicMock(is_completed=True, is_passed=False, is_failed=True)
+        failing.name = "Python Tests"
+
+        with (
+            patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_pr_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_sha_checks,
+            patch("sova.core.steps.monitor_ci.sha_has_workflow_runs", new_callable=AsyncMock) as mock_runs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_pr_checks.return_value = [excluded]
+            mock_sha_checks.side_effect = [[excluded], [excluded, failing]]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "python tests" in result.summary.lower()
+        mock_runs.assert_not_called()
 
 
 class TestEnsureCommitted:
