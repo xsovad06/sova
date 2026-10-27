@@ -1340,6 +1340,7 @@ class TestValidateStepVerifyOutput:
                 ShellResult(returncode=0, stdout="abc123 some commit", stderr=""),  # git log
                 clean_result,  # git diff --stat HEAD (unstaged)
                 clean_result,  # git diff --cached --stat (staged)
+                clean_result,  # git status --porcelain --untracked-files=all
             ]
 
             with patch.object(step, "_check_regressions", new_callable=AsyncMock) as mock_regression:

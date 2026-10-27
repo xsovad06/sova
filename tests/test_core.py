@@ -2393,6 +2393,16 @@ class TestDevelopStep:
 
 
 class TestCommitStep:
+    @pytest.fixture(autouse=True)
+    def _stub_subject_proposal(self):
+        """CommitStep's LLM-assisted subject proposal must not run for real in
+        tests that don't exercise it; falling back to the deterministic
+        builder keeps every existing assertion about the deterministic
+        message valid. Individual tests can still override this with their
+        own nested `patch("sova.core.steps.commit.invoke")`."""
+        with patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")):
+            yield
+
     async def test_commits_uncommitted_changes(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
@@ -2405,8 +2415,10 @@ class TestCommitStep:
             patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat
-                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --stat
+                MagicMock(success=True, stdout="config/base.py\0"),  # diff --name-only -z HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z
                 MagicMock(success=True, stdout="apps/ai/__init__.py\n"),  # untracked
                 MagicMock(success=True, stdout=""),  # log (no commits yet)
             ]
@@ -2415,9 +2427,364 @@ class TestCommitStep:
         assert result.success
         mock_commit.assert_awaited_once()
         msg = mock_commit.call_args[0][0]
-        assert "LLM provider abstraction" in msg
+        # The deterministic subject's first letter is lowercased per the
+        # project's conventional-commit convention, except for an all-caps
+        # opening word: "LLM" is an acronym, not a capitalized sentence.
+        assert "feat(core): LLM provider abstraction" in msg
         assert "Refs #42" in msg
         assert mock_commit.call_args.kwargs["no_verify"] is False
+
+    async def test_detect_changes_dedups_a_path_appearing_in_both_staged_and_unstaged_diffs(
+        self, tmp_path: Path
+    ) -> None:
+        """A staged file also shows up in the plain `git diff --stat HEAD`
+        (which covers staged and unstaged together against HEAD), so without
+        deduplication it would be counted twice in scope inference's
+        most-touched-scope tally, biasing the result toward whatever
+        happened to be staged."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" apps/billing/a.py | 1 +\n"),
+                MagicMock(success=True, stdout=" apps/billing/a.py | 1 +\n"),
+                MagicMock(success=True, stdout="apps/billing/a.py\0"),
+                MagicMock(success=True, stdout="apps/billing/a.py\0"),
+                MagicMock(success=True, stdout=""),
+            ]
+            survey = await step._detect_changes(ctx)
+
+        assert survey.changed_paths() == ["apps/billing/a.py"]
+
+    async def test_long_issue_title_subject_is_trimmed_to_72_chars(self, tmp_path: Path) -> None:
+        """The deterministic fallback (LLM stubbed to fail by the fixture) has
+        to produce a valid lowercase subject within 72 characters by itself."""
+        from sova.core.steps.commit import CommitStep
+        from sova.core.steps.commit_convention import MAX_LINE_LENGTH, is_valid_commit_line
+
+        gwym_title = (
+            "Make the pricing claims match the app: drop tax optimization, "
+            "gate the health score trend, drop the plan parameter"
+        )
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(id="73", title=gwym_title)
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" docs/a.md | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="docs/a.md\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        subject = mock_commit.call_args[0][0].splitlines()[0]
+        assert len(subject) <= MAX_LINE_LENGTH
+        # A docs-only change gets type and scope "docs" from the changed
+        # path, not SOVA's default "feat(core)".
+        assert subject.startswith("docs(docs): make the pricing claims match the app")
+        assert is_valid_commit_line(subject, types=["docs"], scopes=["docs"])
+
+    async def test_subject_proposal_prompt_carries_the_changed_paths(self, tmp_path: Path) -> None:
+        """Type and scope follow from the changed paths, so the prompt must
+        carry them: a title-only prompt can only echo the issue's wording."""
+        from sova.core.steps.commit import CommitStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(id="73", title="Retire stale documentation")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock),
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" docs/project-health-status.md | 12 ++------\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="docs/project-health-status.md\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="docs/new-note.md\0"),
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="docs(core): retire the stale health status doc", model="haiku", cost_usd=Decimal("0.001")
+            )
+            await step.execute(ctx)
+
+        prompt = mock_invoke.call_args[0][0] if mock_invoke.call_args[0] else mock_invoke.call_args[1]["prompt"]
+        assert "docs/project-health-status.md" in prompt
+        assert "docs/new-note.md (new file)" in prompt
+
+    async def test_uses_a_valid_llm_proposed_subject_verbatim(self, tmp_path: Path) -> None:
+        from sova.core.steps.commit import CommitStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(id="73", title="LLM provider abstraction")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="config/base.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="apps/ai/__init__.py\n"),
+                MagicMock(success=True, stdout=""),
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="feat(core): add llm provider abstraction", model="haiku", cost_usd=Decimal("0.001")
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(core): add llm provider abstraction")
+        assert "Refs #42" in msg
+
+    async def test_falls_back_to_deterministic_subject_when_llm_proposal_invalid(self, tmp_path: Path) -> None:
+        from sova.core.steps.commit import CommitStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(id="73", title="validate commit messages")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" README.md | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="README.md\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            # Unconfigured type "perf" must be rejected: falls back to the
+            # deterministic builder instead of being accepted "because it
+            # looks like a real convention".
+            mock_invoke.return_value = LLMResult(
+                text="perf(core): validate commit messages", model="haiku", cost_usd=Decimal("0.001")
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(core): validate commit messages")
+
+    async def test_deterministic_fallback_uses_the_projects_configured_scope(self, tmp_path: Path) -> None:
+        """A project whose commit.scopes omits "core" entirely must not get
+        "core" from the deterministic fallback: that scope would fail the
+        project's own commit-format check, which is the exact drift this
+        configuration exists to stop. The scope itself comes from the
+        changed path: "app/billing.py" names the configured "billing" scope
+        via its filename, not the first entry in the configured list."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(commit=CommitConfig(scopes=["accounts", "billing"])),
+        )
+        ctx.task = Task(id="73", title="retry failed billing charges")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" app/billing.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="app/billing.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(billing): retry failed billing charges")
+
+    async def test_deterministic_fallback_infers_scope_from_a_directory_segment(self, tmp_path: Path) -> None:
+        """A project whose directory layout isn't SOVA's own must still get a
+        real scope from the changed path, not just a configured default."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(commit=CommitConfig(scopes=["accounts", "billing"])),
+        )
+        ctx.task = Task(id="73", title="gate the tax calculation")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" apps/accounts/models.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="apps/accounts/models.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(accounts): gate the tax calculation")
+
+    async def test_long_path_scope_inference_survives_diffstat_truncation(self, tmp_path: Path) -> None:
+        """`git diff --stat` abbreviates a long path's leading segments to
+        "...", exactly the segments scope inference matches against; the
+        exact `--name-only` path list must drive inference instead, or this
+        one long path falls back to the default scope and poisons the
+        result."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps.commit import CommitStep
+
+        long_path = "sova/db/migrations/versions/041_add_task_run_and_cost_record_more_indexes.py"
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(commit=CommitConfig(scopes=["core", "db"])),
+        )
+        ctx.task = Task(id="73", title="add more indexes")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" .../migrations/versions/041_...py | 5 +++++\n"),  # abbreviated
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=f"{long_path}\0"),  # exact path, never abbreviated
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(db): add more indexes")
+
+    async def test_deterministic_fallback_infers_docs_type_from_a_docs_only_change(self, tmp_path: Path) -> None:
+        """A branch that only touches docs/ gets type "docs", not the
+        project's default type, when the project configures "docs"."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(id="73", title="explain the retry policy")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" docs/retry-policy.md | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="docs/retry-policy.md\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("docs(docs): explain the retry policy")
+
+    async def test_commit_step_end_to_end_with_a_non_sova_type_and_scope_vocabulary(self, tmp_path: Path) -> None:
+        """A project whose commit.types/scopes carry its own vocabulary (not
+        SOVA's feat/fix/.../core/dashboard/...) must still commit
+        successfully via the deterministic fallback when the LLM proposal
+        fails, not raise and leave the step failed."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(commit=CommitConfig(types=["feature", "bugfix"], scopes=["accounts"])),
+        )
+        ctx.task = Task(id="73", title="retry failed billing charges")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" apps/accounts/models.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="apps/accounts/models.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feature(accounts): retry failed billing charges")
+
+    async def test_deterministic_fallback_strips_a_configured_non_sova_type_prefix(self, tmp_path: Path) -> None:
+        """An issue title already prefixed with a project's own configured
+        type must be stripped, not stapled with a second prefix."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            tmp_path,
+            worktree_dir=tmp_path / "worktree",
+            config=ProjectConfig(commit=CommitConfig(types=["feature", "bugfix"], scopes=["accounts"])),
+        )
+        ctx.task = Task(id="73", title="feature: add widget")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" apps/accounts/models.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="apps/accounts/models.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feature(accounts): add widget")
+        assert "feature(accounts): feature:" not in msg
 
     async def test_skips_hooks_when_budget_critically_low(self, tmp_path: Path) -> None:
         """Below the 8% threshold, commit passes no_verify=True to preserve work."""
@@ -2435,8 +2802,10 @@ class TestCommitStep:
             patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat
-                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --stat
+                MagicMock(success=True, stdout="config/base.py\0"),  # diff --name-only -z HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z
                 MagicMock(success=True, stdout=""),  # untracked
                 MagicMock(success=True, stdout=""),  # log (no commits yet)
             ]
@@ -2444,6 +2813,37 @@ class TestCommitStep:
 
         assert result.success
         assert mock_commit.call_args.kwargs["no_verify"] is True
+
+    async def test_subject_proposal_skipped_when_budget_critically_low(self, tmp_path: Path) -> None:
+        """The cheap LLM subject proposal is purely a quality improvement;
+        a run with its budget nearly exhausted should not pay for it when
+        the deterministic builder produces an acceptable subject for free."""
+        from sova.config.models import AgentConfig
+        from sova.core.steps.commit import CommitStep
+
+        config = ProjectConfig(agent=AgentConfig(max_budget=Decimal("10.00")))
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree", config=config)
+        ctx.cost_usd = Decimal("9.50")  # 5% remaining, below the 8% threshold
+        ctx.task = Task(id="73", title="LLM provider abstraction")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock),
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="config/base.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_invoke.assert_not_awaited()
 
     async def test_normalizes_double_prefixed_task_title(self, tmp_path: Path) -> None:
         """Generated commit messages should not contain duplicate conventional prefixes."""
@@ -2459,6 +2859,8 @@ class TestCommitStep:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" commit.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="commit.py\0"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
@@ -2486,6 +2888,8 @@ class TestCommitStep:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" commit.py | 3 +++\n"),
                 MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="commit.py\0"),
+                MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
@@ -2504,8 +2908,10 @@ class TestCommitStep:
 
         with patch("sova.core.steps.commit.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # diff --stat (clean)
-                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout=""),  # diff --stat HEAD (clean)
+                MagicMock(success=True, stdout=""),  # diff --cached --stat (clean)
+                MagicMock(success=True, stdout=""),  # diff --name-only -z HEAD (clean)
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z (clean)
                 MagicMock(success=True, stdout=""),  # untracked (clean)
                 MagicMock(success=True, stdout="abc123 feat: something\n"),  # log (has commits)
             ]
@@ -2522,14 +2928,42 @@ class TestCommitStep:
 
         with patch("sova.core.steps.commit.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # diff --stat
-                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --stat
+                MagicMock(success=True, stdout=""),  # diff --name-only -z HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z
                 MagicMock(success=True, stdout=""),  # untracked
                 MagicMock(success=True, stdout=""),  # log (no commits)
             ]
             result = await step.execute(ctx)
 
         assert not result.success
+
+    async def test_message_build_failure_is_reported_not_raised(self, tmp_path: Path) -> None:
+        """A bug in commit-message construction must surface as a failed
+        StepResult, not crash the step: AGENTS.md's "failure must not look
+        like success" cuts both ways, it also must not look like an
+        unhandled exception that aborts the whole pipeline."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch.object(CommitStep, "_build_commit_message", new_callable=AsyncMock, side_effect=ValueError("boom")),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" a.py | 1 +\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="a.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "boom" in result.error
 
     async def test_gate_requires_commits_ahead(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
@@ -2572,8 +3006,10 @@ class TestCommitStep:
             patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),  # diff --stat
-                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),  # diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --stat
+                MagicMock(success=True, stdout="fix.py\0"),  # diff --name-only -z HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z
                 MagicMock(success=True, stdout=""),  # untracked
                 MagicMock(success=True, stdout=""),  # log
             ]
@@ -2599,6 +3035,8 @@ class TestCommitStep:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="fix.py\0"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
@@ -2655,6 +3093,7 @@ class TestValidateStep:
 
         assert result.success
         assert "passed" in result.summary.lower()
+        assert step._fix_loop_ran is False
 
     async def test_invokes_llm_on_hook_failure(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
@@ -2671,9 +3110,12 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
                 MagicMock(success=False, stdout="FAIL: missing type hints\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
                 MagicMock(
                     success=True, stdout="All checks passed\n", stderr="", timed_out=False
                 ),  # hook passes after fix
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.return_value = LLMResult(
                 text="Fixed type hints",
@@ -2684,10 +3126,259 @@ class TestValidateStep:
 
         assert result.success
         assert "1 fix attempt" in result.summary
+        assert step._fix_loop_ran is True
         mock_invoke.assert_awaited_once()
         prompt = mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][1])
         assert "missing type hints" in prompt
-        assert "fix(core): address pre-push hook violations" in prompt
+        assert "leave the changes uncommitted" in prompt
+        assert "do not run git commit" in prompt
+
+    async def test_folds_fix_into_branch_before_retrying_hook(self, tmp_path: Path) -> None:
+        """The fix is folded into its commit (fixup + autosquash) before the
+        hook is retried, not committed on its own as a separate commit."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.fold_fix_into_branch", new_callable=AsyncMock) as mock_fold,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),  # hook passes
+            ]
+            mock_fold.return_value = True
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_fold.assert_awaited_once_with(ctx.working_dir, ctx.base_branch)
+
+    async def test_unwinds_an_ordinary_commit_the_fix_agent_made_despite_instructions(self, tmp_path: Path) -> None:
+        """The fix prompt asks the agent to leave a file-content fix
+        uncommitted; an agent that commits it normally anyway must still
+        have it folded into the branch commit, not left as a separate,
+        non-conventional commit `fold_fix_into_branch()` never looks at."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.utils.shell import run
+
+        await run("git", "init", "-q", "-b", "main", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        await run("git", "config", "commit.gpgsign", "false", cwd=tmp_path)
+        await run("git", "config", "core.hooksPath", "/dev/null", cwd=tmp_path)
+        (tmp_path / "a.py").write_text("a\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "-m", "feat(core): add a", cwd=tmp_path)
+
+        pre_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+
+        (tmp_path / "a.py").write_text("a\nfixed\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "-m", "fix: address pre-push hook violations", cwd=tmp_path)
+
+        await ValidateStep._unwind_ordinary_commits(tmp_path, pre_head, 1, "main")
+
+        head_after = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        assert head_after.stdout.strip() == pre_head.stdout.strip()
+        staged = await run("git", "diff", "--cached", "--name-only", cwd=tmp_path)
+        assert staged.stdout.strip() == "a.py"
+
+    async def test_leaves_a_deliberate_reword_marker_commit_alone(self, tmp_path: Path) -> None:
+        """A commit the agent made on purpose via `--fixup=reword:<sha>`
+        (an `amend!` marker) must not be unwound: `fold_fix_into_branch()`
+        is what handles it, via autosquash."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.utils.shell import run
+
+        await run("git", "init", "-q", "-b", "main", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        await run("git", "config", "commit.gpgsign", "false", cwd=tmp_path)
+        await run("git", "config", "core.hooksPath", "/dev/null", cwd=tmp_path)
+        (tmp_path / "a.py").write_text("a\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "-m", "Add a (bad subject)", cwd=tmp_path)
+        target = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
+
+        pre_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        await run("git", "commit", "--fixup", f"reword:{target}", "--allow-empty", cwd=tmp_path)
+        marker_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+
+        await ValidateStep._unwind_ordinary_commits(tmp_path, pre_head, 1, "main")
+
+        head_after = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        assert head_after.stdout.strip() == marker_head.stdout.strip()
+
+    async def test_leaves_an_amended_reword_alone(self, tmp_path: Path) -> None:
+        """`git commit --amend` is the natural way an agent rewords a commit's
+        message: pre_dispatch_head is no longer an ancestor of the new HEAD
+        afterward, and the reword must survive, not be reset away."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.utils.shell import run
+
+        await run("git", "init", "-q", "-b", "main", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        await run("git", "config", "commit.gpgsign", "false", cwd=tmp_path)
+        await run("git", "config", "core.hooksPath", "/dev/null", cwd=tmp_path)
+        (tmp_path / "a.py").write_text("a\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "-m", "Bad subject not conventional", cwd=tmp_path)
+
+        pre_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        await run("git", "commit", "--amend", "-m", "feat(core): add a", cwd=tmp_path)
+        amended_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        assert amended_head.stdout.strip() != pre_head.stdout.strip()
+
+        await ValidateStep._unwind_ordinary_commits(tmp_path, pre_head, 1, "main")
+
+        head_after = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        assert head_after.stdout.strip() == amended_head.stdout.strip(), "the reword must survive, not be reverted"
+        subject = await run("git", "log", "-1", "--format=%s", cwd=tmp_path)
+        assert subject.stdout.strip() == "feat(core): add a"
+        status = await run("git", "status", "--porcelain", cwd=tmp_path)
+        assert status.stdout.strip() == ""
+
+    async def test_leaves_an_amend_that_also_changes_content_alone(self, tmp_path: Path) -> None:
+        """An amend that both rewords the subject and changes file content
+        must survive intact, and the content ends up folded into a branch
+        commit rather than left staged or reverted."""
+        from sova.core.steps._commit_fold import fold_fix_into_branch
+        from sova.core.steps.validate import ValidateStep
+        from sova.utils.shell import run
+
+        await run("git", "init", "-q", "-b", "main", cwd=tmp_path)
+        await run("git", "config", "user.email", "test@example.com", cwd=tmp_path)
+        await run("git", "config", "user.name", "Test User", cwd=tmp_path)
+        await run("git", "config", "commit.gpgsign", "false", cwd=tmp_path)
+        await run("git", "config", "core.hooksPath", "/dev/null", cwd=tmp_path)
+        (tmp_path / "a.py").write_text("a\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "-m", "Bad subject not conventional", cwd=tmp_path)
+        head = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
+        await run("git", "update-ref", "refs/remotes/origin/main", head, cwd=tmp_path)
+        await run("git", "commit", "--allow-empty", "-m", "feat(core): add b", cwd=tmp_path)
+
+        pre_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        (tmp_path / "a.py").write_text("a\nfixed\n")
+        await run("git", "add", "a.py", cwd=tmp_path)
+        await run("git", "commit", "--amend", "-m", "feat(core): add b (fixed)", cwd=tmp_path)
+        amended_head = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+
+        await ValidateStep._unwind_ordinary_commits(tmp_path, pre_head, 1, "main")
+
+        head_after = await run("git", "rev-parse", "HEAD", cwd=tmp_path)
+        assert head_after.stdout.strip() == amended_head.stdout.strip()
+
+        folded = await fold_fix_into_branch(tmp_path, "main")
+        assert folded is False, "nothing left to fold: the amend already carries the content fix"
+        status = await run("git", "status", "--porcelain", cwd=tmp_path)
+        assert status.stdout.strip() == ""
+        content = (tmp_path / "a.py").read_text()
+        assert content == "a\nfixed\n"
+
+    async def test_nothing_to_fold_is_not_misreported_as_fix_left_uncommitted(self, tmp_path: Path) -> None:
+        """When nothing needed folding (fold returns False with no stray
+        marker commit) and the worktree is clean, the pass summary must not
+        claim a fix was "left uncommitted": there is none."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.fold_fix_into_branch", new_callable=AsyncMock, return_value=False),
+            patch("sova.core.steps.validate.has_unresolved_marker_commits", new_callable=AsyncMock, return_value=False),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain: clean tree
+            ]
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "fix left uncommitted" not in result.summary
+        assert "1 fix attempt" in result.summary
+
+    async def test_fold_failure_with_a_dirty_tree_fails_the_attempt(self, tmp_path: Path) -> None:
+        """When the fold genuinely fails and the fix is still sitting
+        uncommitted, the hook passing against that worktree content must not
+        be reported as success: the fix never reached the branch."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.fold_fix_into_branch", new_callable=AsyncMock, return_value=False),
+            patch("sova.core.steps.validate.has_unresolved_marker_commits", new_callable=AsyncMock, return_value=False),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
+                MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="?? new_file.py\n"),  # git status --porcelain: still dirty
+            ]
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert result.error == "fold_failed"
+        assert "could not be folded" in result.summary
+
+    async def test_fails_the_attempt_when_a_marker_commit_is_stranded(self, tmp_path: Path) -> None:
+        """A fold that leaves a fixup!/squash!/amend! marker commit on the
+        branch must fail the attempt rather than retry the hook on a branch
+        that is not pushable."""
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.dispatch_prompt", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.validate.fold_fix_into_branch", new_callable=AsyncMock, return_value=False),
+            patch("sova.core.steps.validate.has_unresolved_marker_commits", new_callable=AsyncMock, return_value=True),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
+            ]
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert result.error == "marker_commit_stranded"
+        mock_invoke.assert_awaited_once()
 
     async def test_fails_after_max_attempts(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import ValidateStep
@@ -2704,7 +3395,11 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 1
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 2
             ]
             mock_invoke.return_value = LLMResult(
@@ -2741,8 +3436,13 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # still fails after fix 1
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),  # fix 2 passes
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             # routed_task_type_model simulates what the real dispatch_prompt()
             # (mocked out here) would set on an attempt whose configured
@@ -2786,8 +3486,13 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.side_effect = [
                 LLMResult(
@@ -2824,7 +3529,10 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
                 MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.return_value = LLMResult(text="Fixed", model="claude-opus-5-20261001", cost_usd=Decimal("0.2"))
             result = await step.execute(ctx)
@@ -2855,8 +3563,13 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.return_value = LLMResult(text="Attempted fix", model="sonnet", cost_usd=Decimal("0.01"))
             result = await step.execute(ctx)
@@ -2884,8 +3597,13 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=True, stdout="All checks passed\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.return_value = LLMResult(text="Attempted fix", model="sonnet", cost_usd=Decimal("0.01"))
             result = await step.execute(ctx)
@@ -2915,6 +3633,7 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
                 MagicMock(success=True, stdout=""),  # test -x
                 MagicMock(success=False, stdout="FAIL: error\n", stderr="", timed_out=False),  # hook fails
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
             ]
             result = await step.execute(ctx)
 
@@ -2970,10 +3689,55 @@ class TestValidateStep:
                 MagicMock(success=True, stdout="abc123 feat: something\n"),  # git log
                 MagicMock(success=True, stdout=""),  # git diff --stat HEAD (unstaged)
                 MagicMock(success=True, stdout=""),  # git diff --cached --stat (staged)
+                MagicMock(success=True, stdout=""),  # git status --porcelain --untracked-files=all
             ]
             gate = await step.validate_output(ctx)
 
         assert gate.passed
+
+    async def test_gate_ignores_preexisting_untracked_files_when_the_hook_never_failed(self, tmp_path: Path) -> None:
+        """An untracked build/test artifact already sitting in the worktree
+        (unrelated to this step) must not fail the gate when the hook passed
+        without ever needing a fix: the untracked check only guards against
+        what the fix loop itself might leave behind."""
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+        assert step._fix_loop_ran is False
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat: something\n"),  # git log
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (staged)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+        # The untracked check is skipped entirely: no 4th git call.
+        assert mock_run.call_count == 3
+
+    async def test_gate_fails_on_untracked_files_once_the_fix_loop_ran(self, tmp_path: Path) -> None:
+        """Once the hook failed and the fix loop ran, a leftover untracked
+        file is still a genuine gate failure."""
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        step = ValidateStep()
+        step._fix_loop_ran = True
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat: something\n"),  # git log
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (staged)
+                MagicMock(success=True, stdout="?? leftover.py\n"),  # git status (untracked)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "Untracked" in gate.reason
 
     async def test_auto_detects_githooks_directory(self, tmp_path: Path) -> None:
         from sova.core.steps.validate import find_pre_push_hook
@@ -3034,7 +3798,10 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout=large_output, stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (unchanged)
                 MagicMock(success=True, stdout="ok\n", stderr="", timed_out=False),
+                MagicMock(success=True, stdout=""),  # git status --porcelain (worktree clean)
             ]
             mock_invoke.return_value = LLMResult(
                 text="Fixed",
@@ -3065,7 +3832,11 @@ class TestValidateStep:
                 MagicMock(success=True, stdout=".githooks\n"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=False, stdout="short error", stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 1)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 1, unchanged)
                 MagicMock(success=False, stdout=large_retry_output, stderr="", timed_out=False),
+                MagicMock(success=True, stdout="abc123\n"),  # pre-dispatch HEAD (attempt 2)
+                MagicMock(success=True, stdout="abc123\n"),  # post-dispatch HEAD (attempt 2, unchanged)
                 MagicMock(success=False, stdout=large_retry_output, stderr="", timed_out=False),
             ]
             mock_invoke.return_value = LLMResult(
@@ -7871,6 +8642,11 @@ class TestSyncStepTaskFetch:
 
 
 class TestCommitStepAgentArtifacts:
+    @pytest.fixture(autouse=True)
+    def _stub_subject_proposal(self):
+        with patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")):
+            yield
+
     async def test_skips_commit_when_only_agent_artifacts_untracked(self, tmp_path: Path) -> None:
         from sova.core.steps.commit import CommitStep
 
@@ -7879,8 +8655,10 @@ class TestCommitStepAgentArtifacts:
 
         with patch("sova.core.steps.commit.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # diff --stat (clean)
-                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout=""),  # diff --stat HEAD (clean)
+                MagicMock(success=True, stdout=""),  # diff --cached --stat (clean)
+                MagicMock(success=True, stdout=""),  # diff --name-only -z HEAD (clean)
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z (clean)
                 MagicMock(success=True, stdout=".claude/settings.json\n.agent-summary.md\n"),  # only artifacts
                 MagicMock(success=True, stdout="abc123 feat: real work\n"),  # has commits
             ]
@@ -7901,8 +8679,10 @@ class TestCommitStepAgentArtifacts:
             patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # diff --stat
-                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --stat
+                MagicMock(success=True, stdout=""),  # diff --name-only -z HEAD
+                MagicMock(success=True, stdout=""),  # diff --cached --name-only -z
                 MagicMock(success=True, stdout="src/new_file.py\n.claude/tmp.json\n"),  # mixed
                 MagicMock(success=True, stdout=""),  # log (no commits)
             ]
@@ -7918,6 +8698,11 @@ class TestCommitStepAgentArtifacts:
 
 
 class TestCommitStepIssueless:
+    @pytest.fixture(autouse=True)
+    def _stub_subject_proposal(self):
+        with patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")):
+            yield
+
     async def test_issueless_commit_uses_run_label(self, tmp_path: Path) -> None:
         """Issueless runs should use run_label in commit message, no Closes line."""
         from sova.core.steps.commit import CommitStep
@@ -7932,6 +8717,8 @@ class TestCommitStepIssueless:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="plan.py\0"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
@@ -7956,6 +8743,8 @@ class TestCommitStepIssueless:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="plan.py\0"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
@@ -7988,6 +8777,8 @@ class TestCommitStepIssueless:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
                 MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="fix.py\0"),
+                MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
             result = await step.execute(ctx)
@@ -8011,6 +8802,8 @@ class TestCommitStepIssueless:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
                 MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="fix.py\0"),
+                MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
             mock_commit.side_effect = RuntimeError("suspicious file staged")
@@ -8026,6 +8819,11 @@ class TestCommitStepIssueless:
 
 
 class TestCommitStepJira:
+    @pytest.fixture(autouse=True)
+    def _stub_subject_proposal(self):
+        with patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, side_effect=RuntimeError("stub")):
+            yield
+
     async def test_jira_commit_message_has_ticket_link(self, tmp_path: Path) -> None:
         """JIRA projects should emit JIRA: link instead of Closes #N."""
         from sova.core.steps.commit import CommitStep
@@ -8052,6 +8850,8 @@ class TestCommitStepJira:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" security.py | 5 +++++\n"),
                 MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="security.py\0"),
+                MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
             result = await step.execute(ctx)
@@ -8076,6 +8876,8 @@ class TestCommitStepJira:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" login.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="login.py\0"),
                 MagicMock(success=True, stdout=""),
                 MagicMock(success=True, stdout=""),
             ]
@@ -8293,7 +9095,7 @@ class TestCreatePRStepTitleFallback:
 
         adapter.get_task.assert_not_called()
         title_arg = mock_create_pr.call_args.kwargs["title"]
-        assert "Add widget support" in title_arg
+        assert "add widget support" in title_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
@@ -11159,11 +11961,12 @@ class TestHandleSigtermShutdown:
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
+        ctx.config = ProjectConfig()
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, run_id)
 
-        mock_preserve.assert_awaited_once_with(ctx.worktree_dir, "sigterm")
+        mock_preserve.assert_awaited_once_with(ctx.worktree_dir, "sigterm", commit_type="chore", scope="core")
 
         async with await get_session() as session:
             async with session.begin():
@@ -11175,6 +11978,7 @@ class TestHandleSigtermShutdown:
 
         ctx = MagicMock()
         ctx.worktree_dir = tmp_path / "does-not-matter"
+        ctx.config = ProjectConfig()
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
@@ -11201,6 +12005,7 @@ class TestHandleSigtermShutdown:
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("0")
+        ctx.config = ProjectConfig()
 
         with (
             patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)),
