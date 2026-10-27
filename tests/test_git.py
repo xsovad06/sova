@@ -40,6 +40,7 @@ from sova.git.operations import (
     push,
     rebase,
     rebase_with_conflict_resolution,
+    sha_has_workflow_runs,
     sync_branch,
     update_pr_body,
 )
@@ -1329,6 +1330,23 @@ class TestGetCIChecks:
             checks = await get_ci_checks(42, repo="user/repo")
             assert checks is None
 
+    async def test_returns_empty_on_no_checks_reported_stderr(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="no checks reported on the 'feat/x' branch\n")
+
+            checks = await get_ci_checks(42, repo="user/repo")
+            assert checks == []
+
+    async def test_returns_none_on_transient_failure_stderr(self) -> None:
+        """A real fetch failure keeps returning None even though it shares the
+        non-zero exit status with the "no checks reported" case, so
+        MonitorCIStep's cross-check stays fail-closed for it (#1314)."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="HTTP 502: Bad Gateway\n")
+
+            checks = await get_ci_checks(42, repo="user/repo")
+            assert checks is None
+
     async def test_returns_none_on_bad_json(self) -> None:
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="not json")
@@ -1455,6 +1473,87 @@ class TestGetCIChecks:
                 check="Mystery",
                 state="WEIRD_STATE",
             )
+
+
+class TestShaHasWorkflowRuns:
+    """Workflow-run corroboration for an empty check list (#1314 CodeRabbit review).
+
+    An empty check list cannot on its own distinguish "CI never triggered
+    for this commit" from "the checks have not registered yet", because
+    every check lookup reads the same head commit. The workflow-run record
+    is created when the workflow is triggered, ahead of its check runs, so
+    it is the one independent signal available.
+    """
+
+    async def test_returns_false_when_no_runs_exist(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="[]")
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is False
+            args = mock_run.await_args.args
+            assert args[:3] == ("gh", "run", "list")
+            assert "abc123def456" in args
+
+    async def test_returns_true_when_a_run_exists(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps([{"databaseId": 1}]))
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is True
+
+    async def test_returns_none_on_fetch_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="HTTP 502: Bad Gateway\n")
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is None
+
+    async def test_actions_unavailable_reads_as_no_runs(self) -> None:
+        """A repository with Actions disabled fails this lookup identically on
+        every call, so returning None would leave the caller polling to its
+        own timeout for an answer that can never change. Callers only reach
+        here after a PR-level lookup against the same repository succeeded,
+        so a 404 here is about Actions, not a mistyped repo."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="HTTP 404: Not Found\n")
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is False
+
+    async def test_permission_denied_403_returns_none_not_false(self) -> None:
+        """A non-rate-limited 403 (fine-grained token or GitHub App missing
+        Actions scope, SAML/SSO or IP-allowlist restriction) means the
+        credentials could not read Actions, not that Actions is unavailable
+        for the repository, so it must not be read as a confirmed 'no
+        runs'."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="HTTP 403: Resource not accessible by personal access token\n")
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is None
+
+    async def test_rate_limit_returns_none_not_false(self) -> None:
+        """A 403 from rate limiting must not be read as the Actions-unavailable
+        403/404 carve-out: that would report 'no runs' for a commit whose CI
+        is still running, just throttled."""
+        for stderr in (
+            "HTTP 403: API rate limit exceeded for user ID 1\n",
+            "HTTP 403: You have exceeded a secondary rate limit\n",
+        ):
+            with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = _shell_fail(stderr=stderr)
+
+                assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is None
+
+    async def test_returns_none_on_bad_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="not json")
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is None
+
+    async def test_returns_none_on_non_list_json(self) -> None:
+        """`gh run list --json` returns an array; an object means the output is
+        not the list this reads, so "no runs" cannot be concluded from it."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout='{"message": "Not Found"}')
+
+            assert await sha_has_workflow_runs("abc123def456", repo="user/repo") is None
 
 
 class TestGetCIChecksForSha:

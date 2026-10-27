@@ -842,7 +842,17 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
 
     Returns ``None`` on fetch failures (network, auth, CLI errors) so
     callers can distinguish "no checks configured" (``[]``) from
-    "unable to query GitHub" (``None``).
+    "unable to query GitHub" (``None``). ``gh pr checks`` exits non-zero
+    with "no checks reported" on stderr when the PR genuinely has none;
+    that specific case returns ``[]`` rather than ``None``, since it is
+    a legitimate empty result, not a fetch failure.
+
+    An empty result is still ambiguous between "this PR has no CI" and
+    "the checks have not registered yet", because ``gh pr checks`` reads
+    the PR's head commit, the same commit a SHA-scoped lookup reads. A
+    caller that turns an empty list into a passing outcome must therefore
+    corroborate it with :func:`sha_has_workflow_runs` rather than trust
+    the empty list alone.
     """
     env = await resolve_gh_env(github_user)
     result = await run(
@@ -859,6 +869,9 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
     _track_gh_rate_limit(result, github_user)
 
     if not result.success:
+        if "no checks reported" in result.stderr:
+            log.info("git.ci_checks.none_reported", pr=pr_number)
+            return []
         log.warning("git.ci_checks.failed", pr=pr_number, stderr=result.stderr[:200])
         return None
 
@@ -885,6 +898,83 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
         )
 
     return checks
+
+
+async def sha_has_workflow_runs(sha: str, *, repo: str, github_user: str = "") -> bool | None:
+    """Whether GitHub Actions has any workflow run recorded for *sha*.
+
+    Independent corroboration for an empty check list. A commit with no
+    check of any kind is ambiguous between "no CI was ever triggered for
+    it" (every workflow's path filters excluded the change) and "the
+    checks exist but have not registered yet", and neither the PR-level
+    nor the SHA-scoped check lookup can tell the two apart, since both
+    read the same (still empty) check rollup. A workflow run record is
+    created when a workflow is triggered, before and independently of the
+    check runs it later reports, so zero runs plus zero checks is the one
+    combination that confirms CI never started. A broken workflow file or
+    an exhausted Actions budget still creates a (failed) run, so this
+    never reports "no runs" for those.
+
+    Returns ``None`` when the lookup itself fails (network, auth, CLI, or
+    unparseable output): an unreadable answer is not evidence either way,
+    and callers must not read it as "CI never triggered".
+
+    A 404 from the Actions endpoint is the one failure read as a real
+    answer (``False``) rather than as unknown. It means Actions is
+    unavailable for this repository (disabled, or never enabled on a
+    project whose CI is an external service posting commit statuses), and
+    on such a repository every call would fail the same way forever, so
+    returning ``None`` would leave a caller polling to its own timeout
+    with no outcome that can ever change. It cannot be a mistyped *repo*
+    either: callers reach this only after a PR-level lookup against the
+    same repository already succeeded.
+
+    ``HTTP 403`` is deliberately excluded from that carve-out: besides
+    GitHub's primary and secondary rate limits, a 403 also covers a
+    fine-grained token or GitHub App missing Actions scope, a SAML/SSO or
+    IP-allowlist restriction, or any other permission-denied response.
+    None of those mean "Actions is unavailable here", only "this call's
+    credentials could not read it", so a non-rate-limited 403 falls
+    through to the generic failed-lookup path and returns ``None`` rather
+    than a false "no runs".
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "run",
+        "list",
+        "--repo",
+        repo,
+        "--commit",
+        sha,
+        "--limit",
+        "1",
+        "--json",
+        "databaseId",
+        env=env,
+    )
+    _track_gh_rate_limit(result, github_user)
+
+    if not result.success:
+        stderr = result.stderr or ""
+        if result.is_rate_limited:
+            log.warning("git.workflow_runs.rate_limited", sha=sha[:8], stderr=stderr[:200])
+            return None
+        if "HTTP 404" in stderr:
+            log.info("git.workflow_runs.actions_unavailable", sha=sha[:8], stderr=stderr[:200])
+            return False
+        log.warning("git.workflow_runs.failed", sha=sha[:8], stderr=stderr[:200])
+        return None
+
+    try:
+        runs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log.warning("git.workflow_runs.bad_json", sha=sha[:8], stdout=result.stdout[:200])
+        return None
+    if not isinstance(runs, list):
+        log.warning("git.workflow_runs.bad_shape", sha=sha[:8], stdout=result.stdout[:200])
+        return None
+    return bool(runs)
 
 
 _CHECK_RUN_STATUS_MAP: dict[str, CheckStatus] = {

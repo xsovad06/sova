@@ -127,6 +127,9 @@ from sova.git.pr import (
     get_pr_status as get_pr_status,
 )
 from sova.git.pr import (
+    sha_has_workflow_runs as sha_has_workflow_runs,
+)
+from sova.git.pr import (
     update_pr_body as update_pr_body,
 )
 from sova.git.rebase import (
