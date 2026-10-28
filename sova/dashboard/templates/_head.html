@@ -46,10 +46,20 @@ function _ensureMarked() {
   });
 }
 
+// marked passes raw HTML through, so every call to it goes through these two helpers:
+// its output reaches innerHTML only after DOMPurify, or as escaped text if either
+// library failed to load.
 function renderMarkdown(text) {
   _ensureMarked();
   if (!window.marked) return escapeHtml(text || '');
   var html = marked.parse(text || '');
+  return window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(text || '');
+}
+
+function renderMarkdownInline(text) {
+  _ensureMarked();
+  if (!window.marked) return escapeHtml(text || '');
+  var html = marked.parseInline(text || '');
   return window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(text || '');
 }
 </script>
