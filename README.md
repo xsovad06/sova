@@ -182,6 +182,11 @@ read_only = true            # Agents read context; writes still go through the t
 
 `sova install` writes enabled MCP sidecars to `<project>/.mcp.json` and approves them in `.claude/settings.json`. Leave `token` empty and export `SOVA_MCP_ATLASSIAN_TOKEN` to keep the credential out of that file. See [Integration Guidelines](docs/integration-guidelines.md) for details.
 
+SOVA generates commit subjects and PR titles as conventional-commit lines, validated against
+`commit.types` and `commit.scopes`. Both default to SOVA's own convention, so set them to your
+project's lists to stop every generated line falling back to `feat(core): ...`. See
+[Commit Convention Setup](docs/commit-convention-setup.md).
+
 For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
 ## Claude Code Setup

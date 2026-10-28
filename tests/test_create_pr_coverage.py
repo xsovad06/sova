@@ -666,7 +666,7 @@ class TestCreatePRStepJiraTitleBuilding:
             jira_base_url="https://issues.redhat.com",
         )
         title = _build_pr_title("Add widget support", "48928", task_source=ts)
-        assert title == "[RHCLOUD-48928] feat: Add widget support"
+        assert title == "[RHCLOUD-48928] feat: add widget support"
 
     def test_jira_title_with_conventional_prefix(self) -> None:
         """JIRA PR titles should prepend [KEY-N] and preserve existing type."""
@@ -679,6 +679,139 @@ class TestCreatePRStepJiraTitleBuilding:
         )
         title = _build_pr_title("fix(auth): broken login", "42", task_source=ts)
         assert title == "[PROJ-42] fix: broken login"
+
+
+class TestCreatePRStepTitleCandidate:
+    """Test the LLM-proposed PR title: accepted, rejected, and the JIRA bypass."""
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    async def test_valid_llm_candidate_becomes_the_title(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+        from sova.core.steps._pr_body import TITLE_MARKER
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text=f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add a widget",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
+        step = CreatePRStep()
+        _, title = await step._generate_pr_body(ctx, "Add widget", "feat(core): fallback title")
+
+        assert title == "feat(core): add a widget"
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    async def test_overlong_llm_candidate_is_discarded(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+        from sova.core.steps._pr_body import TITLE_MARKER
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        overlong = "feat(core): " + "x" * 80
+        mock_invoke.return_value = LLMResult(
+            text=f"## Summary\n- stuff\n{TITLE_MARKER}\n{overlong}",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
+        step = CreatePRStep()
+        _, title = await step._generate_pr_body(ctx, "Add widget", "feat(core): fallback title")
+
+        assert title == "feat(core): fallback title"
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    async def test_candidate_with_unconfigured_type_is_discarded(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+        from sova.core.steps._pr_body import TITLE_MARKER
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(
+            text=f"## Summary\n- stuff\n{TITLE_MARKER}\nperf(core): speed things up",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42")
+        step = CreatePRStep()
+        _, title = await step._generate_pr_body(ctx, "Add widget", "feat(core): fallback title")
+
+        assert title == "feat(core): fallback title"
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    async def test_jira_project_never_requests_a_title_candidate(self, mock_run, mock_invoke, tmp_path: Path) -> None:
+        from sova.core.steps._pr_body import TITLE_MARKER
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+
+        ts = TaskSourceConfig(type="jira", jira_project_key="PROJ", jira_base_url="https://jira.example.com")
+        ctx = _make_ctx(tmp_path, branch_name="feat/issue-42", config=ProjectConfig(task_source=ts))
+        step = CreatePRStep()
+        _, title = await step._generate_pr_body(ctx, "Add widget", "[PROJ-42] feat: add widget")
+
+        prompt = mock_invoke.call_args.args[0]
+        assert TITLE_MARKER not in prompt
+        assert title == "[PROJ-42] feat: add widget"
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_freeform_pr_title_format_skips_the_conventional_prefix(
+        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
+    ) -> None:
+        """commit.pr_title_format == "freeform" must not force a type(scope)
+        prefix onto the title, and must not request or validate an LLM
+        candidate against commit.types/.scopes."""
+        from sova.config.models import CommitConfig
+        from sova.core.steps._pr_body import TITLE_MARKER
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="sova/core/x.py\n"),  # scope inference (unused for freeform)
+            MagicMock(success=True, stdout="abc123 feat: add widget\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(
+            tmp_path,
+            branch_name="feat/issue-42",
+            task=Task(id="42", title="Add widget support", body="We need a widget"),
+            config=ProjectConfig(commit=CommitConfig(pr_title_format="freeform")),
+        )
+        result = await CreatePRStep().execute(ctx)
+
+        assert result.success
+        prompt = mock_invoke.call_args.args[0]
+        assert TITLE_MARKER not in prompt
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert title_arg == "Add widget support"
 
 
 class TestInferScope:
@@ -730,6 +863,47 @@ class TestInferScope:
         # the other path is validly scoped, so it must not return "dashboard".
         assert _infer_scope(["sova/dashboard/app.py", "README.md"]) == "core"
 
+    def test_configured_scopes_override_sovas_own_list(self) -> None:
+        """A project's own commit.scopes, not SOVA's own DEFAULT_COMMIT_SCOPES,
+        decides which top-level sova/<dir> paths carry a real scope."""
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["sova/widgets/app.py"], scopes=["widgets"]) == "widgets"
+        # "dashboard" is a real SOVA scope but not in this project's list, so
+        # the mixed/unmatched fallback must be a scope the project actually
+        # accepts ("widgets", its only configured one), never the literal
+        # "core": that scope might not be in the project's own list either.
+        assert _infer_scope(["sova/dashboard/app.py"], scopes=["widgets"]) == "widgets"
+
+    def test_unmatched_path_falls_back_to_core_when_core_is_configured(self) -> None:
+        """ "core" stays the fallback when it is itself an accepted scope,
+        which is the common case (SOVA's own convention, or any project that
+        happens to keep a "core" scope)."""
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["sova/dashboard/app.py"], scopes=["widgets", "core"]) == "core"
+
+    def test_empty_configured_scopes_falls_back_to_core(self) -> None:
+        """An empty commit.scopes (misconfigured project) never crashes or
+        emits an unconfigured scope: it falls back to the safe default."""
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["sova/dashboard/app.py"], scopes=[]) == "core"
+
+    def test_non_sova_directory_segment_matches_a_configured_scope(self) -> None:
+        """A project whose layout isn't SOVA's own (no "sova/" top-level
+        directory) must still get a real scope from the changed path, not
+        always fall back to "core"."""
+        from sova.core.steps.create_pr import _infer_scope
+
+        files = ["apps/accounts/models.py", "apps/accounts/views.py"]
+        assert _infer_scope(files, scopes=["accounts", "billing"]) == "accounts"
+
+    def test_docs_only_path_matches_the_docs_scope(self) -> None:
+        from sova.core.steps.create_pr import _infer_scope
+
+        assert _infer_scope(["docs/pricing.md"], scopes=["accounts", "docs"]) == "docs"
+
 
 class TestGithubTitleScope:
     """Test GitHub PR title building uses an inferred scope, not the issue number."""
@@ -738,14 +912,14 @@ class TestGithubTitleScope:
         from sova.core.steps.create_pr import _build_pr_title
 
         title = _build_pr_title("Add widget support", "1245", changed_files=["sova/dashboard/app.py"])
-        assert title == "feat(dashboard): Add widget support"
+        assert title == "feat(dashboard): add widget support"
 
     def test_github_title_no_issue_number_in_title(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
 
         title = _build_pr_title("Fix the thing", "99", changed_files=["sova/cli/app.py"])
         assert "#99" not in title
-        assert title == "feat(cli): Fix the thing"
+        assert title == "feat(cli): fix the thing"
 
     def test_github_title_preserves_existing_type(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
@@ -757,7 +931,90 @@ class TestGithubTitleScope:
         from sova.core.steps.create_pr import _build_pr_title
 
         title = _build_pr_title("Do a thing", "42")
-        assert title == "feat(core): Do a thing"
+        assert title == "feat(core): do a thing"
+
+    def test_github_title_uses_configured_scopes(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Add a widget", "42", changed_files=["sova/widgets/app.py"], scopes=["widgets"])
+        assert title == "feat(widgets): add a widget"
+
+    def test_github_title_uses_configured_types(self) -> None:
+        """A project whose commit.types omits "feat" must not get a title its
+        own commit-format check rejects just because the LLM call failed."""
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Add a widget", "42", changed_files=["sova/widgets/app.py"], types=["feature"])
+        assert title.startswith("feature(")
+
+    def test_long_issue_title_is_lowercased_and_trimmed_to_72_chars(self) -> None:
+        """The deterministic fallback has to satisfy the convention on its own.
+
+        It is the path taken whenever the LLM-proposed title fails
+        validation, and a verbatim issue title is routinely far over the
+        limit (this one, from a real PR, is 118 characters).
+        """
+        from sova.core.steps.commit_convention import MAX_LINE_LENGTH, is_valid_commit_line
+        from sova.core.steps.create_pr import _build_pr_title
+
+        gwym_title = (
+            "Make the pricing claims match the app: drop tax optimization, "
+            "gate the health score trend, drop the plan parameter"
+        )
+        assert len(gwym_title) > MAX_LINE_LENGTH
+
+        title = _build_pr_title(gwym_title, "42", changed_files=["sova/dashboard/app.py"])
+
+        assert len(title) <= MAX_LINE_LENGTH
+        assert title.startswith("feat(dashboard): make the pricing claims match the app")
+        assert is_valid_commit_line(title, types=["feat"], scopes=["dashboard"])
+
+    def test_docs_only_change_gets_the_docs_type(self) -> None:
+        """A branch that only touches docs/ gets a PR title of type "docs",
+        not the project's default type, when the project configures it."""
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title(
+            "Explain the retry policy", "42", changed_files=["docs/retry-policy.md"], scopes=["docs"]
+        )
+        assert title == "docs(docs): explain the retry policy"
+
+    def test_non_sova_accounts_path_gets_the_accounts_scope(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title(
+            "Retry failed billing charges",
+            "42",
+            changed_files=["apps/accounts/models.py"],
+            scopes=["accounts", "billing"],
+        )
+        assert title == "feat(accounts): retry failed billing charges"
+
+    def test_configured_non_sova_type_prefix_is_not_doubled(self) -> None:
+        """An issue title already prefixed with a project's own configured
+        type (not one of SOVA's own feat/fix/.../ci) must be recognized and
+        stripped, not stapled with a second prefix on top."""
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title(
+            "perf: speed up the dashboard query",
+            "42",
+            changed_files=["sova/dashboard/app.py"],
+            scopes=["dashboard"],
+            types=["perf", "feat"],
+        )
+        assert title == "perf(dashboard): speed up the dashboard query"
+        assert "feat(" not in title
+
+    def test_jira_title_keeps_its_bracket_prefix_when_trimmed(self) -> None:
+        from sova.core.steps.commit_convention import MAX_LINE_LENGTH
+        from sova.core.steps.create_pr import _build_pr_title
+
+        ts = TaskSourceConfig(type="jira", jira_project_key="RHCLOUD", jira_base_url="https://issues.redhat.com")
+        title = _build_pr_title("Rework the whole scheduling subsystem " * 5, "4242", task_source=ts)
+
+        assert title.startswith("[RHCLOUD-4242] feat: rework the whole scheduling subsystem")
+        assert len(title) <= MAX_LINE_LENGTH
 
 
 class TestResolveChangedFiles:
@@ -833,22 +1090,44 @@ class TestResolveChangedFiles:
 
 
 class TestValidScopesNoDrift:
-    """_VALID_SCOPES must stay in sync with invariants/commit-format.sh."""
+    """The CommitConfig defaults must stay in sync with invariants/commit-format.sh."""
+
+    def test_valid_types_match_invariant(self) -> None:
+        """DEFAULT_COMMIT_TYPES is a second copy of the invariant's VALID_TYPES.
+
+        Guarded for the same reason the scope list below is: a type added to
+        one and not the other either rejects a commit SOVA generated or
+        generates one the pre-push hook rejects.
+        """
+        import re
+
+        from sova.config.models import DEFAULT_COMMIT_TYPES
+
+        root = Path(__file__).resolve().parent.parent
+        shell = (root / "invariants" / "commit-format.sh").read_text(encoding="utf-8")
+        match = re.search(r'VALID_TYPES="([^"]+)"', shell)
+        assert match, "could not find VALID_TYPES in invariants/commit-format.sh"
+        shell_types = set(match.group(1).split("|"))
+        assert set(DEFAULT_COMMIT_TYPES) == shell_types, (
+            "DEFAULT_COMMIT_TYPES has drifted from invariants/commit-format.sh; "
+            f"only in python: {set(DEFAULT_COMMIT_TYPES) - shell_types}; "
+            f"only in shell: {shell_types - set(DEFAULT_COMMIT_TYPES)}"
+        )
 
     def test_valid_scopes_match_invariant(self) -> None:
         import re
 
-        from sova.core.steps.create_pr import _VALID_SCOPES
+        from sova.config.models import DEFAULT_COMMIT_SCOPES
 
         root = Path(__file__).resolve().parent.parent
         shell = (root / "invariants" / "commit-format.sh").read_text(encoding="utf-8")
         match = re.search(r'VALID_SCOPES="([^"]+)"', shell)
         assert match, "could not find VALID_SCOPES in invariants/commit-format.sh"
         shell_scopes = set(match.group(1).split("|"))
-        assert set(_VALID_SCOPES) == shell_scopes, (
-            "create_pr._VALID_SCOPES has drifted from invariants/commit-format.sh; "
-            f"only in python: {set(_VALID_SCOPES) - shell_scopes}; "
-            f"only in shell: {shell_scopes - set(_VALID_SCOPES)}"
+        assert set(DEFAULT_COMMIT_SCOPES) == shell_scopes, (
+            "DEFAULT_COMMIT_SCOPES has drifted from invariants/commit-format.sh; "
+            f"only in python: {set(DEFAULT_COMMIT_SCOPES) - shell_scopes}; "
+            f"only in shell: {shell_scopes - set(DEFAULT_COMMIT_SCOPES)}"
         )
 
 

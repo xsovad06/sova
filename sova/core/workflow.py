@@ -670,9 +670,16 @@ class WorkflowEngine:
         if self._ctx.worktree_dir is None:
             return False
 
+        from sova.core.steps.commit_convention import resolve_default_scope, resolve_default_type
         from sova.git.worktree import preserve_partial_work
 
-        return await preserve_partial_work(self._ctx.worktree_dir, f"{step_name} (timeout)")
+        commit = self._ctx.config.commit
+        return await preserve_partial_work(
+            self._ctx.worktree_dir,
+            f"{step_name} (timeout)",
+            commit_type=resolve_default_type(commit.types, preferred="chore"),
+            scope=resolve_default_scope(commit.scopes),
+        )
 
     async def _persist_step_result(
         self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str

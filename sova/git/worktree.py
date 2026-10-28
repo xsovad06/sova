@@ -45,7 +45,9 @@ _PRESERVE_ADD_EXCLUDE_PATHSPECS: tuple[str, ...] = tuple(
 ) + tuple(pathspec_exclude(prefix) for prefix in sorted(RUNTIME_ARTIFACT_PREFIXES))
 
 
-async def preserve_partial_work(work_dir: Path | None, reason: str) -> bool:
+async def preserve_partial_work(
+    work_dir: Path | None, reason: str, *, commit_type: str = "chore", scope: str = "core"
+) -> bool:
     """Stage and commit changes (tracked and new) in *work_dir*, if any.
 
     Shared by ``WorkflowEngine``'s step-timeout preservation and the
@@ -54,12 +56,26 @@ async def preserve_partial_work(work_dir: Path | None, reason: str) -> bool:
     process is terminated. Commits (rather than leaving the work staged
     only) so it survives worktree cleanup and the stash cycles
     ``sync_branch()``/``rebase_with_conflict_resolution()`` run on the next
-    attempt; the message uses a conventional-commit type and scope
-    (``chore(core): ...``) so it passes ``invariants/commit-format.sh``,
-    unlike the earlier ``wip:`` message that prompted this function to stop
-    committing in the first place. Returns True if anything was committed,
-    False otherwise (no working dir, not a git repo, or nothing to stage).
+    attempt; the message uses a conventional-commit type and scope so it
+    passes ``invariants/commit-format.sh``, unlike the earlier ``wip:``
+    message that prompted this function to stop committing in the first
+    place. *commit_type*/*scope* default to SOVA's own convention
+    (``chore(core): ...``) since this module has no ``ExecutionContext`` of
+    its own to read ``commit.types``/``commit.scopes`` from; a caller that
+    has one (``WorkflowEngine``, the ``sova run`` SIGTERM handler) resolves
+    them from ``ctx.config.commit`` via
+    ``sova.core.steps.commit_convention.resolve_default_type``/
+    ``resolve_default_scope`` and passes them in, so a project with its own
+    convention still gets a message its commit-format check accepts.
+    Returns True if anything was committed, False otherwise (no working dir,
+    not a git repo, or nothing to stage).
     """
+    # Imported lazily: sova.core.steps.commit_convention is a submodule of
+    # sova.core.steps, whose package __init__ imports sova.git.worktree
+    # (create_worktree.py/ensure_worktree.py); a module-level import here
+    # would be circular.
+    from sova.core.steps.commit_convention import format_type_scope
+
     if not work_dir:
         log.debug("worktree.partial_work.no_working_dir", reason=reason)
         return False
@@ -103,9 +119,8 @@ async def preserve_partial_work(work_dir: Path | None, reason: str) -> bool:
             log.debug("worktree.partial_work.no_staged_changes", reason=reason)
             return False
 
-        commit_result = await run(
-            "git", "commit", "-m", f"chore(core): preserve partial work from {reason}", cwd=work_dir
-        )
+        message = f"{format_type_scope(commit_type, scope)}: preserve partial work from {reason}"
+        commit_result = await run("git", "commit", "-m", message, cwd=work_dir)
         if not commit_result.success:
             log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
             return False

@@ -8,8 +8,6 @@ compatibility.
 from __future__ import annotations
 
 import json
-import re
-import secrets
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -26,39 +24,11 @@ from sova.roles._review_format import (
 )
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
+from sova.utils.prompt_quoting import quote_untrusted as _quote_untrusted
 
 log = get_logger(component="role.reviewer")
 
 DIFF_CHUNK_SIZE = 100_000  # ~100KB per chunk
-
-# Used in place of a bare ``.replace("`", "")`` wherever untrusted issue/repo
-# text is quoted into a prompt: collapsing a run of backticks to a single
-# quote still makes the text unable to open or close a markdown code fence,
-# but (unlike deleting the backticks outright) keeps inline code like
-# `sova/core/spec_utils.py` legible instead of merging it into surrounding
-# prose.
-_BACKTICK_RUN_RE = re.compile(r"`+")
-
-
-def _quote_untrusted(tag: str, content: str) -> tuple[str, str]:
-    """Quote (possibly attacker-authored) text into a nonce-delimited ``<tag id="...">`` block.
-
-    Returns ``(nonce, block)``. Shared by every untrusted-text block built
-    into the review prompt (repo context, issue criteria, and the raw issue
-    description alike) so none of them is quoted differently from the
-    others: a per-call nonce in both the opening and closing tag, with that
-    nonce stripped from the content, means nothing the content contains can
-    spell out a matching closing tag and escape into the prompt's own
-    structure. Backtick runs are collapsed to a single quote so the content
-    additionally cannot break out of a markdown code fence nested elsewhere
-    in the rendered prompt, while inline code (file paths, symbol names)
-    stays legible. The caller still owns the surrounding header text, which
-    explains the nonce and instructs the model to treat the block as
-    background/requirements, never as instructions.
-    """
-    nonce = secrets.token_hex(8)
-    sanitized = _BACKTICK_RUN_RE.sub("'", content).replace(nonce, "")
-    return nonce, f'<{tag} id="{nonce}">\n{sanitized}\n</{tag} id="{nonce}">'
 
 
 _SPEC_SECTIONS = (

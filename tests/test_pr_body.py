@@ -9,6 +9,7 @@ from pathlib import Path
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
+    TITLE_MARKER,
     VERDICT_MARKER,
     apply_owner_overrides,
     apply_sections,
@@ -18,6 +19,7 @@ from sova.core.steps._pr_body import (
     process_llm_result,
     render_closing_block,
     split_sections,
+    split_title_tail,
     split_verdict_tail,
 )
 from sova.core.steps._pr_body import build_prompt as build_pr_body_prompt
@@ -438,7 +440,11 @@ class TestBuildPrompt:
 
         assert criteria == []
         assert VERDICT_MARKER not in prompt
-        assert "no preamble). Start directly" in prompt
+        # A title block is still requested for a non-JIRA project even with
+        # no verdict block, so the bare "Start directly" instruction (which
+        # would contradict that trailing title request) must not appear.
+        assert "no preamble). Start directly" not in prompt
+        assert TITLE_MARKER in prompt
 
     def test_issueless_run_has_no_closing_keyword_and_no_criteria(self, tmp_path: Path) -> None:
         """An issue-less run has nothing to close and nothing to verdict."""
@@ -455,6 +461,120 @@ class TestBuildPrompt:
         assert "Task: Ad-hoc cleanup" in prompt
         assert "Closes #" not in prompt
         assert VERDICT_MARKER not in prompt
+        assert TITLE_MARKER in prompt
+
+
+class TestBuildPromptTitleRequest:
+    """A PR title is requested for a non-JIRA project, never for JIRA."""
+
+    def test_github_project_requests_a_title_scoped_to_configured_lists(self, tmp_path: Path) -> None:
+        prompt, _criteria = build_pr_body_prompt(
+            _ctx(tmp_path),
+            task_title="Fix the bug",
+            issue_body="",
+            commit_log="",
+            diff_stat="",
+            diff_content="",
+        )
+
+        assert TITLE_MARKER in prompt
+        assert "feat, fix, refactor, test, docs, chore, ci" in prompt
+        assert "core" in prompt
+
+    def test_jira_project_never_requests_a_title(self, tmp_path: Path) -> None:
+        from sova.config.models import TaskSourceConfig
+
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(
+                task_source=TaskSourceConfig(
+                    type="jira", jira_project_key="PROJ", jira_base_url="https://jira.example.com"
+                )
+            ),
+            adapter=None,
+            issue_number="42",
+            role="developer",
+        )
+        prompt, _criteria = build_pr_body_prompt(
+            ctx,
+            task_title="Fix the bug",
+            issue_body="",
+            commit_log="",
+            diff_stat="",
+            diff_content="",
+        )
+
+        assert TITLE_MARKER not in prompt
+
+    def test_request_title_false_skips_the_block_for_a_github_project(self, tmp_path: Path) -> None:
+        """A caller that discards the title (RefreshPrBodyStep) must be able
+        to opt out of requesting it at all, not just strip it after the
+        fact: the flag's own effect is what this test locks in."""
+        prompt, _criteria = build_pr_body_prompt(
+            _ctx(tmp_path),
+            task_title="Fix the bug",
+            issue_body="",
+            commit_log="",
+            diff_stat="",
+            diff_content="",
+            request_title=False,
+        )
+
+        assert TITLE_MARKER not in prompt
+
+
+class TestSplitTitleTail:
+    def test_splits_marker_and_candidate_title(self) -> None:
+        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget"
+        body, title = split_title_tail(raw)
+        assert body == "## Summary\n- stuff"
+        assert title == "feat(core): add widget"
+
+    def test_no_marker_returns_none_title(self) -> None:
+        body, title = split_title_tail("## Summary\n- stuff")
+        assert body == "## Summary\n- stuff"
+        assert title is None
+
+    def test_marker_with_no_following_content_returns_none_title(self) -> None:
+        body, title = split_title_tail(f"## Summary\n- stuff\n{TITLE_MARKER}\n")
+        assert body == "## Summary\n- stuff"
+        assert title is None
+
+    def test_strips_title_tail_before_verdict_tail_when_both_present(self) -> None:
+        raw = f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [met] First thing\n{TITLE_MARKER}\nfeat(core): add widget"
+        remainder, title = split_title_tail(raw)
+        assert title == "feat(core): add widget"
+        body, tail = split_verdict_tail(remainder)
+        assert body == "## Summary\n- stuff"
+        assert "- [met] First thing" in tail
+
+    def test_verdict_block_survives_a_title_block_emitted_out_of_order(self) -> None:
+        """Only the marker and the title line are removed, not the rest of the
+        response: a model that emits the title block before the verdict block
+        must not lose the verdicts, which is what drives `Closes #N`."""
+        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget\n{VERDICT_MARKER}\n- [met] First thing"
+        remainder, title = split_title_tail(raw)
+
+        assert title == "feat(core): add widget"
+        body, tail = split_verdict_tail(remainder)
+        assert body == "## Summary\n- stuff"
+        assert "- [met] First thing" in tail
+
+    def test_rejects_a_candidate_that_is_itself_the_verdict_marker(self) -> None:
+        """A model that emits the title block before the verdict block and
+        omits the title line entirely leaves the verdict marker as the next
+        non-blank line. Consuming that as the "title" would destroy the
+        whole verdict block it immediately precedes; it must be rejected and
+        left for split_verdict_tail() instead, which still finds and parses
+        it correctly (the stray, unconsumed title marker text is cosmetic
+        noise left in the body, not a parsing failure)."""
+        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\n\n{VERDICT_MARKER}\n- [met] First thing"
+        remainder, title = split_title_tail(raw)
+
+        assert title is None
+        assert remainder == raw
+        _, tail = split_verdict_tail(remainder)
+        assert "- [met] First thing" in tail
 
 
 class TestLineParsingIsWhitespaceTolerant:

@@ -279,6 +279,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A PR's closing keyword is derived from acceptance-criteria verdicts, not emitted unconditionally, and a body refresh after address-review must target only the sections it generated
 - A non-current spec is degraded with a caveat, not dropped, and the stamp writer and the freshness checker must agree on exactly one frontmatter span
 - Every untrusted issue-body block interpolated into a review prompt is quoted through one shared nonce-delimiting helper, never some of them
+- A project's own commit convention is config, not a hardcoded list, and a hook-fix must fold into the branch commit it belongs to rather than appending a new one
 
 ## Cross-References (domain-specific details)
 

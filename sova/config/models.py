@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _VALID_TASK_STATES = frozenset(
@@ -438,6 +439,52 @@ class WorktreeConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_WORKTREE_")
 
 
+# Conventional-commit types/scopes accepted from an LLM-proposed commit subject
+# or PR title (sova/core/steps/commit_convention.py). SOVA's own convention
+# (AGENTS.md "Commit Messages", invariants/commit-format.sh), used as the
+# CommitConfig default so an unconfigured project's generated commits/PR titles
+# are unaffected; a project installing SOVA can override either list to match
+# its own convention instead. The single copy of each list: sova/core/steps/
+# create_pr.py reads them too, for scope inference on an unconfigured project.
+# The shape every configured commit.types entry must match: a
+# conventional-commit type segment, never capitalized or hyphenated, matching
+# sova/core/steps/commit_convention.py's _LINE_RE type group exactly, so a
+# configured type can always validate a line built from it.
+_TYPE_RE = re.compile(r"^[a-z][a-z0-9]*$")
+
+# Scopes have no such parsing constraint (commit_convention._LINE_RE's scope
+# group is "[^)]+", matching anything but a closing paren), so this is
+# deliberately wider than _TYPE_RE: a project's real convention routinely
+# uses hyphenated or underscored scopes (e.g. "api-gateway", "health_score"),
+# and rejecting those would leave it stuck on SOVA's own scope list, the
+# exact drift this configuration exists to stop.
+_SCOPE_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+DEFAULT_COMMIT_TYPES: tuple[str, ...] = ("feat", "fix", "refactor", "test", "docs", "chore", "ci")
+DEFAULT_COMMIT_SCOPES: tuple[str, ...] = (
+    "dashboard",
+    "commands",
+    "personas",
+    "invariants",
+    "knowledge",
+    "cli",
+    "docs",
+    "scheduler",
+    "ipc",
+    "adapters",
+    "roles",
+    "core",
+    "config",
+    "supervisor",
+    "mcp",
+    "monitoring",
+    "db",
+    "awareness",
+    "oversight",
+    "deps",
+)
+
+
 class CommitConfig(BaseSettings):
     """Commit and PR configuration."""
 
@@ -447,6 +494,8 @@ class CommitConfig(BaseSettings):
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
     branch_naming: Literal["conventional", "freeform"] = "conventional"
     pr_auto_link_issues: bool = True
+    types: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_TYPES))
+    scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_SCOPES))
     # Substrings (case-insensitive, not regexes) that force an acceptance
     # criterion's verdict to "owner" regardless of what the LLM reports,
     # since such a criterion can never be satisfied by an autonomous agent.
@@ -476,6 +525,37 @@ class CommitConfig(BaseSettings):
     )
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMMIT_")
+
+    @field_validator("types", "scopes", mode="after")
+    @classmethod
+    def _validate_type_scope_entries(cls, value: list[str], info: ValidationInfo) -> list[str]:
+        """Reject an empty list or an entry a conventional-commit line could never carry.
+
+        ``sova/core/steps/commit_convention.py``'s ``is_valid_commit_line()``
+        rejects any type/scope outside this list, and its fallback builder
+        (``resolve_default_scope``/``resolve_default_type``) has nothing safe
+        to fall back to once the list is empty or holds a value its own regex
+        can't match (capitalized, hyphenated, ...): both ends of that pipeline
+        would then produce a commit line that can never validate, raising out
+        of ``CommitStep``. Catching the typo here, at config-set time, with a
+        message naming the exact bad entry, is cheaper than discovering it
+        mid-pipeline on an autonomous run.
+        """
+        pattern = _TYPE_RE if info.field_name == "types" else _SCOPE_RE
+        shape = (
+            "lowercase, alphanumeric, starting with a letter"
+            if info.field_name == "types"
+            else "lowercase letters, digits, '_' or '-', starting with a letter"
+        )
+        cleaned = [v.strip() for v in value]
+        invalid = [v for v in cleaned if not pattern.match(v)]
+        if invalid:
+            raise ValueError(
+                f"commit.{info.field_name} entries must match {pattern.pattern!r} ({shape}); invalid: {invalid!r}"
+            )
+        if not cleaned:
+            raise ValueError(f"commit.{info.field_name} must not be empty")
+        return cleaned
 
 
 class TriageConfig(BaseSettings):

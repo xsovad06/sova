@@ -40,6 +40,10 @@ async def _init_repo(path: Path) -> None:
     await run("git", "config", "user.email", "test@example.com", cwd=path)
     await run("git", "config", "user.name", "Test User", cwd=path)
     await run("git", "commit", "-q", "--allow-empty", "-m", "init", cwd=path)
+    # Mirror HEAD to refs/remotes/origin/main so the fold logic (which diffs
+    # against origin/<base>) has a base to resolve, matching test_commit_fold.py.
+    head = (await run("git", "rev-parse", "HEAD", cwd=path)).stdout.strip()
+    await run("git", "update-ref", "refs/remotes/origin/main", head, cwd=path)
 
 
 @pytest.fixture
@@ -118,12 +122,18 @@ class TestValidateStepTimeout:
 
         ctx = _make_ctx(tmp_path)
         failed = ShellResult(returncode=1, stdout="FAIL: lint\n", stderr="")
+        pre_dispatch_head = ShellResult(returncode=0, stdout="abc123\n", stderr="")
         timed_out = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 120s", timed_out=True)
 
         with (
             patch("sova.core.steps.validate.find_pre_push_hook", AsyncMock(return_value=".githooks/pre-push")),
             patch("sova.core.steps.validate.build_pre_push_stdin", AsyncMock(return_value="ref sha ref sha\n")),
-            patch("sova.core.steps.validate.run", AsyncMock(side_effect=[failed, timed_out])),
+            patch(
+                "sova.core.steps.validate.run",
+                AsyncMock(side_effect=[failed, pre_dispatch_head, pre_dispatch_head, timed_out]),
+            ),
+            patch("sova.core.steps.validate.fold_fix_into_branch", AsyncMock(return_value=False)),
+            patch("sova.core.steps.validate.has_unresolved_marker_commits", AsyncMock(return_value=False)),
             patch("sova.core.steps.validate.dispatch_prompt", AsyncMock()) as mock_invoke,
         ):
             mock_invoke.return_value = LLMResult(text="fixed", model="sonnet", cost_usd=Decimal("0.02"))
@@ -167,24 +177,34 @@ class TestValidateStepEndToEnd:
         hooks = tmp_path / ".githooks"
         hooks.mkdir()
         hook = hooks / "pre-push"
-        received_shas = tmp_path / "received_shas.txt"
-        fixed_marker = tmp_path / ".fixed"
+        # Scratch files the hook/fix write to live outside the repo: the new
+        # untracked-file gate in ValidateStep.validate_output()/_worktree_is_dirty()
+        # would otherwise see them (and the hook script itself) as a leftover fix.
+        scratch_dir = tmp_path.with_name(tmp_path.name + "-scratch")
+        scratch_dir.mkdir()
+        received_shas = scratch_dir / "received_shas.txt"
+        fixed_marker = scratch_dir / ".fixed"
         hook.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\nread -r _lref lsha _rref _rsha\n"
             f'echo "$lsha" >> "{received_shas}"\n'
             f'test -f "{fixed_marker}" && exit 0\nexit 1\n'
         )
         hook.chmod(0o755)
+        await run("git", "add", ".githooks/pre-push", cwd=tmp_path)
+        await run("git", "commit", "-q", "-m", "add pre-push hook", cwd=tmp_path)
 
         ctx = _make_ctx(tmp_path, worktree_dir=tmp_path)
 
         async def _fake_fix(*_args: object, **_kwargs: object) -> LLMResult:
-            # Simulate the LLM committing a fix: HEAD moves before the retry.
+            # Simulate the LLM committing a fix itself (against instructions):
+            # a real file change, so _unwind_ordinary_commits/fold_fix_into_branch
+            # has something to fold, and HEAD still moves before the retry.
+            (tmp_path / "fixed.txt").write_text("fixed\n")
+            await run("git", "add", "fixed.txt", cwd=tmp_path)
             await run(
                 "git",
                 "commit",
                 "-q",
-                "--allow-empty",
                 "-m",
                 "fix(core): address pre-push hook violations",
                 cwd=tmp_path,

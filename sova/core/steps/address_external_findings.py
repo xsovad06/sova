@@ -9,6 +9,7 @@ from typing import Any, TypedDict
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.commit_convention import format_type_scope, resolve_default_scope, resolve_default_type
 from sova.git.artifact_exclusions import EXCLUDED_PATHSPECS, IGNORABLE_UNTRACKED_RE
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -26,13 +27,27 @@ class ExternalFindingDict(TypedDict):
 
 log = get_logger(component="step.address_external_findings")
 
-# Distinct from the success-path message: a reader of `git log` (human or
-# bot) must be able to tell, from the subject line alone, that the dispatch
-# that produced this commit failed and never confirmed every finding was
-# addressed, rather than reading the same confident "address external review
-# findings" subject on both an actually-complete fix and a partial one.
-_FINDINGS_COMMIT_MESSAGE = "fix(core): address external review findings"
-_PRESERVE_COMMIT_MESSAGE = "fix(core): preserve partial external review fixes after agent failure"
+
+def _findings_commit_message(ctx: ExecutionContext) -> str:
+    """Build the success-path commit subject from the project's own commit convention."""
+    commit_type = resolve_default_type(ctx.config.commit.types, preferred="fix")
+    scope = resolve_default_scope(ctx.config.commit.scopes)
+    return f"{format_type_scope(commit_type, scope)}: address external review findings"
+
+
+def _preserve_commit_message(ctx: ExecutionContext) -> str:
+    """Build the failure-path commit subject.
+
+    Distinct from :func:`_findings_commit_message`: a reader of ``git log``
+    (human or bot) must be able to tell, from the subject line alone, that
+    the dispatch that produced this commit failed and never confirmed every
+    finding was addressed, rather than reading the same confident "address
+    external review findings" subject on both an actually-complete fix and a
+    partial one.
+    """
+    commit_type = resolve_default_type(ctx.config.commit.types, preferred="fix")
+    scope = resolve_default_scope(ctx.config.commit.scopes)
+    return f"{format_type_scope(commit_type, scope)}: preserve partial external review fixes after agent failure"
 
 
 @dataclass(frozen=True)
@@ -361,7 +376,7 @@ class AddressExternalFindingsStep(BaseStep):
             preserved_changes = preserved_commits = pushed = False
             try:
                 preserved_changes, preserved_commits, pushed = await self._persist_changes(
-                    ctx, prev_count, message=_PRESERVE_COMMIT_MESSAGE
+                    ctx, prev_count, message=_preserve_commit_message(ctx)
                 )
                 persisted = True
             except Exception:  # noqa: BLE001 (best effort preservation; original error must win)
@@ -381,7 +396,7 @@ class AddressExternalFindingsStep(BaseStep):
             raise
 
         has_changes, new_commits, pushed = await self._persist_changes(
-            ctx, prev_count, message=_FINDINGS_COMMIT_MESSAGE
+            ctx, prev_count, message=_findings_commit_message(ctx)
         )
 
         return result.cost_usd, has_changes, new_commits, pushed

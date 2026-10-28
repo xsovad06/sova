@@ -34,15 +34,15 @@ _DIFF_CONTENT_LIMIT = 8000
 _ISSUE_SECTION_HEADING = "Issue"
 
 _OUTPUT_ONLY_BODY_INSTRUCTION = "Output ONLY the markdown body (no fences, no commentary, no preamble)."
-# Used instead of the plain instruction above whenever a verdict block is also
-# requested (criteria is non-empty): the bare "Output ONLY the markdown body"
-# instruction otherwise contradicts the later request for a trailing verdict
-# block in the same response, and a model that obeys this earlier, more
-# emphatic instruction over the later one makes every criteria-bearing PR
-# unparseable, silently disabling auto-close for the whole project.
-_OUTPUT_BODY_THEN_VERDICTS_INSTRUCTION = (
+# Used instead of the plain instruction above whenever a verdict and/or title
+# block is also requested: the bare "Output ONLY the markdown body"
+# instruction otherwise contradicts the later request for trailing block(s)
+# in the same response, and a model that obeys this earlier, more emphatic
+# instruction over the later one makes every such PR unparseable, silently
+# disabling auto-close and/or title generation for the whole project.
+_OUTPUT_BODY_THEN_EXTRA_INSTRUCTION = (
     "Output ONLY the markdown body (no fences, no commentary, no preamble), then, after the "
-    "body, the verdict block described below, and nothing else."
+    "body, the additional block(s) described below, and nothing else."
 )
 
 _PR_BODY_PROMPT_BASE = """\
@@ -158,10 +158,27 @@ then one line per acceptance criterion below in the exact form \
 "- [verdict] <criterion text>" where verdict is exactly one of: met, unmet, \
 owner. Use "owner" only when the criterion itself states it requires human, \
 interactive, or manual action. Copy each criterion's text verbatim, one line \
-per criterion, in the order given below. Output nothing after the verdict lines.
+per criterion, in the order given below.
 
 Acceptance criteria to verdict:
 {criteria_list}
+"""
+
+TITLE_MARKER = "<!-- PR_TITLE -->"
+
+# Always the last block appended to the prompt (after the verdict block, when
+# both are requested), so its own "output nothing after" instruction is the
+# one actually enforced; _VERDICT_PROMPT above deliberately carries none.
+_TITLE_PROMPT = """
+After the above, add a line containing exactly "{marker}", then on the next \
+line a single candidate PR title in the exact form "type(scope): subject" \
+(or "type: subject" only when type is "ci"), where type is one of: {types} \
+and scope is one of: {scopes}. Choose the type and the scope from the \
+changed paths shown above, not from the task title: a change confined to \
+documentation is "docs", one confined to tests is "test", and the scope \
+must name the area those paths belong to. The subject must start with a \
+lowercase letter and the whole line must be at most 72 characters. Output \
+nothing after the title line.
 """
 
 
@@ -267,6 +284,7 @@ def build_prompt(
     commit_log: str,
     diff_stat: str,
     diff_content: str,
+    request_title: bool = True,
 ) -> tuple[str, list[str]]:
     """Build the PR-body prompt and return ``(prompt, criteria)``.
 
@@ -274,9 +292,19 @@ def build_prompt(
     Criteria`` section (always empty for a JIRA ticket or an issue-less run,
     which keeps today's unconditional ``Closes #N`` behavior). When
     non-empty, the prompt also asks for a per-criterion verdict block.
+
+    A candidate PR title (``type(scope): subject``) is also requested,
+    scoped to ``ctx.config.commit.types``/``.scopes``, whenever *request_title*
+    is True and the project is not JIRA-tracked (a JIRA title uses the
+    bracketed ``[KEY-N]`` format instead, which this prompt never touches).
+    ``CreatePRStep`` wants the title (its only source for one); callers that
+    discard it, e.g. ``RefreshPrBodyStep`` regenerating only the body, pass
+    ``request_title=False`` so the block is never requested at all, rather
+    than paying for it and then stripping it off every response.
     """
     ts = ctx.config.task_source
     criteria = extract_acceptance_criteria(issue_body) if (ctx.has_issue and not ts.is_jira) else []
+    request_title = request_title and not ts.is_jira
 
     if ctx.has_issue:
         truncated_body = truncate(issue_body or "(no description)", max_length=_ISSUE_BODY_EXCERPT_LIMIT)
@@ -293,7 +321,9 @@ def build_prompt(
     else:
         middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
 
-    output_instruction = _OUTPUT_BODY_THEN_VERDICTS_INSTRUCTION if criteria else _OUTPUT_ONLY_BODY_INSTRUCTION
+    output_instruction = (
+        _OUTPUT_BODY_THEN_EXTRA_INSTRUCTION if (criteria or request_title) else _OUTPUT_ONLY_BODY_INSTRUCTION
+    )
     prompt = (
         _PR_BODY_PROMPT_BASE.format(output_instruction=output_instruction)
         + middle
@@ -302,7 +332,46 @@ def build_prompt(
     if criteria:
         criteria_list = "\n".join(f"- {c}" for c in criteria)
         prompt += "\n" + _VERDICT_PROMPT.format(marker=VERDICT_MARKER, criteria_list=criteria_list)
+    if request_title:
+        prompt += "\n" + _TITLE_PROMPT.format(
+            marker=TITLE_MARKER,
+            types=", ".join(ctx.config.commit.types),
+            scopes=", ".join(ctx.config.commit.scopes),
+        )
     return prompt, criteria
+
+
+def split_title_tail(raw_text: str) -> tuple[str, str | None]:
+    """Split the LLM's raw output into (remainder, candidate_title_line).
+
+    Always applied before :func:`split_verdict_tail`: the title marker, when
+    present, is the last thing in the response (after any verdict block), so
+    stripping it first leaves the body+verdict text exactly as it was before
+    title generation existed.
+
+    Only the marker and the title line itself are removed, not everything
+    after the marker: a model that emits the two requested blocks in the
+    wrong order would otherwise take the verdict block with it, and an
+    unparseable verdict block silently drops the PR's ``Closes #N``. A
+    candidate that is itself another marker (the model emitted the title
+    block first and omitted the actual title line) is rejected rather than
+    consumed, for the same reason: treating ``VERDICT_MARKER`` as the title
+    candidate would destroy the verdict block that follows it.
+    """
+    if TITLE_MARKER not in raw_text:
+        return raw_text, None
+    before, _, after = raw_text.partition(TITLE_MARKER)
+    lines = after.splitlines()
+    index = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if index is None:
+        return before.rstrip(), None
+    candidate = lines[index].strip()
+    if candidate.startswith("<!--"):
+        log.warning("step._pr_body.title_marker_out_of_order")
+        return raw_text, None
+    tail = "\n".join(lines[index + 1 :]).strip()
+    remainder = f"{before.rstrip()}\n\n{tail}" if tail else before.rstrip()
+    return remainder, candidate
 
 
 def split_verdict_tail(raw_text: str) -> tuple[str, str]:
