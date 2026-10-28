@@ -35,20 +35,58 @@ reviews:
         Check for: async context manager leaks (use `async with await get_session()`),
         missing exc_info=True on except-and-log, and OWASP top 10 vulnerabilities.
         No emojis in code or comments.
+        Also flag:
+        - `x or default` where x can be a legitimate falsy value (0, "", [], False):
+          it discards the real value. Use `x if x is not None else default`.
+        - A helper that swallows an error and returns a value from its success range
+          (0, [], False, ""). Failure must return a sentinel or a multi-state result.
+        - A text file read without encoding="utf-8", or guarded only by `except OSError`
+          (UnicodeDecodeError is not an OSError). Prefer `read_text_or_none()` from
+          sova/utils/files.py.
+        - A specific config value clamped against a broader default, such as
+          `min(develop.step_timeout, agent.step_timeout)`. The more specific value wins.
+        - Queued, scheduled, or background work that reads project_dir or github_user
+          from a contextvar or the working directory instead of taking them as arguments.
+    - path: "sova/config/**"
+      instructions: |
+        A new nested config section needs four registrations: the model in models.py, the
+        section name in `_NESTED_SECTIONS` (loader.py), a SettingMeta entry in
+        sova/dashboard/settings_meta.py, and an `_apply_nested_env_overrides()` call inside
+        `_apply_env_overrides()` for every field settable as SOVA_<SECTION>_<FIELD>. The
+        env override is the one most often missed: without it the env var silently does
+        nothing, and no generic test catches it.
     - path: "sova/dashboard/**"
       instructions: |
         FastAPI dashboard with Jinja2 templates. Verify proper async patterns,
         response model consistency, and that new endpoints have corresponding tests.
     - path: "sova/core/steps/**"
       instructions: |
-        Pipeline step implementations. Every validate_output() must check unstaged diff,
-        staged diff, AND commits ahead of base. Never return GateCheckResult(passed=True)
-        unconditionally.
+        Pipeline step implementations. A validate_output() that gates on whether the step
+        changed anything must check unstaged diff, staged diff, commits ahead of base, AND
+        untracked files, and must never return GateCheckResult(passed=True) unconditionally.
+        Steps whose outcome is not a diff (sync, assess, monitor_ci, confidence_score,
+        resolve_external_reviews, extract_memory, handoff_to_reviewer, handoff_to_user)
+        pass their gate unconditionally by design; do not flag those.
+        A step whose command or prompt edits the worktree must set `requires_tools = True`
+        and go through `dispatch_command()`/`dispatch_prompt()` in sova/core/agent_dispatch.py,
+        never `invoke_command()`, so a missing agent runtime fails fast instead of silently
+        degrading to a text-only LLM call.
     - path: "tests/**/*.py"
       instructions: |
         Pytest suite with pytest-asyncio (asyncio_mode=auto). Verify mocks target the
         correct module path (patch at import site, not definition site). Check for proper
-        async test patterns.
+        async test patterns. Type hints are required on test signatures too (`-> None`),
+        as AGENTS.md requires them on all signatures. A test carrying a runtime, stress,
+        chaos, or evaluation marker must also gate itself with its own skipif:
+        `make test-ci`, which CI runs, does not deselect those markers.
+    - path: "sova/commands/data/commands/*.md"
+      instructions: |
+        Canonical command templates, rendered into .claude/commands/, .agents/skills/ and
+        plugins/sova/. Each fenced bash block runs in its own shell: a variable or function
+        set in one block is gone in the next, so every block must re-derive the values it
+        uses. A command whose output gates a retry cap or cycle limit must check its own
+        exit status first: `cmd | wc -l` and `out=$(cmd) || true` turn a failed gh call
+        into a zero or partial answer.
     - path: ".github/scripts/*.sh"
       instructions: |
         CI gate scripts. Must pass shellcheck at default severity, use set -euo pipefail,
@@ -112,5 +150,23 @@ knowledge_base:
   pull_requests:
     scope: "local"
   code_guidelines:
+    # AGENTS.md, CLAUDE.md and .claude/rules/**/*.md are auto-discovered by default.
+    # A guideline file otherwise applies only to its own directory, so a bare docs/
+    # pattern scopes it to docs/, which path_filters exclude from review: each docs/
+    # entry needs an explicit applyTo. architecture.md keeps its default whole-repo
+    # scope. Patterns are comma-separated without spaces.
     filePatterns:
-      - "docs/*-guidelines.md"
+      - files: "docs/security-guidelines.md"
+        applyTo: "sova/**,invariants/**,.github/**"
+      - files: "docs/error-handling-guidelines.md,docs/performance-guidelines.md,docs/integration-guidelines.md,docs/database-guidelines.md"
+        applyTo: "sova/**"
+      - files: "docs/api-contracts-guidelines.md"
+        applyTo: "sova/dashboard/**,sova/adapters/**,sova/llm/**,sova/ipc/**"
+      - files: "docs/testing-guidelines.md"
+        applyTo: "tests/**"
+      - files: "docs/model-selection-architecture.md,docs/model-selection-risk-assessment.md"
+        applyTo: "sova/llm/**,sova/core/**,sova/config/**,sova/ipc/runtime.py,sova/dashboard/services/models_service.py"
+      - files: ".claude/rules/bash-patterns.md"
+        applyTo: "invariants/**,.github/scripts/**,sova/commands/data/commands/**"
+      - files: ".claude/rules/workflow.md"
+        applyTo: "sova/commands/**"

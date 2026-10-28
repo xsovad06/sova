@@ -144,6 +144,18 @@ Jinja2's `{{ var }}` uses HTML escaping, not JavaScript string escaping. A value
 <button data-slug="{{ slug | e }}" onclick="doThing(this.dataset.slug)">
 ```
 
+Inside a `<script>` block, write the value with `tojson`, which emits a complete, JS-safe string literal (`supervisor.html`'s `githubRepo`, `spec.html`'s `_issueNumber`). Never wrap `{{ var }}` in quotes by hand: a trailing backslash escapes the closing quote.
+
+```html
+<script>
+var issueNumber = {{ issue_number | tojson }};
+</script>
+```
+
+### Rendered Markdown
+
+marked passes raw HTML in its input straight through, so its output must never reach `innerHTML` unsanitized. Render markdown only through the two helpers in `_head.html`: `renderMarkdown()` for blocks and `renderMarkdownInline()` for a single line. Both sanitize with DOMPurify and fall back to escaped text when either library failed to load. `tests/test_dashboard_script_injection.py` runs both helpers under node and fails if any other template or script calls `marked.parse()` or `marked.parseInline()` itself.
+
 ### Manifest Path Traversal
 
 `_remove_managed_commands()` in `sova/cli/commands/project.py` reads filenames from `.sova-manifest.json`. A tampered entry like `../../sova.toml` could escape the managed directory. Guard with `resolve()` + `is_relative_to()`.
@@ -229,3 +241,4 @@ When adding LLM-facing code:
 5. **New file paths from external input**: validate with `Path.resolve()` + root check
 6. **New API endpoints**: validate/sanitize all path parameters
 7. **New log output**: apply `_redact_logs()` if the source may contain tokens or keys
+8. **New dashboard rendering**: render markdown through `renderMarkdown()`/`renderMarkdownInline()`, and write server values into a `<script>` block with `| tojson`

@@ -86,7 +86,7 @@ if (window.mermaid) {
 }
 
 var _specData = null;
-var _issueNumber = '{{ issue_number }}';
+var _issueNumber = {{ issue_number | tojson }};
 
 function complexityColor(c) {
   switch (c) {
@@ -141,12 +141,11 @@ function renderQuestions(questions) {
   }
 
   section.classList.remove('hidden');
-  _ensureMarked();
   var html = '';
   for (var i = 0; i < questions.length; i++) {
     var q = questions[i];
     html += '<div class="bg-surface rounded-lg p-4 border border-gray-700/50">';
-    html += '<p class="text-sm text-gray-200 mb-2 font-medium spec-question-text">' + (window.marked ? marked.parseInline(q.text || '') : escapeHtml(q.text || '')) + '</p>';
+    html += '<p class="text-sm text-gray-200 mb-2 font-medium spec-question-text">' + renderMarkdownInline(q.text) + '</p>';
     html += '<textarea id="answer-' + q.id + '" rows="2" placeholder="Enter your answer..." class="w-full bg-surface-card border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-accent focus:outline-none resize-y">' + escapeHtml(q.answer || '') + '</textarea>';
     html += '</div>';
   }
