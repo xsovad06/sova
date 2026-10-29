@@ -96,11 +96,11 @@ async def _kill_process(pid: int) -> None:
     except OSError:
         return
     await asyncio.sleep(2)
-    try:
-        os.kill(pid, 0)
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        pass
+    if is_process_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 _MERGE_CHECK_TIMEOUT = 10.0  # per-PR GitHub check during recovery

@@ -89,6 +89,7 @@ from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 
 log = get_logger(component="dashboard.app")
 
@@ -570,14 +571,7 @@ def _check_scheduler_health(project_dir: Path) -> str | None:
     except (ValueError, OSError):
         log.warning("healthz.scheduler_check_failed", path=str(pid_path), exc_info=True)
         return "fail"
-    try:
-        os.kill(pid, 0)
-        return "ok"
-    except PermissionError:
-        # Process exists but is owned by another user (still alive).
-        return "ok"
-    except OSError:
-        return "fail"
+    return "ok" if is_process_alive(pid) else "fail"
 
 
 def priority_icon(priority: str | None, size: str = "16") -> Markup:
