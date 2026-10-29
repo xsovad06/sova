@@ -3355,6 +3355,91 @@ class TestHandoffAPI:
         assert data["handoff"]["source"] == "integrate-pr"
         assert len(data["handoff"]["next_actions"]) == 1
 
+    async def test_unreadable_handoffs_are_listed_project_wide_without_an_issue(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text("[]", encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        assert sorted(resp.json()["unreadable_handoffs"]) == [
+            str(control_dir / "handoff-5.json"),
+            str(control_dir / "handoff-6.json"),
+        ]
+
+    async def test_non_object_handoff_is_reported_not_a_500(self, client: AsyncClient, tmp_path) -> None:
+        """A handoff file holding valid JSON that is not an object used to raise in the created_at sort."""
+        import json
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        good = {"id": "g", "source": "developer", "status": "completed", "summary": "ok", "issue": "1"}
+        (control_dir / "handoff-1.json").write_text(json.dumps(good), encoding="utf-8")
+        (control_dir / "handoff-2.json").write_text("[]", encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["handoff"]["issue"] == "1"
+        assert data["unreadable_handoffs"] == [str(control_dir / "handoff-2.json")]
+
+    async def test_issue_filter_narrows_unreadable_handoffs_to_that_issue(self, client: AsyncClient, tmp_path) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff.json").write_text("{not json", encoding="utf-8")
+
+        resp = await client.get("/api/handoff", params={"issue": "5"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is False
+        assert sorted(data["unreadable_handoffs"]) == [
+            str(control_dir / "handoff-5.json"),
+            str(control_dir / "handoff.json"),
+        ]
+
+    async def test_schema_invalid_handoff_is_rendered_and_listed_separately(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """The dashboard renders legacy shapes, but the pipeline skips them, so the response names them."""
+        import json
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        good = {"id": "g", "source": "developer", "status": "completed", "summary": "ok", "issue": "1"}
+        (control_dir / "handoff-1.json").write_text(json.dumps(good), encoding="utf-8")
+        (control_dir / "handoff-15.json").write_text('{"issue": "15", "source": "reviewer"}', encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert sorted(h["issue"] for h in data["handoffs"]) == ["1", "15"]
+        assert data["unreadable_handoffs"] == []
+        assert data["schema_invalid_handoffs"] == [str(control_dir / "handoff-15.json")]
+
+    async def test_issue_filter_narrows_schema_invalid_handoffs_to_that_issue(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text('{"issue": "5"}', encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text('{"issue": "6"}', encoding="utf-8")
+
+        resp = await client.get("/api/handoff", params={"issue": "5"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert data["schema_invalid_handoffs"] == [str(control_dir / "handoff-5.json")]
+
     async def test_clear_handoff_no_file(self, client: AsyncClient) -> None:
         resp = await client.post("/api/handoff/clear")
         assert resp.status_code == 200
@@ -5264,37 +5349,37 @@ class TestGetRecentFailedRunsDirect:
         assert "110" not in issues
 
 
-class TestCalculateDurationMs:
-    """Unit tests for _calculate_duration_ms helper."""
+class TestComputeDurationMs:
+    """Unit tests for _compute_duration_ms, the module's one duration-in-milliseconds helper."""
 
     def test_both_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(None, None) is None
+        assert _compute_duration_ms(None, None) is None
 
     def test_started_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(None, datetime.now(timezone.utc)) is None
+        assert _compute_duration_ms(None, datetime.now(timezone.utc)) is None
 
     def test_ended_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(datetime.now(timezone.utc), None) is None
+        assert _compute_duration_ms(datetime.now(timezone.utc), None) is None
 
     def test_naive_datetimes(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
         start = datetime(2026, 1, 1, 12, 0, 0)
         end = datetime(2026, 1, 1, 12, 0, 10)
-        assert _calculate_duration_ms(start, end) == 10_000
+        assert _compute_duration_ms(start, end) == 10_000
 
     def test_aware_datetimes(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
         start = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-        assert _calculate_duration_ms(start, end) == 300_000
+        assert _compute_duration_ms(start, end) == 300_000
 
 
 class TestGetKanbanColumnsDirect:
@@ -16072,6 +16157,47 @@ class TestRolesAPI:
         assert cmd is not None
         assert cmd["installed_path"] == ".claude/commands/develop.md"
         assert cmd["has_local_drift"] is True
+        role_service._cmd_cache.clear()
+
+    async def test_list_commands_in_single_project_mode_uses_the_default_project_dir(
+        self, client, tmp_path, monkeypatch
+    ):
+        """With no per-request project, the single-project default supplies the installed commands and drift.
+
+        This endpoint used to read only the per-request contextvar, which single-project mode never sets, so it
+        served the canonical catalog with no drift metadata there. The shared resolver's default fallback is
+        an intended behaviour change of the project-dir consolidation, pinned here.
+        """
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_default_project_dir", lambda: tmp_path)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        cmd = next(c for c in resp.json()["commands"] if c["name"] == "develop")
+        assert cmd["installed_path"] == ".claude/commands/develop.md"
+        assert cmd["has_local_drift"] is True
+        role_service._cmd_cache.clear()
+
+    async def test_list_commands_without_a_project_ignores_the_cwd(self, client, tmp_path, monkeypatch):
+        """No project selected means the canonical catalog only: the cwd's own .claude/commands is not the project's."""
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_default_project_dir", lambda: None)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        cmd = next(c for c in resp.json()["commands"] if c["name"] == "develop")
+        assert cmd["has_local_drift"] is False
         role_service._cmd_cache.clear()
 
     async def test_list_commands_symlink_rejected(self, client, tmp_path, monkeypatch):

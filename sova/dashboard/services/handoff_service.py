@@ -9,15 +9,13 @@ Supports multi-project mode via project context or set_project_dir().
 
 from __future__ import annotations
 
-import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sova.config.context import resolve_project_dir
-from sova.utils.logging import get_logger
-
-log = get_logger(component="dashboard.handoff")
+from sova.ipc.handoff import is_schema_valid, prune_unreadable_warnings, read_handoff_json
+from sova.utils.files import remove_stale_temp_files
 
 # Default project dir for single-project mode
 _default_project_dir: Path | None = None
@@ -84,26 +82,52 @@ def get_handoff(project_dir: Path | None = None, issue: str | None = None) -> di
     return _read_cached_path(newest, ck)
 
 
-def get_all_handoffs(project_dir: Path | None = None) -> list[dict]:
-    """Return all active handoff files as dicts."""
+def get_all_handoffs(
+    project_dir: Path | None = None,
+    *,
+    unreadable_out: list[str] | None = None,
+    schema_invalid_out: list[str] | None = None,
+) -> list[dict]:
+    """Return all active handoff files as dicts.
+
+    When *unreadable_out* is given, the path of every candidate that failed
+    to parse is appended to it, so a caller can surface those separately
+    (e.g. as a warning on the agents page) without a second file-read pass.
+    A candidate that vanished after the listing (archived or cleared mid-poll) is skipped,
+    not reported: it was not corrupt, it was handled.
+
+    The dashboard renders any JSON object, legacy shapes included, so such a file is still
+    returned. *schema_invalid_out* collects the paths of the returned files that fail
+    ``DashboardHandoff`` validation: the supervisor and the auto-handoff read through the
+    pipeline reader, which skips them, so the page must not present them as healthy.
+    """
     cdir = _control_dir(project_dir)
-    if cdir is None or not cdir.exists():
+    if cdir is None:
+        return []
+    if not cdir.exists():
+        prune_unreadable_warnings(cdir, [])
         return []
 
     candidates = list(cdir.glob("handoff-*.json"))
     legacy = cdir / "handoff.json"
     if legacy.exists():
         candidates.append(legacy)
+    prune_unreadable_warnings(cdir, candidates)
 
     results = []
     for path in candidates:
-        try:
-            data = json.loads(path.read_text())
-            results.append(data)
-        except (json.JSONDecodeError, OSError):
+        data = read_handoff_json(path)
+        if data is None:
+            if unreadable_out is not None and path.exists():
+                unreadable_out.append(str(path))
             continue
+        if schema_invalid_out is not None and not is_schema_valid(data):
+            schema_invalid_out.append(str(path))
+        results.append(data)
 
-    results.sort(key=lambda h: h.get("created_at", ""), reverse=True)
+    # The dashboard checks only that a file is a JSON object, so created_at may be any JSON
+    # value; a str() key keeps one odd file from turning every poll into a TypeError.
+    results.sort(key=lambda h: str(h.get("created_at") or ""), reverse=True)
     return results
 
 
@@ -118,15 +142,18 @@ def _read_cached_path(hf: Path, ck: str) -> dict | None:
         return None
     try:
         mtime = hf.stat().st_mtime
-        hf_str = str(hf)
-        cached = _handoff_caches.get(ck)
-        if cached and mtime == cached[0] and hf_str == cached[1]:
-            return cached[2]
-        data = json.loads(hf.read_text())
-        _handoff_caches[ck] = (mtime, hf_str, data)
-        return data
-    except (json.JSONDecodeError, OSError):
+    except OSError:
         return None
+    hf_str = str(hf)
+    cached = _handoff_caches.get(ck)
+    if cached and mtime == cached[0] and hf_str == cached[1]:
+        return cached[2]
+    data = read_handoff_json(hf)
+    # Only a successful parse is cached: a read that caught the file mid-write
+    # (truncated, same mtime on a coarse-timestamp filesystem) must be retried.
+    if data is not None:
+        _handoff_caches[ck] = (mtime, hf_str, data)
+    return data
 
 
 def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -> dict | None:
@@ -144,17 +171,17 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
             files.append(cdir / fname)
         legacy = cdir / "handoff.json"
         if legacy.exists():
-            try:
-                ldata = json.loads(legacy.read_text())
-                if str(ldata.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
-                    files.append(legacy)
-            except (json.JSONDecodeError, OSError):
-                pass
+            ldata = read_handoff_json(legacy)
+            if ldata is not None and str(ldata.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
+                files.append(legacy)
     else:
         files = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
         legacy = cdir / "handoff.json"
         if legacy.exists():
             files.append(legacy)
+
+    # Temp files from a handoff write that died before its os.replace() (see write_text_atomic).
+    remove_stale_temp_files(cdir, ".handoff*.tmp")
 
     archive = _archive_dir(project_dir)
     last_data = None
@@ -162,17 +189,17 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
     for hf in files:
         if not hf.exists():
             continue
-        try:
-            data = json.loads(hf.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-
-        last_data = data
+        data = read_handoff_json(hf)
+        if data is not None:
+            last_data = data
+        # An unreadable file (corrupt or non-UTF-8) is archived byte-for-byte too: clear_handoff()
+        # deletes every file this returns after, and that must leave a copy to repair it from.
+        meta = data if data is not None else {"source": "unreadable"}
         if archive is not None:
             archive.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            source = data.get("source", "unknown")
-            h_issue = data.get("issue") or ""
+            source = meta.get("source", "unknown")
+            h_issue = meta.get("issue") or ""
             suffix = f"_{h_issue}" if h_issue else ""
             stem = hf.stem
             archive_name = f"{ts}_{source}{suffix}_{stem}.json"
@@ -210,13 +237,10 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
                 cleared = True
         legacy = cdir / "handoff.json"
         if legacy.exists():
-            try:
-                data = json.loads(legacy.read_text())
-                if str(data.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
-                    legacy.unlink()
-                    cleared = True
-            except (json.JSONDecodeError, OSError):
-                pass
+            data = read_handoff_json(legacy)
+            if data is not None and str(data.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
+                legacy.unlink()
+                cleared = True
         ck = _cache_key(project_dir, issue)
         _handoff_caches[ck] = (0.0, "", None)
     else:

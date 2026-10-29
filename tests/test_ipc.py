@@ -142,6 +142,72 @@ class TestHandoffFile:
 
         assert read_handoff_file(tmp_path) is None
 
+    def test_write_leaves_only_the_handoff_file(self, tmp_path: Path) -> None:
+        """The write is atomic (temp file then replace), so no temp file may outlive it."""
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        path = write_handoff_file(tmp_path, DashboardHandoff(source="t", status="completed", summary="s", issue="7"))
+
+        assert [p.name for p in path.parent.iterdir()] == ["handoff-7.json"]
+
+    def test_failed_write_keeps_the_previous_handoff_readable(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="first", status="completed", summary="s", issue="7"))
+
+        with patch("sova.utils.files.os.replace", side_effect=OSError("disk full")), pytest.raises(OSError):
+            write_handoff_file(tmp_path, DashboardHandoff(source="second", status="completed", summary="s", issue="7"))
+
+        restored = read_handoff_file(tmp_path, "7")
+        assert restored is not None
+        assert restored.source == "first"
+
+    def test_corrupt_file_warns_once_per_version_and_logs_repeats_at_debug(self, tmp_path: Path) -> None:
+        """read_all_handoff_files() runs on every supervisor and agent-exit cycle."""
+        from sova.ipc import handoff as ipc_handoff
+        from sova.ipc.handoff import read_all_handoff_files
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        bad = control_dir / "handoff-9.json"
+        bad.write_text("not valid json{{{", encoding="utf-8")
+
+        with patch.object(ipc_handoff, "log") as mock_log:
+            for _ in range(3):
+                assert read_all_handoff_files(tmp_path) == []
+            assert mock_log.warning.call_count == 1
+            assert mock_log.debug.call_count == 2
+
+            bad.write_text("still not valid json{{{ and longer", encoding="utf-8")
+            read_all_handoff_files(tmp_path)
+
+        assert mock_log.warning.call_count == 2
+
+    def test_schema_invalid_file_is_deduped_like_a_corrupt_one(self, tmp_path: Path) -> None:
+        from sova.ipc import handoff as ipc_handoff
+        from sova.ipc.handoff import read_all_handoff_files
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-9.json").write_text('{"source": "x"}', encoding="utf-8")
+
+        with patch.object(ipc_handoff, "log") as mock_log:
+            read_all_handoff_files(tmp_path)
+            read_all_handoff_files(tmp_path)
+
+        assert mock_log.warning.call_count == 1
+        assert mock_log.debug.call_count == 1
+
+    @pytest.mark.parametrize("content", ["[]", '"x"', "1", "null"])
+    def test_non_object_json_is_unreadable(self, tmp_path: Path, content: str) -> None:
+        from sova.ipc.handoff import read_handoff_file
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-3.json").write_text(content, encoding="utf-8")
+
+        assert read_handoff_file(tmp_path, "3") is None
+
     def test_write_creates_directory(self, tmp_path: Path) -> None:
         from sova.ipc.handoff import DashboardHandoff, write_handoff_file
 

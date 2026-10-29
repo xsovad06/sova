@@ -725,6 +725,26 @@ async function _pollHandoff() {
     if (!res.ok) return;
     var data = await res.json();
     var banner = document.getElementById('checkpoint-banner');
+    var unreadableBanner = document.getElementById('handoff-unreadable-banner');
+
+    if (unreadableBanner) {
+      var unreadable = data.unreadable_handoffs || [];
+      // Rendered by the dashboard (legacy shapes are accepted) but skipped by the supervisor and the
+      // auto-handoff, so the page must not present them as healthy.
+      var schemaInvalid = data.schema_invalid_handoffs || [];
+      unreadableBanner.classList.toggle('hidden', !(unreadable.length || schemaInvalid.length));
+      var unreadableLabel = document.getElementById('handoff-unreadable-label');
+      if (unreadableLabel && (unreadable.length || schemaInvalid.length)) {
+        // File names in the label, full paths on hover: the banner sits in a narrow sidebar.
+        var baseName = function(p) { return p.split(/[\\/]/).pop(); };
+        var parts = [];
+        if (unreadable.length) parts.push('Handoff file unreadable: ' + unreadable.map(baseName).join(', '));
+        if (schemaInvalid.length) parts.push('Handoff file ignored by the pipeline (invalid schema): ' + schemaInvalid.map(baseName).join(', '));
+        unreadableLabel.textContent = parts.join('; ');
+        unreadableLabel.title = unreadable.concat(schemaInvalid).join('\n');
+      }
+    }
+
     if (!banner) return;
 
     var handoffs = (data.handoffs || []).filter(function(h) {

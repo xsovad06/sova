@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -49,26 +50,40 @@ class ClearHandoffRequest(BaseModel):
 
 @router.get("/handoff")
 async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
-    """Get active handoff files, optionally filtered by issue."""
-    all_handoffs = handoff_service.get_all_handoffs()
+    """Get active handoff files, optionally filtered by issue.
+
+    ``unreadable_handoffs`` lists the files that could not be parsed. ``schema_invalid_handoffs``
+    lists the files that parse as JSON objects, and are still returned in ``handoffs`` because the
+    dashboard renders legacy shapes, but fail ``DashboardHandoff`` validation: the supervisor and the
+    auto-handoff skip them, so they must not look healthy. Without ``issue`` both cover the whole
+    project; with ``issue`` they are narrowed to that issue's own file and the legacy shared
+    ``handoff.json``, so another issue's corrupt file is not reported as this one's.
+    """
+    unreadable: list[str] = []
+    schema_invalid: list[str] = []
+    all_handoffs = handoff_service.get_all_handoffs(unreadable_out=unreadable, schema_invalid_out=schema_invalid)
 
     if issue:
+        # Built inline rather than via handoff_filename(): this route is polled every few seconds
+        # and that helper warns on an unsafe issue string, which here is client-controlled input.
+        own_files = {f"handoff-{issue.lstrip('#').strip()}.json", "handoff.json"}
+        unreadable = [path for path in unreadable if Path(path).name in own_files]
+        schema_invalid = [path for path in schema_invalid if Path(path).name in own_files]
         filtered = [h for h in all_handoffs if str(h.get("issue", "")) == issue]
-        if filtered:
-            return {"has_handoff": True, "handoff": filtered[0], "handoffs": filtered}
-        return {"has_handoff": False, "handoffs": []}
+    else:
+        filtered = all_handoffs
 
-    if not all_handoffs:
-        synthesized = await get_synthesized_handoff()
-        if synthesized is not None:
-            return {"has_handoff": True, "handoff": synthesized, "handoffs": [synthesized]}
-        return {"has_handoff": False, "handoffs": []}
+    problems = {"unreadable_handoffs": unreadable, "schema_invalid_handoffs": schema_invalid}
 
-    return {
-        "has_handoff": True,
-        "handoff": all_handoffs[0],
-        "handoffs": all_handoffs,
-    }
+    if filtered:
+        return {"has_handoff": True, "handoff": filtered[0], "handoffs": filtered, **problems}
+    if issue:
+        return {"has_handoff": False, "handoffs": [], **problems}
+
+    synthesized = await get_synthesized_handoff()
+    if synthesized is not None:
+        return {"has_handoff": True, "handoff": synthesized, "handoffs": [synthesized], **problems}
+    return {"has_handoff": False, "handoffs": [], **problems}
 
 
 @router.post(

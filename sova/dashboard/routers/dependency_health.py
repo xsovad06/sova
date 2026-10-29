@@ -10,13 +10,14 @@ from sova.config.context import resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.dashboard.services import dependency_health_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.utils.dedup_log import FileVersion, forget_under, warn_once_per_version
 from sova.utils.logging import get_logger
 
 router = APIRouter(prefix="/dependency-health", tags=["dependency-health"])
 log = get_logger(component="dashboard.api.dependency_health")
 
-# path -> (mtime, size) of the unreadable manifest version already warned about (None when it cannot be stat'ed)
-_warned_manifests: dict[str, tuple[float, int] | None] = {}
+# resolved path -> (mtime, size) of the unreadable manifest version already warned about
+_warned_manifests: dict[str, FileVersion] = {}
 
 _ERROR_RESPONSES = {
     400: {"description": "No project selected"},
@@ -32,17 +33,7 @@ def _note_unreadable_manifest(path: Path) -> None:
     A new save is a new version (mtime and size), so a still-broken re-save warns again. No traceback: the
     path and the exception's message already say everything, and the frames hold the manifest text.
     """
-    try:
-        st = path.stat()
-        version: tuple[float, int] | None = (st.st_mtime, st.st_size)
-    except OSError:
-        version = None
-    key = str(path)
-    if key in _warned_manifests and _warned_manifests[key] == version:
-        log.debug("dependency_health.manifest_unreadable", path=key)
-        return
-    _warned_manifests[key] = version
-    log.warning("dependency_health.manifest_unreadable", path=key)
+    warn_once_per_version(log, "dependency_health.manifest_unreadable", path, _warned_manifests)
 
 
 async def _get_snapshot(*, force_refresh: bool = False) -> dependency_health_service.DependencyHealthSnapshot:
@@ -57,13 +48,16 @@ async def _get_snapshot(*, force_refresh: bool = False) -> dependency_health_ser
         raise HTTPException(status_code=400, detail="No project selected")
     try:
         dh_cfg = load_config(project_dir).dependency_health
-        return await dependency_health_service.get_snapshot(
+        snapshot = await dependency_health_service.get_snapshot(
             project_dir,
             enabled=dh_cfg.enabled,
             cache_ttl_minutes=dh_cfg.cache_ttl_minutes,
             registry_timeout_seconds=dh_cfg.registry_timeout_seconds,
             force_refresh=force_refresh,
         )
+        # Every manifest scanned cleanly, so none of this project's warned versions is current any more.
+        forget_under(project_dir, _warned_manifests)
+        return snapshot
     except dependency_health_service.ManifestUnreadableError as exc:
         # Not a server fault and not retryable: name the file so the user knows what to re-save as UTF-8.
         _note_unreadable_manifest(exc.path)

@@ -166,6 +166,30 @@ class TestDependencyHealthRouter:
         assert mock_log.debug.call_count == 2
         assert all("exc_info" not in call.kwargs for call in mock_log.warning.call_args_list)
 
+    async def test_a_clean_scan_forgets_the_projects_warned_manifests(self, tmp_path) -> None:
+        """The table is not pruned by anything else, so it would grow by one entry per distinct path."""
+        from sova.dashboard.routers import dependency_health as router_module
+        from sova.utils.dedup_log import warn_key
+
+        manifest = tmp_path / "requirements-fixed.txt"
+        manifest.write_bytes(b"\xff")
+        elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere.txt"
+        elsewhere.write_bytes(b"\xff")
+        router_module._note_unreadable_manifest(manifest)
+        router_module._note_unreadable_manifest(elsewhere)
+        assert warn_key(manifest) in router_module._warned_manifests
+
+        with (
+            patch.object(router_module, "resolve_project_dir_or_none", return_value=tmp_path),
+            patch.object(router_module, "load_config"),
+            patch.object(svc, "get_snapshot", new=AsyncMock(return_value="snapshot")),
+        ):
+            assert await router_module._get_snapshot() == "snapshot"
+
+        assert warn_key(manifest) not in router_module._warned_manifests
+        assert warn_key(elsewhere) in router_module._warned_manifests
+        router_module._warned_manifests.pop(warn_key(elsewhere), None)
+
     async def test_snapshot_no_project_selected_returns_400(self, app) -> None:
         with patch("sova.dashboard.routers.dependency_health.get_default_project_dir", return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

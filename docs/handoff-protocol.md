@@ -16,6 +16,12 @@ This replaces the need for long-running agents that pause for approval. Instead,
 5. New agent reads `handoff.json` for context, does its work
 6. New agent overwrites `handoff.json` with its own result (or deletes it if done)
 
+**Writes are atomic.** `write_handoff_file()` writes a hidden sibling temp file and `os.replace()`s it over the target, so the dashboard's poll sees the previous handoff or the new one, never a truncated file.
+
+**Unreadable files.** A handoff that cannot be used (invalid JSON, not valid UTF-8, or valid JSON that is not an object such as `[]`) is skipped, not fatal. `GET /api/handoff` lists its path in `unreadable_handoffs`, which the dashboard renders as the red "Handoff file unreadable" sidebar banner. With `?issue=N` the list is narrowed to `handoff-N.json` and the legacy `handoff.json`; without it, it covers every file in the control directory. A file deleted between the directory listing and the read (the auto-handoff clears a handoff before it spawns the next agent) is skipped silently and never listed. Each unreadable version (keyed by mtime and size) is logged once as a `handoff_file.unreadable` warning and at debug on repeat reads, by one shared reader in `sova/ipc/handoff.py` used by both the dashboard and the pipeline. Clearing a handoff archives an unreadable file byte-for-byte before deleting it.
+
+**Only the pipeline reader skips on the schema, and the dashboard reports the difference.** The dashboard accepts any JSON object, because it also renders legacy shapes (an action keyed by `action` rather than `id`, a file with no `summary`), so a schema-invalid object stays in `handoffs` and is not in `unreadable_handoffs`. It is listed in `schema_invalid_handoffs` instead (narrowed by `?issue=N` the same way), and the sidebar banner names it as "ignored by the pipeline (invalid schema)", because the pipeline reader (`read_handoff_file()`, `read_all_handoff_files()`) additionally validates `DashboardHandoff` and skips such a file, so the supervisor and the auto-handoff never act on it. The pipeline logs it under the same once-per-version rule. A dashboard read does not reset that dedup for an unchanged file, so the two readers sharing a process do not take turns re-warning. The warning carries a short `error` field (the exception type and, for a validation failure, the field names and messages) and no traceback, because a traceback frame holds the file text and a validation error holds its input values.
+
 ## Schema
 
 ```json
