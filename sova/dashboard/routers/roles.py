@@ -7,9 +7,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir_or_none
 from sova.core.dag import validate_dag
 from sova.dashboard.services import role_service
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
@@ -56,7 +57,7 @@ async def list_roles() -> dict[str, list[dict[str, Any]]]:
 @router.get("/commands")
 async def list_commands() -> dict[str, list[dict[str, Any]]]:
     """List available commands with content, install path, and drift metadata."""
-    pdir = _resolve_project_dir()
+    pdir = _resolve_commands_project_dir()
     commands = role_service.get_available_commands(pdir)
     return {"commands": commands}
 
@@ -64,7 +65,7 @@ async def list_commands() -> dict[str, list[dict[str, Any]]]:
 @router.get("/commands/{name}")
 async def get_command(name: str) -> dict[str, Any]:
     """Get a single command by name."""
-    pdir = _resolve_project_dir()
+    pdir = _resolve_commands_project_dir()
     cmd = role_service.get_command_detail(name, pdir)
     if cmd is None:
         raise HTTPException(status_code=404, detail=f"Command not found: {name}")
@@ -154,7 +155,12 @@ async def validate_role(name: str, req: ValidateRequest) -> dict[str, Any]:
     return {"valid": len(errors) == 0, "errors": errors}
 
 
-def _resolve_project_dir() -> str | None:
-    """Return the active project directory as a string, or ``None``."""
-    pdir = get_project_dir()
-    return str(pdir) if pdir else None
+def _resolve_commands_project_dir() -> str | None:
+    """The active project directory as a string, or ``None`` when no project is selected.
+
+    ``None`` is meaningful to ``role_service``: it serves the canonical command catalog with no
+    project drift metadata. The cwd is therefore not a fallback here, or a dashboard started from
+    an unrelated directory that has its own ``.claude/commands/`` would serve those as the project's.
+    """
+    pdir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    return str(pdir) if pdir is not None else None

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from sova.a2a.agent_card import generate_role_card
 from sova.a2a.task_mapping import sova_status_to_a2a, task_run_to_a2a_task
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir, resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.dashboard.services import mcp_service
@@ -34,7 +34,7 @@ def _get_a2a_config() -> ProjectConfig | None:
     """Load A2A config with a TTL cache to avoid disk reads on every request."""
     global _cached_config, _cached_config_dir, _cached_config_ts
 
-    project_dir = get_project_dir() or get_default_project_dir()
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     if project_dir is None:
         return None
 
@@ -132,7 +132,7 @@ def _validate_a2a_cancel_auth(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    project_dir = get_project_dir() or get_default_project_dir()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     secret = mcp_service.get_or_generate_secret(project_dir)
     token = authorization[7:]
 

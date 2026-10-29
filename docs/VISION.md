@@ -29,7 +29,7 @@ sova/
     core/                          # Workflow engine, 29 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer)
     adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
-    dashboard/                     # FastAPI web UI (33 routers, 49 services, 29 templates)
+    dashboard/                     # FastAPI web UI (33 routers, 48 services, 29 templates)
     scheduler/                     # Watch loop, server daemon
     llm/                           # Claude CLI async wrapper, cost tracking
     mcp/                           # MCP server for tool integration

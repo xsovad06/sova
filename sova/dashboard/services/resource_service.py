@@ -39,8 +39,8 @@ def _get_memory_guard_config() -> MemoryGuardConfig | None:
     agent spawn gate (which also calls ``load_config`` directly).
     """
     try:
+        from sova.config.context import get_project_dir
         from sova.config.loader import load_config
-        from sova.dashboard.project_context import get_project_dir
 
         cfg = load_config(get_project_dir())
         return cfg.memory_guard

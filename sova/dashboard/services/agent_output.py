@@ -24,8 +24,8 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int) ->
     Falls back to the DB-persisted output when the agent is not in memory,
     then to a legacy log file for pre-migration runs.
     """
+    from sova.core.output import read_lines, read_lines_from_file
     from sova.dashboard.services.agent_pool import _get_project_agents
-    from sova.dashboard.services.output_service import read_lines, read_lines_from_file
 
     pa = _get_project_agents(slug)
 

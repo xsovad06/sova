@@ -436,7 +436,7 @@ class TestSynthesizePrActions:
         agent_recovery._synthesis_cache.clear()
         agent_recovery._issue_pr_cache.clear()
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = type(
             "Cfg",
             (),
@@ -692,7 +692,7 @@ class TestLoadRepoConfig:
 
         from sova.dashboard.services.agent_recovery import _load_repo_config
 
-        with patch("sova.dashboard.project_context.get_project_dir", return_value=None):
+        with patch("sova.config.context.get_project_dir", return_value=None):
             assert _load_repo_config() is None
 
     def test_load_repo_config_exception(self, tmp_path: Path) -> None:
@@ -701,7 +701,7 @@ class TestLoadRepoConfig:
         from sova.dashboard.services.agent_recovery import _load_repo_config
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch(
                 "sova.config.loader.load_config",
                 side_effect=RuntimeError("bad config"),
@@ -717,7 +717,7 @@ class TestLoadRepoConfig:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch(
                 "sova.config.loader.load_config",
                 return_value=mock_cfg,
@@ -1021,7 +1021,7 @@ class TestFetchAndInterpretReviews:
         agent_recovery._synthesis_cache.clear()
         agent_recovery._issue_pr_cache.clear()
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = type(
             "Cfg",
             (),
@@ -1064,7 +1064,7 @@ class TestSynthesizePrActionsCachePaths:
         agent_recovery._synthesis_cache.clear()
         agent_recovery._issue_pr_cache.clear()
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = type(
             "Cfg",
             (),
@@ -1079,7 +1079,7 @@ class TestSynthesizePrActionsCachePaths:
     async def test_returns_none_when_no_repo_config(self, monkeypatch) -> None:
         from sova.dashboard.services import agent_recovery
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: None)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: None)
 
         result = await agent_recovery.synthesize_pr_actions("42")
         assert result is None

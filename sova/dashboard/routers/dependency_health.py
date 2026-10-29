@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.dashboard.services import dependency_health_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
@@ -19,12 +19,11 @@ _ERROR_RESPONSES = {400: {"description": "No project selected"}, 500: {"descript
 async def _get_snapshot(*, force_refresh: bool = False) -> dependency_health_service.DependencyHealthSnapshot:
     """Load config and return the project's snapshot, translating any failure into a 500.
 
-    `get_project_dir()` only returns a value when the multi-project middleware set it
-    from a `/p/{slug}/` prefix; in single-project mode it is always None, so the
-    single-project default (set at startup) is the fallback before treating this as
-    "no project selected".
+    The per-request project is only set by the multi-project middleware from a `/p/{slug}/`
+    prefix; in single-project mode the single-project default (set at startup) is the fallback
+    before treating this as "no project selected".
     """
-    project_dir = get_project_dir() or get_default_project_dir()
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     if project_dir is None:
         raise HTTPException(status_code=400, detail="No project selected")
     try:

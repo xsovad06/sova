@@ -493,12 +493,12 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     When raise_on_error=True, config/retrieval failures propagate instead of
     returning [] (so callers can distinguish "no PRs" from "retrieval failed").
     """
+    from sova.config.context import resolve_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.git.pr import get_pr_review_data, list_open_prs
 
-    if project_dir is None:
-        project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
     try:
         cfg = load_config(project_dir)

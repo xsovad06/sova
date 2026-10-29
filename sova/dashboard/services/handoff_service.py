@@ -14,7 +14,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import resolve_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.handoff")
@@ -34,10 +34,7 @@ def set_project_dir(path: Path) -> None:
 
 def _resolve_project_dir() -> Path:
     """Resolve the active project directory."""
-    ctx_dir = get_project_dir()
-    if ctx_dir is not None:
-        return ctx_dir
-    return _default_project_dir or Path.cwd()
+    return resolve_project_dir(default_project_dir=_default_project_dir)
 
 
 def _control_dir(project_dir: Path | None = None) -> Path | None:

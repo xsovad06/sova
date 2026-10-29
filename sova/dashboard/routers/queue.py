@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field, field_validator
 
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import get_project_dir
 from sova.dashboard.services import batch_service
 from sova.dashboard.services.control_service import start_agent
 from sova.dashboard.services.queue_service import get_priority_queue

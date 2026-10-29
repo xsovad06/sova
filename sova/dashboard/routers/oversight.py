@@ -45,8 +45,8 @@ async def cancel_run_now_tasks() -> None:
 @router.get("/status")
 async def get_status() -> dict:
     """Return oversight agent status and summary stats."""
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
 
     project_dir = get_project_dir()
     try:
@@ -129,8 +129,8 @@ async def trigger_run_now() -> dict:
 async def create_issue_from_finding(finding_id: int) -> dict:
     """Create a GitHub Issue from a pending finding."""
     from sova.adapters import create_adapter
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
     from sova.oversight.actions import _issue_body, _issue_labels
 
     try:

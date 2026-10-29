@@ -702,8 +702,8 @@ def _summarize_ci_checks(checks: list | None) -> str:
 
 def _load_repo_config() -> tuple[str, str] | None:
     """Load project config and return (repo, gh_user), or None if unavailable."""
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
 
     project_dir = get_project_dir()
     if not project_dir:
@@ -762,7 +762,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
 
     from types import SimpleNamespace
 
-    from sova.dashboard.project_context import get_project_dir as _get_project_dir
+    from sova.config.context import get_project_dir as _get_project_dir
     from sova.dashboard.services.work_verdict import resolve_sova_verdict
 
     sova_review = await resolve_sova_verdict(
@@ -865,8 +865,8 @@ def _build_integrate_actions(issue_number: str, pr_number: int) -> list[dict]:
 async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_key: tuple) -> list[dict] | None:
     """Fetch reviews from adapter, deduplicate, interpret, and build actions."""
     from sova.adapters import create_adapter
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
 
     cfg = load_config(get_project_dir())
     try:

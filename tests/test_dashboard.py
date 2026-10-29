@@ -590,7 +590,7 @@ class TestDashboardHealth:
             github_repo: str = "owner/repo"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "proj")),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path / "proj")),
             patch("sova.config.loader.load_config", return_value=FakeCfg()),
         ):
             resp = await client.get("/supervisor")
@@ -4654,7 +4654,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
             patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
@@ -4680,7 +4680,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=None),
         ):
@@ -16040,7 +16040,7 @@ class TestRolesAPI:
         installed_dir = tmp_path / ".claude" / "commands"
         installed_dir.mkdir(parents=True)
         (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         from sova.dashboard.services import role_service
 
         role_service._cmd_cache.clear()
@@ -16061,7 +16061,7 @@ class TestRolesAPI:
         target.write_text("secret data", encoding="utf-8")
         symlink = installed_dir / "evil.md"
         symlink.symlink_to(target)
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         from sova.dashboard.services import role_service
 
         role_service._cmd_cache.clear()
@@ -16158,21 +16158,57 @@ class TestRolesAPI:
         assert result["name"] == "develop"
         _cmd_cache.clear()
 
-    async def test_resolve_project_dir_returns_none(self, monkeypatch):
-        """_resolve_project_dir returns None when no project context is set."""
-        from sova.dashboard.routers.roles import _resolve_project_dir
+    async def test_commands_endpoint_resolves_the_project_dir_from_the_request_context(
+        self, client, tmp_path, monkeypatch
+    ):
+        """GET /api/roles/commands hands role_service the contextvar project, as a string."""
+        from sova.config.context import clear_project_context, set_project_context
 
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: None)
-        assert _resolve_project_dir() is None
+        set_project_context(tmp_path, "slug")
+        try:
+            with patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock:
+                resp = await client.get("/api/roles/commands")
+        finally:
+            clear_project_context()
 
-    async def test_resolve_project_dir_returns_string(self, monkeypatch):
-        """_resolve_project_dir converts Path to string."""
-        from sova.dashboard.routers.roles import _resolve_project_dir
+        assert resp.status_code == 200
+        mock.assert_called_once_with(str(tmp_path))
 
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: Path("/some/path"))
-        result = _resolve_project_dir()
-        assert result == "/some/path"
-        assert isinstance(result, str)
+    async def test_commands_endpoint_falls_back_to_the_single_project_default(self, client, tmp_path):
+        """With no request context the single-project default resolves, not None."""
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=tmp_path),
+            patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock,
+        ):
+            resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with(str(tmp_path))
+
+    async def test_command_detail_endpoint_keeps_none_without_any_project(self, client):
+        """No context and no default means no project: role_service serves the canonical catalog.
+
+        The server's own cwd must not stand in for a project, or a dashboard started from an
+        unrelated directory with its own .claude/commands/ would serve those as the project's.
+        """
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=None),
+            patch("sova.dashboard.routers.roles.role_service.get_command_detail", return_value={"name": "x"}) as mock,
+        ):
+            resp = await client.get("/api/roles/commands/x")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with("x", None)
+
+    async def test_commands_endpoint_keeps_none_without_any_project(self, client):
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=None),
+            patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock,
+        ):
+            resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with(None)
 
     async def test_get_builtin_role(self, client):
         """GET /api/roles/developer returns the built-in developer role."""
@@ -19236,7 +19272,7 @@ class TestResourceServiceMemoryPressure:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
         ):
             result = rs._get_memory_guard_config()
 

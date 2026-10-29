@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
+from sova.core.output import OutputWriter
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
 )
@@ -178,7 +179,6 @@ from sova.dashboard.services.agent_validation import (
     check_stale_command as check_stale_command,
 )
 from sova.dashboard.services.feed_service import emit_safe
-from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import (
     _PIPELINE_ROLES,
     RUN_RUNTIME_MODEL_OVERRIDE_ENV,

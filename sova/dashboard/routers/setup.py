@@ -10,8 +10,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from sova.config.context import get_project_dir
 from sova.config.registry import register_project
-from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import setup_service
 from sova.utils.logging import get_logger
 

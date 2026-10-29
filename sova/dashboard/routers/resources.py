@@ -91,7 +91,7 @@ async def system_metrics_history() -> list[dict]:
 
 @router.get("/resources/cross-project", responses={500: {"description": "Internal error"}})
 async def cross_project_metrics() -> dict:
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import get_project_dir
 
     project_dir = get_project_dir()
     try:
@@ -103,7 +103,7 @@ async def cross_project_metrics() -> dict:
 
 @router.get("/resources/capacity", response_model=None, responses={500: {"description": "Internal error"}})
 async def capacity_recommendation() -> dict:
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import get_project_dir
 
     project_dir = get_project_dir()
     try:
@@ -115,7 +115,7 @@ async def capacity_recommendation() -> dict:
 
 @router.get("/resources/energy/total", response_model=None, responses={500: {"description": "Internal error"}})
 async def total_energy() -> dict:
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import get_project_dir
 
     project_dir = get_project_dir()
     try:

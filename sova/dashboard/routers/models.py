@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir
 from sova.dashboard.services import models_service
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.utils.logging import get_logger
 
 router = APIRouter()
@@ -23,7 +23,7 @@ log = get_logger(component="dashboard.models")
     },
 )
 async def available_models(layer: Literal["llm", "runtime"], refresh: bool = False) -> dict:
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     try:
         return await models_service.get_available_models(project_dir, layer=layer, refresh=refresh)
     except models_service.ModelsRefreshRateLimitedError as exc:

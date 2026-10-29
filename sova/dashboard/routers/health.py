@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter
 
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir
 from sova.dashboard.services import health_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
 
@@ -20,5 +18,5 @@ async def checks() -> dict:
     Never 500s: health_service.get_health_checks() converts any internal
     failure into a single failed check row rather than raising.
     """
-    project_dir = get_project_dir() or get_default_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     return await health_service.get_health_checks(project_dir)

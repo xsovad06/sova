@@ -6,7 +6,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import get_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.tasks")
