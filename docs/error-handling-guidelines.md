@@ -54,7 +54,7 @@ log = get_logger(component="module.name")
 **Enforced by `invariants/structured-logging.sh`**: a new `logging.getLogger(...)` under `sova/` fails the pre-push hook. A stdlib logger accepts `exc_info=True` but raises `TypeError` on context keywords such as `branch=name`, and only when that line runs. End the line with `# stdlib-logging: <reason>` when a stdlib logger is genuinely needed (for example to quiet a third-party library).
 
 - **Event names**: dot-delimited keys (`step.create_pr.assign_failed`, `workflow.gate.failed`)
-- **Always pass `exc_info=True`** in warning/error calls inside except blocks
+- **Always pass `exc_info=True`** in warning/error calls inside except blocks, except where the frames hold secrets: code that reads or writes `.claude/settings.json` (`sova/utils/permissions.py`, `sova/utils/rtk.py`) or `.mcp.json` (`sova/utils/mcp_config.py`) logs `error=str(exc)` instead, because those files can carry an `env` block with credentials, a renderer that shows frame locals would print them, and a `UnicodeDecodeError` holds the whole undecodable file in `.object`. A recurring route that fails the same way on every request (`dashboard/routers/dependency_health.py`'s unreadable manifest) also drops the traceback and warns once per file version
 - **Never use bare `print()`** for diagnostics: use the logger
 
 ## Non-Fatal Side Effects

@@ -481,7 +481,7 @@ def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> 
     try:
         import tomlkit
 
-        doc = tomlkit.parse(toml_path.read_text())
+        doc = tomlkit.parse(toml_path.read_text(encoding="utf-8"))
         parts = key.split(".")
         target = doc
         for part in parts[:-1]:
@@ -491,7 +491,7 @@ def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> 
 
         target[parts[-1]] = value
         tmp_path = toml_path.with_suffix(".toml.tmp")
-        tmp_path.write_text(tomlkit.dumps(doc))
+        tmp_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
         tmp_path.replace(toml_path)
         return True
     except ImportError:

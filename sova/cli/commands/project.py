@@ -379,7 +379,7 @@ def _create_agent_memory(claude_dir: Path) -> None:
     for name in ["MEMORY.md", "learnings.md", "review-feedback.md", "common-mistakes.md"]:
         mem_file = memory_dir / name
         if not mem_file.exists():
-            mem_file.write_text(f"# {name.replace('.md', '').replace('-', ' ').title()}\n")
+            mem_file.write_text(f"# {name.replace('.md', '').replace('-', ' ').title()}\n", encoding="utf-8")
 
 
 def _verify_install(project_dir: Path, *, update: bool = False) -> tuple[list[str], list[str]]:
@@ -516,10 +516,13 @@ def _uninstall_rtk_hook_step(claude_dir: Path, project_dir: Path) -> tuple[list[
     removed: list[str] = []
     failed: list[str] = []
     try:
-        from sova.utils.rtk import remove_rtk_hook
+        from sova.utils.rtk import HookRemovalResult, remove_rtk_hook
 
-        if remove_rtk_hook(claude_dir):
+        result = remove_rtk_hook(claude_dir)
+        if result is HookRemovalResult.REMOVED:
             removed.append("RTK hook from .claude/settings.json")
+        elif result is HookRemovalResult.ERROR:
+            failed.append("RTK hook: failed to update .claude/settings.json")
     except Exception as exc:  # noqa: BLE001 (uninstall continues past any single step; failures are reported to the user)
         log.debug("uninstall.rtk_hook_failed", project_dir=str(project_dir), exc_info=True)
         failed.append(f"RTK hook: {exc}")

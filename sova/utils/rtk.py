@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import json
-import logging
 import shutil
+from enum import Enum
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from sova.utils.logging import get_logger
+
+logger = get_logger(component="utils.rtk")
+# No warning in this module passes ``exc_info=True``: settings.json can hold an ``env`` block with credentials, and
+# these frames hold its raw text (``json.loads``) or parsed content (``data``), which a renderer that shows frame
+# locals (rich's, outside the fallback configured in ``sova/utils/logging.py``) would print. A
+# ``UnicodeDecodeError`` also carries the whole undecodable file in ``.object``. ``str(exc)`` names the cause
+# (the OS error, or the byte and position) without those values.
 
 _RTK_COMMAND = "rtk hook claude"
 _LEGACY_RTK_COMMAND = "rtk"
 _RTK_MATCHER = "Bash"
+
+
+class HookRemovalResult(str, Enum):
+    """Outcome of an attempted removal of the RTK hook from settings.json.
+
+    A bare bool would make a read/write failure indistinguishable from "no hook was there", so a
+    caller checking only truthiness could report an uninstall as clean while the hook stays in the
+    file. Mirrors ``PermissionRemovalResult`` in ``sova/utils/permissions.py``.
+    """
+
+    REMOVED = "removed"
+    NOT_FOUND = "not_found"
+    ERROR = "error"
 
 
 def _rtk_entry() -> dict:
@@ -42,25 +62,25 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
 
     try:
         try:
-            data = json.loads(settings_path.read_text())
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {}
-        except json.JSONDecodeError:
-            logger.warning("Malformed .claude/settings.json: skipping RTK hook injection")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning("rtk.settings_malformed", path=str(settings_path))
             return False
 
         if not isinstance(data, dict):
-            logger.warning("Malformed .claude/settings.json: skipping RTK hook injection")
+            logger.warning("rtk.settings_malformed", path=str(settings_path))
             return False
 
         hooks = data.setdefault("hooks", {})
         if not isinstance(hooks, dict):
-            logger.warning("Unexpected type for hooks in settings.json: skipping RTK hook injection")
+            logger.warning("rtk.hooks_type_unexpected", path=str(settings_path))
             return False
 
         pre_tool_use = hooks.setdefault("PreToolUse", [])
         if not isinstance(pre_tool_use, list):
-            logger.warning("Unexpected type for PreToolUse in settings.json: skipping RTK hook injection")
+            logger.warning("rtk.pre_tool_use_type_unexpected", path=str(settings_path))
             return False
 
         changed = _nest_flat_entries(pre_tool_use)
@@ -70,45 +90,51 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
             changed = True
 
         if not changed:
-            logger.debug("RTK hook already present in settings.json")
+            logger.debug("rtk.hook_already_present", path=str(settings_path))
             return False
 
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         return True
     except OSError as exc:
-        logger.warning("Failed to inject RTK hook: %s", exc, exc_info=True)
+        logger.warning("rtk.inject_failed", path=str(settings_path), error=str(exc))
         return False
 
 
-def remove_rtk_hook(claude_dir: Path) -> bool:
+def remove_rtk_hook(claude_dir: Path) -> HookRemovalResult:
     """Remove the RTK PreToolUse hook from .claude/settings.json.
 
-    Returns True if a hook was removed, False if not found or error.
+    Returns REMOVED if a hook was removed, NOT_FOUND if settings.json is absent, malformed or has no
+    RTK entry, and ERROR if settings.json could not be read as UTF-8 or the edited file could not be
+    written: the hook may well still be in it, and reporting NOT_FOUND would let an uninstall claim
+    there was nothing to remove.
     """
     settings_path = claude_dir / "settings.json"
 
     try:
         try:
-            data = json.loads(settings_path.read_text())
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
-            return False
+            return HookRemovalResult.NOT_FOUND
+        except UnicodeDecodeError as exc:
+            logger.warning("rtk.remove_unreadable", path=str(settings_path), error=str(exc))
+            return HookRemovalResult.ERROR
 
         if not isinstance(data, dict):
-            return False
+            return HookRemovalResult.NOT_FOUND
 
         hooks = data.get("hooks", {})
         if not isinstance(hooks, dict):
-            return False
+            return HookRemovalResult.NOT_FOUND
 
         pre_tool_use = hooks.get("PreToolUse", [])
         if not isinstance(pre_tool_use, list):
-            return False
+            return HookRemovalResult.NOT_FOUND
 
         original_len = len(pre_tool_use)
         pre_tool_use[:] = [h for h in pre_tool_use if not _is_rtk_entry(h) and not _is_legacy_rtk_entry(h)]
 
         if len(pre_tool_use) == original_len:
-            return False
+            return HookRemovalResult.NOT_FOUND
 
         # Clean up empty structures
         if not pre_tool_use:
@@ -116,11 +142,11 @@ def remove_rtk_hook(claude_dir: Path) -> bool:
         if not hooks:
             del data["hooks"]
 
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
-        return True
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return HookRemovalResult.REMOVED
     except OSError as exc:
-        logger.warning("Failed to remove RTK hook: %s", exc, exc_info=True)
-        return False
+        logger.warning("rtk.remove_failed", path=str(settings_path), error=str(exc))
+        return HookRemovalResult.ERROR
 
 
 def _is_flat_rtk_entry(hook: dict) -> bool:

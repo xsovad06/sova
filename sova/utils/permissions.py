@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import json
-import logging
 from enum import Enum
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from sova.utils.logging import get_logger
+
+logger = get_logger(component="utils.permissions")
+# No warning in this module passes ``exc_info=True``: settings.json can hold an ``env`` block with credentials, and
+# these frames hold its raw text (``json.loads``) or parsed content (``data``), which a renderer that shows frame
+# locals (rich's, outside the fallback configured in ``sova/utils/logging.py``) would print. A
+# ``UnicodeDecodeError`` also carries the whole undecodable file in ``.object``. ``str(exc)`` names the cause
+# (the OS error, or the byte and position) without those values.
 
 _REQUIRED_PERMISSIONS = ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)"]
 _SETTINGS_FILENAME = "settings.json"
 _ADDED_MARKER_FILENAME = ".sova-added-permissions.json"
+_ALLOW_NOT_HASHABLE_EVENT = "permissions.allow_not_hashable"
 
 
 class PermissionRemovalResult(str, Enum):
@@ -41,47 +48,45 @@ def inject_agent_permissions(claude_dir: Path) -> bool:
 
     try:
         try:
-            data = json.loads(settings_path.read_text())
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             data = {}
-        except json.JSONDecodeError:
-            logger.warning("Malformed .claude/settings.json, skipping agent permission injection")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning("permissions.settings_malformed", path=str(settings_path))
             return False
 
         if not isinstance(data, dict):
-            logger.warning("Malformed .claude/settings.json, skipping agent permission injection")
+            logger.warning("permissions.settings_malformed", path=str(settings_path))
             return False
 
         permissions = data.setdefault("permissions", {})
         if not isinstance(permissions, dict):
-            logger.warning("Unexpected type for permissions in settings.json, skipping agent permission injection")
+            logger.warning("permissions.permissions_type_unexpected", path=str(settings_path))
             return False
 
         allow = permissions.setdefault("allow", [])
         if not isinstance(allow, list):
-            logger.warning(
-                "Unexpected type for permissions.allow in settings.json, skipping agent permission injection"
-            )
+            logger.warning("permissions.allow_type_unexpected", path=str(settings_path))
             return False
 
         try:
             existing_set = set(allow)
         except TypeError:
-            logger.warning("permissions.allow contains non-hashable items, skipping agent permission injection")
+            logger.warning(_ALLOW_NOT_HASHABLE_EVENT, path=str(settings_path))
             return False
         required_set = set(_REQUIRED_PERMISSIONS)
         if required_set.issubset(existing_set):
-            logger.debug("Agent permissions already present in settings.json")
+            logger.debug("permissions.already_present", path=str(settings_path))
             return False
 
         added = [perm for perm in _REQUIRED_PERMISSIONS if perm not in existing_set]
         allow.extend(added)
 
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         _record_added_permissions(claude_dir, added)
         return True
     except OSError as exc:
-        logger.warning("Failed to inject agent permissions: %s", exc, exc_info=True)
+        logger.warning("permissions.inject_failed", path=str(settings_path), error=str(exc))
         return False
 
 
@@ -90,9 +95,9 @@ def _record_added_permissions(claude_dir: Path, added: list[str]) -> None:
     marker_path = claude_dir / _ADDED_MARKER_FILENAME
     try:
         combined = sorted(set(_read_added_permissions(marker_path)) | set(added))
-        marker_path.write_text(json.dumps({"added": combined}, indent=2) + "\n")
-    except OSError:
-        logger.warning("Failed to record which agent permissions were added", exc_info=True)
+        marker_path.write_text(json.dumps({"added": combined}, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("permissions.record_added_failed", path=str(marker_path), error=str(exc))
 
 
 def _read_added_permissions(marker_path: Path) -> list[str]:
@@ -126,8 +131,8 @@ def check_agent_permissions(claude_dir: Path) -> tuple[bool, list[str]]:
 
     try:
         try:
-            data = json.loads(settings_path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
+            data = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
             return (False, _REQUIRED_PERMISSIONS.copy())
 
         if not isinstance(data, dict):
@@ -144,7 +149,7 @@ def check_agent_permissions(claude_dir: Path) -> tuple[bool, list[str]]:
         try:
             existing_set = set(allow)
         except TypeError:
-            logger.warning("permissions.allow contains non-hashable items")
+            logger.warning(_ALLOW_NOT_HASHABLE_EVENT, path=str(settings_path))
             return (False, _REQUIRED_PERMISSIONS.copy())
         required_set = set(_REQUIRED_PERMISSIONS)
         missing = sorted(required_set - existing_set)
@@ -181,9 +186,15 @@ def remove_agent_permissions(claude_dir: Path) -> PermissionRemovalResult:
     try:
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        except (FileNotFoundError, json.JSONDecodeError):
             _unlink_marker(marker_path)
             return PermissionRemovalResult.UNCHANGED
+        except UnicodeDecodeError as exc:
+            # Undecodable is not the same as absent or malformed: the entries SOVA added are
+            # probably still in the file, so keep the marker that records them and report the
+            # failure instead of letting every later uninstall become a no-op.
+            logger.warning("permissions.remove_unreadable", path=str(settings_path), error=str(exc))
+            return PermissionRemovalResult.ERROR
 
         if not isinstance(data, dict):
             return PermissionRemovalResult.UNCHANGED
@@ -201,7 +212,7 @@ def remove_agent_permissions(claude_dir: Path) -> PermissionRemovalResult:
             added_set = set(added)
             allow[:] = [p for p in allow if p not in added_set]
         except TypeError:
-            logger.warning("permissions.allow contains non-hashable items, skipping agent permission removal")
+            logger.warning(_ALLOW_NOT_HASHABLE_EVENT, path=str(settings_path))
             return PermissionRemovalResult.ERROR
 
         if len(allow) == original_len:
@@ -214,9 +225,9 @@ def remove_agent_permissions(claude_dir: Path) -> PermissionRemovalResult:
         if not permissions:
             del data["permissions"]
 
-        settings_path.write_text(json.dumps(data, indent=2) + "\n")
+        settings_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
-        logger.warning("Failed to remove agent permissions: %s", exc, exc_info=True)
+        logger.warning("permissions.remove_failed", path=str(settings_path), error=str(exc))
         return PermissionRemovalResult.ERROR
 
     _unlink_marker(marker_path)

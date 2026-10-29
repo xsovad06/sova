@@ -43,6 +43,8 @@ class PlannedTask(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
 
 
+_VISION_UNREADABLE = "(docs/VISION.md exists but could not be read, so the project vision is unknown)"
+
 _PLANNING_PROMPT = """\
 You are a project planning assistant. Analyze the project state and propose \
 new tasks that would advance the project toward its goals.
@@ -180,9 +182,12 @@ class PlannerRole(AgentRole):
         vision_path = ctx.project_dir / "docs" / "VISION.md"
         if vision_path.exists():
             try:
-                return vision_path.read_text()
-            except OSError:
-                return ""
+                return vision_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # Not "": the prompt would then claim there is no VISION.md and the planner would propose
+                # tasks as if the project had stated no goals.
+                log.warning("planner.vision_unreadable", path=str(vision_path), exc_info=True)
+                return _VISION_UNREADABLE
         return ""
 
     def _parse_response(self, text: str) -> list[PlannedTask] | None:

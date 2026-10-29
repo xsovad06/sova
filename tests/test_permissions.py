@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from sova.utils.permissions import (
     _ADDED_MARKER_FILENAME,
     _REQUIRED_PERMISSIONS,
     PermissionRemovalResult,
+    _record_added_permissions,
     check_agent_permissions,
     inject_agent_permissions,
     remove_agent_permissions,
@@ -317,3 +319,113 @@ def test_remove_agent_permissions_allow_contains_non_hashable(tmp_path: Path) ->
     result = remove_agent_permissions(claude_dir)
 
     assert result is PermissionRemovalResult.ERROR
+
+
+def _claude_dir(tmp_path: Path) -> Path:
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    return claude_dir
+
+
+def test_inject_agent_permissions_non_utf8_settings_left_untouched(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+    raw = b'{"note": "caf\xe9"}'
+    (claude_dir / "settings.json").write_bytes(raw)
+
+    assert inject_agent_permissions(claude_dir) is False
+    assert (claude_dir / "settings.json").read_bytes() == raw
+
+
+def test_inject_agent_permissions_permissions_not_a_dict(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+    (claude_dir / "settings.json").write_text(json.dumps({"permissions": ["Bash(*)"]}), encoding="utf-8")
+
+    assert inject_agent_permissions(claude_dir) is False
+
+
+def test_inject_agent_permissions_write_failure_returns_false(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+
+    with patch.object(Path, "write_text", side_effect=OSError("read-only filesystem")):
+        assert inject_agent_permissions(claude_dir) is False
+
+
+def test_record_added_permissions_swallows_write_failure(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+
+    with patch.object(Path, "write_text", side_effect=OSError("read-only filesystem")):
+        _record_added_permissions(claude_dir, ["Bash(*)"])
+
+    assert not (claude_dir / _ADDED_MARKER_FILENAME).exists()
+
+
+def test_check_agent_permissions_non_utf8_settings(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+    (claude_dir / "settings.json").write_bytes(b"\xff\xfe")
+
+    has_all, missing = check_agent_permissions(claude_dir)
+
+    assert has_all is False
+    assert sorted(missing) == sorted(REQUIRED_PERMISSIONS)
+
+
+def test_remove_agent_permissions_non_utf8_settings_keeps_the_marker(tmp_path: Path) -> None:
+    """Undecodable settings may still hold the grants, so the record of them must survive."""
+    claude_dir = _claude_dir(tmp_path)
+    raw = b"\xff\xfe"
+    (claude_dir / "settings.json").write_bytes(raw)
+    (claude_dir / _ADDED_MARKER_FILENAME).write_text(
+        json.dumps({"added": REQUIRED_PERMISSIONS.copy()}), encoding="utf-8"
+    )
+
+    assert remove_agent_permissions(claude_dir) is PermissionRemovalResult.ERROR
+    assert (claude_dir / "settings.json").read_bytes() == raw
+    assert (claude_dir / _ADDED_MARKER_FILENAME).exists()
+
+
+def test_remove_agent_permissions_write_failure_returns_error(tmp_path: Path) -> None:
+    claude_dir = _claude_dir(tmp_path)
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["Bash(*)", "Other(*)"]}}), encoding="utf-8"
+    )
+    (claude_dir / _ADDED_MARKER_FILENAME).write_text(json.dumps({"added": ["Bash(*)"]}), encoding="utf-8")
+
+    with patch.object(Path, "write_text", side_effect=OSError("read-only filesystem")):
+        result = remove_agent_permissions(claude_dir)
+
+    assert result is PermissionRemovalResult.ERROR
+
+
+def test_settings_warnings_carry_no_traceback(tmp_path: Path) -> None:
+    """settings.json can hold credentials, and a frame-locals renderer would print them from a traceback."""
+    from sova.utils import permissions
+
+    claude_dir = _claude_dir(tmp_path)
+    (claude_dir / _ADDED_MARKER_FILENAME).write_text(json.dumps({"added": ["Bash(*)"]}), encoding="utf-8")
+    (claude_dir / "settings.json").write_bytes(b'{"env": {"TOKEN": "secret-\xe9"}}')
+
+    with patch.object(permissions, "logger") as mock_logger:
+        assert remove_agent_permissions(claude_dir) is PermissionRemovalResult.ERROR
+
+    mock_logger.warning.assert_called_once()
+    kwargs = mock_logger.warning.call_args.kwargs
+    assert "exc_info" not in kwargs
+    assert "secret" not in kwargs["error"]
+
+
+def test_write_failure_warnings_carry_no_traceback(tmp_path: Path) -> None:
+    from sova.utils import permissions
+
+    claude_dir = _claude_dir(tmp_path)
+    (claude_dir / "settings.json").write_text(json.dumps({"permissions": {"allow": ["Other(*)"]}}), encoding="utf-8")
+
+    with (
+        patch.object(permissions, "logger") as mock_logger,
+        patch.object(Path, "write_text", side_effect=OSError("read-only filesystem")),
+    ):
+        assert inject_agent_permissions(claude_dir) is False
+
+    mock_logger.warning.assert_called_once()
+    kwargs = mock_logger.warning.call_args.kwargs
+    assert "exc_info" not in kwargs
+    assert "read-only filesystem" in kwargs["error"]

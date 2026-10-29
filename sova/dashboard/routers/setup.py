@@ -96,6 +96,7 @@ async def scan_project(req: ScanRequest) -> dict:
     "/setup/install",
     responses={
         404: {"description": "Directory not found"},
+        409: {"description": "Installed, but the project registry is unreadable"},
         500: {"description": "Installation failed"},
     },
 )
@@ -109,11 +110,13 @@ async def install_project(req: InstallRequest) -> dict:
 
     try:
         await _install(path=project, no_dashboard=True, update=req.update_only)
-        slug = register_project(project)
-        return {"status": "ok", "slug": slug}
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.exception("setup.install.error", project=str(project))
         raise HTTPException(status_code=500, detail="Installation failed") from exc
+    # Outside the try: a finished install must not be reported as "Installation failed" when only the
+    # registration fails. An unreadable registry reaches the client as a 409 through the app's handler.
+    slug = register_project(project)
+    return {"status": "ok", "slug": slug}
 
 
 @router.post("/setup/configure", responses={404: {"description": "Directory not found"}})

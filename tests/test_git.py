@@ -3301,6 +3301,45 @@ class TestEnsureComposeProjectName:
         env_content = (worktree / ".env").read_text()
         assert "COMPOSE_PROJECT_NAME=my_project" in env_content
 
+    def test_legacy_encoded_env_is_extended_without_rewriting_existing_bytes(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+        legacy = b"GREETING=caf\xe9"
+        (worktree / ".env").write_bytes(legacy)
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert (worktree / ".env").read_bytes() == legacy + b"\nCOMPOSE_PROJECT_NAME=my_project\n"
+
+    def test_non_utf8_compose_file_is_still_scanned_for_a_name(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_bytes(b"# caf\xe9\nname: my_project\nservices: {}\n")
+        (worktree / ".env").write_text("DEBUG=True\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert "COMPOSE_PROJECT_NAME" not in (worktree / ".env").read_text()
+
+    def test_creates_env_when_absent(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert (worktree / ".env").read_text() == "COMPOSE_PROJECT_NAME=my_project\n"
+
 
 # ---------------------------------------------------------------------------
 # PR diff and files

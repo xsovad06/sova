@@ -64,7 +64,7 @@ def append_spec_section(
         log.debug("spec_helpers.no_spec", issue=issue_number)
         return False
 
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
 
     existing = extract_section(text, section_heading)
 
@@ -73,7 +73,7 @@ def append_spec_section(
     else:
         text = text.rstrip() + f"\n\n## {section_heading}\n" + content + "\n"
 
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     log.info("spec_helpers.appended", issue=issue_number, section=section_heading)
     return True
 
@@ -91,7 +91,7 @@ def read_spec_sections(
     if path is None:
         return ""
 
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     parts: list[str] = []
     for heading in headings:
         content = extract_section(text, heading)

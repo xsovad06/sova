@@ -7377,10 +7377,10 @@ class TestPlannerRole:
         result = role._read_vision(ctx)
         assert "Vision" in result
 
-    def test_read_vision_returns_empty_on_oserror(self, tmp_path: Path) -> None:
+    def test_read_vision_reports_unreadable_on_oserror(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
-        from sova.roles.planner import PlannerRole
+        from sova.roles.planner import _VISION_UNREADABLE, PlannerRole
 
         docs = tmp_path / "docs"
         docs.mkdir()
@@ -7391,7 +7391,20 @@ class TestPlannerRole:
         role = PlannerRole()
         with patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
             result = role._read_vision(ctx)
-        assert result == ""
+        assert result == _VISION_UNREADABLE
+
+    def test_read_vision_reports_unreadable_on_non_utf8(self, tmp_path: Path) -> None:
+        from sova.roles.planner import _VISION_UNREADABLE, PlannerRole
+
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "VISION.md").write_bytes(b"# Vision caf\xe9")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
+        ctx.project_dir = tmp_path
+
+        result = PlannerRole()._read_vision(ctx)
+        assert result == _VISION_UNREADABLE
+        assert "no VISION.md" not in result
 
     def test_read_vision_returns_empty_when_missing(self, tmp_path: Path) -> None:
         from sova.roles.planner import PlannerRole

@@ -218,6 +218,20 @@ def _parse_requirement(line: str) -> tuple[str, str | None] | None:
     return name, version if operator == "==" else None
 
 
+class ManifestUnreadableError(Exception):
+    """A package manifest is not valid UTF-8, so the project's dependencies cannot be listed.
+
+    Raised instead of reading the manifest as empty: an undecodable manifest degrading to "no
+    dependencies" would cache a 100% health snapshot for a project nothing was checked on. It
+    propagates out of ``scan_manifests()`` so ``get_snapshot()`` caches nothing, and carries the
+    manifest's path so the router can name the file the user has to fix.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"{path} is not valid UTF-8")
+        self.path = path
+
+
 def _scan_npm_lockfile(lockfile_path: Path, direct_names: set[str]) -> dict[str, str | None]:
     """Parse npm lockfileVersion 2/3 'packages' map for resolved versions of direct dependencies only.
 
@@ -226,8 +240,8 @@ def _scan_npm_lockfile(lockfile_path: Path, direct_names: set[str]) -> dict[str,
     nested/transitive packages.
     """
     try:
-        data = json.loads(lockfile_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(lockfile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         log.warning("dependency_health.npm_lockfile_parse_failed", path=str(lockfile_path), exc_info=True)
         return {}
     packages = data.get("packages")
@@ -248,7 +262,9 @@ def _scan_npm_lockfile(lockfile_path: Path, direct_names: set[str]) -> dict[str,
 
 def _scan_npm_manifest(manifest_path: Path) -> dict[str, str | None]:
     try:
-        data = json.loads(manifest_path.read_text())
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ManifestUnreadableError(manifest_path) from exc
     except (OSError, json.JSONDecodeError):
         log.warning("dependency_health.npm_manifest_parse_failed", path=str(manifest_path), exc_info=True)
         return {}
@@ -287,7 +303,9 @@ def _scan_npm(project_dir: Path) -> dict[str, str | None]:
 def _scan_requirements_txt(path: Path) -> dict[str, str | None]:
     result: dict[str, str | None] = {}
     try:
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ManifestUnreadableError(path) from exc
     except OSError:
         log.warning("dependency_health.requirements_read_failed", path=str(path), exc_info=True)
         return {}
@@ -303,7 +321,9 @@ def _scan_requirements_txt(path: Path) -> dict[str, str | None]:
 
 def _scan_pyproject(path: Path) -> dict[str, str | None]:
     try:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ManifestUnreadableError(path) from exc
     except (OSError, tomllib.TOMLDecodeError):
         log.warning("dependency_health.pyproject_parse_failed", path=str(path), exc_info=True)
         return {}
@@ -350,7 +370,10 @@ def _scan_python(project_dir: Path) -> dict[str, str | None]:
 
 
 def scan_manifests(project_dir: Path) -> dict[str, dict[str, str | None]]:
-    """Detect and parse package manifests. Returns {ecosystem: {name: current_version}}."""
+    """Detect and parse package manifests. Returns {ecosystem: {name: current_version}}.
+
+    Raises ManifestUnreadableError when a manifest is not valid UTF-8, rather than reporting it as empty.
+    """
     ecosystems: dict[str, dict[str, str | None]] = {}
     npm = _scan_npm(project_dir)
     if npm:

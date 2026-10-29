@@ -1840,6 +1840,7 @@ class TestConfigGet:
         binds structlog to stdout, so an in-process `CliRunner` cannot see the default.
         """
         import os
+        import site
         import sqlite3
         import subprocess
         import sys
@@ -1861,6 +1862,16 @@ class TestConfigGet:
         repo_root = str(Path(__file__).resolve().parent.parent)
         env = {k: v for k, v in os.environ.items() if k != "SOVA_DATABASE_URL"}
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [repo_root, env.get("PYTHONPATH")]))
+        # conftest's isolation (the patched registry file, the Path.home() DB fallback) does not reach a
+        # subprocess, so point its user-level directories into tmp_path: a future write on the config load
+        # path must not land in the developer's real ~/.config/sova.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        env["HOME"] = str(fake_home)
+        env["XDG_CONFIG_HOME"] = str(fake_home / ".config")
+        # The user site-packages directory lives under HOME, so keep it resolving to the real one or a
+        # `pip install --user` environment loses its dependencies in the child.
+        env["PYTHONUSERBASE"] = site.getuserbase()
         result = subprocess.run(
             [
                 sys.executable,
@@ -1959,3 +1970,111 @@ class TestCommitConfigTypeScopeValidation:
     def test_capitalized_scope_is_still_rejected(self) -> None:
         with pytest.raises(ValidationError, match="commit.scopes"):
             CommitConfig(types=["feat"], scopes=["Web"])
+
+
+class TestProjectRegistryUnreadable:
+    """A registry that exists but cannot be read is never replaced by a rewrite."""
+
+    @pytest.fixture
+    def unreadable_registry(self) -> Path:
+        from sova.config import registry
+
+        registry._REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+        registry._REGISTRY_FILE.write_bytes(b'{"alpha": "/somewhere\xff"}')
+        return registry._REGISTRY_FILE
+
+    def test_lookups_treat_it_as_empty(self, unreadable_registry: Path) -> None:
+        from sova.config import registry
+
+        assert registry.list_projects() == {}
+        assert registry.has_projects() is False
+
+    def test_register_refuses_and_keeps_the_file(self, unreadable_registry: Path, tmp_path: Path) -> None:
+        from sova.config import registry
+
+        original = unreadable_registry.read_bytes()
+        project = tmp_path / "proj"
+        project.mkdir()
+        with pytest.raises(RuntimeError, match="unreadable or malformed"):
+            registry.register_project(project)
+        assert unreadable_registry.read_bytes() == original
+
+    def test_unregister_refuses_and_keeps_the_file(self, unreadable_registry: Path) -> None:
+        from sova.config import registry
+
+        original = unreadable_registry.read_bytes()
+        with pytest.raises(RuntimeError, match="unreadable or malformed"):
+            registry.unregister_project("alpha")
+        assert unreadable_registry.read_bytes() == original
+
+    def test_fleet_priority_update_refuses_and_keeps_the_file(self, unreadable_registry: Path) -> None:
+        from sova.config import registry
+
+        original = unreadable_registry.read_bytes()
+        with pytest.raises(RuntimeError, match="unreadable or malformed"):
+            registry.update_fleet_priority("alpha", 3)
+        assert unreadable_registry.read_bytes() == original
+
+    def test_malformed_json_is_also_refused(self, tmp_path: Path) -> None:
+        from sova.config import registry
+
+        registry._REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+        registry._REGISTRY_FILE.write_text("[1, 2", encoding="utf-8")
+        project = tmp_path / "proj"
+        project.mkdir()
+        with pytest.raises(RuntimeError):
+            registry.register_project(project)
+
+    @pytest.mark.parametrize("content", ["[]", '"x"', "null", "1"])
+    def test_a_top_level_value_that_is_not_an_object_is_refused_by_every_mutator(
+        self, content: str, tmp_path: Path
+    ) -> None:
+        from sova.config import registry
+
+        registry._REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
+        registry._REGISTRY_FILE.write_text(content, encoding="utf-8")
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        for mutate in (
+            lambda: registry.register_project(project),
+            lambda: registry.unregister_project("alpha"),
+            lambda: registry.update_fleet_priority("alpha", 3),
+        ):
+            with pytest.raises(registry.RegistryUnreadableError) as excinfo:
+                mutate()
+            assert excinfo.value.path == registry._REGISTRY_FILE
+        assert registry._REGISTRY_FILE.read_text(encoding="utf-8") == content
+
+    def test_the_error_is_still_a_runtime_error(self) -> None:
+        from sova.config import registry
+
+        assert issubclass(registry.RegistryUnreadableError, RuntimeError)
+
+    def test_a_missing_registry_is_still_created(self, tmp_path: Path) -> None:
+        from sova.config import registry
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        assert registry.register_project(project) == "proj"
+
+    def test_a_failed_save_leaves_the_previous_registry_readable(self, tmp_path: Path) -> None:
+        """The refusal above turns a truncated registry into a standing failure, so a save must not truncate."""
+        from unittest.mock import patch
+
+        from sova.config import registry
+
+        first = tmp_path / "first"
+        first.mkdir()
+        second = tmp_path / "second"
+        second.mkdir()
+        registry.register_project(first)
+        before = registry._REGISTRY_FILE.read_bytes()
+
+        with patch("sova.utils.files.os.replace", side_effect=OSError("disk gone")):
+            with pytest.raises(OSError, match="disk gone"):
+                registry.register_project(second)
+
+        assert registry._REGISTRY_FILE.read_bytes() == before
+        assert list(registry.list_projects()) == ["first"]
+        assert list(registry._REGISTRY_DIR.glob(".projects.json.*.tmp")) == []

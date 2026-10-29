@@ -9,12 +9,14 @@ in-process check could not see the fallback.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_SECRET = "ghp_FAKESECRET123_must_not_reach_stderr"
 
 
 def _run_python(script: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -71,3 +73,50 @@ class TestFallbackLevel:
         assert result.returncode == 0, result.stderr
         assert "debug.event" in result.stderr
 
+
+class TestFallbackTraceback:
+    def test_failed_settings_write_does_not_print_env_secrets(self, tmp_path: Path) -> None:
+        """permissions.inject_failed logs with exc_info; the traceback must not carry frame locals.
+
+        The failing frame holds ``data``, the parsed settings.json, which can carry an
+        ``env`` block of API tokens. structlog's default renderer prints every local of
+        every frame, so the token reached stderr until the fallback set a plain formatter.
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({"env": {"GITHUB_TOKEN": _SECRET}}), encoding="utf-8")
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from unittest.mock import patch\n"
+            "from sova.utils.permissions import inject_agent_permissions\n"
+            "with patch.object(Path, 'write_text', side_effect=OSError('read-only filesystem')):\n"
+            "    inject_agent_permissions(Path(sys.argv[1]))\n"
+        )
+
+        result = _run_python(script, str(claude_dir))
+
+        assert result.returncode == 0, result.stderr
+        assert "permissions.inject_failed" in result.stderr
+        assert "read-only filesystem" in result.stderr
+        assert _SECRET not in result.stderr
+        assert _SECRET not in result.stdout
+
+    def test_failed_rtk_settings_write_does_not_print_env_secrets(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({"env": {"GITHUB_TOKEN": _SECRET}}), encoding="utf-8")
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from unittest.mock import patch\n"
+            "from sova.utils.rtk import inject_rtk_hook\n"
+            "with patch.object(Path, 'write_text', side_effect=OSError('read-only filesystem')):\n"
+            "    inject_rtk_hook(Path(sys.argv[1]))\n"
+        )
+
+        result = _run_python(script, str(claude_dir))
+
+        assert result.returncode == 0, result.stderr
+        assert "rtk.inject_failed" in result.stderr
+        assert _SECRET not in result.stderr

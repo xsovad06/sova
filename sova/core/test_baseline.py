@@ -112,12 +112,12 @@ async def run_test_suite(
 
     if report_path.exists():
         try:
-            report = json.loads(report_path.read_text())
+            report = json.loads(report_path.read_text(encoding="utf-8"))
             tests = [SingleTestOutcome(nodeid=t["nodeid"], outcome=t["outcome"]) for t in report.get("tests", [])]
             log.info("test_baseline.per_test_captured", count=len(tests), exit_code=result.returncode)
             report_path.unlink(missing_ok=True)
             return BaselineSnapshot(mode="per_test", exit_code=result.returncode, tests=tests)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError):
             log.warning("test_baseline.report_parse_failed", exc_info=True)
             report_path.unlink(missing_ok=True)
 
@@ -138,7 +138,7 @@ def save_baseline(snapshot: BaselineSnapshot, worktree_dir: Path) -> Path:
     """Write baseline to disk and return the file path."""
     path = baseline_path(worktree_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n")
+    path.write_text(json.dumps(snapshot.to_dict(), indent=2) + "\n", encoding="utf-8")
     log.info("test_baseline.saved", path=str(path), test_count=len(snapshot.tests))
     return path
 
@@ -149,9 +149,9 @@ def load_baseline(worktree_dir: Path) -> BaselineSnapshot | None:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         return BaselineSnapshot.from_dict(data)
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, OSError, UnicodeDecodeError):
         log.warning("test_baseline.load_failed", path=str(path), exc_info=True)
         return None
 

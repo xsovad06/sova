@@ -255,7 +255,7 @@ async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) 
 
     for marker_path in marker_paths:
         try:
-            data = json.loads(marker_path.read_text())
+            data = json.loads(marker_path.read_text(encoding="utf-8"))
             pr_number = data.get("pr_number")
             repo = data.get("repo", "")
             issue_number = data.get("issue_number")

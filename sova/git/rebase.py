@@ -362,7 +362,7 @@ async def _try_consensus_resolution(
             log.info("git.rebase.no_consensus", file=filepath)
             return False, total_cost
 
-        abs_path.write_text(resolved)
+        abs_path.write_text(resolved, encoding="utf-8")
         stage = await run("git", "add", filepath, cwd=cwd)
         if not stage.success:
             log.warning("git.rebase.stage_failed", file=filepath, stderr=(stage.stderr or "")[:200])

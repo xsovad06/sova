@@ -134,11 +134,40 @@ class TestDependencyHealthRouter:
                 resp = await client.get("/api/dependency-health/snapshot")
         assert resp.status_code == 500
 
-    async def test_snapshot_no_project_selected_returns_400(self, app) -> None:
+    async def test_unreadable_manifest_returns_422_naming_the_file(self, app, tmp_path) -> None:
+        manifest = tmp_path / "requirements.txt"
+        error = svc.ManifestUnreadableError(manifest)
+        with patch.object(svc, "get_snapshot", new=AsyncMock(side_effect=error)):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.get("/api/dependency-health/snapshot")
+        assert resp.status_code == 422
+        assert str(manifest) in resp.json()["detail"]
+
+    async def test_unreadable_manifest_warns_once_per_version_without_a_traceback(self, app, tmp_path) -> None:
+        from sova.dashboard.routers import dependency_health as router_module
+
+        manifest = tmp_path / "requirements-once.txt"
+        manifest.write_bytes(b"\xff\xfe")
+        error = svc.ManifestUnreadableError(manifest)
         with (
-            patch("sova.dashboard.routers.dependency_health.get_project_dir", return_value=None),
-            patch("sova.dashboard.routers.dependency_health.get_default_project_dir", return_value=None),
+            patch.object(svc, "get_snapshot", new=AsyncMock(side_effect=error)),
+            patch.object(router_module, "log") as mock_log,
         ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                for _ in range(3):
+                    resp = await client.get("/api/dependency-health/snapshot")
+                    assert resp.status_code == 422
+                manifest.write_bytes(b"\xff\xfe\xfd")
+                await client.get("/api/dependency-health/snapshot")
+
+        assert mock_log.warning.call_count == 2
+        assert mock_log.debug.call_count == 2
+        assert all("exc_info" not in call.kwargs for call in mock_log.warning.call_args_list)
+
+    async def test_snapshot_no_project_selected_returns_400(self, app) -> None:
+        with patch("sova.dashboard.routers.dependency_health.get_default_project_dir", return_value=None):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/dependency-health/snapshot")

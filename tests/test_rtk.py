@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from sova.utils.rtk import inject_rtk_hook, is_rtk_available, remove_rtk_hook
+from sova.utils.rtk import HookRemovalResult, inject_rtk_hook, is_rtk_available, remove_rtk_hook
 
 # The only PreToolUse entry shape Claude Code accepts: an entry without a
 # "hooks" list makes it reject the whole settings.json.
@@ -210,7 +210,7 @@ def test_remove_when_present(tmp_path: Path) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
     result = remove_rtk_hook(tmp_path)
-    assert result is True
+    assert result is HookRemovalResult.REMOVED
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings["hooks"]["PreToolUse"] == [{"type": "command", "command": "my-hook"}]
@@ -222,7 +222,7 @@ def test_remove_nested_entry(tmp_path: Path) -> None:
     existing = {"hooks": {"PreToolUse": [other, _NESTED_RTK]}}
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
-    assert remove_rtk_hook(tmp_path) is True
+    assert remove_rtk_hook(tmp_path) is HookRemovalResult.REMOVED
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings["hooks"]["PreToolUse"] == [other]
@@ -231,7 +231,7 @@ def test_remove_nested_entry(tmp_path: Path) -> None:
 def test_remove_after_inject_cleans_up(tmp_path: Path) -> None:
     """Uninstall removes exactly what install wrote."""
     assert inject_rtk_hook(tmp_path) is True
-    assert remove_rtk_hook(tmp_path) is True
+    assert remove_rtk_hook(tmp_path) is HookRemovalResult.REMOVED
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert "hooks" not in settings
@@ -247,10 +247,40 @@ def test_remove_cleans_empty_structures(tmp_path: Path) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
     result = remove_rtk_hook(tmp_path)
-    assert result is True
+    assert result is HookRemovalResult.REMOVED
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert "hooks" not in settings
+
+
+def test_inject_leaves_non_utf8_settings_untouched(tmp_path: Path) -> None:
+    """An undecodable settings.json is never replaced by a fresh file holding only the hook."""
+    raw = b'{"permissions": {"allow": ["Bash(*)"]}, "note": "caf\xe9"}'
+    (tmp_path / "settings.json").write_bytes(raw)
+
+    assert inject_rtk_hook(tmp_path) is False
+    assert (tmp_path / "settings.json").read_bytes() == raw
+
+
+def test_remove_reports_error_on_non_utf8_settings(tmp_path: Path) -> None:
+    """An undecodable settings.json may still hold the hook, so it is not reported as nothing to remove."""
+    raw = b'{"hooks": {"PreToolUse": [{"command": "rtk hook claude"}]}, "note": "caf\xe9"}'
+    (tmp_path / "settings.json").write_bytes(raw)
+
+    assert remove_rtk_hook(tmp_path) is HookRemovalResult.ERROR
+    assert (tmp_path / "settings.json").read_bytes() == raw
+
+
+def test_uninstall_step_reports_non_utf8_settings_as_a_failure(tmp_path: Path) -> None:
+    from sova.cli.commands.project import _uninstall_rtk_hook_step
+
+    (tmp_path / "settings.json").write_bytes(b"\xff\xfe not utf-8")
+
+    removed, failed = _uninstall_rtk_hook_step(tmp_path, tmp_path)
+
+    assert removed == []
+    assert len(failed) == 1
+    assert failed[0].startswith("RTK hook:")
 
 
 def test_remove_legacy_entry(tmp_path: Path) -> None:
@@ -263,14 +293,14 @@ def test_remove_legacy_entry(tmp_path: Path) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
     result = remove_rtk_hook(tmp_path)
-    assert result is True
+    assert result is HookRemovalResult.REMOVED
 
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert "hooks" not in settings
 
 
 def test_remove_when_not_present(tmp_path: Path) -> None:
-    """Remove returns False if no RTK hook found."""
+    """Remove reports NOT_FOUND if no RTK hook found."""
     existing = {
         "hooks": {
             "PreToolUse": [{"type": "command", "command": "other"}],
@@ -279,20 +309,20 @@ def test_remove_when_not_present(tmp_path: Path) -> None:
     (tmp_path / "settings.json").write_text(json.dumps(existing))
 
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 def test_remove_when_no_file(tmp_path: Path) -> None:
-    """Remove returns False when settings.json doesn't exist."""
+    """Remove reports NOT_FOUND when settings.json doesn't exist."""
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 def test_remove_skips_malformed_json(tmp_path: Path) -> None:
-    """Remove returns False for malformed JSON."""
+    """Remove reports NOT_FOUND for malformed JSON."""
     (tmp_path / "settings.json").write_text("{bad")
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 # Config model
@@ -375,10 +405,10 @@ def test_inject_skips_non_dict_json(tmp_path: Path) -> None:
 
 
 def test_remove_skips_non_dict_json(tmp_path: Path) -> None:
-    """Remove returns False when settings.json is valid JSON but not a dict."""
+    """Remove reports NOT_FOUND when settings.json is valid JSON but not a dict."""
     (tmp_path / "settings.json").write_text('"just a string"')
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 def test_inject_skips_when_hooks_is_not_dict(tmp_path: Path) -> None:
@@ -398,17 +428,17 @@ def test_inject_skips_when_pretooluse_is_not_list(tmp_path: Path) -> None:
 
 
 def test_remove_skips_when_hooks_is_not_dict(tmp_path: Path) -> None:
-    """Remove returns False when hooks key is not a dict."""
+    """Remove reports NOT_FOUND when hooks key is not a dict."""
     (tmp_path / "settings.json").write_text(json.dumps({"hooks": 42}))
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 def test_remove_skips_when_pretooluse_is_not_list(tmp_path: Path) -> None:
-    """Remove returns False when PreToolUse is not a list."""
+    """Remove reports NOT_FOUND when PreToolUse is not a list."""
     (tmp_path / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": {}}}))
     result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.NOT_FOUND
 
 
 # OSError handling
@@ -425,14 +455,54 @@ def test_inject_handles_oserror(tmp_path: Path) -> None:
 
 
 def test_remove_handles_oserror(tmp_path: Path) -> None:
-    """Remove returns False on OSError during write."""
+    """Remove reports ERROR on OSError during write, so the hook is not mistaken for absent."""
     existing = {"hooks": {"PreToolUse": [{"type": "command", "command": "rtk"}]}}
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(json.dumps(existing))
 
     with patch.object(Path, "write_text", side_effect=OSError("disk full")):
         result = remove_rtk_hook(tmp_path)
-    assert result is False
+    assert result is HookRemovalResult.ERROR
+
+
+def test_remove_write_failure(tmp_path: Path) -> None:
+    """A read-only settings.json leaves the hook in place; the uninstall step must report that as a failure."""
+    from sova.cli.commands.project import _uninstall_rtk_hook_step
+
+    existing = {"hooks": {"PreToolUse": [_NESTED_RTK]}}
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(existing))
+
+    with patch.object(Path, "write_text", side_effect=OSError("read-only filesystem")):
+        assert remove_rtk_hook(tmp_path) is HookRemovalResult.ERROR
+        removed, failed = _uninstall_rtk_hook_step(tmp_path, tmp_path)
+
+    assert removed == []
+    assert failed == ["RTK hook: failed to update .claude/settings.json"]
+    assert json.loads(settings_path.read_text()) == existing
+
+
+def test_remove_read_failure_is_an_error_not_absence(tmp_path: Path) -> None:
+    """A PermissionError while reading settings.json says nothing about whether the hook is in it."""
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": [_NESTED_RTK]}}))
+
+    with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+        assert remove_rtk_hook(tmp_path) is HookRemovalResult.ERROR
+
+
+def test_warnings_carry_no_traceback(tmp_path: Path) -> None:
+    """settings.json can hold credentials; a frame-locals renderer would print them from a traceback."""
+    from sova.utils import rtk
+
+    (tmp_path / "settings.json").write_bytes(b'{"env": {"TOKEN": "secret-\xe9"}}')
+
+    with patch.object(rtk, "logger") as mock_logger:
+        assert remove_rtk_hook(tmp_path) is HookRemovalResult.ERROR
+
+    mock_logger.warning.assert_called_once()
+    kwargs = mock_logger.warning.call_args.kwargs
+    assert "exc_info" not in kwargs
+    assert "secret" not in kwargs["error"]
 
 
 # _is_rtk_entry edge cases

@@ -433,7 +433,7 @@ class SOVAServer:
     def _write_pid_file(self) -> None:
         """Write the current PID to the PID file."""
         pid_path = self._pid_file_path()
-        pid_path.write_text(str(os.getpid()))
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
         log.info("pid.written", path=str(pid_path), pid=os.getpid())
 
     def _remove_pid_file(self) -> None:
@@ -491,7 +491,7 @@ def read_pid_file(
         return None
 
     try:
-        pid = int(pid_path.read_text().strip())
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return None
 

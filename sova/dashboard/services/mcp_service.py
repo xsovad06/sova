@@ -91,7 +91,7 @@ def get_or_generate_secret(project_dir: Path | None) -> str:
     secret_file = (project_dir or Path.cwd()) / ".claude" / "mcp_secret"
     if secret_file.exists():
         try:
-            return secret_file.read_text().strip()
+            return secret_file.read_text(encoding="utf-8").strip()
         except (OSError, ValueError):
             log.debug("mcp.secret_read_failed", exc_info=True)
 
