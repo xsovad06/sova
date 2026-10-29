@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.db.models import OversightFinding
+from sova.llm.models import resolve_model_alias
 from sova.llm.provider import LLMProvider
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
@@ -32,6 +33,7 @@ log = get_logger(component="oversight.analysis")
 
 _DEFAULT_DEDUP_WINDOW_DAYS = 14
 _DEFAULT_ANALYSIS_TIMEOUT = 120
+_DEFAULT_ANALYSIS_MODEL = resolve_model_alias("cheap")  # tracks the cheap tier instead of pinning a release
 _MAX_DEDUP_TITLES = 5000  # Query limit to prevent unbounded memory usage
 
 _VALID_SEVERITIES = {"info", "warning", "critical"}
@@ -246,7 +248,7 @@ async def analyze_snapshot(
     persona: str,
     provider: LLMProvider,
     *,
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = _DEFAULT_ANALYSIS_MODEL,
     dedup_window_days: int = _DEFAULT_DEDUP_WINDOW_DAYS,
     analysis_timeout: int = _DEFAULT_ANALYSIS_TIMEOUT,
 ) -> tuple[list[OversightFinding], str | None]:

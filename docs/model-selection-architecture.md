@@ -222,7 +222,7 @@ falls back: a release whose ID merely extends an older one (`claude-opus-5-5` vs
 `claude-opus-4-6` vs `claude-opus-4`) must be given its own entry in the same change that adds it,
 and until it has one it reports `CostSource.UNKNOWN` and costs `$0` instead of inheriting the older
 model's rate. The same holds for an alias spelling such as `claude-sonnet-4-5` or `claude-opus-4-0`:
-each is its own key.
+each is its own key. The oversight analysis default follows the `cheap` alias, so it needs no edit.
 Each entry carries its own cache-read multiplier (0.1 of the input rate by default, 0.05 for
 Opus 5.5, 0.025 for Fable 5.1), and Haiku 5.5 bills a second input/output pair
 once the whole prompt (`input_tokens + cache_read_tokens + cache_creation_tokens`) exceeds
