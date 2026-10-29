@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import partial
 
 from sova.awareness.base import AwarenessItem
 
@@ -33,7 +34,7 @@ class ProjectPulse:
 class Briefing:
     """Aggregated, prioritized output from all awareness providers."""
 
-    generated_at: datetime = field(default_factory=datetime.now)
+    generated_at: datetime = field(default_factory=partial(datetime.now, timezone.utc))
     attention_items: list[AwarenessItem] = field(default_factory=list)
     informational_items: list[AwarenessItem] = field(default_factory=list)
     schedule: list[AwarenessItem] = field(default_factory=list)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sova.awareness import register_provider
 from sova.awareness.base import AwarenessItem, AwarenessProvider, ItemCategory
@@ -67,7 +67,7 @@ class RemindersProvider(AwarenessProvider):
             return []
 
         items: list[AwarenessItem] = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc).astimezone()
 
         for reminder in reminders:
             item = _build_item(reminder, now)
@@ -124,9 +124,8 @@ def _build_item(reminder: dict, now: datetime) -> AwarenessItem | None:
         return None
 
     try:
-        due_date = datetime.fromisoformat(due_date_str.replace("Z", "+00:00"))
-        if due_date.tzinfo is not None:
-            due_date = due_date.astimezone().replace(tzinfo=None)
+        # A naive due date is local time; astimezone() makes both forms local-aware.
+        due_date = datetime.fromisoformat(due_date_str.replace("Z", "+00:00")).astimezone()
     except (ValueError, AttributeError):
         _log.debug("reminders.invalid_date", due_date_str=due_date_str)
         return None

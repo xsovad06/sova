@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 
 import pytest
@@ -32,6 +32,19 @@ def test_render_empty_briefing(console: Console) -> None:
     assert "SOVA_AWARENESS_ENABLED=true" in output
     assert "settings page" in output
     assert "sova.toml" not in output
+
+
+def test_greeting_shows_local_time_for_utc_generated_at(console: Console) -> None:
+    """generated_at is stored in UTC; the header must show the user's local clock."""
+    generated = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    briefing = Briefing(
+        generated_at=generated,
+        provider_statuses=[ProviderStatus(name="gmail", ok=True, message="ok", items_fetched=0, fetch_time_ms=1)],
+    )
+
+    render_briefing_cli(briefing, console, quiet=False)
+
+    assert generated.astimezone().strftime("%H:%M") in console.file.getvalue()
 
 
 def test_render_briefing_with_attention_items(console: Console) -> None:
@@ -239,7 +252,7 @@ def test_parse_since_hours() -> None:
 
     result = _parse_since("2h")
     assert result is not None
-    delta = datetime.now() - result
+    delta = datetime.now(timezone.utc) - result
     assert 1.9 * 3600 < delta.total_seconds() < 2.1 * 3600
 
 
@@ -249,7 +262,7 @@ def test_parse_since_minutes() -> None:
 
     result = _parse_since("30m")
     assert result is not None
-    delta = datetime.now() - result
+    delta = datetime.now(timezone.utc) - result
     assert 29 * 60 < delta.total_seconds() < 31 * 60
 
 
@@ -259,8 +272,19 @@ def test_parse_since_days() -> None:
 
     result = _parse_since("1d")
     assert result is not None
-    delta = datetime.now() - result
+    delta = datetime.now(timezone.utc) - result
     assert 0.9 * 86400 < delta.total_seconds() < 1.1 * 86400
+
+
+def test_parse_since_is_comparable_with_github_timestamps() -> None:
+    """--since must be timezone-aware: providers compare it against aware
+    GitHub timestamps, and a naive value raises TypeError there."""
+    from sova.cli.commands.briefing import _parse_since
+
+    result = _parse_since("2h")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert datetime.fromisoformat("2026-01-01T00:00:00+00:00") < result
 
 
 def test_parse_since_invalid() -> None:
@@ -359,7 +383,7 @@ def test_parse_and_validate_since_valid() -> None:
 
     result = _parse_and_validate_since("2h")
     assert result is not None
-    delta = datetime.now() - result
+    delta = datetime.now(timezone.utc) - result
     assert 1.9 * 3600 < delta.total_seconds() < 2.1 * 3600
 
 

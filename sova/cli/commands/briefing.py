@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Optional
 
@@ -133,6 +133,6 @@ def _parse_since(since_str: str) -> datetime | None:
         else:
             return None
 
-        return datetime.now() - delta
+        return datetime.now(timezone.utc) - delta
     except (OverflowError, ValueError):
         return None

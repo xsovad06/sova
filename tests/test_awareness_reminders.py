@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from sova.awareness.base import ItemCategory
-from sova.awareness.providers.reminders import RemindersProvider
+from sova.awareness.providers.reminders import RemindersProvider, _build_item
 from sova.config.models import AwarenessConfig
 from sova.utils.shell import ShellResult
 
@@ -385,3 +388,73 @@ async def test_fetch_on_non_macos_returns_empty(mock_run: AsyncMock, reminders_p
     items = await reminders_provider.fetch_items()
     assert items == []
     mock_run.assert_not_called()
+
+
+@pytest.fixture
+def new_york_local_time(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run the test with the process-local timezone set to America/New_York.
+
+    monkeypatch restores ``TZ`` itself, but the C library only re-reads it on ``tzset()``. The ``finally``
+    runs after the monkeypatch context has undone the variable, so even a ``tzset()`` that raises partway
+    cannot leave the zone changed for later tests on this xdist worker.
+    """
+    try:
+        with monkeypatch.context() as patch_env:
+            patch_env.setenv("TZ", "America/New_York")
+            time.tzset()
+            yield
+    finally:
+        time.tzset()
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset() is unavailable on this platform")
+@pytest.mark.usefixtures("new_york_local_time")
+class TestBuildItemMixedDueDateForms:
+    """_build_item() compares aware local datetimes, so a naive and a 'Z' due date must agree.
+
+    The fixed ``now`` is 2026-03-08 12:00 EDT, just after the US spring-forward
+    (02:00 local that day), so the local UTC offset is -05:00 before the
+    transition and -04:00 after it. Each 'Z' case below falls on a different
+    calendar date in UTC than in New York, which is exactly where comparing UTC
+    dates (the old naive-compare behaviour) classifies it wrongly.
+    """
+
+    NOW = datetime(2026, 3, 8, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+
+    @pytest.mark.parametrize(
+        ("due_date", "expected"),
+        [
+            # naive: local wall-clock time, on either side of the transition
+            ("2026-03-07T23:30:00", (ItemCategory.NEEDS_ATTENTION, 2)),
+            ("2026-03-08T01:30:00", (ItemCategory.NEEDS_ATTENTION, 1)),
+            ("2026-03-08T23:30:00", (ItemCategory.NEEDS_ATTENTION, 1)),
+            ("2026-03-09T00:30:00", (ItemCategory.INFORMATIONAL, 0)),
+            ("2026-03-10T09:00:00", None),
+            # 'Z': 23:59 EST on Mar 7 is already Mar 8 in UTC, but is overdue locally
+            ("2026-03-08T04:59:00Z", (ItemCategory.NEEDS_ATTENTION, 2)),
+            # 'Z': 23:30 EDT on Mar 8 is already Mar 9 in UTC, but is still today locally
+            ("2026-03-09T03:30:00Z", (ItemCategory.NEEDS_ATTENTION, 1)),
+            # 'Z': 00:30 EDT on Mar 9
+            ("2026-03-09T04:30:00Z", (ItemCategory.INFORMATIONAL, 0)),
+            ("2026-03-10T13:00:00Z", None),
+        ],
+    )
+    def test_classification_matches_local_calendar_day(
+        self, due_date: str, expected: tuple[ItemCategory, int] | None
+    ) -> None:
+        item = _build_item({"id": "r1", "name": "Pay rent", "dueDate": due_date}, self.NOW)
+
+        if expected is None:
+            assert item is None
+        else:
+            assert item is not None
+            assert (item.category, item.urgency) == expected
+
+    def test_naive_and_z_forms_of_the_same_instant_classify_alike(self) -> None:
+        """23:30 local on Mar 8 (EDT) written both ways is the same reminder."""
+        naive = _build_item({"id": "n", "name": "x", "dueDate": "2026-03-08T23:30:00"}, self.NOW)
+        zulu = _build_item({"id": "z", "name": "x", "dueDate": "2026-03-09T03:30:00Z"}, self.NOW)
+
+        assert naive is not None
+        assert zulu is not None
+        assert (naive.category, naive.urgency, naive.timestamp) == (zulu.category, zulu.urgency, zulu.timestamp)
