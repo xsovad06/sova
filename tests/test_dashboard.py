@@ -15366,7 +15366,7 @@ class TestAvailableModelsAPI:
         assert resp.status_code == 503
 
     async def test_layer_runtime_reachable_returns_runtime_reported_models(self, client: AsyncClient) -> None:
-        runtime = _FakeRuntimeForModels(["claude-sonnet-5"])
+        runtime = _FakeRuntimeForModels(["claude-sonnet-5-5"])
         with _patch_runtime_env(runtime):
             resp = await client.get("/api/models/available", params={"layer": "runtime"})
         assert resp.status_code == 200
@@ -15377,7 +15377,7 @@ class TestAvailableModelsAPI:
         # display_name is the curated label for an ID SOVA already names, so the
         # same model does not read differently in the two layers' dropdowns.
         assert data["models"] == [
-            {"id": "claude-sonnet-5", "family": "anthropic", "display_name": "Claude Sonnet 5", "tier": "fast"}
+            {"id": "claude-sonnet-5-5", "family": "anthropic", "display_name": "Claude Sonnet 5.5", "tier": "fast"}
         ]
         assert data["honours_model_override"] is True
 

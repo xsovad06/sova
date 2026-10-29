@@ -110,7 +110,7 @@ class TestGetLlmSuggestion:
 
         invoke_mock.assert_called_once()
         call_kwargs = invoke_mock.call_args.kwargs
-        assert call_kwargs["model"] == "claude-haiku-4-5-20251001"
+        assert call_kwargs["model"] == "claude-haiku-5-5"
         assert call_kwargs["max_tokens"] == 200
         assert call_kwargs["isolated"] is True
         assert call_kwargs["task_type"] == "pr_suggestion"
@@ -184,7 +184,7 @@ class TestGetLlmSuggestion:
         with _patch_service(cfg, invoke_mock):
             await get_llm_suggestion(**_kwargs())
 
-        assert invoke_mock.call_args.kwargs["model"] == "anthropic/claude-haiku-4-5-20251001"
+        assert invoke_mock.call_args.kwargs["model"] == "anthropic/claude-haiku-5-5"
 
     async def test_litellm_with_bedrock_prefixed_model_falls_back_to_configured_model(self) -> None:
         """Only the "anthropic/" prefix can be reapplied to the resolved cheap-tier ID
