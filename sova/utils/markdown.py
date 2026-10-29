@@ -123,16 +123,57 @@ def upsert_section(text: str, heading: str, content: str) -> str:
     return (text[: match.start()] + new_section).strip() + "\n"
 
 
+def _strip_glued_closing_fence(line: str, width: int) -> str:
+    """Drop a closing fence run glued to the end of *line*, leaving an inline code span's delimiters alone.
+
+    The run must be at least *width* backticks, the opening fence's length. A line with an even number of such
+    runs ends in an inline code span that already closed itself, so its last run is not a fence. When the text
+    before the trailing run leaves a span open (an odd number of backtick runs), the span's own closing delimiter
+    is part of that trailing run: ``use `x````` under a three-backtick opener is ``use `x`` plus a fence, so
+    only the fence is dropped.
+    """
+    runs = re.findall(rf"`{{{width},}}", line)
+    if len(runs) % 2 == 0 or not line.endswith("`" * width):
+        return line
+    body = line.rstrip("`")
+    trailing = len(line) - len(body)
+    body_runs = re.findall(r"`+", body)
+    if len(body_runs) % 2 == 1 and trailing - len(body_runs[-1]) >= width:
+        return body + body_runs[-1]
+    return body
+
+
+# A language tag in front of the content of a one-line fence: glued to a bracket (json{"a": 1}) or, for
+# the JSON family, separated from it by blanks. Any other word before a space stays content, so a one-line
+# fenced sentence such as "see [docs]" keeps its first word.
+_ONE_LINE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w+-]*(?=[\[{])|(?i:jsonc?|json5)[ \t]+(?=[\[{])")
+
+
 def strip_code_fences(text: str) -> str:
-    """Strip leading/trailing markdown code fences if present."""
+    """Strip leading/trailing markdown code fences if present.
+
+    A last line that is only backticks (three or more) closes the wrapper whatever width the opener had, as
+    the strip always did: LLMs mismatch fence lengths, and a stray closing line would otherwise reach harden,
+    spec and PR-body output. The closing run has to be at least as long as the opening one only where that
+    disambiguates, for a fence glued to the end of a content line (a four-backtick wrapper loses all four).
+    """
     stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        stripped = "\n".join(lines)
-    return stripped.strip()
+    opening = re.match(r"`{3,}", stripped)
+    if opening is None:
+        return stripped
+    width = len(opening.group())
+    if "\n" not in stripped:
+        # Opening and closing fence on the same line (e.g. "```foo```"):
+        # the line-based split below would discard the content entirely.
+        body = _strip_glued_closing_fence(stripped[width:], width).strip()
+        return _ONE_LINE_INFO_STRING_RE.sub("", body, count=1) if _ONE_LINE_INFO_STRING_RE.match(body) else body
+    lines = stripped.split("\n")[1:]
+    if lines and re.fullmatch(r"[ \t]*`{3,}[ \t]*", lines[-1]):
+        lines = lines[:-1]
+    elif lines:
+        # Closing fence glued to the last content line (e.g. '{"a": 1}```').
+        lines[-1] = _strip_glued_closing_fence(lines[-1], width)
+    return "\n".join(lines).strip()
 
 
 def _is_atx_heading(line: str) -> bool:

@@ -698,7 +698,7 @@ async def get_recent_failed_runs(
 
     items = []
     for r in runs:
-        duration_ms = _calculate_duration_ms(r.started_at, r.ended_at)
+        duration_ms = _compute_duration_ms(r.started_at, r.ended_at)
 
         items.append(
             {
@@ -719,20 +719,8 @@ async def get_recent_failed_runs(
     return items
 
 
-def _calculate_duration_ms(started_at: datetime | None, ended_at: datetime | None) -> int | None:
-    """Calculate duration in milliseconds between two datetimes, normalizing naive datetimes to UTC."""
-    if not started_at or not ended_at:
-        return None
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
-    if ended_at.tzinfo is None:
-        ended_at = ended_at.replace(tzinfo=timezone.utc)
-    return int((ended_at - started_at).total_seconds() * 1000)
-
-
-def _format_duration(td) -> str:
-    """Format a timedelta as human-readable string."""
-    total = int(td.total_seconds())
+def _format_seconds(total: int) -> str:
+    """Format a count of seconds as a human-readable string."""
     if total < 60:
         return f"{total}s"
     if total < 3600:
@@ -740,17 +728,15 @@ def _format_duration(td) -> str:
     hours = total // 3600
     mins = (total % 3600) // 60
     return f"{hours}h {mins}m"
+
+
+def _format_duration(td: timedelta) -> str:
+    """Format a timedelta as human-readable string."""
+    return _format_seconds(int(td.total_seconds()))
 
 
 def _format_duration_ms(ms: int | None) -> str | None:
     """Format milliseconds as human-readable string."""
     if ms is None:
         return None
-    total = ms // 1000
-    if total < 60:
-        return f"{total}s"
-    if total < 3600:
-        return f"{total // 60}m {total % 60}s"
-    hours = total // 3600
-    mins = (total % 3600) // 60
-    return f"{hours}h {mins}m"
+    return _format_seconds(ms // 1000)

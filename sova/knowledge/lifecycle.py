@@ -20,6 +20,7 @@ from sova.db.models import Memory
 from sova.db.session import get_session
 from sova.knowledge.similarity import parse_confirmation_counter, set_confirmation_counter, titles_match
 from sova.utils.logging import get_logger
+from sova.utils.markdown import strip_code_fences
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -358,12 +359,7 @@ Return ONLY a JSON object (no markdown fences, no extra text):
         llm_result = await invoke(prompt, model=model, task_type="extraction", cwd=cwd, timeout=60)
         import json
 
-        text = llm_result.text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+        text = strip_code_fences(llm_result.text)
 
         data = json.loads(text)
         new_title = data.get("title", cluster.titles[0])

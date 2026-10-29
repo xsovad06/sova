@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
@@ -27,7 +28,6 @@ log = get_logger(component="dashboard.pr_service")
 # first (see parse_linked_issue()): that section is where _pr_body.py always
 # renders the PR's own closing decision, so a "Part of #<epic>" mention an
 # LLM wrote earlier in "## Summary" can never win a bare whole-body search.
-_CLOSING_KEYWORD_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
