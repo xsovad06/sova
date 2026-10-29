@@ -212,6 +212,26 @@ runaway guard goes blind, and switching off claude-code loses the per-run cap en
 wall-clock / step-count runaway guard must exist **before** any non-Anthropic provider is
 enabled.
 
+Three tables in `sova/llm/models.py` name the current Anthropic models and must be edited
+together when a release ships: `_ALIAS_TO_CURRENT_MODEL` (the six bare names; its `smart`/`fast`/
+`cheap` targets also fix `model_tier_for_id()`), `CURATED_MODELS` (the enumeration fallback), and
+`_ANTHROPIC_RATE_CARD`. A model that leaves the first two keeps its rate card entry so recorded
+runs still price. `_lookup_rates()` takes the exact ID, else the ID with one trailing snapshot date
+(`-YYYYMMDD` or `@YYYYMMDD`) stripped, so a dated snapshot falls back to its family. Nothing else
+falls back: a release whose ID merely extends an older one (`claude-opus-5-5` vs `claude-opus-5`,
+`claude-opus-4-6` vs `claude-opus-4`) must be given its own entry in the same change that adds it,
+and until it has one it reports `CostSource.UNKNOWN` and costs `$0` instead of inheriting the older
+model's rate. The same holds for an alias spelling such as `claude-sonnet-4-5` or `claude-opus-4-0`:
+each is its own key. The oversight analysis default follows the `cheap` alias, so it needs no edit.
+Each entry carries its own cache-read multiplier (0.1 of the input rate by default, 0.05 for
+Opus 5.5, 0.025 for Fable 5.1), and Haiku 5.5 bills a second input/output pair
+once the whole prompt (`input_tokens + cache_read_tokens + cache_creation_tokens`) exceeds
+100K tokens. `compute_anthropic_cost()` bills `input_tokens` in full, as the Messages API reports
+it: that field already excludes cached tokens. It used to subtract the cache counts from it a
+second time, which under-billed every cached call, so a `CostRecord` written before this change is
+lower than the same call priced now; history is not recomputed. The Vertex and Bedrock tier
+candidates in `sova/llm/backends.py` are a separate table that is not updated by a release here.
+
 ### 2.7 Backend-aware alias resolution (#1033)
 
 `LLMConfig.model_aliases` (Q3) resolves a generic tier name to a native ID, but the native ID a

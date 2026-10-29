@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
@@ -282,34 +283,91 @@ class BatchResult:
         return self.result is not None and not self.error
 
 
-# Per-million-token pricing for Anthropic Messages API.
-# Keys are model ID prefixes matched left-to-right; the first match wins.
-# Values: (input_cost_per_mtok, output_cost_per_mtok).
-_ANTHROPIC_RATE_CARD: dict[str, tuple[Decimal, Decimal]] = {
-    "claude-fable-5": (Decimal("10"), Decimal("50")),
-    "claude-opus-5": (Decimal("5"), Decimal("25")),
-    "claude-sonnet-5": (Decimal("2"), Decimal("10")),
-    "claude-haiku-4-5": (Decimal("1"), Decimal("5")),
-    "claude-opus-4": (Decimal("15"), Decimal("75")),
-    "claude-sonnet-4": (Decimal("3"), Decimal("15")),
+@dataclass(frozen=True)
+class _LongPromptRates:
+    """The second input/output rate pair a model bills once its prompt exceeds ``threshold_tokens``."""
+
+    threshold_tokens: int
+    input_per_mtok: Decimal
+    output_per_mtok: Decimal
+
+
+@dataclass(frozen=True)
+class _ModelRates:
+    """Per-million-token pricing for one rate card entry.
+
+    ``cache_read_multiplier`` scales ``input_per_mtok`` for tokens served from
+    the prompt cache: a tenth for most models, less for Opus 5.5 and Fable 5.1.
+    ``long_prompt`` is set only for a model with prompt-length tiers (today
+    Haiku 5.5); it replaces both rates for a call whose whole prompt is longer
+    than its threshold.
+    """
+
+    input_per_mtok: Decimal
+    output_per_mtok: Decimal
+    cache_read_multiplier: Decimal = Decimal("0.1")
+    long_prompt: _LongPromptRates | None = None
+
+    def for_prompt(self, prompt_tokens: int) -> tuple[Decimal, Decimal]:
+        """Return the (input, output) rates per MTok that apply to a prompt of *prompt_tokens*."""
+        long_prompt = self.long_prompt
+        if long_prompt is not None and prompt_tokens > long_prompt.threshold_tokens:
+            return long_prompt.input_per_mtok, long_prompt.output_per_mtok
+        return self.input_per_mtok, self.output_per_mtok
+
+
+# Per-million-token pricing for Anthropic Messages API, keyed by model ID and
+# resolved by _lookup_rates() below: an exact ID, or the ID of a dated snapshot of
+# one. A release gets its own entry; it is never priced from an older ID it merely
+# extends ("claude-opus-5-5" is not "claude-opus-5"), so one without an entry is
+# unpriced rather than silently billed at the wrong rate. An entry for a model
+# that is no longer aliased or curated stays, so recorded runs still price.
+_ANTHROPIC_RATE_CARD: dict[str, _ModelRates] = {
+    "claude-fable-5-1": _ModelRates(Decimal("10"), Decimal("50"), cache_read_multiplier=Decimal("0.025")),
+    "claude-fable-5": _ModelRates(Decimal("10"), Decimal("50")),
+    "claude-opus-5-5": _ModelRates(Decimal("4"), Decimal("20"), cache_read_multiplier=Decimal("0.05")),
+    "claude-opus-5": _ModelRates(Decimal("5"), Decimal("25")),
+    "claude-sonnet-5-5": _ModelRates(Decimal("2"), Decimal("10")),
+    "claude-sonnet-5": _ModelRates(Decimal("2"), Decimal("10")),
+    "claude-haiku-5-5": _ModelRates(
+        Decimal("0.10"),
+        Decimal("0.50"),
+        long_prompt=_LongPromptRates(100_000, Decimal("0.50"), Decimal("2.50")),
+    ),
+    "claude-haiku-4-5": _ModelRates(Decimal("1"), Decimal("5")),
+    "claude-opus-4-8": _ModelRates(Decimal("5"), Decimal("25")),
+    "claude-opus-4-7": _ModelRates(Decimal("5"), Decimal("25")),
+    "claude-opus-4-6": _ModelRates(Decimal("5"), Decimal("25")),
+    "claude-opus-4-5": _ModelRates(Decimal("5"), Decimal("25")),
+    "claude-opus-4-1": _ModelRates(Decimal("15"), Decimal("75")),
+    "claude-opus-4-0": _ModelRates(Decimal("15"), Decimal("75")),
+    "claude-opus-4": _ModelRates(Decimal("15"), Decimal("75")),
+    "claude-sonnet-4-6": _ModelRates(Decimal("3"), Decimal("15")),
+    "claude-sonnet-4-5": _ModelRates(Decimal("3"), Decimal("15")),
+    "claude-sonnet-4-0": _ModelRates(Decimal("3"), Decimal("15")),
+    "claude-sonnet-4": _ModelRates(Decimal("3"), Decimal("15")),
 }
+
+# The only thing a rate card key may be followed by: a snapshot date, as the
+# first-party API writes it ("-20251001") or Vertex does ("@20251001").
+_SNAPSHOT_SUFFIX = re.compile(r"[-@]\d{8}$")
 
 _MTOK = Decimal("1_000_000")
 
 # Bare family aliases carry no version, but the rate card is keyed by full model
 # IDs. Map each alias to the current release in its family so rate lookups (used
 # for cost/savings estimates) resolve instead of falling back to 0. Keep in sync
-# with _ANTHROPIC_RATE_CARD as new releases ship.
+# with _ANTHROPIC_RATE_CARD and CURATED_MODELS as new releases ship.
 # These values are also sent to raw HTTP model endpoints via resolve_model_alias()
 # (batch submission, AnthropicAPIProvider.normalize_model_name), so a stale entry
 # does not merely skew a cost estimate: it makes those calls fail outright.
 _ALIAS_TO_CURRENT_MODEL: dict[str, str] = {
-    "opus": "claude-opus-5",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
-    "smart": "claude-opus-5",
-    "fast": "claude-sonnet-5",
-    "cheap": "claude-haiku-4-5-20251001",
+    "opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
+    "smart": "claude-opus-5-5",
+    "fast": "claude-sonnet-5-5",
+    "cheap": "claude-haiku-5-5",
 }
 
 
@@ -379,9 +437,9 @@ CURATED_MODELS: tuple[ModelInfo, ...] = tuple(
         source="curated",
     )
     for model_id, display_name in (
-        ("claude-opus-5", "Claude Opus 5"),
-        ("claude-sonnet-5", "Claude Sonnet 5"),
-        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+        ("claude-opus-5-5", "Claude Opus 5.5"),
+        ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ("claude-haiku-5-5", "Claude Haiku 5.5"),
         ("claude-fable-5-1", "Claude Fable 5.1"),
     )
 )
@@ -396,17 +454,21 @@ def compute_anthropic_cost(
 ) -> Decimal:
     """Compute USD cost from token counts using the Anthropic rate card.
 
+    The counts are the Messages API's own ``usage`` fields: ``input_tokens``
+    is the uncached input only, and the two cache counts are separate from it.
+
     Returns ``Decimal("0")`` for unknown models rather than raising.
     """
     rates = _lookup_rates(model)
     if rates is None:
         return Decimal("0")
-    input_rate, output_rate = rates
-    base_input = max(0, input_tokens - cache_read_tokens - cache_creation_tokens)
+    # The prompt-length tier is chosen by the whole prompt the model received,
+    # which is the sum of the three separate input counts.
+    input_rate, output_rate = rates.for_prompt(input_tokens + cache_read_tokens + cache_creation_tokens)
     cost = (
-        input_rate * base_input / _MTOK
+        input_rate * input_tokens / _MTOK
         + output_rate * output_tokens / _MTOK
-        + input_rate * Decimal("0.1") * cache_read_tokens / _MTOK
+        + input_rate * rates.cache_read_multiplier * cache_read_tokens / _MTOK
         + input_rate * Decimal("1.25") * cache_creation_tokens / _MTOK
     )
     return cost.quantize(Decimal("0.000001"))
@@ -420,14 +482,21 @@ def input_rate_per_mtok(model: str) -> Decimal:
     model IDs and config commonly stores bare aliases.
     """
     rates = _lookup_rates(resolve_model_alias(model))
-    return rates[0] if rates else Decimal("0")
+    return rates.input_per_mtok if rates else Decimal("0")
 
 
-def _lookup_rates(model: str) -> tuple[Decimal, Decimal] | None:
-    for prefix, rates in _ANTHROPIC_RATE_CARD.items():
-        if model.startswith(prefix):
-            return rates
-    return None
+def _lookup_rates(model: str) -> _ModelRates | None:
+    """Return the rate card entry for *model*: its exact ID, else that of the snapshot it dates.
+
+    Only a trailing snapshot date is stripped. A bare prefix match would price
+    any later release whose ID extends an older key (``claude-opus-5-6`` against
+    ``claude-opus-5``) at the older model's rates and report it as priced; such
+    an ID has no entry, so it returns ``None`` and surfaces as ``UNKNOWN``.
+    """
+    rates = _ANTHROPIC_RATE_CARD.get(model)
+    if rates is not None:
+        return rates
+    return _ANTHROPIC_RATE_CARD.get(_SNAPSHOT_SUFFIX.sub("", model))
 
 
 # Local/self-hosted backends LiteLLM can route to are never in its hosted

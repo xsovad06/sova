@@ -39,7 +39,7 @@ try:
 except ImportError:
     _HAS_ANTHROPIC = False
 
-_DEFAULT_MODEL = "claude-sonnet-5"
+_DEFAULT_MODEL = "claude-sonnet-5-5"
 _DEFAULT_MAX_TOKENS = 4096
 
 
@@ -359,8 +359,8 @@ class AnthropicAPIProvider(LLMProvider):
         # cost_usd is computed locally by compute_anthropic_cost() rather than
         # reported by the callee (claude-code reads total_cost_usd straight off
         # the CLI). That is the right rate card for a model this provider
-        # recognizes, but LLMConfig.model accepts arbitrary IDs and an
-        # unmatched prefix silently costs $0 (compute_anthropic_cost's own
+        # recognizes, but LLMConfig.model accepts arbitrary IDs and one with no
+        # rate card entry silently costs $0 (compute_anthropic_cost's own
         # documented fallback). reports_cost=True would suppress the R6
         # warning for exactly that case, letting agent.max_budget /
         # max_issue_budget silently fail to enforce against a newly released

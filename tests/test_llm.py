@@ -890,13 +890,13 @@ class TestInvokeBatch:
         ("model", "task_type", "routing", "expected"),
         [
             # A bare family alias becomes a full model ID before the batch API sees it.
-            ("sonnet", None, None, "claude-sonnet-5"),
+            ("sonnet", None, None, "claude-sonnet-5-5"),
             ("claude-opus-5", None, None, "claude-opus-5"),
             # No model and no task_type leaves the provider default in charge.
             ("", None, None, ""),
-            ("", "triage", {"triage": "haiku"}, "claude-haiku-4-5-20251001"),
+            ("", "triage", {"triage": "haiku"}, "claude-haiku-5-5"),
             # An explicit request model outranks task_type routing.
-            ("opus", "triage", {"triage": "haiku"}, "claude-opus-5"),
+            ("opus", "triage", {"triage": "haiku"}, "claude-opus-5-5"),
         ],
     )
     async def test_model_resolved_before_provider(
@@ -912,7 +912,7 @@ class TestInvokeBatch:
         """The non-batch provider path gets the same resolved model."""
         req = BatchRequest(custom_id="req-1", prompt="hello", model="cheap")
 
-        assert await self._models_sent(req, batch_provider=False) == ["claude-haiku-4-5-20251001"]
+        assert await self._models_sent(req, batch_provider=False) == ["claude-haiku-5-5"]
 
     async def test_config_load_failure_does_not_retry_routing_per_request(self) -> None:
         """A failed config load is not retried once per request in the batch.
@@ -4464,10 +4464,11 @@ class TestAnthropicRateCard:
         cost = compute_anthropic_cost("gpt-4o", input_tokens=1000, output_tokens=500)
         assert cost == Decimal("0")
 
-    def test_prefix_matching(self) -> None:
+    def test_dated_snapshot_is_priced_as_its_family(self) -> None:
         from sova.llm.models import compute_anthropic_cost
 
         cost = compute_anthropic_cost("claude-sonnet-5-20260101", input_tokens=1000, output_tokens=500)
+        assert cost == compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=500)
         assert cost > Decimal("0")
 
     def test_input_rate_per_mtok_known_model(self) -> None:
@@ -4485,17 +4486,19 @@ class TestAnthropicRateCard:
         a nonzero rate; otherwise the compression-savings estimate is always $0."""
         from sova.llm.models import input_rate_per_mtok
 
-        assert input_rate_per_mtok("opus") == Decimal("5")
+        assert input_rate_per_mtok("opus") == Decimal("4")
         assert input_rate_per_mtok("sonnet") == Decimal("2")
-        assert input_rate_per_mtok("haiku") == Decimal("1")
+        assert input_rate_per_mtok("haiku") == Decimal("0.10")
 
     def test_resolve_model_alias_known(self) -> None:
         from sova.llm.models import resolve_model_alias
 
-        assert resolve_model_alias("sonnet") == "claude-sonnet-5"
-        assert resolve_model_alias("opus") == "claude-opus-5"
-        assert resolve_model_alias("haiku") == "claude-haiku-4-5-20251001"
-        assert resolve_model_alias("cheap") == "claude-haiku-4-5-20251001"
+        assert resolve_model_alias("sonnet") == "claude-sonnet-5-5"
+        assert resolve_model_alias("opus") == "claude-opus-5-5"
+        assert resolve_model_alias("haiku") == "claude-haiku-5-5"
+        assert resolve_model_alias("smart") == "claude-opus-5-5"
+        assert resolve_model_alias("fast") == "claude-sonnet-5-5"
+        assert resolve_model_alias("cheap") == "claude-haiku-5-5"
 
     def test_resolve_model_alias_passes_through_unknown(self) -> None:
         from sova.llm.models import resolve_model_alias
@@ -4510,12 +4513,20 @@ class TestAnthropicRateCard:
         cost_no_cache = compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=100)
         cost_with_cache = compute_anthropic_cost(
             "claude-sonnet-5",
-            input_tokens=1000,
+            input_tokens=500,
             output_tokens=100,
             cache_read_tokens=500,
             cache_creation_tokens=0,
         )
         assert cost_with_cache < cost_no_cache
+
+    def test_uncached_input_is_billed_in_full_alongside_cache_reads(self) -> None:
+        """input_tokens is the API's uncached count; cache reads are never subtracted from it."""
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-sonnet-5", input_tokens=30_000, output_tokens=0, cache_read_tokens=50_000)
+        # 30K uncached at $2 plus 50K cache reads at 0.1 x $2.
+        assert cost == Decimal("0.070000")
 
     def test_cache_creation_tokens_increase_cost(self) -> None:
         from sova.llm.models import compute_anthropic_cost
@@ -4560,6 +4571,249 @@ class TestAnthropicRateCard:
         req = BatchRequest(custom_id="test", prompt="hello")
         result = BatchResult(request=req, error="something went wrong")
         assert result.succeeded is False
+
+
+class TestRateCardPerModel:
+    """Every priced model: its own rates, cache-read price and prompt-length tier."""
+
+    @pytest.mark.parametrize(
+        ("model", "input_rate", "output_rate"),
+        [
+            ("claude-fable-5-1", "10", "50"),
+            ("claude-fable-5", "10", "50"),
+            ("claude-opus-5-5", "4", "20"),
+            ("claude-opus-5", "5", "25"),
+            ("claude-sonnet-5-5", "2", "10"),
+            ("claude-sonnet-5", "2", "10"),
+            ("claude-haiku-5-5", "0.10", "0.50"),
+            ("claude-haiku-4-5", "1", "5"),
+            ("claude-haiku-4-5-20251001", "1", "5"),
+            ("claude-opus-4-8", "5", "25"),
+            ("claude-opus-4-7", "5", "25"),
+            ("claude-opus-4-6", "5", "25"),
+            ("claude-opus-4-5-20251101", "5", "25"),
+            ("claude-opus-4-1", "15", "75"),
+            ("claude-opus-4-1-20250805", "15", "75"),
+            ("claude-opus-4-0", "15", "75"),
+            ("claude-opus-4-20250514", "15", "75"),
+            ("claude-sonnet-4-6", "3", "15"),
+            ("claude-sonnet-4-5", "3", "15"),
+            ("claude-sonnet-4-5@20250929", "3", "15"),
+            ("claude-sonnet-4-0", "3", "15"),
+            ("claude-sonnet-4-20250514", "3", "15"),
+        ],
+    )
+    def test_input_and_output_rates(self, model: str, input_rate: str, output_rate: str) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        # 50K tokens keeps Haiku 5.5 on its lower prompt-length tier.
+        input_cost = compute_anthropic_cost(model, input_tokens=50_000, output_tokens=0)
+        output_cost = compute_anthropic_cost(model, input_tokens=0, output_tokens=50_000)
+        assert input_cost == (Decimal(input_rate) * 50_000 / 1_000_000).quantize(Decimal("0.000001"))
+        assert output_cost == (Decimal(output_rate) * 50_000 / 1_000_000).quantize(Decimal("0.000001"))
+
+    @pytest.mark.parametrize(
+        ("model", "cache_read_per_mtok"),
+        [
+            ("claude-fable-5-1", "0.25"),
+            ("claude-fable-5", "1"),
+            ("claude-opus-5-5", "0.20"),
+            ("claude-opus-5", "0.50"),
+            ("claude-sonnet-5-5", "0.20"),
+            ("claude-sonnet-5", "0.20"),
+            ("claude-haiku-5-5", "0.01"),
+            ("claude-haiku-4-5", "0.10"),
+        ],
+    )
+    def test_cache_read_price(self, model: str, cache_read_per_mtok: str) -> None:
+        """Cache reads are not a flat tenth of the input rate: Opus 5.5 and Fable 5.1 read cheaper."""
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost(model, input_tokens=0, output_tokens=0, cache_read_tokens=10_000)
+        assert cost == (Decimal(cache_read_per_mtok) * 10_000 / 1_000_000).quantize(Decimal("0.000001"))
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-5-5"])
+    def test_cache_creation_is_a_quarter_over_input(self, model: str) -> None:
+        from sova.llm.models import compute_anthropic_cost, input_rate_per_mtok
+
+        cost = compute_anthropic_cost(model, input_tokens=0, output_tokens=0, cache_creation_tokens=10_000)
+        expected = input_rate_per_mtok(model) * Decimal("1.25") * 10_000 / 1_000_000
+        assert cost == expected.quantize(Decimal("0.000001"))
+
+    def test_haiku_55_prompt_at_threshold_is_the_lower_tier(self) -> None:
+        """The issue says "up to 100K": exactly 100K tokens still bills at $0.10 / $0.50."""
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-haiku-5-5", input_tokens=100_000, output_tokens=1_000)
+        assert cost == Decimal("0.010500")
+
+    def test_haiku_55_prompt_above_threshold_is_the_higher_tier(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        cost = compute_anthropic_cost("claude-haiku-5-5", input_tokens=200_000, output_tokens=10_000)
+        assert cost == Decimal("0.125000")
+
+    def test_haiku_55_one_token_over_threshold_flips_the_tier(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        at = compute_anthropic_cost("claude-haiku-5-5", input_tokens=100_000, output_tokens=0)
+        over = compute_anthropic_cost("claude-haiku-5-5", input_tokens=100_001, output_tokens=0)
+        assert at == Decimal("0.010000")
+        # 100,001 tokens at $0.50/MTok is 0.0500005, which rounds half-even to 0.050000.
+        # A $1/MTok mistake would give 0.100001 and the lower tier 0.010000.
+        assert over == Decimal("0.050000")
+
+    def test_haiku_55_output_follows_the_prompt_tier(self) -> None:
+        """A long prompt reprices the output too, not just the input."""
+        from sova.llm.models import compute_anthropic_cost
+
+        short = compute_anthropic_cost("claude-haiku-5-5", input_tokens=1_000, output_tokens=1_000_000)
+        long = compute_anthropic_cost("claude-haiku-5-5", input_tokens=150_000, output_tokens=1_000_000)
+        assert short == Decimal("0.500100")
+        assert long == Decimal("2.575000")
+
+    def test_haiku_55_tier_counts_cache_tokens_in_the_prompt(self) -> None:
+        """Prompt length is everything sent: uncached input plus cache reads plus cache writes."""
+        from sova.llm.models import compute_anthropic_cost
+
+        # 50K uncached alone is the lower tier; with 60K of cache reads the prompt is 110K.
+        read = compute_anthropic_cost(
+            "claude-haiku-5-5", input_tokens=50_000, output_tokens=0, cache_read_tokens=60_000
+        )
+        assert read == Decimal("0.028000")  # 50K at $0.50 plus 60K reads at 0.1 x $0.50, not the $0.10 tier
+        # Same for 100K of cache writes with a handful of uncached tokens.
+        write = compute_anthropic_cost(
+            "claude-haiku-5-5", input_tokens=10, output_tokens=0, cache_creation_tokens=100_000
+        )
+        assert write == Decimal("0.062505")  # 10 at $0.50 plus 100K writes at 1.25 x $0.50
+
+    @pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-4-5"])
+    def test_other_models_have_no_prompt_length_tier(self, model: str) -> None:
+        from sova.llm.models import compute_anthropic_cost, input_rate_per_mtok
+
+        cost = compute_anthropic_cost(model, input_tokens=500_000, output_tokens=0)
+        assert cost == (input_rate_per_mtok(model) * Decimal("0.5")).quantize(Decimal("0.000001"))
+
+    def test_input_rate_per_mtok_reports_the_base_rate(self) -> None:
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("claude-haiku-5-5") == Decimal("0.10")
+        assert input_rate_per_mtok("claude-opus-5-5") == Decimal("4")
+
+    def test_every_alias_target_is_priced(self) -> None:
+        from sova.llm.models import CostSource, compute_model_cost, resolve_model_alias
+
+        for alias in ("opus", "sonnet", "haiku", "smart", "fast", "cheap"):
+            cost, source = compute_model_cost(alias, input_tokens=1_000, output_tokens=1_000)
+            assert source == CostSource.PRICED, alias
+            assert cost > Decimal("0"), alias
+            assert resolve_model_alias(alias).startswith("claude-"), alias
+
+
+class TestRateCardLookup:
+    """An exact model ID wins; otherwise only a trailing snapshot date is stripped."""
+
+    def test_newer_release_is_not_priced_as_the_older_one_it_extends(self) -> None:
+        """A release whose ID extends an older one (opus-5-5 vs opus-5) is not shadowed by it."""
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("claude-opus-5-5") == Decimal("4")
+        assert input_rate_per_mtok("claude-opus-5") == Decimal("5")
+        assert input_rate_per_mtok("claude-sonnet-5-5") == Decimal("2")
+        assert input_rate_per_mtok("claude-haiku-5-5") == Decimal("0.10")
+        assert input_rate_per_mtok("claude-haiku-4-5") == Decimal("1")
+
+    def test_opus_46_is_not_priced_as_opus_4(self) -> None:
+        """Opus 4.5 onward dropped to $5/$25; the broad claude-opus-4 entry ($15/$75) is for Opus 4 and 4.1 only."""
+        from sova.llm.models import compute_anthropic_cost, input_rate_per_mtok
+
+        assert input_rate_per_mtok("claude-opus-4-6") == Decimal("5")
+        assert input_rate_per_mtok("claude-opus-4-1") == Decimal("15")
+        assert input_rate_per_mtok("claude-opus-4-20250514") == Decimal("15")
+        assert input_rate_per_mtok("claude-opus-4-1-20250805") == Decimal("15")
+        cache_read = compute_anthropic_cost(
+            "claude-opus-4-6", input_tokens=0, output_tokens=0, cache_read_tokens=10_000
+        )
+        assert cache_read == Decimal("0.005000")
+
+    @pytest.mark.parametrize(
+        ("snapshot", "family_rate"),
+        [
+            ("claude-opus-5-5-20261001", "4"),
+            ("claude-opus-5-20260101", "5"),
+            ("claude-sonnet-5-5-20261001", "2"),
+            ("claude-haiku-5-5-20261101", "0.10"),
+            ("claude-haiku-4-5-20251001", "1"),
+            ("claude-fable-5-1-20260301", "10"),
+        ],
+    )
+    def test_dated_snapshot_falls_back_to_its_own_family_entry(self, snapshot: str, family_rate: str) -> None:
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok(snapshot) == Decimal(family_rate)
+
+    def test_snapshot_of_a_newer_release_keeps_that_releases_cache_read_price(self) -> None:
+        from sova.llm.models import compute_anthropic_cost
+
+        exact = compute_anthropic_cost("claude-opus-5-5", input_tokens=0, output_tokens=0, cache_read_tokens=10_000)
+        snapshot = compute_anthropic_cost(
+            "claude-opus-5-5-20261001", input_tokens=0, output_tokens=0, cache_read_tokens=10_000
+        )
+        assert snapshot == exact == Decimal("0.002000")
+
+    def test_vertex_style_at_date_snapshot_falls_back_to_its_family(self) -> None:
+        from sova.llm.models import input_rate_per_mtok
+
+        assert input_rate_per_mtok("claude-sonnet-4-5@20250929") == Decimal("3")
+        assert input_rate_per_mtok("claude-haiku-4-5@20251001") == Decimal("1")
+
+    def test_fable_51_has_its_own_entry_and_a_sibling_version_does_not_borrow_it(self) -> None:
+        """Fable 5.1 reads its cache at 0.025x; Fable 5 must not inherit that, and a later sibling is unpriced."""
+        from sova.llm.models import compute_anthropic_cost
+
+        def cache_read_cost(model: str) -> Decimal:
+            return compute_anthropic_cost(model, input_tokens=0, output_tokens=0, cache_read_tokens=10_000)
+
+        assert cache_read_cost("claude-fable-5-1") == Decimal("0.002500")
+        assert cache_read_cost("claude-fable-5-1-20260301") == Decimal("0.002500")
+        assert cache_read_cost("claude-fable-5") == Decimal("0.010000")
+        assert cache_read_cost("claude-fable-5-2") == Decimal("0")
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-opus-5-6",
+            "claude-sonnet-5-6",
+            "claude-haiku-5-6",
+            "claude-fable-5-2",
+            "claude-opus-4-9",
+            "claude-sonnet-4-9",
+            "claude-opus-5-5-preview",
+            "claude-opus-5-5-2026",
+        ],
+    )
+    def test_release_that_extends_a_known_id_is_unknown_until_it_has_an_entry(self, model: str) -> None:
+        """A later release must report UNKNOWN, not borrow the older model's price and read as PRICED."""
+        from sova.llm.models import CostSource, compute_anthropic_cost, compute_model_cost, input_rate_per_mtok
+
+        assert input_rate_per_mtok(model) == Decimal("0")
+        assert compute_anthropic_cost(model, input_tokens=1_000_000, output_tokens=1_000_000) == Decimal("0")
+        assert compute_model_cost(model, 1_000_000, 1_000_000) == (Decimal("0"), CostSource.UNKNOWN)
+
+    def test_unknown_models_still_cost_zero(self) -> None:
+        from sova.llm.models import CostSource, compute_anthropic_cost, compute_model_cost, input_rate_per_mtok
+
+        assert compute_anthropic_cost("gpt-4o", input_tokens=1000, output_tokens=500) == Decimal("0")
+        assert compute_anthropic_cost("claude-unreleased-9", input_tokens=1000, output_tokens=500) == Decimal("0")
+        assert input_rate_per_mtok("claude-unreleased-9") == Decimal("0")
+        assert compute_model_cost("gpt-4o", 1000, 500) == (Decimal("0"), CostSource.UNKNOWN)
+        assert compute_model_cost("claude-unreleased-9", 1000, 500) == (Decimal("0"), CostSource.UNKNOWN)
+
+    def test_compute_model_cost_prices_a_current_release(self) -> None:
+        from sova.llm.models import CostSource, compute_model_cost
+
+        cost, source = compute_model_cost("claude-opus-5-5", 1_000_000, 0)
+        assert (cost, source) == (Decimal("4.000000"), CostSource.PRICED)
 
 
 # ---------------------------------------------------------------------------
@@ -4661,6 +4915,21 @@ class TestAnthropicAPIProvider:
         # catalog via the SDK's models.list().
         assert caps.dynamic_models is True
 
+    async def test_default_model_is_the_current_sonnet(self, mock_anthropic: MagicMock) -> None:
+        from sova.llm.models import resolve_model_alias
+        from sova.llm.providers.anthropic_api import AnthropicAPIProvider
+
+        client = mock_anthropic.AsyncAnthropic.return_value
+        client.messages.create = AsyncMock(
+            return_value=_MockAnthropicResponse(text="ok", model="claude-sonnet-5-5"),
+        )
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
+            await AnthropicAPIProvider().invoke("Hello")
+
+        assert client.messages.create.call_args.kwargs["model"] == "claude-sonnet-5-5"
+        assert client.messages.create.call_args.kwargs["model"] == resolve_model_alias("sonnet")
+
     async def test_invoke_basic(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
 
@@ -4683,7 +4952,7 @@ class TestAnthropicAPIProvider:
 
         client.messages.create.assert_called_once()
         call_kwargs = client.messages.create.call_args[1]
-        assert call_kwargs["model"] == "claude-sonnet-5"
+        assert call_kwargs["model"] == "claude-sonnet-5-5"
         assert call_kwargs["messages"] == [{"role": "user", "content": "Hello"}]
 
     async def test_invoke_with_system_prompt(self, mock_anthropic: MagicMock) -> None:
@@ -4725,7 +4994,7 @@ class TestAnthropicAPIProvider:
             await provider.invoke("Hello", model="sonnet")
 
         call_kwargs = client.messages.create.call_args[1]
-        assert call_kwargs["model"] == "claude-sonnet-5"
+        assert call_kwargs["model"] == "claude-sonnet-5-5"
 
     async def test_invoke_missing_api_key(self, mock_anthropic: MagicMock) -> None:
         from sova.llm.providers.anthropic_api import AnthropicAPIProvider
@@ -4954,12 +5223,12 @@ class TestAnthropicAPIProvider:
 
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-key"}):
             provider = AnthropicAPIProvider()
-        assert provider.normalize_model_name("sonnet") == "claude-sonnet-5"
-        assert provider.normalize_model_name("opus") == "claude-opus-5"
-        assert provider.normalize_model_name("haiku") == "claude-haiku-4-5-20251001"
-        assert provider.normalize_model_name("fast") == "claude-sonnet-5"
-        assert provider.normalize_model_name("smart") == "claude-opus-5"
-        assert provider.normalize_model_name("cheap") == "claude-haiku-4-5-20251001"
+        assert provider.normalize_model_name("sonnet") == "claude-sonnet-5-5"
+        assert provider.normalize_model_name("opus") == "claude-opus-5-5"
+        assert provider.normalize_model_name("haiku") == "claude-haiku-5-5"
+        assert provider.normalize_model_name("fast") == "claude-sonnet-5-5"
+        assert provider.normalize_model_name("smart") == "claude-opus-5-5"
+        assert provider.normalize_model_name("cheap") == "claude-haiku-5-5"
         assert provider.normalize_model_name("claude-opus-5") == "claude-opus-5"
 
     async def test_invoke_with_max_tokens(self, mock_anthropic: MagicMock) -> None:
@@ -5234,7 +5503,7 @@ class TestAnthropicAPIProvider:
         client.models.list = AsyncMock(
             return_value=_MockAnthropicModelsPage(
                 [
-                    _MockAnthropicModelEntry("claude-opus-5", "Claude Opus 5"),
+                    _MockAnthropicModelEntry("claude-opus-5-5", "Claude Opus 5.5"),
                     _MockAnthropicModelEntry("mystery-model-9000"),
                 ]
             )
@@ -5245,11 +5514,11 @@ class TestAnthropicAPIProvider:
             models = await AnthropicAPIProvider().list_available_models()
         reset_availability_cache()
 
-        assert {m.id for m in models} == {"claude-opus-5", "mystery-model-9000"}
-        opus = next(m for m in models if m.id == "claude-opus-5")
+        assert {m.id for m in models} == {"claude-opus-5-5", "mystery-model-9000"}
+        opus = next(m for m in models if m.id == "claude-opus-5-5")
         assert opus.family == ModelFamily.ANTHROPIC
         assert opus.tier == "smart"
-        assert opus.display_name == "Claude Opus 5"
+        assert opus.display_name == "Claude Opus 5.5"
         assert opus.source == "anthropic_api"
         mystery = next(m for m in models if m.id == "mystery-model-9000")
         assert mystery.family == ModelFamily.UNKNOWN
@@ -6106,15 +6375,22 @@ class TestModelTierForId:
     def test_known_ids(self) -> None:
         from sova.llm.models import model_tier_for_id
 
-        assert model_tier_for_id("claude-opus-5") == "smart"
-        assert model_tier_for_id("claude-sonnet-5") == "fast"
-        assert model_tier_for_id("claude-haiku-4-5-20251001") == "cheap"
+        assert model_tier_for_id("claude-opus-5-5") == "smart"
+        assert model_tier_for_id("claude-sonnet-5-5") == "fast"
+        assert model_tier_for_id("claude-haiku-5-5") == "cheap"
 
     def test_unknown_id_returns_empty_string(self) -> None:
         from sova.llm.models import model_tier_for_id
 
         assert model_tier_for_id("gpt-4o") == ""
         assert model_tier_for_id("claude-fable-5") == ""
+
+    @pytest.mark.parametrize("model_id", ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"])
+    def test_superseded_ids_no_longer_hold_a_tier(self, model_id: str) -> None:
+        """A tier belongs to exactly one current model: the previous generation reports none."""
+        from sova.llm.models import model_tier_for_id
+
+        assert model_tier_for_id(model_id) == ""
 
 
 class TestCuratedModels:
@@ -6132,6 +6408,30 @@ class TestCuratedModels:
 
         tiers = {m.tier for m in CURATED_MODELS}
         assert {"smart", "fast", "cheap"}.issubset(tiers)
+
+    def test_lists_the_current_release_of_each_family(self) -> None:
+        from sova.llm.models import CURATED_MODELS
+
+        assert {m.id: m.display_name for m in CURATED_MODELS} == {
+            "claude-opus-5-5": "Claude Opus 5.5",
+            "claude-sonnet-5-5": "Claude Sonnet 5.5",
+            "claude-haiku-5-5": "Claude Haiku 5.5",
+            "claude-fable-5-1": "Claude Fable 5.1",
+        }
+
+    def test_each_generic_tier_is_held_by_its_alias_target(self) -> None:
+        """CURATED_MODELS, the alias table and the tier map move together."""
+        from sova.llm.models import CURATED_MODELS, resolve_model_alias
+
+        tier_by_id = {m.id: m.tier for m in CURATED_MODELS}
+        for tier in ("smart", "fast", "cheap"):
+            assert tier_by_id[resolve_model_alias(tier)] == tier
+
+    def test_every_curated_model_is_priced(self) -> None:
+        from sova.llm.models import CURATED_MODELS, input_rate_per_mtok
+
+        for model in CURATED_MODELS:
+            assert input_rate_per_mtok(model.id) > Decimal("0"), model.id
 
 
 # ---------------------------------------------------------------------------
@@ -6491,11 +6791,11 @@ class TestClaudeCodeListAvailableModels:
         from sova.llm.models import CURATED_MODELS
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
-        mock_run = AsyncMock(side_effect=self._run_side_effect(available_ids={"claude-opus-5", "claude-sonnet-5"}))
+        mock_run = AsyncMock(side_effect=self._run_side_effect(available_ids={"claude-opus-5-5", "claude-sonnet-5-5"}))
         with patch("sova.llm.providers.claude_code.run", mock_run):
             models = await ClaudeCodeProvider().list_available_models()
 
-        assert {m.id for m in models} == {"claude-opus-5", "claude-sonnet-5"}
+        assert {m.id for m in models} == {"claude-opus-5-5", "claude-sonnet-5-5"}
         assert all(m.source == "probed" for m in models)
         assert mock_run.await_count == 1 + len(CURATED_MODELS)
 
@@ -6562,7 +6862,7 @@ class TestClaudeCodeListAvailableModels:
                 )
             if "--model" in args:
                 idx = args.index("--model")
-                if args[idx + 1] == "claude-opus-5":
+                if args[idx + 1] == "claude-opus-5-5":
                     raise OSError("claude binary vanished")
                 return ShellResult(returncode=0, stdout="{}", stderr="")
             return ShellResult(returncode=0, stdout="{}", stderr="")
@@ -6570,7 +6870,7 @@ class TestClaudeCodeListAvailableModels:
         with patch("sova.llm.providers.claude_code.run", _flaky_run):
             models = await ClaudeCodeProvider().list_available_models()
 
-        assert "claude-opus-5" not in {m.id for m in models}
+        assert "claude-opus-5-5" not in {m.id for m in models}
         assert len(models) == len(CURATED_MODELS) - 1
 
     async def test_different_accounts_get_independent_probed_sets(self) -> None:
@@ -6597,14 +6897,14 @@ class TestClaudeCodeListAvailableModels:
 
             return _run
 
-        with patch("sova.llm.providers.claude_code.run", await _run_for("a@example.com", "claude-opus-5")):
+        with patch("sova.llm.providers.claude_code.run", await _run_for("a@example.com", "claude-opus-5-5")):
             models_a = await ClaudeCodeProvider().list_available_models()
 
-        with patch("sova.llm.providers.claude_code.run", await _run_for("b@example.com", "claude-sonnet-5")):
+        with patch("sova.llm.providers.claude_code.run", await _run_for("b@example.com", "claude-sonnet-5-5")):
             models_b = await ClaudeCodeProvider().list_available_models()
 
-        assert {m.id for m in models_a} == {"claude-opus-5"}
-        assert {m.id for m in models_b} == {"claude-sonnet-5"}
+        assert {m.id for m in models_a} == {"claude-opus-5-5"}
+        assert {m.id for m in models_b} == {"claude-sonnet-5-5"}
 
     async def test_every_probe_failing_returns_curated_and_is_not_cached(self) -> None:
         """A whole-list wipeout is a CLI/account outage, not "this account can
@@ -6675,7 +6975,7 @@ class TestClaudeCodeListAvailableModels:
             if "--model" in args:
                 idx = args.index("--model")
                 model_id = args[idx + 1]
-                ok = model_id == "claude-opus-5"
+                ok = model_id == "claude-opus-5-5"
                 return ShellResult(returncode=0 if ok else 1, stdout="{}", stderr="" if ok else "boom")
             return ShellResult(returncode=0, stdout="{}", stderr="")
 
@@ -6691,7 +6991,7 @@ class TestClaudeCodeListAvailableModels:
 
         identity_a = _claude_code_enumeration_identity({"email": "a@example.com"})
         identity_b = _claude_code_enumeration_identity({"email": "b@example.com"})
-        assert {m.id for m in models} == {"claude-opus-5"}
+        assert {m.id for m in models} == {"claude-opus-5-5"}
 
         from sova.llm.client import get_availability_cache
 

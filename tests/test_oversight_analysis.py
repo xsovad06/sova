@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base, OversightFinding, OversightRun, OversightRunStatus
-from sova.llm.models import LLMResult
+from sova.llm.models import LLMResult, resolve_model_alias
 from sova.oversight.analysis import (
     _build_prompt,
     _clamp,
@@ -267,6 +267,19 @@ class TestAnalyzeSnapshot:
         result, error = await analyze_snapshot({"projects": []}, "run-2", "", provider)
         assert error is None
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_default_model_is_the_cheap_tier(self, db_session) -> None:
+        """The default follows the cheap-tier alias, so a release bump does not leave it pinned to an old model."""
+        provider = _make_provider("[]")
+
+        async with db_session() as session:
+            async with session.begin():
+                session.add(OversightRun(id="run-default-model", status="running", cycle_number=1))
+
+        await analyze_snapshot({"projects": []}, "run-default-model", "", provider)
+
+        assert provider.invoke.call_args.kwargs["model"] == resolve_model_alias("cheap")
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_error(self, db_session) -> None:

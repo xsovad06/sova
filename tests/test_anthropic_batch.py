@@ -196,7 +196,7 @@ class TestBatchProviderShared:
 
     def test_normalize_model_name_expands_alias(self) -> None:
         provider = BatchProvider("anthropic", api_key="test-key")
-        assert provider.normalize_model_name("opus") == "claude-opus-5"
+        assert provider.normalize_model_name("opus") == "claude-opus-5-5"
 
     def test_normalize_model_name_passes_through_full_id(self) -> None:
         provider = BatchProvider("anthropic", api_key="test-key")
@@ -207,7 +207,7 @@ class TestBatchProviderShared:
         provider = BatchProvider("anthropic", api_key="test-key")
         req = BatchRequest(custom_id="r1", prompt="hi", model="opus")
         params = provider._message_params(req)
-        assert params["model"] == "claude-opus-5"
+        assert params["model"] == "claude-opus-5-5"
 
 
 # ---------------------------------------------------------------------------
@@ -827,12 +827,12 @@ class TestCancelAndCleanup:
         provider = BatchProvider("anthropic", api_key="k")
         reqs = [
             BatchRequest(custom_id="a", prompt="p", model="opus"),
-            BatchRequest(custom_id="b", prompt="p", model="claude-opus-5"),
+            BatchRequest(custom_id="b", prompt="p", model="claude-opus-5-5"),
         ]
         with patch("sova.llm.providers.anthropic_batch.log") as mock_log:
             model = provider._resolve_model(reqs)
         mock_log.warning.assert_not_called()
-        assert model == "claude-opus-5"
+        assert model == "claude-opus-5-5"
 
     def test_resolve_model_still_warns_on_genuine_mix(self) -> None:
         """Two requests that normalize to different models still warn."""
