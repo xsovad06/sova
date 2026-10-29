@@ -6,7 +6,6 @@ for the Work page (Active / History / Failed tabs).
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -28,8 +27,9 @@ from sova.dashboard.services.agent_progress import (
 )
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import decimal_to_json, iso_utc
+from sova.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(component="dashboard.work_service")
 
 _TERMINAL = TASK_RUN_TERMINAL
 
@@ -436,7 +436,7 @@ def _run_to_dict(run: TaskRun) -> dict:
         # A lazy load outside the async greenlet context (e.g. MissingGreenlet)
         # surfaces wrapped as StatementError, not InvalidRequestError, when it
         # occurs during actual statement execution rather than attribute access.
-        logger.warning("work.run_to_dict.resource_summary_not_loaded, run_id=%s", run.id, exc_info=True)
+        logger.warning("work.run_to_dict.resource_summary_not_loaded", run_id=run.id, exc_info=True)
     return result
 
 

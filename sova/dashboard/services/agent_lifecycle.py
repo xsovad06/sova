@@ -432,7 +432,7 @@ def _resolve_config_model(project_dir: Path) -> str | None:
         cfg = load_config(project_dir)
         return cfg.agent.model or None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
-        log.debug("resolve_config_model.failed", exc_info=True)
+        log.warning("resolve_config_model.failed", exc_info=True)
         return None
 
 
@@ -444,7 +444,7 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
         cfg = load_config(project_dir)
         return cfg.agent.fallback_models[0] if cfg.agent.fallback_models else None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
-        log.debug("resolve_config_fallback_model.failed", exc_info=True)
+        log.warning("resolve_config_fallback_model.failed", exc_info=True)
         return None
 
 
@@ -460,7 +460,7 @@ def _resolve_repo_context_agent_enabled(project_dir: Path) -> bool:
 
         return load_config(project_dir).review.repo_context_agent
     except Exception:  # noqa: BLE001 (config load failure defaults the feature off)
-        log.debug("resolve_repo_context_agent_enabled.failed", exc_info=True)
+        log.warning("resolve_repo_context_agent_enabled.failed", exc_info=True)
         return False
 
 

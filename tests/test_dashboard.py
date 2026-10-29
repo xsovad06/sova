@@ -8694,6 +8694,27 @@ class TestWaitAndFinalizeGraphBroadcast:
 
         invalidate_prs.assert_not_called()
 
+    def test_verdict_cache_invalidation_failure_does_not_raise(self, tmp_path: Path) -> None:
+        """A failed verdict-cache drop degrades to stale-until-TTL, not a propagated exception."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_finalize
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
+            patch("sova.dashboard.services.work_verdict.invalidate_verdict", side_effect=OSError("boom")),
+        ):
+            agent_finalize._invalidate_work_item_caches(tmp_path, 99)
+
+    def test_repo_context_agent_defaults_off_when_config_load_fails(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+            assert agent_lifecycle._resolve_repo_context_agent_enabled(tmp_path) is False
+
     async def test_broadcast_failure_does_not_raise(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 

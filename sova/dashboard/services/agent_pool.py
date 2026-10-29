@@ -211,7 +211,7 @@ def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None
             )
             pa.max_concurrent = cfg.max_parallel_agents
     except Exception:  # noqa: BLE001 (slot count keeps its previous value when config is unavailable)
-        log.debug("pool.max_concurrent.sync_failed", exc_info=True)
+        log.warning("pool.max_concurrent.sync_failed", exc_info=True)
 
 
 def list_all_pools() -> dict[str, ProjectAgents]:

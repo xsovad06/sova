@@ -1,4 +1,9 @@
-"""Structured logging setup for SOVA using structlog."""
+"""Structured logging setup for SOVA using structlog.
+
+Importing this module installs a fallback configuration (stderr, WARNING and above,
+plain tracebacks without frame locals; see ``_configure_fallback()``) unless structlog
+is already configured. ``setup_logging()`` replaces it for ``sova run`` and the dashboard.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,62 @@ _NAME_TO_LEVEL: dict[str, int] = {
 }
 
 _log_file_handle: object | None = None
+
+
+def _stderr_logger_factory(*_args: object) -> structlog.PrintLogger:
+    """Build a PrintLogger bound to whatever ``sys.stderr`` is at call time.
+
+    Resolved per call rather than captured once, so a process that swaps
+    ``sys.stderr`` later (pytest capture, a redirected stream) still sees the
+    record on the stream it is actually reading.
+    """
+    return structlog.PrintLogger(file=sys.stderr)
+
+
+def _configure_fallback() -> None:
+    """Install the default configuration used until ``setup_logging()`` replaces it.
+
+    Only ``sova run`` and the dashboard call ``setup_logging()``, so every other CLI
+    command (``sova install``, ``sova uninstall``, ``sova config get``) logs through
+    this. It reproduces what ``logging.lastResort`` gave the stdlib loggers these
+    modules used before the move to structlog, in three respects:
+
+    - stderr, not structlog's default stdout: a warning raised while loading config
+      (``sova config get``'s "Skipping setting ...") must not land on the stdout a
+      script reads a value from.
+    - WARNING and above, not structlog's default of every level: debug and info
+      events are for a process that opted into a level through ``setup_logging()``.
+    - a plain traceback, never frame locals: structlog's default ``ConsoleRenderer``
+      renders ``exc_info`` through rich with ``show_locals=True``, which prints every
+      local in every frame, so a failed ``settings.json`` write in
+      ``inject_agent_permissions()`` would put the file's ``env`` tokens on stderr.
+      ``lastResort`` never rendered locals; neither may this.
+
+    ``cache_logger_on_first_use`` stays off so a logger created before
+    ``setup_logging()`` runs still picks up the configuration it installs.
+    """
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S"),
+            structlog.dev.ConsoleRenderer(
+                colors=sys.stderr.isatty(),
+                exception_formatter=structlog.dev.plain_traceback,
+            ),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING),
+        logger_factory=_stderr_logger_factory,
+    )
+
+
+# Importing this module configures structlog when nothing else has: the only
+# import-time side effect, and it is skipped when a caller (a test, an embedding
+# application) configured structlog first.
+if not structlog.is_configured():
+    _configure_fallback()
 
 
 def rotation_kwargs(max_bytes: int, backup_count: int) -> dict[str, int]:

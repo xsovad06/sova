@@ -1830,6 +1830,59 @@ class TestConfigGet:
         assert result.exit_code == 0
         assert result.output.strip() == "(secret)"
 
+    def test_get_keeps_a_skipped_setting_warning_off_stdout(self, tmp_path: Path) -> None:
+        """A warning raised while loading config must not land on the stdout a script reads.
+
+        structlog's unconfigured default writes to stdout, and only `sova run` and the
+        dashboard call `setup_logging()`, so `Skipping setting ...: invalid JSON value`
+        used to be captured by `value=$(sova config get <key>)` alongside the value.
+        Run in a real subprocess: this suite's `configure_test_logging()` deliberately
+        binds structlog to stdout, so an in-process `CliRunner` cannot see the default.
+        """
+        import os
+        import sqlite3
+        import subprocess
+        import sys
+
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        conn = sqlite3.connect(claude_dir / "sova.db")
+        try:
+            conn.execute(
+                "CREATE TABLE project_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, key VARCHAR(200) NOT NULL, "
+                "value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.execute("INSERT INTO project_settings (key, value) VALUES (?, ?)", ("agent.model", '"sonnet-test"'))
+            conn.execute("INSERT INTO project_settings (key, value) VALUES (?, ?)", ("review.enabled", "not json{"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        repo_root = str(Path(__file__).resolve().parent.parent)
+        env = {k: v for k, v in os.environ.items() if k != "SOVA_DATABASE_URL"}
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [repo_root, env.get("PYTHONPATH")]))
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from sova.cli.app import app; app(prog_name='sova')",
+                "config",
+                "get",
+                "agent.model",
+                "--project",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "sonnet-test"
+        assert "Skipping setting 'review.enabled'" in result.stderr
+
     def test_get_masks_a_secret_even_without_the_value_type_shortcut(self, tmp_path: Path) -> None:
         """Defense in depth: the read path masks secrets independently of the early return."""
         from sova.dashboard.services.settings_service import _flatten_dict, get_config

@@ -2834,16 +2834,15 @@ class TestFindMissingColumns:
             await conn.execute(text("ALTER TABLE memories DROP COLUMN embedding"))
 
         mock_logger = MagicMock()
-        with patch("sova.db.session.logging.getLogger", return_value=mock_logger):
+        with patch("sova.db.session._log", mock_logger):
             result = await _run_migrations(engine)
         await engine.dispose()
 
         assert result is False  # still no DDL: Alembic cannot repair this
         mock_logger.error.assert_called_once()
-        # Rendered rather than indexed by position, so reordering the log args cannot
-        # turn this into a false pass.
-        fmt, *params = mock_logger.error.call_args.args
-        assert "memories.embedding" in fmt % tuple(params)
+        # Rendered as a structured kwarg rather than interpolated into the
+        # message, so reordering the log kwargs cannot turn this into a false pass.
+        assert mock_logger.error.call_args.kwargs["missing_columns"] == "memories.embedding"
 
     async def test_verification_failure_does_not_block_startup(self, tmp_path) -> None:
         """The check is diagnostic: a schema it cannot inspect must still start."""
@@ -2856,7 +2855,7 @@ class TestFindMissingColumns:
         mock_logger = MagicMock()
         with (
             patch("sova.db.session._find_missing_columns", side_effect=RuntimeError("inspection blew up")),
-            patch("sova.db.session.logging.getLogger", return_value=mock_logger),
+            patch("sova.db.session._log", mock_logger),
         ):
             result = await _run_migrations(engine)
         await engine.dispose()
@@ -2874,7 +2873,7 @@ class TestFindMissingColumns:
         engine = await _migrated_engine(tmp_path / "at-head-clean.db")
 
         mock_logger = MagicMock()
-        with patch("sova.db.session.logging.getLogger", return_value=mock_logger):
+        with patch("sova.db.session._log", mock_logger):
             result = await _run_migrations(engine)
         await engine.dispose()
 

@@ -9,7 +9,6 @@ Supports:
 
 from __future__ import annotations
 
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -19,13 +18,14 @@ from pydantic import ValidationError
 from sova.config.models import (
     ProjectConfig,
 )
+from sova.utils.logging import get_logger
 
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
 
-logger = logging.getLogger(__name__)
+logger = get_logger(component="config.loader")
 
 
 def load_config(project_dir: Path | None = None) -> ProjectConfig:
@@ -53,7 +53,7 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
         _auto_migrate_toml_to_db(project_dir, toml_flat)
         db_overrides = _try_load_from_db(project_dir)
         if db_overrides is not None:
-            logger.debug("Auto-migrated config from sova.toml to database")
+            logger.debug("loader.auto_migrated_to_db")
 
     if db_overrides:
         merged = _deep_merge(toml_flat, db_overrides)
@@ -362,4 +362,4 @@ def _auto_migrate_toml_to_db(project_dir: Path, toml_flat: dict[str, Any]) -> No
     try:
         _save_config_to_db_sync(project_dir, toml_flat, only_if_empty=True)
     except Exception:  # noqa: BLE001 (auto-migration is best-effort; the file config stays authoritative)
-        logger.warning("Auto-migration of sova.toml to database failed", exc_info=True)
+        logger.warning("loader.auto_migration_failed", exc_info=True)
