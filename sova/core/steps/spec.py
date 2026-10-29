@@ -308,7 +308,7 @@ def _write_spec_file(issue_number: str, title: str, content: str, project_dir: P
     specs_dir.mkdir(parents=True, exist_ok=True)
     slug = _make_slug(title)
     spec_path = specs_dir / f"{safe_issue}-{slug}.md"
-    spec_path.write_text(content)
+    spec_path.write_text(content, encoding="utf-8")
     return spec_path
 
 
@@ -387,7 +387,7 @@ class SpecStep(BaseStep):
         log.info("step.spec.written", issue=ctx.issue_number, path=str(spec_path))
 
         # Read once, derive everything from text
-        text = spec_path.read_text()
+        text = spec_path.read_text(encoding="utf-8")
         has_questions = _text_has_open_questions(text)
         spec_complexity = _extract_complexity(text)
 
@@ -409,7 +409,7 @@ class SpecStep(BaseStep):
                 )
             updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
             try:
-                spec_path.write_text(updated)
+                spec_path.write_text(updated, encoding="utf-8")
             except OSError as exc:
                 return StepResult(
                     success=False,

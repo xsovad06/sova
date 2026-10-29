@@ -24,6 +24,7 @@ from sova.roles._review_format import (
 )
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
+from sova.utils.markdown import strip_code_fences as _strip_code_fences
 from sova.utils.prompt_quoting import quote_untrusted as _quote_untrusted
 
 log = get_logger(component="role.reviewer")
@@ -387,20 +388,9 @@ def _extract_json(text: str) -> dict | None:
     return first_valid
 
 
-def _strip_json_fences(text: str) -> str:
-    """Strip a wrapping markdown code fence from *text*."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-    return text
-
-
 def _load_findings_json(text: str) -> dict | None:
     """Parse a findings payload out of an LLM response, tolerating fences and prose."""
-    stripped = _strip_json_fences(text)
+    stripped = _strip_code_fences(text)
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError:

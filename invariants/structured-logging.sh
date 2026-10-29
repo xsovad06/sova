@@ -5,9 +5,9 @@
 # as `log.warning("step.push.failed", branch=name, exc_info=True)`. A logger from
 # `logging.getLogger(...)` looks the same at the call site, often under the same
 # `log` name, but raises TypeError on those keyword arguments, and only when that
-# line runs (typically an error path nobody exercised). Eleven modules still
-# create stdlib loggers; only lines a branch adds are checked, so those do not
-# fail it and no new one can appear.
+# line runs (typically an error path nobody exercised). Only lines a branch
+# adds are checked, so an existing stdlib logger does not fail it until a
+# line near it changes, and no new one can appear.
 #
 # Escape hatch: end the line with `# stdlib-logging: <reason>`, for example to
 # tune a third-party library's logger.

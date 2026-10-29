@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
@@ -27,7 +28,6 @@ log = get_logger(component="dashboard.pr_service")
 # first (see parse_linked_issue()): that section is where _pr_body.py always
 # renders the PR's own closing decision, so a "Part of #<epic>" mention an
 # LLM wrote earlier in "## Summary" can never win a bare whole-body search.
-_CLOSING_KEYWORD_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
@@ -493,12 +493,12 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     When raise_on_error=True, config/retrieval failures propagate instead of
     returning [] (so callers can distinguish "no PRs" from "retrieval failed").
     """
+    from sova.config.context import resolve_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.git.pr import get_pr_review_data, list_open_prs
 
-    if project_dir is None:
-        project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
     try:
         cfg = load_config(project_dir)

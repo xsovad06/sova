@@ -265,8 +265,8 @@ def _planner_task_labels(task: PlannedTaskRequest, *, is_github: bool) -> list[s
 async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     """Create GitHub issues from planner-proposed tasks."""
     from sova.adapters import create_adapter
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
 
     if not req.tasks:
         return {"created": [], "errors": []}
@@ -313,8 +313,8 @@ async def get_issue_complexity(issue_number: str) -> dict:
     via ``assess_complexity()`` using issue metadata from the adapter.
     """
     from sova.adapters import create_adapter
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
     from sova.db.models import TaskAssessmentRecord
     from sova.llm.complexity import ComplexityTier, assess_complexity
     from sova.llm.routing import route_model
@@ -387,7 +387,7 @@ async def get_issue_complexity(issue_number: str) -> dict:
 @router.get("/agents/work-items")
 async def get_work_items() -> dict:
     """Get unified work items with computed state and actions."""
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import get_project_dir
     from sova.dashboard.services.work_item_service import get_work_items as _get_work_items
 
     return await _get_work_items(get_project_dir())
@@ -430,8 +430,8 @@ async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> di
     """Get non-terminal TaskRuns grouped into Kanban columns."""
     # Config is loaded per-request intentionally: load_config() caches internally,
     # and per-request loading supports hot-reload of SOVA config without restart.
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
-    from sova.dashboard.project_context import get_project_dir
 
     project_dir = get_project_dir()
     cfg = load_config(project_dir)
@@ -518,16 +518,19 @@ async def _validate_llm_model_override(role: str | None, model_id: str) -> None:
     page or a scripted call through, with an ID the configured provider
     cannot serve.
     """
-    from sova.config.context import get_project_dir
+    from sova.config.context import resolve_project_dir
     from sova.dashboard.services import models_service
     from sova.dashboard.services.agent_lifecycle import llm_model_override_role_error
+    from sova.dashboard.services.agent_pool import get_default_project_dir
 
     role_error = llm_model_override_role_error(role)
     if role_error:
         raise HTTPException(status_code=400, detail=role_error)
 
     try:
-        available = await models_service.get_available_models(get_project_dir() or Path.cwd(), layer="llm")
+        available = await models_service.get_available_models(
+            resolve_project_dir(default_project_dir=get_default_project_dir()), layer="llm"
+        )
     except Exception as exc:  # noqa: BLE001 (any discovery failure means the override cannot be verified)
         log.warning("agents.llm_model_override_discovery_failed", model=model_id, exc_info=True)
         raise HTTPException(
@@ -562,11 +565,14 @@ async def _validate_runtime_model(model_id: str) -> None:
     false, e.g. Codex) is a 400, not a silent no-op; an ``"unavailable"``
     catalog cannot vouch for any ID, so it is a 503 like a failed fetch.
     """
-    from sova.config.context import get_project_dir
+    from sova.config.context import resolve_project_dir
     from sova.dashboard.services import models_service
+    from sova.dashboard.services.agent_pool import get_default_project_dir
 
     try:
-        available = await models_service.get_available_models(get_project_dir() or Path.cwd(), layer="runtime")
+        available = await models_service.get_available_models(
+            resolve_project_dir(default_project_dir=get_default_project_dir()), layer="runtime"
+        )
     except Exception as exc:  # noqa: BLE001 (any discovery failure means the model cannot be verified)
         log.warning("agents.runtime_model_discovery_failed", model=model_id, exc_info=True)
         raise HTTPException(
@@ -676,10 +682,11 @@ async def run_command(req: RunCommandRequest) -> dict:
     bare `/{command}` to the headless, tool-using agent for anything it cannot
     find). Rejecting anything outside the known catalog closes both at once.
     """
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import resolve_project_dir
     from sova.dashboard.services.agent_context import known_command_names
+    from sova.dashboard.services.agent_pool import get_default_project_dir
 
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     if req.command not in known_command_names(project_dir):
         raise HTTPException(status_code=400, detail=f"Unknown command: {req.command}")
 
@@ -699,17 +706,18 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     to every subscriber, keeping backend work constant regardless of
     client count.
     """
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import resolve_project_dir_or_none
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     await websocket.accept()
     # Capture project_dir at connection time so the producer loop uses the
-    # correct scope even in multi-project mode. get_project_dir() is a
-    # per-request contextvar that ProjectContextMiddleware only ever sets for
-    # HTTP requests under /p/; it is never set for a websocket scope, so a
-    # single-project deployment falls back to the default project dir rather
-    # than registering under None while broadcasters key on the real path.
-    project_dir = get_project_dir() or get_default_project_dir()
+    # correct scope even in multi-project mode. The per-request contextvar is
+    # set by ProjectContextMiddleware only for HTTP requests under /p/; it is
+    # never set for a websocket scope, so a single-project deployment falls
+    # back to the default project dir rather than registering under None while
+    # broadcasters key on the real path. The cwd is deliberately not a further
+    # fallback: it would key the connection under a path no broadcaster uses.
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     _ws_manager.connect(websocket, project_dir)
     try:
         # Keep connection alive: wait for client messages or disconnect.

@@ -12,8 +12,8 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from sova.config.context import clear_project_context, set_project_context
 from sova.config.registry import get_project_path
-from sova.dashboard.project_context import clear_project_context, set_project_context
 
 _SAFE_SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 

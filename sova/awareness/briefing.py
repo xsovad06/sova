@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sova.awareness.base import AwarenessProvider, ItemCategory
@@ -77,7 +77,7 @@ class BriefingService:
         )
 
         return Briefing(
-            generated_at=datetime.now(),
+            generated_at=datetime.now(timezone.utc),
             attention_items=attention,
             informational_items=informational,
             schedule=schedule,

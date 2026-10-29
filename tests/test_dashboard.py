@@ -590,7 +590,7 @@ class TestDashboardHealth:
             github_repo: str = "owner/repo"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "proj")),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path / "proj")),
             patch("sova.config.loader.load_config", return_value=FakeCfg()),
         ):
             resp = await client.get("/supervisor")
@@ -3355,6 +3355,91 @@ class TestHandoffAPI:
         assert data["handoff"]["source"] == "integrate-pr"
         assert len(data["handoff"]["next_actions"]) == 1
 
+    async def test_unreadable_handoffs_are_listed_project_wide_without_an_issue(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text("[]", encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        assert sorted(resp.json()["unreadable_handoffs"]) == [
+            str(control_dir / "handoff-5.json"),
+            str(control_dir / "handoff-6.json"),
+        ]
+
+    async def test_non_object_handoff_is_reported_not_a_500(self, client: AsyncClient, tmp_path) -> None:
+        """A handoff file holding valid JSON that is not an object used to raise in the created_at sort."""
+        import json
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        good = {"id": "g", "source": "developer", "status": "completed", "summary": "ok", "issue": "1"}
+        (control_dir / "handoff-1.json").write_text(json.dumps(good), encoding="utf-8")
+        (control_dir / "handoff-2.json").write_text("[]", encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["handoff"]["issue"] == "1"
+        assert data["unreadable_handoffs"] == [str(control_dir / "handoff-2.json")]
+
+    async def test_issue_filter_narrows_unreadable_handoffs_to_that_issue(self, client: AsyncClient, tmp_path) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text("{not json", encoding="utf-8")
+        (control_dir / "handoff.json").write_text("{not json", encoding="utf-8")
+
+        resp = await client.get("/api/handoff", params={"issue": "5"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is False
+        assert sorted(data["unreadable_handoffs"]) == [
+            str(control_dir / "handoff-5.json"),
+            str(control_dir / "handoff.json"),
+        ]
+
+    async def test_schema_invalid_handoff_is_rendered_and_listed_separately(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """The dashboard renders legacy shapes, but the pipeline skips them, so the response names them."""
+        import json
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        good = {"id": "g", "source": "developer", "status": "completed", "summary": "ok", "issue": "1"}
+        (control_dir / "handoff-1.json").write_text(json.dumps(good), encoding="utf-8")
+        (control_dir / "handoff-15.json").write_text('{"issue": "15", "source": "reviewer"}', encoding="utf-8")
+
+        resp = await client.get("/api/handoff")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert sorted(h["issue"] for h in data["handoffs"]) == ["1", "15"]
+        assert data["unreadable_handoffs"] == []
+        assert data["schema_invalid_handoffs"] == [str(control_dir / "handoff-15.json")]
+
+    async def test_issue_filter_narrows_schema_invalid_handoffs_to_that_issue(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff-5.json").write_text('{"issue": "5"}', encoding="utf-8")
+        (control_dir / "handoff-6.json").write_text('{"issue": "6"}', encoding="utf-8")
+
+        resp = await client.get("/api/handoff", params={"issue": "5"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert data["schema_invalid_handoffs"] == [str(control_dir / "handoff-5.json")]
+
     async def test_clear_handoff_no_file(self, client: AsyncClient) -> None:
         resp = await client.post("/api/handoff/clear")
         assert resp.status_code == 200
@@ -4654,7 +4739,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
             patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
@@ -4680,7 +4765,7 @@ class TestAgentsAPI:
             github_user: str = "testuser"
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path)),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
             patch("sova.config.loader.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=None),
         ):
@@ -5264,37 +5349,37 @@ class TestGetRecentFailedRunsDirect:
         assert "110" not in issues
 
 
-class TestCalculateDurationMs:
-    """Unit tests for _calculate_duration_ms helper."""
+class TestComputeDurationMs:
+    """Unit tests for _compute_duration_ms, the module's one duration-in-milliseconds helper."""
 
     def test_both_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(None, None) is None
+        assert _compute_duration_ms(None, None) is None
 
     def test_started_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(None, datetime.now(timezone.utc)) is None
+        assert _compute_duration_ms(None, datetime.now(timezone.utc)) is None
 
     def test_ended_none(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
-        assert _calculate_duration_ms(datetime.now(timezone.utc), None) is None
+        assert _compute_duration_ms(datetime.now(timezone.utc), None) is None
 
     def test_naive_datetimes(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
         start = datetime(2026, 1, 1, 12, 0, 0)
         end = datetime(2026, 1, 1, 12, 0, 10)
-        assert _calculate_duration_ms(start, end) == 10_000
+        assert _compute_duration_ms(start, end) == 10_000
 
     def test_aware_datetimes(self) -> None:
-        from sova.dashboard.services.work_service import _calculate_duration_ms
+        from sova.dashboard.services.work_service import _compute_duration_ms
 
         start = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-        assert _calculate_duration_ms(start, end) == 300_000
+        assert _compute_duration_ms(start, end) == 300_000
 
 
 class TestGetKanbanColumnsDirect:
@@ -8693,6 +8778,27 @@ class TestWaitAndFinalizeGraphBroadcast:
             agent_finalize._invalidate_work_item_caches(tmp_path)
 
         invalidate_prs.assert_not_called()
+
+    def test_verdict_cache_invalidation_failure_does_not_raise(self, tmp_path: Path) -> None:
+        """A failed verdict-cache drop degrades to stale-until-TTL, not a propagated exception."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_finalize
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
+            patch("sova.dashboard.services.work_verdict.invalidate_verdict", side_effect=OSError("boom")),
+        ):
+            agent_finalize._invalidate_work_item_caches(tmp_path, 99)
+
+    def test_repo_context_agent_defaults_off_when_config_load_fails(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+            assert agent_lifecycle._resolve_repo_context_agent_enabled(tmp_path) is False
 
     async def test_broadcast_failure_does_not_raise(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -16040,7 +16146,7 @@ class TestRolesAPI:
         installed_dir = tmp_path / ".claude" / "commands"
         installed_dir.mkdir(parents=True)
         (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         from sova.dashboard.services import role_service
 
         role_service._cmd_cache.clear()
@@ -16053,6 +16159,47 @@ class TestRolesAPI:
         assert cmd["has_local_drift"] is True
         role_service._cmd_cache.clear()
 
+    async def test_list_commands_in_single_project_mode_uses_the_default_project_dir(
+        self, client, tmp_path, monkeypatch
+    ):
+        """With no per-request project, the single-project default supplies the installed commands and drift.
+
+        This endpoint used to read only the per-request contextvar, which single-project mode never sets, so it
+        served the canonical catalog with no drift metadata there. The shared resolver's default fallback is
+        an intended behaviour change of the project-dir consolidation, pinned here.
+        """
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_default_project_dir", lambda: tmp_path)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        cmd = next(c for c in resp.json()["commands"] if c["name"] == "develop")
+        assert cmd["installed_path"] == ".claude/commands/develop.md"
+        assert cmd["has_local_drift"] is True
+        role_service._cmd_cache.clear()
+
+    async def test_list_commands_without_a_project_ignores_the_cwd(self, client, tmp_path, monkeypatch):
+        """No project selected means the canonical catalog only: the cwd's own .claude/commands is not the project's."""
+        installed_dir = tmp_path / ".claude" / "commands"
+        installed_dir.mkdir(parents=True)
+        (installed_dir / "develop.md").write_text("---\nname: develop\n---\nlocal copy", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sova.dashboard.routers.roles.get_default_project_dir", lambda: None)
+        from sova.dashboard.services import role_service
+
+        role_service._cmd_cache.clear()
+        resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        cmd = next(c for c in resp.json()["commands"] if c["name"] == "develop")
+        assert cmd["has_local_drift"] is False
+        role_service._cmd_cache.clear()
+
     async def test_list_commands_symlink_rejected(self, client, tmp_path, monkeypatch):
         """Symlinked command files in the installed directory are skipped."""
         installed_dir = tmp_path / ".claude" / "commands"
@@ -16061,7 +16208,7 @@ class TestRolesAPI:
         target.write_text("secret data", encoding="utf-8")
         symlink = installed_dir / "evil.md"
         symlink.symlink_to(target)
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         from sova.dashboard.services import role_service
 
         role_service._cmd_cache.clear()
@@ -16158,21 +16305,57 @@ class TestRolesAPI:
         assert result["name"] == "develop"
         _cmd_cache.clear()
 
-    async def test_resolve_project_dir_returns_none(self, monkeypatch):
-        """_resolve_project_dir returns None when no project context is set."""
-        from sova.dashboard.routers.roles import _resolve_project_dir
+    async def test_commands_endpoint_resolves_the_project_dir_from_the_request_context(
+        self, client, tmp_path, monkeypatch
+    ):
+        """GET /api/roles/commands hands role_service the contextvar project, as a string."""
+        from sova.config.context import clear_project_context, set_project_context
 
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: None)
-        assert _resolve_project_dir() is None
+        set_project_context(tmp_path, "slug")
+        try:
+            with patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock:
+                resp = await client.get("/api/roles/commands")
+        finally:
+            clear_project_context()
 
-    async def test_resolve_project_dir_returns_string(self, monkeypatch):
-        """_resolve_project_dir converts Path to string."""
-        from sova.dashboard.routers.roles import _resolve_project_dir
+        assert resp.status_code == 200
+        mock.assert_called_once_with(str(tmp_path))
 
-        monkeypatch.setattr("sova.dashboard.routers.roles.get_project_dir", lambda: Path("/some/path"))
-        result = _resolve_project_dir()
-        assert result == "/some/path"
-        assert isinstance(result, str)
+    async def test_commands_endpoint_falls_back_to_the_single_project_default(self, client, tmp_path):
+        """With no request context the single-project default resolves, not None."""
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=tmp_path),
+            patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock,
+        ):
+            resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with(str(tmp_path))
+
+    async def test_command_detail_endpoint_keeps_none_without_any_project(self, client):
+        """No context and no default means no project: role_service serves the canonical catalog.
+
+        The server's own cwd must not stand in for a project, or a dashboard started from an
+        unrelated directory with its own .claude/commands/ would serve those as the project's.
+        """
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=None),
+            patch("sova.dashboard.routers.roles.role_service.get_command_detail", return_value={"name": "x"}) as mock,
+        ):
+            resp = await client.get("/api/roles/commands/x")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with("x", None)
+
+    async def test_commands_endpoint_keeps_none_without_any_project(self, client):
+        with (
+            patch("sova.dashboard.routers.roles.get_default_project_dir", return_value=None),
+            patch("sova.dashboard.routers.roles.role_service.get_available_commands", return_value=[]) as mock,
+        ):
+            resp = await client.get("/api/roles/commands")
+
+        assert resp.status_code == 200
+        mock.assert_called_once_with(None)
 
     async def test_get_builtin_role(self, client):
         """GET /api/roles/developer returns the built-in developer role."""
@@ -19236,7 +19419,7 @@ class TestResourceServiceMemoryPressure:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.project_context.get_project_dir", return_value=tmp_path),
+            patch("sova.config.context.get_project_dir", return_value=tmp_path),
         ):
             result = rs._get_memory_guard_config()
 

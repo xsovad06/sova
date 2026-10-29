@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskState
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import get_project_dir
 from sova.dashboard.services.pr_service import ComputedPRState
 from sova.utils.logging import get_logger
 
@@ -162,8 +162,8 @@ async def _fetch_last_run_map() -> dict[int, dict]:
     try:
         from sqlalchemy import func, select
 
+        from sova.config.context import get_project_dir
         from sova.core.state import TASK_RUN_TERMINAL
-        from sova.dashboard.project_context import get_project_dir
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 

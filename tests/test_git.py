@@ -883,6 +883,49 @@ class TestFindPRForIssue:
             call_args = mock_run.call_args[0]
             assert "--search" in call_args
 
+    @staticmethod
+    def _body_search_only(body: str):
+        """A `run` stand-in where only the body search can see the PR: every `--head` branch lookup is empty.
+
+        A mock that answers every call with the same JSON would let the branch lookup return the PR
+        without looking at its body, so a test of the body pattern would pass for the wrong reason.
+        """
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 83,
+                    "url": "https://github.com/user/repo/pull/83",
+                    "body": f"## Summary\n\n{body}",
+                    "headRefName": "feat/unrelated-branch-name",
+                }
+            ]
+        )
+
+        def _run(*args: str, **kwargs: object):
+            return _shell_ok(stdout="[]" if "--head" in args else pr_json)
+
+        return _run
+
+    async def test_finds_pr_whose_closing_reference_is_a_hashless_jira_key(self) -> None:
+        """A Jira key needs no '#', and a PR on an unrelated branch name is only linkable by its body."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = self._body_search_only("Closes RHCLOUD-123")
+
+            result = await find_pr_for_issue("RHCLOUD-123", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 83
+
+    @pytest.mark.parametrize("body", ["Fixes 73", "Closes 73"])
+    async def test_a_hashless_numeric_reference_does_not_link_a_pr(self, body: str) -> None:
+        """'Closes 73' is not a GitHub closing reference and could be any number, so only the '#' form links."""
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = self._body_search_only(body)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is None
+
     async def test_finds_pr_by_branch_name(self) -> None:
         pr_json = json.dumps(
             [
@@ -1181,6 +1224,92 @@ class TestResolveLinkedIssue:
             )
             result = await resolve_linked_issue(99, repo="user/repo")
             assert result == "42"
+
+
+class TestClosingKeywordSharing:
+    """Every closing-reference pattern builds from one CLOSING_KEYWORDS constant."""
+
+    @pytest.mark.parametrize(
+        "keyword",
+        ["Closes", "fixes", "RESOLVES", "Close", "Closed", "Fix", "fixed", "Resolve", "resolved"],
+    )
+    def test_every_pattern_accepts_all_nine_github_keyword_forms(self, keyword: str) -> None:
+        from sova.core.steps._pr_body import _closing_keyword_re, _neutralize_inline_closing_keyword
+        from sova.utils.gh import CLOSES_RE, closing_pattern_for
+
+        body = f"{keyword} #42"
+        assert CLOSES_RE.search(body) is not None
+        assert closing_pattern_for("42").search(body) is not None
+        assert _closing_keyword_re("42").search(body) is not None
+        assert _neutralize_inline_closing_keyword(body, "42") == "addresses #42"
+
+    def test_a_keyword_outside_the_list_matches_no_pattern(self) -> None:
+        from sova.utils.gh import CLOSES_RE, closing_pattern_for
+
+        assert CLOSES_RE.search("Addresses #42") is None
+        assert closing_pattern_for("42").search("Addresses #42") is None
+
+    def test_per_issue_pattern_binds_to_the_exact_number(self) -> None:
+        from sova.utils.gh import closing_pattern_for
+
+        pattern = closing_pattern_for("42")
+        assert pattern.search("Closes #42")
+        assert pattern.search("Closes #421") is None
+        assert pattern.search("Closes #4") is None
+
+    @pytest.mark.parametrize("body", ["Closes 42", "Fixes 42", "fixed 42.", "Fixed 42 flaky tests"])
+    def test_per_issue_pattern_needs_the_hash_for_a_numeric_issue(self, body: str) -> None:
+        """GitHub does not auto-close on a bare number, and a bare "Fixed 3 tests" is not the PR for #3."""
+        from sova.utils.gh import closing_pattern_for
+
+        assert closing_pattern_for("42").search(body) is None
+
+    def test_a_count_in_prose_is_not_a_reference_to_that_issue_number(self) -> None:
+        from sova.utils.gh import closing_pattern_for
+
+        assert closing_pattern_for("3").search("Fixed 3 flaky tests") is None
+        assert closing_pattern_for("3").search("Fixed #3 flaky tests") is not None
+
+    @pytest.mark.parametrize("body", ["bugfix #12", "disclosed #7", "prefix #12", "unresolved #12"])
+    def test_a_keyword_inside_a_longer_word_is_not_a_closing_reference(self, body: str) -> None:
+        """No pattern, reader or rewriter, may treat the tail of a longer word as a keyword."""
+        from sova.core.steps._pr_body import _closing_keyword_re, _neutralize_inline_closing_keyword
+        from sova.utils.gh import CLOSES_RE, closing_pattern_for
+
+        issue = body.rsplit("#", 1)[1]
+        assert CLOSES_RE.search(body) is None
+        assert closing_pattern_for(issue).search(body) is None
+        assert _closing_keyword_re(issue).search(body) is None
+        assert _neutralize_inline_closing_keyword(body, issue) == body
+
+    @pytest.mark.parametrize("body", ["Fixes: #42", "closes : #42", "Resolved:  #42"])
+    def test_readers_and_rewriter_agree_on_the_optional_colon(self, body: str) -> None:
+        """The rewriter always accepted ``Fixes: #42``; a reader that did not left the two disagreeing."""
+        from sova.core.steps._pr_body import _closing_keyword_re, _neutralize_inline_closing_keyword
+        from sova.utils.gh import CLOSES_RE, closing_pattern_for
+
+        match = CLOSES_RE.search(body)
+        assert match is not None
+        assert match.group(1) == "42"
+        assert closing_pattern_for("42").search(body) is not None
+        assert _closing_keyword_re("42").search(body) is not None
+        assert _neutralize_inline_closing_keyword(body, "42").startswith("addresses")
+
+    def test_per_issue_pattern_matches_a_jira_key_without_a_hash(self) -> None:
+        from sova.utils.gh import closing_pattern_for
+
+        pattern = closing_pattern_for("RHCLOUD-123")
+        assert pattern.search("Closes RHCLOUD-123")
+        assert pattern.search("Closes RHCLOUD-1234") is None
+
+    def test_closes_re_keeps_the_hash_mandatory(self) -> None:
+        """CLOSES_RE captures a numeric GitHub issue, so a bare number is not a reference."""
+        from sova.utils.gh import CLOSES_RE
+
+        assert CLOSES_RE.search("Closes 42") is None
+        match = CLOSES_RE.search("Fix #42")
+        assert match is not None
+        assert match.group(1) == "42"
 
 
 class TestGetPRStatus:
@@ -3171,6 +3300,45 @@ class TestEnsureComposeProjectName:
 
         env_content = (worktree / ".env").read_text()
         assert "COMPOSE_PROJECT_NAME=my_project" in env_content
+
+    def test_legacy_encoded_env_is_extended_without_rewriting_existing_bytes(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+        legacy = b"GREETING=caf\xe9"
+        (worktree / ".env").write_bytes(legacy)
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert (worktree / ".env").read_bytes() == legacy + b"\nCOMPOSE_PROJECT_NAME=my_project\n"
+
+    def test_non_utf8_compose_file_is_still_scanned_for_a_name(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_bytes(b"# caf\xe9\nname: my_project\nservices: {}\n")
+        (worktree / ".env").write_text("DEBUG=True\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert "COMPOSE_PROJECT_NAME" not in (worktree / ".env").read_text()
+
+    def test_creates_env_when_absent(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        assert (worktree / ".env").read_text() == "COMPOSE_PROJECT_NAME=my_project\n"
 
 
 # ---------------------------------------------------------------------------

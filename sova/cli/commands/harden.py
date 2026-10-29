@@ -218,7 +218,7 @@ def _load_project_docs(project_dir: Path) -> str:
         for f in sorted(project_dir.glob(pattern)):
             if not f.is_file():
                 continue
-            lines = f.read_text(errors="replace").splitlines()[:_MAX_DOC_LINES]
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()[:_MAX_DOC_LINES]
             docs.append(f"--- {f.name} ---\n" + "\n".join(lines))
 
     # Issue templates
@@ -226,7 +226,7 @@ def _load_project_docs(project_dir: Path) -> str:
     if template_dir.is_dir():
         for f in sorted(template_dir.iterdir()):
             if f.suffix in (".md", ".yml"):
-                docs.append(f"--- Issue Template: {f.name} ---\n" + f.read_text(errors="replace"))
+                docs.append(f"--- Issue Template: {f.name} ---\n" + f.read_text(encoding="utf-8", errors="replace"))
 
     return "\n\n".join(docs)
 
@@ -250,7 +250,7 @@ def _load_issue_template(project_dir: Path, issue_type: str) -> str:
     if not template_path.is_file():
         return ""
 
-    content = template_path.read_text(errors="replace")
+    content = template_path.read_text(encoding="utf-8", errors="replace")
 
     # Strip YAML frontmatter (--- ... ---)
     if content.startswith("---"):

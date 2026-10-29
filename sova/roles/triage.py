@@ -26,6 +26,7 @@ from sova.roles._review_format import SCOPE_BOUNDARY_HEADINGS
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended
 from sova.utils.logging import get_logger
+from sova.utils.markdown import strip_code_fences
 
 if TYPE_CHECKING:
     from sova.adapters.ldap_client import LdapClient, Person
@@ -34,14 +35,6 @@ if TYPE_CHECKING:
 log = get_logger(component="role.triage")
 
 _ACCEPTANCE_CRITERIA = "acceptance criteria"
-
-
-def _strip_markdown_fencing(text: str) -> str:
-    """Remove markdown code fencing (```...```) wrapping from LLM output."""
-    if text.startswith("```"):
-        lines = text.split("\n")
-        return "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    return text
 
 
 # Line-initial patterns that indicate LLM-generated preamble/postamble.
@@ -898,7 +891,7 @@ class TriageRole(AgentRole):
     def _parse_llm_assessment(self, text: str) -> TaskAssessment | None:
         """Parse Claude's JSON response into a TaskAssessment (lenient fallback)."""
         try:
-            cleaned = _strip_markdown_fencing(text.strip())
+            cleaned = strip_code_fences(text)
 
             data = json.loads(cleaned)
 
@@ -914,7 +907,7 @@ class TriageRole(AgentRole):
         fall back to heuristic assessment.
         """
         try:
-            cleaned = _strip_markdown_fencing(text.strip())
+            cleaned = strip_code_fences(text)
             data = json.loads(cleaned)
             return self._assessment_from_dict(data, strict=True)
         except (KeyError, ValueError) as exc:
@@ -1163,7 +1156,7 @@ class TriageRole(AgentRole):
                 model_selection_reason=model_reason,
             )
 
-            cleaned = _strip_markdown_fencing(result.text.strip())
+            cleaned = strip_code_fences(result.text)
 
             data = json.loads(cleaned)
 
@@ -1173,7 +1166,7 @@ class TriageRole(AgentRole):
             enriched_body: str | None = None
             raw_body = data.get("enriched_body", "")
             if isinstance(raw_body, str):
-                raw_body = _strip_markdown_fencing(raw_body.strip())
+                raw_body = strip_code_fences(raw_body)
                 if raw_body and len(raw_body) > len(task.body or ""):
                     enriched_body = raw_body
                 elif raw_body:

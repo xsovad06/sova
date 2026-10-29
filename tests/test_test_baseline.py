@@ -108,6 +108,12 @@ class TestSaveLoad:
         result = load_baseline(tmp_path)
         assert result is None
 
+    def test_load_non_utf8(self, tmp_path: Path) -> None:
+        path = baseline_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b'{"mode": "exit_code\xff"}')
+        assert load_baseline(tmp_path) is None
+
     def test_baseline_path(self, tmp_path: Path) -> None:
         p = baseline_path(tmp_path)
         assert p == tmp_path / ".sova" / "test-baseline.json"
@@ -277,6 +283,26 @@ class TestRunTestSuite:
         assert result.mode == "exit_code"
         assert result.exit_code == 1
         assert call_count == 2  # enriched + fallback
+
+    async def test_pytest_fallback_when_report_not_utf8(self, tmp_path: Path) -> None:
+        sova_dir = tmp_path / ".sova"
+        sova_dir.mkdir()
+        call_count = 0
+
+        async def mock_run_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                (sova_dir / ".test-report.json").write_bytes(b'{"tests": []\xff}')
+                return MagicMock(returncode=4, success=False, stdout="", stderr="")
+            return MagicMock(returncode=1, success=False, stdout="", stderr="")
+
+        with patch("sova.core.test_baseline.run", side_effect=mock_run_side_effect):
+            result = await run_test_suite("pytest", tmp_path, cmd_timeout=60)
+
+        assert result.mode == "exit_code"
+        assert call_count == 2
+        assert not (sova_dir / ".test-report.json").exists()
 
     async def test_pytest_fallback_when_no_report(self, tmp_path: Path) -> None:
         call_count = 0

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -10,7 +9,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-logger = logging.getLogger(__name__)
+from sova.utils.logging import get_logger
+
+logger = get_logger(component="cli.migrate")
 console = Console(stderr=True)
 
 try:
@@ -85,7 +86,7 @@ def migrate_config(
     try:
         _save_config_to_db_sync(project_dir, save_config)
     except Exception:  # noqa: BLE001 (logged and reported; the command exits non-zero)
-        logger.exception("Failed to write settings to database")
+        logger.exception("migrate.write_to_db_failed")
         typer.echo("Error: failed to write settings to database.", err=True)
         raise typer.Exit(1)
 

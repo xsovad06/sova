@@ -10,7 +10,6 @@ Priority chain: env vars > DB > TOML > defaults.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -21,8 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import ProjectSetting
 from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
+from sova.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(component="config.db_loader")
 
 _DB_FILENAME = "sova.db"
 
@@ -79,7 +79,9 @@ def _rows_to_nested(rows: Any) -> dict[str, Any] | None:
         try:
             value = json.loads(row.value)
         except (json.JSONDecodeError, TypeError):
-            logger.warning("Skipping setting %r: invalid JSON value", row.key)
+            # Rendered text is documented user-facing troubleshooting guidance
+            # (CLAUDE.md, docs/troubleshooting-config.md): keep it verbatim.
+            logger.warning(f"Skipping setting {row.key!r}: invalid JSON value")
             continue
         _set_nested(nested, row.key, value)
     return nested if nested else None
@@ -128,7 +130,7 @@ async def load_task_queue(project_dir: Path | None) -> list[int]:
     if not isinstance(queue, list):
         return []
     if not all(type(x) is int and x > 0 for x in queue):
-        logger.warning("Corrupted task_queue in DB, returning empty: %r", queue)
+        logger.warning("db_loader.task_queue_corrupted", queue=repr(queue))
         return []
     return queue
 
@@ -197,14 +199,14 @@ def _save_with_immediate_lock(engine: Any, config: dict[str, Any], flat: dict[st
         try:
             conn.execute(text("SELECT 1 FROM project_settings LIMIT 0"))
         except (OperationalError, ProgrammingError):
-            logger.debug("project_settings table does not exist, skipping sync save")
+            logger.debug("db_loader.project_settings_table_missing")
             return
 
         conn.execute(text("BEGIN IMMEDIATE"))
         try:
             row_count = conn.execute(text("SELECT COUNT(*) FROM project_settings")).fetchone()
             if row_count and row_count[0] > 0:
-                logger.debug("Skipping migration: DB is not empty (found %d rows)", row_count[0])
+                logger.debug("db_loader.migration_skipped_not_empty", row_count=row_count[0])
                 conn.execute(text("ROLLBACK"))
                 return
 
@@ -225,7 +227,7 @@ def _save_within_transaction(engine: Any, config: dict[str, Any], flat: dict[str
         try:
             conn.execute(text("SELECT 1 FROM project_settings LIMIT 0"))
         except (OperationalError, ProgrammingError):
-            logger.debug("project_settings table does not exist, skipping sync save")
+            logger.debug("db_loader.project_settings_table_missing")
             return
 
         _write_flat_config(conn, config, flat)
@@ -244,7 +246,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
     """
     db_path = project_dir / ".claude" / _DB_FILENAME
     if not db_path.exists():
-        logger.debug("DB file does not exist at %s, skipping sync save", db_path)
+        logger.debug("db_loader.db_file_missing", path=str(db_path))
         return
 
     flat = _flatten_config_dict(config)
@@ -265,7 +267,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
         finally:
             engine.dispose()
     except Exception:  # noqa: BLE001 (config save is best-effort; the file-based config remains authoritative)
-        logger.warning("Failed to save config to DB (sync)", exc_info=True)
+        logger.warning("db_loader.save_sync_failed", exc_info=True)
 
 
 def _flatten_config_dict(config: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -369,5 +371,5 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
         finally:
             engine.dispose()
     except Exception:  # noqa: BLE001 (silent fallback to file-based config on any DB failure)
-        logger.debug("DB config load skipped", exc_info=True)
+        logger.debug("db_loader.load_skipped", exc_info=True)
         return None

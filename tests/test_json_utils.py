@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from sova.utils.json import extract_json
+from sova.utils.markdown import strip_code_fences
 
 
 class TestExtractJson:
@@ -93,3 +96,45 @@ class TestExtractJson:
         parsed = json.loads(result)
         assert parsed["msg"] == "Use [this] format"
         assert parsed["value"] == 42
+
+
+class TestExtractJsonAgreesWithStripCodeFences:
+    """extract_json() and strip_code_fences() (triage's stripper) accept the same wrapped output."""
+
+    PAYLOAD = '{"suitability": "ready", "items": [1, 2]}'
+
+    WRAPPERS = [
+        pytest.param(f"```json\n{PAYLOAD}\n```", id="three-backticks"),
+        pytest.param(f"```\n{PAYLOAD}\n```", id="bare-fence"),
+        pytest.param(f"  \n```json\n{PAYLOAD}\n```\n\n", id="surrounding-whitespace"),
+        pytest.param(f"```json\n{PAYLOAD}\n```  ", id="trailing-blanks-after-fence"),
+        pytest.param(f"```json\n{PAYLOAD}\n", id="unclosed"),
+        pytest.param(f"````json\n{PAYLOAD}\n````", id="four-backticks"),
+        pytest.param(f"```json\n{PAYLOAD}\n`````", id="closing-wider-than-opening"),
+        pytest.param(f"````json\n{PAYLOAD}\n```", id="closing-narrower-than-opening"),
+        pytest.param(f"```json\n{PAYLOAD}```", id="closing-glued-to-last-line"),
+        pytest.param(f"````json\n{PAYLOAD}````", id="four-backticks-glued-to-last-line"),
+        pytest.param(f"```json{PAYLOAD}```", id="one-line-tag-glued-to-json"),
+        pytest.param(f"```json {PAYLOAD}```", id="one-line-tag-then-blank"),
+        pytest.param(f"```{PAYLOAD}```", id="one-line-no-tag"),
+    ]
+
+    @pytest.mark.parametrize("text", WRAPPERS)
+    def test_both_helpers_yield_the_same_json(self, text: str) -> None:
+        assert json.loads(extract_json(text)) == json.loads(strip_code_fences(text))
+        assert json.loads(extract_json(text)) == json.loads(self.PAYLOAD)
+
+    @pytest.mark.parametrize("text", [w for w in WRAPPERS if "\n" in w.values[0].strip()])
+    def test_a_multi_line_wrapper_is_returned_exactly_as_stripped(self, text: str) -> None:
+        assert extract_json(text) == strip_code_fences(text)
+
+    def test_prose_after_the_closing_fence_is_tolerated(self) -> None:
+        text = f"```json\n{self.PAYLOAD}\n```\nHope this helps."
+        assert json.loads(extract_json(text)) == json.loads(self.PAYLOAD)
+
+    def test_prose_before_the_fence_is_tolerated(self) -> None:
+        text = f"Here is the result:\n```json\n{self.PAYLOAD}\n```"
+        assert json.loads(extract_json(text)) == json.loads(self.PAYLOAD)
+
+    def test_a_fenced_block_that_is_not_json_is_returned_unchanged(self) -> None:
+        assert extract_json("```\nnot json at all\n```") == "not json at all"

@@ -49,7 +49,7 @@ def approve_spec(
         return {"error": f"No spec file found for issue #{issue_number}"}
 
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         log.warning("spec.approve.read_failed", issue=issue_number, exc_info=True)
         return {"error": f"Failed to read spec file: {exc}"}
@@ -64,7 +64,7 @@ def approve_spec(
     text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
 
     try:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     except (OSError, UnicodeEncodeError) as exc:
         log.warning("spec.approve.write_failed", issue=issue_number, exc_info=True)
         return {"error": f"Failed to write spec file: {exc}"}
@@ -80,7 +80,7 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
         return {"error": f"No spec file found for issue #{issue_number}"}
 
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         log.warning("spec.reject.read_failed", issue=issue_number, exc_info=True)
         return {"error": f"Failed to read spec file: {exc}"}
@@ -94,7 +94,7 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
     text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: rejected", text, count=1)
 
     try:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     except (OSError, UnicodeEncodeError) as exc:
         log.warning("spec.reject.write_failed", issue=issue_number, exc_info=True)
         return {"error": f"Failed to write spec file: {exc}"}
@@ -117,7 +117,7 @@ def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
         if not issue_match:
             continue
         try:
-            text = f.read_text()
+            text = f.read_text(encoding="utf-8")
             parsed = _parse_spec(text, f, issue_match.group(1))
         except (OSError, ValueError):
             log.warning("spec.parse_failed", file=str(f), exc_info=True)
@@ -159,7 +159,7 @@ def write_answers(
         return
 
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         log.warning("spec.write_answers.read_failed", issue=issue_number, exc_info=True)
         return
@@ -181,6 +181,6 @@ def write_answers(
                 text = text.replace(q["text"], f"Q: {q['text']} A: {answer}")
 
     try:
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     except (OSError, UnicodeEncodeError):
         log.warning("spec.write_answers.write_failed", issue=issue_number, exc_info=True)

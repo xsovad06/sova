@@ -4974,29 +4974,47 @@ class TestAssessAndEnrich:
 
 
 # ---------------------------------------------------------------------------
-# _strip_markdown_fencing helper
+# strip_code_fences helper (shared with triage)
 # ---------------------------------------------------------------------------
 
 
-class TestStripMarkdownFencing:
-    """Tests for _strip_markdown_fencing helper."""
+class TestTriageFenceStripping:
+    """Fenced LLM output must still parse through both of triage.py's own parse paths.
 
-    def test_no_fencing_passthrough(self) -> None:
-        from sova.roles.triage import _strip_markdown_fencing
+    triage.py delegates to the shared ``strip_code_fences()`` helper, which also
+    strips surrounding whitespace; ``json.loads`` is indifferent to that, so what
+    these tests pin is that the wiring accepts the same fenced shapes the old
+    local stripper did.
+    """
 
-        assert _strip_markdown_fencing("plain text") == "plain text"
+    PAYLOAD = '{"suitability": "ready", "confidence": 0.8, "complexity": "simple", "reasoning": "clear scope"}'
 
-    def test_fencing_with_closing_backticks(self) -> None:
-        from sova.roles.triage import _strip_markdown_fencing
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(PAYLOAD, id="unfenced"),
+            pytest.param(f"```json\n{PAYLOAD}\n```", id="closed-fence"),
+            pytest.param(f"```json\n{PAYLOAD}\n", id="unclosed-fence"),
+            pytest.param(f"```\n{PAYLOAD}\n```", id="bare-fence"),
+            pytest.param(f"  \n```json\n{PAYLOAD}\n```\n\n", id="surrounding-whitespace"),
+            pytest.param(f"```json\n{PAYLOAD}\n```  ", id="trailing-spaces-after-fence"),
+        ],
+    )
+    @pytest.mark.parametrize("method", ["_parse_llm_assessment", "_parse_llm_assessment_strict"])
+    def test_fenced_json_parses_to_an_assessment(self, method: str, text: str) -> None:
+        from sova.roles.triage import TriageRole
 
-        text = '```json\n{"key": "val"}\n```'
-        assert _strip_markdown_fencing(text) == '{"key": "val"}'
+        result = getattr(TriageRole(), method)(text)
 
-    def test_fencing_without_closing_backticks(self) -> None:
-        from sova.roles.triage import _strip_markdown_fencing
+        assert result is not None
+        assert result.suitability == "ready"
+        assert result.confidence == 0.8
 
-        text = '```json\n{"key": "val"}\nmore text'
-        assert _strip_markdown_fencing(text) == '{"key": "val"}\nmore text'
+    @pytest.mark.parametrize("method", ["_parse_llm_assessment", "_parse_llm_assessment_strict"])
+    def test_unparseable_fenced_text_is_rejected_not_raised(self, method: str) -> None:
+        from sova.roles.triage import TriageRole
+
+        assert getattr(TriageRole(), method)("```json\nnot json at all\n```") is None
 
 
 # ---------------------------------------------------------------------------
@@ -7359,10 +7377,10 @@ class TestPlannerRole:
         result = role._read_vision(ctx)
         assert "Vision" in result
 
-    def test_read_vision_returns_empty_on_oserror(self, tmp_path: Path) -> None:
+    def test_read_vision_reports_unreadable_on_oserror(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
-        from sova.roles.planner import PlannerRole
+        from sova.roles.planner import _VISION_UNREADABLE, PlannerRole
 
         docs = tmp_path / "docs"
         docs.mkdir()
@@ -7373,7 +7391,20 @@ class TestPlannerRole:
         role = PlannerRole()
         with patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
             result = role._read_vision(ctx)
-        assert result == ""
+        assert result == _VISION_UNREADABLE
+
+    def test_read_vision_reports_unreadable_on_non_utf8(self, tmp_path: Path) -> None:
+        from sova.roles.planner import _VISION_UNREADABLE, PlannerRole
+
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "VISION.md").write_bytes(b"# Vision caf\xe9")
+        ctx = _make_ctx(tmp_path, role="planner", issue_number="")
+        ctx.project_dir = tmp_path
+
+        result = PlannerRole()._read_vision(ctx)
+        assert result == _VISION_UNREADABLE
+        assert "no VISION.md" not in result
 
     def test_read_vision_returns_empty_when_missing(self, tmp_path: Path) -> None:
         from sova.roles.planner import PlannerRole

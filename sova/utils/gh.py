@@ -278,12 +278,42 @@ async def check_push_permission(
     return check
 
 
-_CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+# The one place the auto-close keyword list lives: GitHub's full set of nine forms
+# (close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved). Every pattern that reads
+# or rewrites a PR body for a closing reference builds from it (CLOSES_RE and
+# closing_pattern_for() here, plus the two line-anchored patterns in
+# sova/core/steps/_pr_body.py), so a PR body that writes "Fix #42" cannot be stripped as an
+# auto-close reference by one reader and ignored as a link to the issue by another.
+#
+# The keyword list alone is not the shared shape: the readers and the rewriter in _pr_body.py
+# must also agree on the optional colon after it (so "Fixes: #42", which GitHub honors, is a
+# closing reference to all of them: CLOSING_SEPARATOR) and on the leading word boundary (so
+# "bugfix #12" and "disclosed #7" are not: CLOSING_REFERENCE_PREFIX, which the two readers here
+# start from; the line-anchored patterns in _pr_body.py get their boundary from the line start,
+# and its inline rewriter spells the "\b" itself because it must capture the separator).
+CLOSING_KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+CLOSING_SEPARATOR = r"\s*:?\s+"
+CLOSING_REFERENCE_PREFIX = rf"\b{CLOSING_KEYWORDS}{CLOSING_SEPARATOR}"
+CLOSES_RE = re.compile(rf"{CLOSING_REFERENCE_PREFIX}#(\d+)", re.IGNORECASE)
+
+
+def closing_pattern_for(issue_num: str) -> re.Pattern[str]:
+    """Pattern matching a closing keyword that references exactly *issue_num*.
+
+    A numeric GitHub issue needs its ``#``, as in CLOSES_RE: GitHub does not auto-close on
+    ``Fixes 42``, and a bare number would make ``Fixed 3 flaky tests`` look like the PR for
+    issue #3, so ``find_pr_for_issue()`` could adopt the wrong PR. A Jira-keyed issue is
+    never written with a ``#`` (``Closes RHCLOUD-123``), so for a non-numeric key it is optional.
+    """
+    hash_prefix = "#" if re.fullmatch(r"[0-9]+", issue_num) else "#?"
+    return re.compile(rf"{CLOSING_REFERENCE_PREFIX}{hash_prefix}{re.escape(issue_num)}\b", re.IGNORECASE)
+
+
 # "part of" is not a GitHub auto-close keyword; it is SOVA's own deterministic
 # marker for a PR that only partially satisfies an issue's acceptance
 # criteria (see sova/core/steps/_pr_body.py:render_closing_block). It still
 # links the PR to the issue, just without auto-closing it on merge. Checked
-# only after _CLOSES_RE finds nothing: this repo also uses "Part of #N" for
+# only after CLOSES_RE finds nothing: this repo also uses "Part of #N" for
 # epic linkage, so a PR body that mentions an epic that way before its own
 # "Closes #N" must still resolve to the PR's own issue, not the epic. The
 # search itself is scoped to the "## Issue" section first (see
@@ -330,7 +360,7 @@ async def resolve_linked_issue(
         log.warning("gh.pr_body_parse_failed", pr=pr_number)
         return None
 
-    match = _CLOSES_RE.search(body) or _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
+    match = CLOSES_RE.search(body) or _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
     if match:
         issue_num = match.group(1)
         log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)

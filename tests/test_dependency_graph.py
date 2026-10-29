@@ -968,7 +968,7 @@ class TestBuildGraphConfigError:
         from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "fake")),
+            patch("sova.dashboard.routers.dependencies.get_project_dir", return_value=str(tmp_path / "fake")),
             patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no sova.toml")),
         ):
             with pytest.raises(_ConfigError, match="no sova.toml"):
@@ -981,7 +981,7 @@ class TestBuildGraphConfigError:
         from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
 
         with (
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "fake")),
+            patch("sova.dashboard.routers.dependencies.get_project_dir", return_value=str(tmp_path / "fake")),
             patch("sova.config.loader.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
         ):
@@ -1271,7 +1271,7 @@ class TestFetchLastRunMap:
     async def test_last_run_fetch_failure_returns_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_last_run_map
 
-        with patch("sova.dashboard.project_context.get_project_dir", side_effect=RuntimeError("no project")):
+        with patch("sova.config.context.get_project_dir", side_effect=RuntimeError("no project")):
             result = await _fetch_last_run_map()
         assert result == {}
 
@@ -1290,7 +1290,7 @@ class TestFetchLastRunMap:
                 session.add(TaskRun(id=3, issue_number="42", status="running", role="developer"))
                 session.add(TaskRun(id=4, issue_number="99", status="interrupted", role="researcher"))
 
-        with patch("sova.dashboard.project_context.get_project_dir", return_value=project_dir):
+        with patch("sova.config.context.get_project_dir", return_value=project_dir):
             result = await _fetch_last_run_map()
 
         assert 42 in result

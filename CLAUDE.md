@@ -55,7 +55,7 @@ Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Develop
 SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova.toml`. The migration is automatic:
 
 - **First run**: `sova install /path/to/project` creates the database
-- **Read**: `sova config` prints a summary table; `sova config get <key>` prints one resolved value (lists and dicts as JSON, a secret key as `(secret)`, an unknown key as exit code 1), which is how a command or script reads a setting it must not hardcode
+- **Read**: `sova config` prints a summary table; `sova config get <key>` prints one resolved value (lists and dicts as JSON, a secret key as `(secret)`, an unknown key as exit code 1), which is how a command or script reads a setting it must not hardcode (log warnings go to stderr, so stdout carries only the value)
 - **Edit**: `sova config set <key> <value>`, or the dashboard settings page. Both go through the same
   validation, so neither can persist a value that makes `load_config()` raise. List-valued keys accept
   a JSON array or comma-separated text: `sova config set awareness.providers "gmail, gcal"`

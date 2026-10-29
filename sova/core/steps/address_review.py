@@ -729,7 +729,7 @@ class AddressReviewStep(BaseStep):
         # a clean review (no findings) must not leave it stranded indefinitely.
         pending_docs = ctx.project_dir / ".claude" / "agent-control" / "pending-docs.md"
         try:
-            has_pending_docs = pending_docs.exists() and pending_docs.read_text().strip() != ""
+            has_pending_docs = pending_docs.exists() and pending_docs.read_text(encoding="utf-8").strip() != ""
         except (OSError, UnicodeDecodeError):
             # An unreadable queue file must not crash the step; fall back to
             # the pre-existing safe behavior of treating it as absent.

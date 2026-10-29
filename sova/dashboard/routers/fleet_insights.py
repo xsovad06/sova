@@ -91,9 +91,9 @@ async def get_issue_draft(
 async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
     """Create a GitHub issue on the SOVA repo from fleet failure data."""
     from sova.adapters.github import GitHubAdapter
+    from sova.config.context import get_project_dir
     from sova.config.loader import load_config
     from sova.config.models import FleetConfig
-    from sova.dashboard.project_context import get_project_dir
 
     project_dir = get_project_dir()
     github_user = ""

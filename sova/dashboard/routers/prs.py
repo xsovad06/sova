@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, field_validator
 
+from sova.config.context import resolve_project_dir
 from sova.config.loader import load_config
-from sova.dashboard.project_context import get_project_dir
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.pr_service import ComputedPRState, list_open_prs_with_state
 from sova.dashboard.services.work_state import VALID_MERGE_STATES
 from sova.utils.logging import get_logger
@@ -166,7 +166,7 @@ async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
     from sova.db.models import ActionFeedback
     from sova.db.session import get_session
 
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     async with await get_session(project_dir) as session:
         record = ActionFeedback(
             pr_number=body.pr_number,
@@ -227,7 +227,7 @@ async def trigger_pr_backfill(days: int = Query(90, ge=7, le=365)) -> dict:
     """Backfill PR lifecycle events from GitHub history."""
     from sova.dashboard.services import pr_metrics_service
 
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     try:
         cfg = load_config(project_dir)
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 400)

@@ -14,11 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.dashboard.project_context import get_project_dir, get_project_slug
+from sova.config.context import get_project_dir, get_project_slug
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sova.dashboard.services.output_service import OutputWriter
+    from sova.core.output import OutputWriter
     from sova.ipc.control import AgentProcess, FileAgentProcess
     from sova.ipc.runtime import StreamParser
     from sova.llm.models import CostSource
@@ -211,7 +211,7 @@ def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None
             )
             pa.max_concurrent = cfg.max_parallel_agents
     except Exception:  # noqa: BLE001 (slot count keeps its previous value when config is unavailable)
-        log.debug("pool.max_concurrent.sync_failed", exc_info=True)
+        log.warning("pool.max_concurrent.sync_failed", exc_info=True)
 
 
 def list_all_pools() -> dict[str, ProjectAgents]:

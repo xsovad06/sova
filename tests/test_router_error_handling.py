@@ -57,6 +57,22 @@ class TestSetupRouterErrors:
         assert "Installation failed" in resp.json()["detail"]
         assert "secret" not in resp.json()["detail"]
 
+    async def test_install_reports_an_unreadable_registry_as_409_not_a_failed_install(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        from sova.config.registry import RegistryUnreadableError
+
+        registry_file = tmp_path / "projects.json"
+        with (
+            patch("sova.cli.commands.project._install", new_callable=AsyncMock),
+            patch("sova.dashboard.routers.setup.register_project", side_effect=RegistryUnreadableError(registry_file)),
+        ):
+            resp = await client.post("/api/setup/install", json={"project_path": str(tmp_path)})
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert str(registry_file) in detail
+        assert "Installation failed" not in detail
+
     async def test_jira_test_config_error_returns_400(self, client: AsyncClient) -> None:
         with patch(
             "sova.dashboard.routers.setup.setup_service.test_jira_connection",

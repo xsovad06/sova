@@ -43,7 +43,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from sova.adapters.priority import Priority
-from sova.config.registry import has_projects, list_projects
+from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
 from sova.dashboard.routers import (
     agents,
     auth,
@@ -89,6 +89,7 @@ from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 
 log = get_logger(component="dashboard.app")
 
@@ -564,20 +565,13 @@ def _check_scheduler_health(project_dir: Path) -> str | None:
     # non-idempotent (a persistently-dead scheduler would report "fail" once and
     # then flip to 200, check skipped, forever after the file is gone).
     try:
-        pid = int(pid_path.read_text().strip())
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
         if pid <= 0:
             raise ValueError("PID must be positive")
     except (ValueError, OSError):
         log.warning("healthz.scheduler_check_failed", path=str(pid_path), exc_info=True)
         return "fail"
-    try:
-        os.kill(pid, 0)
-        return "ok"
-    except PermissionError:
-        # Process exists but is owned by another user (still alive).
-        return "ok"
-    except OSError:
-        return "fail"
+    return "ok" if is_process_alive(pid) else "fail"
 
 
 def priority_icon(priority: str | None, size: str = "16") -> Markup:
@@ -605,6 +599,18 @@ def priorities_json() -> Markup:
     """
     payload = [{"value": p.value, "rank": p.rank, "display_name": p.display_name, "icon": p.icon} for p in Priority]
     return Markup(json.dumps(payload))
+
+
+async def _registry_unreadable_handler(request: Request, exc: Exception) -> Response:
+    """Report an unreadable project registry as a 409 naming the file, instead of a bare 500.
+
+    The registry mutators (register, unregister, fleet priority) refuse to rewrite a file they cannot
+    read, so the actionable text ("fix or remove it, then retry") would otherwise stay in the server log.
+    """
+    path = exc.path if isinstance(exc, RegistryUnreadableError) else "the project registry"
+    log.warning("registry.unreadable", path=str(path), route=request.url.path)
+    detail = f"Cannot update the project registry: {path} is unreadable or malformed; fix or remove it, then retry"
+    return JSONResponse({"detail": detail}, status_code=409)
 
 
 def create_app(
@@ -976,6 +982,8 @@ def create_app(
         app.state.limiter = limiter
         app.add_middleware(SlowAPIMiddleware)
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    app.add_exception_handler(RegistryUnreadableError, _registry_unreadable_handler)
 
     @app.get("/healthz")
     async def healthz() -> Response:
@@ -1492,8 +1500,8 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/supervisor")
     async def supervisor_page(request: Request) -> Response:
         try:
+            from sova.config.context import get_project_dir
             from sova.config.loader import load_config
-            from sova.dashboard.project_context import get_project_dir
 
             sup_cfg = load_config(get_project_dir())
             github_repo = sup_cfg.github_repo or ""
@@ -1606,11 +1614,11 @@ def _register_a2a_routes(app: FastAPI) -> None:
     @app.get("/.well-known/agent.json")
     async def well_known_agent_card(request: Request) -> Response:
         from sova.a2a.agent_card import generate_agent_card
-        from sova.config.context import get_project_dir
+        from sova.config.context import resolve_project_dir_or_none
         from sova.config.loader import load_config
         from sova.dashboard.services.agent_pool import get_default_project_dir
 
-        project_dir = get_project_dir() or get_default_project_dir()
+        project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
         if project_dir is None:
             endpoint_base = str(request.base_url).rstrip("/")
             card = generate_agent_card(endpoint_base=endpoint_base)

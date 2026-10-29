@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import get_project_dir
 from sova.dashboard.services.log_service import get_components, get_logs
 from sova.utils.logging import get_logger
 

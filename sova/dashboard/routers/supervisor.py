@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from sova.dashboard.project_context import get_project_dir
+from sova.config.context import get_project_dir, resolve_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.supervisor")
@@ -74,17 +74,9 @@ def _resolve_project_dir() -> Path:
     In single-project mode the context var is unset, so we infer from the
     daemon registry (exactly one entry) or fall back to cwd.
     """
-    pd = get_project_dir()
-    if pd is not None:
-        return pd
-    if len(_daemon_registry) == 1:
-        return Path(next(iter(_daemon_registry)))
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
-    ctrl = get_default_project_dir()
-    if ctrl is not None:
-        return ctrl
-    return Path.cwd().resolve()
+    return resolve_project_dir(daemon_registry=_daemon_registry, default_project_dir=get_default_project_dir())
 
 
 def _project_dir_and_slug() -> tuple[Path, str | None]:

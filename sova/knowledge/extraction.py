@@ -18,6 +18,7 @@ from sova.knowledge import memory
 from sova.knowledge.embeddings import embed_text
 from sova.knowledge.similarity import parse_confirmation_counter, set_confirmation_counter, titles_match
 from sova.utils.logging import get_logger
+from sova.utils.markdown import strip_code_fences
 
 log = get_logger(component="knowledge.extraction")
 
@@ -141,13 +142,7 @@ Return [] if nothing worth remembering."""
 
 def _parse_extraction_response(text: str) -> list[ExtractedMemory]:
     """Parse LLM JSON response into ExtractedMemory objects."""
-    text = text.strip()
-
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = strip_code_fences(text)
 
     try:
         data = json.loads(text)

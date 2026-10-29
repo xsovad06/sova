@@ -15,6 +15,7 @@ import re
 from typing import TYPE_CHECKING
 
 from sova.utils.formatting import truncate
+from sova.utils.gh import CLOSING_KEYWORDS, CLOSING_SEPARATOR
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section, mask_fenced_blocks, strip_preamble, upsert_section
 
@@ -207,7 +208,7 @@ def _closing_keyword_re(issue_number: str) -> re.Pattern[str]:
     any other prose for the stripped line to lose.
     """
     return re.compile(
-        rf"^[ \t]*(?:[-*+]|\d+\.)?[ \t]*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+        rf"^[ \t]*(?:[-*+]|\d+\.)?[ \t]*{CLOSING_KEYWORDS}{CLOSING_SEPARATOR}"
         rf"#{re.escape(issue_number)}[ \t]*[.;]?[ \t\r]*$",
         re.MULTILINE | re.IGNORECASE,
     )
@@ -498,7 +499,7 @@ def _neutralize_inline_closing_keyword(body: str, issue_number: str) -> str:
     still reads naturally, rather than deleting the whole mention.
     """
     pattern = re.compile(
-        rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+#{re.escape(issue_number)}\b)",
+        rf"\b{CLOSING_KEYWORDS}({CLOSING_SEPARATOR}#{re.escape(issue_number)}\b)",
         re.IGNORECASE,
     )
     return pattern.sub(r"addresses\1", body)

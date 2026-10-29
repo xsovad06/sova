@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from urllib.parse import urlparse
 
-from sova.utils.gh import resolve_gh_env
+from sova.utils.gh import closing_pattern_for, resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 from sova.utils.shell import ShellResult, run
@@ -365,7 +365,7 @@ def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None | object:
     except json.JSONDecodeError:
         return _SEARCH_FAILED
 
-    closing_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
+    closing_pattern = closing_pattern_for(issue_num)
     # "part of" is SOVA's own deterministic marker for a PR that only
     # partially satisfies an issue's acceptance criteria
     # (sova/core/steps/_pr_body.py); it still links the PR for dedup purposes,

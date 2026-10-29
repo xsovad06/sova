@@ -101,6 +101,62 @@ class TestStripCodeFences:
         text = "\n  ```markdown\n## Title\n```  \n"
         assert _strip_code_fences(text) == "## Title"
 
+    def test_single_line_fence(self) -> None:
+        assert _strip_code_fences("```foo```") == "foo"
+
+    def test_closing_fence_on_last_content_line(self) -> None:
+        assert _strip_code_fences('```json\n{"a": 1}```') == '{"a": 1}'
+
+    def test_four_backtick_fence_loses_all_four_closing_backticks(self) -> None:
+        assert _strip_code_fences("````markdown\n## Title\n````") == "## Title"
+
+    def test_longer_closing_fence_on_own_line(self) -> None:
+        assert _strip_code_fences("```json\n{}\n`````") == "{}"
+
+    def test_shorter_closing_line_still_closes_the_wrapper(self) -> None:
+        """The strip always accepted a lone three-backtick last line; LLMs mismatch fence lengths."""
+        assert _strip_code_fences("````md\nbody\n```") == "body"
+
+    def test_closing_line_with_surrounding_spaces_closes_the_wrapper(self) -> None:
+        assert _strip_code_fences("````md\nbody\n  ``` ") == "body"
+
+    def test_glued_closing_run_shorter_than_the_opener_is_content(self) -> None:
+        """The width rule applies only where it disambiguates: a run glued to a content line."""
+        assert _strip_code_fences("````md\nuse ```x```") == "use ```x```"
+
+    def test_glued_closing_fence_keeps_the_inline_span_delimiter(self) -> None:
+        assert _strip_code_fences("```md\nuse `x````") == "use `x`"
+
+    def test_single_line_glued_closing_fence_keeps_the_inline_span_delimiter(self) -> None:
+        assert _strip_code_fences("```use `x````") == "use `x`"
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param('```json{"a": 1}```', '{"a": 1}', id="tag-glued-to-object"),
+            pytest.param("```json[1, 2]```", "[1, 2]", id="tag-glued-to-array"),
+            pytest.param('```json {"a": 1}```', '{"a": 1}', id="json-tag-with-blank"),
+            pytest.param("```JSON [1]```", "[1]", id="json-tag-upper-case"),
+            pytest.param("```see [docs]```", "see [docs]", id="other-word-before-blank-is-content"),
+            pytest.param("```foo```", "foo", id="plain-word"),
+        ],
+    )
+    def test_single_line_fence_drops_a_language_tag_only_in_front_of_json(self, text: str, expected: str) -> None:
+        assert _strip_code_fences(text) == expected
+
+    def test_four_backtick_closing_glued_to_last_line(self) -> None:
+        assert _strip_code_fences("````json\n{}````") == "{}"
+
+    def test_unclosed_wrapper_keeps_a_trailing_inline_code_span_intact(self) -> None:
+        assert _strip_code_fences("```md\nuse ```x```") == "use ```x```"
+
+    def test_unclosed_single_line_wrapper_keeps_a_trailing_inline_code_span_intact(self) -> None:
+        assert _strip_code_fences("```use ```x```") == "use ```x```"
+
+    def test_nested_closing_fence_kept_when_outer_fence_on_own_line(self) -> None:
+        text = "```markdown\n## Title\n```python\nx = 1\n```\n```"
+        assert _strip_code_fences(text) == "## Title\n```python\nx = 1\n```"
+
 
 class TestStripPreamble:
     def test_no_preamble(self) -> None:

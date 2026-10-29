@@ -7,18 +7,24 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir
 from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import setup_service
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.utils.logging import get_logger
 
 router = APIRouter()
 log = get_logger(component="dashboard.auth")
 
 
+def _project_dir() -> Path:
+    """The active project: the per-request one, else the single-project startup default, else the cwd."""
+    return resolve_project_dir(default_project_dir=get_default_project_dir())
+
+
 @router.get("/auth/status", responses={503: {"description": "Provider auth status unavailable"}})
 async def auth_status() -> dict:
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     try:
         return await setup_service.get_auth_status(project_dir)
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
@@ -29,7 +35,7 @@ async def auth_status() -> dict:
 @router.get("/connections", responses={503: {"description": "Connection catalog unavailable"}})
 async def connections_catalog(request: Request) -> dict:
     """List every supported LLM provider and agent runtime with its readiness state."""
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
     try:
         return await setup_service.get_connection_catalog(project_dir, is_loopback_bind=is_loopback_bind)
@@ -61,7 +67,7 @@ async def validate_llm_connection(req: _LLMCandidateRequest) -> dict:
     unguarded version would hand any page in the operator's browser a
     reachability oracle for arbitrary hosts.
     """
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.validate_llm_candidate(project_dir, req.provider, model=req.model, api_base=req.api_base)
 
 
@@ -71,7 +77,7 @@ async def validate_llm_connection(req: _LLMCandidateRequest) -> dict:
 )
 async def activate_llm_connection(req: _LLMCandidateRequest) -> dict:
     """Persist a candidate LLM provider as llm.provider, after re-validating it."""
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.activate_llm_candidate(project_dir, req.provider, model=req.model, api_base=req.api_base)
 
 
@@ -81,7 +87,7 @@ async def activate_llm_connection(req: _LLMCandidateRequest) -> dict:
 )
 async def test_llm_connection(req: _LLMCandidateRequest) -> dict:
     """Run one real, billable invoke() call against a candidate LLM provider."""
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.test_llm_candidate(project_dir, req.provider, model=req.model, api_base=req.api_base)
 
 
@@ -95,7 +101,7 @@ async def validate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
     Guarded for the same reason as the LLM probe above: it spawns a runtime
     CLI subprocess rather than only reading state.
     """
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.validate_runtime_candidate(project_dir, req.runtime)
 
 
@@ -105,7 +111,7 @@ async def validate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
 )
 async def activate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
     """Persist a candidate agent runtime as agent.runtime, after re-validating it."""
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.activate_runtime_candidate(project_dir, req.runtime)
 
 
@@ -115,14 +121,14 @@ async def activate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
 )
 async def start_reconnect(request: Request) -> dict:
     """Start a CLI-owned `claude auth login` subprocess for local reconnect."""
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
     return await setup_service.start_reconnect(project_dir, is_loopback_bind=is_loopback_bind)
 
 
 @router.get("/connections/reconnect/status")
 async def reconnect_status() -> dict:
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return setup_service.get_reconnect_status(project_dir)
 
 
@@ -131,5 +137,5 @@ async def reconnect_status() -> dict:
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def cancel_reconnect() -> dict:
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = _project_dir()
     return await setup_service.cancel_reconnect(project_dir)

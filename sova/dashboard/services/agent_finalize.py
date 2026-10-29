@@ -255,7 +255,7 @@ async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) 
 
     for marker_path in marker_paths:
         try:
-            data = json.loads(marker_path.read_text())
+            data = json.loads(marker_path.read_text(encoding="utf-8"))
             pr_number = data.get("pr_number")
             repo = data.get("repo", "")
             issue_number = data.get("issue_number")
@@ -396,7 +396,7 @@ def _invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None
 
         invalidate_queue_cache(project_dir)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
-        log.debug("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+        log.warning("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
     try:
         from sova.config.loader import load_config
         from sova.dashboard.services.pr_service import invalidate_pr_cache
@@ -405,13 +405,13 @@ def _invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None
         if repo:
             invalidate_pr_cache(repo)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
-        log.debug("finalize.pr_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+        log.warning("finalize.pr_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
     try:
         from sova.dashboard.services.work_verdict import invalidate_verdict
 
         invalidate_verdict(project_dir, pr_number)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
-        log.debug("finalize.verdict_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+        log.warning("finalize.verdict_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
 
 
 async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, status: str) -> None:

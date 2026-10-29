@@ -206,8 +206,8 @@ def read_cross_project_metrics(
 def _read_snapshot(path: Path, now: float) -> dict | None:
     """Read and validate a single snapshot file. Returns None if stale or corrupt."""
     try:
-        raw = path.read_text()
-    except OSError:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
 
     try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
@@ -35,7 +36,7 @@ class RebaseStep(BaseStep):
 
         if result.success:
             if ctx.project_dir and ctx.working_dir != ctx.project_dir:
-                ensure_claude_artifacts(ctx.project_dir, ctx.working_dir)
+                await asyncio.to_thread(ensure_claude_artifacts, ctx.project_dir, ctx.working_dir)
             summary = f"Rebased onto {ctx.base_branch}"
             if result.conflicts_resolved:
                 summary += f" ({result.conflicts_resolved} conflicts resolved)"

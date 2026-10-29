@@ -35,10 +35,12 @@ def render_briefing_cli(briefing: Briefing, console: Console, quiet: bool = Fals
 
 def _render_greeting(briefing: Briefing, console: Console) -> None:
     """Render greeting header with date."""
-    date_str = briefing.generated_at.strftime("%A, %B %d, %Y")
-    time_str = briefing.generated_at.strftime("%H:%M")
+    # generated_at is stored in UTC; greet and display in the user's local time
+    generated_at = briefing.generated_at.astimezone()
+    date_str = generated_at.strftime("%A, %B %d, %Y")
+    time_str = generated_at.strftime("%H:%M")
 
-    hour = briefing.generated_at.hour
+    hour = generated_at.hour
     if hour < 12:
         greeting = "Good morning"
     elif hour < 18:
@@ -168,10 +170,10 @@ def _urgency_marker(urgency: int) -> str:
 
 def _format_time_ago(timestamp: datetime) -> str:
     """Format timestamp as relative time (e.g., '2h ago', '30m ago')."""
-    now = datetime.now()
-    # If timestamp is timezone-aware, make now aware too
-    if timestamp.tzinfo is not None:
-        now = datetime.now(timezone.utc).astimezone(timestamp.tzinfo)
+    if timestamp.tzinfo is None:
+        # A naive timestamp is local time
+        timestamp = timestamp.astimezone()
+    now = datetime.now(timezone.utc).astimezone(timestamp.tzinfo)
 
     if timestamp > now:
         return timestamp.strftime("%Y-%m-%d %H:%M")

@@ -199,6 +199,17 @@ class TestScanNpm:
         (tmp_path / "package.json").write_text("{not valid json")
         assert svc._scan_npm(tmp_path) == {}
 
+    def test_non_utf8_manifest_raises_rather_than_reading_as_empty(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_bytes(b'{"dependencies": {"react\xff": "18.0.0"}}')
+        with pytest.raises(svc.ManifestUnreadableError) as excinfo:
+            svc._scan_npm(tmp_path)
+        assert excinfo.value.path == tmp_path / "package.json"
+
+    def test_non_utf8_lockfile_falls_back_to_manifest(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"react": "18.0.0"}}))
+        (tmp_path / "package-lock.json").write_bytes(b'{"packages": \xff}')
+        assert svc._scan_npm(tmp_path) == {"react": "18.0.0"}
+
     def test_malformed_lockfile_falls_back_to_manifest(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"react": "18.0.0"}}))
         (tmp_path / "package-lock.json").write_text("{not valid json")
@@ -239,6 +250,14 @@ class TestScanPython:
 
     def test_no_files_returns_empty(self, tmp_path: Path) -> None:
         assert svc._scan_python(tmp_path) == {}
+
+    @pytest.mark.parametrize("name", ["requirements.txt", "pyproject.toml"])
+    def test_non_utf8_manifest_raises_rather_than_reading_as_empty(self, tmp_path: Path, name: str) -> None:
+        (tmp_path / name).write_bytes(b"requests==2.31.0\n# caf\xe9\n")
+        with pytest.raises(svc.ManifestUnreadableError) as excinfo:
+            svc._scan_python(tmp_path)
+        assert excinfo.value.path == tmp_path / name
+        assert str(tmp_path / name) in str(excinfo.value)
 
     def test_requirements_takes_precedence_over_pyproject(self, tmp_path: Path) -> None:
         (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
@@ -327,6 +346,12 @@ class TestGetSnapshot:
         assert result.enabled is True
         assert result.total == 0
         assert result.ecosystems == []
+
+    async def test_non_utf8_manifest_fails_the_scan_and_caches_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "requirements.txt").write_bytes(b"requests==2.31.0\n# caf\xe9\n")
+        with pytest.raises(svc.ManifestUnreadableError):
+            await svc.get_snapshot(tmp_path, enabled=True, cache_ttl_minutes=30, registry_timeout_seconds=10)
+        assert tmp_path not in svc._cache
 
     async def test_scans_and_caches(self, tmp_path: Path) -> None:
         (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")

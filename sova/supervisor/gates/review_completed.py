@@ -29,15 +29,15 @@ for human-initiated integration (explicit user choice).
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from sova.supervisor.gates import BlockReason
+from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-log = logging.getLogger("sova.supervisor.gates.review_completed")
+log = get_logger(component="supervisor.gates.review_completed")
 
 _APPROVED_LABEL = "sova:approved"
 

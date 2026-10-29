@@ -12,10 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sova.adapters.label_catalog import REQUIRED_LABELS as _REQUIRED_LABELS
+from sova.config.context import get_project_dir, resolve_project_dir
 from sova.config.models import ProjectConfig
-from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import settings_service
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.settings_meta import get_grouped_config, get_meta
 from sova.utils.logging import get_logger
 
@@ -450,7 +451,7 @@ async def installation_status() -> dict[str, object]:
     from sova.commands.distribution import diff_commands
     from sova.config.loader import load_config
 
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
 
     try:
         cfg = load_config(project_dir)

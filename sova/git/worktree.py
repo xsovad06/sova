@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import shutil
 import subprocess
@@ -17,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES, pathspec_exclude
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
 
 if TYPE_CHECKING:
@@ -213,7 +213,7 @@ async def create_worktree(
                     commits_ahead=ahead.stdout.strip(),
                 )
             log.info("worktree.reuse", path=str(worktree_path), branch=branch)
-            ensure_claude_artifacts(project_dir, worktree_path)
+            await asyncio.to_thread(ensure_claude_artifacts, project_dir, worktree_path)
             return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
         # Stale or wrong-branch worktree: remove and recreate
         log.info("worktree.stale_remove", path=str(worktree_path))
@@ -255,7 +255,7 @@ async def create_worktree(
     if copy_files:
         _copy_worktree_files(project_dir, worktree_path, copy_files)
 
-    ensure_claude_artifacts(project_dir, worktree_path)
+    await asyncio.to_thread(ensure_claude_artifacts, project_dir, worktree_path)
     _ensure_compose_project_name(project_dir, worktree_path)
 
     return WorktreeInfo(
@@ -352,7 +352,7 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
     """Check if an agent is actively using a worktree.
 
     Queries the TaskRun DB table for non-terminal runs whose worktree_path
-    matches, then verifies PID liveness via ``os.kill(pid, 0)``.
+    matches, then verifies PID liveness via ``is_process_alive()``.
 
     Returns:
         The PID of the active agent, or ``None`` if no active agent found.
@@ -383,16 +383,8 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
 
             for run_record in runs:
                 run_wt = str(Path(run_record.worktree_path).resolve())
-                if run_wt == resolved and run_record.pid:
-                    try:
-                        os.kill(run_record.pid, 0)
-                        return run_record.pid
-                    except ProcessLookupError:
-                        # PID is dead: not an active agent
-                        continue
-                    except PermissionError:
-                        # Process exists but we lack permission to signal it
-                        return run_record.pid
+                if run_wt == resolved and run_record.pid and is_process_alive(run_record.pid):
+                    return run_record.pid
     except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("worktree.active_agent_check_failed", path=str(worktree_path), exc_info=True)
         raise RuntimeError(
@@ -470,8 +462,8 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
     if not compose_file.exists():
         return
 
-    # Check if compose file already has an explicit name
-    content = compose_file.read_text()
+    # Check if compose file already has an explicit name. Only scanned, so a stray non-UTF-8 byte must not abort it.
+    content = compose_file.read_text(encoding="utf-8", errors="replace")
     for line in content.splitlines():
         if line.strip().startswith("name:"):
             return
@@ -480,11 +472,14 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
     project_name = project_dir.name.lower().replace("-", "_")
     env_file = worktree_path / ".env"
 
-    # Append or create .env with COMPOSE_PROJECT_NAME
-    existing = env_file.read_text() if env_file.exists() else ""
-    if "COMPOSE_PROJECT_NAME" not in existing:
-        separator = "\n" if existing and not existing.endswith("\n") else ""
-        env_file.write_text(f"{existing}{separator}COMPOSE_PROJECT_NAME={project_name}\n")
+    # Append or create .env with COMPOSE_PROJECT_NAME. Handled as bytes: a copied .env may be in a legacy
+    # encoding, and decoding it would raise after git created the worktree (a retry then reuses it and
+    # skips this function) or, with errors="replace", rewrite the user's own variables on the way back.
+    existing = env_file.read_bytes() if env_file.exists() else b""
+    if b"COMPOSE_PROJECT_NAME" not in existing:
+        separator = b"\n" if existing and not existing.endswith(b"\n") else b""
+        line = f"COMPOSE_PROJECT_NAME={project_name}\n".encode()
+        env_file.write_bytes(existing + separator + line)
         log.info("worktree.compose_project_name", project_name=project_name)
 
 

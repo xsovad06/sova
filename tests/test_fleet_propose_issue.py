@@ -256,7 +256,7 @@ class TestProposeIssueEndpoint:
 
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.dashboard.project_context.get_project_dir", return_value=None),
+            patch("sova.config.context.get_project_dir", return_value=None),
         ):
             mock_adapter = AsyncMock()
             mock_adapter.create_issue = AsyncMock(return_value=mock_task)
@@ -280,7 +280,7 @@ class TestProposeIssueEndpoint:
     async def test_adapter_error_returns_structured_error(self, client: AsyncClient) -> None:
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.dashboard.project_context.get_project_dir", return_value=None),
+            patch("sova.config.context.get_project_dir", return_value=None),
         ):
             mock_adapter = AsyncMock()
             mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError("gh auth: not logged in"))
@@ -310,7 +310,7 @@ class TestProposeIssueEndpoint:
 
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.dashboard.project_context.get_project_dir", return_value=str(tmp_path / "proj")),
+            patch("sova.config.context.get_project_dir", return_value=str(tmp_path / "proj")),
             patch("sova.config.loader.load_config", return_value=mock_cfg),
         ):
             mock_adapter = AsyncMock()
@@ -334,7 +334,7 @@ class TestProposeIssueEndpoint:
 
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.dashboard.project_context.get_project_dir", return_value=None),
+            patch("sova.config.context.get_project_dir", return_value=None),
         ):
             mock_adapter = AsyncMock()
             mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError(long_error))

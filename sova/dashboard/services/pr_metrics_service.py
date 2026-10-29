@@ -8,7 +8,6 @@ import statistics
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -87,11 +86,12 @@ class PRMetricsService:
         self._cache[key] = (time.monotonic(), value)
 
     async def _load_events(self, days: int) -> list[Any]:
-        from sova.dashboard.project_context import get_project_dir
+        from sova.config.context import resolve_project_dir
+        from sova.dashboard.services.agent_pool import get_default_project_dir
         from sova.db.models import PREvent
         from sova.db.session import get_session
 
-        project_dir = get_project_dir() or Path.cwd()
+        project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         async with await get_session(project_dir) as session:
             stmt = select(PREvent).where(PREvent.timestamp >= cutoff).order_by(PREvent.timestamp)
@@ -391,7 +391,8 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
 
     Returns the number of events created.
     """
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.db.models import PREvent
     from sova.db.session import get_session
     from sova.utils.gh import resolve_gh_env
@@ -428,7 +429,7 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
     def _naive(ts: datetime) -> datetime:
         return ts.replace(tzinfo=None) if ts.tzinfo else ts
 
-    project_dir = get_project_dir() or Path.cwd()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     async with await get_session(project_dir) as session:
         existing_rows = await session.execute(
             select(PREvent.pr_number, PREvent.repo, PREvent.event_type, PREvent.timestamp).where(PREvent.repo == repo)

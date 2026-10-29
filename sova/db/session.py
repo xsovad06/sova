@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import logging
 import os
 import sqlite3
 import time
@@ -22,13 +21,14 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base
+from sova.utils.logging import get_logger
 
 _engine = None
 _session_factory = None
 _engines: dict[str, tuple] = {}
 
 _DB_FILENAME = "sova.db"
-_log = logging.getLogger("sova.db")
+_log = get_logger(component="db.session")
 _init_locks: dict[str, asyncio.Lock] = {}
 
 _LOCK_POLL_INTERVAL_S = 0.5
@@ -124,7 +124,7 @@ def _secure_db_file(db_path: Path) -> None:
         try:
             os.chmod(path, 0o600)
         except OSError:
-            _log.exception("db.chmod_failed path=%s", path)
+            _log.exception("db.chmod_failed", path=str(path))
             raise
 
 
@@ -379,21 +379,22 @@ async def _run_migrations(engine) -> bool:
             # here rather than surfacing later as OperationalError on an unrelated query.
             # Purely diagnostic, so it fails open: a database this cannot inspect must
             # still start the server, exactly as it did before the check existed.
-            log = logging.getLogger("sova.db")
             try:
                 async with engine.connect() as conn:
                     missing = await conn.run_sync(_find_missing_columns)
             except Exception:  # noqa: BLE001 (diagnostic check must fail open; schema drift is reported, not fatal)
-                log.warning("Could not verify schema against the ORM", exc_info=True)
+                _log.warning("db.schema_verify_failed", exc_info=True)
                 missing = []
             if missing:
-                log.error(
-                    "Schema drift: database is stamped at migration head %s but lacks %d ORM column(s): %s. "
-                    "A model column was added without a migration; queries touching these tables will fail. "
-                    "Add a migration that creates them.",
-                    head,
-                    len(missing),
-                    ", ".join(missing),
+                _log.error(
+                    "db.schema_drift",
+                    head=head,
+                    missing_count=len(missing),
+                    missing_columns=", ".join(missing),
+                    hint=(
+                        "a model column was added without a migration; queries touching these tables "
+                        "will fail; add a migration that creates them"
+                    ),
                 )
             return False  # Already at head, no DDL needed
 
@@ -407,7 +408,7 @@ async def _run_migrations(engine) -> bool:
 
     backup_path = await _backup_db(str(engine.url))
     if backup_path is not None:
-        _log.info("Pre-migration backup written to %s", backup_path)
+        _log.info("db.pre_migration_backup_written", path=backup_path)
 
     try:
         if has_tables and not has_alembic:
@@ -422,7 +423,7 @@ async def _run_migrations(engine) -> bool:
             # partially-applied (or entirely unapplied) migration as if it had
             # succeeded. Let init_db() fail loudly instead.
             raise
-        _log.warning("Alembic migration failed on a fresh database, falling back to create_all", exc_info=True)
+        _log.warning("db.alembic_migration_failed_fallback_create_all", exc_info=True)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         try:
@@ -430,7 +431,7 @@ async def _run_migrations(engine) -> bool:
                 await conn.run_sync(lambda c: c.execute(text("DROP TABLE IF EXISTS alembic_version")))
                 await conn.run_sync(_do_stamp)
         except Exception:  # noqa: BLE001 (tables exist either way; stamping is advisory)
-            _log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
+            _log.warning("db.alembic_stamp_failed_tables_untracked", exc_info=True)
     return True  # DDL was executed
 
 
@@ -461,7 +462,7 @@ def _register_sqlite_pragmas(engine) -> None:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
         except Exception:  # noqa: BLE001 (sqlite3 DB-API connection is opaque; pragma failure is advisory)
-            _log.warning("Failed to set SQLite pragmas", exc_info=True)
+            _log.warning("db.sqlite_pragmas_failed", exc_info=True)
 
 
 _ORPHANED_MEMORY_EDGES_WHERE = (
@@ -524,20 +525,20 @@ async def _cleanup_orphaned_memory_edges(engine) -> None:
 
         backup_path = await _backup_db(str(engine.url), backup_suffix=_ORPHAN_CLEANUP_BACKUP_SUFFIX)
         if backup_path is not None:
-            _log.warning("Backup written to %s before removing orphaned edges", backup_path)
+            _log.warning("db.orphan_cleanup_backup_written", path=backup_path)
 
         async with engine.begin() as conn:
             result = await conn.execute(text(f"DELETE FROM memory_edges WHERE {_ORPHANED_MEMORY_EDGES_WHERE}"))
             if result.rowcount:
                 _log.warning(
-                    "Removed %d orphaned memory_edges row(s) referencing a deleted memory",
-                    result.rowcount,
+                    "db.orphaned_memory_edges_removed",
+                    row_count=result.rowcount,
                 )
 
         if "project_settings" in table_names:
             await _mark_orphan_sweep_done(engine)
     except Exception:  # noqa: BLE001 (diagnostic cleanup must fail open; startup must not depend on it)
-        _log.warning("Failed to clean up orphaned memory_edges rows", exc_info=True)
+        _log.warning("db.orphan_cleanup_failed", exc_info=True)
 
 
 async def _enable_sqlite_wal(engine) -> None:
@@ -563,7 +564,7 @@ async def _enable_sqlite_wal(engine) -> None:
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
     except Exception:  # noqa: BLE001 (WAL mode is an optimization; non-SQLite backends and locked DBs both fail here)
-        _log.warning("Failed to set SQLite WAL mode", exc_info=True)
+        _log.warning("db.sqlite_wal_mode_failed", exc_info=True)
 
 
 def _acquire_migration_lock_sync(lock_path: Path) -> IO[str]:
@@ -591,7 +592,7 @@ def _acquire_migration_lock_sync(lock_path: Path) -> IO[str]:
                     "another process may be hung while holding it"
                 ) from None
             if not warned and waited >= _LOCK_WARN_AFTER_S:
-                _log.warning("Waiting on migration lock %s held by another process", lock_path)
+                _log.warning("db.migration_lock_wait", path=str(lock_path))
                 warned = True
             time.sleep(_LOCK_POLL_INTERVAL_S)
             waited += _LOCK_POLL_INTERVAL_S

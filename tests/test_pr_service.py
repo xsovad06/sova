@@ -1562,33 +1562,41 @@ class TestListOpenPrsWithState:
     @pytest.mark.asyncio
     async def test_returns_empty_on_config_load_exception(self, monkeypatch, tmp_path) -> None:
         """Test lines 472-474: config load exception returns empty list."""
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        # list_open_prs_with_state() imports get_project_dir inside the function, so patching the
+        # module attribute reaches it; asserting what load_config() received proves the patch is
+        # what supplied the directory, not whatever the real contextvar or cwd happened to be.
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
+        seen_dirs: list[object] = []
 
-        def _raise_config(_: object) -> None:
+        def _raise_config(project_dir: object) -> None:
+            seen_dirs.append(project_dir)
             raise RuntimeError("config error")
 
         monkeypatch.setattr("sova.config.loader.load_config", _raise_config)
         result = await list_open_prs_with_state()
         assert result == []
+        assert seen_dirs == [tmp_path]
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_github_repo(self, monkeypatch, tmp_path) -> None:
         """Test lines 476-477: returns empty when github_repo is empty."""
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        load_config = MagicMock(return_value=mock_cfg)
+        monkeypatch.setattr("sova.config.loader.load_config", load_config)
         result = await list_open_prs_with_state()
         assert result == []
+        load_config.assert_called_once_with(tmp_path)
 
     @pytest.mark.asyncio
     async def test_uses_unknown_thread_counts_on_exception(self, monkeypatch, tmp_path) -> None:
         """Thread/review-data fetch exceptions leave counts unknown (None), not (0, 0)."""
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
@@ -1614,7 +1622,7 @@ class TestListOpenPrsWithState:
         """Test lines 503-505: background task setup doesn't raise exceptions."""
         from unittest.mock import MagicMock
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
@@ -1789,7 +1797,7 @@ class TestInvalidatePrCache:
 
         from sova.dashboard.services import pr_service
 
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"

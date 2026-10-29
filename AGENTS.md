@@ -25,6 +25,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/api-contracts-guidelines.md` | Dashboard API, adapter ABC, LLM output formats |
 | `docs/database-guidelines.md` | ORM models, session management, migrations |
 | `docs/testing-guidelines.md` | pytest patterns, fixtures, mocking, test isolation |
+| `docs/deferred-consolidation.md` | Work an audit-driven consolidation pass deferred (import-layering contract, Codex runtime split, `sova/workflow/`), and the behaviour changes of the slices that landed |
 | `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
 | `docs/jira-configuration-guide.md` | Jira Cloud setup, JQL filters, status mapping, troubleshooting |
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
@@ -51,7 +52,7 @@ sova/
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
       routers/                     # 33 API routers (auth, overview, runs, costs, briefing, feed, handoff, health, lifecycle, memory, models, logs, tasks, queue, quota, reliability, settings, setup, agents, work, roles, spec, prs, dependencies, dependency_health, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
-      services/                    # 49 services (run, cost, memory, models, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
+      services/                    # 48 services (run, cost, memory, models, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping
@@ -82,7 +83,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (12000+ tests)
+  tests/                           # pytest suite (13000+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

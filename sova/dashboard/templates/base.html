@@ -47,6 +47,13 @@
         <span class="sidebar-label">Action required</span>
       </a>
     </div>
+    <!-- Handoff unreadable banner (shown when a handoff file failed to parse) -->
+    <div id="handoff-unreadable-banner" class="hidden px-4 py-2.5 bg-accent-red/10 border-b border-accent-red/30">
+      <a href="{{ prefix }}/agents" class="flex items-center gap-2 text-xs text-accent-red hover:text-red-400 transition-colors">
+        <span class="w-2 h-2 rounded-full bg-accent-red shrink-0"></span>
+        <span id="handoff-unreadable-label" class="sidebar-label min-w-0 truncate">Handoff file unreadable</span>
+      </a>
+    </div>
     <div class="flex-1 py-2">
       {% set nav_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
         ("agents", prefix + "/agents", "Agents", "agents"),

@@ -18,6 +18,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
+from sova.core.output import OutputWriter
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
 )
@@ -178,7 +179,6 @@ from sova.dashboard.services.agent_validation import (
     check_stale_command as check_stale_command,
 )
 from sova.dashboard.services.feed_service import emit_safe
-from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import (
     _PIPELINE_ROLES,
     RUN_RUNTIME_MODEL_OVERRIDE_ENV,
@@ -432,7 +432,7 @@ def _resolve_config_model(project_dir: Path) -> str | None:
         cfg = load_config(project_dir)
         return cfg.agent.model or None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
-        log.debug("resolve_config_model.failed", exc_info=True)
+        log.warning("resolve_config_model.failed", exc_info=True)
         return None
 
 
@@ -444,7 +444,7 @@ def _resolve_config_fallback_model(project_dir: Path) -> str | None:
         cfg = load_config(project_dir)
         return cfg.agent.fallback_models[0] if cfg.agent.fallback_models else None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
-        log.debug("resolve_config_fallback_model.failed", exc_info=True)
+        log.warning("resolve_config_fallback_model.failed", exc_info=True)
         return None
 
 
@@ -460,7 +460,7 @@ def _resolve_repo_context_agent_enabled(project_dir: Path) -> bool:
 
         return load_config(project_dir).review.repo_context_agent
     except Exception:  # noqa: BLE001 (config load failure defaults the feature off)
-        log.debug("resolve_repo_context_agent_enabled.failed", exc_info=True)
+        log.warning("resolve_repo_context_agent_enabled.failed", exc_info=True)
         return False
 
 

@@ -10,8 +10,22 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from sova.utils.files import read_json_or_none, write_text_atomic
+
 _REGISTRY_DIR = Path.home() / ".config" / "sova"
 _REGISTRY_FILE = _REGISTRY_DIR / "projects.json"
+
+
+class RegistryUnreadableError(RuntimeError):
+    """The project registry file exists but cannot be read as a JSON object.
+
+    A ``RuntimeError`` subclass so existing ``except RuntimeError`` callers keep working. It carries
+    the file's path so a caller (the dashboard routes) can name the file the user has to fix.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"Project registry {path} is unreadable or malformed; fix or remove it, then retry")
+        self.path = path
 
 
 @dataclass
@@ -24,12 +38,8 @@ class ProjectEntry:
 
 def _load_raw() -> dict[str, str | dict]:
     """Load raw registry data (may contain old or new format entries)."""
-    if not _REGISTRY_FILE.exists():
-        return {}
-    try:
-        return json.loads(_REGISTRY_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {}
+    data = read_json_or_none(_REGISTRY_FILE)
+    return data if isinstance(data, dict) else {}
 
 
 def _load() -> dict[str, str]:
@@ -66,13 +76,27 @@ def _load_entries() -> dict[str, ProjectEntry]:
     return result
 
 
+def _load_entries_for_update() -> dict[str, ProjectEntry]:
+    """Load entries ahead of a rewrite, refusing to replace a registry that exists but cannot be read.
+
+    ``_load_entries()`` reads an unreadable file (non-UTF-8, truncated, or not a JSON object) as
+    empty, which is right for a lookup but would make the following save drop every existing
+    registration.
+    """
+    if _REGISTRY_FILE.exists() and not isinstance(read_json_or_none(_REGISTRY_FILE), dict):
+        raise RegistryUnreadableError(_REGISTRY_FILE)
+    return _load_entries()
+
+
 def _save_entries(entries: dict[str, ProjectEntry]) -> None:
     """Save registry in the new format with full entry data."""
     _REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
     data: dict[str, dict] = {}
     for slug, entry in entries.items():
         data[slug] = {"path": entry.path, "fleet_priority": entry.fleet_priority}
-    _REGISTRY_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    # Atomic, not write_text(): a process killed mid-write would leave a truncated file, which the
+    # refusal in _load_entries_for_update() would then turn into a failure on every later mutation.
+    write_text_atomic(_REGISTRY_FILE, json.dumps(data, indent=2) + "\n")
 
 
 def _validate_slug(slug: str) -> str:
@@ -107,7 +131,7 @@ def register_project(path: Path, slug: str | None = None) -> str:
     """
     path = _validate_project_path(path)
 
-    entries = _load_entries()
+    entries = _load_entries_for_update()
     slug = slug or _slugify(path.name)
     slug = _validate_slug(slug)
 
@@ -129,7 +153,7 @@ def register_project(path: Path, slug: str | None = None) -> str:
 
 def unregister_project(slug: str) -> bool:
     """Remove a project from the registry. Returns True if it existed."""
-    entries = _load_entries()
+    entries = _load_entries_for_update()
     if slug not in entries:
         return False
     del entries[slug]
@@ -179,7 +203,7 @@ def get_project_entries() -> dict[str, ProjectEntry]:
 
 def update_fleet_priority(slug: str, priority: int) -> bool:
     """Update fleet_priority for a project. Returns True if found."""
-    entries = _load_entries()
+    entries = _load_entries_for_update()
     if slug not in entries:
         return False
     entries[slug].fleet_priority = priority

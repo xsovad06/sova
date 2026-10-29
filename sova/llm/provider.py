@@ -174,7 +174,7 @@ class LLMProvider(ABC):
         Providers that support native command dispatch can override this.
         """
         if command.startswith("/") and cwd:
-            _assert_command_exists(command, Path(cwd))
+            await asyncio.to_thread(_assert_command_exists, command, Path(cwd))
         prompt = f"{command} {args}".strip() if args else command
         log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
         return await self.invoke(
@@ -355,10 +355,10 @@ def _resolve_scoped_api_key(cfg: LLMConfig, project_dir: Path | None) -> str:
     migrated or deleted) for a user upgrading from before this scoping
     existed, then to ``cfg.api_key`` as stored in the database.
     """
-    from sova.config.context import get_project_dir
+    from sova.config.context import resolve_project_dir
     from sova.llm.keyring_store import resolve_secret, scoped_secret_name
 
-    resolved_dir = project_dir if project_dir is not None else (get_project_dir() or Path.cwd())
+    resolved_dir = resolve_project_dir(project_dir)
     scoped_name = scoped_secret_name("llm.api_key", resolved_dir, cfg.provider)
     return resolve_secret(scoped_name, cfg.api_key, legacy_name="llm.api_key")
 

@@ -249,7 +249,7 @@ def _detect_tech_stack(project: Path) -> list[str]:
         for f in [_REQUIREMENTS_TXT, _PYPROJECT_TOML, "setup.py", "setup.cfg"]:
             p = project / f
             if p.exists():
-                reqs += p.read_text(errors="ignore")
+                reqs += p.read_text(encoding="utf-8", errors="ignore")
         if (project / "manage.py").exists() and "django" in reqs.lower():
             stack.append("django")
         if "fastapi" in reqs.lower():
@@ -276,7 +276,7 @@ def _detect_tech_stack(project: Path) -> list[str]:
         stack.append("rust")
     try:
         manifests = list(project.rglob("__manifest__.py"))
-        if any("'name'" in m.read_text(errors="ignore") for m in manifests[:5]):
+        if any("'name'" in m.read_text(encoding="utf-8", errors="ignore") for m in manifests[:5]):
             stack.append("odoo")
     except OSError:
         pass
@@ -317,10 +317,12 @@ async def _detect_base_branch(project: Path) -> str:
 
 def _detect_cmd(project: Path, makefile_target: str, pkg_script: str, fallback: str) -> str:
     makefile = project / "Makefile"
-    if makefile.exists() and re.search(rf"^{makefile_target}:", makefile.read_text(), re.MULTILINE):
+    if makefile.exists() and re.search(
+        rf"^{makefile_target}:", makefile.read_text(encoding="utf-8", errors="ignore"), re.MULTILINE
+    ):
         return f"make {makefile_target}"
     pkg = project / _PACKAGE_JSON
-    if pkg.exists() and f'"{pkg_script}"' in pkg.read_text(errors="ignore"):
+    if pkg.exists() and f'"{pkg_script}"' in pkg.read_text(encoding="utf-8", errors="ignore"):
         return f"npm run {pkg_script}"
     return fallback
 

@@ -5,15 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.config.db_loader import (
+    _save_config_to_db_sync,
+    _save_with_immediate_lock,
+    _save_within_transaction,
     _set_nested,
     _try_load_from_db,
     get_setting,
+    load_task_queue,
     save_setting,
 )
 from sova.config.loader import _deep_merge
@@ -562,3 +567,53 @@ class TestMigrateDeprecatedKeys:
         flat: dict[str, Any] = {"github_repo": "user/repo"}
         _migrate_deprecated_keys(flat)
         assert flat == {"github_repo": "user/repo"}
+
+
+class TestLoadTaskQueue:
+    @staticmethod
+    async def _load(stored: Any) -> list[int]:
+        with (
+            patch("sova.db.session.get_session", new=AsyncMock(return_value=MagicMock())),
+            patch("sova.config.db_loader.get_setting", new=AsyncMock(return_value=stored)),
+        ):
+            return await load_task_queue(None)
+
+    async def test_valid_queue_is_returned(self) -> None:
+        assert await self._load([3, 1, 2]) == [3, 1, 2]
+
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            pytest.param(None, id="unset"),
+            pytest.param("not a list", id="not a list"),
+            pytest.param([1, -2], id="negative"),
+            pytest.param([0], id="zero"),
+            pytest.param([True, 2], id="bool is not an issue number"),
+        ],
+    )
+    async def test_malformed_queue_is_empty(self, stored: Any) -> None:
+        assert await self._load(stored) == []
+
+
+class TestSyncSaveWithoutSettingsTable:
+    """A database that predates project_settings is skipped, not failed."""
+
+    @pytest.fixture
+    def bare_engine(self, tmp_path: Path):
+        from sqlalchemy import create_engine
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'bare.db'}")
+        yield engine
+        engine.dispose()
+
+    def test_immediate_lock_save_returns_when_table_missing(self, bare_engine: Any) -> None:
+        assert _save_with_immediate_lock(bare_engine, {}, {"github_repo": "a/b"}) is None
+
+    def test_transaction_save_returns_when_table_missing(self, bare_engine: Any) -> None:
+        assert _save_within_transaction(bare_engine, {}, {"github_repo": "a/b"}) is None
+
+    def test_sync_save_swallows_an_engine_failure(self, tmp_path: Path) -> None:
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "sova.db").write_bytes(b"")
+        with patch("sqlalchemy.create_engine", side_effect=RuntimeError("boom")):
+            assert _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"}) is None

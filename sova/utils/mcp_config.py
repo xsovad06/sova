@@ -10,17 +10,22 @@ the interactive approval prompt.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sova.utils.logging import get_logger
+
 if TYPE_CHECKING:
     from sova.config.models import AtlassianMCPConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(component="utils.mcp_config")
+# No warning in this module passes ``exc_info=True``: these frames hold the config being written
+# (``server_config``/``data``, which can inline an Atlassian token) or the raw file text (``json.loads``), and a
+# renderer that shows frame locals (rich's, outside the fallback configured in ``sova/utils/logging.py``) would
+# print them. The exception's own message names the cause without those values.
 
 MCP_JSON_FILENAME = ".mcp.json"
 ATLASSIAN_MCP_NAME = "atlassian-mcp"
@@ -50,18 +55,18 @@ def mcp_json_path(project_dir: Path) -> Path:
 def _read_json_dict(path: Path) -> dict[str, Any] | None:
     """Read a JSON object. Returns {} when the file is absent, None when unusable."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except json.JSONDecodeError:
-        logger.warning("Malformed %s, skipping MCP server update", path.name, exc_info=True)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        logger.warning("mcp_config.malformed", path=str(path), error=str(exc))
         return None
     except OSError as exc:
-        logger.warning("Failed to read %s: %s", path.name, exc, exc_info=True)
+        logger.warning("mcp_config.read_failed", path=str(path), error=str(exc))
         return None
 
     if not isinstance(data, dict):
-        logger.warning("Unexpected top-level type in %s, skipping MCP server update", path.name)
+        logger.warning("mcp_config.unexpected_top_level_type", path=str(path))
         return None
     return data
 
@@ -79,7 +84,7 @@ def _write_json_dict(path: Path, data: dict[str, Any], *, private: bool = False)
         if private:
             fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
             try:
-                with os.fdopen(fd, "w") as handle:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     handle.write(content)
                 os.replace(tmp_name, path)
             except OSError:
@@ -90,10 +95,10 @@ def _write_json_dict(path: Path, data: dict[str, Any], *, private: bool = False)
             # JSON payload) is tainted, not `path`. `path` is a fixed filename
             # under an operator-chosen project directory, never attacker-supplied
             # input, so writing tainted payload bytes to it cannot traverse paths.
-            path.write_text(content)  # NOSONAR
+            path.write_text(content, encoding="utf-8")  # NOSONAR
         return True
     except OSError as exc:
-        logger.warning("Failed to write %s: %s", path.name, exc, exc_info=True)
+        logger.warning("mcp_config.write_failed", path=str(path), error=str(exc))
         return False
 
 
@@ -101,7 +106,7 @@ def _servers_map(data: dict[str, Any], path: Path) -> dict[str, Any] | None:
     """Return the ``mcpServers`` map, creating it when missing. None when malformed."""
     servers = data.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
-        logger.warning("Unexpected type for mcpServers in %s, skipping MCP server update", path.name)
+        logger.warning("mcp_config.unexpected_servers_type", path=str(path))
         return None
     return servers
 
@@ -139,12 +144,12 @@ def inject_mcp_server(
         return MCPWriteResult.ERROR
 
     if servers.get(server_name) == server_config:
-        logger.debug("MCP server %s already current in %s", server_name, path.name)
+        logger.debug("mcp_config.server_already_current", server=server_name, path=str(path))
         if private:
             try:
                 path.chmod(0o600)
             except OSError as exc:
-                logger.warning("Failed to restrict permissions on %s: %s", path.name, exc, exc_info=True)
+                logger.warning("mcp_config.chmod_failed", path=str(path), error=str(exc))
                 return MCPWriteResult.ERROR
         return MCPWriteResult.UNCHANGED
 
@@ -199,7 +204,7 @@ def _remove_server_entry(path: Path, server_name: str, *, delete_when_empty: boo
                 path.unlink()
                 return True
             except OSError as exc:
-                logger.warning("Failed to remove %s: %s", path.name, exc, exc_info=True)
+                logger.warning("mcp_config.remove_failed", path=str(path), error=str(exc))
                 return False
 
     return _write_json_dict(path, data)
@@ -225,7 +230,7 @@ def set_project_mcp_approval(claude_dir: Path, server_name: str, *, approved: bo
 
     enabled = data.get("enabledMcpjsonServers", [])
     if not isinstance(enabled, list):
-        logger.warning("Unexpected type for enabledMcpjsonServers, skipping MCP approval update")
+        logger.warning("mcp_config.unexpected_enabled_servers_type", path=str(settings_path))
         return MCPWriteResult.ERROR
 
     if approved == (server_name in enabled):

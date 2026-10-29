@@ -22,6 +22,7 @@ from fastapi import FastAPI
 
 from sova.config.models import ProjectConfig
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 from sova.utils.version import get_git_sha, get_version
 
 log = get_logger(component="scheduler.server")
@@ -432,7 +433,7 @@ class SOVAServer:
     def _write_pid_file(self) -> None:
         """Write the current PID to the PID file."""
         pid_path = self._pid_file_path()
-        pid_path.write_text(str(os.getpid()))
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
         log.info("pid.written", path=str(pid_path), pid=os.getpid())
 
     def _remove_pid_file(self) -> None:
@@ -490,7 +491,7 @@ def read_pid_file(
         return None
 
     try:
-        pid = int(pid_path.read_text().strip())
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return None
 
@@ -502,19 +503,14 @@ def read_pid_file(
         return None
 
     # Check if process is alive
+    if is_process_alive(pid):
+        return pid
+    # Process is dead, clean up stale PID file
     try:
-        os.kill(pid, 0)
-        return pid
-    except ProcessLookupError:
-        # Process is dead, clean up stale PID file
-        try:
-            pid_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return None
-    except PermissionError:
-        # Process exists but we can't signal it: still alive, not stale.
-        return pid
+        pid_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return None
 
 
 def _wait_for_pid_death(pid: int, timeout: float, poll_interval: float = _POLL_INTERVAL_SECONDS) -> bool:
@@ -526,12 +522,8 @@ def _wait_for_pid_death(pid: int, timeout: float, poll_interval: float = _POLL_I
     """
     deadline = time.monotonic() + timeout
     while True:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not is_process_alive(pid):
             return True
-        except PermissionError:
-            pass
         if time.monotonic() >= deadline:
             return False
         time.sleep(poll_interval)

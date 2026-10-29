@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from typing import Annotated, Any
 
@@ -11,7 +10,7 @@ from sqlalchemy import func, select
 
 from sova.a2a.agent_card import generate_role_card
 from sova.a2a.task_mapping import sova_status_to_a2a, task_run_to_a2a_task
-from sova.config.context import get_project_dir
+from sova.config.context import resolve_project_dir, resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.dashboard.services import mcp_service
@@ -19,8 +18,9 @@ from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.mcp_service import validate_mcp_token
 from sova.db.models import TaskRun
 from sova.db.session import get_session
+from sova.utils.logging import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(component="dashboard.api.a2a")
 
 router = APIRouter(tags=["a2a"])
 
@@ -34,7 +34,7 @@ def _get_a2a_config() -> ProjectConfig | None:
     """Load A2A config with a TTL cache to avoid disk reads on every request."""
     global _cached_config, _cached_config_dir, _cached_config_ts
 
-    project_dir = get_project_dir() or get_default_project_dir()
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     if project_dir is None:
         return None
 
@@ -132,14 +132,14 @@ def _validate_a2a_cancel_auth(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    project_dir = get_project_dir() or get_default_project_dir()
+    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
     secret = mcp_service.get_or_generate_secret(project_dir)
     token = authorization[7:]
 
     try:
         token_run_id = validate_mcp_token(token, secret)
     except ValueError as e:
-        log.warning("a2a.cancel_auth_failed: %s", e, exc_info=True)
+        log.warning("a2a.cancel_auth_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=401, detail=str(e)) from e
 
     if token_run_id != run_id:
@@ -170,7 +170,7 @@ async def cancel_a2a_task(
     try:
         await control_service.stop_agent(run_id=authenticated_run_id)
     except Exception:  # noqa: BLE001 (the run is already marked rejected; stop failure is reported only)
-        log.warning("stop_agent failed after marking run %d rejected", authenticated_run_id, exc_info=True)
+        log.warning("a2a.stop_agent_after_reject_failed", run_id=authenticated_run_id, exc_info=True)
     return {"id": task_id, "status": {"state": "canceled", "message": "Task canceled"}}
 
 

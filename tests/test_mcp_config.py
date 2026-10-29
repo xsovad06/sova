@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sova.config.models import AtlassianMCPConfig
 from sova.utils.mcp_config import (
@@ -370,3 +370,72 @@ def test_atlassian_token_inlined_for_stored_token(monkeypatch) -> None:
     cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat", token="stored")
     assert atlassian_token_inlined(cfg) is True
     assert build_atlassian_mcp_server_config(cfg)["env"]["JIRA_PERSONAL_TOKEN"] == "stored"
+
+
+_SECRET = "s3cr3t-token"
+_SECRET_SERVER = {"command": "npx", "env": {"ATLASSIAN_TOKEN": _SECRET}}
+
+
+def _assert_warned_without_traceback(mock_logger: MagicMock, event: str) -> None:
+    """The warning names the failure but carries no traceback (whose frame locals would show the token)."""
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args == (event,)
+    assert "exc_info" not in kwargs
+    assert _SECRET not in repr((args, kwargs))
+
+
+def test_chmod_failure_warns_without_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"test-mcp": _SECRET_SERVER}}), encoding="utf-8")
+    with (
+        patch("sova.utils.mcp_config.logger") as mock_logger,
+        patch.object(Path, "chmod", side_effect=OSError("permission denied")),
+    ):
+        result = inject_mcp_server(tmp_path, "test-mcp", _SECRET_SERVER, private=True)
+    assert result is MCPWriteResult.ERROR
+    _assert_warned_without_traceback(mock_logger, "mcp_config.chmod_failed")
+
+
+def test_write_failure_warns_without_a_traceback(tmp_path: Path) -> None:
+    with patch("sova.utils.mcp_config.logger") as mock_logger, patch("os.replace", side_effect=OSError("disk full")):
+        result = inject_mcp_server(tmp_path, "test-mcp", _SECRET_SERVER, private=True)
+    assert result is MCPWriteResult.ERROR
+    _assert_warned_without_traceback(mock_logger, "mcp_config.write_failed")
+
+
+def test_malformed_file_warns_without_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(f'{{"mcpServers": {{"x": "{_SECRET}" oops', encoding="utf-8")
+    with patch("sova.utils.mcp_config.logger") as mock_logger:
+        result = inject_mcp_server(tmp_path, "test-mcp", _SECRET_SERVER)
+    assert result is MCPWriteResult.ERROR
+    _assert_warned_without_traceback(mock_logger, "mcp_config.malformed")
+
+
+def test_non_utf8_file_warns_without_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_bytes(b'{"mcpServers": {"x": "\xff"}}')
+    with patch("sova.utils.mcp_config.logger") as mock_logger:
+        result = inject_mcp_server(tmp_path, "test-mcp", _SECRET_SERVER)
+    assert result is MCPWriteResult.ERROR
+    _assert_warned_without_traceback(mock_logger, "mcp_config.malformed")
+
+
+def test_unreadable_file_warns_without_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text("{}", encoding="utf-8")
+    with (
+        patch("sova.utils.mcp_config.logger") as mock_logger,
+        patch.object(Path, "read_text", side_effect=OSError("io error")),
+    ):
+        result = inject_mcp_server(tmp_path, "test-mcp", _SECRET_SERVER)
+    assert result is MCPWriteResult.ERROR
+    _assert_warned_without_traceback(mock_logger, "mcp_config.read_failed")
+
+
+def test_remove_failure_warns_without_a_traceback(tmp_path: Path) -> None:
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"test-mcp": _SECRET_SERVER}}), encoding="utf-8")
+    with (
+        patch("sova.utils.mcp_config.logger") as mock_logger,
+        patch.object(Path, "unlink", side_effect=OSError("busy")),
+    ):
+        result = remove_mcp_server(tmp_path, "test-mcp")
+    assert result is False
+    _assert_warned_without_traceback(mock_logger, "mcp_config.remove_failed")
