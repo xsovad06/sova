@@ -174,7 +174,7 @@ class LLMProvider(ABC):
         Providers that support native command dispatch can override this.
         """
         if command.startswith("/") and cwd:
-            _assert_command_exists(command, Path(cwd))
+            await asyncio.to_thread(_assert_command_exists, command, Path(cwd))
         prompt = f"{command} {args}".strip() if args else command
         log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
         return await self.invoke(

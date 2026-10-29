@@ -872,7 +872,7 @@ async def dispatch_command(
 
     runtime = await _require_runtime(step)
     resolved_cwd = Path(cwd) if cwd is not None else Path.cwd()
-    body = _resolve_command_body(command, resolved_cwd)
+    body = await asyncio.to_thread(_resolve_command_body, command, resolved_cwd)
 
     cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
         model=model, task_type=task_type, timeout=timeout, cwd=cwd
