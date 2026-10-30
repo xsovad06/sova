@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.models import PRMonitorConfig
-from sova.dashboard.services.pr_service import _STATE_LABELS, ComputedPRState
+from sova.dashboard.services.pr_service import ComputedPRState
+from sova.dashboard.services.work_state import state_label
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -210,11 +211,11 @@ class PRMonitor:
 
         from sova.ipc.notifications import notify
 
-        state_label = _STATE_LABELS.get(snapshot.computed_state, snapshot.computed_state)
+        label = state_label(snapshot.computed_state)
         notify(
             self.notification_config,
             title="SOVA",
-            subtitle=f"PR #{snapshot.number} {state_label}",
+            subtitle=f"PR #{snapshot.number} {label}",
             message=snapshot.title,
             group=f"sova-pr-{snapshot.number}",
         )

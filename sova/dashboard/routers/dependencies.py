@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import TaskState
 from sova.config.context import get_project_dir
 from sova.dashboard.services.pr_service import ComputedPRState
+from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.dependencies")
@@ -87,11 +88,17 @@ async def _fetch_pr_map() -> dict[int, dict]:
             if issue_num not in result or pr["number"] > result[issue_num]["pr_number"]:
                 computed = pr.get("computed_state", "")
                 pr_state = _PR_STATE_MAP.get(computed, "awaiting_review")
+                # Label and color both come from the raw computed state (not the collapsed pr_state above),
+                # so a node's PR text and dot can never name two different states. With no computed state at
+                # all, pr_state already fell back to awaiting_review, and the display follows that fallback
+                # instead of showing "Unknown" beside a node that says awaiting review.
+                display_state = computed or pr_state
                 result[issue_num] = {
                     "pr_number": pr["number"],
                     "pr_url": pr.get("url", ""),
                     "pr_state": pr_state,
-                    "pr_state_label": pr.get("state_label", ""),
+                    "pr_state_label": state_label(display_state),
+                    "pr_state_color": state_color(display_state),
                 }
 
     return result
@@ -200,6 +207,17 @@ async def _fetch_last_run_map() -> dict[int, dict]:
         return {}
 
 
+def _state_display(state: str) -> dict[str, str]:
+    """The label and color token the client renders for a tracker state, from ``work_state``."""
+    return {"state_label": state_label(state), "state_color": state_color(state)}
+
+
+def _enrich_with_state_display(graph_dict: dict) -> None:
+    """Add ``state_label``/``state_color`` to every node (the PR half arrives via ``_fetch_pr_map``)."""
+    for node in graph_dict.get("nodes", []):
+        node.update(_state_display(node.get("state", "")))
+
+
 def _enrich_with_queue_position(graph_dict: dict, project_dir: str | Path) -> None:
     """Add ``queue_position`` (1-indexed) to nodes that appear in the task queue.
 
@@ -262,6 +280,7 @@ async def get_graph(milestone: str = "") -> dict:
             last_run_map=last_run_map,
             project_dir=project_dir,
         )
+        _enrich_with_state_display(result)
         _enrich_with_queue_position(result, project_dir)
         return result
     except _ConfigError:
@@ -303,6 +322,7 @@ async def get_ready(milestone: str = "") -> dict:
                     "id": tid,
                     "title": task.title,
                     "state": task.state.value,
+                    **_state_display(task.state.value),
                     "milestone": task.milestone,
                 }
             )
@@ -341,6 +361,7 @@ async def get_chain(issue_number: int, milestone: str = "") -> dict:
                     "id": tid,
                     "title": task.title,
                     "state": task.state.value,
+                    **_state_display(task.state.value),
                     "done": task.state == TaskState.DONE,
                 }
             )

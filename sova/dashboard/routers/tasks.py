@@ -7,6 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from sova.config.context import get_project_dir
+from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.tasks")
@@ -40,6 +41,8 @@ async def list_issues() -> dict:
                 "number": t.id,
                 "title": t.title,
                 "state": t.state.value,
+                "state_label": state_label(t.state.value),
+                "state_color": state_color(t.state.value),
                 "labels": t.labels,
             }
             for t in tasks

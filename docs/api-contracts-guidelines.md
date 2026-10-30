@@ -61,6 +61,10 @@ return {"status": "deleted", "name": name}
 return {"has_handoff": True, "handoff": data, "handoffs": [data]}
 ```
 
+### State Display Fields
+
+Any payload that carries a `state` string for the UI also carries `state_label` and `state_color`, both produced by `state_label()`/`state_color()` in `sova/dashboard/services/work_state.py` (work items and their `pr_details`, open PRs, queue items, `/api/tasks/issues`, dependency-graph nodes, and `pr_state_label`/`pr_state_color` for a node's PR). A PR's label and color are always built from the same raw computed state, never one from the collapsed graph `pr_state`, so the two cannot name different states. `state_color` is a token (`gray`, `gray-dim`, `yellow`, `peach`, `green`, `green-strong`, `purple`, `blue`, `red`, `lavender`), never CSS or a hex: `app.js` maps a token to badge classes (`stateBadgeClasses`) or a hex (`stateHex`). A state the module does not know comes back humanized and `gray` rather than blank, so register a new state there instead of adding a per-page table. `stateHex` gives each token that needs its own fill a distinct hex (`green-strong` reads `--ctp-green-strong`, a deeper shade than `green`), so a graph node still in review and a finished one, or an Approved PR and a Ready to Merge one, never share a dot; only `gray-dim` is drawn as plain `gray` on a canvas, where it differs from `gray` by badge text shade alone. A client that caches a render keyed on a node's fields must key on `state_color`, `pr_state_label` and `pr_state_color` as well as `pr_state`, which is the collapsed value (`supervisor.html`'s `_computeGraphKey()`).
+
 ### Request Models (Pydantic v2)
 
 All POST/PUT endpoints use `BaseModel` subclasses with validators:

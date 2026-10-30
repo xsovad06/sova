@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
@@ -79,19 +80,6 @@ class ComputedPRState(StrEnum):
     APPROVED = "approved"
     REVIEW_ADDRESSED = "review_addressed"
     AWAITING_REVIEW = "awaiting_review"
-
-
-_STATE_LABELS: dict[str, str] = {
-    "draft": "Draft",
-    "conflicted": "Conflicts",
-    "ci_running": "CI Running",
-    "ci_failed": "CI Failed",
-    "changes_requested": "Changes Requested",
-    "approved_ci_green": "Ready to Merge",
-    "approved": "Approved",
-    "review_addressed": "In Review",
-    "awaiting_review": "Awaiting Review",
-}
 
 
 def parse_linked_issue(body: str | None) -> int | None:
@@ -443,7 +431,8 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "url": raw.get("url", ""),
         "state": raw.get("state", "OPEN"),
         "computed_state": computed,
-        "state_label": _STATE_LABELS.get(computed, computed),
+        "state_label": state_label(computed),
+        "state_color": state_color(computed),
         "review_decision": review_decision,
         "ci_status": ci_status,
         "mergeable": mergeable,

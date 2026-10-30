@@ -1003,6 +1003,20 @@ class TestFetchPrMapUnknownState:
         assert result[10]["pr_state"] == "awaiting_review"
 
     @pytest.mark.asyncio
+    async def test_missing_computed_state_label_follows_the_awaiting_review_fallback(self) -> None:
+        """pr_state falls back to awaiting_review; the label and dot must not say "Unknown" beside it."""
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+        from sova.dashboard.services.work_state import state_color, state_label
+
+        mock_prs = [{"number": 1, "url": "", "linked_issues": [10]}]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result[10]["pr_state"] == "awaiting_review"
+        assert result[10]["pr_state_label"] == state_label("awaiting_review") != "Unknown"
+        assert result[10]["pr_state_color"] == state_color("awaiting_review")
+
+    @pytest.mark.asyncio
     async def test_none_linked_issues_treated_as_empty(self) -> None:
         from sova.dashboard.routers.dependencies import _fetch_pr_map
 

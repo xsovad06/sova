@@ -318,8 +318,7 @@ var _roleLabels = {
 
 function stateTag(state, stateLabel, stateColor) {
   var label = stateLabel || state;
-  var cls = stateColor || 'bg-gray-600/30 text-gray-400';
-  return '<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ' + cls + '">' + escapeHtml(label) + '</span>';
+  return '<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ' + stateBadgeClasses(stateColor) + '">' + escapeHtml(label) + '</span>';
 }
 
 var _TIER2_PAGE_SIZE = 15;
@@ -673,7 +672,7 @@ function renderTaskCard(item) {
 
   var prBadge = '';
   if (item.pr_details) {
-    var prStateClass = prStateBadgeColor(item.pr_details.computed_state);
+    var prStateClass = stateBadgeClasses(item.pr_details.state_color);
     var prUrl = item.pr_details.url || '';
     var isLink = prUrl.startsWith('https://');
     var openTag = isLink
@@ -2526,7 +2525,7 @@ function renderJiraInitial(name) {
 }
 
 function renderPrRow(pr) {
-  var stateClass = prStateBadgeColor(pr.computed_state);
+  var stateClass = stateBadgeClasses(pr.state_color);
 
   var issueRef = pr.linked_issue
     ? '<span class="text-xs text-gray-500">#' + escapeHtml(String(pr.linked_issue)) + '</span>'

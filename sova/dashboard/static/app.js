@@ -14,9 +14,15 @@ function initColors() {
   window.SOVA_COLORS = {
     accent:  getCSSVar('--ctp-blue'),
     green:   getCSSVar('--ctp-green'),
+    greenStrong: getCSSVar('--ctp-green-strong'),
     red:     getCSSVar('--ctp-red'),
     yellow:  getCSSVar('--ctp-yellow'),
     purple:  getCSSVar('--ctp-mauve'),
+    peach:    getCSSVar('--ctp-peach'),
+    lavender: getCSSVar('--ctp-lavender'),
+    sapphire: getCSSVar('--ctp-sapphire'),
+    gray:     getCSSVar('--ctp-overlay0'),
+    grayDim:  getCSSVar('--ctp-surface2'),
     surface: getCSSVar('--ctp-surface0'),
     muted:   getCSSVar('--ctp-overlay1'),
   };
@@ -1574,34 +1580,34 @@ var STEP_STATUS_COLORS = {
   skipped:     { bg: 'var(--ctp-surface1)', text: 'text-gray-500' }
 };
 
-var ISSUE_STATE_COLORS = {
-  backlog:    'bg-gray-600/30 text-gray-400',
-  triaged:    'bg-accent-yellow/20 text-accent-yellow',
-  researched: 'bg-accent-purple/20 text-accent-purple',
-  in_progress: 'bg-accent/20 text-accent',
-  in_review:  'bg-accent-green/20 text-accent-green',
-  needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
-  human_only: 'bg-gray-600/30 text-gray-500',
+/* State colors. The API decides which token a state gets (state_color, from
+   sova/dashboard/services/work_state.py); these two lookups only turn a token into
+   badge classes or a hex, so no page keeps its own state-to-color table. */
+var STATE_BADGE_CLASSES = {
+  'gray':         'bg-gray-600/30 text-gray-400',
+  'gray-dim':     'bg-gray-600/30 text-gray-500',
+  'yellow':       'bg-accent-yellow/20 text-accent-yellow',
+  'peach':        'bg-accent-peach/20 text-accent-peach',
+  'green':        'bg-accent-green/20 text-accent-green',
+  'green-strong': 'bg-accent-green/30 text-accent-green',
+  'purple':       'bg-accent-purple/20 text-accent-purple',
+  'blue':         'bg-accent/20 text-accent',
+  'red':          'bg-accent-red/20 text-accent-red',
+  'lavender':     'bg-accent-lavender/20 text-accent-lavender',
 };
 
-function issueStateColor(state) {
-  return Object.prototype.hasOwnProperty.call(ISSUE_STATE_COLORS, state) ? ISSUE_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+function stateBadgeClasses(token) {
+  return Object.prototype.hasOwnProperty.call(STATE_BADGE_CLASSES, token) ? STATE_BADGE_CLASSES[token] : STATE_BADGE_CLASSES.gray;
 }
 
-var PR_STATE_COLORS = {
-  draft:             'bg-gray-600/30 text-gray-400',
-  conflicted:        'bg-accent-red/20 text-accent-red',
-  ci_running:        'bg-accent-yellow/20 text-accent-yellow',
-  ci_failed:         'bg-accent-red/20 text-accent-red',
-  changes_requested: 'bg-accent-peach/20 text-accent-peach',
-  approved_ci_green: 'bg-accent-green/30 text-accent-green',
-  approved:          'bg-accent-green/20 text-accent-green',
-  review_addressed:  'bg-accent-lavender/20 text-accent-lavender',
-  awaiting_review:   'bg-accent/20 text-accent',
+var _STATE_HEX_KEYS = {
+  'gray': 'gray', 'gray-dim': 'grayDim', 'yellow': 'yellow', 'peach': 'peach', 'green': 'green',
+  'green-strong': 'greenStrong', 'purple': 'purple', 'blue': 'accent', 'red': 'red', 'lavender': 'lavender',
 };
 
-function prStateBadgeColor(state) {
-  return Object.prototype.hasOwnProperty.call(PR_STATE_COLORS, state) ? PR_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+function stateHex(token) {
+  var key = Object.prototype.hasOwnProperty.call(_STATE_HEX_KEYS, token) ? _STATE_HEX_KEYS[token] : 'gray';
+  return (window.SOVA_COLORS && window.SOVA_COLORS[key]) || '#6c7086';
 }
 
 var PHASE_STATUS_COLORS = {

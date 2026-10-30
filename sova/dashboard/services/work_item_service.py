@@ -30,12 +30,6 @@ from sova.dashboard.services.work_state import (
     _SPEC_ACTION_IDS as _SPEC_ACTION_IDS,
 )
 from sova.dashboard.services.work_state import (
-    _STATE_COLORS as _STATE_COLORS,
-)
-from sova.dashboard.services.work_state import (
-    _STATE_LABELS as _STATE_LABELS,
-)
-from sova.dashboard.services.work_state import (
     _STATE_SORT_ORDER as _STATE_SORT_ORDER,
 )
 from sova.dashboard.services.work_state import (
@@ -67,6 +61,12 @@ from sova.dashboard.services.work_state import (
 )
 from sova.dashboard.services.work_state import (
     resolve_next_action as resolve_next_action,
+)
+from sova.dashboard.services.work_state import (
+    state_color as state_color,
+)
+from sova.dashboard.services.work_state import (
+    state_label as state_label,
 )
 from sova.dashboard.services.work_verdict import (  # re-export facade
     _fetch_sova_verdicts as _fetch_sova_verdicts,
@@ -622,12 +622,15 @@ def _format_sova_context(sova_verdict: dict | None) -> dict:
 
 
 def _format_pr_details(pr: dict) -> dict:
+    computed = pr.get("computed_state", "")
     return {
         "number": pr.get("number"),
-        "computed_state": pr.get("computed_state", ""),
+        "computed_state": computed,
         "ci_status": pr.get("ci_status", ""),
         "review_decision": pr.get("review_decision", ""),
-        "state_label": pr.get("state_label", ""),
+        # A PR with no computed state has no label to show: "Unknown" here would read as a real state.
+        "state_label": state_label(computed) if computed else "",
+        "state_color": state_color(computed) if computed else "",
         "url": pr.get("url", ""),
         "mergeable": pr.get("mergeable", ""),
         "merge_state": pr.get("merge_state", ""),
@@ -654,8 +657,8 @@ def _build_item(**kwargs: object) -> dict:
         "title": kwargs["title"],
         "url": kwargs["url"],
         "state": state.value,
-        "state_label": _STATE_LABELS.get(state, state.value),
-        "state_color": _STATE_COLORS.get(state, _STATE_COLORS[WorkItemState.BACKLOG]),
+        "state_label": state_label(state),
+        "state_color": state_color(state),
         "primary_action": kwargs["primary_action"],
         "secondary_actions": kwargs["secondary_actions"],
         "handoff_actions": kwargs["handoff_actions"],

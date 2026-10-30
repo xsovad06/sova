@@ -11,6 +11,9 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from sova.core.state import TaskStatus
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.work_state")
 
 
 class WorkItemState(StrEnum):
@@ -75,35 +78,105 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.HUMAN_ONLY: "Human Only",
 }
 
-_CLR_GRAY = "bg-gray-600/30 text-gray-400"
-_CLR_YELLOW = "bg-accent-yellow/20 text-accent-yellow"
-_CLR_PEACH = "bg-accent-peach/20 text-accent-peach"
-_CLR_GREEN = "bg-accent-green/20 text-accent-green"
-_CLR_GREEN_STRONG = "bg-accent-green/30 text-accent-green"
-
+# Color tokens, not CSS: the client resolves a token to Tailwind badge classes
+# (app.js stateBadgeClasses) or to a hex for canvas/SVG use (stateHex via SOVA_COLORS),
+# so the state-to-color decision is made once, here, and the palette stays in the theme.
 _STATE_COLORS: dict[WorkItemState, str] = {
-    WorkItemState.BACKLOG: _CLR_GRAY,
-    WorkItemState.NEEDS_SPEC: _CLR_YELLOW,
-    WorkItemState.TRIAGED: _CLR_YELLOW,
-    WorkItemState.RESEARCHED: "bg-accent-purple/20 text-accent-purple",
-    WorkItemState.IN_PROGRESS: "bg-accent/20 text-accent",
-    WorkItemState.AGENT_RUNNING: _CLR_YELLOW,
-    WorkItemState.PR_DRAFT: _CLR_GRAY,
-    WorkItemState.PR_CONFLICTED: "bg-accent-red/20 text-accent-red",
-    WorkItemState.PR_CI_RUNNING: _CLR_YELLOW,
-    WorkItemState.PR_CI_FAILED: "bg-accent-red/20 text-accent-red",
-    WorkItemState.PR_AWAITING_REVIEW: "bg-accent/20 text-accent",
-    WorkItemState.PR_SOVA_CHANGES: _CLR_PEACH,
-    WorkItemState.PR_EXTERNAL_CHANGES: _CLR_PEACH,
-    WorkItemState.PR_REVIEW_ADDRESSED: "bg-accent-lavender/20 text-accent-lavender",
-    WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
-    WorkItemState.PR_SOVA_PENDING: _CLR_PEACH,
-    WorkItemState.PR_REVIEW_EXHAUSTED: _CLR_PEACH,
-    WorkItemState.SPEC_REVIEW: _CLR_PEACH,
-    WorkItemState.MERGED: _CLR_GREEN_STRONG,
-    WorkItemState.DONE: _CLR_GREEN_STRONG,
-    WorkItemState.HUMAN_ONLY: "bg-gray-600/30 text-gray-500",
+    WorkItemState.BACKLOG: "gray",
+    WorkItemState.NEEDS_SPEC: "yellow",
+    WorkItemState.TRIAGED: "yellow",
+    WorkItemState.RESEARCHED: "purple",
+    WorkItemState.IN_PROGRESS: "blue",
+    WorkItemState.AGENT_RUNNING: "yellow",
+    WorkItemState.PR_DRAFT: "gray",
+    WorkItemState.PR_CONFLICTED: "red",
+    WorkItemState.PR_CI_RUNNING: "yellow",
+    WorkItemState.PR_CI_FAILED: "red",
+    WorkItemState.PR_AWAITING_REVIEW: "blue",
+    WorkItemState.PR_SOVA_CHANGES: "peach",
+    WorkItemState.PR_EXTERNAL_CHANGES: "peach",
+    WorkItemState.PR_REVIEW_ADDRESSED: "lavender",
+    WorkItemState.PR_READY_TO_MERGE: "green-strong",
+    WorkItemState.PR_SOVA_PENDING: "peach",
+    WorkItemState.PR_REVIEW_EXHAUSTED: "peach",
+    WorkItemState.SPEC_REVIEW: "peach",
+    WorkItemState.MERGED: "green-strong",
+    WorkItemState.DONE: "green-strong",
+    WorkItemState.HUMAN_ONLY: "gray-dim",
 }
+
+# ComputedPRState values (pr_service.compute_pr_state) and the dependency graph's collapsed
+# pr_state strings, which are a subset of them. Each is the WorkItemState that names the same
+# condition, and its label and color are read from that member, so a PR row and the task card
+# showing that PR cannot disagree on either. "approved" (approved, CI not green yet) names no
+# WorkItemState, so it is written out below, in a shade of its own: Ready to Merge is the stronger
+# green, and the PR tracker must still tell the two apart.
+_PR_STATE_WORK_ITEM: dict[str, WorkItemState] = {
+    "draft": WorkItemState.PR_DRAFT,
+    "conflicted": WorkItemState.PR_CONFLICTED,
+    "ci_running": WorkItemState.PR_CI_RUNNING,
+    "ci_failed": WorkItemState.PR_CI_FAILED,
+    "changes_requested": WorkItemState.PR_EXTERNAL_CHANGES,
+    "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
+    "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
+    "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
+}
+_PR_STATE_META: dict[str, tuple[str, str]] = {
+    **{pr_state: (_STATE_LABELS[item], _STATE_COLORS[item]) for pr_state, item in _PR_STATE_WORK_ITEM.items()},
+    "approved": ("Approved", "green"),
+}
+
+# The TaskState values (sova/adapters/base.py) the queue, the task list and the dependency graph
+# emit that WorkItemState has no member for: it folds in_review into the PR states. Every other
+# TaskState value is a WorkItemState value too and resolves through the enum above. Neither shares
+# a token with "in_progress" (blue), the state next to it in the lifecycle.
+_TASK_STATE_META: dict[str, tuple[str, str]] = {
+    "in_review": ("In Review", "green"),
+    "on_qa": ("On QA", "peach"),
+}
+
+_FALLBACK_COLOR = "gray"
+
+# Unregistered states already reported, so a state that nobody registered is logged once rather than
+# on every poll. Capped: the domain is a handful of internal enums, never user-supplied text.
+_reported_unknown_states: set[str] = set()
+_MAX_REPORTED_UNKNOWN_STATES = 64
+
+
+def _state_meta(state: str) -> tuple[str, str] | None:
+    try:
+        item = WorkItemState(state)
+    except ValueError:
+        meta = _PR_STATE_META.get(state) or _TASK_STATE_META.get(state)
+        if (
+            meta is None
+            and state
+            and state not in _reported_unknown_states
+            and len(_reported_unknown_states) < _MAX_REPORTED_UNKNOWN_STATES
+        ):
+            _reported_unknown_states.add(state)
+            log.warning("work_state.unregistered_state", state=state)
+        return meta
+    return _STATE_LABELS[item], _STATE_COLORS[item]
+
+
+def state_label(state: str) -> str:
+    """Display label for any state string an API emits (work item, PR, or tracker state).
+
+    A state this module does not know is shown humanized rather than blank, so a new
+    value that nobody registered is visible on the page instead of rendering as nothing.
+    """
+    meta = _state_meta(state)
+    if meta is not None:
+        return meta[0]
+    return state.replace("_", " ").title() if state else "Unknown"
+
+
+def state_color(state: str) -> str:
+    """Color token for any state string an API emits; an unregistered state is neutral gray."""
+    meta = _state_meta(state)
+    return meta[1] if meta is not None else _FALLBACK_COLOR
+
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
