@@ -47,6 +47,12 @@ _auth_status_cache: dict[str, tuple[float, dict]] = {}
 # instead of each spawning duplicate `claude --version` / `claude auth status` calls.
 _auth_status_locks: dict[str, asyncio.Lock] = {}
 
+# The footer's `github_user` is read during template rendering, which runs synchronously on the event
+# loop, and `load_config()` opens SQLite with a busy timeout. Caching a successful read per project
+# keeps that blocking path to at most one hit per TTL instead of one per page render.
+_GITHUB_USER_CACHE_TTL = 60.0
+_github_user_cache: dict[str, tuple[float, str]] = {}
+
 # Allowlist, not a denylist: the account payload is whatever `claude auth
 # status --json` happens to print, so a field a future CLI version adds (a
 # token, a session id) would otherwise be served verbatim by an endpoint that
@@ -572,6 +578,34 @@ def _read_existing_toml(project: Path) -> dict:
     except (OSError, ValueError):
         log.warning("setup.toml_read_failed", toml_file=str(toml_file), exc_info=True)
         return {}
+
+
+def get_github_user(project_dir: Path | None) -> str | None:
+    """The project's configured ``github_user`` for the sidebar footer: ``""`` when unset, ``None`` when unreadable.
+
+    A config failure returns ``None`` rather than raising, so a broken or missing config only drops the
+    footer's account segment instead of crashing every page render, and is never cached, so the next render
+    retries. A successful read is cached per project for ``_GITHUB_USER_CACHE_TTL`` seconds. Falls back to
+    the single-project default when no project is scoped.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    resolved_dir = project_dir or get_default_project_dir()
+    cache_key = str(resolved_dir)
+    now = time.monotonic()
+    cached = _github_user_cache.get(cache_key)
+    if cached and (now - cached[0]) < _GITHUB_USER_CACHE_TTL:
+        return cached[1]
+
+    try:
+        cfg = load_config(resolved_dir)
+        user = (cfg.github_user or "").strip()
+    except Exception:  # noqa: BLE001 (a broken config must only hide the footer's account segment)
+        log.debug("setup.github_user_unavailable", exc_info=True)
+        return None
+    _github_user_cache[cache_key] = (now, user)
+    return user
 
 
 async def get_auth_status(project_dir: Path) -> dict:

@@ -1418,6 +1418,19 @@ function initSidebarCollapse() {
   }
 }
 
+/* A collapsed sidebar's hover tooltips are position: fixed (the scrolling nav list would clip an
+   absolute one), so each hovered element hands its own vertical centre to the stylesheet. */
+function initSidebarTooltips() {
+  var sidebar = document.querySelector('.sidebar');
+  if (!sidebar) return;
+  sidebar.addEventListener('mouseover', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-tooltip]') : null;
+    if (!el || !sidebar.contains(el)) return;
+    var rect = el.getBoundingClientRect();
+    el.style.setProperty('--sidebar-tip-y', (rect.top + rect.height / 2) + 'px');
+  });
+}
+
 function toggleSidebar() {
   var isCollapsed = document.body.dataset.sidebarCollapsed === 'true';
   var btn = document.getElementById('sidebar-toggle');
@@ -1441,6 +1454,7 @@ function toggleSidebar() {
 initColors();
 _initGithubRepo();
 initSidebarCollapse();
+initSidebarTooltips();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();

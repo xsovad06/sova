@@ -485,6 +485,16 @@
   background: var(--color-sidebar-hover);
 }
 
+/* The nav link list scrolls when the viewport is shorter than it, so the collapse button and the
+   provider footer (both shrink-0) stay pinned at the bottom instead of being pushed off screen.
+   Its overflow would clip the collapsed links' hover tooltips, which is why those are position:
+   fixed (see "Sidebar tooltips" in section 9a and initSidebarTooltips() in app.js). */
+.sidebar-nav-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
 body[data-sidebar-collapsed="true"] {
   --sidebar-width: 64px;
 }
@@ -1222,47 +1232,36 @@ body.feed-open .feed-fab { display: none; }
    9a. PROVIDER AUTH STATUS WIDGET
    ============================================================ */
 
+/* The sidebar footer account row. It is the positioned anchor for the popover, which opens upward
+   from it, so a sidebar collapse or expand carries the popover along instead of orphaning it. */
 .auth-widget {
-  position: fixed;
-  /* Stacked directly above the resource widget (same right offset) rather
-     than placed further left: a horizontal offset large enough to clear the
-     resource widget's toggle would need to vary with label text width
-     ("claude-code" is wider than "N agents"), which is fragile. Vertical
-     stacking has no such dependency. */
-  bottom: 3.5rem;
-  right: 6rem;
-  /* One below .resource-widget (45): the resource panel opens upward from
-     bottom: calc(100% + 0.5rem) and is 480px tall, so it passes straight
-     through this widget's toggle. At an equal z-index the later DOM node (this
-     one) would win and punch a hole in the expanded panel; one lower makes the
-     panel cleanly cover the toggle instead. */
-  z-index: 44;
+  position: relative;
 }
 
 .auth-widget-toggle {
   display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.375rem 0.75rem;
-  background: var(--color-surface-card);
-  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
-  border-radius: 0.5rem;
+  align-items: flex-start;
+  width: 100%;
+  padding: 1rem 1.25rem;
+  background: none;
+  border: none;
   cursor: pointer;
-  transition: border-color 150ms ease, background-color 150ms ease;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.3);
+  text-align: left;
+  transition: background-color 150ms ease;
 }
 
 .auth-widget-toggle:hover {
-  border-color: rgb(var(--ctp-surface2-rgb) / 0.8);
-  background: var(--color-surface-hover);
+  background: var(--color-sidebar-hover);
 }
 
 .auth-widget-panel {
   position: absolute;
-  bottom: calc(100% + 0.5rem);
-  right: 0;
-  width: min(320px, calc(100vw - 7rem));
-  max-height: 480px;
+  bottom: calc(100% + 0.25rem);
+  left: 0.5rem;
+  z-index: 10;
+  width: min(320px, calc(100vw - 1rem));
+  /* A short viewport shrinks the popover (it scrolls) rather than clipping it past the top edge. */
+  max-height: min(480px, calc(100vh - 6rem));
   overflow-y: auto;
   background: var(--color-surface-card);
   border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
@@ -1272,17 +1271,21 @@ body.feed-open .feed-fab { display: none; }
 
 .auth-widget-panel.hidden { display: none; }
 
-/* Sidebar tooltips: only visible when collapsed */
+/* Sidebar tooltips: only visible when collapsed. They are position: fixed rather than absolute at
+   left: 100%, because the scrolling nav list (.sidebar-nav-scroll) would clip an absolute one. The
+   vertical centre is the hovered element's own, written to --sidebar-tip-y by initSidebarTooltips()
+   in app.js; the horizontal origin is the collapsed sidebar's right edge. */
 .sidebar [data-tooltip]::after {
   display: none;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   display: block;
+  position: fixed;
   bottom: auto;
-  left: 100%;
-  top: 50%;
+  left: calc(var(--sidebar-width) + 0.5rem);
+  top: var(--sidebar-tip-y, 50%);
   transform: translateY(-50%);
   margin-bottom: 0;
-  margin-left: 0.5rem;
+  margin-left: 0;
 }
