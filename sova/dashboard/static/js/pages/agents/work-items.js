@@ -103,7 +103,7 @@ export async function loadWorkItems() {
     _agentHistory = _workItems.filter(function(i) { return i.last_run || i.pr_number; });
     _suggested = _workItems.filter(function(i) {
       return !i.last_run && !i.pr_number && (i.state === 'triaged' || i.state === 'researched');
-    });
+    }).sort(_sortWorkItems);
 
     var attentionCount = _workItems.filter(function(i) {
       return i.state === 'spec_review' ||
@@ -264,23 +264,34 @@ function _applyTaskFilters(items) {
   return filtered;
 }
 
+// Issues no agent has started yet. Within this tier the issue's own priority
+// outranks how far triage or research got, so a high triaged issue sits above a
+// low researched one. Human-only and finished items sort after it.
+var _NOT_STARTED_STATES = new Set(_STATE_FILTER_GROUPS.backlog);
+var _NOT_STARTED_TIER = 6;
+
 function _stateSortTier(item) {
   if (item.state === 'agent_running') return 0;
   if (item.state === 'pr_draft') return 5;
   if (_PR_STAGE_STATES.has(item.state)) return 2;
   if (item.state === 'spec_review') return 3;
   if (item.state === 'in_progress') return 4;
-  return 5;
+  if (_NOT_STARTED_STATES.has(item.state)) return _NOT_STARTED_TIER;
+  return 7;
+}
+
+function _issuePriorityRank(item) {
+  var rank = _priorityRankMap()[item.issue_priority];
+  return rank === undefined ? 99 : rank;
 }
 
 function _sortWorkItems(a, b) {
   var ta = _stateSortTier(a), tb = _stateSortTier(b);
   if (ta !== tb) return ta - tb;
+  var ra = _issuePriorityRank(a), rb = _issuePriorityRank(b);
+  if (ta === _NOT_STARTED_TIER && ra !== rb) return ra - rb;
   if (a.priority !== b.priority) return a.priority - b.priority;
-  var order = _priorityRankMap();
-  var pa = order[a.issue_priority];
-  var pb = order[b.issue_priority];
-  return (pa === undefined ? 99 : pa) - (pb === undefined ? 99 : pb);
+  return ra - rb;
 }
 
 function expandTasks() {

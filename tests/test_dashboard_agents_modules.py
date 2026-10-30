@@ -1687,6 +1687,36 @@ console.log(JSON.stringify([atStart, whileHidden, calls]));
         assert "var prNum" not in _module_source("work-items")
         assert "agent-role" not in _module_source("launch-modal")
 
+    def test_not_started_issues_sort_by_issue_priority_before_state(self) -> None:
+        """A low researched issue used to sit above a high triaged one, burying the work that mattered."""
+        _require_node("node is required to run the task sort")
+        source = _module_source("work-items")
+        start = source.index("var _NOT_STARTED_STATES")
+        end = source.index("\n}\n", source.index("function _sortWorkItems(")) + 2
+        script = f"""
+var _STATE_FILTER_GROUPS = {{backlog: ['backlog', 'needs_spec', 'triaged', 'researched']}};
+var _PR_STAGE_STATES = new Set(['pr_ci_running']);
+function _priorityRankMap() {{ return {{blocker: 0, critical: 1, high: 2, medium: 3, low: 4, undefined: 5}}; }}
+{source[start:end]}
+const items = [
+  {{n: 1, state: 'researched', priority: 0, issue_priority: 'low'}},
+  {{n: 2, state: 'human_only', priority: 5, issue_priority: 'high'}},
+  {{n: 3, state: 'triaged', priority: 2, issue_priority: 'high'}},
+  {{n: 4, state: 'triaged', priority: 2, issue_priority: 'undefined'}},
+  {{n: 5, state: 'researched', priority: 0, issue_priority: 'high'}},
+  {{n: 6, state: 'pr_ci_running', priority: -2, issue_priority: 'low'}},
+  {{n: 7, state: 'agent_running', priority: 2, issue_priority: 'low'}},
+];
+console.log(JSON.stringify(items.sort(_sortWorkItems).map(i => i.n)));
+"""
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout) == [7, 6, 5, 3, 1, 4, 2]
+
+    def test_suggested_tasks_use_the_shared_sort(self) -> None:
+        source = _module_source("work-items")
+        assert "(i.state === 'triaged' || i.state === 'researched');\n    }).sort(_sortWorkItems);" in source
+
 
 class TestVisualAuditSkillChecksTheClientPatterns:
     """Both hand-authored copies (Claude Code and Codex) carry the same three mechanical greps."""
