@@ -84,7 +84,7 @@ from sova.dashboard.security import (
     issue_csrf_cookie,
     require_same_origin_csrf,
 )
-from sova.dashboard.services import awareness_service, control_service, handoff_service
+from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
@@ -1083,7 +1083,14 @@ def create_app(
 
         return awareness_service.is_awareness_enabled(_get_ctx_project_dir())
 
+    def _footer_github_user() -> str | None:
+        """Jinja global: the request-scoped project's `github_user` for the sidebar footer account row."""
+        from sova.config.context import get_project_dir as _get_ctx_project_dir
+
+        return setup_service.get_github_user(_get_ctx_project_dir())
+
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+    templates.env.globals["github_user"] = _footer_github_user
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
 
