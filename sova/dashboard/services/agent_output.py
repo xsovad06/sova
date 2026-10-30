@@ -45,17 +45,36 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int) ->
     return lines
 
 
+def get_output_seq(slug: str | None = None, *, run_id: int) -> int | None:
+    """Lines an in-memory agent has buffered over its life, or ``None`` when the agent is not in memory.
+
+    Read with no ``await`` between it and ``get_output()`` or an SSE subscribe, it is exactly the number
+    of lines that call sees: ``_buffer_line()`` counts a line and publishes it in one step.
+    """
+    from sova.dashboard.services.agent_pool import _get_project_agents
+
+    agent = _get_project_agents(slug).agents.get(run_id)
+    return agent.output_seq if agent is not None else None
+
+
 async def _buffer_line(agent: AgentState, text: str) -> None:
-    """Append a line to the agent's deque, persist to DB, and push to SSE subscribers."""
+    """Append a line to the agent's deque, push it to SSE subscribers, and persist it to the DB.
+
+    The append, the sequence count and the publish run with no ``await`` between them, so a subscriber
+    that reads ``output_seq`` when it subscribes receives exactly the lines numbered from there on. The
+    DB flush may suspend, so it comes after.
+    """
     agent.output_lines.append(text)
-    if agent.output_writer:
-        agent.output_writer.write_line(text)
-        if agent.output_writer.should_flush():
-            await agent.output_writer.flush()
+    agent.output_seq += 1
 
     oss = get_output_stream_service()
     if oss.has_subscribers(agent.run_id):
         oss.publish(agent.run_id, text)
+
+    if agent.output_writer:
+        agent.output_writer.write_line(text)
+        if agent.output_writer.should_flush():
+            await agent.output_writer.flush()
 
 
 async def _read_output(agent: AgentState) -> None:

@@ -18,8 +18,8 @@ from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
+from tests.conftest import agents_page_source, drain_feed_persist
 from tests.conftest import csrf_request_headers as _csrf_request_headers
-from tests.conftest import drain_feed_persist
 
 
 @pytest.fixture(autouse=True)
@@ -437,7 +437,10 @@ class TestDashboardHealth:
         resp = await client.get("/static/app.js")
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("asset", ["/static/style.css", "/static/app.js"])
+    @pytest.mark.parametrize(
+        "asset",
+        ["/static/style.css", "/static/app.js", "/static/js/pages/agents/work-items.js"],
+    )
     async def test_static_assets_revalidate_on_every_use(self, client: AsyncClient, asset: str) -> None:
         """A cached asset must never outlive a deploy: `max-age` let a fresh page pair with pre-deploy JS.
 
@@ -576,7 +579,8 @@ class TestDashboardHealth:
         a status_update broadcast).
         """
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Should use _STATUS_TERMINAL lookup instead of hardcoded done/failed check
         assert "_STATUS_TERMINAL[msg.status]" in html, "Notification check should use _STATUS_TERMINAL lookup"
         # Should exclude paused (user-initiated, not worth notifying)
@@ -584,7 +588,8 @@ class TestDashboardHealth:
 
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         assert "msg.status" in html
         assert "sendBrowserNotification" in html
 
@@ -3561,14 +3566,14 @@ class TestHandoffAPI:
     async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        assert "executeHandoffAction" in resp.text
+        assert "executeHandoffAction" in agents_page_source()
 
     async def test_agents_page_has_interrupted_banner(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         assert resp.status_code == 200
         assert 'id="interrupted-banner"' in resp.text
-        assert "checkInterrupted" in resp.text
-        assert "dismissInterrupted" in resp.text
+        assert "checkInterrupted" in agents_page_source()
+        assert "dismissInterrupted" in agents_page_source()
 
     async def test_agents_page_has_status_filter(self, client: AsyncClient) -> None:
         from sova.core.state import TASK_RUN_TERMINAL
@@ -3587,9 +3592,9 @@ class TestHandoffAPI:
         """
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = resp.text.find("async function loadHistory()")
+        idx = agents_page_source().find("async function loadHistory()")
         assert idx != -1, "loadHistory() not found in agents.html"
-        body = resp.text[idx : idx + 800]
+        body = agents_page_source()[idx : idx + 800]
         assert "getElementById('filter-status')" in body
         assert "getElementById('filter-role')" in body
         assert "&role=" in body
@@ -3601,9 +3606,9 @@ class TestHandoffAPI:
         banner's own re-run button (source-level check, same pattern as above)."""
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = resp.text.find("function renderHistoryTable")
+        idx = agents_page_source().find("function renderHistoryTable")
         assert idx != -1, "renderHistoryTable() not found in agents.html"
-        body = resp.text[idx : idx + 2000]
+        body = agents_page_source()[idx : idx + 2000]
         assert "data-run-id=" in body
 
     async def test_agents_page_has_stat_row(self, client: AsyncClient) -> None:
@@ -3615,11 +3620,11 @@ class TestHandoffAPI:
         assert 'id="stat-today-cost"' in resp.text
         assert 'id="stat-invocations"' in resp.text
         assert 'id="stat-completion"' in resp.text
-        idx = resp.text.find("async function loadAgentsStatRow()")
+        idx = agents_page_source().find("async function loadAgentsStatRow()")
         assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = resp.text[idx : idx + 800]
+        body = agents_page_source()[idx : idx + 800]
         assert "apiUrl('/overview')" in body
-        assert "visibilityAwarePoll(loadAgentsStatRow" in resp.text
+        assert "visibilityAwarePoll(loadAgentsStatRow" in agents_page_source()
 
     async def test_agents_stat_row_clears_on_refresh_failure(self, client: AsyncClient) -> None:
         """A failed poll must blank the stat row rather than leave the previous poll's
@@ -3627,22 +3632,22 @@ class TestHandoffAPI:
         """
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = resp.text.find("async function loadAgentsStatRow()")
+        idx = agents_page_source().find("async function loadAgentsStatRow()")
         assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = resp.text[idx : idx + 1400]
+        body = agents_page_source()[idx : idx + 1400]
         catch_idx = body.find("} catch (e) {")
         assert catch_idx != -1, "loadAgentsStatRow() has no catch block"
         assert "_clearAgentsStatRow();" in body[catch_idx:], "catch block does not reset the stat row"
 
-        accents_idx = resp.text.find("var _STAT_ACCENTS")
+        accents_idx = agents_page_source().find("var _STAT_ACCENTS")
         assert accents_idx != -1, "_STAT_ACCENTS map not found in agents.html"
-        accents_body = resp.text[accents_idx : accents_idx + 400]
+        accents_body = agents_page_source()[accents_idx : accents_idx + 400]
         for stat_id in ("stat-today-cost", "stat-invocations", "stat-completion"):
             assert stat_id in accents_body, f"{stat_id} not registered in _STAT_ACCENTS"
 
-        clear_idx = resp.text.find("function _clearAgentsStatRow()")
+        clear_idx = agents_page_source().find("function _clearAgentsStatRow()")
         assert clear_idx != -1, "_clearAgentsStatRow() not found in agents.html"
-        clear_body = resp.text[clear_idx : clear_idx + 400]
+        clear_body = agents_page_source()[clear_idx : clear_idx + 400]
         # The failure marker must differ from the "--" pre-fetch placeholder
         # (lines 18/23/28), or an operator cannot tell "data unavailable"
         # from "still loading".
@@ -3655,14 +3660,14 @@ class TestHandoffAPI:
         pattern as above)."""
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = resp.text.find("async function loadAgentsStatRow()")
+        idx = agents_page_source().find("async function loadAgentsStatRow()")
         assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = resp.text[idx : idx + 400]
+        body = agents_page_source()[idx : idx + 400]
         assert "_restoreAgentsStatRow();" in body, "success path does not restore stat row styling"
 
-        restore_idx = resp.text.find("function _restoreAgentsStatRow()")
+        restore_idx = agents_page_source().find("function _restoreAgentsStatRow()")
         assert restore_idx != -1, "_restoreAgentsStatRow() not found in agents.html"
-        restore_body = resp.text[restore_idx : restore_idx + 400]
+        restore_body = agents_page_source()[restore_idx : restore_idx + 400]
         assert "text-red-400" in restore_body
         assert "removeAttribute('data-tooltip')" in restore_body
 
@@ -3671,8 +3676,8 @@ class TestHandoffAPI:
         assert resp.status_code == 200
         assert "kanban-grid" in resp.text
         assert "kanban-columns" in resp.text
-        assert "switchAgentView" in resp.text
-        assert "loadKanban" in resp.text
+        assert "switchAgentView" in agents_page_source()
+        assert "loadKanban" in agents_page_source()
         assert "view-list" in resp.text
         assert "view-kanban" in resp.text
 
@@ -3680,12 +3685,13 @@ class TestHandoffAPI:
         resp = await client.get("/agents")
         assert resp.status_code == 200
         assert 'id="pr-summary-strip"' in resp.text
-        assert "renderPrSummary" in resp.text
+        assert "renderPrSummary" in agents_page_source()
 
     async def test_pr_summary_strip_js_constants_and_structure(self, client: AsyncClient) -> None:
         """Verify JS constants, metric labels, and stale threshold for renderPrSummary."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Stale threshold: 7 days in seconds
         assert "_STALE_THRESHOLD_SECONDS = 7 * 86400" in html
         # Caching key mechanism
@@ -3701,7 +3707,8 @@ class TestHandoffAPI:
     async def test_pr_summary_strip_state_counting_logic(self, client: AsyncClient) -> None:
         """Verify JS logic counts the correct computed_state values for each metric."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # awaiting_review state counted
         assert "st === 'awaiting_review'" in html
         # changes_requested state counted
@@ -3714,9 +3721,10 @@ class TestHandoffAPI:
     async def test_pr_summary_strip_visible_when_collapsed(self, client: AsyncClient) -> None:
         """Verify the summary strip stays visible when the tracker list is collapsed."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Strip starts hidden (empty data, not collapsed state)
-        assert 'id="pr-summary-strip" class="hidden"' in html
+        assert 'id="pr-summary-strip" class="hidden"' in resp.text
         # togglePrTracker only hides the list, not the strip
         assert "list.classList.toggle('hidden', _prTrackerCollapsed)" in html
         # Strip becomes visible via classList.remove('hidden') when data arrives
@@ -3725,7 +3733,8 @@ class TestHandoffAPI:
     async def test_pr_summary_strip_dynamic_grid_cols(self, client: AsyncClient) -> None:
         """Verify grid-cols is computed from metrics.length, not hardcoded."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         assert "grid-cols-' + metrics.length + '" in html
 
     async def test_pr_api_provides_fields_for_metrics(self, client: AsyncClient, monkeypatch) -> None:
@@ -3765,7 +3774,8 @@ class TestHandoffAPI:
     async def test_pr_summary_ready_counts_only_approved_ci_green(self, client: AsyncClient) -> None:
         """Ready metric must count only approved_ci_green, not plain approved."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # The approved counter increments only for approved_ci_green
         assert "st === 'approved_ci_green') approved++" in html
         # Plain 'approved' without ci_green must NOT increment the counter
@@ -3774,7 +3784,8 @@ class TestHandoffAPI:
     async def test_pr_summary_empty_array_hides_strip(self, client: AsyncClient) -> None:
         """When PR data is empty, the strip is hidden and cache key is cleared."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Empty-array guard: hide strip and clear key
         assert "if (!prs.length)" in html
         assert "_lastPrSummaryKey = null" in html
@@ -3782,7 +3793,8 @@ class TestHandoffAPI:
     async def test_pr_summary_avg_age_fallback(self, client: AsyncClient) -> None:
         """When stale count is zero, the Stale cell shows avg age instead."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Stale cell toggles between stale count and avg age
         assert "m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value)" in html
         assert "m.label === 'Stale' && m.value === 0 ? 'Avg Age' : m.label" in html
@@ -3790,14 +3802,16 @@ class TestHandoffAPI:
     async def test_pr_summary_cache_key_includes_all_metrics(self, client: AsyncClient) -> None:
         """Cache key must include all metric values to detect any change."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # Key joins all six computed values plus ageHours
         assert "[total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',')" in html
 
     async def test_pr_summary_strip_not_hidden_on_collapse_in_toggle(self, client: AsyncClient) -> None:
         """togglePrTracker must not hide the summary strip."""
         resp = await client.get("/agents")
-        html = resp.text
+        assert resp.status_code == 200
+        html = agents_page_source()
         # The toggle function should NOT contain strip visibility logic
         # (strip stays visible regardless of collapse state)
         assert "strip.classList.toggle('hidden'" not in html
@@ -8830,11 +8844,7 @@ class TestAgentsPageRefreshWiring:
     """The Agents page must refetch the Tasks list on agent exit, not only on its 30 s poll (#1149)."""
 
     def _template(self) -> str:
-        from pathlib import Path
-
-        import sova.dashboard
-
-        return (Path(sova.dashboard.__file__).parent / "templates" / "agents.html").read_text(encoding="utf-8")
+        return agents_page_source()
 
     def test_handles_agent_finished_event(self) -> None:
         html = self._template()
@@ -8876,7 +8886,7 @@ class TestAgentsPageRefreshWiring:
         block_start = html.index("if (_wsLastRunStatuses === null) {", start)
         block_end = html.index("} else if (runStatuses !== _wsLastRunStatuses) {", block_start)
         block = html[block_start:block_end]
-        assert "_lastLoadedRunIds" in block
+        assert "getLastLoadedRunIds()" in block
         assert "_scheduleWorkItemsRefresh();" in block
 
 

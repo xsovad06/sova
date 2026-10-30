@@ -42,6 +42,9 @@ class AgentState:
     role: str
     process: AgentProcess | FileAgentProcess
     output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
+    # Lines buffered over the run's life. Unlike len(output_lines) it keeps counting once the deque
+    # evicts, so a log viewer can tell exactly how many lines a snapshot has that its stream also sent.
+    output_seq: int = 0
     output_writer: OutputWriter | None = None
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None

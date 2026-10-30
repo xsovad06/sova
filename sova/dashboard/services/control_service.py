@@ -92,6 +92,9 @@ from sova.dashboard.services.agent_output import (
 from sova.dashboard.services.agent_output import (
     get_output as get_output,
 )
+from sova.dashboard.services.agent_output import (
+    get_output_seq as get_output_seq,
+)
 from sova.dashboard.services.agent_pool import (
     _DEFAULT_SLUG as _DEFAULT_SLUG,
 )

@@ -11,9 +11,17 @@ from httpx import ASGITransport, AsyncClient
 from sova.adapters.priority import Priority
 from sova.dashboard.app import create_app, priorities_json, priority_icon
 from sova.db.session import close_db, init_db
+from tests.conftest import agents_page_source
 
 # Derived from the registry, so a new Priority level fails these tests until its icon ships.
 _ICON_NAMES = [p.icon for p in Priority]
+
+
+def _template_source(template: str) -> str:
+    """A dashboard template's source; the Agents page's JS lives in its ES modules, not the template."""
+    if template == "agents.html":
+        return agents_page_source()
+    return (Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / template).read_text(encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)
@@ -116,8 +124,7 @@ class TestPriorityIconGlobal:
     @pytest.mark.parametrize("template", ["supervisor.html", "agents.html", "queue.html"])
     def test_template_uses_shared_priorityIconUrl(self, template: str) -> None:
         """Verify templates call priorityIconUrl (defined in app.js) without redefining it."""
-        path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / template
-        content = path.read_text()
+        content = _template_source(template)
         assert "priorityIconUrl(" in content
 
     @pytest.mark.parametrize("template", ["supervisor.html", "agents.html", "queue.html"])
@@ -126,8 +133,7 @@ class TestPriorityIconGlobal:
         shared priorityDisplayName() helper, so it never disagrees with the
         server-rendered priority_icon() global on the same enum value.
         """
-        path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / template
-        content = path.read_text()
+        content = _template_source(template)
         assert "priorityDisplayName(" in content
         assert "function priorityIconUrl" not in content
 
@@ -191,7 +197,6 @@ class TestUndefinedPriorityRendering:
         assert "priority ? '<img" not in content, "Queue template conditionally renders priority icon"
 
     def test_agents_planner_renders_icon_without_priority(self) -> None:
-        path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "agents.html"
-        content = path.read_text()
+        content = agents_page_source()
         assert "priorityIconUrl(t.priority)" in content, "Agents template must call priorityIconUrl for planner tasks"
         assert "t.priority ? '<img" not in content, "Agents planner conditionally renders priority icon"

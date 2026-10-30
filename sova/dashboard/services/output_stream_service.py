@@ -24,6 +24,8 @@ class OutputStreamService:
         # run_id -> {sub_id -> Queue}
         self._subscribers: dict[int, dict[int, asyncio.Queue[str]]] = {}
         self._sub_counter = itertools.count(1)
+        # (run_id, sub_id) of subscribers that lost a line to a full queue since their stream last asked.
+        self._overflowed: set[tuple[int, int]] = set()
 
     def subscribe(self, run_id: int) -> tuple[int, asyncio.Queue[str]]:
         """Register a subscriber for a run's output. Returns (sub_id, queue)."""
@@ -41,6 +43,7 @@ class OutputStreamService:
             run_subs.pop(sub_id, None)
             if not run_subs:
                 del self._subscribers[run_id]
+        self._overflowed.discard((run_id, sub_id))
         log.debug("output_stream.unsubscribed", run_id=run_id, sub_id=sub_id)
 
     def publish(self, run_id: int, line: str) -> None:
@@ -48,11 +51,23 @@ class OutputStreamService:
         run_subs = self._subscribers.get(run_id)
         if not run_subs:
             return
-        for queue in run_subs.values():
+        for sub_id, queue in run_subs.items():
             try:
                 queue.put_nowait(line)
             except asyncio.QueueFull:
-                pass  # drop for slow consumers
+                # Drop for slow consumers, but remember it: a stream that silently lost a line shows a log
+                # with a hole in it, so the SSE endpoint reports the loss (take_overflow) and the viewer re-reads.
+                if (run_id, sub_id) not in self._overflowed:
+                    log.warning("output_stream.line_dropped", run_id=run_id, sub_id=sub_id)
+                self._overflowed.add((run_id, sub_id))
+
+    def take_overflow(self, run_id: int, sub_id: int) -> bool:
+        """Whether this subscriber lost a line since the last call, clearing the mark."""
+        key = (run_id, sub_id)
+        if key not in self._overflowed:
+            return False
+        self._overflowed.discard(key)
+        return True
 
     def has_subscribers(self, run_id: int) -> bool:
         run_subs = self._subscribers.get(run_id)

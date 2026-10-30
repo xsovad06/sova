@@ -596,6 +596,8 @@ function sovaConfirm(message, options) {
    6. VISIBILITY-AWARE POLLING
    ============================================================ */
 
+/* Runs fn at once on start and each time the tab becomes visible again, then every intervalMs while the tab
+   is visible. */
 function visibilityAwarePoll(fn, intervalMs) {
   var state = { id: null };
   if (!document.hidden) {

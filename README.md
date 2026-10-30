@@ -425,7 +425,7 @@ SOVA has no bounty, reward, or paid-contribution program. There is no `/claim`, 
 
 ```bash
 make check    # Lint + test (close to CI; see docs/testing-guidelines.md for what it does not cover)
-make lint     # ShellCheck + Ruff
+make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node; see CONTRIBUTING.md)
 make test     # All tests (bash + python)
 make format   # Auto-format Python
 ```
