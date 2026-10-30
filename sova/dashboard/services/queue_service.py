@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
+from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
@@ -132,6 +133,8 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "issue": t.id,
                 "title": t.title,
                 "state": t.state.value,
+                "state_label": state_label(t.state.value),
+                "state_color": state_color(t.state.value),
                 "priority": priority,
                 "priority_label": _milestone_badge(t.milestone),
                 "issue_priority": t.priority.value,

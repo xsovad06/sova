@@ -125,18 +125,14 @@
     </div>
   </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const POLL_MS = 5 * 60 * 1000;
 let _lastFleetKey = null;
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
 function fmtRate(rate) {
   return (rate * 100).toFixed(1) + '%';
 }

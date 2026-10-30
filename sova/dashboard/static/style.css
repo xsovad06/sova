@@ -55,6 +55,9 @@
 
   --ctp-blue:      #89b4fa;
   --ctp-green:     #a6e3a1;
+  /* Catppuccin Latte green: the canvas shade for the green-strong state token (Ready to Merge, Merged,
+     Done), so the dependency graph tells it apart from plain green (Approved, tracker In Review). */
+  --ctp-green-strong: #40a02b;
   --ctp-red:       #f38ba8;
   --ctp-yellow:    #f9e2af;
   --ctp-mauve:     #cba6f7;

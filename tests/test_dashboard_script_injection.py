@@ -32,6 +32,7 @@ from sova.dashboard.app import create_app
 
 _DASHBOARD = Path(__file__).resolve().parents[1] / "sova" / "dashboard"
 _HEAD = _DASHBOARD / "templates" / "_head.html"
+_APP_JS = _DASHBOARD / "static" / "app.js"
 _SPEC = _DASHBOARD / "templates" / "spec.html"
 
 _PAYLOAD = "<img src=x onerror=alert(1)>"
@@ -80,6 +81,13 @@ def _head_script() -> str:
     return re.search(r"<script>(.*?)</script>", _HEAD.read_text(encoding="utf-8"), re.DOTALL).group(1)
 
 
+def _escape_html_source() -> str:
+    """escapeHtml() from app.js: _head.html's renderers call it, and base.html loads app.js after the head."""
+    source = _APP_JS.read_text(encoding="utf-8")
+    start = source.index("function escapeHtml(")
+    return source[start : source.index("\n}\n", start) + 2]
+
+
 def _render_questions_source() -> str:
     """renderQuestions() from spec.html; the rest of that script holds Jinja markup."""
     source = _SPEC.read_text(encoding="utf-8")
@@ -93,7 +101,7 @@ def _run(tmp_path: Path, *, marked: bool, purify: bool, calls: list[list[object]
     harness = tmp_path / "harness.js"
     harness.write_text(_HARNESS, encoding="utf-8")
     scenario = {
-        "head": _head_script(),
+        "head": _escape_html_source() + "\n" + _head_script(),
         "page": _render_questions_source(),
         "marked": marked,
         "purify": purify,

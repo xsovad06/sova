@@ -14,9 +14,15 @@ function initColors() {
   window.SOVA_COLORS = {
     accent:  getCSSVar('--ctp-blue'),
     green:   getCSSVar('--ctp-green'),
+    greenStrong: getCSSVar('--ctp-green-strong'),
     red:     getCSSVar('--ctp-red'),
     yellow:  getCSSVar('--ctp-yellow'),
     purple:  getCSSVar('--ctp-mauve'),
+    peach:    getCSSVar('--ctp-peach'),
+    lavender: getCSSVar('--ctp-lavender'),
+    sapphire: getCSSVar('--ctp-sapphire'),
+    gray:     getCSSVar('--ctp-overlay0'),
+    grayDim:  getCSSVar('--ctp-surface2'),
     surface: getCSSVar('--ctp-surface0'),
     muted:   getCSSVar('--ctp-overlay1'),
   };
@@ -122,10 +128,17 @@ function _rewriteCsrfRejection(res) {
   };
 })();
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
+
+// Short alias used by the page templates and role-editor.js; defined once here so no page redeclares it.
+var esc = escapeHtml;
 
 function escapeJsStr(str) {
   if (!str) return '';
@@ -273,6 +286,50 @@ var _WAITING_STEPS = {
   handoff_to_reviewer: 1,
   handoff_to_user: 1,
 };
+
+// A timestamp in the future (clock skew) reads "just now". queue.html's old private copy returned
+// an empty string for it; the shared helper deliberately does not special-case one page.
+function timeAgo(isoStr, emptyLabel) {
+  var empty = emptyLabel === undefined ? '' : emptyLabel;
+  if (!isoStr) return empty;
+  var d = new Date(isoStr);
+  if (isNaN(d.getTime())) return empty;
+  var diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 0) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+var STATUS_BADGE_CLASSES = {
+  done:    'bg-accent-green/15 text-accent-green',
+  error:   'bg-accent-red/15 text-accent-red',
+  running: 'bg-accent/15 text-accent',
+};
+
+// Run/status pill as an HTML string. Pass a classMap to override the default done/error/running colors;
+// an unmapped status renders neutral gray, with its text escaped either way.
+function statusBadge(status, classMap) {
+  var map = classMap || STATUS_BADGE_CLASSES;
+  var cls = Object.prototype.hasOwnProperty.call(map, status) ? map[status] : 'bg-gray-700/30 text-gray-400';
+  return '<span class="text-xs px-2 py-0.5 rounded ' + cls + '">' + escapeHtml(status) + '</span>';
+}
+
+function setText(id, text) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function renderSectionError(containerId, message) {
+  var el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = '';
+  var p = document.createElement('p');
+  p.className = 'text-red-400 text-sm';
+  p.textContent = message;
+  el.appendChild(p);
+}
 
 function formatElapsed(seconds) {
   if (!seconds) return '0s';
@@ -539,6 +596,8 @@ function sovaConfirm(message, options) {
    6. VISIBILITY-AWARE POLLING
    ============================================================ */
 
+/* Runs fn at once on start and each time the tab becomes visible again, then every intervalMs while the tab
+   is visible. */
 function visibilityAwarePoll(fn, intervalMs) {
   var state = { id: null };
   if (!document.hidden) {
@@ -1523,34 +1582,34 @@ var STEP_STATUS_COLORS = {
   skipped:     { bg: 'var(--ctp-surface1)', text: 'text-gray-500' }
 };
 
-var ISSUE_STATE_COLORS = {
-  backlog:    'bg-gray-600/30 text-gray-400',
-  triaged:    'bg-accent-yellow/20 text-accent-yellow',
-  researched: 'bg-accent-purple/20 text-accent-purple',
-  in_progress: 'bg-accent/20 text-accent',
-  in_review:  'bg-accent-green/20 text-accent-green',
-  needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
-  human_only: 'bg-gray-600/30 text-gray-500',
+/* State colors. The API decides which token a state gets (state_color, from
+   sova/dashboard/services/work_state.py); these two lookups only turn a token into
+   badge classes or a hex, so no page keeps its own state-to-color table. */
+var STATE_BADGE_CLASSES = {
+  'gray':         'bg-gray-600/30 text-gray-400',
+  'gray-dim':     'bg-gray-600/30 text-gray-500',
+  'yellow':       'bg-accent-yellow/20 text-accent-yellow',
+  'peach':        'bg-accent-peach/20 text-accent-peach',
+  'green':        'bg-accent-green/20 text-accent-green',
+  'green-strong': 'bg-accent-green/30 text-accent-green',
+  'purple':       'bg-accent-purple/20 text-accent-purple',
+  'blue':         'bg-accent/20 text-accent',
+  'red':          'bg-accent-red/20 text-accent-red',
+  'lavender':     'bg-accent-lavender/20 text-accent-lavender',
 };
 
-function issueStateColor(state) {
-  return Object.prototype.hasOwnProperty.call(ISSUE_STATE_COLORS, state) ? ISSUE_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+function stateBadgeClasses(token) {
+  return Object.prototype.hasOwnProperty.call(STATE_BADGE_CLASSES, token) ? STATE_BADGE_CLASSES[token] : STATE_BADGE_CLASSES.gray;
 }
 
-var PR_STATE_COLORS = {
-  draft:             'bg-gray-600/30 text-gray-400',
-  conflicted:        'bg-accent-red/20 text-accent-red',
-  ci_running:        'bg-accent-yellow/20 text-accent-yellow',
-  ci_failed:         'bg-accent-red/20 text-accent-red',
-  changes_requested: 'bg-accent-peach/20 text-accent-peach',
-  approved_ci_green: 'bg-accent-green/30 text-accent-green',
-  approved:          'bg-accent-green/20 text-accent-green',
-  review_addressed:  'bg-accent-lavender/20 text-accent-lavender',
-  awaiting_review:   'bg-accent/20 text-accent',
+var _STATE_HEX_KEYS = {
+  'gray': 'gray', 'gray-dim': 'grayDim', 'yellow': 'yellow', 'peach': 'peach', 'green': 'green',
+  'green-strong': 'greenStrong', 'purple': 'purple', 'blue': 'accent', 'red': 'red', 'lavender': 'lavender',
 };
 
-function prStateBadgeColor(state) {
-  return Object.prototype.hasOwnProperty.call(PR_STATE_COLORS, state) ? PR_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+function stateHex(token) {
+  var key = Object.prototype.hasOwnProperty.call(_STATE_HEX_KEYS, token) ? _STATE_HEX_KEYS[token] : 'gray';
+  return (window.SOVA_COLORS && window.SOVA_COLORS[key]) || '#6c7086';
 }
 
 var PHASE_STATUS_COLORS = {

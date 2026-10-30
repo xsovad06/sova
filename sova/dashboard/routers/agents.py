@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Annotated, Any
@@ -448,25 +449,42 @@ async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> di
 
 @router.get("/agents/{run_id}/output")
 async def get_agent_output(run_id: int, since: int = 0) -> dict:
-    """Get output lines for a specific agent."""
+    """Get output lines for a specific agent.
+
+    ``seq`` is the agent's lifetime line count at the moment these lines were read (``None`` when the
+    agent is not in memory, so nothing is still being produced). A log viewer that reconnects its SSE
+    stream pairs it with the ``seq`` in that stream's ``connected`` event to drop exactly the lines the
+    snapshot and the stream both carry.
+    """
+    seq = control_service.get_output_seq(run_id=run_id)
     lines = await control_service.get_output(since, run_id=run_id)
-    return {"lines": lines, "total": since + len(lines)}
+    return {"lines": lines, "total": since + len(lines), "seq": seq}
 
 
 @router.get("/agents/{run_id}/output/stream")
 async def stream_agent_output(run_id: int, request: Request) -> StreamingResponse:
-    """SSE endpoint: streams output lines for a specific agent run in real time."""
+    """SSE endpoint: streams output lines for a specific agent run in real time.
+
+    Events: ``connected`` (carries ``seq``), ``output``, ``done``, and ``gap``, sent when a slow reader's
+    queue overflowed and a line was dropped; the client then discards the stream and re-reads the run.
+    """
     oss = get_output_stream_service()
     sub_id, queue = oss.subscribe(run_id)
+    # Read with no await after the subscribe: every line numbered from here on is pushed to this stream.
+    seq = control_service.get_output_seq(run_id=run_id)
+    connected = json.dumps({} if seq is None else {"seq": seq})
 
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
-            yield "event: connected\ndata: {}\n\n"
+            yield f"event: connected\ndata: {connected}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
                 try:
                     line = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    if oss.take_overflow(run_id, sub_id):
+                        # A full queue dropped a line: the client cannot tell which, so it must re-read the run.
+                        yield "event: gap\ndata: {}\n\n"
                     escaped = line.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
                     yield f"event: output\ndata: {escaped}\n\n"
                 except asyncio.TimeoutError:

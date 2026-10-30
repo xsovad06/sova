@@ -31,7 +31,7 @@ make serve                          # Start web UI at http://localhost:8111
 # Development
 make check                          # Run all linters + tests (same pytest invocation as CI via make test-ci; see docs/testing-guidelines.md)
 make test                           # Run bash + python tests
-make lint                           # ShellCheck + Ruff
+make lint                           # ShellCheck + Ruff + dashboard JS syntax check (node --check)
 make format                         # Auto-format Python code
 make marketplace                    # Regenerate plugins/sova/ from sova/commands/data/commands/ (run after editing a published command)
 make commands-render                # Regenerate .claude/commands/ from sova/commands/data/commands/ (run after editing a managed command)

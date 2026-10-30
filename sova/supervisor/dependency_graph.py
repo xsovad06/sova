@@ -288,7 +288,7 @@ class DependencyGraph:
         """Serialize the graph for API responses.
 
         *pr_map* maps issue IDs to PR info dicts (pr_number, pr_url, pr_state,
-        pr_state_label).  When provided, nodes are enriched with PR fields and
+        pr_state_label, pr_state_color).  When provided, nodes are enriched with PR fields and
         IN_REVIEW nodes get PR-state-aware available_actions via *pr_state_actions*.
 
         *agent_map* maps issue IDs to running agent info (run_id, role, status, elapsed_seconds).
@@ -404,6 +404,7 @@ class DependencyGraph:
                 node["pr_url"] = pr_info.get("pr_url", "")
                 node["pr_state"] = pr_info.get("pr_state", "")
                 node["pr_state_label"] = pr_info.get("pr_state_label", "")
+                node["pr_state_color"] = pr_info.get("pr_state_color", "")
             agent_info = effective_agent_map.get(tid)
             if agent_info:
                 node["agent_running"] = True

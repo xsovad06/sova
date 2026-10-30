@@ -28,13 +28,9 @@
     <h3 class="text-sm font-medium text-gray-300">Dependency Graph <span class="text-xs text-gray-600 font-normal ml-1">left = ready, right = blocked &middot; click node to highlight chain</span></h3>
     <div class="flex items-center gap-3">
       <div class="flex items-center gap-2 text-xs text-gray-500">
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block"></span> Done</span>
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent inline-block"></span> In Progress</span>
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#f9e2af"></span> Awaiting</span>
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-gray-500 inline-block"></span> Open</span>
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+        <span id="graph-state-legend" class="flex items-center gap-2"></span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
-        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#fab387"></span> Handoff</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-peach inline-block"></span> Handoff</span>
         <span class="text-gray-700 mx-0.5">|</span>
         <span class="flex items-center gap-1">{{ priority_icon('blocker', '12') }} Blocker</span>
         <span class="flex items-center gap-1">{{ priority_icon('critical', '12') }} Critical</span>
@@ -42,9 +38,9 @@
         <span class="flex items-center gap-1">{{ priority_icon('medium', '12') }} Med</span>
         <span class="flex items-center gap-1">{{ priority_icon('low', '12') }} Low</span>
         <span class="text-gray-700 mx-0.5">|</span>
-        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#f38ba8;background:#f38ba830"></span> Human</span>
-        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border border-dashed" style="border-color:#fab387;background:#fab38720"></span> Interactive</span>
-        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#74c7ec;background:#74c7ec30"></span> Queued</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:var(--ctp-red);background:rgb(var(--ctp-red-rgb) / 0.19)"></span> Human</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border border-dashed" style="border-color:var(--ctp-peach);background:rgb(var(--ctp-peach-rgb) / 0.125)"></span> Interactive</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:var(--ctp-sapphire);background:rgb(var(--ctp-sapphire-rgb) / 0.19)"></span> Queued</span>
       </div>
       <div class="flex items-center gap-1">
         <button type="button" id="hide-done-btn" onclick="toggleHideDone()" data-tooltip="Toggle visibility of completed work"
@@ -192,21 +188,20 @@
 
 <style>
 @keyframes graph-node-pulse {
-  0%   { stroke: #cdd6f4; stroke-width: 3; }
-  50%  { stroke: #74c7ec; stroke-width: 3; }
-  100% { stroke: #cdd6f4; stroke-width: 2; }
+  0%   { stroke: var(--ctp-text); stroke-width: 3; }
+  50%  { stroke: var(--ctp-sapphire); stroke-width: 3; }
+  100% { stroke: var(--ctp-text); stroke-width: 2; }
 }
 .graph-node-highlight { animation: graph-node-pulse 1s ease-in-out 2; }
 </style>
+{% endblock %}
+
+{% block scripts %}
 <script src="/static/d3.min.js"></script>
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const githubRepo = {{ github_repo | tojson }};
-
-const esc = window.escapeHtml || function(str) {
-  const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
-};
 
 function _fmtElapsed(secs) {
   if (secs < 60) return secs + 's';
@@ -241,30 +236,12 @@ function isDoneState(state) {
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
   // and would cause a full re-render (and position reset) on every poll cycle.
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}:${n.queue_position||0}`).sort().join(',');
+  // pr_state is the collapsed state (review_addressed reads awaiting_review, approved reads
+  // approved_ci_green), while the PR dot and the drawer draw pr_state_color/pr_state_label from the raw
+  // computed state, so the display fields are keyed too or a raw-state change would never repaint.
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.state_color||''}:${n.milestone||''}:${n.pr_state||''}:${n.pr_state_color||''}:${n.pr_state_label||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}:${n.queue_position||0}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
-}
-
-function stateColor(state) {
-  const s = (state || '').toLowerCase();
-  if (isDoneState(s)) return '#a6e3a1';
-  if (s === 'in_progress' || s === 'in_review') return '#89b4fa';
-  if (s === 'awaiting_approval') return '#f9e2af';
-  if (s === 'blocked') return '#f38ba8';
-  return '#6c7086';
-}
-
-function prStateColor(prState) {
-  const s = (prState || '');
-  if (s === 'approved_ci_green') return '#a6e3a1';
-  if (s === 'conflicted')        return '#f38ba8';
-  if (s === 'changes_requested') return '#fab387';
-  if (s === 'ci_failed')         return '#f38ba8';
-  if (s === 'ci_running')        return '#f9e2af';
-  if (s === 'awaiting_review')   return '#89b4fa';
-  if (s === 'draft')             return '#6c7086';
-  return null;
 }
 
 // Priority configuration: colors for backward compatibility
@@ -581,6 +558,7 @@ async function loadGraph() {
     loading.classList.add('hidden');
 
     if (!data.nodes || data.nodes.length === 0) {
+      renderStateLegend([]);
       errorEl.classList.remove('hidden');
       errorEl.innerHTML = '<p class="text-sm text-gray-500 bg-gray-700/30 px-4 py-2 rounded">No issues with dependencies found</p>';
       return;
@@ -601,6 +579,26 @@ async function loadGraph() {
     errorEl.classList.remove('hidden');
     errorEl.innerHTML = `<p class="text-sm text-gray-500">Failed to load graph: ${e.message}</p>`;
   }
+}
+
+// The legend is built from the label and color token the API attached to each node on screen, so it
+// lists exactly the colors the graph draws and cannot drift from them (work_state.py owns both).
+function renderStateLegend(nodes) {
+  const host = document.getElementById('graph-state-legend');
+  if (!host) return;
+  const tokens = new Map();
+  nodes.forEach(n => { if (n.state_label && !tokens.has(n.state_label)) tokens.set(n.state_label, n.state_color); });
+  host.replaceChildren();
+  [...tokens.entries()].sort((a, b) => a[0].localeCompare(b[0])).forEach(([label, token]) => {
+    const item = document.createElement('span');
+    item.className = 'flex items-center gap-1';
+    const dot = document.createElement('span');
+    dot.className = 'w-2 h-2 rounded-full inline-block';
+    dot.style.backgroundColor = stateHex(token);
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(' ' + label));
+    host.appendChild(item);
+  });
 }
 
 function renderGraph(data) {
@@ -630,6 +628,7 @@ function renderGraph(data) {
   // from the default presentation. Edges to hidden nodes naturally disappear
   // because they have no rendered position.
   const visibleNodes = (data.nodes || []).filter(n => !_hideDone || !isDoneState(n.state));
+  renderStateLegend(visibleNodes);
 
   // Group nodes by milestone; nodes without a milestone go into "(Independent)"
   const msMap = new Map();
@@ -985,7 +984,7 @@ function renderGraph(data) {
       grp.append('text')
         .attr('x', x + boxW - 10).attr('y', y + 18)
         .attr('text-anchor', 'end')
-        .attr('fill', '#a6e3a1').attr('font-size', '9px').attr('font-weight', '500')
+        .attr('fill', stateHex('green-strong')).attr('font-size', '9px').attr('font-weight', '500')
         .attr('font-family', 'system-ui, sans-serif')
         .attr('opacity', 0.6)
         .text(`${nodeCount} done`);
@@ -1078,17 +1077,19 @@ function renderGraph(data) {
   visibleNodes.forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
-    const color = stateColor(n.state);
+    const color = stateHex(n.state_color);
     const isDone = isDoneState(n.state);
 
-    const prc = n.pr_state ? prStateColor(n.pr_state) : null;
+    const prc = n.pr_state_color ? stateHex(n.pr_state_color) : null;
     const borderColor = prc || (color + '66');
 
     const isEpic = n.is_epic === true;
     const isHumanOnly = n.is_human_only === true;
     const isInteractive = n.is_interactive_recommended === true;
 
-    const humanBorder = isHumanOnly ? '#f38ba8' : (isInteractive ? '#fab387' : null);
+    // The same sources the legend reads (red and peach), so a marker cannot be recolored in one place only.
+    const humanHex = stateHex('red'), interactiveHex = stateHex('peach');
+    const humanBorder = isHumanOnly ? humanHex : (isInteractive ? interactiveHex : null);
     const effectiveBorder = humanBorder || borderColor;
 
     const g = mainG.append('g')
@@ -1098,7 +1099,7 @@ function renderGraph(data) {
       .style('cursor', 'pointer');
     const bgRect = g.append('rect').attr('class', 'node-bg')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
-      .attr('fill', isHumanOnly ? '#f38ba810' : (isInteractive ? '#fab38710' : color + '18'))
+      .attr('fill', isHumanOnly ? humanHex + '10' : (isInteractive ? interactiveHex + '10' : color + '18'))
       .attr('stroke', effectiveBorder).attr('stroke-width', (humanBorder || prc) ? 1.5 : (isEpic ? 1.5 : 1));
     if (isEpic && isInteractive) {
       bgRect.attr('stroke-dasharray', '5,2,2,2');
@@ -1152,7 +1153,7 @@ function renderGraph(data) {
 
     // Human-only / interactive-recommended badge at bottom-left (after epic badge if present)
     if (isHumanOnly) {
-      const HUMAN_BADGE_COLOR = '#f38ba8';
+      const HUMAN_BADGE_COLOR = humanHex;
       const HUMAN_BADGE_W = 42;
       const hbX = isEpic ? pos.x + 4 + EPIC_BADGE_WIDTH + 4 : pos.x + 4;
       const hbY = pos.y + NH - 18;
@@ -1165,7 +1166,7 @@ function renderGraph(data) {
         .attr('fill', HUMAN_BADGE_COLOR).attr('font-size', '7px').attr('font-weight', '600').attr('font-family', 'monospace')
         .text('HUMAN');
     } else if (isInteractive) {
-      const INTER_BADGE_COLOR = '#fab387';
+      const INTER_BADGE_COLOR = interactiveHex;
       const INTER_BADGE_W = 60;
       const ibX = isEpic ? pos.x + 4 + EPIC_BADGE_WIDTH + 4 : pos.x + 4;
       const ibY = pos.y + NH - 18;
@@ -1191,11 +1192,11 @@ function renderGraph(data) {
       const pulseG = g.append('g');
       pulseG.append('circle')
         .attr('cx', pos.x + 6).attr('cy', pos.y + 6).attr('r', 4)
-        .attr('fill', '#a6e3a1').attr('opacity', 0.3)
+        .attr('fill', stateHex('green')).attr('opacity', 0.3)
         .append('animate').attr('attributeName', 'r').attr('values', '4;7;4').attr('dur', '1.5s').attr('repeatCount', 'indefinite');
       pulseG.append('circle')
         .attr('cx', pos.x + 6).attr('cy', pos.y + 6).attr('r', 3)
-        .attr('fill', '#a6e3a1');
+        .attr('fill', stateHex('green'));
     }
 
     // Handoff pending indicator (small badge at bottom-right)
@@ -1203,7 +1204,7 @@ function renderGraph(data) {
       const hbX = pos.x + NW - 10, hbY = pos.y + NH - 10;
       g.append('circle')
         .attr('cx', hbX).attr('cy', hbY).attr('r', 4)
-        .attr('fill', '#fab387');
+        .attr('fill', stateHex('peach'));
     }
 
     // Failed last run indicator (small red badge at bottom-right, only when no agent and no handoff)
@@ -1211,12 +1212,12 @@ function renderGraph(data) {
       const fbX = pos.x + NW - 10, fbY = pos.y + NH - 10;
       g.append('circle')
         .attr('cx', fbX).attr('cy', fbY).attr('r', 4)
-        .attr('fill', '#f38ba8');
+        .attr('fill', stateHex('red'));
     }
 
     // Queue position badge (sapphire pill at bottom-right, offset left of status indicators)
     if (n.queue_position) {
-      const QUEUE_COLOR = '#74c7ec';  // Catppuccin sapphire
+      const QUEUE_COLOR = window.SOVA_COLORS.sapphire || stateHex('gray');  // Catppuccin sapphire, as the legend
       const qbW = 26, qbH = 14;
       const qbX = pos.x + NW - qbW - 16, qbY = pos.y + NH - qbH - 2;
       g.append('rect')
@@ -1280,10 +1281,10 @@ function showDrawer(node) {
   const drawer = document.getElementById('action-drawer');
   drawer.classList.remove('hidden');
 
-  const color = stateColor(node.state);
+  const color = stateHex(node.state_color);
   document.getElementById('drawer-dot').style.backgroundColor = color;
   document.getElementById('drawer-title').textContent = node.title || `Issue #${node.id}`;
-  document.getElementById('drawer-state').textContent = (node.state || '').replace(/_/g, ' ');
+  document.getElementById('drawer-state').textContent = node.state_label || '';
   document.getElementById('drawer-milestone').textContent = node.milestone || '';
   document.getElementById('drawer-excerpt').textContent = node.body_excerpt || '';
 
@@ -1293,7 +1294,7 @@ function showDrawer(node) {
 
   const prBadge = document.getElementById('drawer-pr-badge');
   if (node.pr_number) {
-    const prc = prStateColor(node.pr_state) || '#6c7086';
+    const prc = stateHex(node.pr_state_color);
     prBadge.classList.remove('hidden');
     prBadge.style.color = prc;
     const prUrl = node.pr_url || (githubRepo ? `https://github.com/${githubRepo}/pull/${node.pr_number}` : '#');

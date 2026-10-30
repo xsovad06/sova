@@ -497,12 +497,11 @@ class TestSuggestionPayloadIncludesMergeState:
     """
 
     def test_agents_html_sends_merge_state_in_suggestion_payload(self) -> None:
-        from pathlib import Path
+        from tests.conftest import agents_page_source
 
-        path = Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / "agents.html"
-        content = path.read_text(encoding="utf-8")
+        content = agents_page_source()
         idx = content.find("deterministic_state: item.state,")
-        assert idx != -1, "Suggestion request payload construction not found in agents.html"
+        assert idx != -1, "Suggestion request payload construction not found in the Agents page source"
         block = content[idx : idx + 600]
         assert "merge_state: prDetails.merge_state" in block, (
             "Suggestion payload must include merge_state so the LLM shadow-evaluation "

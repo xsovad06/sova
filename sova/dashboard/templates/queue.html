@@ -106,16 +106,6 @@ var milestoneStyles = {
   '--': { badge: 'bg-gray-700/20 text-gray-500', border: 'border-gray-700/30' },
 };
 
-var stateLabels = {
-  researched: 'Researched',
-  in_progress: 'In Progress',
-  triaged: 'Triaged',
-  backlog: 'Backlog',
-  needs_spec: 'Needs Spec',
-  in_review: 'In Review',
-  human_only: 'Human Only',
-};
-
 var issueTypeStyles = {
   Bug: 'bg-accent-red/20 text-accent-red',
   Story: 'bg-accent/20 text-accent',
@@ -225,29 +215,14 @@ function renderStartButton(item) {
     label + '</button>';
 }
 
-function timeAgo(isoStr) {
-  if (!isoStr) return '';
-  var d = new Date(isoStr);
-  if (isNaN(d.getTime())) return '';
-  var now = new Date();
-  var diff = Math.floor((now - d) / 1000);
-  if (diff < 0) return '';
-  if (diff < 60) return diff + 's ago';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
-}
-
 function issueTypeBadge(type) {
   if (!type) return '';
   var cls = issueTypeStyles[type] || 'bg-gray-600/30 text-gray-400';
   return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(type) + '</span>';
 }
 
-function stateBadge(state) {
-  var label = stateLabels[state] || state;
-  var cls = issueStateColor(state);
-  return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
+function stateBadge(item) {
+  return '<span class="px-1.5 py-0.5 rounded text-xs ' + stateBadgeClasses(item.state_color) + '">' + escapeHtml(item.state_label) + '</span>';
 }
 
 function actionBadge(action) {
@@ -295,7 +270,7 @@ function renderQueueCard(item) {
   }).join(' ');
 
   var metaParts = [];
-  metaParts.push(stateBadge(item.state));
+  metaParts.push(stateBadge(item));
   if (item.spec_status) {
     metaParts.push(specStatusBadge(item.spec_status));
   }
@@ -686,7 +661,7 @@ function populateFilterDropdowns() {
   var labelsInData = {};
 
   queueData.forEach(function(item) {
-    statesInData[item.state] = true;
+    statesInData[item.state] = item.state_label;
     if (item.priority_label && item.priority_label !== '--') {
       milestonesInData[item.priority_label] = true;
     }
@@ -705,7 +680,7 @@ function populateFilterDropdowns() {
       return '<label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700/30 cursor-pointer text-sm text-gray-300">' +
         '<input type="checkbox" value="' + s + '" onchange="onFilterCheckbox(\x27states\x27, this)"' + checked +
         ' class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">' +
-        escapeHtml(stateLabels[s] || s) + '</label>';
+        escapeHtml(statesInData[s]) + '</label>';
     }).join('');
 
   var milestoneDropdown = document.getElementById('filter-milestone-dropdown');

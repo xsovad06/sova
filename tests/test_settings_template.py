@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from sova.dashboard.settings_meta import _REGISTRY
+from tests.conftest import agents_page_source
 
 _TEMPLATE = Path(__file__).resolve().parents[1] / "sova" / "dashboard" / "templates" / "settings.html"
 
@@ -169,14 +170,11 @@ class TestFallbackOrderControls:
         assert _cast_list('["b", "a"]') == ["b", "a"]
 
 
-_AGENTS_TEMPLATE = _TEMPLATE.parent / "agents.html"
-
-
 # Module-level rather than a class-scoped fixture method in each class:
 # pytest 9.1 deprecates a class-scoped fixture defined as an instance method.
 @pytest.fixture(scope="module")
 def agents_source() -> str:
-    return _AGENTS_TEMPLATE.read_text(encoding="utf-8")
+    return agents_page_source()
 
 
 class TestLaunchModalLlmOverride:
@@ -198,7 +196,7 @@ class TestLaunchModalLlmOverride:
         from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
 
         match = re.search(r"var _LLM_OVERRIDE_ROLES = \{([^}]*)\};", agents_source)
-        assert match, "_LLM_OVERRIDE_ROLES not found in agents.html"
+        assert match, "_LLM_OVERRIDE_ROLES not found in the Agents page source"
         client_roles = set(re.findall(r"(\w+): true", match.group(1)))
         assert client_roles == set(LLM_MODEL_OVERRIDE_ROLES)
 
@@ -263,7 +261,7 @@ class TestRuntimeModelSelectors:
         from sova.dashboard.services.agent_lifecycle import RUNTIME_MODEL_PIN_ROLES
 
         match = re.search(r"var _RUNTIME_MODEL_PIN_ROLES = \{([^}]*)\};", agents_source)
-        assert match, "_RUNTIME_MODEL_PIN_ROLES not found in agents.html"
+        assert match, "_RUNTIME_MODEL_PIN_ROLES not found in the Agents page source"
         assert set(re.findall(r"(\w+): true", match.group(1))) == set(RUNTIME_MODEL_PIN_ROLES)
 
     def test_pin_mode_never_preselects_the_suggestion(self, agents_source: str) -> None:

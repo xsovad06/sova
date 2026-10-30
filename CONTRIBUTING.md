@@ -24,6 +24,7 @@ Maintainer, collaborator, and bot pull requests are never evaluated. If a genuin
 - [GitHub CLI](https://cli.github.com/) (`gh`): authenticated
 - `git`
 - `shellcheck` (for bash linting: `brew install shellcheck` on macOS)
+- `node` (for the dashboard JS syntax check in `make lint`: `brew install node` on macOS; `make lint` fails without it)
 
 **Optional** (for AI-assisted workflows):
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`): powers SOVA's slash commands and agent orchestration
@@ -73,7 +74,7 @@ git push origin main
 ```bash
 make check    # Lint + test (close to CI, run before submitting PR; see docs/testing-guidelines.md for what it does not cover)
 make test     # Run all tests
-make lint     # ShellCheck + Ruff
+make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node)
 make format   # Auto-format Python code
 ```
 
@@ -178,6 +179,8 @@ Use the [issue templates](https://github.com/xsovad06/sova/issues/new/choose) fo
 **"shellcheck: command not found"**: Install with `brew install shellcheck` (macOS) or `apt install shellcheck` (Linux).
 
 **Git hooks not running**: Run `make setup` or `git config core.hooksPath .githooks`. Verify with `sova doctor`.
+
+**"lint-js: node is required"**: Install node (`brew install node` on macOS, `apt install nodejs` on Linux). It is only used to syntax-check the dashboard JS.
 
 **Ruff not found**: Ensure dev dependencies are installed: `pip install -e ".[dev]"` or `make install-deps`.
 

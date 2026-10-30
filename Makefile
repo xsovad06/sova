@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
+.PHONY: serve dev test lint lint-bash lint-py lint-js format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
 
 SHELL := /bin/bash
 
@@ -59,7 +59,7 @@ test-evaluation: ## Run the model-evaluation harness against live providers (req
 
 # ── Linting ───────────────────────────────────────────────────
 
-lint: lint-bash lint-py ## Run all linters
+lint: lint-bash lint-py lint-js ## Run all linters
 
 lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 	shellcheck invariants/*.sh .github/scripts/*.sh
@@ -67,6 +67,15 @@ lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 lint-py: ## Ruff lint + format check
 	$(RUFF) check sova/ tests/
 	$(RUFF) format --check sova/ tests/
+
+lint-js: ## Syntax-check dashboard JS (static/*.js as scripts, static/js/**/*.js as ES modules); needs node
+	@command -v node >/dev/null || { echo "lint-js: node is required"; exit 1; }
+	@for f in $$(find sova/dashboard/static -maxdepth 1 -name '*.js' ! -name '*.min.js' | sort); do \
+		node --check "$$f" || { echo "lint-js: syntax error in $$f"; exit 1; }; \
+	done
+	@for f in $$(find sova/dashboard/static/js -name '*.js' | sort); do \
+		node --input-type=module --check < "$$f" || { echo "lint-js: syntax error in $$f"; exit 1; }; \
+	done
 
 # ── Formatting ────────────────────────────────────────────────
 

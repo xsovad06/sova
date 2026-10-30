@@ -72,6 +72,28 @@ class TestOutputStreamService:
             svc.publish(1, f"line {i}")
         assert queue.qsize() == 200  # capped at _QUEUE_MAX
 
+    def test_overflow_is_reported_once_to_the_subscriber_that_lost_a_line(self) -> None:
+        svc = OutputStreamService()
+        slow_id, _slow = svc.subscribe(run_id=1)
+        fast_id, fast = svc.subscribe(run_id=1)
+        for i in range(200):
+            svc.publish(1, f"line {i}")
+        fast.get_nowait()  # the fast reader keeps up; only the slow one is full
+        assert not svc.take_overflow(1, slow_id)
+        svc.publish(1, "one too many")
+        assert svc.take_overflow(1, slow_id) is True
+        assert svc.take_overflow(1, slow_id) is False, "reading the mark clears it"
+        assert svc.take_overflow(1, fast_id) is False
+
+    def test_unsubscribe_forgets_a_pending_overflow(self) -> None:
+        svc = OutputStreamService()
+        sub_id, _ = svc.subscribe(run_id=1)
+        for i in range(201):
+            svc.publish(1, f"line {i}")
+        svc.unsubscribe(1, sub_id)
+        assert not svc.take_overflow(1, sub_id)
+        assert not svc._overflowed
+
     def test_has_subscribers(self) -> None:
         svc = OutputStreamService()
         assert not svc.has_subscribers(1)
@@ -221,6 +243,70 @@ async def test_output_stream_delivers_published_lines(setup_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_output_stream_reports_a_dropped_line_as_a_gap_event(setup_db) -> None:
+    """A slow reader's full queue drops a line; the stream says so, since the client cannot find the hole."""
+    import sova.dashboard.services.output_stream_service as mod
+
+    svc = OutputStreamService()
+    mod._output_stream_service = svc
+
+    from sova.dashboard.routers.agents import stream_agent_output
+
+    mock_request = AsyncMock()
+    call_count = 0
+
+    async def is_disconnected() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count > 1
+
+    mock_request.is_disconnected = is_disconnected
+
+    try:
+        response = await stream_agent_output(run_id=77, request=mock_request)
+        for i in range(201):  # the 201st finds the 200-line queue full
+            svc.publish(77, f"line {i}")
+        chunks = [chunk async for chunk in response.body_iterator]
+    finally:
+        mod._output_stream_service = None
+
+    combined = "".join(chunks)
+    assert "event: gap" in combined
+    assert combined.index("event: gap") < combined.index("event: output")
+
+
+@pytest.mark.asyncio
+async def test_output_stream_sends_no_gap_when_nothing_was_dropped(setup_db) -> None:
+    import sova.dashboard.services.output_stream_service as mod
+
+    svc = OutputStreamService()
+    mod._output_stream_service = svc
+
+    from sova.dashboard.routers.agents import stream_agent_output
+
+    mock_request = AsyncMock()
+    call_count = 0
+
+    async def is_disconnected() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count > 1
+
+    mock_request.is_disconnected = is_disconnected
+
+    try:
+        response = await stream_agent_output(run_id=78, request=mock_request)
+        svc.publish(78, "only line")
+        chunks = [chunk async for chunk in response.body_iterator]
+    finally:
+        mod._output_stream_service = None
+
+    combined = "".join(chunks)
+    assert "event: output" in combined
+    assert "event: gap" not in combined
+
+
+@pytest.mark.asyncio
 async def test_output_stream_sends_done_on_terminal_run(setup_db) -> None:
     """When the run reaches terminal status, stream sends 'done' event."""
     import sova.dashboard.services.output_stream_service as mod
@@ -294,3 +380,152 @@ async def test_check_run_terminal_exception_returns_false(setup_db) -> None:
     with patch("sova.dashboard.routers.agents.get_session", side_effect=RuntimeError("db down")):
         result = await _check_run_terminal(run_id=999)
     assert result is False
+
+
+# Line sequence numbers: let a reconnecting log viewer drop exactly the lines its backfill and its stream share
+
+
+def _fake_agent(run_id: int, existing: list[str] | None = None):
+    from collections import deque
+
+    from sova.dashboard.services.agent_pool import AgentState
+
+    agent = AgentState.__new__(AgentState)
+    agent.run_id = run_id
+    agent.output_lines = deque(existing or [], maxlen=5000)
+    agent.output_seq = len(existing or [])
+    agent.output_writer = None
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_buffer_line_counts_every_line_and_keeps_counting_past_the_deque_cap(setup_db) -> None:
+    """output_seq is the run's lifetime line count, so it is not capped like the deque is."""
+    from collections import deque
+
+    from sova.dashboard.services.agent_output import _buffer_line
+
+    agent = _fake_agent(11)
+    agent.output_lines = deque(maxlen=2)
+    for text in ("a", "b", "c"):
+        await _buffer_line(agent, text)
+
+    assert list(agent.output_lines) == ["b", "c"]
+    assert agent.output_seq == 3
+
+
+@pytest.mark.asyncio
+async def test_buffer_line_publishes_before_the_db_flush_can_suspend(setup_db) -> None:
+    """A subscriber that reads output_seq must receive every later line, so the count and the publish happen
+    in one step with the flush (the only await) after them."""
+    import sova.dashboard.services.output_stream_service as mod
+    from sova.dashboard.services.agent_output import _buffer_line
+
+    svc = OutputStreamService()
+    mod._output_stream_service = svc
+    flush_started = asyncio.Event()
+    release_flush = asyncio.Event()
+
+    class SlowWriter:
+        def write_line(self, text: str) -> None:
+            pass
+
+        def should_flush(self) -> bool:
+            return True
+
+        async def flush(self) -> None:
+            flush_started.set()
+            await release_flush.wait()
+
+    agent = _fake_agent(12)
+    agent.output_writer = SlowWriter()
+    _sub_id, queue = svc.subscribe(run_id=12)
+    try:
+        task = asyncio.create_task(_buffer_line(agent, "line"))
+        await asyncio.wait_for(flush_started.wait(), timeout=5)
+        assert agent.output_seq == 1
+        assert queue.get_nowait() == "line", "published while the flush is still suspended"
+        release_flush.set()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        mod._output_stream_service = None
+
+
+def test_get_output_seq_reports_an_in_memory_agent_and_none_otherwise() -> None:
+    from unittest.mock import MagicMock
+
+    from sova.dashboard.services.agent_output import get_output_seq
+
+    pa = MagicMock()
+    pa.agents = {42: _fake_agent(42, ["x", "y", "z"])}
+    with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=pa):
+        assert get_output_seq(run_id=42) == 3
+        assert get_output_seq(run_id=43) is None
+
+
+@pytest.mark.asyncio
+async def test_output_endpoint_returns_the_sequence_read_with_the_lines(setup_db) -> None:
+    from unittest.mock import MagicMock
+
+    from sova.dashboard.routers.agents import get_agent_output
+
+    pa = MagicMock()
+    pa.agents = {42: _fake_agent(42, ["x", "y", "z"])}
+    with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=pa):
+        in_memory = await get_agent_output(run_id=42, since=0)
+        absent = await get_agent_output(run_id=99, since=0)
+
+    assert in_memory == {"lines": ["x", "y", "z"], "total": 3, "seq": 3}
+    assert absent["seq"] is None
+
+
+@pytest.mark.asyncio
+async def test_connected_event_carries_the_sequence_at_subscribe_time(setup_db) -> None:
+    """The count is read right after the subscribe, so a line buffered while the generator waits to run is
+    pushed to the stream but not counted in the event."""
+    import json
+    from unittest.mock import MagicMock
+
+    import sova.dashboard.services.output_stream_service as mod
+    from sova.dashboard.routers.agents import stream_agent_output
+
+    svc = OutputStreamService()
+    mod._output_stream_service = svc
+    agent = _fake_agent(42, ["x", "y"])
+    pa = MagicMock()
+    pa.agents = {42: agent}
+
+    mock_request = AsyncMock()
+    mock_request.is_disconnected = AsyncMock(side_effect=[False, True])
+    try:
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=pa):
+            response = await stream_agent_output(run_id=42, request=mock_request)
+            svc.publish(42, "z")
+            agent.output_lines.append("z")
+            agent.output_seq += 1
+            chunks = [chunk async for chunk in response.body_iterator]
+    finally:
+        mod._output_stream_service = None
+
+    connected = next(c for c in chunks if c.startswith("event: connected"))
+    assert json.loads(connected.split("data: ", 1)[1]) == {"seq": 2}
+    assert any("data: z" in c for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_connected_event_has_no_sequence_for_an_agent_not_in_memory(setup_db) -> None:
+    import json
+    from unittest.mock import MagicMock
+
+    from sova.dashboard.routers.agents import stream_agent_output
+
+    pa = MagicMock()
+    pa.agents = {}
+    mock_request = AsyncMock()
+    mock_request.is_disconnected = AsyncMock(return_value=True)
+    with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=pa):
+        response = await stream_agent_output(run_id=77, request=mock_request)
+        chunks = [chunk async for chunk in response.body_iterator]
+
+    connected = next(c for c in chunks if c.startswith("event: connected"))
+    assert json.loads(connected.split("data: ", 1)[1]) == {}

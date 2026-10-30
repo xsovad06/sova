@@ -689,7 +689,7 @@ class TestEnrichPr:
     def test_draft_state(self) -> None:
         result = _enrich_pr(self._raw_pr(isDraft=True), time.time())
         assert result["computed_state"] == ComputedPRState.DRAFT
-        assert result["state_label"] == "Draft"
+        assert result["state_label"] == "Draft PR"
 
     def test_approved_ci_green_mergeable(self) -> None:
         result = _enrich_pr(self._raw_pr(reviewDecision="APPROVED"), time.time())

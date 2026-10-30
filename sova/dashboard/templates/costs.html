@@ -89,16 +89,6 @@
 
 {% block scripts %}
 <script>
-function renderSectionError(containerId, message) {
-  var el = document.getElementById(containerId);
-  if (!el) return;
-  el.innerHTML = '';
-  var p = document.createElement('p');
-  p.className = 'text-red-400 text-sm';
-  p.textContent = message;
-  el.appendChild(p);
-}
-
 function setElementError(elementId, errorText, removeClasses) {
   var el = document.getElementById(elementId);
   if (!el) return;
