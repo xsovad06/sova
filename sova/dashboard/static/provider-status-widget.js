@@ -114,11 +114,6 @@
     document.getElementById('aw-error-section').classList.remove('hidden');
   }
 
-  function setText(id, text) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = text;
-  }
-
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

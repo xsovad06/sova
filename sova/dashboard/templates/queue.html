@@ -225,19 +225,6 @@ function renderStartButton(item) {
     label + '</button>';
 }
 
-function timeAgo(isoStr) {
-  if (!isoStr) return '';
-  var d = new Date(isoStr);
-  if (isNaN(d.getTime())) return '';
-  var now = new Date();
-  var diff = Math.floor((now - d) / 1000);
-  if (diff < 0) return '';
-  if (diff < 60) return diff + 's ago';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  return Math.floor(diff / 86400) + 'd ago';
-}
-
 function issueTypeBadge(type) {
   if (!type) return '';
   var cls = issueTypeStyles[type] || 'bg-gray-600/30 text-gray-400';

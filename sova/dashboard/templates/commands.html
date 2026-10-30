@@ -34,8 +34,6 @@
 (function() {
   const prefix = '{{ prefix|default("") }}';
   const apiBase = prefix ? `${prefix}/api` : '/api';
-  const esc = window.escapeHtml || function(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
-
   let allCommands = [];
   let activeCommand = null;
 

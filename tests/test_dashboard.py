@@ -390,7 +390,14 @@ class TestDashboardHealth:
         assert "function loadEnergy()" in body
         assert "function loadDailyChart()" in body
         assert "function loadCostTable(" in body
-        assert "function renderSectionError(" in body
+        # renderSectionError() is the shared helper from app.js, so the page must call it from the
+        # sections that fail, not merely mention it. Its single definition and its load order before this
+        # inline script are guarded by TestSharedHelpersHaveOneDefinition in test_dashboard_agents_modules.py.
+        assert "function renderSectionError(" not in body
+        daily_chart = body[body.index("async function loadDailyChart()") : body.index("async function loadCostTable(")]
+        assert "renderSectionError('daily-chart'," in daily_chart
+        cost_table = body[body.index("async function loadCostTable(") :]
+        assert "renderSectionError(containerId," in cost_table.split("\n}\n")[0]
         assert "function setElementError(" in body
         assert "} catch (err)" in body
         # Verify energy error handler clears detail elements

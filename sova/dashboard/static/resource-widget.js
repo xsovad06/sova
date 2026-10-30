@@ -322,11 +322,6 @@
     content.innerHTML = html;
   }
 
-  function setText(id, text) {
-    var el = document.getElementById(id);
-    if (el) el.textContent = text;
-  }
-
   // Uses global formatBytes(bytes, compact) from app.js
   function fmtBytes(bytes) {
     return formatBytes(bytes, false);

@@ -30,16 +30,12 @@
     </div>
   </div>
 </div>
+{% endblock %}
 
+{% block scripts %}
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
-
-const esc = window.escapeHtml || function(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
-};
 
 async function loadRoles() {
   try {

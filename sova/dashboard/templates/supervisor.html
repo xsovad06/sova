@@ -198,15 +198,14 @@
 }
 .graph-node-highlight { animation: graph-node-pulse 1s ease-in-out 2; }
 </style>
+{% endblock %}
+
+{% block scripts %}
 <script src="/static/d3.min.js"></script>
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const githubRepo = {{ github_repo | tojson }};
-
-const esc = window.escapeHtml || function(str) {
-  const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
-};
 
 function _fmtElapsed(secs) {
   if (secs < 60) return secs + 's';

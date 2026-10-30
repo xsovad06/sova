@@ -122,10 +122,17 @@ function _rewriteCsrfRejection(res) {
   };
 })();
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
+
+// Short alias used by the page templates and role-editor.js; defined once here so no page redeclares it.
+var esc = escapeHtml;
 
 function escapeJsStr(str) {
   if (!str) return '';
@@ -273,6 +280,50 @@ var _WAITING_STEPS = {
   handoff_to_reviewer: 1,
   handoff_to_user: 1,
 };
+
+// A timestamp in the future (clock skew) reads "just now". queue.html's old private copy returned
+// an empty string for it; the shared helper deliberately does not special-case one page.
+function timeAgo(isoStr, emptyLabel) {
+  var empty = emptyLabel === undefined ? '' : emptyLabel;
+  if (!isoStr) return empty;
+  var d = new Date(isoStr);
+  if (isNaN(d.getTime())) return empty;
+  var diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 0) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+var STATUS_BADGE_CLASSES = {
+  done:    'bg-accent-green/15 text-accent-green',
+  error:   'bg-accent-red/15 text-accent-red',
+  running: 'bg-accent/15 text-accent',
+};
+
+// Run/status pill as an HTML string. Pass a classMap to override the default done/error/running colors;
+// an unmapped status renders neutral gray, with its text escaped either way.
+function statusBadge(status, classMap) {
+  var map = classMap || STATUS_BADGE_CLASSES;
+  var cls = Object.prototype.hasOwnProperty.call(map, status) ? map[status] : 'bg-gray-700/30 text-gray-400';
+  return '<span class="text-xs px-2 py-0.5 rounded ' + cls + '">' + escapeHtml(status) + '</span>';
+}
+
+function setText(id, text) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function renderSectionError(containerId, message) {
+  var el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = '';
+  var p = document.createElement('p');
+  p.className = 'text-red-400 text-sm';
+  p.textContent = message;
+  el.appendChild(p);
+}
 
 function formatElapsed(seconds) {
   if (!seconds) return '0s';

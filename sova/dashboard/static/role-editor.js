@@ -10,13 +10,6 @@
 
   const _css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
-  // Reuse global escapeHtml or provide fallback
-  const esc = window.escapeHtml || function(str) {
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
-  };
-
   let cy = null;
   let roleData = null;
   let isBuiltin = false;

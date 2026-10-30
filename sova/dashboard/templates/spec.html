@@ -98,7 +98,7 @@ function complexityColor(c) {
   }
 }
 
-function statusBadge(status) {
+function applySpecStatusBadge(status) {
   var el = document.getElementById('spec-status-badge');
   switch (status) {
     case 'draft':
@@ -170,7 +170,7 @@ function renderSpec(data) {
 
   document.getElementById('meta-created').textContent = data.created || '--';
 
-  statusBadge(data.status);
+  applySpecStatusBadge(data.status);
 
   // Questions
   renderQuestions(data.open_questions);

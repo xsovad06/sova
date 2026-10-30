@@ -70,30 +70,13 @@
     <pre id="persona-preview" class="text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-surface rounded p-3 border border-gray-700/30 max-h-64 overflow-y-auto">Loading...</pre>
   </div>
 </details>
+{% endblock %}
 
+{% block scripts %}
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const POLL_MS = 15000;
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = String(s);
-  return d.innerHTML;
-}
-
-function timeAgo(iso) {
-  if (!iso) return 'Never';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 0) return 'just now';
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return s + 's ago';
-  const m = Math.floor(s / 60);
-  if (m < 60) return m + 'm ago';
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
-}
 
 function timeUntil(iso) {
   if (!iso) return 'N/A';
@@ -108,16 +91,6 @@ function severityClass(sev) {
   if (sev === 'critical') return 'text-accent-red';
   if (sev === 'warning') return 'text-accent-yellow';
   return 'text-accent';
-}
-
-function statusBadge(status) {
-  const colors = {
-    done: 'bg-accent-green/15 text-accent-green',
-    error: 'bg-accent-red/15 text-accent-red',
-    running: 'bg-accent/15 text-accent',
-  };
-  const cls = colors[status] || 'bg-gray-700/30 text-gray-400';
-  return `<span class="text-xs px-2 py-0.5 rounded ${cls}">${esc(status)}</span>`;
 }
 
 function flash(msg, type) {
@@ -151,7 +124,7 @@ async function loadStatus() {
     const lastEl = document.getElementById('stat-last-run');
     const detailEl = document.getElementById('stat-last-run-detail');
     if (d.last_run) {
-      lastEl.textContent = timeAgo(d.last_run.started_at);
+      lastEl.textContent = timeAgo(d.last_run.started_at, 'Never');
       detailEl.textContent = d.last_run.status + (d.last_run.duration_ms != null ? ' (' + (d.last_run.duration_ms / 1000).toFixed(1) + 's)' : '');
     } else {
       lastEl.textContent = 'Never';
@@ -216,7 +189,7 @@ function renderFindings(findings, status) {
         (f.description ? `<p class="text-xs text-gray-400 mb-2 leading-relaxed">${esc(f.description)}</p>` : '') +
         (f.recommendation ? `<p class="text-xs text-gray-500 mb-3 leading-relaxed"><span class="text-gray-400 font-medium">Recommendation:</span> ${esc(f.recommendation)}</p>` : '') +
         `<div class="flex items-center gap-3 text-xs text-gray-500">` +
-          `<span>${timeAgo(f.created_at)}</span>` +
+          `<span>${timeAgo(f.created_at, 'Never')}</span>` +
           (f.project_slug ? `<span>Project: ${esc(f.project_slug)}</span>` : '') +
         `</div>` +
         `<div class="flex items-center gap-2 mt-3">`;
@@ -304,7 +277,7 @@ function renderRuns(runs) {
     const dur = r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + 's' : '--';
     html += '<tr class="border-t border-gray-700/30">' +
       `<td class="py-2 pr-4 text-gray-400 font-mono text-xs">#${r.cycle_number}</td>` +
-      `<td class="py-2 pr-4 text-gray-400 text-xs" title="${esc(r.started_at || '')}">${timeAgo(r.started_at)}</td>` +
+      `<td class="py-2 pr-4 text-gray-400 text-xs" title="${esc(r.started_at || '')}">${timeAgo(r.started_at, 'Never')}</td>` +
       `<td class="py-2 pr-4">${statusBadge(r.status)}</td>` +
       `<td class="py-2 pr-4 text-right text-gray-300">${r.findings_count}</td>` +
       `<td class="py-2 pr-4 text-right ${r.issues_created > 0 ? 'text-accent-green' : 'text-gray-500'}">${r.issues_created}</td>` +
