@@ -1,17 +1,46 @@
-/* SOVA Dashboard: LLM provider auth status floating widget */
+/* SOVA Dashboard: LLM provider auth status (sidebar footer account row and its popover) */
 
 (function () {
   'use strict';
 
   var POLL_INTERVAL = 60000; // matches the endpoint's cache TTL
-  var STORAGE_KEY = 'sova-auth-widget-expanded';
 
   function init() {
     if (!document.getElementById('auth-widget')) return;
 
-    // Uses globals initWidgetToggle() and visibilityAwarePoll() from app.js
-    initWidgetToggle('auth-widget-toggle', 'auth-widget-panel', STORAGE_KEY);
+    initPopover();
+    // Uses global visibilityAwarePoll() from app.js
     visibilityAwarePoll(poll, POLL_INTERVAL);
+  }
+
+  /* The popover is a transient menu opened from the sidebar footer, so its open
+     state is not persisted across page loads. A click anywhere outside the
+     widget (the sidebar collapse button included) or Escape closes it. */
+  function initPopover() {
+    var widget = document.getElementById('auth-widget');
+    var toggle = document.getElementById('auth-widget-toggle');
+    var panel = document.getElementById('auth-widget-panel');
+    if (!toggle || !panel) return;
+
+    function setOpen(open) {
+      panel.classList.toggle('hidden', !open);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    toggle.addEventListener('click', function () {
+      setOpen(panel.classList.contains('hidden'));
+    });
+    document.addEventListener('click', function (e) {
+      if (!widget.contains(e.target)) setOpen(false);
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || panel.classList.contains('hidden')) return;
+      // Return focus only when it is still in the widget: after tabbing out (or into a modal that
+      // handles this same Escape) it belongs to wherever the user went, not to the sidebar footer.
+      var hadFocus = widget.contains(document.activeElement);
+      setOpen(false);
+      if (hadFocus) toggle.focus();
+    });
   }
 
   async function poll() {
@@ -35,6 +64,7 @@
     if (label) {
       label.textContent = data.provider || 'provider';
     }
+    setToggleSummary(statusSummary(data));
 
     setText('aw-provider-val', data.provider || '--');
     setText('aw-checked-val', formatCheckedAt(data.checked_at));
@@ -92,6 +122,24 @@
     return 'claude auth login\n# headless or remote (no browser available):\nclaude setup-token';
   }
 
+  /* A collapsed sidebar shows only the dot, whose colour is the sole carrier of the state. The toggle's
+     tooltip (shown on hover while collapsed) and its accessible name spell the same state out in words. */
+  function statusSummary(data) {
+    var name = data.provider || 'provider';
+    if (!data.authenticated) return name + ': not authenticated';
+    if (data.routing_warnings && data.routing_warnings.length > 0) {
+      return name + ': authenticated, routing variables set';
+    }
+    return name + ': authenticated';
+  }
+
+  function setToggleSummary(text) {
+    var toggle = document.getElementById('auth-widget-toggle');
+    if (!toggle) return;
+    toggle.setAttribute('data-tooltip', text);
+    toggle.setAttribute('aria-label', text);
+  }
+
   function dotClass(data) {
     if (!data.authenticated) return 'resource-dot-red';
     if (data.routing_warnings && data.routing_warnings.length > 0) return 'resource-dot-yellow';
@@ -111,6 +159,7 @@
     render({});
     var label = document.getElementById('auth-widget-label');
     if (label) label.textContent = 'unavailable';
+    setToggleSummary('Provider status unavailable');
     document.getElementById('aw-error-section').classList.remove('hidden');
   }
 
