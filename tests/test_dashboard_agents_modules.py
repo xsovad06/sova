@@ -1688,6 +1688,20 @@ console.log(JSON.stringify([atStart, whileHidden, calls]));
         assert "agent-role" not in _module_source("launch-modal")
 
 
+class TestVisualAuditSkillChecksTheClientPatterns:
+    """Both hand-authored copies (Claude Code and Codex) carry the same three mechanical greps."""
+
+    @pytest.mark.parametrize("rel", [".claude/skills/visual-audit/SKILL.md", ".agents/skills/visual-audit/SKILL.md"])
+    def test_skill_greps_for_small_text_raw_fetch_and_raw_set_interval(self, rel: str) -> None:
+        skill = (DASHBOARD_DIR.parents[1] / rel).read_text(encoding="utf-8")
+        assert r"text-\[(9|10|11)px\]" in skill
+        assert "--include='*.js'" in skill, "the font-size check must cover JS-rendered markup"
+        assert r"-E '\bfetch\('" in skill
+        assert "fetchAPI" in skill
+        assert "'setInterval('" in skill
+        assert "visibilityAwarePoll" in skill
+
+
 class TestLogViewerResumeAfterHiddenTab:
     def test_a_line_written_during_the_backfill_is_shown_once_and_in_order(self, tmp_path: Path) -> None:
         _require_node("node is required to run the log viewer")

@@ -53,12 +53,12 @@
   }
 
   async function loadRole() {
-    const resp = await fetch(`${apiBase}/roles/${roleName}`);
-    if (!resp.ok) {
+    try {
+      roleData = await fetchAPI(`${apiBase}/roles/${roleName}`);
+    } catch (e) {
       document.getElementById('role-title').textContent = 'Failed to load role';
-      throw new Error(`Role load failed: ${resp.status}`);
+      throw e;
     }
-    roleData = await resp.json();
     isBuiltin = !!roleData.is_builtin;
     document.getElementById('role-title').textContent = roleData.name || decodeURIComponent(roleName);
     if (isBuiltin) {
@@ -69,8 +69,7 @@
 
   async function loadCommands() {
     try {
-      const resp = await fetch(`${apiBase}/roles/commands`);
-      const data = await resp.json();
+      const data = await fetchAPI(`${apiBase}/roles/commands`);
       commands = data.commands || [];
     } catch (e) {
       commands = [];
@@ -205,7 +204,7 @@
 
     let html = '';
     for (const [cat, cmds] of Object.entries(byCategory).sort()) {
-      html += `<p class="text-[10px] text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">${esc(cat)}</p>`;
+      html += `<p class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">${esc(cat)}</p>`;
       for (const cmd of cmds) {
         html += `<button class="js-add-node w-full text-left text-xs px-2 py-1.5 rounded hover:bg-sidebar-hover text-gray-300 transition-colors"
                          data-command="${esc(cmd.name)}"
@@ -245,33 +244,33 @@
     let html = `
       <div class="space-y-3">
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">ID</label>
+          <label class="text-xs text-gray-500 block mb-1">ID</label>
           <p class="text-xs text-gray-400">${esc(data.id)}</p>
         </div>
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">Command</label>
+          <label class="text-xs text-gray-500 block mb-1">Command</label>
           ${cmd ? `<a href="${prefix}/commands#${encodeURIComponent(data.command)}" class="text-xs text-accent hover:underline">${esc(data.command)}</a>` : `<p class="text-xs text-gray-300">${esc(data.command || '(none)')}</p>`}
         </div>
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">Label</label>
+          <label class="text-xs text-gray-500 block mb-1">Label</label>
           ${editable
             ? `<input type="text" value="${esc(data.label)}" data-node-id="${esc(data.id)}" class="js-node-label w-full bg-surface text-xs text-gray-300 border border-gray-700/50 rounded px-2 py-1">`
             : `<p class="text-xs text-gray-300">${esc(data.label)}</p>`}
         </div>`;
 
     if (inputs.length) {
-      html += `<div><label class="text-[10px] text-gray-500 block mb-1">Inputs</label>
-        <div class="flex flex-wrap gap-1">${inputs.map(i => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${esc(i)}</span>`).join('')}</div></div>`;
+      html += `<div><label class="text-xs text-gray-500 block mb-1">Inputs</label>
+        <div class="flex flex-wrap gap-1">${inputs.map(i => `<span class="text-xs px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${esc(i)}</span>`).join('')}</div></div>`;
     }
     if (outputs.length) {
-      html += `<div><label class="text-[10px] text-gray-500 block mb-1">Outputs</label>
-        <div class="flex flex-wrap gap-1">${outputs.map(o => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green">${esc(o)}</span>`).join('')}</div></div>`;
+      html += `<div><label class="text-xs text-gray-500 block mb-1">Outputs</label>
+        <div class="flex flex-wrap gap-1">${outputs.map(o => `<span class="text-xs px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green">${esc(o)}</span>`).join('')}</div></div>`;
     }
 
     if (editable) {
       html += `<div class="pt-2 border-t border-gray-700/30 flex gap-2">
-        <button data-node-id="${esc(data.id)}" class="js-connect-from text-[10px] px-2 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Add edge from</button>
-        <button data-node-id="${esc(data.id)}" class="js-delete-node text-[10px] px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete</button>
+        <button data-node-id="${esc(data.id)}" class="js-connect-from text-xs px-2 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Add edge from</button>
+        <button data-node-id="${esc(data.id)}" class="js-delete-node text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete</button>
       </div>`;
     }
 
@@ -307,15 +306,15 @@
     let html = `
       <div class="space-y-3">
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">Source</label>
+          <label class="text-xs text-gray-500 block mb-1">Source</label>
           <p class="text-xs text-gray-400">${esc(data.source)}</p>
         </div>
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">Target</label>
+          <label class="text-xs text-gray-500 block mb-1">Target</label>
           <p class="text-xs text-gray-400">${esc(data.target)}</p>
         </div>
         <div>
-          <label class="text-[10px] text-gray-500 block mb-1">Condition</label>
+          <label class="text-xs text-gray-500 block mb-1">Condition</label>
           ${editable
             ? `<input type="text" value="${esc(data.condition || '')}" placeholder="key == value" data-edge-id="${esc(data.id)}" class="js-edge-condition w-full bg-surface text-xs text-gray-300 border border-gray-700/50 rounded px-2 py-1">`
             : `<p class="text-xs text-gray-300">${esc(data.condition || '(unconditional)')}</p>`}
@@ -323,7 +322,7 @@
 
     if (editable) {
       html += `<div class="pt-2 border-t border-gray-700/30">
-        <button data-edge-id="${esc(data.id)}" class="js-delete-edge text-[10px] px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete edge</button>
+        <button data-edge-id="${esc(data.id)}" class="js-delete-edge text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete edge</button>
       </div>`;
     }
 

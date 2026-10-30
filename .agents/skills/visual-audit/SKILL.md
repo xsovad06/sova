@@ -49,8 +49,19 @@ grep -rn --include='*.html' --include='*.css' --include='*.js' 'transition:\s*al
 # Arbitrary spacing values
 grep -rn --include='*.html' -E '(p|m|gap)-\[' sova/dashboard/templates/
 
-# Font sizes below minimum
-grep -rn --include='*.html' --include='*.css' -E 'text-\[(9|10|11)px\]|font-size:\s*(9|10|11)px' sova/dashboard/templates/ sova/dashboard/static/
+# Font sizes below minimum (use text-xs or a token; JS-rendered markup counts, so include *.js)
+grep -rn --include='*.html' --include='*.css' --include='*.js' --exclude='*.min.js' -E 'text-\[(9|10|11)px\]|font-size:\s*(9|10|11)px' sova/dashboard/templates/ sova/dashboard/static/
+
+# Raw fetch( instead of fetchAPI (fetchAPI owns the non-2xx error path).
+# Expect hits: the fetch( inside fetchAPI itself, and pages that predate it. Report a hit in a file in
+# scope; list a hit in an untouched page as pre-existing instead of counting it against the change.
+grep -rn --include='*.html' --include='*.js' --exclude='*.min.js' -E '\bfetch\(' sova/dashboard/templates/ sova/dashboard/static/
+
+# Raw setInterval( instead of visibilityAwarePoll (a raw timer keeps polling in a hidden tab).
+# Expect hits: the setInterval( inside visibilityAwarePoll itself, a few timers in static/app.js that its
+# own visibility handler manages (read the surrounding code), and pages that predate the helper. Apply the
+# same in-scope versus pre-existing split.
+grep -rn --include='*.html' --include='*.js' --exclude='*.min.js' 'setInterval(' sova/dashboard/templates/ sova/dashboard/static/
 
 # Banned shadow classes (SOVA uses border-based depth)
 grep -rn --include='*.html' -E 'shadow-(md|lg|xl|2xl)' sova/dashboard/templates/ | grep -v '{#'
@@ -128,6 +139,14 @@ For each template in scope, check:
 | **Rainbow tags** | 4+ distinct hues in the same badge row | Medium |
 | **Over-rounded** | `rounded-3xl` or larger on content cards | Low |
 | **Gratuitous dividers** | `<hr>` between every section instead of spacing | Low |
+
+#### G. Mechanical Pattern Checks (from the Step 3 greps)
+
+| Pattern | Replacement | Severity |
+|---------|-------------|----------|
+| `text-[9px]`, `text-[10px]`, `text-[11px]`, `font-size: 10px` in a template or a `.js` file | `text-xs` or the type scale in `docs/design-system.md` | Medium |
+| Raw `fetch(` in page code | `fetchAPI(url)` from `app.js` | Medium |
+| Raw `setInterval(` for polling | `visibilityAwarePoll(fn, ms)` from `app.js` | High |
 
 ### Step 5: Report Format
 
