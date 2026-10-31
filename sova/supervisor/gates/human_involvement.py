@@ -1,4 +1,4 @@
-"""Human involvement gate: blocks epic, human-only and interactive-recommended issues."""
+"""Human involvement gate: blocks epic, human-only, on-hold and interactive-recommended issues."""
 
 from __future__ import annotations
 
@@ -20,14 +20,16 @@ log = get_logger(component="supervisor.gates.human_involvement")
 _PRE_DEVELOPMENT_CANDIDATES = frozenset({"spawn_triage", "spawn_researcher", "spawn_developer"})
 
 
-# The modes this gate ever blocks on. `blocked` is deliberately absent:
-# dependency blocking is `check_dependency_gate`'s job and is config-gated by
-# `supervisor.respect_dependencies`, so honouring it here would bypass that
-# switch. `autonomous`/`unclassified` never block. Kept explicit (rather than
-# inferred from `_BLOCKS`' keys) so a mode that becomes blocking in the future
-# cannot silently fall through `_BLOCKS.get()`'s `None` default into "allow".
+# The modes this gate ever blocks on. `blocked` is present only because this
+# gate classifies with `consider_dependencies=False`, so the one thing that can
+# produce it here is the `agent:on-hold` label. Dependency blocking stays
+# `check_dependency_gate`'s job, config-gated by `supervisor.respect_dependencies`,
+# and never reaches this gate. `autonomous`/`unclassified` never block. Kept
+# explicit (rather than inferred from `_BLOCKS`' keys) so a mode that becomes
+# blocking in the future cannot silently fall through `_BLOCKS.get()`'s `None`
+# default into "allow".
 _BLOCKING_MODES: frozenset[SuitabilityMode] = frozenset(
-    {SuitabilityMode.EPIC, SuitabilityMode.HUMAN, SuitabilityMode.INTERACTIVE}
+    {SuitabilityMode.EPIC, SuitabilityMode.HUMAN, SuitabilityMode.BLOCKED, SuitabilityMode.INTERACTIVE}
 )
 
 # (suitability mode, came from the local record) -> (log event, detail template).
@@ -43,6 +45,10 @@ _BLOCKS: dict[tuple[SuitabilityMode, bool], tuple[str, str]] = {
     (SuitabilityMode.HUMAN, True): (
         "human_involvement_gate.blocked_human_only_local",
         "Issue #{issue} has a local human-only suitability assessment (clear with `sova assess clear {issue}`)",
+    ),
+    (SuitabilityMode.BLOCKED, False): (
+        "human_involvement_gate.blocked_on_hold",
+        "Issue #{issue} is labeled agent:on-hold (held by a lead or an unanswered question)",
     ),
     (SuitabilityMode.INTERACTIVE, False): (
         "human_involvement_gate.blocked_interactive_recommended",
@@ -64,9 +70,11 @@ async def check_human_involvement_gate(
     project_slug: str = "",
     candidate: str = "",
 ) -> BlockReason | None:
-    """Block issues classified `epic`, `human` or `interactive` by `assess_suitability`.
+    """Block issues classified `epic`, `human`, `blocked` or `interactive` by `assess_suitability`.
 
     human-only is a hard block (defense-in-depth alongside state-based HUMAN_ONLY).
+    `agent:on-hold` is the only source of `blocked` here, and like human-only it is
+    unscoped by `candidate`: a hold added after a PR exists still stops the next spawn.
     interactive-recommended blocks autonomous scheduling; manual dashboard starts
     bypass the progression engine entirely. An epic is a tracking container that
     no role should ever be spawned on; like human-only, this block is
@@ -83,7 +91,8 @@ async def check_human_involvement_gate(
     real dependency graph: `blocked` outranks `interactive` in the classifier's
     precedence, so feeding a real graph in would silently downgrade an
     interactive-recommended issue that also has an open dependency to `blocked`
-    and stop this gate blocking it at all. Dependency blocking is
+    and stop this gate blocking it at all (a hold label is read regardless, so
+    a held issue is blocked on the hold). Dependency blocking is
     `check_dependency_gate`'s job, and is config-gated separately.
 
     When neither suitability label is present, falls back to the local

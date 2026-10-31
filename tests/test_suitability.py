@@ -156,6 +156,92 @@ class TestAssessSuitabilityDependencies:
         assert result.mode == "human"
 
 
+class TestAssessSuitabilityOnHold:
+    """`agent:on-hold` is a non-state label: it reports `blocked` without any open dependency."""
+
+    _ON_HOLD_REASON = [{"source": "label", "value": "agent:on-hold"}]
+
+    def test_on_hold_label_is_blocked_with_no_dependencies(self) -> None:
+        task = _task(1, labels=["agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "blocked"
+        assert result.reasons == self._ON_HOLD_REASON
+        assert result.blocked_by == []
+
+    def test_on_hold_label_is_case_insensitive(self) -> None:
+        task = _task(1, labels=["Agent:On-Hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "blocked"
+
+    def test_on_hold_overrides_ready_label(self) -> None:
+        task = _task(1, labels=["agent:ready", "agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "blocked"
+        assert result.reasons == self._ON_HOLD_REASON
+
+    def test_on_hold_overrides_interactive_recommended_label(self) -> None:
+        task = _task(1, labels=["agent:interactive-recommended", "agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "blocked"
+
+    def test_on_hold_overrides_local_ready_record(self) -> None:
+        task = _task(1, labels=["agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]), local_assessment="ready")
+        assert result.mode == "blocked"
+
+    def test_on_hold_overrides_local_interactive_record(self) -> None:
+        task = _task(1, labels=["agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]), local_assessment="interactive_recommended")
+        assert result.mode == "blocked"
+
+    def test_human_only_wins_over_on_hold(self) -> None:
+        task = _task(1, labels=["agent:on-hold", "agent:human-only"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "human"
+        assert result.reasons == [{"source": "label", "value": "agent:human-only"}]
+
+    def test_local_human_only_record_wins_over_on_hold(self) -> None:
+        task = _task(1, labels=["agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]), local_assessment="human_only")
+        assert result.mode == "human"
+
+    def test_epic_wins_over_on_hold(self) -> None:
+        task = _task(1, labels=["type: epic", "agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode == "epic"
+
+    def test_on_hold_reported_alongside_open_dependency_names_the_hold(self) -> None:
+        """Both causes block; the label survives the blocker closing, so the hold is the reported reason."""
+        tasks = [
+            _task(1, state=TaskState.BACKLOG),
+            _task(2, labels=["agent:on-hold"], body="## Dependencies\n- #1\n", state=TaskState.BACKLOG),
+        ]
+        graph = DependencyGraph(tasks)
+        result = assess_suitability(graph.get_task(2), graph)
+        assert result.mode == "blocked"
+        assert result.reasons == self._ON_HOLD_REASON
+
+    def test_hold_survives_the_blocker_closing(self) -> None:
+        tasks = [
+            _task(1, state=TaskState.DONE),
+            _task(2, labels=["agent:on-hold"], body="## Dependencies\n- #1\n", state=TaskState.BACKLOG),
+        ]
+        graph = DependencyGraph(tasks)
+        assert assess_suitability(graph.get_task(2), graph).mode == "blocked"
+
+    def test_on_hold_blocks_even_when_dependency_data_is_ignored(self) -> None:
+        """The human-involvement gate passes `consider_dependencies=False`; a hold is not a dependency."""
+        task = _task(1, labels=["agent:on-hold"])
+        result = assess_suitability(task, consider_dependencies=False)
+        assert result.mode == "blocked"
+        assert result.reasons == self._ON_HOLD_REASON
+
+    def test_on_hold_ticket_is_not_agent_eligible(self) -> None:
+        task = _task(1, labels=["agent:ready", "agent:on-hold"])
+        result = assess_suitability(task, DependencyGraph([task]))
+        assert result.mode not in AGENT_ELIGIBLE_MODES
+
+
 class TestAssessSuitabilityGraphUnavailable:
     def test_none_graph_is_blocked(self) -> None:
         task = _task(1)

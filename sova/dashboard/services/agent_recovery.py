@@ -558,11 +558,16 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
         # Parse role for command variants
         role_clean = role.removeprefix("command:").removeprefix("/").split()[0]
 
-        # Special case: triage role removes all agent: labels
+        # Special case: triage role removes all agent: labels except agent:on-hold,
+        # which a lead or /find-task set, never triage, so a failed run must not lift it
         if role_clean == "triage":
+            from sova.supervisor.labels import is_on_hold
+
             try:
                 task = await adapter.get_task(issue_number)
-                agent_labels = [label for label in task.labels if label.startswith("agent:")]
+                agent_labels = [
+                    label for label in task.labels if label.startswith("agent:") and not is_on_hold([label])
+                ]
                 for label in agent_labels:
                     await adapter.remove_label(issue_number, label)
                 log.info("rollback.triage_labels_removed", issue=issue_number, count=len(agent_labels))

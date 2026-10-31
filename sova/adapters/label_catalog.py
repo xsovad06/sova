@@ -44,6 +44,7 @@ REQUIRED_LABELS: list[dict[str, str]] = [
     {"name": "agent:needs-research", "color": "ededed", "description": "Needs research"},
     {"name": "agent:human-only", "color": "ededed", "description": "Human intervention required"},
     {"name": "agent:interactive-recommended", "color": "ededed", "description": "Manual start only"},
+    {"name": "agent:on-hold", "color": "ededed", "description": "Held by a lead or an unanswered question"},
     # SOVA review verdict labels
     {"name": "sova:approved", "color": "0e8a16", "description": "SOVA review approved"},
     {"name": "sova:revise", "color": "fbca04", "description": "SOVA review requests changes"},
