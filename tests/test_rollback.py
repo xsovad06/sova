@@ -155,6 +155,28 @@ class TestRollbackIssueState:
         mock_adapter.remove_label.assert_any_call("42", "agent:triaged")
         mock_adapter.remove_label.assert_any_call("42", "agent:in-progress")
 
+    async def test_rollback_triage_keeps_the_on_hold_label(self, session, mock_adapter, mock_config, tmp_path):
+        """A hold comes from a lead or /find-task, never triage, so a failed triage run must not lift it."""
+        from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+        task_run = TaskRun(
+            issue_number="42",
+            role="triage",
+            status="failed",
+            started_at=datetime.now(timezone.utc),
+        )
+        session.add(task_run)
+        await session.commit()
+
+        mock_adapter.remove_label = AsyncMock()
+        mock_adapter.get_task = AsyncMock(return_value=MagicMock(labels=["agent:ready", "agent:on-hold"]))
+
+        with patch("sova.config.loader.load_config", return_value=mock_config):
+            with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+                await rollback_issue_state(task_run.id, tmp_path)
+
+        mock_adapter.remove_label.assert_awaited_once_with("42", "agent:ready")
+
     async def test_rollback_command_integrate_pr(self, session, mock_adapter, mock_config, tmp_path):
         """Command integrate-pr rolls back to in_review."""
         from sova.dashboard.services.agent_recovery import rollback_issue_state

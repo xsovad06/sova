@@ -180,7 +180,7 @@ class DependencyGraph:
 
         Missing deps are treated as blocking (fail-closed).
         Issues already in progress, in review, done, or human-only are excluded
-        by state; epics, human-only/interactive-recommended labels, and open
+        by state; epics, human-only/interactive-recommended/on-hold labels, and open
         non-epic dependencies are excluded via the suitability classifier.
 
         *suitabilities*, when given, is a precomputed `{issue_id: Suitability}`
@@ -300,7 +300,7 @@ class DependencyGraph:
 
         Each node carries both ``is_human_only``/``is_interactive_recommended``
         (label-only, legacy) and ``suitability`` (the classifier verdict, where
-        ``blocked`` outranks ``interactive`` and ``human``). The two can
+        ``blocked`` outranks ``interactive`` but not ``human``). The two can
         disagree: an interactive-recommended issue with an open dependency has
         ``is_interactive_recommended=True`` but ``suitability.mode="blocked"``.
 

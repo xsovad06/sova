@@ -122,6 +122,15 @@ class TestPruneUnsuitable:
         result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
         assert result == []
 
+    def test_on_hold_entry_is_pruned_even_when_it_keeps_its_ready_label(self) -> None:
+        task_map = {10: TaskState.TRIAGED}
+        task_objects = {
+            10: Task(id="10", title="x", state=TaskState.TRIAGED, labels=["agent:ready", "agent:on-hold"]),
+        }
+
+        result = _prune_unsuitable([10], task_map, task_objects, graph=None, local_assessments={})
+        assert result == []
+
     def test_suitable_entry_is_kept(self) -> None:
         task_map = {10: TaskState.RESEARCHED}
         task_objects = {10: Task(id="10", title="x", state=TaskState.RESEARCHED, labels=[])}

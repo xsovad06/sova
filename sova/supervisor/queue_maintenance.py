@@ -317,7 +317,7 @@ def _prune_unsuitable(
     suitability drifted mid-flight. Every other state (including BACKLOG and
     TRIAGED, where an epic or interactive-recommended entry typically sits,
     since epics rarely reach RESEARCHED) is re-checked, or an issue that gains
-    `type: epic`/`agent:interactive-recommended` or a local human_only/interactive
+    `type: epic`/`agent:interactive-recommended`/`agent:on-hold` or a local human_only/interactive
     record after being queued would sit there forever, re-blocked by the
     human-involvement gate on every poll cycle while still occupying a
     `max_queue_size` slot `_discover_ready` can no longer fill.
