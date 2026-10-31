@@ -163,6 +163,18 @@ conflicts to resolve.
      intent of each side is unambiguous
    - a lockfile or generated file that can be regenerated
 
+   Resolve a lockfile or generated file in exactly one of two ways: edit the
+   conflicting hunk so both sides' entries survive, or regenerate the file from
+   the rebased manifests with the project's own tool. Never take one side's
+   whole file (`git checkout --ours <file>` or `--theirs <file>`) for any
+   lockfile or generated file the PR changed, even when the conflicting hunk is
+   the PR's only change to it. During a rebase `--ours` is the base branch, so
+   `--ours` keeps the base's file and silently discards every change the PR
+   made to it; `--theirs` is the PR's commit, so it keeps the PR's file and
+   silently discards what the base gained since the fork. Step 4b catches a
+   file lost the `--ours` way, but only after the fact, and it cannot see the
+   `--theirs` way at all: the file then matches the backup.
+
    STOP and hand off instead of guessing:
    - both sides changed the same function's behaviour or signature
    - the conflict spans a semantic decision (which of two implementations wins)
@@ -177,6 +189,83 @@ conflicts to resolve.
    whether or not the markers were removed, so the index alone does not prove
    the conflict was resolved.
 
+4b. **Check the rebase did not drop PR content.** Run this once the rebase has
+   completed (also after a clean rebase with no conflicts), in the PR worktree
+   from step 1 and before step 5. A conflict resolved by taking one side's
+   whole file leaves no marker and no failing test: the file just vanishes
+   from the PR's diff. This compares the PR's file list and per-file
+   changed-line counts, read from the backup ref step 2 saved, against the
+   rebased head. It uses local git only, so a clean rebase adds no push and no
+   CI cycle.
+   ```bash
+   BACKUP="refs/integrate-backup/<PR_NUMBER>"
+   BASE="origin/<BASE_BRANCH>"
+   # Paths below are repo-relative: run from the top, so a shell left in a subdirectory still checks every file.
+   if ! cd "$(git rev-parse --show-toplevel)"; then
+     echo "DROPPED_FILE_CHECK_ERROR: not inside the PR worktree: STOP." >&2
+     exit 1
+   fi
+   if ! git rev-parse --verify --quiet "$BACKUP^{commit}" >/dev/null; then
+     echo "DROPPED_FILE_CHECK_ERROR: $BACKUP is missing, but step 2 always creates it. The sequence was broken: STOP." >&2
+     exit 1
+   fi
+   if [ -d "$(git rev-parse --git-path rebase-merge)" ] || [ -d "$(git rev-parse --git-path rebase-apply)" ]; then
+     echo "DROPPED_FILE_CHECK_ERROR: the rebase is still in progress. Finish it first." >&2
+     exit 1
+   fi
+   LIST=$(mktemp)
+   # --no-renames: a rename is a delete plus an add on both sides, independent of rename detection.
+   if ! git diff --numstat -z --no-renames "$BASE...$BACKUP" > "$LIST"; then
+     echo "DROPPED_FILE_CHECK_ERROR: could not read the PR's file list from $BACKUP against $BASE: STOP." >&2
+     rm -f "$LIST"
+     exit 1
+   fi
+   LOST=0
+   # One NUL-terminated "added<TAB>deleted<TAB>path" record per file; a path may hold tabs or newlines.
+   while IFS= read -r -d '' rec; do
+     added=${rec%%$'\t'*}; rest=${rec#*$'\t'}; deleted=${rest%%$'\t'*}; file=${rest#*$'\t'}
+     case "$added$deleted" in
+       ''|*[!0-9-]*) echo "UNPARSEABLE: a numstat record from $BACKUP has no line counts" >&2; LOST=1; continue ;;
+     esac
+     # Nothing the PR wrote was lost when the rebased file is byte-identical to the backup's.
+     git --literal-pathspecs diff --quiet "$BACKUP" HEAD -- "$file" && continue
+     now=$(git --literal-pathspecs diff --numstat --no-renames "$BASE...HEAD" -- "$file")
+     if [ -z "$now" ]; then
+       # Left the diff. That is legitimate only when the base already carries the PR's exact version of the file
+       # (both sides deleted counts: both absent compares equal).
+       if ! git --literal-pathspecs diff --quiet "$BASE" "$BACKUP" -- "$file"; then
+         echo "DROPPED: $file is in the PR before the rebase, is absent after it, and the base's version differs" >&2
+         LOST=1
+       fi
+     else
+       read -r now_added now_deleted _ <<< "$now"
+       # A binary side (numstat "-" before or after the rebase) has no line counts: presence only, above.
+       if [ "$added" != "-" ] && [ "$now_added" != "-" ]; then
+         before=$((added + deleted))
+         after=$((now_added + now_deleted))
+         # Sharp shrink: under half the changed lines, and at least 5 lines lost.
+         if [ $((after * 2)) -lt "$before" ] && [ $((before - after)) -ge 5 ]; then
+           echo "SHRUNK: $file had $before changed lines before the rebase and has $after after it" >&2
+           LOST=1
+         fi
+       fi
+     fi
+   done < "$LIST"
+   rm -f "$LIST"
+   if [ "$LOST" -ne 0 ]; then
+     echo "DROPPED_FILE_CHECK_FAIL: the rebase lost PR content. Do not push: follow step 6 (reset to the backup ref) and hand off." >&2
+     exit 1
+   fi
+   echo "DROPPED_FILE_CHECK_PASS"
+   ```
+   Act on the marker it prints. `DROPPED_FILE_CHECK_PASS` on stdout: continue to
+   step 5. Anything else, including no output at all, is a failure: do not try
+   to repair the file here, follow step 6 and point the user at
+   the `sova-address-pr` skill <PR_NUMBER>. One false alarm remains possible: when the base
+   landed part of the PR's change itself and the rebased file still differs
+   from the backup's, `SHRUNK` can report lines the base now carries. Say so in
+   the handoff when the missing lines are visibly in the base.
+
 5. When all commits are replayed, run the project's linter and tests (see
    CLAUDE.md). The rebase pulled in new base-branch code, so a green result
    from before the rebase means nothing.
@@ -187,14 +276,15 @@ conflicts to resolve.
      ```bash
      git rebase --abort
      ```
-   - **Tests failing after the rebase completed** (step 5, no rebase in
-     progress: `git rebase --abort` here reports nothing to abort and leaves
-     the rebased commits in place):
+   - **Tests failing, or the dropped-file check failing, after the rebase
+     completed** (steps 4b and 5, no rebase in progress: `git rebase --abort`
+     here reports nothing to abort and leaves the rebased commits in place):
      ```bash
      git reset --hard "refs/integrate-backup/<PR_NUMBER>"
      ```
    Then delete the backup ref (`git update-ref -d "refs/integrate-backup/<PR_NUMBER>"`),
-   stop, and report the conflicting files, pointing the user at
+   stop, and report the conflicting files (for a step 4b failure, the
+   `DROPPED`/`SHRUNK` files it named), pointing the user at
    the `sova-address-pr` skill <PR_NUMBER>. Never leave the worktree mid-rebase.
 
 7. **Before pushing, fold in any stale documentation for free.** This push is
