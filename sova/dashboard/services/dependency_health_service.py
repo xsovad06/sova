@@ -41,7 +41,11 @@ _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 _NPM_REGISTRY_URL = "https://registry.npmjs.org/{name}"
 _PYPI_REGISTRY_URL = "https://pypi.org/pypi/{name}/json"
 
-_VERSION_RE = re.compile(r"(?>(\d+))\.(?>(\d+))\.(?>(\d+))")
+# The lookbehind anchors a match to the start of a digit run: atomic groups alone stop backtracking
+# within one attempt, but search() would still retry at every offset inside a long run (quadratic).
+# S8786 still reports this pattern as super-linear, a false positive: every offset inside a digit run
+# fails the lookbehind at once, and test_version_re_adversarial pins the linear runtime.
+_VERSION_RE = re.compile(r"(?<!\d)(?>(\d+))\.(?>(\d+))\.(?>(\d+))")  # NOSONAR(S8786)
 _NPM_RANGE_PREFIX_RE = re.compile(r"^[\^~>=<\s]+")
 _PEP508_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 _PEP508_OPERATORS = ("==", ">=", "<=", "~=")
