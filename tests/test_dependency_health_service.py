@@ -33,13 +33,38 @@ class TestParseVersion:
     def test_empty_string(self) -> None:
         assert svc._parse_version("") is None
 
-    def test_version_re_adversarial(self) -> None:
-        """python:S8786 pinning: no super-linear backtrack on a long digit run with no match."""
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("1.2.x3.4.5", (3, 4, 5)),
+            ("12.34.567.8", (12, 34, 567)),
+            ("1..2.3.4", (2, 3, 4)),
+            (".1.2.3", (1, 2, 3)),
+            ("1.2.3.", (1, 2, 3)),
+            ("1.2", None),
+            ("1.2.", None),
+        ],
+    )
+    def test_takes_the_first_three_part_run(self, raw: str, expected: tuple[int, int, int] | None) -> None:
+        assert svc._parse_version(raw) == expected
+
+    def test_component_digit_bound(self) -> None:
+        assert svc._parse_version("1" * 18 + ".0.0") == (int("1" * 18), 0, 0)
+        assert svc._parse_version("1" * 19 + ".0.0") is None
+
+    def test_parse_version_adversarial(self) -> None:
+        """python:S8786/S5852 pinning: linear time on long digit runs, and no unbounded int() on them."""
         import time
 
         start = time.monotonic()
-        svc._VERSION_RE.search("v" + "1" * 20000)
-        # Linear search takes about 1 ms here; without the lookbehind it took about 1 second.
+        assert svc._parse_version("v" + "1" * 20000) is None
+        assert svc._parse_version("9" * 50000 + ".x") is None
+        assert svc._parse_version("1." * 50000) == (1, 1, 1)
+        # A complete three-part number whose component exceeds int()'s 4300-digit limit must not raise.
+        assert svc._parse_version("1" * 5000 + ".1.1") is None
+        assert svc._parse_version("1.1." + "1" * 5000) is None
+        assert svc._lag_category("1" * 5000 + ".1.1", "2.0.0") == "unknown"
+        # The linear scan takes a few ms here; a quadratic one takes seconds, so the bound stays tight.
         assert time.monotonic() - start < 0.25
 
 

@@ -218,6 +218,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - Per-issue handoff files for parallel agent isolation
 - `recover_stale_runs` must check external state for merge-role runs
 - Background merge queue monitor
+- PR throttle loops start per project from its own config, and a heartbeat file tells create_pr whether one is alive
 - Config-driven provider selection must be wired at startup
 - `pull_request_target` reads workflow from base branch, not PR branch
 - PR spam gate closes drive-by bounty PRs without blocking newcomers
@@ -231,7 +232,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - `start_agent()` recovers pr_number from DB history for developer role
 - `PR_CHANGES_REQUESTED` split into `PR_SOVA_CHANGES` and `PR_EXTERNAL_CHANGES`
 - Review-completed gate: three-source check plus thread resolution and run-completion requirements
-- Integration gates default to on, and the label source of the review-completed gate excludes explicit rejections (integration-gates half superseded; the review-completed label source still applies, see the next entry)
+- Integration gates default to on, and the label source of the review-completed gate excludes explicit rejections
 - `IntegrationGatesConfig` and its three independent evaluators: REMOVED. `resolve_next_action()` is the sole source of truth for whether Integrate is offered
 - Unresolved-thread state is three-valued, but only an explicit unknown fails closed
 - One shared next-action resolver replaces two independently-computed state machines

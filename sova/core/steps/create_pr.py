@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from typing import TYPE_CHECKING
 
@@ -55,6 +56,26 @@ log = get_logger(component="step.create_pr")
 _MAX_SUGGESTED_REVIEWERS = 2
 
 _DEFAULT_SCOPE = "core"
+
+# Longest the step waits for the throttle loop to create its PR, when no step deadline bounds it.
+_QUEUE_WAIT_CAP_SECONDS = 3600
+# Kept back from the step deadline so the queue wait ends with time to cancel its entry and report
+# the failure, instead of the engine's hard timeout killing the step with the entry still pending.
+_QUEUE_WAIT_MARGIN_SECONDS = 60
+# Bounds each cleanup DB call (cancel, quota read) so a stuck database cannot hold the step open.
+_QUEUE_CLEANUP_TIMEOUT_SECONDS = 10
+
+
+def _queue_wait_seconds(ctx: ExecutionContext) -> float:
+    """How long the step may wait on the queue: its remaining time less a margin, capped.
+
+    Follows ``DevelopStep``'s convention: a deadline that is the run-wide runaway guard is left to the
+    engine's own timeout, which routes the failure through the resumable PAUSED path.
+    """
+    remaining = ctx.step_time_remaining
+    if remaining is None or ctx.step_deadline_is_runaway:
+        return _QUEUE_WAIT_CAP_SECONDS
+    return max(0.0, min(_QUEUE_WAIT_CAP_SECONDS, remaining - _QUEUE_WAIT_MARGIN_SECONDS))
 
 
 def _infer_scope(changed_files: list[str] | None, scopes: Collection[str] | None = None) -> str:
@@ -287,13 +308,37 @@ class CreatePRStep(BaseStep):
             return StepResult(success=False, summary="Failed to create PR", error=str(exc))
 
     async def _create_pr_throttled(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
-        """Enqueue PR creation and poll until the background processor creates it."""
+        """Enqueue PR creation and wait, within the step deadline, for the background processor to create it."""
+        from sova.db.models import PRQueueStatus
         from sova.db.session import get_session
-        from sova.supervisor.pr_throttle import enqueue, poll_until_created
+        from sova.supervisor.pr_throttle import QueueEntryMissingError, enqueue, poll_until_created, throttle_loop_alive
 
         if ctx.task_run_id is None:
             log.warning("step.create_pr.no_task_run_id_for_throttle")
             return await self._create_pr_immediate(ctx, title, body)
+
+        # The loop lives in the daemon, a different process: only its heartbeat file says whether anyone
+        # will drain the queue. Without one, an enqueued entry would sit pending until the step times out.
+        if not throttle_loop_alive(ctx.project_dir):
+            log.warning(
+                "step.create_pr.no_throttle_loop",
+                project_dir=str(ctx.project_dir),
+                action="creating the PR directly, bypassing the CodeRabbit quota",
+            )
+            return await self._create_pr_immediate(ctx, title, body)
+
+        # Sized before the enqueue: a step with less than the margin left cannot wait for the loop at all, so
+        # it must not write an entry only to cancel it at once and report a timeout that never had a chance.
+        wait_seconds = _queue_wait_seconds(ctx)
+        if wait_seconds <= 0:
+            return StepResult(
+                success=False,
+                summary="No time left to queue the PR",
+                error=(
+                    f"The step deadline left no time to queue the PR (less than {_QUEUE_WAIT_MARGIN_SECONDS}s "
+                    "remained), so it was not queued"
+                ),
+            )
 
         try:
             async with await get_session(project_dir=ctx.project_dir) as session:
@@ -320,15 +365,32 @@ class CreatePRStep(BaseStep):
         async def _session_factory() -> AsyncSession:
             return await get_session(project_dir=ctx.project_dir)
 
-        result = await poll_until_created(_session_factory, entry_id)
-        if result is None:
+        result = None
+        try:
+            result = await poll_until_created(_session_factory, entry_id, timeout_seconds=wait_seconds)
+        except QueueEntryMissingError:
+            # Not a timeout: the row was deleted under the wait, so nothing is left to cancel and whether the
+            # loop created a PR first cannot be read back.
+            log.warning("step.create_pr.queue_entry_missing", entry_id=entry_id)
             return StepResult(
                 success=False,
-                summary="PR creation timed out in queue",
-                error=f"Timed out waiting for queue entry {entry_id} to be processed",
+                summary="PR queue entry disappeared",
+                error=(
+                    f"Queue entry {entry_id} disappeared before it was processed, "
+                    "so it is unknown whether a PR was created"
+                ),
             )
+        finally:
+            # Every way out of the wait (done, timed out, step deadline, cancellation) leaves no pending entry.
+            final = await self._cancel_queue_entry(ctx, entry_id)
 
-        from sova.db.models import PRQueueStatus
+        if result is None:
+            # Timed out, so the cancel above was the last write: `final` is the entry's closing state.
+            # The loop may have created the PR in the moment before the cancel landed.
+            if final is not None and final["status"] == PRQueueStatus.CREATED and final["pr_number"]:
+                result = final
+            else:
+                return await self._queue_timeout_result(ctx, entry_id, wait_seconds, final)
 
         if result["status"] == PRQueueStatus.CREATED and result["pr_number"]:
             ctx.pr_number = result["pr_number"]
@@ -338,6 +400,75 @@ class CreatePRStep(BaseStep):
         error_message = result.get("error_message")
         error = error_message if error_message is not None else f"Unknown error (queue entry {entry_id})"
         return StepResult(success=False, summary=f"PR creation failed in queue: {error}", error=error)
+
+    @staticmethod
+    async def _cancel_queue_entry(ctx: ExecutionContext, entry_id: int) -> dict | None:
+        """Cancel this run's pending queue entries and return the entry's final status, or None.
+
+        Never raises an ordinary exception: it runs on the way out of the wait, including while a cancellation
+        is propagating, and a cleanup failure must not replace the real outcome (a ``CancelledError`` still
+        passes through, so cancellation is never swallowed). The work is shielded so that cancellation
+        cannot abandon the transaction half-written, and bounded so a stuck database cannot hold the step
+        past its deadline. If this fails, the run-finalization path cancels the entry as a backstop.
+
+        An entry already ``creating`` is not touched: its ``gh pr create`` cannot be recalled, and the
+        loop's own ``created`` write stays the authoritative one.
+        """
+        from sova.db.session import get_session
+        from sova.supervisor.pr_throttle import dequeue, get_queue_entry_status
+
+        async def _cancel_and_read() -> dict | None:
+            async with await get_session(project_dir=ctx.project_dir) as session:
+                async with session.begin():
+                    await dequeue(
+                        session,
+                        task_run_id=ctx.task_run_id,
+                        reason="Cancelled: the create_pr step ended before the entry was processed",
+                    )
+                return await get_queue_entry_status(session, entry_id)
+
+        try:
+            return await asyncio.wait_for(asyncio.shield(_cancel_and_read()), timeout=_QUEUE_CLEANUP_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 (cleanup must not replace the step outcome, whatever the driver raises)
+            log.warning("step.create_pr.queue_cancel_failed", entry_id=entry_id, exc_info=True)
+            return None
+
+    async def _queue_timeout_result(
+        self, ctx: ExecutionContext, entry_id: int, wait_seconds: float, final: dict | None
+    ) -> StepResult:
+        """Build the explicit failure for a queue wait that ran out, naming the entry and the next quota slot."""
+        from sova.db.models import PRQueueStatus
+
+        if final is not None and final["status"] == PRQueueStatus.CREATING:
+            log.warning("step.create_pr.queue_entry_in_flight", entry_id=entry_id)
+            detail = "its PR creation was already in flight and could not be cancelled, so the PR may still appear"
+        else:
+            detail = await self._next_slot_hint(ctx)
+        error = f"Timed out waiting for queue entry {entry_id} to be processed after {int(wait_seconds)}s: {detail}"
+        return StepResult(success=False, summary="PR creation timed out in queue", error=error)
+
+    @staticmethod
+    async def _next_slot_hint(ctx: ExecutionContext) -> str:
+        """Describe when the CodeRabbit quota next has a free slot, for the queue timeout error."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import get_quota_status
+
+        try:
+            async with (
+                asyncio.timeout(_QUEUE_CLEANUP_TIMEOUT_SECONDS),
+                await get_session(project_dir=ctx.project_dir) as session,
+            ):
+                quota = await get_quota_status(
+                    session, ctx.config.coderabbit_quota, project_slug=ctx.config.github_repo
+                )
+        except Exception:  # noqa: BLE001 (a hint must not replace the queue timeout error, whatever the lookup raises)
+            log.warning("step.create_pr.quota_status_failed", exc_info=True)
+            return "the next free CodeRabbit quota slot could not be determined"
+        if quota.can_create_pr:
+            return "a CodeRabbit quota slot was free, so the throttle loop is not draining the queue"
+        if quota.next_available_minutes is None:
+            return "no CodeRabbit quota slot is free"
+        return f"the next free CodeRabbit quota slot opens in about {math.ceil(quota.next_available_minutes)} minutes"
 
     async def _try_adopt_existing_pr(self, ctx: ExecutionContext) -> StepResult | None:
         if not ctx.has_issue:

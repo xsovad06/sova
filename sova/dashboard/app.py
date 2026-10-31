@@ -179,6 +179,92 @@ def _try_load_config(project_path: Path) -> ProjectConfig | None:
         return None
 
 
+# Throttle loop tasks started by ensure_pr_throttle_loop(), from the lifespan scan or a later settings
+# change. Module level because the settings router starts loops long after the lifespan's locals are fixed.
+_pr_throttle_tasks: list[asyncio.Task] = []
+
+
+async def ensure_pr_throttle_loop(project_dir: Path, cfg: ProjectConfig) -> bool:
+    """Start *project_dir*'s PR throttle loop from its own config, unless one is already registered.
+
+    The one start path for the lifespan scan and for the settings router when ``coderabbit_quota.enabled``
+    is switched on at runtime. Idempotent: two loops on one project could pick the same pending entry
+    and open a duplicate PR, so a registered loop for the resolved project directory makes this a no-op.
+    Returns True when a loop was started.
+
+    The loop is registered before the first ``await`` rather than guarded by a lock: the check and the
+    registration then cannot interleave with a concurrent call, and a module-level ``asyncio.Lock`` would
+    bind to whichever event loop first contended it. A start that fails (or is cancelled) while recovering
+    entries unregisters the loop again, so a later call can retry.
+
+    Startup recovery (``creating`` entries back to ``pending``) runs only when no other live process is
+    already serving the project (``sibling_loop_alive``). A sibling (a ``make dev`` dashboard whose lifespan
+    restarts on every reload, next to the daemon) may be inside ``gh pr create`` for such an entry, and
+    resetting it would let this loop open the same PR a second time. A crashed process's leftover heartbeat
+    does not count, so a restart after a crash still recovers.
+    """
+    if not cfg.coderabbit_quota.enabled:
+        return False
+
+    from sova.db.session import get_session
+    from sova.supervisor.pr_throttle import PRThrottleLoop as _PRThrottleLoop
+    from sova.supervisor.pr_throttle import recover_creating_entries, sibling_loop_alive
+
+    key = str(project_dir.resolve())
+    if _daemon_components.get(key, {}).get("pr_throttles"):
+        return False
+
+    async def _session_factory() -> AsyncSession:
+        return await get_session(project_dir=project_dir)
+
+    throttle = _PRThrottleLoop(
+        _session_factory,
+        cfg.coderabbit_quota,
+        project_slug=cfg.github_repo,
+        project_dir=project_dir,
+    )
+    # Read before this loop's first beat overwrites the file.
+    sibling_alive = sibling_loop_alive(project_dir)
+    registered = _daemon_components.setdefault(key, {}).setdefault("pr_throttles", [])
+    registered.append(throttle)
+    try:
+        if sibling_alive:
+            log.info("pr_throttle.recovery_skipped_sibling_alive", project=key)
+        else:
+            async with await get_session(project_dir=project_dir) as session, session.begin():
+                await recover_creating_entries(session)
+    except BaseException:
+        registered.remove(throttle)
+        raise
+    _pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
+    log.info("pr_throttle.loop_started", project=key)
+    return True
+
+
+async def _start_pr_throttle_loops(resolved: Path, cfg: ProjectConfig, *, is_multi: bool) -> None:
+    """Start a throttle loop for every project whose own config enables the quota.
+
+    The root config decides nothing in multi-project mode: each registered project is judged on its own
+    ``coderabbit_quota``. One project failing to load or start must not stop the others, or the lifespan.
+    """
+    targets = [(resolved, cfg)]
+    if is_multi:
+        targets = []
+        for path_str in list_projects().values():
+            p = Path(path_str)
+            if not p.is_dir():
+                continue
+            pcfg = _try_load_config(p)
+            if pcfg is not None:
+                targets.append((p, pcfg))
+
+    for project_dir, project_cfg in targets:
+        try:
+            await ensure_pr_throttle_loop(project_dir, project_cfg)
+        except Exception:  # noqa: BLE001 (one project's DB or loop failure must not abort the other projects or the lifespan)
+            log.warning("pr_throttle.loop_start_failed", project=str(project_dir), exc_info=True)
+
+
 def _load_config_or_fail(project_path: Path) -> ProjectConfig:
     """Load the primary dashboard config, exiting with a readable message on failure.
 
@@ -701,66 +787,8 @@ def create_app(
             if cfg.dashboard.gc_on_startup:
                 gc_task = asyncio.create_task(_startup_gc(resolved))
 
-        # Recover stale PR queue entries and start background processor
-        pr_throttle_tasks: list[asyncio.Task] = []
-        pr_throttle_instances: list[PRThrottleLoop] = []
-        if cfg.coderabbit_quota.enabled:
-            from sova.db.session import get_session
-            from sova.supervisor.pr_throttle import PRThrottleLoop as _PRThrottleLoop
-            from sova.supervisor.pr_throttle import recover_creating_entries
-
-            if is_multi:
-                from sova.config.loader import load_config as _load_cfg
-
-                for path_str in list_projects().values():
-                    p = Path(path_str)
-                    if not p.is_dir():
-                        continue
-                    pcfg = _load_cfg(p)
-                    if not pcfg.coderabbit_quota.enabled:
-                        continue
-
-                    async with await get_session(project_dir=p) as session:
-                        async with session.begin():
-                            await recover_creating_entries(session)
-
-                    def _make_factory(proj_dir: Path) -> Callable[[], Awaitable[AsyncSession]]:
-                        async def _factory() -> AsyncSession:
-                            return await get_session(project_dir=proj_dir)
-
-                        return _factory
-
-                    throttle = _PRThrottleLoop(
-                        _make_factory(p),
-                        pcfg.coderabbit_quota,
-                        project_slug=pcfg.github_repo,
-                        project_dir=p,
-                    )
-                    pr_throttle_instances.append(throttle)
-                    pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
-
-                    _key = str(p.resolve())
-                    _daemon_components.setdefault(_key, {})
-                    _daemon_components[_key].setdefault("pr_throttles", []).append(throttle)
-            else:
-                async with await get_session(project_dir=resolved) as session:
-                    async with session.begin():
-                        await recover_creating_entries(session)
-
-                async def _pr_session_factory() -> AsyncSession:
-                    return await get_session(project_dir=resolved)
-
-                throttle = _PRThrottleLoop(
-                    _pr_session_factory,
-                    cfg.coderabbit_quota,
-                    project_slug=cfg.github_repo,
-                    project_dir=resolved,
-                )
-                pr_throttle_instances.append(throttle)
-                pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
-
-                _daemon_components.setdefault(str(resolved), {})
-                _daemon_components[str(resolved)].setdefault("pr_throttles", []).append(throttle)
+        # Start each project's PR throttle loop from its own config
+        await _start_pr_throttle_loops(resolved, cfg, is_multi=is_multi)
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         recovery_task = asyncio.create_task(_periodic_recovery_loop(project_dir, is_multi))
@@ -887,7 +915,7 @@ def create_app(
                 await asyncio.wait_for(
                     _shutdown_tasks(
                         sweep_task,
-                        pr_throttle_tasks,
+                        list(_pr_throttle_tasks),
                         pr_monitor_tasks,
                         metrics_writer,
                         watchdog,
@@ -902,6 +930,7 @@ def create_app(
             except TimeoutError:
                 log.warning("lifespan.shutdown_timeout", exc_info=True)
             _daemon_components.clear()
+            _pr_throttle_tasks.clear()
             try:
                 await asyncio.wait_for(get_feed_service().drain_persist(), timeout=3.0)
             except TimeoutError:

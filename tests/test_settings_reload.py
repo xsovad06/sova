@@ -12,7 +12,7 @@ import contextlib
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, TypeVar
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -936,8 +936,48 @@ class TestDispatchConfigReload:
 
         cfg = MagicMock()
         await _dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
-        await _dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": []}, tmp_path)
         await _dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_quota_change_starts_a_loop_when_none_is_registered(self, tmp_path: Path) -> None:
+        """Enabling the quota after server start must start a loop; there is none to reload."""
+        from sova.dashboard.routers.settings import _dispatch_config_reload
+
+        cfg = MagicMock()
+        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+            await _dispatch_config_reload("coderabbit_quota", cfg, {}, tmp_path)
+        ensure.assert_awaited_once_with(tmp_path, cfg)
+
+    @pytest.mark.asyncio
+    async def test_quota_change_reloads_a_registered_loop_before_ensuring(self, tmp_path: Path) -> None:
+        """The registered loop must take the new limits first: `ensure` returns early once a loop is registered."""
+        from sova.dashboard.routers.settings import _dispatch_config_reload
+
+        cfg = MagicMock()
+        throttle = MagicMock()
+        parent = MagicMock()
+        parent.attach_mock(throttle.reload_config, "reload")
+        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+            parent.attach_mock(ensure, "ensure")
+            await _dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": [throttle]}, tmp_path)
+        assert parent.mock_calls == [call.reload(cfg.coderabbit_quota), call.ensure(tmp_path, cfg)]
+
+    @pytest.mark.asyncio
+    async def test_quota_change_in_multi_project_root_starts_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A root-level request in multi-project mode names no project, so it cannot start a loop.
+
+        The working directory is a real directory here on purpose: starting a loop for it is the bug.
+        Reloading is separate: it acts on the loops the caller found, see the `_reload_all_configs` tests.
+        """
+        from sova.dashboard.routers.settings import _dispatch_config_reload
+
+        monkeypatch.chdir(tmp_path)
+        cfg = MagicMock()
+        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+            await _dispatch_config_reload("coderabbit_quota", cfg, {}, None)
+        ensure.assert_not_awaited()
 
 
 class TestReloadAllConfigs:
@@ -1003,11 +1043,251 @@ class TestReloadAllConfigs:
                 "sova.dashboard.app.get_daemon_components",
                 return_value={resolved_key: {"pr_throttles": [throttle]}},
             ),
+            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
         ):
             err = await _reload_all_configs(project_dir, "coderabbit_quota.reviews_per_hour")
 
         assert err is None
         throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
+        ensure.assert_awaited_once_with(project_dir, cfg)
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_key_without_a_scope_follows_the_single_project_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`create_app(project_dir)` can differ from the working directory; the lifespan keyed on the former.
+
+        The config, the daemon components lookup, the reload and the start must all use that directory.
+        A lookup under the working directory finds no throttle, so the running loop would keep stale limits.
+        """
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        app_project = tmp_path / "app-project"
+        app_project.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        cfg = MagicMock()
+        throttle = MagicMock()
+
+        with (
+            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch(
+                "sova.dashboard.app.get_daemon_components",
+                return_value={str(app_project.resolve()): {"pr_throttles": [throttle]}},
+            ),
+            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+        ):
+            err = await _reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
+
+        assert err is None
+        load.assert_called_once_with(app_project)
+        throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
+        ensure.assert_awaited_once_with(app_project, cfg)
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_key_in_multi_project_root_reloads_the_cwd_loop_and_starts_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No scope and no single-project default: the request falls back to the working directory's config.
+
+        Like every other reload target, it reloads a loop registered under the working directory with the
+        config it just loaded, since that is the config the request wrote. It starts no loop: the root
+        config decides nothing in multi-project mode, and the working directory was never a named project.
+        """
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        monkeypatch.chdir(tmp_path)
+        cfg = MagicMock()
+        throttle = MagicMock()
+
+        with (
+            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=None),
+            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch(
+                "sova.dashboard.app.get_daemon_components",
+                return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
+            ),
+            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+        ):
+            err = await _reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
+
+        assert err is None
+        load.assert_called_once_with(None)
+        throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
+        ensure.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_key_in_a_scoped_request_follows_the_request_scope_not_the_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `/p/{slug}/` request resolves its project from the contextvar, ahead of the startup default.
+
+        The default names some other project in multi-project mode; resolving it first would start or
+        reload the wrong project's loop.
+        """
+        from sova.config.context import clear_project_context, set_project_context
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        scoped = tmp_path / "scoped"
+        scoped.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.chdir(other)
+        cfg = MagicMock()
+        scoped_throttle = MagicMock()
+        other_throttle = MagicMock()
+        components = {
+            str(scoped.resolve()): {"pr_throttles": [scoped_throttle]},
+            str(other.resolve()): {"pr_throttles": [other_throttle]},
+        }
+
+        set_project_context(scoped, "scoped")
+        try:
+            with (
+                patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=other),
+                patch("sova.config.loader.load_config", return_value=cfg) as load,
+                patch("sova.dashboard.app.get_daemon_components", return_value=components),
+                patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+            ):
+                err = await _reload_all_configs(None, "coderabbit_quota.enabled")
+        finally:
+            clear_project_context()
+
+        assert err is None
+        load.assert_called_once_with(scoped)
+        scoped_throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
+        other_throttle.reload_config.assert_not_called()
+        ensure.assert_awaited_once_with(scoped, cfg)
+
+    @pytest.mark.asyncio
+    async def test_a_saved_quota_setting_is_visible_to_the_reload_that_follows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real config load and a real project database: the write and the reload must read the same store.
+
+        The write has no project argument and lands in the database `init_db(resolved)` opened at startup;
+        the reload reads the project the default names. The app project and the working directory differ
+        on purpose: a reload that fell back to `load_config(project_dir)` would read the working
+        directory's store, find `enabled=False`, and start no loop.
+        """
+        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services import settings_service
+        from sova.db.session import close_db, init_db
+
+        app_project = tmp_path / "app-project"
+        app_project.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        monkeypatch.chdir(elsewhere)
+        await init_db(app_project)
+        try:
+            with (
+                patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+                patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+            ):
+                saved = await settings_service.update_config(None, key="coderabbit_quota.enabled", value="true")
+                err = await _reload_all_configs(None, "coderabbit_quota.enabled")
+        finally:
+            await close_db()
+
+        assert saved.get("status") == "ok"
+        assert err is None
+        ensure.assert_awaited_once()
+        started_dir, started_cfg = ensure.await_args.args
+        assert started_dir == app_project
+        assert started_cfg.coderabbit_quota.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_reload_still_runs_when_starting_the_loop_fails(self, tmp_path: Path) -> None:
+        """A start that raises (a locked database during recovery) is reported, but only after the reload.
+
+        Awaiting the start first would let a failed start keep a registered loop on its old limits.
+        """
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        cfg = MagicMock()
+        throttle = MagicMock()
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch(
+                "sova.dashboard.app.get_daemon_components",
+                return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
+            ),
+            patch(
+                "sova.dashboard.app.ensure_pr_throttle_loop",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("database is locked"),
+            ),
+        ):
+            err = await _reload_all_configs(tmp_path, "coderabbit_quota.reviews_per_hour")
+
+        assert err is not None
+        assert "coderabbit_quota" in err
+        throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
+
+    @pytest.mark.asyncio
+    async def test_supervisor_key_without_a_scope_follows_the_single_project_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every unscoped target resolves the project the way the lifespan keyed it, not by working directory.
+
+        For the supervisor that is the directory `_reload_daemon_config` is handed: it keys the lifecycle
+        lock, the daemon lookup and where a new daemon is registered.
+        """
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        app_project = tmp_path / "app-project"
+        app_project.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        cfg = MagicMock()
+
+        with (
+            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch("sova.dashboard.app.get_daemon_components", return_value={}),
+            patch("sova.dashboard.routers.settings._reload_daemon_config", new_callable=AsyncMock) as reload_daemon,
+        ):
+            err = await _reload_all_configs(None, "supervisor.enabled")
+
+        assert err is None
+        load.assert_called_once_with(app_project)
+        reload_daemon.assert_awaited_once_with(app_project)
+
+    @pytest.mark.asyncio
+    async def test_watchdog_key_without_a_scope_looks_up_components_under_the_single_project_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.routers.settings import _reload_all_configs
+
+        app_project = tmp_path / "app-project"
+        app_project.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        cfg = MagicMock()
+        app_watchdog = MagicMock()
+        cwd_watchdog = MagicMock()
+        components = {
+            str(app_project.resolve()): {"watchdog": app_watchdog},
+            str(elsewhere.resolve()): {"watchdog": cwd_watchdog},
+        }
+
+        with (
+            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.app.get_daemon_components", return_value=components),
+        ):
+            err = await _reload_all_configs(None, "watchdog.check_interval_seconds")
+
+        assert err is None
+        app_watchdog.reload_config.assert_called_once_with(cfg.watchdog, cfg.memory_guard)
+        cwd_watchdog.reload_config.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_integration_key_dispatches_to_merge_queue(self, tmp_path: Path) -> None:
