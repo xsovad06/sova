@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sova.adapters.label_catalog import REQUIRED_LABELS as _REQUIRED_LABELS
-from sova.config.context import get_project_dir, resolve_project_dir
+from sova.config.context import get_project_dir, resolve_project_dir, resolve_project_dir_or_none
 from sova.config.models import ProjectConfig
 from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import settings_service
@@ -329,6 +329,25 @@ def _match_reload_target(key: str) -> str | None:
     return None
 
 
+async def _start_pr_throttle_if_enabled(cfg: ProjectConfig, project_dir: Path | None) -> None:
+    """Start the PR throttle loop for *project_dir* once the quota is enabled at runtime.
+
+    Enabling the quota after the server started leaves no loop to reload; without one, create_pr's
+    heartbeat check sends every PR down the direct path. *project_dir* and *cfg* are the ones
+    ``_reload_all_configs`` resolved (a request scope, else the single-project default ``create_app()``
+    was given, which need not be the working directory), so the start, the reload and the daemon
+    components lookup all act on the same project. ``None`` is multi-project mode with no request scope:
+    the root config decides nothing there, so nothing starts (a loop already registered under the working
+    directory is still reloaded by the caller, since that is the config the request just wrote).
+    """
+    from sova.dashboard.app import ensure_pr_throttle_loop
+
+    if project_dir is None:
+        log.debug("settings.pr_throttle_start_skipped", reason="no project in scope")
+        return
+    await ensure_pr_throttle_loop(project_dir, cfg)
+
+
 async def _dispatch_config_reload(
     target: str,
     cfg: ProjectConfig,
@@ -348,8 +367,12 @@ async def _dispatch_config_reload(
         for mon in components.get("pr_monitors", []):
             mon.reload_config(cfg.pr_monitor, cfg.notification)
     elif target == "coderabbit_quota":
+        # Reloading acts on whatever loop *components* holds, which the caller looked up under the resolved
+        # project (the working directory when no project is in scope, as for every other target). Starting
+        # a new loop is a decision about a named project, so it needs one.
         for throttle in components.get("pr_throttles", []):
             throttle.reload_config(cfg.coderabbit_quota)
+        await _start_pr_throttle_if_enabled(cfg, project_dir)
     elif target == "integration":
         for mqm in components.get("merge_queue_monitors", []):
             mqm.reload_config(cfg.integration, cfg.notification)
@@ -376,10 +399,14 @@ async def _reload_all_configs(project_dir: Path | None, key: str) -> str | None:
         return None
 
     try:
-        cfg = load_config(project_dir)
-        resolved_key = str(project_dir.resolve()) if project_dir else str(Path.cwd().resolve())
+        # Resolve the target once, the way the lifespan keyed its loops at startup, so the config, the
+        # daemon components lookup and the dispatch all name the same project. Without a request scope
+        # that is the single-project default, which need not be the working directory.
+        target_dir = resolve_project_dir_or_none(project_dir, default_project_dir=get_default_project_dir())
+        cfg = await asyncio.to_thread(load_config, target_dir)
+        resolved_key = str(target_dir.resolve()) if target_dir else str(Path.cwd().resolve())
         components = get_daemon_components().get(resolved_key, {})
-        await _dispatch_config_reload(matched, cfg, components, project_dir)
+        await _dispatch_config_reload(matched, cfg, components, target_dir)
     except Exception:  # noqa: BLE001 (reload spans config load, daemon lookup and per-component dispatch)
         log.warning("settings.reload_failed", target=matched, exc_info=True)
         return f"Config saved but {matched} reload failed"
