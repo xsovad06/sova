@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sova.adapters import ldap_client as lc
 from sova.config.models import LdapConfig
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config(**kwargs: object) -> LdapConfig:
@@ -398,3 +404,40 @@ class TestGetGroupMembers:
 
         client = lc.LdapClient(_config())
         assert await client.get_group_members("ghost-team") == []
+
+
+def _import_with_stub_ldap3(tmp_path: Path, stub_source: str) -> subprocess.CompletedProcess[str]:
+    """Import ldap_client in a fresh interpreter where DeprecationWarning is an error.
+
+    A stub ``ldap3`` package stands in for the real one: CI installs only the
+    ``dev`` extra, never ``ldap``, so without the stub the filter around the
+    import would never run there.
+    """
+    stub = tmp_path / "ldap3"
+    stub.mkdir()
+    (stub / "__init__.py").write_text(stub_source, encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(tmp_path), str(_REPO_ROOT), env.get("PYTHONPATH")]))
+    return subprocess.run(
+        [sys.executable, "-W", "error::DeprecationWarning", "-c", "import sova.adapters.ldap_client"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+        check=False,
+    )
+
+
+class TestLdap3ImportWarnings:
+    def test_pyasn1_tagmap_deprecation_is_silenced(self, tmp_path: Path) -> None:
+        """ldap3 2.9.1 triggers pyasn1's tagMap deprecation on import; that one warning is not ours."""
+        stub = 'import warnings\nwarnings.warn("tagMap is deprecated. Use TAG_MAP instead.", DeprecationWarning)\n'
+        result = _import_with_stub_ldap3(tmp_path, stub)
+        assert result.returncode == 0, result.stderr
+
+    def test_other_ldap3_deprecations_still_surface(self, tmp_path: Path) -> None:
+        """The filter matches the message, so any other deprecation raised during the import still fails."""
+        stub = 'import warnings\nwarnings.warn("connect_timeout is deprecated", DeprecationWarning)\n'
+        result = _import_with_stub_ldap3(tmp_path, stub)
+        assert result.returncode != 0
+        assert "connect_timeout is deprecated" in result.stderr
