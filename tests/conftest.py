@@ -476,6 +476,24 @@ def _isolate_provider_routing_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_os_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report the OS keyring as unavailable so no test reaches the developer's real one.
+
+    ``keyring_store.is_keyring_available()`` probes the real backend once per
+    process. CI runners have none, so every secret falls back to its plaintext
+    DB value there; a macOS machine has the Keychain, so the same tests write
+    real ``sova`` entries into the developer's keychain and read back
+    ``keyring_store.SENTINEL`` instead of the value they stored. Pinning the
+    cached probe result to ``False`` matches CI. Tests that exercise the
+    keyring path patch ``is_keyring_available`` or ``_backend_usable``
+    themselves, which overrides this per test.
+    """
+    from sova.llm import keyring_store
+
+    monkeypatch.setattr(keyring_store, "_backend_usable", False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Run each test from an empty directory so the repo's own config cannot leak.
 

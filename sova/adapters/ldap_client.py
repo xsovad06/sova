@@ -15,6 +15,7 @@ import asyncio
 import re
 import ssl
 import time
+import warnings
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -22,7 +23,12 @@ from sova.config.models import LdapConfig
 from sova.utils.logging import get_logger
 
 try:
-    import ldap3
+    # ldap3 2.9.1 (its latest release) imports pyasn1's ``tagMap``/``typeMap``,
+    # which pyasn1 0.6.4 deprecated in favor of ``TAG_MAP``/``TYPE_MAP``. The
+    # warning is ldap3's to fix, not ours, so silence exactly that one here.
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r"(tagMap|typeMap) is deprecated", category=DeprecationWarning)
+        import ldap3
 
     _LDAP3_AVAILABLE = True
 except ImportError:

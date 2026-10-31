@@ -39,7 +39,8 @@ class TestParseVersion:
 
         start = time.monotonic()
         svc._VERSION_RE.search("v" + "1" * 20000)
-        assert time.monotonic() - start < 2.0
+        # Linear search takes about 1 ms here; without the lookbehind it took about 1 second.
+        assert time.monotonic() - start < 0.25
 
 
 class TestParseRequirement:
