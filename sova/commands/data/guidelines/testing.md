@@ -68,10 +68,10 @@ def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
 When a module was split with a re-export facade, patch the actual submodule:
 
 ```python
-# Correct -- patches the real implementation
+# Correct: patches the real implementation
 patch.object(actual_module, "function_name", return_value=result)
 
-# Wrong -- only patches the facade's attribute
+# Wrong: only patches the facade's attribute
 patch.object(facade_module, "function_name", return_value=result)
 ```
 

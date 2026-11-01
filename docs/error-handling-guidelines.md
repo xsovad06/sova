@@ -32,13 +32,13 @@ the adapter.
 **SonarCloud S5713 rule**: never catch both parent and child in the same except tuple:
 
 ```python
-# Wrong -- redundant
+# Wrong: redundant
 except (json.JSONDecodeError, ValueError):
 
-# Correct -- broad catch
+# Correct: broad catch
 except ValueError:
 
-# Correct -- narrow catch for JSON + separate concern
+# Correct: narrow catch for JSON + separate concern
 except (json.JSONDecodeError, OSError):
 ```
 
@@ -94,11 +94,11 @@ A helper that swallows an error must never return a value inside its own success
 `typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly: `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
 
 ```python
-# Wrong -- typer.Exit escapes this
+# Wrong: typer.Exit escapes this
 except Exception as exc:
     raise HTTPException(status_code=500, detail=str(exc))
 
-# Correct -- catch SystemExit for CLI errors, generic message for others
+# Correct: catch SystemExit for CLI errors, generic message for others
 except SystemExit:
     raise HTTPException(status_code=404, detail="Project directory not found")
 except Exception:
@@ -121,14 +121,14 @@ except Exception:
 When iterating over items to delete (files, directories, registry entries), wrap try/except **inside** the loop so one failure doesn't skip the remaining items.
 
 ```python
-# Wrong -- first failure skips everything after it
+# Wrong: first failure skips everything after it
 try:
     for name in items:
         (path / name).unlink()
 except OSError as exc:
     failed.append(f"cleanup: {exc}")
 
-# Correct -- each item attempted independently
+# Correct: each item attempted independently
 for name in items:
     try:
         (path / name).unlink()

@@ -7,13 +7,13 @@ Conventions for exceptions, logging, retries, fallbacks, and circuit breakers in
 Never catch both parent and child in the same except tuple:
 
 ```python
-# Wrong -- JSONDecodeError inherits from ValueError
+# Wrong: JSONDecodeError inherits from ValueError
 except (json.JSONDecodeError, ValueError):
 
-# Correct -- broad catch
+# Correct: broad catch
 except ValueError:
 
-# Correct -- narrow catch for JSON + separate concern
+# Correct: narrow catch for JSON + separate concern
 except (json.JSONDecodeError, OSError):
 ```
 

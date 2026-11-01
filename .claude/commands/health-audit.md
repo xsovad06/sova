@@ -172,7 +172,7 @@ From this, note:
 Collect codebase stats in parallel:
 
 ```bash
-# Run these in parallel -- they are independent
+# Run these in parallel: they are independent
 # LOC counts (adjust extensions for the project's language)
 find . -name "*.py" -not -path "./.venv/*" -not -path "*/__pycache__/*" -not -path "*/migrations/*" -not -path "./.claude/*" | xargs wc -l | tail -1
 find . -name "*.html" -not -path "./.venv/*" | xargs wc -l | tail -1
@@ -455,7 +455,7 @@ Group findings under Level 1-4 headers. Each finding:
 ```
 #### [P{n}] {Short title}
 **Location**: {file(s) or module(s)}
-**Issue**: {What is wrong and why it matters -- concrete, not generic}
+**Issue**: {What is wrong and why it matters: concrete, not generic}
 **Evidence**: {Code snippet, query count, or specific example}
 **Recommendation**: {Specific action to fix, not "consider improving"}
 ```
@@ -742,7 +742,7 @@ file(s), the concrete issue, and why it matters; cite severity inline, e.g.
 <Links to prerequisite group issues, or "None">
 
 ## References
-- Source: `docs/HEALTH-AUDIT.md` -- Health Audit {date}
+- Source: `docs/HEALTH-AUDIT.md` (Health Audit {date})
 ```
 
 When a group's disclosure choice is "file neutrally", omit the specific
