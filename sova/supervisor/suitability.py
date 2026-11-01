@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
 from sova.knowledge.assessments import SUITABILITY_SHORTHANDS
-from sova.supervisor.labels import is_epic, is_human_only, is_interactive_recommended, is_ready
+from sova.supervisor.labels import is_epic, is_human_only, is_interactive_recommended, is_on_hold, is_ready
 
 if TYPE_CHECKING:
     from sova.supervisor.dependency_graph import DependencyGraph
@@ -104,6 +104,13 @@ def assess_suitability(
 
     Precedence: epic > human > blocked > interactive > autonomous > unclassified.
 
+    `blocked` has two independent causes: an `agent:on-hold` label (a lead's
+    hold or the user's own unanswered question, which outranks `agent:ready`
+    and `agent:interactive-recommended` and is read even with
+    `consider_dependencies=False`) and an open dependency. Only the dependency
+    cause is live: it is derived from the graph, so it clears when the blocker
+    closes, whereas the label stays until a human removes it.
+
     A tracker label always wins over a conflicting `local_assessment` for
     `agent:ready`/`agent:human-only`/`type: epic`: `agent:ready` clears a
     conflicting local `human_only`/`interactive_recommended` record, and a
@@ -136,6 +143,9 @@ def assess_suitability(
         return Suitability(mode=SuitabilityMode.HUMAN, reasons=[{"source": "label", "value": "agent:human-only"}])
     if not ready_label and local_assessment == _LOCAL_HUMAN_ONLY:
         return Suitability(mode=SuitabilityMode.HUMAN, reasons=[{"source": "local_assessment", "value": "human_only"}])
+
+    if is_on_hold(labels):
+        return Suitability(mode=SuitabilityMode.BLOCKED, reasons=[{"source": "label", "value": "agent:on-hold"}])
 
     if consider_dependencies:
         blocked_by = _unsatisfied_dependencies(task, graph)

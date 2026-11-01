@@ -4015,6 +4015,28 @@ class TestHumanInvolvementGate:
         result = await check_human_involvement_gate(1, ["agent:ready"])
         assert result is None
 
+    async def test_on_hold_label_blocks(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:on-hold"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "agent:on-hold" in result.detail
+
+    async def test_on_hold_label_blocks_a_ready_ticket(self) -> None:
+        """A held ticket keeps `agent:ready`; the hold must still stop the spawn."""
+        result = await check_human_involvement_gate(1, ["agent:ready", "agent:on-hold"])
+        assert result is not None
+        assert "agent:on-hold" in result.detail
+
+    async def test_on_hold_label_blocks_post_development_candidate_too(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:on-hold"], candidate="spawn_integrate")
+        assert result is not None
+        assert result.gate == "human_involvement"
+
+    async def test_human_only_wins_over_on_hold(self) -> None:
+        result = await check_human_involvement_gate(1, ["agent:on-hold", "agent:human-only"])
+        assert result is not None
+        assert "human-only" in result.detail
+
     async def test_gate_takes_no_dependency_graph(self) -> None:
         """The gate must classify on labels alone, never against a real graph.
 

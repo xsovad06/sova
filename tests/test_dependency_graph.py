@@ -23,6 +23,7 @@ from sova.supervisor.dependency_graph import (
     is_ready,
     parse_dependencies,
 )
+from sova.supervisor.labels import is_on_hold
 from sova.supervisor.suitability import Suitability, SuitabilityMode
 
 
@@ -1659,6 +1660,26 @@ class TestIsInteractiveRecommended:
         assert is_interactive_recommended(["area: dashboard", "agent:human-only"]) is False
 
 
+class TestIsOnHold:
+    def test_no_labels(self) -> None:
+        assert is_on_hold([]) is False
+
+    def test_exact_match(self) -> None:
+        assert is_on_hold(["agent:on-hold"]) is True
+
+    def test_case_insensitive(self) -> None:
+        assert is_on_hold(["Agent:On-Hold"]) is True
+
+    def test_with_spaces(self) -> None:
+        assert is_on_hold(["  agent:on-hold  "]) is True
+
+    def test_unrelated_labels(self) -> None:
+        assert is_on_hold(["area: dashboard", "agent:human-only"]) is False
+
+    def test_prefix_is_not_a_match(self) -> None:
+        assert is_on_hold(["agent:on-hold-forever"]) is False
+
+
 class TestIsReady:
     def test_no_labels(self) -> None:
         assert is_ready([]) is False
@@ -1710,6 +1731,12 @@ class TestLocalAssessmentApplies:
         from sova.supervisor.labels import local_assessment_applies
 
         assert local_assessment_applies(["type: epic"]) is False
+
+    def test_on_hold_label_does_not_apply(self) -> None:
+        """A stale local `ready` record must never be applied over (or skip the check of) a hold label."""
+        from sova.supervisor.labels import local_assessment_applies
+
+        assert local_assessment_applies(["agent:on-hold"]) is False
 
     @pytest.mark.parametrize(
         "label",

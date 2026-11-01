@@ -33,6 +33,15 @@ def is_interactive_recommended(labels: list[str]) -> bool:
     return any(label.lower().strip() == "agent:interactive-recommended" for label in labels)
 
 
+def is_on_hold(labels: list[str]) -> bool:
+    """Return True if labels include 'agent:on-hold' (case-insensitive).
+
+    A non-state label: a held ticket keeps its real pipeline state, and only the
+    suitability classifier reads this, reporting `blocked`.
+    """
+    return any(label.lower().strip() == "agent:on-hold" for label in labels)
+
+
 def is_ready(labels: list[str]) -> bool:
     """Return True if labels include 'agent:ready' (case-insensitive)."""
     return any(label.lower().strip() == "agent:ready" for label in labels)
@@ -59,7 +68,7 @@ def local_assessment_applies(labels: list[str]) -> bool:
 
     False once any tracker label already determines the outcome on its own:
     `agent:ready`, `agent:human-only`, `agent:interactive-recommended`,
-    `type: epic`, or any pipeline-state label past pre-development
+    `agent:on-hold`, `type: epic`, or any pipeline-state label past pre-development
     (`agent:triaged`, `agent:researched`, ...). Shared by
     `check_human_involvement_gate()` (to skip the DB lookup entirely when a
     label already decides the verdict) and `queue_maintenance._discover_ready()`
@@ -76,5 +85,6 @@ def local_assessment_applies(labels: list[str]) -> bool:
         and not is_past_pre_development(labels)
         and not is_human_only(labels)
         and not is_interactive_recommended(labels)
+        and not is_on_hold(labels)
         and not is_epic(labels)
     )

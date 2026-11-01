@@ -301,7 +301,7 @@ async def get_graph(milestone: str = "") -> dict:
 async def get_ready(milestone: str = "") -> dict:
     """Return issues classified `autonomous` or `unclassified` by `assess_suitability()`:
 
-    dependencies satisfied and no epic/human-only/interactive-recommended label.
+    dependencies satisfied and no epic/human-only/interactive-recommended/on-hold label.
     """
     try:
         graph = await _build_graph(milestone)
