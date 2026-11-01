@@ -9,23 +9,158 @@ PRs directly (zero behavior change).
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.config.models import CodeRabbitQuotaConfig
-from sova.db.models import PRCreationQueue, PRQueueStatus
+from sova.core.state import TASK_RUN_TERMINAL
+from sova.db.models import PRCreationQueue, PRQueueStatus, TaskRun
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
+from sova.utils.process import is_process_alive
 
 log = get_logger(component="supervisor.pr_throttle")
 
 _MAX_QUEUE_AGE_HOURS = 2
 _PROCESS_INTERVAL_SECONDS = 60
 _POLL_INTERVAL_SECONDS = 30
+
+# A loop touches its heartbeat before and after every cycle, and every interval while a queue pass runs,
+# so the file is never older than about one interval however long ``gh pr create`` takes. Five intervals
+# leaves room for a delayed write.
+_HEARTBEAT_PREFIX = "pr-throttle."
+_HEARTBEAT_SUFFIX = ".heartbeat"
+_HEARTBEAT_MAX_AGE_SECONDS = 5 * _PROCESS_INTERVAL_SECONDS
+
+_RUN_ENDED_REASON = "Cancelled: the run ended before the PR was created"
+
+
+def heartbeat_path(project_dir: Path | str, pid: int | None = None) -> Path:
+    """Path of the file *pid*'s (default: this process's) throttle loop touches to show it is alive.
+
+    One file per process, named for its pid: processes serving one project (a ``make dev`` dashboard next
+    to the daemon) never write or delete each other's file, so neither can hide the other.
+    """
+    name = f"{_HEARTBEAT_PREFIX}{os.getpid() if pid is None else pid}{_HEARTBEAT_SUFFIX}"
+    return Path(project_dir) / ".claude" / "agent-control" / name
+
+
+def _heartbeat_files(project_dir: Path | str) -> list[tuple[str, Path]]:
+    """Every process's heartbeat file for *project_dir* as ``(pid text, path)``. Empty if the glob fails."""
+    directory = heartbeat_path(project_dir).parent
+    try:
+        paths = sorted(directory.glob(f"{_HEARTBEAT_PREFIX}*{_HEARTBEAT_SUFFIX}"))
+    except OSError:
+        return []
+    return [(p.name[len(_HEARTBEAT_PREFIX) : -len(_HEARTBEAT_SUFFIX)], p) for p in paths]
+
+
+def _fresh_heartbeat_pids(project_dir: Path | str) -> list[str]:
+    """The pid text of every heartbeat file touched within the maximum age."""
+    now = time.time()
+    fresh = []
+    for pid_text, path in _heartbeat_files(project_dir):
+        try:
+            if now - path.stat().st_mtime <= _HEARTBEAT_MAX_AGE_SECONDS:
+                fresh.append(pid_text)
+        except OSError:
+            continue
+    return fresh
+
+
+def _prune_stale_heartbeats(project_dir: Path | str) -> None:
+    """Remove heartbeat files older than the maximum age, left behind by processes that crashed. Never raises.
+
+    A stale file never reads as alive, so removing it changes no answer; it only stops one file per
+    crashed process from piling up. A live process rewrites its own file every interval, long before it
+    could reach the maximum age.
+    """
+    now = time.time()
+    for _pid_text, path in _heartbeat_files(project_dir):
+        try:
+            if now - path.stat().st_mtime > _HEARTBEAT_MAX_AGE_SECONDS:
+                path.unlink(missing_ok=True)
+        except OSError:
+            log.debug("pr_throttle.heartbeat_prune_failed", path=str(path), exc_info=True)
+
+
+def touch_heartbeat(project_dir: Path | str, owner: str = "") -> None:
+    """Record that this process's throttle loop is serving *project_dir*, stamping *owner*. Never raises.
+
+    Only the mtime says "alive" (``throttle_loop_alive``); the content names the loop that wrote, so
+    ``clear_heartbeat`` can tell its own beat from another loop's in this process. A failed write only
+    costs a spurious direct PR creation in ``CreatePRStep``, so it is logged and swallowed rather than
+    allowed to end the loop.
+    """
+    path = heartbeat_path(project_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(owner, encoding="utf-8")
+    except OSError:
+        log.warning("pr_throttle.heartbeat_write_failed", path=str(path), exc_info=True)
+        return
+    _prune_stale_heartbeats(project_dir)
+
+
+def clear_heartbeat(project_dir: Path | str, owner: str = "") -> None:
+    """Remove this process's heartbeat for *project_dir* when its loop stops. Never raises.
+
+    Without this a stopped loop keeps reading as alive until the file ages out, and every ``CreatePRStep``
+    in that window enqueues onto a queue nobody drains instead of taking the direct-creation path.
+
+    Only this process's own file is touched, so a sibling process serving the project (a ``make dev``
+    dashboard next to the daemon) keeps reading as alive and there is no cross-process check-then-unlink
+    to race. The file is unlinked only while it still holds *owner*, so a loop that stops after another
+    loop in this process has started beating does not remove the newer one's heartbeat. The check and
+    the unlink run with no ``await`` between them, so no other task in this process interleaves.
+    """
+    path = heartbeat_path(project_dir)
+    if read_text_or_none(path) != owner:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        log.warning("pr_throttle.heartbeat_clear_failed", path=str(path), exc_info=True)
+
+
+def throttle_loop_alive(project_dir: Path | str) -> bool:
+    """Whether any process's throttle loop touched *project_dir*'s heartbeat recently.
+
+    ``CreatePRStep`` runs in a separate process from the daemon that owns the loop, so the files' mtimes
+    are the only signal it can read. A missing, stale or unreadable heartbeat reads as not alive, which
+    sends the step down the direct-creation path instead of onto a queue nobody drains.
+    """
+    return bool(_fresh_heartbeat_pids(project_dir))
+
+
+def sibling_loop_alive(project_dir: Path | str) -> bool:
+    """Whether a throttle loop in another live process is serving *project_dir*.
+
+    A fresh heartbeat alone cannot tell a sibling (a ``make dev`` dashboard next to the daemon) from a
+    daemon that crashed seconds ago: both leave a file younger than the maximum age. Each process has its
+    own file named for its pid, so every fresh file is judged on its own: one counts while its process
+    still exists and is not this one, whatever any other process wrote last. A fresh file whose pid
+    cannot be parsed is treated as a live sibling, the direction that cannot reset an entry under an
+    in-flight ``gh pr create``.
+
+    A pid recycled by an unrelated process within the maximum age reads as a sibling; the cost is that
+    startup recovery is skipped once, leaving a crashed run's ``creating`` entry as it was.
+    """
+    for pid_text in _fresh_heartbeat_pids(project_dir):
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            return True
+        if pid != os.getpid() and is_process_alive(pid):
+            return True
+    return False
 
 
 async def enqueue(
@@ -61,24 +196,34 @@ async def enqueue(
     return entry_id
 
 
-async def dequeue(session: AsyncSession, *, task_run_id: int) -> bool:
-    """Cancel a pending queue entry for a task run.
+async def dequeue(session: AsyncSession, *, task_run_id: int, reason: str | None = None) -> bool:
+    """Cancel every pending queue entry for a task run.
 
-    Returns True if a pending entry was cancelled, False if none found
-    or the entry was already processed.
+    A retried step enqueues once per attempt, so one run can hold several pending entries. An entry
+    already past ``pending`` (``creating`` has a ``gh pr create`` in flight) is left alone.
+
+    Returns True if at least one pending entry was cancelled, False if none found
+    or every entry was already processed.
+
+    One conditional UPDATE, not select-then-set: a ``process_queue()`` that flipped an entry to
+    ``creating`` between the two would otherwise have that state overwritten with ``cancelled``.
     """
-    stmt = select(PRCreationQueue).where(
-        PRCreationQueue.task_run_id == task_run_id,
-        PRCreationQueue.status == PRQueueStatus.PENDING,
+    values: dict = {"status": PRQueueStatus.CANCELLED, "processed_at": datetime.now(timezone.utc)}
+    if reason is not None:
+        values["error_message"] = reason
+    result = await session.execute(
+        update(PRCreationQueue)
+        .where(
+            PRCreationQueue.task_run_id == task_run_id,
+            PRCreationQueue.status == PRQueueStatus.PENDING,
+        )
+        .values(**values)
+        .returning(PRCreationQueue.id)
     )
-    result = await session.execute(stmt)
-    entry = result.scalar_one_or_none()
-    if entry is None:
-        return False
-    entry.status = PRQueueStatus.CANCELLED
-    entry.processed_at = datetime.now(timezone.utc)
-    log.info("pr_throttle.dequeued", entry_id=entry.id, task_run_id=task_run_id)
-    return True
+    entry_ids = result.scalars().all()
+    for entry_id in entry_ids:
+        log.info("pr_throttle.dequeued", entry_id=entry_id, task_run_id=task_run_id)
+    return bool(entry_ids)
 
 
 async def get_queue_entry_status(
@@ -98,6 +243,14 @@ async def get_queue_entry_status(
     }
 
 
+class QueueEntryMissingError(LookupError):
+    """A queue entry being polled no longer exists, which is not the same outcome as a timeout."""
+
+    def __init__(self, entry_id: int) -> None:
+        super().__init__(f"queue entry {entry_id} no longer exists")
+        self.entry_id = entry_id
+
+
 async def poll_until_created(
     session_factory: Callable[[], Awaitable[AsyncSession]],
     entry_id: int,
@@ -106,27 +259,34 @@ async def poll_until_created(
 ) -> dict | None:
     """Poll a queue entry until it reaches a terminal status.
 
-    Returns the entry status dict, or None on timeout.
-    Used by CreatePRStep to wait for the background processor.
+    Returns the entry status dict, or None on timeout. Raises ``QueueEntryMissingError`` if the entry
+    row is gone, so a caller can tell that from a wait that merely ran out.
+    Used by CreatePRStep to wait for the background processor. A timeout leaves
+    the entry untouched: the caller cancels it, because it must do so on every
+    other way out of the wait too (step deadline, cancellation), and a
+    ``creating`` entry must not be marked failed under a ``gh pr create`` that
+    may still succeed.
     """
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+        # Never sleep past the deadline: the wait is sized to leave the caller time to clean up.
+        await asyncio.sleep(min(_POLL_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
         async with await session_factory() as session:
             status = await get_queue_entry_status(session, entry_id)
         if status is None:
-            return None
+            raise QueueEntryMissingError(entry_id)
         if status["status"] in (PRQueueStatus.CREATED, PRQueueStatus.FAILED, PRQueueStatus.CANCELLED):
             return status
-    # Timed out: mark as failed so the entry doesn't linger
-    async with await session_factory() as session:
-        async with session.begin():
-            entry = await session.get(PRCreationQueue, entry_id)
-            if entry and entry.status in (PRQueueStatus.PENDING, PRQueueStatus.CREATING):
-                entry.status = PRQueueStatus.FAILED
-                entry.error_message = "Timed out waiting for PR creation"
-                entry.processed_at = datetime.now(timezone.utc)
     return None
+
+
+def _ended_run_ids() -> Select:
+    """Subquery of the task runs that have ended (``TASK_RUN_TERMINAL``).
+
+    A queue entry whose run row is missing matches nothing here: only an observed terminal status
+    cancels an entry, so a deleted run does not strand or discard one.
+    """
+    return select(TaskRun.id).where(TaskRun.status.in_(TASK_RUN_TERMINAL))
 
 
 async def process_queue(
@@ -159,6 +319,21 @@ async def process_queue(
             stale_entry.error_message = "Cancelled: exceeded max queue age"
             log.warning("pr_throttle.stale_cancelled", entry_id=stale_entry.id)
 
+        # Cancel entries whose run has ended. The step's own cleanup and the run-finalization backstop each
+        # miss some (a SIGKILLed `sova run` is only swept by liveness recovery, which never dequeues), so
+        # the loop is the authority: a held PR is never created once its run is over.
+        ended_stmt = select(PRCreationQueue).where(
+            PRCreationQueue.status == PRQueueStatus.PENDING,
+            PRCreationQueue.project_slug == project_slug,
+            PRCreationQueue.task_run_id.in_(_ended_run_ids()),
+        )
+        ended_result = await session.execute(ended_stmt)
+        for ended_entry in ended_result.scalars().all():
+            ended_entry.status = PRQueueStatus.CANCELLED
+            ended_entry.processed_at = now
+            ended_entry.error_message = _RUN_ENDED_REASON
+            log.warning("pr_throttle.run_ended_cancelled", entry_id=ended_entry.id, task_run_id=ended_entry.task_run_id)
+
         # Check quota
         from sova.supervisor.coderabbit_quota import get_quota_status
 
@@ -184,7 +359,21 @@ async def process_queue(
 
         # Mark as CREATING and commit durably BEFORE network call (edge case 9).
         # This prevents a crash during create_pr from rolling back to PENDING.
-        entry.status = PRQueueStatus.CREATING
+        # Conditional on still being PENDING and its run still live: the run's own step may have cancelled
+        # the entry since the SELECT above, and the run may have ended after the ended-run sweep, whose
+        # finalization backstop skips an entry already past pending. Neither may become a PR.
+        flipped = await session.execute(
+            update(PRCreationQueue)
+            .where(
+                PRCreationQueue.id == entry.id,
+                PRCreationQueue.status == PRQueueStatus.PENDING,
+                ~PRCreationQueue.task_run_id.in_(_ended_run_ids()),
+            )
+            .values(status=PRQueueStatus.CREATING)
+        )
+        if flipped.rowcount != 1:
+            log.info("pr_throttle.entry_cancelled_before_creation", entry_id=entry.id)
+            return 0
         entry_id = entry.id
         entry_task_run_id = entry.task_run_id
         entry_title = entry.title
@@ -240,8 +429,6 @@ async def process_queue(
         )
 
         # Update the TaskRun with PR info
-        from sova.db.models import TaskRun
-
         task_run = await session.get(TaskRun, entry_task_run_id)
         if task_run is not None:
             task_run.pr_number = pr_info.number
@@ -373,17 +560,38 @@ async def _trigger_coderabbit_review(
 
 
 async def recover_creating_entries(session: AsyncSession) -> int:
-    """Reset entries stuck in 'creating' status back to 'pending'.
+    """Reset entries stuck in 'creating' back to 'pending', unless their run has ended.
 
     Called on startup to recover from server crashes mid-creation (edge case 9).
-    Safe because PR dedup in _try_adopt_existing_pr prevents double creation.
+
+    Only safe while no other process is draining this project's queue: ``process_queue`` calls
+    ``create_pr`` directly, with no adoption of an existing PR, so resetting an entry whose ``gh pr create``
+    is still running in a sibling process would open the PR a second time. Callers gate this on
+    ``sibling_loop_alive()``.
+
+    A ``creating`` entry is the one state neither the step's cleanup nor run finalization cancels (its
+    ``gh pr create`` was in flight), so a run that ended in the meantime would otherwise have its entry
+    reset and drained into a PR for a finished run. Those are cancelled instead.
+
+    Returns the number of entries reset to ``pending``.
     """
-    stmt = (
+    cancelled = await session.execute(
+        update(PRCreationQueue)
+        .where(PRCreationQueue.status == PRQueueStatus.CREATING, PRCreationQueue.task_run_id.in_(_ended_run_ids()))
+        .values(
+            status=PRQueueStatus.CANCELLED,
+            processed_at=datetime.now(timezone.utc),
+            error_message=_RUN_ENDED_REASON,
+        )
+    )
+    if cancelled.rowcount:
+        log.warning("pr_throttle.recovered_creating_run_ended", count=cancelled.rowcount)
+
+    result = await session.execute(
         update(PRCreationQueue)
         .where(PRCreationQueue.status == PRQueueStatus.CREATING)
         .values(status=PRQueueStatus.PENDING)
     )
-    result = await session.execute(stmt)
     count = result.rowcount
     if count:
         log.info("pr_throttle.recovered_creating", count=count)
@@ -408,6 +616,8 @@ class PRThrottleLoop:
         self._project_dir = project_dir
         self._stop_event = stop_event
         self._wake_event = asyncio.Event()
+        # Stamped into this process's heartbeat file so this loop only clears a heartbeat it wrote itself.
+        self._heartbeat_owner = f"{os.getpid()}:{uuid.uuid4().hex}"
 
     def reload_config(self, config: CodeRabbitQuotaConfig) -> None:
         """Hot-reload config (called by settings router after TOML update)."""
@@ -423,21 +633,50 @@ class PRThrottleLoop:
         finally:
             self._wake_event.clear()
 
-    async def run(self) -> None:
-        """Main loop: process queue entries, then sleep between iterations."""
+    def _beat(self) -> None:
+        """Touch the heartbeat that tells ``CreatePRStep`` this project's queue is being drained."""
+        if self._project_dir is not None:
+            touch_heartbeat(self._project_dir, self._heartbeat_owner)
+
+    async def _beat_while_processing(self) -> None:
+        """Touch the heartbeat every interval until cancelled.
+
+        A queue pass runs ``gh pr create`` and its side effects one after another, each allowed minutes,
+        so a slow pass could outlast the heartbeat's maximum age and send a concurrent ``CreatePRStep``
+        down the direct path past the quota.
+        """
         while True:
-            if self._stop_event and self._stop_event.is_set():
-                break
-            try:
-                async with await self._session_factory() as session:
-                    await process_queue(
-                        session,
-                        self._config,
-                        project_slug=self._project_slug,
-                        project_dir=self._project_dir,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 (background loop must survive any single-cycle error)
-                log.warning("pr_throttle.loop_error", exc_info=True)
-            await self._interruptible_sleep(_PROCESS_INTERVAL_SECONDS)
+            self._beat()
+            await asyncio.sleep(_PROCESS_INTERVAL_SECONDS)
+
+    async def run(self) -> None:
+        """Main loop: process queue entries, then sleep between iterations.
+
+        The heartbeat is removed on every way out (stop event, cancellation at shutdown), so a stopped
+        loop stops reading as alive and ``CreatePRStep`` falls back to direct creation immediately, unless
+        a sibling process serving the same project still beats its own file (see ``clear_heartbeat``).
+        """
+        try:
+            while True:
+                if self._stop_event and self._stop_event.is_set():
+                    break
+                beater = asyncio.create_task(self._beat_while_processing())
+                try:
+                    async with await self._session_factory() as session:
+                        await process_queue(
+                            session,
+                            self._config,
+                            project_slug=self._project_slug,
+                            project_dir=self._project_dir,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 (background loop must survive any single-cycle error)
+                    log.warning("pr_throttle.loop_error", exc_info=True)
+                finally:
+                    beater.cancel()
+                self._beat()
+                await self._interruptible_sleep(_PROCESS_INTERVAL_SECONDS)
+        finally:
+            if self._project_dir is not None:
+                clear_heartbeat(self._project_dir, self._heartbeat_owner)

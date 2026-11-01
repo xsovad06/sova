@@ -253,6 +253,9 @@ async def _handle_terminal_status(task_run: object, file_handoff: dict | None, s
     # consumer of TaskRun.handoff_json can always find it.
     if not task_run.handoff_json:
         _apply_file_handoff(task_run, file_handoff, run_id)
+    # A run that ended must not leave a pending PR queue entry for the throttle loop to create a PR from
+    # later; the create_pr step cancels its own, so this catches one a killed subprocess never reached.
+    await _dequeue_pr_entry(session, run_id)
     await _finalize_orphaned_steps(session, run_id)
 
 
@@ -301,13 +304,19 @@ def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState
 
 
 async def _dequeue_pr_entry(session: object, run_id: int) -> None:
-    """Cancel pending PR queue entry on terminal transition."""
+    """Cancel pending PR queue entries on terminal transition.
+
+    Runs inside the caller's finalize transaction, so the dequeue gets a savepoint: a failed statement
+    otherwise leaves the session needing a rollback, and the handoff and step finalization that follow
+    would be lost with it.
+    """
     try:
         from sova.supervisor.pr_throttle import dequeue as pr_dequeue
 
-        await pr_dequeue(session, task_run_id=run_id)
+        async with session.begin_nested():
+            await pr_dequeue(session, task_run_id=run_id)
     except (SQLAlchemyError, OSError):
-        log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
+        log.warning("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
 
 
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> bool:

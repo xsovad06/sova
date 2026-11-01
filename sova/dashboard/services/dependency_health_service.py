@@ -41,11 +41,8 @@ _OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 _NPM_REGISTRY_URL = "https://registry.npmjs.org/{name}"
 _PYPI_REGISTRY_URL = "https://pypi.org/pypi/{name}/json"
 
-# The lookbehind anchors a match to the start of a digit run: atomic groups alone stop backtracking
-# within one attempt, but search() would still retry at every offset inside a long run (quadratic).
-# S8786 still reports this pattern as super-linear, a false positive: every offset inside a digit run
-# fails the lookbehind at once, and test_version_re_adversarial pins the linear runtime.
-_VERSION_RE = re.compile(r"(?<!\d)(?>(\d+))\.(?>(\d+))\.(?>(\d+))")  # NOSONAR(S8786)
+# A version component longer than this is treated as unparseable rather than handed to int().
+_MAX_VERSION_COMPONENT_DIGITS = 18
 _NPM_RANGE_PREFIX_RE = re.compile(r"^[\^~>=<\s]+")
 _PEP508_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 _PEP508_OPERATORS = ("==", ">=", "<=", "~=")
@@ -107,10 +104,38 @@ def _parse_version(raw: str | None) -> tuple[int, int, int] | None:
     """Extract a (major, minor, patch) tuple from the leading numeric part of a version string."""
     if not raw:
         return None
-    match = _VERSION_RE.search(raw)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+    # A hand-rolled scan rather than a regex: search() for digits-dot-digits retries from every position
+    # inside a long digit run, which is quadratic. Each run start here is tried once and reads at most
+    # three runs, so the whole scan is linear.
+    pos = 0
+    while pos < len(raw):
+        if not raw[pos].isdecimal():
+            pos += 1
+            continue
+        parts: list[str] = []
+        start = pos
+        while True:
+            end = _digit_run_end(raw, start)
+            parts.append(raw[start:end])
+            if len(parts) == 3:
+                # int() raises ValueError past Python's 4300-digit string limit, and a registry response
+                # is untrusted; no real version component comes anywhere near this bound.
+                if any(len(part) > _MAX_VERSION_COMPONENT_DIGITS for part in parts):
+                    return None
+                return int(parts[0]), int(parts[1]), int(parts[2])
+            if not (raw.startswith(".", end) and end + 1 < len(raw) and raw[end + 1].isdecimal()):
+                break
+            start = end + 1
+        pos = _digit_run_end(raw, pos)
+    return None
+
+
+def _digit_run_end(raw: str, start: int) -> int:
+    """Index just past the run of decimal digits beginning at *start*."""
+    end = start
+    while end < len(raw) and raw[end].isdecimal():
+        end += 1
+    return end
 
 
 def _lag_category(current: str | None, latest: str | None) -> str:
