@@ -14,11 +14,11 @@ ORM conventions, session management, and migration patterns for SOVA's async SQL
 Always acquire sessions with the async context manager pattern:
 
 ```python
-# CORRECT -- auto-closes on exit
+# CORRECT: auto-closes on exit
 async with await get_session() as session:
     result = await session.execute(select(TaskRun))
 
-# WRONG -- leaks sessions on exception
+# WRONG: leaks sessions on exception
 session = await get_session()
 result = await session.execute(select(TaskRun))
 await session.close()
@@ -69,7 +69,7 @@ Two related frozensets in `sova/core/state.py`:
 # State machine terminals (3 states)
 _TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})
 
-# DB query terminals (4 states -- includes "interrupted")
+# DB query terminals (4 states, including "interrupted")
 TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})
 ```
 

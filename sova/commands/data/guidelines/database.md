@@ -7,11 +7,11 @@ ORM conventions, session management, and migration patterns for {{ project_name 
 Always acquire sessions with the async context manager pattern:
 
 ```python
-# Correct -- auto-closes on exit
+# Correct: auto-closes on exit
 async with await get_session() as session:
     result = await session.execute(select(Model))
 
-# Wrong -- leaks sessions on exception
+# Wrong: leaks sessions on exception
 session = await get_session()
 result = await session.execute(select(Model))
 await session.close()
