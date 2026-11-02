@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -17,6 +18,7 @@ from sova.supervisor.dependency_graph import (
     DependencyGraph,
     _get_spec_meta,
     _graph_cache,
+    _graph_cache_generation,
     build_dependency_graph,
     invalidate_graph_cache,
     is_human_only,
@@ -32,8 +34,10 @@ from sova.supervisor.suitability import Suitability, SuitabilityMode, rank_next_
 def _clear_graph_cache():
     """Prevent graph cache leaking between tests."""
     _graph_cache.clear()
+    _graph_cache_generation.clear()
     yield
     _graph_cache.clear()
+    _graph_cache_generation.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +983,68 @@ class TestBuildDependencyGraph:
         assert _builds(adapter2) == 1
         assert "org/repo-a" in _graph_cache
         assert "org/repo-b" in _graph_cache
+
+
+class TestGraphCacheInvalidationRace:
+    """A build already fetching when the cache is invalidated must not re-cache its stale snapshot."""
+
+    @staticmethod
+    def _gated_adapter(repo: str):
+        adapter = AsyncMock()
+        adapter.repo = repo
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        listings: list[str] = []
+
+        async def list_tasks(filters):
+            listings.append(filters.state)
+            if filters.state == "all" and not entered.is_set():
+                entered.set()
+                await release.wait()
+            return [_task(1)]
+
+        adapter.list_tasks.side_effect = list_tasks
+        adapter.get_task = AsyncMock()
+        return adapter, entered, release
+
+    @pytest.mark.asyncio
+    async def test_a_build_in_flight_across_an_invalidation_returns_its_graph_but_does_not_cache_it(self) -> None:
+        adapter, entered, release = self._gated_adapter("owner/repo")
+
+        build = asyncio.create_task(build_dependency_graph(adapter))
+        await entered.wait()
+        invalidate_graph_cache("owner/repo")
+        release.set()
+        graph = await build
+
+        assert graph.has_task(1)
+        assert "owner/repo" not in _graph_cache
+        await build_dependency_graph(adapter)
+        assert _builds(adapter) == 2
+
+    @pytest.mark.asyncio
+    async def test_invalidating_every_repo_also_covers_a_build_in_flight(self) -> None:
+        adapter, entered, release = self._gated_adapter("owner/repo")
+
+        build = asyncio.create_task(build_dependency_graph(adapter))
+        await entered.wait()
+        invalidate_graph_cache()
+        release.set()
+        await build
+
+        assert "owner/repo" not in _graph_cache
+
+    @pytest.mark.asyncio
+    async def test_invalidating_another_repo_does_not_stop_the_build_being_cached(self) -> None:
+        adapter, entered, release = self._gated_adapter("owner/repo")
+
+        build = asyncio.create_task(build_dependency_graph(adapter))
+        await entered.wait()
+        invalidate_graph_cache("owner/other")
+        release.set()
+        await build
+
+        assert "owner/repo" in _graph_cache
 
 
 class TestBuildDependencyGraphIssueWindow:

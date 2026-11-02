@@ -29,6 +29,10 @@ log = get_logger(component="supervisor.dependency_graph")
 
 _GRAPH_CACHE_TTL = 180.0  # 3 minutes
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
+# Bumped by every invalidation of a repo. A build captures it before its first await and caches only if
+# it is unchanged, so a fetch that began before an invalidation (an agent spawn or epic close) cannot put
+# its pre-invalidation snapshot back for the rest of the TTL.
+_graph_cache_generation: dict[str, int] = {}
 # How many of the most recent issues (open and closed) one build asks the tracker for.
 _GRAPH_ISSUE_LIMIT = 500
 
@@ -496,11 +500,15 @@ def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int
 
 
 def invalidate_graph_cache(repo: str = "") -> None:
-    """Force the next ``build_dependency_graph`` call to rebuild from the API."""
-    if repo:
-        _graph_cache.pop(repo, None)
-    else:
-        _graph_cache.clear()
+    """Force the next ``build_dependency_graph`` call to rebuild from the API.
+
+    A build already in flight is not cached either: it fetched before this call, so what it
+    holds predates whatever triggered the invalidation.
+    """
+    keys = [repo] if repo else list(set(_graph_cache) | set(_graph_cache_generation))
+    for key in keys:
+        _graph_cache.pop(key, None)
+        _graph_cache_generation[key] = _graph_cache_generation.get(key, 0) + 1
 
 
 async def _with_every_open_issue(adapter: TaskAdapter, window: list[Task], milestone: str) -> list[Task]:
@@ -553,7 +561,11 @@ async def build_dependency_graph(
     filtered builds bypass the cache (rare, manual-only path).
     """
     repo_key = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
-    if not milestone and repo_key:
+    cacheable = not milestone and bool(repo_key)
+    # setdefault, not get: the key must exist before the awaits below so a concurrent
+    # invalidate_graph_cache() can see and bump it.
+    generation = _graph_cache_generation.setdefault(repo_key, 0) if cacheable else 0
+    if cacheable:
         now = time.monotonic()
         cached = _graph_cache.get(repo_key)
         if cached is not None and (now - cached[0]) < _GRAPH_CACHE_TTL:
@@ -616,6 +628,7 @@ async def build_dependency_graph(
                 task_map[int(dep_task.id)] = dep_task
 
     graph = DependencyGraph(list(task_map.values()), requested=requested)
-    if not milestone and repo_key:
+    # Still returned when an invalidation raced it: this caller asked before it, only the cache must not keep it.
+    if cacheable and _graph_cache_generation.get(repo_key, 0) == generation:
         _graph_cache[repo_key] = (time.monotonic(), graph)
     return graph
