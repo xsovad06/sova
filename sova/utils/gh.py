@@ -380,7 +380,9 @@ async def resolve_linked_issue(
     so a "Part of #<epic>" mention written earlier in ``## Summary`` never
     wins over the PR's own issue rendered under ``## Issue``.
 
-    Returns the issue number as a string, or None if no link is found.
+    Returns the issue number as a string, or None if the body has no link.
+    Raises RuntimeError when the PR body cannot be fetched or parsed, so a
+    failed lookup is never mistaken for a PR without a linked issue.
     """
     env = await resolve_gh_env(github_user)
     result = await run(
@@ -396,13 +398,13 @@ async def resolve_linked_issue(
     )
     if not result.success:
         log.warning("gh.pr_view_failed", pr=pr_number, stderr=result.stderr[:200])
-        return None
+        raise RuntimeError(f"Failed to fetch PR #{pr_number} body: {result.stderr[:200]}")
 
     try:
-        body = json.loads(result.stdout).get("body", "")
-    except (json.JSONDecodeError, TypeError):
+        body = json.loads(result.stdout).get("body", "") or ""
+    except (json.JSONDecodeError, TypeError, AttributeError) as exc:
         log.warning("gh.pr_body_parse_failed", pr=pr_number)
-        return None
+        raise RuntimeError(f"Failed to parse PR #{pr_number} body: {result.stdout[:200]}") from exc
 
     match = CLOSES_RE.search(body) or _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
     if match:

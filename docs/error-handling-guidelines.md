@@ -48,6 +48,7 @@ All logging uses structlog (`sova/utils/logging.py`).
 
 ```python
 from sova.utils.logging import get_logger
+
 log = get_logger(component="module.name")
 ```
 

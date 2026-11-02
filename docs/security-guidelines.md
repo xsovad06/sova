@@ -76,11 +76,19 @@ cmd_parts.extend(["--role", shlex.quote(role)])
 `sova/git/safety.py` holds `SUSPICIOUS_PATHS` and `unstage_suspicious_files()`, shared by `sova/git/branch.py:commit()` (raises `RuntimeError` on a match) and `sova/git/worktree.py:preserve_partial_work()` (logs a warning and fails closed instead, since that caller must not abort entirely just because a secret was mixed in with real partial work):
 
 ```python
-SUSPICIOUS_PATHS = frozenset({
-    ".venv", ".env", ".env.local", "credentials.json",
-    ".secrets", "node_modules", ".DS_Store", "__pycache__",
-    ".mcp.json",
-})
+SUSPICIOUS_PATHS = frozenset(
+    {
+        ".venv",
+        ".env",
+        ".env.local",
+        "credentials.json",
+        ".secrets",
+        "node_modules",
+        ".DS_Store",
+        "__pycache__",
+        ".mcp.json",
+    }
+)
 ```
 
 `.mcp.json` (project root, outside `.claude/`) can hold a plaintext MCP sidecar token (see `sova/cli/commands/project.py`'s Atlassian sidecar config), so it needs the same guard as `.env`. It is also gitignored in this repo's own `.gitignore` for the same reason; `sova/utils/mcp_config.py` already writes it with mode 0600.
@@ -95,10 +103,10 @@ SUSPICIOUS_PATHS = frozenset({
 _SENSITIVE_PATTERNS = re.compile(
     r"(?i)"
     r"(?:token|secret|password|api[_-]?key|authorization)[=:\s]+\S+"
-    r"|ghp_[A-Za-z0-9]{36}"           # GitHub classic PAT
-    r"|ghs_[A-Za-z0-9]{36}"           # GitHub OAuth token
-    r"|github_pat_[A-Za-z0-9_]{82}"   # GitHub fine-grained PAT
-    r"|sk-[A-Za-z0-9]{48}"            # OpenAI key
+    r"|ghp_[A-Za-z0-9]{36}"  # GitHub classic PAT
+    r"|ghs_[A-Za-z0-9]{36}"  # GitHub OAuth token
+    r"|github_pat_[A-Za-z0-9_]{82}"  # GitHub fine-grained PAT
+    r"|sk-[A-Za-z0-9]{48}"  # OpenAI key
 )
 ```
 

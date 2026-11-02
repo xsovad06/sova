@@ -274,7 +274,13 @@ def build_action_command(action: dict) -> dict:
             command = command or cmd_name
 
     if mode == "agent":
-        ticket = args.get("issue") or args.get("ticket") or str(args.get("pr", ""))
+        # An explicitly empty issue (a reviewer handoff on a PR with no linked
+        # issue) stays empty, as on the auto-execute path: start_agent() then
+        # works from pr_number instead of taking the PR number as an issue.
+        if "issue" in args or "ticket" in args:
+            ticket = str(args.get("issue") or args.get("ticket") or "")
+        else:
+            ticket = str(args.get("pr", ""))
         return {"type": "agent", "issue": ticket, "role": args.get("role"), "pr_number": args.get("pr")}
 
     if mode == "claude-command":

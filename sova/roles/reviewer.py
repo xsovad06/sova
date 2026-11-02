@@ -33,12 +33,14 @@ from sova.git.operations import (
     get_pr_diff,
     get_pr_files,
     get_pr_head_sha,
+    get_pr_title_body_state,
 )
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
     HandoffAction,
+    read_all_handoff_files,
     read_handoff_file,
     write_handoff,
     write_handoff_file,
@@ -205,15 +207,9 @@ class ReviewerRole(AgentRole):
                 await self._clear_current_step(ctx)
 
     async def _execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
-
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not in valid state for review",
-                error=f"Precondition failed: issue is in {task.state}, "
-                f"expected one of {', '.join(self.allowed_input_states)}",
-            )
+        task = await self._resolve_task(ctx)
+        if isinstance(task, RoleResult):
+            return task
 
         error_msg, head_sha = await self._discover_pr(ctx)
         if error_msg:
@@ -278,6 +274,50 @@ class ReviewerRole(AgentRole):
             findings=[f.description for f in review.findings],
         )
 
+    async def _resolve_task(self, ctx: ExecutionContext) -> Task | RoleResult:
+        """Resolve the task under review, or the failed result that stops the run.
+
+        A run with an issue reviews that issue, gated on its state. A run without
+        one (address-pr handoff on a PR with no linked issue) reviews the PR itself.
+        """
+        if ctx.has_issue:
+            task = await ctx.adapter.get_task(ctx.issue_number)
+            if not self.validate_preconditions(task, force=ctx.force):
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} not in valid state for review",
+                    error=f"Precondition failed: issue is in {task.state}, "
+                    f"expected one of {', '.join(self.allowed_input_states)}",
+                )
+            return task
+        if ctx.pr_number:
+            return await self._task_from_pr(ctx)
+        msg = "Issue-less review requires a PR number"
+        return RoleResult(success=False, summary=msg, error=msg)
+
+    async def _task_from_pr(self, ctx: ExecutionContext) -> Task | RoleResult:
+        """Build the review task from the PR title and body when the run has no issue.
+
+        The PR's own state stands in for the issue precondition: a closed or
+        merged PR is not reviewed unless forced. A failed fetch fails open with
+        a placeholder title, since an unverifiable state is not a closed PR.
+        """
+        title, body, state = f"PR #{ctx.pr_number}", "", ""
+        try:
+            pr_title, body, state = await get_pr_title_body_state(
+                ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user
+            )
+            title = pr_title or title
+        except (RuntimeError, OSError):
+            log.warning("reviewer.pr_text_fetch_failed", pr=ctx.pr_number, exc_info=True)
+        if state and state != "OPEN" and not ctx.force:
+            return RoleResult(
+                success=False,
+                summary=f"PR #{ctx.pr_number} not in valid state for review",
+                error=f"Precondition failed: PR is {state}, expected OPEN",
+            )
+        return Task(id="", title=title, body=body, state=TaskState.IN_REVIEW)
+
     async def _discover_pr(self, ctx: ExecutionContext) -> tuple[str | None, str]:
         """Discover PR number and branch for the issue.
 
@@ -320,16 +360,24 @@ class ReviewerRole(AgentRole):
         """Load addressed external findings from the developer's handoff.
 
         Three sources (tried in order):
-        1. File-based handoff for this issue
+        1. File-based handoff for this issue (for an issue-less run, the newest
+           handoff file whose ``pr_number`` is this PR)
         2. Resume run's DB handoff (when spawned with --resume)
         3. Recent developer TaskRuns for this issue (DB fallback, loops
            through up to 10 runs to skip address-review cycles that don't
            populate addressed_findings)
         """
         try:
-            handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number or None)
-            if handoff and handoff.details.get("addressed_findings"):
-                return handoff.details["addressed_findings"]
+            if ctx.has_issue:
+                handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number)
+                handoffs = [handoff] if handoff else []
+            else:
+                # An issue-less handoff shares the legacy file with every other such run, and
+                # the newest file may be another PR's, so select by PR rather than by recency.
+                handoffs = [h for h in read_all_handoff_files(ctx.project_dir) if h.pr_number == ctx.pr_number]
+            for handoff in handoffs:
+                if handoff.details.get("addressed_findings"):
+                    return handoff.details["addressed_findings"]
         except (OSError, ValueError):
             log.debug("reviewer.addressed_findings_file_failed", exc_info=True)
 
@@ -914,6 +962,8 @@ class ReviewerRole(AgentRole):
 
     def _append_review_rationale(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Append review rationale to spec for findings with severity >= 5."""
+        if not ctx.has_issue:
+            return
         try:
             from sova.core.steps._spec_helpers import SECTION_REVIEW_RATIONALE, append_spec_section
 

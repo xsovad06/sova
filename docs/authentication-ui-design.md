@@ -345,11 +345,14 @@ Not built, and not currently planned: an audit log of auth events, multiple save
 def test_store_and_retrieve_credentials():
     """Credentials stored in keyring should be retrievable"""
 
+
 def test_provider_detection():
     """Correct provider should be detected from credentials"""
 
+
 def test_keyring_fallback():
     """Should fall back to env vars if keyring unavailable"""
+
 
 def test_api_key_validation():
     """Valid/invalid API keys should be detected"""
@@ -362,11 +365,14 @@ def test_api_key_validation():
 def test_auth_status_endpoint():
     """GET /api/auth/status should return current provider"""
 
+
 def test_setup_flow_claude_code():
     """Full Claude Code login flow should work"""
 
+
 def test_setup_flow_anthropic():
     """Full Anthropic API setup flow should work"""
+
 
 def test_provider_switch():
     """Switching providers should clear old credentials"""
@@ -379,8 +385,10 @@ def test_provider_switch():
 def test_first_time_setup():
     """New user should complete setup via UI"""
 
+
 def test_invalid_api_key_rejected():
     """Invalid keys should show error message"""
+
 
 def test_reauth_prompt_on_failure():
     """Agent failure should trigger reauth prompt"""

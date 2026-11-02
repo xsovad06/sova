@@ -35,7 +35,7 @@ SQLAlchemy `JSON` defaults to `none_as_null=False`. Python `None` becomes JSON `
 ## Terminal Status Sets
 
 ```python
-_TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})         # state machine
+_TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})  # state machine
 TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})  # DB queries
 ```
 Use `TASK_RUN_TERMINAL` for DB queries. Always guard finalization:

@@ -413,6 +413,49 @@ class TestPRCommands:
         result = runner.invoke(app, ["review-pr", "--help"])
         assert result.exit_code == 0
 
+    async def test_review_pr_without_linked_issue_reviews_pr_alone(self, tmp_path: Path) -> None:
+        """An unlinked PR runs the reviewer with no issue, not with the PR number posing as one."""
+        from sova.cli.commands.pr import _review_pr
+        from sova.roles.base import RoleResult
+
+        execute = AsyncMock(return_value=RoleResult(success=True, summary="Reviewed PR #60: 0 findings"))
+        with (
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.utils.gh.resolve_linked_issue", new_callable=AsyncMock, return_value=None),
+            patch("sova.roles.reviewer.ReviewerRole.execute", execute),
+        ):
+            await _review_pr(pr=60, project_dir=tmp_path)
+
+        ctx = execute.await_args.args[0]
+        assert ctx.issue_number == ""
+        assert ctx.pr_number == 60
+
+    async def test_review_pr_exits_when_linked_issue_lookup_fails(self, tmp_path: Path) -> None:
+        """A failed lookup is not an unlinked PR: it must not silently review without the issue."""
+        import typer
+
+        from sova.cli.commands.pr import _review_pr
+
+        execute = AsyncMock()
+        with (
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch(
+                "sova.utils.gh.resolve_linked_issue",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Failed to fetch PR #60 body"),
+            ),
+            patch("sova.roles.reviewer.ReviewerRole.execute", execute),
+            pytest.raises(typer.Exit) as exc_info,
+        ):
+            await _review_pr(pr=60, project_dir=tmp_path)
+
+        assert exc_info.value.exit_code == 1
+        execute.assert_not_called()
+
     def test_learn_from_pr_help(self) -> None:
         from sova.cli.app import app
 

@@ -770,6 +770,23 @@ async def get_pr_body(pr_number: int, *, repo: str, github_user: str = "") -> st
     return data.get("body", "") or ""
 
 
+async def get_pr_title_body_state(pr_number: int, *, repo: str, github_user: str = "") -> tuple[str, str, str]:
+    """Fetch a pull request's title, body and state (``OPEN``/``CLOSED``/``MERGED``) via gh CLI in one call."""
+    env = await resolve_gh_env(github_user)
+    result = await run("gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "title,body,state", env=env)
+    _track_gh_rate_limit(result, github_user)
+
+    if not result.success:
+        raise RuntimeError(f"Failed to get title, body and state for PR #{pr_number}: {result.stderr[:200]}")
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse PR #{pr_number} response: {result.stdout[:200]}") from exc
+
+    return data.get("title", "") or "", data.get("body", "") or "", data.get("state", "") or ""
+
+
 async def update_pr_body(pr_number: int, *, body: str, repo: str, github_user: str = "") -> None:
     """Overwrite a pull request's body via gh CLI."""
     log.info("git.update_pr_body", pr=pr_number)
