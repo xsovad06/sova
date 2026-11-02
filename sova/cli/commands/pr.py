@@ -112,14 +112,18 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
 
     console.print(f"[bold]Reviewing PR #{pr}...[/bold]")
 
-    issue_number = await resolve_linked_issue(
-        pr,
-        repo=config.github_repo,
-        github_user=config.github_user,
-    )
+    try:
+        issue_number = await resolve_linked_issue(
+            pr,
+            repo=config.github_repo,
+            github_user=config.github_user,
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]Could not resolve the linked issue of PR #{pr}: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
     if not issue_number:
-        console.print(f"[yellow]Could not resolve linked issue from PR #{pr}, using PR number.[/yellow]")
-        issue_number = str(pr)
+        console.print(f"[yellow]PR #{pr} has no linked issue, reviewing the PR on its own.[/yellow]")
+        issue_number = ""
 
     ctx = ExecutionContext(
         project_dir=resolved_dir,

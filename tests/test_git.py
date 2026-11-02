@@ -1226,6 +1226,23 @@ class TestResolveLinkedIssue:
             result = await resolve_linked_issue(99, repo="user/repo")
             assert result == "42"
 
+    async def test_returns_none_when_body_has_no_link(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": None}))
+            assert await resolve_linked_issue(99, repo="user/repo") is None
+
+    @pytest.mark.parametrize("response", [_shell_fail(), _shell_ok(stdout="not json"), _shell_ok(stdout="[]")])
+    async def test_raises_when_lookup_fails(self, response: ShellResult) -> None:
+        """A failed fetch or unparseable body must not read as a PR without a linked issue."""
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = response
+            with pytest.raises(RuntimeError, match="PR #99 body"):
+                await resolve_linked_issue(99, repo="user/repo")
+
 
 class TestClosingKeywordSharing:
     """Every closing-reference pattern builds from one CLOSING_KEYWORDS constant."""
