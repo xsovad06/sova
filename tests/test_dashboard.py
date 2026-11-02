@@ -3284,6 +3284,19 @@ class TestBuildActionCommand:
         )
         assert result["issue"] == "99"
 
+    def test_keeps_explicitly_empty_issue(self) -> None:
+        """An issue-less reviewer handoff must not turn its PR number into an issue number."""
+        from sova.dashboard.services.handoff_service import build_action_command
+
+        result = build_action_command(
+            {
+                "mode": "agent",
+                "args": {"issue": "", "pr": 60, "role": "developer"},
+            }
+        )
+        assert result["issue"] == ""
+        assert result["pr_number"] == 60
+
 
 # ---------------------------------------------------------------------------
 # Auto-handoff orchestration
