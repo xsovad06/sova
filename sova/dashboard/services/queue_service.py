@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
+from sova.adapters.milestone import extract_phase_order
 from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
@@ -63,8 +63,6 @@ def _milestone_badge(milestone: str) -> str:
     return milestone.split(":")[0].strip()[:8]
 
 
-_PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
-
 _QUEUE_CACHE_TTL = 120  # seconds
 # Caches only the adapter's sorted task list (the GitHub/Jira round trip). The
 # local enrichment (last_run from the DB, spec_status from spec files) is
@@ -99,17 +97,6 @@ def invalidate_queue_cache(project_dir: Path) -> None:
         _queue_cache_generation[key] = _queue_cache_generation.get(key, 0) + 1
 
 
-def _extract_phase_order(milestone: str | None) -> int:
-    """Extract phase number from milestone title. Lower = earlier phase.
-
-    Supports: 'Phase 1: Ship It', 'Phase 2', 'P1: ...', 'P2'.
-    """
-    if not milestone:
-        return 99
-    m = _PHASE_RE.match(milestone.strip())
-    return int(m.group(1)) if m else 99
-
-
 async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     """Fetch open issues and return a priority-sorted queue.
 
@@ -127,7 +114,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     queue = []
     for t in actionable:
         priority = _STATE_PRIORITY.get(t.state, 99)
-        phase_order = _extract_phase_order(t.milestone)
+        phase_order = extract_phase_order(t.milestone)
         queue.append(
             {
                 "issue": t.id,
@@ -207,7 +194,7 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
     actionable.sort(
         key=lambda t: (
             _STATE_PRIORITY.get(t.state, 99),
-            _extract_phase_order(t.milestone),
+            extract_phase_order(t.milestone),
             t.priority.rank,
             t.metadata.get("created_at", "9999"),
         )

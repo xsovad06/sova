@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.adapters.base import Task, TaskState
 from sova.dashboard.services.work_item_service import (
+    GraphConfigError,
     PRFacts,
     Resolution,
     WorkItemState,
@@ -15,6 +18,7 @@ from sova.dashboard.services.work_item_service import (
     _attach_merge_blockers,
     _build_pr_item,
     _build_task_item,
+    _classify_queue_item,
     _extract_handoff_summary,
     _format_pr_details,
     _format_running_agent,
@@ -23,13 +27,39 @@ from sova.dashboard.services.work_item_service import (
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
+    _load_graph_or_none,
+    _parse_issue_number,
     _sort_items,
+    cancel_graph_builds,
     compute_work_item_resolution,
     compute_work_item_state,
     describe_reason_chain,
+    get_next_tasks,
     get_work_items,
+    load_dependency_graph,
+    load_ranking_graph,
+    next_task_exclusions,
+    rank_graph_entries,
+    ranked_task_payload,
     resolve_next_action,
 )
+from sova.supervisor.dependency_graph import DependencyGraph
+from sova.supervisor.suitability import rank_next_tasks
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dependency_graph():
+    """get_work_items() loads the dependency graph; keep every test off the real tracker.
+
+    An empty graph is what a project with no tracked issues yields, so each queue
+    task classifies as blocked ("graph unavailable") unless a test supplies its own graph.
+    """
+    with patch(
+        "sova.dashboard.services.work_item_service.load_dependency_graph",
+        new_callable=AsyncMock,
+        return_value=DependencyGraph([]),
+    ) as mock_load:
+        yield mock_load
 
 
 def _state(**kwargs: object) -> WorkItemState:
@@ -2873,3 +2903,1172 @@ class TestJiraDisplayName:
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Suitability on work items and the ranked next-task list
+# ---------------------------------------------------------------------------
+
+
+def _graph_task(
+    issue: int,
+    *,
+    labels: list[str] | None = None,
+    state: TaskState = TaskState.RESEARCHED,
+    body: str = "",
+    milestone: str = "",
+    ready: bool = True,
+) -> Task:
+    from sova.adapters.priority import Priority
+
+    all_labels = list(labels or [])
+    if ready:
+        all_labels.append("agent:ready")
+    return Task(
+        id=str(issue),
+        title=f"Issue #{issue}",
+        body=body,
+        state=state,
+        labels=all_labels,
+        milestone=milestone,
+        url=f"https://github.com/o/r/issues/{issue}",
+        priority=Priority.from_labels(all_labels),
+    )
+
+
+def _queue_entry(issue: str, labels: list[str] | None = None, state: str = "researched") -> dict:
+    return {"issue": issue, "title": f"Issue {issue}", "state": state, "labels": labels or [], "priority": 0}
+
+
+class TestWorkItemSuitability:
+    """Every task work item carries a suitability object classified from the cached graph."""
+
+    @pytest.fixture
+    def _sources(self):
+        with (
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_all_sources",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=MagicMock(max_concurrent=3)),
+        ):
+            yield mock_fetch
+
+    @staticmethod
+    def _suitability(result: dict, issue: str) -> dict | None:
+        return next(i for i in result["items"] if i["issue_number"] == issue)["suitability"]
+
+    @pytest.mark.asyncio
+    async def test_mode_matches_the_graph_node(self, _sources, _no_real_dependency_graph) -> None:
+        tasks = [
+            _graph_task(1, state=TaskState.BACKLOG, ready=False),
+            _graph_task(2, body="## Dependencies\n- #1\n"),
+            _graph_task(3),
+            _graph_task(4, labels=["agent:human-only"]),
+            _graph_task(5, ready=False),
+        ]
+        graph = DependencyGraph(tasks)
+        _no_real_dependency_graph.return_value = graph
+        _sources.return_value = (
+            [_queue_entry(str(t.id), list(t.labels)) for t in tasks],
+            [],
+            [],
+            {"agents": [], "completed": []},
+        )
+
+        result = await get_work_items()
+
+        nodes = {n["id"]: n["suitability"] for n in graph.to_dict()["nodes"]}
+        for issue_id, node in nodes.items():
+            item = self._suitability(result, str(issue_id))
+            assert item == {"mode": node["mode"], "reasons": node["reasons"], "blocked_by": node["blocked_by"]}
+        assert self._suitability(result, "3")["mode"] == "autonomous"
+        assert self._suitability(result, "2")["blocked_by"] == [1]
+
+    @pytest.mark.asyncio
+    async def test_suitability_has_exactly_three_fields(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(3)])
+        _sources.return_value = ([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert set(self._suitability(result, "3")) == {"mode", "reasons", "blocked_by"}
+
+    @pytest.mark.asyncio
+    async def test_graph_task_wins_over_stale_queue_labels(self, _sources, _no_real_dependency_graph) -> None:
+        """The queue cache (120s) and graph cache (180s) can disagree; the graph's own Task decides."""
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(3, labels=["agent:human-only"])])
+        _sources.return_value = ([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "3")["mode"] == "human"
+
+    @pytest.mark.asyncio
+    async def test_issue_absent_from_the_graph_is_blocked_never_autonomous(
+        self, _sources, _no_real_dependency_graph
+    ) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(1)])
+        _sources.return_value = ([_queue_entry("9", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "9") == {
+            "mode": "blocked",
+            "reasons": [{"source": "graph", "value": "missing"}],
+            "blocked_by": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_issue_written_with_a_hash_and_absent_from_the_graph_is_missing(
+        self, _sources, _no_real_dependency_graph
+    ) -> None:
+        """ "#9" names an issue, so a graph that lacks it has a gap; it is not a non-numeric id."""
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(1)])
+        _sources.return_value = ([_queue_entry("#9", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "#9")["reasons"] == [{"source": "graph", "value": "missing"}]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("label", "mode", "reason"),
+        [
+            ("type: epic", "epic", {"source": "label", "value": "type: epic"}),
+            ("agent:human-only", "human", {"source": "label", "value": "agent:human-only"}),
+            ("agent:on-hold", "blocked", {"source": "label", "value": "agent:on-hold"}),
+        ],
+    )
+    async def test_a_label_driven_mode_keeps_its_own_reason_for_an_issue_absent_from_the_graph(
+        self, _sources, _no_real_dependency_graph, label, mode, reason
+    ) -> None:
+        """Only the classifier's own graph-gap reason is refined to `missing`; a label reason is never touched."""
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(1)])
+        _sources.return_value = ([_queue_entry("9", [label])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "9")["mode"] == mode
+        assert self._suitability(result, "9")["reasons"] == [reason]
+
+    @pytest.mark.asyncio
+    async def test_no_graph_at_all_is_unavailable_not_missing(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+        _sources.return_value = ([_queue_entry("9", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "9")["reasons"] == [{"source": "graph", "value": "unavailable"}]
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_issue_id_is_blocked_with_the_graph_unavailable_reason(
+        self, _sources, _no_real_dependency_graph
+    ) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(1)])
+        _sources.return_value = ([_queue_entry("PROJ-7", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert self._suitability(result, "PROJ-7")["mode"] == "blocked"
+        assert self._suitability(result, "PROJ-7")["reasons"] == [{"source": "graph", "value": "unavailable"}]
+
+    @pytest.mark.parametrize(
+        ("issue", "mode"),
+        [("3", "autonomous"), ("#3", "autonomous"), ("\u00b3", "blocked")],
+    )
+    def test_a_digit_int_rejects_classifies_instead_of_raising(self, issue: str, mode: str) -> None:
+        """`str.isdigit()` is True for a superscript three, which `int()` raises on; it must classify, not fail."""
+        graph = DependencyGraph([_graph_task(3)])
+
+        assert _classify_queue_item(_queue_entry(issue, ["agent:ready"]), graph)["mode"] == mode
+
+    @pytest.mark.asyncio
+    async def test_graph_failure_degrades_to_blocked_and_logs(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+        _sources.return_value = (
+            [_queue_entry("3", ["agent:ready"]), _queue_entry("4", ["agent:human-only"])],
+            [],
+            [],
+            {"agents": [], "completed": []},
+        )
+
+        with patch("sova.dashboard.services.work_item_service.log") as mock_log:
+            result = await get_work_items()
+
+        assert self._suitability(result, "3")["mode"] == "blocked"
+        # Label-driven modes still take precedence over the missing graph.
+        assert self._suitability(result, "4")["mode"] == "human"
+        assert any("graph_failed" in str(call) for call in mock_log.warning.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_standalone_pr_item_has_a_null_suitability(self, _sources) -> None:
+        pr = {"number": 7, "title": "Fix", "state": "OPEN", "computed_state": "awaiting_review", "labels": []}
+        _sources.return_value = ([], [pr], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert result["items"][0]["suitability"] is None
+        assert "suitability" in result["items"][0]
+
+    def test_pr_builder_emits_the_suitability_key(self) -> None:
+        pr = {"number": 7, "title": "Fix", "state": "OPEN", "computed_state": "awaiting_review", "labels": []}
+        assert _build_pr_item(pr, None, None, None)["suitability"] is None
+
+    def test_task_builder_defaults_to_no_suitability(self) -> None:
+        item = _build_task_item(_queue_entry("42"), None, None, None)
+        assert item["suitability"] is None
+
+    def test_task_builder_passes_suitability_through(self) -> None:
+        payload = {"mode": "autonomous", "reasons": [], "blocked_by": []}
+        item = _build_task_item(_queue_entry("42"), None, None, None, suitability=payload)
+        assert item["suitability"] == payload
+
+
+def _traceback_length(exc: BaseException) -> int:
+    length = 0
+    tb = exc.__traceback__
+    while tb is not None:
+        length += 1
+        tb = tb.tb_next
+    return length
+
+
+class TestBoundedGraphLoad:
+    """The work-items poll waits only briefly for the graph and never repeats a failed full fetch."""
+
+    @pytest.fixture(autouse=True)
+    async def _cancel_builds_left_running(self):
+        """A test whose fake build never finishes would leave the task to event-loop teardown."""
+        yield
+        await cancel_graph_builds()
+
+    @pytest.fixture(autouse=True)
+    def _short_waits(self):
+        with patch("sova.dashboard.services.work_item_service._GRAPH_WAIT_SECONDS", 0.05):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_the_next_poll_after_a_slow_build_reuses_the_in_flight_build(self, _no_real_dependency_graph) -> None:
+        release = asyncio.Event()
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return graph
+
+        _no_real_dependency_graph.side_effect = slow_load
+
+        assert await _load_graph_or_none(None) is None
+        release.set()
+        assert await _load_graph_or_none(None) is graph
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_polls_share_one_build(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def load(project_dir, milestone=""):
+            await asyncio.sleep(0.01)
+            return graph
+
+        _no_real_dependency_graph.side_effect = load
+
+        results = await asyncio.gather(*(_load_graph_or_none(None) for _ in range(5)))
+
+        assert results == [graph] * 5
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_builds_are_per_project(self, _no_real_dependency_graph, tmp_path: Path) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([])
+
+        await _load_graph_or_none(tmp_path / "a")
+        await _load_graph_or_none(tmp_path / "b")
+
+        assert _no_real_dependency_graph.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_failed_build_is_not_repeated_within_the_backoff(self, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+
+        with patch("sova.dashboard.services.work_item_service.log") as mock_log:
+            assert await _load_graph_or_none(None) is None
+            assert await _load_graph_or_none(None) is None
+            assert await _load_graph_or_none(None) is None
+
+        assert _no_real_dependency_graph.await_count == 1
+        assert [c for c in mock_log.warning.call_args_list if "graph_failed" in str(c)]
+
+    @pytest.mark.asyncio
+    async def test_the_build_is_retried_once_the_backoff_has_passed(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.side_effect = [RuntimeError("tracker down"), graph]
+
+        with patch("sova.dashboard.services.work_item_service._GRAPH_FAILURE_BACKOFF_SECONDS", 0.0):
+            assert await _load_graph_or_none(None) is None
+            assert await _load_graph_or_none(None) is graph
+
+        assert _no_real_dependency_graph.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_successful_build_clears_the_recorded_failure(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        work_item_service._graph_failures["None"] = (0.0, RuntimeError("old"))  # long past any backoff
+        _no_real_dependency_graph.return_value = DependencyGraph([])
+
+        await _load_graph_or_none(None)
+
+        assert "None" not in work_item_service._graph_failures
+
+    @pytest.mark.asyncio
+    async def test_a_hung_build_is_capped_and_recorded_as_a_failure(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        async def hang(project_dir, milestone=""):
+            await asyncio.Event().wait()
+
+        _no_real_dependency_graph.side_effect = hang
+
+        with patch("sova.dashboard.services.work_item_service._GRAPH_BUILD_TIMEOUT_SECONDS", 0.05):
+            assert await _load_graph_or_none(None) is None
+            await asyncio.sleep(0.1)
+
+        assert "None" in work_item_service._graph_failures
+        assert "None" not in work_item_service._graph_builds
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_warns_once_per_window(self, _no_real_dependency_graph) -> None:
+        release = asyncio.Event()
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return DependencyGraph([])
+
+        _no_real_dependency_graph.side_effect = slow_load
+
+        with patch("sova.dashboard.services.work_item_service.log") as mock_log:
+            await _load_graph_or_none(None)
+            await _load_graph_or_none(None)
+        release.set()
+        await asyncio.sleep(0)
+
+        assert len([c for c in mock_log.warning.call_args_list if "graph_timeout" in str(c)]) == 1
+
+    @pytest.mark.asyncio
+    async def test_work_items_render_blocked_while_the_graph_is_slow(self, _no_real_dependency_graph) -> None:
+        release = asyncio.Event()
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return DependencyGraph([_graph_task(3)])
+
+        _no_real_dependency_graph.side_effect = slow_load
+        with (
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_all_sources",
+                new_callable=AsyncMock,
+                return_value=([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []}),
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=MagicMock(max_concurrent=3)),
+        ):
+            result = await get_work_items()
+            release.set()
+
+        item = next(i for i in result["items"] if i["issue_number"] == "3")
+        assert item["suitability"]["mode"] == "blocked"
+        assert item["suitability"]["reasons"] == [{"source": "graph", "value": "unavailable"}]
+
+    @pytest.mark.asyncio
+    async def test_a_slow_rebuild_is_classified_from_the_previous_graph(self, _no_real_dependency_graph) -> None:
+        """The cache expiring (or an agent spawn invalidating it) must not read as an outage for one poll."""
+        first = DependencyGraph([_graph_task(1)])
+        second = DependencyGraph([_graph_task(1), _graph_task(2)])
+        release = asyncio.Event()
+        builds = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal builds
+            builds += 1
+            if builds == 1:
+                return first
+            await release.wait()
+            return second
+
+        _no_real_dependency_graph.side_effect = load
+
+        assert await _load_graph_or_none(None) is first
+        assert await _load_graph_or_none(None) is first  # the rebuild outlasts the wait: the old graph answers
+        release.set()
+        assert await _load_graph_or_none(None) is second
+
+    @pytest.mark.asyncio
+    async def test_work_items_keep_their_mode_while_the_graph_rebuilds_slowly(self, _no_real_dependency_graph) -> None:
+        release = asyncio.Event()
+        builds = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal builds
+            builds += 1
+            if builds > 1:
+                await release.wait()
+            return DependencyGraph([_graph_task(3)])
+
+        _no_real_dependency_graph.side_effect = load
+        with (
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_all_sources",
+                new_callable=AsyncMock,
+                return_value=([_queue_entry("3", ["agent:ready"])], [], [], {"agents": [], "completed": []}),
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=MagicMock(max_concurrent=3)),
+        ):
+            warm = await get_work_items()
+            slow = await get_work_items()
+            release.set()
+
+        modes = [next(i for i in r["items"] if i["issue_number"] == "3")["suitability"]["mode"] for r in (warm, slow)]
+        assert modes == ["autonomous", "autonomous"]
+        assert builds == 2
+
+    @pytest.mark.asyncio
+    async def test_a_failed_rebuild_drops_the_previous_graph(self, _no_real_dependency_graph) -> None:
+        """Once the tracker fails, an ever older snapshot must not keep answering: it reads as blocked."""
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.side_effect = [graph, RuntimeError("tracker down")]
+
+        assert await _load_graph_or_none(None) is graph
+        assert await _load_graph_or_none(None) is None
+
+        assert "None" not in work_item_service._last_graphs
+        assert await _load_graph_or_none(None) is None  # inside the backoff
+
+    @pytest.mark.asyncio
+    async def test_a_slow_rebuild_after_a_failure_has_no_previous_graph_to_fall_back_on(
+        self, _no_real_dependency_graph
+    ) -> None:
+        release = asyncio.Event()
+        calls = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return DependencyGraph([_graph_task(1)])
+            if calls == 2:
+                raise RuntimeError("tracker down")
+            await release.wait()
+            return DependencyGraph([_graph_task(1)])
+
+        _no_real_dependency_graph.side_effect = load
+
+        with patch("sova.dashboard.services.work_item_service._GRAPH_FAILURE_BACKOFF_SECONDS", 0.0):
+            assert await _load_graph_or_none(None) is not None
+            assert await _load_graph_or_none(None) is None
+            assert await _load_graph_or_none(None) is None
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_the_previous_graph_is_remembered_per_project(
+        self, _no_real_dependency_graph, tmp_path: Path
+    ) -> None:
+        graph_a = DependencyGraph([_graph_task(1)])
+        project_a, project_b = tmp_path / "a", tmp_path / "b"
+        builds_of_a = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal builds_of_a
+            if project_dir == project_a:
+                builds_of_a += 1
+                if builds_of_a == 1:
+                    return graph_a
+            await asyncio.Event().wait()  # every other build, project b's included, never finishes
+
+        _no_real_dependency_graph.side_effect = load
+
+        assert await _load_graph_or_none(project_a) is graph_a
+        assert await _load_graph_or_none(project_a) is graph_a  # a's rebuild hangs; its previous graph answers
+        assert await _load_graph_or_none(project_b) is None  # b has no previous graph, whatever a has
+
+    @pytest.mark.asyncio
+    async def test_a_build_that_hits_its_own_cap_is_logged_as_a_failure_not_as_a_slow_wait(
+        self, _no_real_dependency_graph
+    ) -> None:
+        async def hang(project_dir, milestone=""):
+            await asyncio.Event().wait()
+
+        _no_real_dependency_graph.side_effect = hang
+
+        with (
+            patch("sova.dashboard.services.work_item_service._GRAPH_WAIT_SECONDS", 1.0),
+            patch("sova.dashboard.services.work_item_service._GRAPH_BUILD_TIMEOUT_SECONDS", 0.05),
+            patch("sova.dashboard.services.work_item_service.log") as mock_log,
+        ):
+            assert await _load_graph_or_none(None) is None
+
+        events = [str(c) for c in mock_log.warning.call_args_list]
+        assert any("graph_failed" in e for e in events)
+        assert not any("graph_timeout" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_a_caller_wait_running_out_is_logged_as_a_timeout_not_a_failure(
+        self, _no_real_dependency_graph
+    ) -> None:
+        release = asyncio.Event()
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return DependencyGraph([])
+
+        _no_real_dependency_graph.side_effect = slow_load
+
+        with patch("sova.dashboard.services.work_item_service.log") as mock_log:
+            assert await _load_graph_or_none(None) is None
+        release.set()
+        await asyncio.sleep(0)
+
+        events = [str(c) for c in mock_log.warning.call_args_list]
+        assert any("graph_timeout" in e for e in events)
+        assert not any("graph_failed" in e for e in events)
+
+    @pytest.mark.asyncio
+    async def test_cancel_graph_builds_cancels_a_build_in_flight(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        async def hang(project_dir, milestone=""):
+            await asyncio.Event().wait()
+
+        _no_real_dependency_graph.side_effect = hang
+        assert await _load_graph_or_none(None) is None
+        build = work_item_service._graph_builds["None"]
+
+        await cancel_graph_builds()
+
+        assert build.cancelled()
+        assert not work_item_service._graph_builds
+        assert "None" not in work_item_service._graph_failures  # a cancelled build is not a tracker failure
+
+    @pytest.mark.asyncio
+    async def test_cancel_graph_builds_is_a_no_op_without_a_build(self) -> None:
+        await cancel_graph_builds()
+
+
+class TestRankingGraphLoad:
+    """`load_ranking_graph()` shares the work-items poll's build and keeps its raise-on-failure contract."""
+
+    @pytest.fixture(autouse=True)
+    async def _cancel_builds_left_running(self):
+        """A test whose fake build never finishes would leave the task to event-loop teardown."""
+        yield
+        await cancel_graph_builds()
+
+    @pytest.mark.asyncio
+    async def test_a_cold_ranking_call_and_a_work_items_poll_share_one_build(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def load(project_dir, milestone=""):
+            await asyncio.sleep(0.01)
+            return graph
+
+        _no_real_dependency_graph.side_effect = load
+
+        polled, ranked = await asyncio.gather(_load_graph_or_none(None), load_ranking_graph(None))
+
+        assert polled is graph
+        assert ranked is graph
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_ranking_calls_share_one_build(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def load(project_dir, milestone=""):
+            await asyncio.sleep(0.01)
+            return graph
+
+        _no_real_dependency_graph.side_effect = load
+
+        results = await asyncio.gather(*(load_ranking_graph(None) for _ in range(5)))
+
+        assert results == [graph] * 5
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_waits_for_a_slow_build_without_a_limit_of_its_own(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def slow_load(project_dir, milestone=""):
+            await asyncio.sleep(0.1)
+            return graph
+
+        _no_real_dependency_graph.side_effect = slow_load
+
+        with patch("sova.dashboard.services.work_item_service._GRAPH_WAIT_SECONDS", 0.01):
+            assert await load_ranking_graph(None) is graph
+
+    @pytest.mark.asyncio
+    async def test_a_failure_raises_to_every_sharing_caller(self, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+
+        results = await asyncio.gather(
+            load_ranking_graph(None), load_ranking_graph(None), _load_graph_or_none(None), return_exceptions=True
+        )
+
+        assert isinstance(results[0], RuntimeError)
+        assert isinstance(results[1], RuntimeError)
+        assert results[2] is None
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_within_the_backoff_the_recorded_failure_is_re_raised_without_a_fetch(
+        self, _no_real_dependency_graph
+    ) -> None:
+        _no_real_dependency_graph.side_effect = GraphConfigError("bad config")
+
+        with pytest.raises(GraphConfigError, match="bad config"):
+            await load_ranking_graph(None)
+        with pytest.raises(GraphConfigError, match="bad config"):
+            await load_ranking_graph(None)
+        with pytest.raises(GraphConfigError, match="bad config"):
+            await get_next_tasks()
+
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_each_backoff_caller_gets_a_fresh_exception_chained_to_the_recorded_one(
+        self, _no_real_dependency_graph
+    ) -> None:
+        """Re-raising the one stored object would pile every caller's frames onto its shared traceback."""
+        from sova.dashboard.services import work_item_service
+
+        _no_real_dependency_graph.side_effect = GraphConfigError("bad config")
+        with pytest.raises(GraphConfigError):
+            await load_ranking_graph(None)
+        recorded = work_item_service._graph_failures["None"][1]
+        frames_before = _traceback_length(recorded)
+
+        raised = []
+        for _ in range(3):
+            with pytest.raises(GraphConfigError) as excinfo:
+                await load_ranking_graph(None)
+            raised.append(excinfo.value)
+
+        assert all(e is not recorded for e in raised)
+        assert len({id(e) for e in raised}) == 3
+        assert all(e.__cause__ is recorded for e in raised)
+        assert _traceback_length(recorded) == frames_before
+
+    @pytest.mark.asyncio
+    async def test_a_non_config_failure_in_the_backoff_is_a_chained_runtime_error(
+        self, _no_real_dependency_graph
+    ) -> None:
+        from sova.dashboard.services import work_item_service
+
+        _no_real_dependency_graph.side_effect = ValueError("tracker down")
+        with pytest.raises(ValueError, match="tracker down"):
+            await load_ranking_graph(None)
+        recorded = work_item_service._graph_failures["None"][1]
+
+        with pytest.raises(RuntimeError, match="tracker down") as excinfo:
+            await load_ranking_graph(None)
+
+        assert not isinstance(excinfo.value, GraphConfigError)
+        assert excinfo.value.__cause__ is recorded
+
+    @pytest.mark.asyncio
+    async def test_a_failure_the_work_items_poll_hit_is_not_fetched_again_by_ranking(
+        self, _no_real_dependency_graph
+    ) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+
+        assert await _load_graph_or_none(None) is None
+        with pytest.raises(RuntimeError, match="tracker down"):
+            await load_ranking_graph(None)
+
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_build_is_retried_once_the_backoff_has_passed(self, _no_real_dependency_graph) -> None:
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.side_effect = [RuntimeError("tracker down"), graph]
+
+        with patch("sova.dashboard.services.work_item_service._GRAPH_FAILURE_BACKOFF_SECONDS", 0.0):
+            with pytest.raises(RuntimeError, match="tracker down"):
+                await load_ranking_graph(None)
+            assert await load_ranking_graph(None) is graph
+
+        assert _no_real_dependency_graph.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_is_cancelled_does_not_cancel_the_shared_build(self, _no_real_dependency_graph) -> None:
+        release = asyncio.Event()
+        graph = DependencyGraph([_graph_task(1)])
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return graph
+
+        _no_real_dependency_graph.side_effect = slow_load
+
+        waiting = asyncio.create_task(load_ranking_graph(None))
+        await asyncio.sleep(0.01)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        release.set()
+
+        assert await load_ranking_graph(None) is graph
+        assert _no_real_dependency_graph.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_milestone_is_built_on_its_own_and_never_shared(self, _no_real_dependency_graph, tmp_path) -> None:
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1, milestone="Phase 1")], requested=[1])
+        _no_real_dependency_graph.return_value = graph
+
+        assert await load_ranking_graph(tmp_path, "Phase 1") is graph
+
+        _no_real_dependency_graph.assert_awaited_once_with(tmp_path, "Phase 1")
+        assert not work_item_service._graph_builds
+        assert not work_item_service._graph_failures
+
+    @pytest.mark.asyncio
+    async def test_a_milestone_build_ignores_a_recorded_failure_of_the_unfiltered_one(
+        self, _no_real_dependency_graph
+    ) -> None:
+        graph = DependencyGraph([_graph_task(1, milestone="Phase 1")], requested=[1])
+        _no_real_dependency_graph.side_effect = [RuntimeError("tracker down"), graph]
+
+        assert await _load_graph_or_none(None) is None
+
+        assert await load_ranking_graph(None, "Phase 1") is graph
+
+
+class TestLoadDependencyGraph:
+    @pytest.fixture
+    def _real_loader(self):
+        """Undo the autouse stub so the real loader runs against patched collaborators."""
+        with patch("sova.dashboard.services.work_item_service.load_dependency_graph", load_dependency_graph):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_config_failure_is_a_graph_config_error(self, _real_loader, tmp_path: Path) -> None:
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            with pytest.raises(GraphConfigError, match="no config"):
+                await load_dependency_graph(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_adapter_failure_is_a_graph_config_error(self, _real_loader, tmp_path: Path) -> None:
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
+        ):
+            with pytest.raises(GraphConfigError, match="missing repo"):
+                await load_dependency_graph(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_propagates_unwrapped(self, _real_loader, tmp_path: Path) -> None:
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch(
+                "sova.supervisor.dependency_graph.build_dependency_graph",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("tracker down"),
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="tracker down"):
+                await load_dependency_graph(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_passes_project_dir_and_milestone_through(self, _real_loader, tmp_path: Path) -> None:
+        graph = DependencyGraph([])
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()) as mock_load,
+            patch("sova.adapters.create_adapter", return_value="adapter"),
+            patch(
+                "sova.supervisor.dependency_graph.build_dependency_graph",
+                new_callable=AsyncMock,
+                return_value=graph,
+            ) as mock_build,
+        ):
+            result = await load_dependency_graph(tmp_path, "Phase 1")
+
+        assert result is graph
+        mock_load.assert_called_once_with(tmp_path)
+        mock_build.assert_awaited_once_with("adapter", milestone="Phase 1")
+
+
+class TestGraphCacheAcrossPolls:
+    """Every poll starts a build task, so a broken cache key would refetch the whole tracker on each one."""
+
+    @pytest.fixture(autouse=True)
+    def _real_graph_and_clean_cache(self):
+        from sova.supervisor import dependency_graph
+
+        dependency_graph._graph_cache.clear()
+        with patch("sova.dashboard.services.work_item_service.load_dependency_graph", load_dependency_graph):
+            yield
+        dependency_graph._graph_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_two_polls_fetch_the_tracker_once(self, tmp_path: Path) -> None:
+        adapter = AsyncMock()
+        adapter.repo = "owner/repo"
+        adapter.list_tasks.return_value = [_graph_task(1)]
+        adapter.get_task = AsyncMock()
+        sources = ([_queue_entry("1", ["agent:ready"])], [], [], {"agents": [], "completed": []})
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_all_sources",
+                new_callable=AsyncMock,
+                return_value=sources,
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=MagicMock(max_concurrent=3)),
+        ):
+            first = await get_work_items(tmp_path)
+            second = await get_work_items(tmp_path)
+
+        windows = [c for c in adapter.list_tasks.await_args_list if c.args[0].state == "all"]
+        assert len(windows) == 1
+        for result in (first, second):
+            [item] = result["items"]
+            assert item["suitability"]["mode"] == "autonomous"
+
+
+class TestRankedTaskPayload:
+    def test_entry_shape(self) -> None:
+        task = _graph_task(7, labels=["priority: high"], milestone="Phase 2: Scale")
+        graph = DependencyGraph([task])
+        [ranked] = rank_next_tasks([task], graph, running=set(), open_prs=set())
+
+        assert ranked_task_payload(ranked) == {
+            "id": 7,
+            "title": "Issue #7",
+            "state": "researched",
+            "state_label": "Researched",
+            "state_color": "purple",
+            "milestone": "Phase 2: Scale",
+            "url": "https://github.com/o/r/issues/7",
+            "priority": "high",
+            "mode": "autonomous",
+            "rank": 1,
+            "why": ["priority:high", "phase:2", "state:researched"],
+        }
+
+
+class TestRankGraphEntries:
+    def test_ranks_every_task_in_the_graph(self) -> None:
+        graph = DependencyGraph([_graph_task(2), _graph_task(1), _graph_task(3, ready=False)])
+        entries = rank_graph_entries(graph, running=set(), open_prs=set())
+        assert [e["id"] for e in entries] == [1, 2]
+
+    def test_exclusions_and_limit_apply(self) -> None:
+        graph = DependencyGraph([_graph_task(n) for n in (1, 2, 3, 4)])
+        entries = rank_graph_entries(graph, running={1}, open_prs={2}, limit=1)
+        assert [e["id"] for e in entries] == [3]
+        assert entries[0]["rank"] == 1
+
+    def test_accepts_dict_key_views(self) -> None:
+        """Callers may pass dict key views straight through."""
+        graph = DependencyGraph([_graph_task(1), _graph_task(2)])
+        entries = rank_graph_entries(graph, running={1: {}}.keys(), open_prs={}.keys())
+        assert [e["id"] for e in entries] == [2]
+
+    def test_a_milestone_graph_ranks_only_the_issues_its_fetch_returned(self) -> None:
+        """The out-of-milestone dependency (#1) is a node so blockers classify, but it is never offered."""
+        graph = DependencyGraph(
+            [
+                _graph_task(1, milestone="Phase 2"),
+                _graph_task(2, milestone="Phase 1: Ship It", body="## Dependencies\n- #1\n"),
+                _graph_task(3, milestone="Phase 1: Ship It"),
+            ],
+            requested=[2, 3],
+        )
+        entries = rank_graph_entries(graph, running=set(), open_prs=set())
+        assert [e["id"] for e in entries] == [3]
+        assert entries[0]["rank"] == 1
+
+    def test_the_pool_does_not_depend_on_how_the_milestone_was_written(self) -> None:
+        """`gh issue list --milestone` takes a number or a title in any case; nodes carry the canonical title."""
+        tasks = [_graph_task(1, milestone="Phase 1: Ship It"), _graph_task(2, milestone="Phase 1: Ship It")]
+        entries = rank_graph_entries(DependencyGraph(tasks, requested=[1, 2]), running=set(), open_prs=set())
+        assert [e["id"] for e in entries] == [1, 2]
+
+    def test_a_milestone_graph_with_no_returned_issues_ranks_nothing(self) -> None:
+        graph = DependencyGraph([_graph_task(1, milestone="Phase 2")], requested=[])
+        assert rank_graph_entries(graph, running=set(), open_prs=set()) == []
+
+    def test_milestone_unblocks_counts_over_the_graph_given(self) -> None:
+        """A milestone-filtered graph holds only its subgraph, so a dependent outside it is not counted."""
+        in_milestone = DependencyGraph(
+            [
+                _graph_task(1, milestone="P1"),
+                _graph_task(2, milestone="P1", ready=False, body="## Dependencies\n- #1\n"),
+            ],
+            requested=[1, 2],
+        )
+        full = DependencyGraph(
+            [
+                _graph_task(1, milestone="P1"),
+                _graph_task(2, milestone="P1", ready=False, body="## Dependencies\n- #1\n"),
+                _graph_task(3, milestone="P2", ready=False, body="## Dependencies\n- #1\n"),
+            ]
+        )
+        [filtered] = rank_graph_entries(in_milestone, running=set(), open_prs=set())
+        [unfiltered] = rank_graph_entries(full, running=set(), open_prs=set())
+        assert "unblocks:1" in filtered["why"]
+        assert "unblocks:2" in unfiltered["why"]
+
+
+class TestParseIssueNumber:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("507", 507), ("#507", 507), (" #507 ", 507), (507, 507), ("0", 0), (0, 0)],
+    )
+    def test_accepts_every_way_an_issue_is_written(self, raw: object, expected: int) -> None:
+        assert _parse_issue_number(raw) == expected
+
+    @pytest.mark.parametrize("raw", [None, "", "#", "PROJ-7", "12a", "-5", "1.5", "\u0663"])
+    def test_rejects_anything_that_is_not_an_issue_number(self, raw: object) -> None:
+        assert _parse_issue_number(raw) is None
+
+
+class TestNextTaskExclusions:
+    @pytest.fixture
+    def _sources(self):
+        with (
+            patch(
+                "sova.dashboard.services.work_item_service._safe_prs",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_prs,
+            patch(
+                "sova.dashboard.services.work_item_service._safe_agents",
+                new_callable=AsyncMock,
+                return_value={"agents": [], "completed": []},
+            ) as mock_agents,
+        ):
+            yield mock_prs, mock_agents
+
+    @pytest.mark.asyncio
+    async def test_running_agents_are_parsed_with_or_without_a_hash(self, _sources) -> None:
+        _, mock_agents = _sources
+        mock_agents.return_value = {
+            "agents": [{"issue": "#1"}, {"issue": "2"}, {"issue": 3}, {"issue": ""}, {"pr_number": 9}, {"issue": "X"}]
+        }
+
+        running, open_prs = await next_task_exclusions(None)
+
+        assert running == {1, 2, 3}
+        assert open_prs == set()
+
+    @pytest.mark.asyncio
+    async def test_open_prs_cover_every_linked_issue(self, _sources) -> None:
+        mock_prs, _ = _sources
+        mock_prs.return_value = [{"linked_issue": 1, "linked_issues": [1, 2]}, {"linked_issue": 5}, {"number": 8}]
+
+        _, open_prs = await next_task_exclusions(None)
+
+        assert open_prs == {1, 2, 5}
+
+    @pytest.mark.asyncio
+    async def test_the_explicit_project_is_used_for_both_lookups(self, _sources, tmp_path: Path) -> None:
+        mock_prs, mock_agents = _sources
+
+        await next_task_exclusions(tmp_path)
+
+        mock_prs.assert_awaited_once_with(tmp_path)
+        mock_agents.assert_awaited_once_with(tmp_path.name)
+
+    @pytest.mark.asyncio
+    async def test_any_source_error_fails_open_to_no_exclusions(self) -> None:
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                side_effect=KeyError("linked_issues"),
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_unified_agents",
+                new_callable=AsyncMock,
+                side_effect=ValueError("bad row"),
+            ),
+        ):
+            assert await next_task_exclusions(None) == (set(), set())
+
+
+class TestGetNextTasks:
+    @pytest.fixture
+    def _sources(self):
+        with (
+            patch(
+                "sova.dashboard.services.work_item_service._safe_prs",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_prs,
+            patch(
+                "sova.dashboard.services.work_item_service._safe_agents",
+                new_callable=AsyncMock,
+                return_value={"agents": [], "completed": []},
+            ) as mock_agents,
+        ):
+            yield mock_prs, mock_agents
+
+    @pytest.mark.asyncio
+    async def test_returns_ranked_tasks_and_unclassified_count(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph(
+            [
+                _graph_task(1, labels=["priority: low"]),
+                _graph_task(2, labels=["priority: high"]),
+                _graph_task(3, ready=False),
+            ]
+        )
+
+        result = await get_next_tasks()
+
+        assert [t["id"] for t in result["tasks"]] == [2, 1]
+        assert result["unclassified_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_running_agents_and_open_prs_are_excluded(self, _sources, _no_real_dependency_graph) -> None:
+        mock_prs, mock_agents = _sources
+        mock_agents.return_value = {"agents": [{"issue": "1", "run_id": 5}, {"issue": "", "pr_number": 12}]}
+        mock_prs.return_value = [{"number": 20, "linked_issue": 2}, {"number": 21}]
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(n) for n in (1, 2, 3)])
+
+        result = await get_next_tasks()
+
+        assert [t["id"] for t in result["tasks"]] == [3]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_issue_written_with_a_hash_is_excluded(self, _sources, _no_real_dependency_graph) -> None:
+        _, mock_agents = _sources
+        mock_agents.return_value = {"agents": [{"issue": "#1", "run_id": 5}]}
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(n) for n in (1, 2)])
+
+        result = await get_next_tasks()
+
+        assert [t["id"] for t in result["tasks"]] == [2]
+
+    @pytest.mark.asyncio
+    async def test_every_issue_a_pr_links_to_is_excluded(self, _sources, _no_real_dependency_graph) -> None:
+        """A PR closing #1 and #2 covers both, as `/dependencies/ready` already treats it."""
+        mock_prs, _ = _sources
+        mock_prs.return_value = [{"number": 20, "linked_issue": 1, "linked_issues": [1, 2]}]
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(n) for n in (1, 2, 3)])
+
+        result = await get_next_tasks()
+
+        assert [t["id"] for t in result["tasks"]] == [3]
+
+    @pytest.mark.asyncio
+    async def test_excluded_issues_are_not_counted_as_unclassified(self, _sources, _no_real_dependency_graph) -> None:
+        mock_prs, _ = _sources
+        mock_prs.return_value = [{"number": 20, "linked_issue": 1}]
+        _no_real_dependency_graph.return_value = DependencyGraph(
+            [_graph_task(1, ready=False), _graph_task(2, ready=False)]
+        )
+
+        result = await get_next_tasks()
+
+        assert result["unclassified_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_limit_truncates_the_tasks_but_not_the_count(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph(
+            [_graph_task(1), _graph_task(2), _graph_task(3), _graph_task(4, ready=False)]
+        )
+
+        result = await get_next_tasks(limit=2)
+
+        assert [t["id"] for t in result["tasks"]] == [1, 2]
+        assert result["unclassified_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_pool_is_an_empty_list_and_a_zero_count(self, _sources, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([])
+
+        assert await get_next_tasks() == {"tasks": [], "unclassified_count": 0}
+
+    @pytest.mark.asyncio
+    async def test_graph_config_failure_raises_instead_of_returning_empty(
+        self, _sources, _no_real_dependency_graph
+    ) -> None:
+        mock_prs, mock_agents = _sources
+        _no_real_dependency_graph.side_effect = GraphConfigError("bad config")
+
+        with pytest.raises(GraphConfigError):
+            await get_next_tasks()
+
+        mock_prs.assert_not_awaited()
+        mock_agents.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graph_fetch_failure_raises_instead_of_returning_empty(
+        self, _sources, _no_real_dependency_graph
+    ) -> None:
+        _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
+
+        with pytest.raises(RuntimeError, match="tracker down"):
+            await get_next_tasks()
+
+    @pytest.mark.asyncio
+    async def test_pr_and_agent_sources_fail_open_to_state_only_filtering(self, _no_real_dependency_graph) -> None:
+        _no_real_dependency_graph.return_value = DependencyGraph([_graph_task(1)])
+
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh down"),
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_unified_agents",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("pool down"),
+            ),
+        ):
+            result = await get_next_tasks()
+
+        assert [t["id"] for t in result["tasks"]] == [1]
+
+    @pytest.mark.asyncio
+    async def test_project_dir_is_threaded_into_every_source(
+        self, _sources, _no_real_dependency_graph, tmp_path: Path
+    ) -> None:
+        mock_prs, mock_agents = _sources
+        _no_real_dependency_graph.return_value = DependencyGraph([])
+
+        await get_next_tasks(tmp_path)
+
+        _no_real_dependency_graph.assert_awaited_once_with(tmp_path)
+        mock_prs.assert_awaited_once_with(tmp_path)
+        mock_agents.assert_awaited_once_with(tmp_path.name)

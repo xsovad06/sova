@@ -6,10 +6,11 @@ import asyncio
 import re
 import time
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from sova.adapters.base import Task, TaskAdapter, TaskState
+from sova.adapters.base import AdapterError, Task, TaskAdapter, TaskFilters, TaskState
 
 # is_ready: used by callers importing it from here rather than from its
 # canonical home in sova.supervisor.labels (kept for backward compatibility).
@@ -28,6 +29,12 @@ log = get_logger(component="supervisor.dependency_graph")
 
 _GRAPH_CACHE_TTL = 180.0  # 3 minutes
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
+# Bumped by every invalidation of a repo. A build captures it before its first await and caches only if
+# it is unchanged, so a fetch that began before an invalidation (an agent spawn or epic close) cannot put
+# its pre-invalidation snapshot back for the rest of the TTL.
+_graph_cache_generation: dict[str, int] = {}
+# How many of the most recent issues (open and closed) one build asks the tracker for.
+_GRAPH_ISSUE_LIMIT = 500
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
 
@@ -105,8 +112,11 @@ class DependencyGraph:
     on agent spawn or epic close. Milestone-filtered builds bypass the cache.
     """
 
-    def __init__(self, tasks: list[Task]) -> None:
+    def __init__(self, tasks: list[Task], *, requested: Iterable[int] | None = None) -> None:
         self._tasks: dict[int, Task] = {int(t.id): t for t in tasks}
+        # The issues the build was asked for, as opposed to the out-of-scope dependencies it also fetched
+        # individually so blockers classify. None means every node was asked for.
+        self._requested: frozenset[int] | None = None if requested is None else frozenset(requested)
         # adjacency: edges[A] = {B, C} means A depends on B and C
         self._deps: dict[int, set[int]] = defaultdict(set)
         # reverse: rdeps[B] = {A} means A depends on B
@@ -125,6 +135,19 @@ class DependencyGraph:
     def nodes(self) -> list[int]:
         """All issue IDs in the graph."""
         return sorted(self._tasks.keys())
+
+    @property
+    def requested_issues(self) -> list[int]:
+        """The issues this graph was built for, ascending.
+
+        Every node, except for a milestone-filtered build: there it is the issues the milestone
+        fetch returned, not the dependencies outside it that were fetched one by one. The adapter
+        decides what the milestone value matches (a number or a title, in any case), so callers
+        read this instead of comparing a task's ``milestone`` against the value they passed.
+        """
+        if self._requested is None:
+            return self.nodes
+        return sorted(issue for issue in self._requested if issue in self._tasks)
 
     @property
     def edges(self) -> list[tuple[int, int]]:
@@ -477,11 +500,43 @@ def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int
 
 
 def invalidate_graph_cache(repo: str = "") -> None:
-    """Force the next ``build_dependency_graph`` call to rebuild from the API."""
-    if repo:
-        _graph_cache.pop(repo, None)
-    else:
-        _graph_cache.clear()
+    """Force the next ``build_dependency_graph`` call to rebuild from the API.
+
+    A build already in flight is not cached either: it fetched before this call, so what it
+    holds predates whatever triggered the invalidation.
+    """
+    keys = [repo] if repo else list(set(_graph_cache) | set(_graph_cache_generation))
+    for key in keys:
+        _graph_cache.pop(key, None)
+        _graph_cache_generation[key] = _graph_cache_generation.get(key, 0) + 1
+
+
+async def _with_every_open_issue(adapter: TaskAdapter, window: list[Task], milestone: str) -> list[Task]:
+    """*window* plus every open issue it left out.
+
+    The window is cut by recency and by whatever cap the adapter applies (Jira's unpaginated
+    listing returns at most 50 whatever limit is asked for), so a short window is no proof it is
+    complete: an older open issue would otherwise be no node at all, could not be ranked, and
+    would have its work item classified as if the graph were broken. The open issues are
+    therefore always listed on their own, without that cap, and merged in. The failure of that
+    second fetch propagates, because a graph that silently lacks open issues is worse than none.
+    An empty open listing while the window holds an open issue is such a failure too: an adapter
+    that swallows a failed page returns ``[]`` (the Jira paginated path does), and that must not
+    read as "nothing is open".
+    """
+    open_tasks = await adapter.list_tasks(TaskFilters(milestone=milestone, state="open", paginate=True))
+    if not open_tasks and any(t.state != TaskState.DONE for t in window):
+        raise AdapterError("the open issue listing came back empty although the issue window holds open issues")
+    seen = {int(t.id) for t in window}
+    older_open = [t for t in open_tasks if int(t.id) not in seen]
+    log.info(
+        "build_dependency_graph.open_issues_merged",
+        window=len(window),
+        limit=_GRAPH_ISSUE_LIMIT,
+        open_issues=len(open_tasks),
+        added_older_open=len(older_open),
+    )
+    return [*window, *older_open]
 
 
 async def build_dependency_graph(
@@ -491,32 +546,37 @@ async def build_dependency_graph(
 ) -> DependencyGraph:
     """Build a dependency graph from the adapter's task list.
 
-    Fetches all issues (open + closed) so that:
-    - open issues are always included
+    Fetches the most recent ``_GRAPH_ISSUE_LIMIT`` issues (open + closed), plus every open
+    issue on its own listing (the window can be cut shorter than the limit by the adapter), so that:
+    - open issues are always included, however old
     - closed issues within a milestone that still has open issues are included
       (shows completed sub-tasks of an in-progress feature)
     - milestones where every issue is closed are excluded (feature is done)
 
     When *milestone* is provided, only tasks in that milestone are fetched.
-    Dependencies outside the filtered set are fetched individually.
+    Dependencies outside the filtered set are fetched individually, and the graph's
+    ``requested_issues`` names only the ones the milestone fetch returned.
 
     Results are cached per-repo for ``_GRAPH_CACHE_TTL`` seconds. Milestone-
     filtered builds bypass the cache (rare, manual-only path).
     """
-    from sova.adapters.base import TaskFilters
-
     repo_key = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
-    if not milestone and repo_key:
+    cacheable = not milestone and bool(repo_key)
+    # setdefault, not get: the key must exist before the awaits below so a concurrent
+    # invalidate_graph_cache() can see and bump it.
+    generation = _graph_cache_generation.setdefault(repo_key, 0) if cacheable else 0
+    if cacheable:
         now = time.monotonic()
         cached = _graph_cache.get(repo_key)
         if cached is not None and (now - cached[0]) < _GRAPH_CACHE_TTL:
             log.debug("build_dependency_graph.cached", repo=repo_key, age_s=round(now - cached[0], 1))
             return cached[1]
 
-    # Fetch up to 500 issues so the graph is not silently truncated on larger
-    # repos.  gh CLI handles pagination automatically when --limit > 100.
-    filters = TaskFilters(milestone=milestone, state="all", limit=500)
+    # The most recent _GRAPH_ISSUE_LIMIT issues, open and closed: the closed ones are context.
+    # gh CLI handles pagination automatically when --limit > 100.
+    filters = TaskFilters(milestone=milestone, state="all", limit=_GRAPH_ISSUE_LIMIT)
     tasks = await adapter.list_tasks(filters)
+    tasks = await _with_every_open_issue(adapter, tasks, milestone)
 
     # Milestones that have at least one open (non-done) issue
     active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}
@@ -539,6 +599,9 @@ async def build_dependency_graph(
         or (t.milestone and t.milestone in active_milestones)
         or int(t.id) in tasks_with_deps
     ]
+
+    # What the milestone fetch returned, before dependencies outside it are added to classify blockers.
+    requested = {int(t.id) for t in tasks} if milestone else None
 
     # Collect all referenced deps and fetch missing ones
     all_dep_ids: set[int] = set()
@@ -564,7 +627,8 @@ async def build_dependency_graph(
             if dep_task is not None:
                 task_map[int(dep_task.id)] = dep_task
 
-    graph = DependencyGraph(list(task_map.values()))
-    if not milestone and repo_key:
+    graph = DependencyGraph(list(task_map.values()), requested=requested)
+    # Still returned when an invalidation raced it: this caller asked before it, only the cache must not keep it.
+    if cacheable and _graph_cache_generation.get(repo_key, 0) == generation:
         _graph_cache[repo_key] = (time.monotonic(), graph)
     return graph

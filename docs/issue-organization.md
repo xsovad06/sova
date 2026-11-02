@@ -7,7 +7,7 @@ This guide explains how to organize project issues using milestone-based phases 
 The dashboard Priority Queue reads the **milestone** field from each issue (via the task adapter) and uses it for visual grouping:
 
 1. **Badge label**: extracted from the milestone title before the colon (e.g., `Phase 2: Dashboard Polish` -> `Phase 2`)
-2. **Sort order**: numeric phase extracted via regex (`Phase N` or `PN`), lower numbers appear first
+2. **Sort order**: numeric phase extracted via regex (`Phase N` or `PN`; `sova/adapters/milestone.py`, shared with the "Up next" ranking), lower numbers appear first, and a missing or phase-less milestone sorts last
 3. **Color**: each phase number (1-7) has a distinct color in the dashboard theme
 4. **Within-phase sort**: issues within the same phase are sorted by `Priority.rank` (`sova/adapters/priority.py`), six levels from most to least urgent: `blocker` > `critical` > `high` > `medium` > `low` > `undefined` (an unlabelled issue sorts after `low`, never ahead of a labelled one)
 
@@ -93,7 +93,7 @@ Use **Cycles** or **Projects** with phase-prefixed names. The Linear adapter (pl
 | Jira | Fix Versions | `issue.fields.fixVersions[0].name` |
 | Linear | Cycles / Projects | (planned) |
 
-The adapter ABC's `_parse_issue()` method extracts the milestone string. The dashboard's `_milestone_badge()` and `_extract_phase_order()` functions in `queue_service.py` handle display and sorting regardless of the adapter backend.
+The adapter ABC's `_parse_issue()` method extracts the milestone string. The dashboard's `_milestone_badge()` (`queue_service.py`) and `extract_phase_order()` (`sova/adapters/milestone.py`) handle display and sorting regardless of the adapter backend.
 
 ## Best Practices
 

@@ -11,6 +11,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import TaskState
 from sova.config.context import get_project_dir
 from sova.dashboard.services.pr_service import ComputedPRState
+from sova.dashboard.services.work_item_service import GraphConfigError as _ConfigError
+from sova.dashboard.services.work_item_service import (
+    load_dependency_graph,
+    load_ranking_graph,
+    next_task_exclusions,
+    rank_graph_entries,
+)
 from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.logging import get_logger
 
@@ -52,23 +59,9 @@ _PR_STATE_ACTIONS: dict[str, list[dict]] = {
 }
 
 
-class _ConfigError(Exception):
-    """Raised when project config or adapter creation fails."""
-
-
 async def _build_graph(milestone: str = ""):
     """Build a dependency graph from the current project's adapter."""
-    from sova.adapters import create_adapter
-    from sova.config.loader import load_config
-    from sova.supervisor.dependency_graph import build_dependency_graph
-
-    try:
-        project_dir = get_project_dir()
-        cfg = load_config(project_dir)
-        adapter = create_adapter(cfg)
-    except Exception as exc:  # noqa: BLE001 (config load and adapter construction fail in many ways; translated to _ConfigError)
-        raise _ConfigError(str(exc)) from exc
-    return await build_dependency_graph(adapter, milestone=milestone)
+    return await load_dependency_graph(get_project_dir(), milestone)
 
 
 async def _fetch_pr_map() -> dict[int, dict]:
@@ -299,34 +292,32 @@ async def get_graph(milestone: str = "") -> dict:
     },
 )
 async def get_ready(milestone: str = "") -> dict:
-    """Return issues classified `autonomous` or `unclassified` by `assess_suitability()`:
+    """Return the issues an agent should pick up next, best first.
 
-    dependencies satisfied and no epic/human-only/interactive-recommended/on-hold label.
+    Only `autonomous` issues in `triaged` or `researched` state with no running agent
+    and no open PR, ordered by priority, then transitive unblock count, then milestone
+    phase, then issue number (see `rank_next_tasks()`). Each entry carries `rank` and a
+    machine-readable `why`. A failure is an error status, never an empty list: an empty
+    list means there is nothing to do.
+
+    With ``milestone`` (a number or a title, as ``gh issue list --milestone`` takes it) only
+    the issues that fetch returned are listed: the graph records them, so no milestone string
+    is compared here. Its out-of-milestone dependencies are loaded to classify blockers but
+    never offered, and ``unblocks`` counts dependents within that milestone's subgraph. The
+    graph is the build `/agents/next-tasks` and the work-items poll share, and the running-agent
+    and open-PR exclusions come from `next_task_exclusions()`, the same source as `/agents/next-tasks`.
     """
     try:
-        graph = await _build_graph(milestone)
+        project_dir = get_project_dir()
+        graph = await load_ranking_graph(project_dir, milestone)
+        running, open_prs = await next_task_exclusions(project_dir)
+        return {"ready": rank_graph_entries(graph, running=running, open_prs=open_prs)}
     except _ConfigError:
         log.error("Project config/adapter error for ready tasks", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
     except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.error("Failed to get ready tasks", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to get ready tasks")
-
-    ready_ids = graph.get_ready_tasks()
-    ready_tasks = []
-    for tid in ready_ids:
-        task = graph.get_task(tid)
-        if task:
-            ready_tasks.append(
-                {
-                    "id": tid,
-                    "title": task.title,
-                    "state": task.state.value,
-                    **_state_display(task.state.value),
-                    "milestone": task.milestone,
-                }
-            )
-    return {"ready": ready_tasks}
 
 
 @router.get(

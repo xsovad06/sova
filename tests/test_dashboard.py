@@ -1238,6 +1238,35 @@ class TestShutdownTasks:
         assert monitor.cancelled()
         writer.stop.assert_awaited_once()
 
+    async def test_cancels_the_dependency_graph_builds(self) -> None:
+        """A graph build stuck in a tracker call must not outlive the lifespan shutdown."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.app import _shutdown_tasks
+        from sova.dashboard.services import work_item_service
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        sweep = asyncio.create_task(_hang())
+        build = asyncio.create_task(_hang())
+        work_item_service._graph_builds["shutdown-test"] = build
+
+        cancel_bg = "sova.dashboard.services.agent_lifecycle.cancel_background_tasks"
+        cancel_batch = "sova.dashboard.services.batch_service.cancel_all_batches"
+        try:
+            with (
+                patch(cancel_bg, new_callable=AsyncMock),
+                patch("sova.dashboard.routers.agents._ws_manager") as mock_ws,
+                patch(cancel_batch, new_callable=AsyncMock),
+            ):
+                mock_ws.cancel_all = AsyncMock()
+                await _shutdown_tasks(sweep, [], [], None)
+        finally:
+            work_item_service._graph_builds.pop("shutdown-test", None)
+
+        assert build.cancelled()
+
     async def test_handles_none_metrics_writer(self) -> None:
         """_shutdown_tasks works when metrics_writer is None."""
         from unittest.mock import AsyncMock, patch
@@ -4312,51 +4341,6 @@ class TestMilestoneBadge:
         assert _milestone_badge("  P4  : future work") == "P4"
 
 
-class TestPhaseOrder:
-    """Tests for _extract_phase_order helper in queue_service."""
-
-    def test_phase_with_title(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 1: Ship It") == 1
-
-    def test_phase_number_only(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 7") == 7
-
-    def test_short_prefix(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("P3: v0.1") == 3
-
-    def test_empty_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("") == 99
-
-    def test_none_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order(None) == 99
-
-    def test_no_phase_pattern(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Beta Release") == 99
-
-    def test_phase_ordering(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 1: Ship It") < _extract_phase_order("Phase 4: Bank")
-        assert _extract_phase_order("Phase 4: Bank") < _extract_phase_order("Phase 7: Scale")
-
-    def test_leading_whitespace(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("  Phase 3: v0.1") == 3
-
-
 class TestQueueServiceEnrichment:
     """Tests for NEEDS_SPEC inclusion and recommended actions in queue_service."""
 
@@ -4678,6 +4662,78 @@ class TestAgentsAPI:
             assert data["items"][0]["issue_number"] == "42"
             assert data["running_count"] == 0
             assert data["max_concurrent"] == 3
+
+    async def test_next_tasks_returns_ranked_payload(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        mock_result = {
+            "tasks": [{"id": 7, "rank": 1, "why": ["priority:high", "state:researched"]}],
+            "unclassified_count": 2,
+        }
+        with patch(
+            "sova.dashboard.services.work_item_service.get_next_tasks",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_next:
+            resp = await client.get("/api/agents/next-tasks")
+        assert resp.status_code == 200
+        assert resp.json() == mock_result
+        assert mock_next.await_args.kwargs == {"limit": 5}
+
+    async def test_next_tasks_passes_the_limit_through(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.work_item_service.get_next_tasks",
+            new_callable=AsyncMock,
+            return_value={"tasks": [], "unclassified_count": 0},
+        ) as mock_next:
+            resp = await client.get("/api/agents/next-tasks?limit=12")
+        assert resp.status_code == 200
+        assert mock_next.await_args.kwargs == {"limit": 12}
+
+    @pytest.mark.parametrize("limit", ["0", "-1", "51", "abc"])
+    async def test_next_tasks_rejects_an_invalid_limit(self, client: AsyncClient, limit: str) -> None:
+        resp = await client.get(f"/api/agents/next-tasks?limit={limit}")
+        assert resp.status_code == 422
+
+    async def test_next_tasks_empty_pool_is_200_not_an_error(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.work_item_service.get_next_tasks",
+            new_callable=AsyncMock,
+            return_value={"tasks": [], "unclassified_count": 0},
+        ):
+            resp = await client.get("/api/agents/next-tasks")
+        assert resp.status_code == 200
+        assert resp.json() == {"tasks": [], "unclassified_count": 0}
+
+    async def test_next_tasks_config_failure_is_503_not_an_empty_list(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.work_item_service import GraphConfigError
+
+        with patch(
+            "sova.dashboard.services.work_item_service.get_next_tasks",
+            new_callable=AsyncMock,
+            side_effect=GraphConfigError("bad config"),
+        ):
+            resp = await client.get("/api/agents/next-tasks")
+        assert resp.status_code == 503
+        assert "tasks" not in resp.json()
+
+    async def test_next_tasks_graph_failure_is_500_not_an_empty_list(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.work_item_service.get_next_tasks",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("tracker down"),
+        ):
+            resp = await client.get("/api/agents/next-tasks")
+        assert resp.status_code == 500
+        assert "tasks" not in resp.json()
 
     async def test_agents_active_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/active")

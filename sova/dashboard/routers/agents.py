@@ -394,6 +394,33 @@ async def get_work_items() -> dict:
     return await _get_work_items(get_project_dir())
 
 
+@router.get(
+    "/agents/next-tasks",
+    responses={
+        500: {"description": "Failed to rank next tasks"},
+        503: {"description": "Project configuration unavailable"},
+    },
+)
+async def get_next_tasks(limit: Annotated[int, Query(ge=1, le=50)] = 5) -> dict:
+    """Get the ranked "Up next" list: the autonomous issues an agent should pick up next, best first.
+
+    Returns ``{tasks, unclassified_count}``. A failure to build the dependency graph is an
+    error status, never an empty list: an empty list means there is nothing to do.
+    """
+    from sova.config.context import get_project_dir
+    from sova.dashboard.services.work_item_service import GraphConfigError
+    from sova.dashboard.services.work_item_service import get_next_tasks as _get_next_tasks
+
+    try:
+        return await _get_next_tasks(get_project_dir(), limit=limit)
+    except GraphConfigError:
+        log.error("agents.next_tasks_config_failed", exc_info=True)
+        raise HTTPException(status_code=503, detail="Project configuration unavailable")
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.error("agents.next_tasks_failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to rank next tasks")
+
+
 @router.get("/agents/active")
 async def get_active_agents() -> dict:
     """Get all running + recently completed agents (dashboard + external)."""
