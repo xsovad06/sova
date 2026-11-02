@@ -16,6 +16,7 @@ there is nothing stale to block.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -112,11 +113,12 @@ class TestFindStaleCommand:
 
 
 class TestBranchCopyStaleness:
-    """A project that commits `.claude/commands/` runs the worktree branch's own copy.
+    """A slash command resolves from the worktree, so its copy is judged there.
 
     `ensure_claude_artifacts()` never overwrites a tracked file, so a branch
-    forked before a recipe fix keeps the old copy even when the primary
-    checkout is current.
+    that commits `.claude/commands/` and was forked before a recipe fix keeps
+    the old copy even when the primary checkout is current. An untracked copy
+    is refreshed on reuse, so its message must not send the operator to rebase.
     """
 
     @pytest.fixture
@@ -129,17 +131,54 @@ class TestBranchCopyStaleness:
         self, project: Path, worktree: Path, cfg: ProjectConfig
     ) -> None:
         _age_manifest_entry(worktree, "address-pr.md", "old recipe: git reset --soft origin/$BASE\n")
+        subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+        subprocess.run(["git", "add", "-f", ".claude/commands"], cwd=worktree, check=True)
 
         assert find_stale_command(project, "address-pr", cfg) is None
         reason = find_stale_command(project, "address-pr", cfg, run_dir=worktree)
 
         assert reason is not None
         assert str(worktree) in reason
+        assert "committed on the branch" in reason
         assert "Rebase the branch" in reason
         assert "sova commands update" not in reason
 
-    def test_current_branch_copy_passes(self, project: Path, worktree: Path, cfg: ProjectConfig) -> None:
-        assert find_stale_command(project, "integrate-pr", cfg, run_dir=worktree) is None
+    def test_outdated_untracked_copy_does_not_suggest_a_rebase(
+        self, project: Path, worktree: Path, cfg: ProjectConfig
+    ) -> None:
+        """A project that gitignores `.claude/` holds a copy no rebase can change."""
+        _age_manifest_entry(worktree, "address-pr.md", "old recipe\n")
+        subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+
+        reason = find_stale_command(project, "address-pr", cfg, run_dir=worktree)
+
+        assert reason is not None
+        assert "committed" not in reason
+        assert "Rebase" not in reason
+        assert "not tracked by the branch" in reason
+        assert str(_commands_dir(worktree) / "address-pr.md") in reason
+
+    def test_unanswered_git_does_not_read_as_untracked(self, project: Path, worktree: Path, cfg: ProjectConfig) -> None:
+        """A failed `git ls-files` must not tell the operator to delete a file the branch may commit."""
+        _age_manifest_entry(worktree, "address-pr.md", "old recipe\n")
+
+        with patch("sova.commands.staleness.git_tracked_paths", return_value=None):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=worktree)
+
+        assert reason is not None
+        assert "could not be determined" in reason
+        assert "rebase the branch" in reason
+        assert "not tracked by the branch" not in reason
+        assert ".claude/commands/address-pr.md" in reason
+
+    def test_current_branch_copy_passes_without_asking_git(
+        self, project: Path, worktree: Path, cfg: ProjectConfig
+    ) -> None:
+        """Tracking only picks the message, so a current copy must not pay for a git subprocess."""
+        with patch("sova.commands.staleness.git_tracked_paths") as mock_tracked:
+            assert find_stale_command(project, "integrate-pr", cfg, run_dir=worktree) is None
+
+        mock_tracked.assert_not_called()
 
     def test_branch_copy_is_ignored_when_the_primary_checkout_has_none(
         self, tmp_path: Path, worktree: Path, cfg: ProjectConfig

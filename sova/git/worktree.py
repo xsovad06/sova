@@ -484,6 +484,11 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
 
 
 _CLAUDE_DIRS = ("commands", "rules", "agent-memory", "skills")
+# The subset SOVA renders from its own templates, which goes out of date when
+# SOVA (and the primary checkout's sync) moves on. Refreshed on every reuse;
+# rules, agent-memory and settings are not, because an agent or a person may
+# have written to the worktree's copy and a refresh would overwrite it.
+_SOVA_RENDERED_CLAUDE_DIRS = ("commands", "skills")
 # CLAUDE.md lives at the project root, not under .claude/, and is handled
 # separately (root_claude_md) in both ensure_claude_artifacts() and
 # missing_claude_artifacts(); this tuple only covers files under .claude/.
@@ -515,13 +520,24 @@ def _copy2_skip_identical(src: str, dst: str, *, follow_symlinks: bool = True) -
         return dst
 
 
-def _tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str]:
+def tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str]:
     """Return paths under *pathspec* that the worktree's branch tracks.
 
     Used to decide what :func:`ensure_claude_artifacts` (and its runtime-skills
     counterpart) must not overwrite. A failure to ask git returns the empty
     set, preserving the historical copy-everything behaviour rather than
-    silently skipping a worktree's setup.
+    silently skipping a worktree's setup. A caller that must tell "nothing is
+    tracked" from "git could not say" uses :func:`git_tracked_paths`.
+    """
+    found = git_tracked_paths(worktree_path, pathspec)
+    return found if found is not None else set()
+
+
+def git_tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str] | None:
+    """Like :func:`tracked_paths`, but ``None`` when git failed to answer.
+
+    A directory that is not a git repository still answers with the empty set:
+    nothing is tracked there, which is a fact rather than a fault.
     """
     try:
         result = subprocess.run(
@@ -534,7 +550,7 @@ def _tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str]:
         )
     except (OSError, subprocess.SubprocessError):
         log.warning("worktree.ls_files.failed", worktree=str(worktree_path), exc_info=True)
-        return set()
+        return None
     if result.returncode != 0:
         # "not a git repository" is an expected condition, not a fault: the
         # caller is then copying into a plain directory, where nothing is
@@ -543,13 +559,19 @@ def _tracked_paths(worktree_path: Path, pathspec: str = ".claude") -> set[str]:
         stderr = result.stderr.strip()
         if _NOT_A_REPO_RE.search(stderr):
             log.debug("worktree.ls_files.not_a_repo", worktree=str(worktree_path))
-        else:
-            log.warning("worktree.ls_files.failed", worktree=str(worktree_path), stderr=stderr[:200])
-        return set()
+            return set()
+        log.warning("worktree.ls_files.failed", worktree=str(worktree_path), stderr=stderr[:200])
+        return None
     return {entry for entry in result.stdout.split("\0") if entry}
 
 
-def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
+def ensure_claude_artifacts(
+    project_dir: Path,
+    worktree_path: Path,
+    *,
+    dirs: tuple[str, ...] = _CLAUDE_DIRS,
+    files: tuple[str, ...] = _CLAUDE_FILES,
+) -> None:
     """Copy .claude/ artifacts that are gitignored but needed by agents.
 
     Projects that gitignore ``.claude/`` (the standard pattern for SOVA-installed
@@ -569,7 +591,9 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     committed as its own change (issue #1090, seen on PR #1085).
 
     Safe to call repeatedly. Called at worktree creation and after operations
-    that may destroy ``.claude/`` (e.g. rebase stash pop conflicts).
+    that may destroy ``.claude/`` (e.g. rebase stash pop conflicts). ``dirs``
+    and ``files`` narrow what is copied, for a caller that only wants to
+    refresh part of an existing copy.
     """
     root_claude_md = project_dir / "CLAUDE.md"
     wt_claude_md = worktree_path / "CLAUDE.md"
@@ -586,7 +610,7 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     claude_dst = worktree_path / ".claude"
     claude_dst.mkdir(exist_ok=True)
 
-    tracked = _tracked_paths(worktree_path)
+    tracked = tracked_paths(worktree_path)
 
     def _ignore_tracked(directory: str, names: list[str]) -> set[str]:
         """copytree ignore callback: skip entries the worktree tracks AND still has.
@@ -608,7 +632,7 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
                 skipped.add(name)
         return skipped
 
-    for dirname in _CLAUDE_DIRS:
+    for dirname in dirs:
         src = claude_src / dirname
         if src.is_dir():
             try:
@@ -622,7 +646,7 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
             except OSError:
                 log.warning("worktree.copy_claude_dir.failed", dir=dirname, exc_info=True)
 
-    for filename in _CLAUDE_FILES:
+    for filename in files:
         src = claude_src / filename
         if src.is_file():
             # Same rule as _ignore_tracked: tracked and present means the branch
@@ -690,7 +714,7 @@ def _mirror_runtime_skills(project_dir: Path, worktree_path: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
     root_name = src.relative_to(project_dir).parts[0]
-    tracked = _tracked_paths(worktree_path, pathspec=root_name)
+    tracked = tracked_paths(worktree_path, pathspec=root_name)
 
     def _ignore_tracked(directory: str, names: list[str]) -> set[str]:
         skipped: set[str] = set()
@@ -851,7 +875,9 @@ async def ensure_worktree_usable(
     A worktree about to be handed to an agent must exist on disk, still be a
     live git worktree (its ``.git`` linkage can be pruned out from under it
     while the directory survives), and carry the ``.claude`` artifacts an
-    agent needs. Missing artifacts are cheap to repopulate in place; a missing
+    agent needs. Missing artifacts are cheap to repopulate in place, and the
+    SOVA-rendered ``commands`` and ``skills`` the branch does not track are
+    refreshed from the primary checkout on every reuse; a missing
     directory or broken git linkage requires recreating the worktree via
     :func:`create_worktree`, which needs a known branch.
 
@@ -928,17 +954,35 @@ async def ensure_worktree_usable(
     missing = missing_claude_artifacts(project_dir, worktree_path)
     if missing:
         log.warning("worktree.reuse_missing_artifacts", path=str(worktree_path), missing=missing)
-        try:
-            # Runs the shutil-based copy off the event loop: repopulating
-            # several artifacts can mean a non-trivial shutil.copytree over
-            # .claude/{commands,rules,agent-memory,skills}, and this function
-            # runs on the dashboard's single event loop while a caller may be
-            # holding a spawn-serializing lock, so blocking it here would
-            # stall every other agent's output polling and API requests.
-            await asyncio.to_thread(ensure_claude_artifacts, project_dir, worktree_path)
-        except OSError:
+        dirs, files = _CLAUDE_DIRS, _CLAUDE_FILES
+    else:
+        # Refresh even when nothing is missing: in a project that gitignores
+        # .claude/, a copy made when the worktree was created is never updated
+        # by a later `sova commands update` in the primary checkout, so a
+        # reused worktree would run (and the stale-command check would block
+        # on) the recipe it was created with. Only the SOVA-rendered subset,
+        # and ensure_claude_artifacts() still skips whatever the branch tracks.
+        dirs, files = _SOVA_RENDERED_CLAUDE_DIRS, ()
+    try:
+        # Runs the shutil-based copy off the event loop: repopulating
+        # several artifacts can mean a non-trivial shutil.copytree over
+        # .claude/{commands,rules,agent-memory,skills}, and this function
+        # runs on the dashboard's single event loop while a caller may be
+        # holding a spawn-serializing lock, so blocking it here would
+        # stall every other agent's output polling and API requests.
+        await asyncio.to_thread(ensure_claude_artifacts, project_dir, worktree_path, dirs=dirs, files=files)
+    except OSError:
+        if missing:
             log.error("worktree.reuse_repopulate_failed", path=str(worktree_path), exc_info=True)
             return None
+        # Nothing was missing, so the worktree is still usable with its
+        # existing copies; the stale-command check judges those on its own.
+        # Only the mkdir of .claude/ can raise here: ensure_claude_artifacts()
+        # logs its own copy failures (worktree.copy_claude_dir.failed and
+        # copy_claude_file.failed), which are the signal for a copy that did
+        # not refresh.
+        log.warning("worktree.reuse_refresh_failed", path=str(worktree_path), exc_info=True)
+    if missing:
         still_missing = missing_claude_artifacts(project_dir, worktree_path)
         if still_missing:
             critical_missing = [m for m in still_missing if m in _CRITICAL_CLAUDE_ARTIFACTS]
