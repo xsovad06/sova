@@ -2942,6 +2942,67 @@ class TestSpecAnchoredReview:
         assert len(result) == 1
         assert result[0]["source"] == "sonarcloud"
 
+    @pytest.mark.parametrize(("handoff_pr", "expected"), [(60, 1), (61, 0)])
+    async def test_issue_less_load_addressed_findings_only_from_same_pr(
+        self, tmp_path: Path, handoff_pr: int, expected: int
+    ) -> None:
+        """Without an issue the newest handoff is read, so another PR's findings must not leak in."""
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+        from sova.roles.reviewer import ReviewerRole
+
+        findings = [{"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "X"}]
+        h = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            summary="Done",
+            pr_number=handoff_pr,
+            details={"addressed_findings": findings},
+        )
+        write_handoff_file(tmp_path, h)
+
+        ctx = _make_ctx(tmp_path, role="reviewer", issue_number="", pr_number=60)
+
+        result = await ReviewerRole()._load_addressed_findings(ctx)
+        assert len(result) == expected
+
+    async def test_issue_less_load_addressed_findings_skips_newer_handoff_of_another_pr(self, tmp_path: Path) -> None:
+        """A newer per-issue handoff for another PR must not hide this PR's own legacy handoff."""
+        import os
+
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+        from sova.roles.reviewer import ReviewerRole
+
+        findings = [{"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "X"}]
+        own = write_handoff_file(
+            tmp_path,
+            DashboardHandoff(
+                source="developer",
+                status="awaiting_action",
+                summary="Done",
+                pr_number=60,
+                created_at="2026-11-01T10:00:00Z",
+                details={"addressed_findings": findings},
+            ),
+        )
+        other = write_handoff_file(
+            tmp_path,
+            DashboardHandoff(
+                source="developer",
+                status="awaiting_action",
+                summary="Done",
+                issue="42",
+                pr_number=61,
+                created_at="2026-11-01T11:00:00Z",
+                details={"addressed_findings": [{"message": "other PR"}]},
+            ),
+        )
+        os.utime(own, (1_000_000, 1_000_000))
+        os.utime(other, (2_000_000, 2_000_000))
+
+        ctx = _make_ctx(tmp_path, role="reviewer", issue_number="", pr_number=60)
+
+        assert await ReviewerRole()._load_addressed_findings(ctx) == findings
+
     async def test_load_addressed_findings_from_resume_run(self, tmp_path: Path) -> None:
         from sova.db.models import TaskRun
         from sova.db.session import get_session

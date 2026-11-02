@@ -40,6 +40,7 @@ from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
     HandoffAction,
+    read_all_handoff_files,
     read_handoff_file,
     write_handoff,
     write_handoff_file,
@@ -359,16 +360,24 @@ class ReviewerRole(AgentRole):
         """Load addressed external findings from the developer's handoff.
 
         Three sources (tried in order):
-        1. File-based handoff for this issue
+        1. File-based handoff for this issue (for an issue-less run, the newest
+           handoff file whose ``pr_number`` is this PR)
         2. Resume run's DB handoff (when spawned with --resume)
         3. Recent developer TaskRuns for this issue (DB fallback, loops
            through up to 10 runs to skip address-review cycles that don't
            populate addressed_findings)
         """
         try:
-            handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number or None)
-            if handoff and handoff.details.get("addressed_findings"):
-                return handoff.details["addressed_findings"]
+            if ctx.has_issue:
+                handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number)
+                handoffs = [handoff] if handoff else []
+            else:
+                # An issue-less handoff shares the legacy file with every other such run, and
+                # the newest file may be another PR's, so select by PR rather than by recency.
+                handoffs = [h for h in read_all_handoff_files(ctx.project_dir) if h.pr_number == ctx.pr_number]
+            for handoff in handoffs:
+                if handoff.details.get("addressed_findings"):
+                    return handoff.details["addressed_findings"]
         except (OSError, ValueError):
             log.debug("reviewer.addressed_findings_file_failed", exc_info=True)
 
