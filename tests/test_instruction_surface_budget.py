@@ -79,42 +79,44 @@ def _index_topics(text: str) -> list[str]:
     return topics
 
 
-def test_architecture_index_topics_resolve_to_deep_dive_entries() -> None:
-    """Every topic architecture.md's index points readers at must exist in the deep-dive doc.
+def _section(text: str, heading: str) -> str:
+    """The body of a "## heading" section, up to the next "## " heading."""
+    start = text.index(f"\n{heading}\n") + len(heading) + 2
+    return text[start:].split("\n## ", 1)[0]
 
-    architecture.md tells readers to "grep that file for a topic below to
-    read its full entry": relocation (the point of this doc split, and an
-    explicit scope boundary: "No historical knowledge was deleted, only
-    relocated and indexed") is only lossless if every indexed topic still
-    resolves to a real body. A topic silently dropped from the deep-dive
-    during a future edit would otherwise go unnoticed, since nothing else
-    checks that the index and the content it points to stay in sync.
+
+def _missing_topics(index_text: str, body_text: str) -> list[str]:
+    topics = _index_topics(index_text)
+    assert topics, "indexed section has no topics: index bullets may have been removed"
+    # A short, distinctive slice of the topic label (not the whole sentence,
+    # which may be paraphrased slightly between the index and the deep-dive
+    # heading) must appear somewhere in the body.
+    return [topic for topic in topics if topic[:40] not in body_text]
+
+
+def test_architecture_index_topics_resolve_to_deep_dive_entries() -> None:
+    """Every topic the two indexes point readers at must exist in the deep-dive doc.
+
+    architecture.md keeps the Supporting Modules index and tells readers to
+    "grep that file for a topic below to read its full entry"; the Key Design
+    Decisions index moved into the deep-dive itself (issue #1338).
+    Relocation is only lossless if every indexed topic still resolves to a
+    real body. A topic silently dropped from the deep-dive during a future
+    edit would otherwise go unnoticed, since nothing else checks that the
+    index and the content it points to stay in sync.
     """
     architecture_text = _ARCHITECTURE_RULES.read_text(encoding="utf-8")
     deep_dive_text = _DEEP_DIVE.read_text(encoding="utf-8")
 
-    # Only the two "Grep that file for a topic below" index sections list
-    # relocated topics; everything else in architecture.md is live content,
-    # not an index. Each index section runs from its marker up to the next
-    # "## " heading, so splitting on the marker alone isn't enough: the text
-    # between the first marker and the second one also contains unrelated
-    # sections (Config System, Naming Convention, ...) whose own bullet
-    # lists would otherwise be misread as missing deep-dive topics.
     marker = "Grep that file for a topic below to read its full entry:"
-    raw_sections = architecture_text.split(marker)
-    assert len(raw_sections) >= 3, "expected two indexed sections pointing at the deep-dive doc"
-    sections = [section.split("\n## ", 1)[0] for section in raw_sections[1:]]
+    assert marker in architecture_text, "architecture.md lost its Supporting Modules index"
+    supporting_index = architecture_text.split(marker, 1)[1].split("\n## ", 1)[0]
+    missing = _missing_topics(supporting_index, deep_dive_text)
+    assert not missing, f"Supporting Modules topics missing from {_DEEP_DIVE.name}: {missing}"
 
-    missing: list[str] = []
-    for section in sections:
-        topics = _index_topics(section)
-        assert topics, "indexed section has no topics: index bullets may have been removed"
-        for topic in topics:
-            # A short, distinctive slice of the topic label (not the whole
-            # sentence, which may be paraphrased slightly between the index
-            # and the deep-dive heading) must appear somewhere in the body.
-            needle = topic[:40]
-            if needle and needle not in deep_dive_text:
-                missing.append(topic)
-
-    assert not missing, f"Index topics missing from {_DEEP_DIVE.name}: {missing}"
+    # Searched in the doc with the index itself cut out, or each index title
+    # would trivially match its own index line. (One decision's body lives in
+    # a Supporting Modules entry, so the search cannot be narrowed further.)
+    decisions_index = _section(deep_dive_text, "## Key Design Decisions Index")
+    missing = _missing_topics(decisions_index, deep_dive_text.replace(decisions_index, ""))
+    assert not missing, f"Key Design Decisions Index topics missing an entry in {_DEEP_DIVE.name}: {missing}"

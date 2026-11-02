@@ -11,7 +11,7 @@ Scheduler (sova/scheduler/) -- Watch loop, server daemon
 
 Supporting modules: adapters (GitHub/Jira), LLM providers, git operations, IPC/handoff, knowledge system, config, and database.
 
-For the full architecture reference (component details, design decisions, and key patterns), see [`.claude/rules/architecture.md`](../.claude/rules/architecture.md).
+The always-loaded summary (component overview, rule lines and pointers) is [`.claude/rules/architecture.md`](../.claude/rules/architecture.md); the full component notes, design decisions and per-module narrative are in [architecture-deep-dive.md](architecture-deep-dive.md).
 
 For domain-specific implementation patterns, code examples, and gotchas, see the guideline files in this directory:
 
@@ -24,7 +24,7 @@ For domain-specific implementation patterns, code examples, and gotchas, see the
 | [database-guidelines.md](database-guidelines.md) | ORM, sessions, migrations |
 | [testing-guidelines.md](testing-guidelines.md) | pytest patterns, fixtures, mocking |
 | [integration-guidelines.md](integration-guidelines.md) | External services, handoff protocol |
-| [architecture-deep-dive.md](architecture-deep-dive.md) | Full per-module and per-decision narrative entries indexed (not duplicated) in `.claude/rules/architecture.md` |
+| [architecture-deep-dive.md](architecture-deep-dive.md) | Full component, per-module and per-decision narrative entries, with the Key Design Decisions index; `.claude/rules/architecture.md` keeps a short rule line or index entry per topic |
 
 ## Other Documents
 
