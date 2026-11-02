@@ -37,6 +37,7 @@ Every other file under `docs/`, grouped by purpose. Dated reports and drafts are
 | [awareness-setup.md](awareness-setup.md) | Setting up the awareness briefing providers |
 | [troubleshooting-config.md](troubleshooting-config.md) | Diagnosing config load and agent spawn failures |
 | [invariants.md](invariants.md) | Full rules, exemptions and history of each pre-push and CI invariant |
+| [workflow-history.md](workflow-history.md) | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
 | [token-compression.md](token-compression.md) | Optional RTK and Headroom token compression setup |
 | [agent-spawn-guide.md](agent-spawn-guide.md) | Troubleshooting an agent that fails before its first step |
 | [github-token-setup.md](github-token-setup.md) | Making the `gh` token reachable from agent subprocesses |
