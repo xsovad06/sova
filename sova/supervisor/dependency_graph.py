@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from sova.adapters.base import Task, TaskAdapter, TaskState
+from sova.adapters.base import AdapterError, Task, TaskAdapter, TaskFilters, TaskState
 
 # is_ready: used by callers importing it from here rather than from its
 # canonical home in sova.supervisor.labels (kept for backward compatibility).
@@ -29,6 +29,8 @@ log = get_logger(component="supervisor.dependency_graph")
 
 _GRAPH_CACHE_TTL = 180.0  # 3 minutes
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
+# How many of the most recent issues (open and closed) one build asks the tracker for.
+_GRAPH_ISSUE_LIMIT = 500
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
 
@@ -501,6 +503,34 @@ def invalidate_graph_cache(repo: str = "") -> None:
         _graph_cache.clear()
 
 
+async def _with_every_open_issue(adapter: TaskAdapter, window: list[Task], milestone: str) -> list[Task]:
+    """*window* plus every open issue it left out.
+
+    The window is cut by recency and by whatever cap the adapter applies (Jira's unpaginated
+    listing returns at most 50 whatever limit is asked for), so a short window is no proof it is
+    complete: an older open issue would otherwise be no node at all, could not be ranked, and
+    would have its work item classified as if the graph were broken. The open issues are
+    therefore always listed on their own, without that cap, and merged in. The failure of that
+    second fetch propagates, because a graph that silently lacks open issues is worse than none.
+    An empty open listing while the window holds an open issue is such a failure too: an adapter
+    that swallows a failed page returns ``[]`` (the Jira paginated path does), and that must not
+    read as "nothing is open".
+    """
+    open_tasks = await adapter.list_tasks(TaskFilters(milestone=milestone, state="open", paginate=True))
+    if not open_tasks and any(t.state != TaskState.DONE for t in window):
+        raise AdapterError("the open issue listing came back empty although the issue window holds open issues")
+    seen = {int(t.id) for t in window}
+    older_open = [t for t in open_tasks if int(t.id) not in seen]
+    log.info(
+        "build_dependency_graph.open_issues_merged",
+        window=len(window),
+        limit=_GRAPH_ISSUE_LIMIT,
+        open_issues=len(open_tasks),
+        added_older_open=len(older_open),
+    )
+    return [*window, *older_open]
+
+
 async def build_dependency_graph(
     adapter: TaskAdapter,
     *,
@@ -508,8 +538,9 @@ async def build_dependency_graph(
 ) -> DependencyGraph:
     """Build a dependency graph from the adapter's task list.
 
-    Fetches all issues (open + closed) so that:
-    - open issues are always included
+    Fetches the most recent ``_GRAPH_ISSUE_LIMIT`` issues (open + closed), plus every open
+    issue on its own listing (the window can be cut shorter than the limit by the adapter), so that:
+    - open issues are always included, however old
     - closed issues within a milestone that still has open issues are included
       (shows completed sub-tasks of an in-progress feature)
     - milestones where every issue is closed are excluded (feature is done)
@@ -521,8 +552,6 @@ async def build_dependency_graph(
     Results are cached per-repo for ``_GRAPH_CACHE_TTL`` seconds. Milestone-
     filtered builds bypass the cache (rare, manual-only path).
     """
-    from sova.adapters.base import TaskFilters
-
     repo_key = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
     if not milestone and repo_key:
         now = time.monotonic()
@@ -531,10 +560,11 @@ async def build_dependency_graph(
             log.debug("build_dependency_graph.cached", repo=repo_key, age_s=round(now - cached[0], 1))
             return cached[1]
 
-    # Fetch up to 500 issues so the graph is not silently truncated on larger
-    # repos.  gh CLI handles pagination automatically when --limit > 100.
-    filters = TaskFilters(milestone=milestone, state="all", limit=500)
+    # The most recent _GRAPH_ISSUE_LIMIT issues, open and closed: the closed ones are context.
+    # gh CLI handles pagination automatically when --limit > 100.
+    filters = TaskFilters(milestone=milestone, state="all", limit=_GRAPH_ISSUE_LIMIT)
     tasks = await adapter.list_tasks(filters)
+    tasks = await _with_every_open_issue(adapter, tasks, milestone)
 
     # Milestones that have at least one open (non-done) issue
     active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}

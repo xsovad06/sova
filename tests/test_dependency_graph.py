@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sova.adapters.base import Task, TaskState
+from sova.adapters.base import AdapterError, Task, TaskState
 from sova.adapters.priority import Priority
 from sova.supervisor.dependency_graph import (
+    _GRAPH_ISSUE_LIMIT,
     DependencyGraph,
     _get_spec_meta,
     _graph_cache,
@@ -24,7 +25,7 @@ from sova.supervisor.dependency_graph import (
     parse_dependencies,
 )
 from sova.supervisor.labels import is_on_hold
-from sova.supervisor.suitability import Suitability, SuitabilityMode
+from sova.supervisor.suitability import Suitability, SuitabilityMode, rank_next_tasks
 
 
 @pytest.fixture(autouse=True)
@@ -811,6 +812,11 @@ class TestToDict_SpecEnrichment:
 # ---------------------------------------------------------------------------
 
 
+def _builds(adapter: AsyncMock) -> int:
+    """How many graph builds ran against *adapter*: each starts with one ``state=all`` window listing."""
+    return sum(1 for call in adapter.list_tasks.await_args_list if call.args[0].state == "all")
+
+
 class TestBuildDependencyGraph:
     @pytest.mark.asyncio
     async def test_fetches_missing_deps(self) -> None:
@@ -900,7 +906,7 @@ class TestBuildDependencyGraph:
         g2 = await build_dependency_graph(adapter)
 
         assert g1 is g2
-        assert adapter.list_tasks.call_count == 1
+        assert _builds(adapter) == 1
 
     @pytest.mark.asyncio
     async def test_cache_bypassed_for_milestone(self) -> None:
@@ -913,7 +919,7 @@ class TestBuildDependencyGraph:
         await build_dependency_graph(adapter)
         await build_dependency_graph(adapter, milestone="P1")
 
-        assert adapter.list_tasks.call_count == 2
+        assert _builds(adapter) == 2
 
     @pytest.mark.asyncio
     async def test_invalidate_cache(self) -> None:
@@ -927,7 +933,7 @@ class TestBuildDependencyGraph:
         invalidate_graph_cache("owner/repo")
         await build_dependency_graph(adapter)
 
-        assert adapter.list_tasks.call_count == 2
+        assert _builds(adapter) == 2
 
     @pytest.mark.asyncio
     async def test_invalidate_cache_all_repos(self) -> None:
@@ -950,8 +956,8 @@ class TestBuildDependencyGraph:
         await build_dependency_graph(adapter1)
         await build_dependency_graph(adapter2)
 
-        assert adapter1.list_tasks.call_count == 2
-        assert adapter2.list_tasks.call_count == 2
+        assert _builds(adapter1) == 2
+        assert _builds(adapter2) == 2
 
     @pytest.mark.asyncio
     async def test_cache_keyed_by_repo(self) -> None:
@@ -969,10 +975,123 @@ class TestBuildDependencyGraph:
         await build_dependency_graph(adapter1)
         await build_dependency_graph(adapter2)
 
-        assert adapter1.list_tasks.call_count == 1
-        assert adapter2.list_tasks.call_count == 1
+        assert _builds(adapter1) == 1
+        assert _builds(adapter2) == 1
         assert "org/repo-a" in _graph_cache
         assert "org/repo-b" in _graph_cache
+
+
+class TestBuildDependencyGraphIssueWindow:
+    """``state=all, limit=500`` cuts by recency, so an older open issue must still become a node."""
+
+    @staticmethod
+    def _tracker(recent: list[Task], open_issues: list[Task]):
+        """A tracker stub: the ``state=all`` listing returns *recent*, the ``state=open`` listing *open_issues*."""
+        adapter = AsyncMock()
+        adapter.repo = ""
+        adapter.project_key = ""
+
+        async def list_tasks(filters):
+            return list(recent if filters.state == "all" else open_issues)
+
+        adapter.list_tasks.side_effect = list_tasks
+        adapter.get_task = AsyncMock()
+        return adapter
+
+    @staticmethod
+    def _full_window() -> list[Task]:
+        """The newest ``_GRAPH_ISSUE_LIMIT`` issues, all closed: context the build then drops."""
+        return [_task(1000 - n, state=TaskState.DONE) for n in range(_GRAPH_ISSUE_LIMIT)]
+
+    @pytest.mark.asyncio
+    async def test_an_open_issue_older_than_a_full_window_is_a_node_and_is_ranked(self) -> None:
+        old_ready = _task(5, state=TaskState.RESEARCHED, labels=["agent:ready"])
+        adapter = self._tracker(self._full_window(), [old_ready])
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.has_task(5)
+        assert graph.requested_issues == [5]
+        pool = [graph.get_task(i) for i in graph.requested_issues]
+        assert [r.task.id for r in rank_next_tasks(pool, graph, running=set(), open_prs=set())] == ["5"]
+
+    @pytest.mark.asyncio
+    async def test_the_open_listing_is_unbounded_and_follows_the_milestone(self) -> None:
+        adapter = self._tracker(self._full_window(), [])
+
+        await build_dependency_graph(adapter, milestone="Phase 1")
+
+        window_filters, open_filters = (call.args[0] for call in adapter.list_tasks.await_args_list)
+        assert (window_filters.state, window_filters.limit) == ("all", _GRAPH_ISSUE_LIMIT)
+        assert (open_filters.state, open_filters.paginate, open_filters.milestone) == ("open", True, "Phase 1")
+
+    @pytest.mark.asyncio
+    async def test_an_open_issue_a_short_window_left_out_is_still_a_node_and_is_ranked(self) -> None:
+        """Jira returns at most 50 issues whatever limit is asked for, so a short window is no proof it is whole."""
+        old_ready = _task(5, state=TaskState.RESEARCHED, labels=["agent:ready"])
+        short_window = [_task(1000 - n, state=TaskState.DONE) for n in range(50)]
+        adapter = self._tracker([_task(900, state=TaskState.TRIAGED), *short_window], [old_ready])
+        assert len(short_window) < _GRAPH_ISSUE_LIMIT
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.has_task(5)
+        pool = [graph.get_task(i) for i in graph.requested_issues]
+        assert "5" in [r.task.id for r in rank_next_tasks(pool, graph, running=set(), open_prs=set())]
+
+    @pytest.mark.asyncio
+    async def test_the_open_listing_runs_on_every_build(self) -> None:
+        adapter = self._tracker([_task(1000 - n, state=TaskState.DONE) for n in range(3)], [])
+
+        await build_dependency_graph(adapter)
+
+        assert [call.args[0].state for call in adapter.list_tasks.await_args_list] == ["all", "open"]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_open_listing_beside_open_issues_in_the_window_fails_the_build(self) -> None:
+        """An adapter that swallows a failed page returns ``[]``; that must not read as "nothing is open"."""
+        adapter = self._tracker([_task(7, state=TaskState.RESEARCHED), _task(8, state=TaskState.DONE)], [])
+        adapter.repo = "owner/repo"
+
+        with pytest.raises(AdapterError, match="came back empty"):
+            await build_dependency_graph(adapter)
+
+        assert "owner/repo" not in _graph_cache
+
+    @pytest.mark.asyncio
+    async def test_an_empty_open_listing_is_fine_when_the_window_holds_only_closed_issues(self) -> None:
+        adapter = self._tracker([_task(8, state=TaskState.DONE, milestone="Phase 1")], [])
+
+        graph = await build_dependency_graph(adapter)
+
+        assert not graph.has_task(8)  # closed, and its milestone has no open issue left
+
+    @pytest.mark.asyncio
+    async def test_an_open_issue_the_window_already_holds_is_kept_once(self) -> None:
+        in_window = _task(900, state=TaskState.RESEARCHED, labels=["agent:ready"])
+        recent = [in_window, *self._full_window()[1:]]
+        adapter = self._tracker(recent, [in_window, _task(5, state=TaskState.TRIAGED)])
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.nodes == [5, 900]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_open_listing_fails_the_build_and_caches_nothing(self) -> None:
+        adapter = self._tracker(self._full_window(), [])
+        adapter.repo = "owner/repo"
+
+        async def list_tasks(filters):
+            if filters.state == "open":
+                raise RuntimeError("rate limited")
+            return self._full_window()
+
+        adapter.list_tasks.side_effect = list_tasks
+
+        with pytest.raises(RuntimeError, match="rate limited"):
+            await build_dependency_graph(adapter)
+
+        assert "owner/repo" not in _graph_cache
 
 
 # ---------------------------------------------------------------------------
