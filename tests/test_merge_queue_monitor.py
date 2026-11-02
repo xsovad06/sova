@@ -21,6 +21,7 @@ from sova.dashboard.services.merge_queue_monitor import (
 from sova.db.models import MergeQueueEntry
 from sova.db.session import close_db, get_session, init_db
 from sova.git.merge import MergeQueueStatus
+from sova.utils.shell import ShellResult
 
 
 @pytest.fixture(autouse=True)
@@ -385,7 +386,7 @@ class TestHandleMerged:
             await monitor._handle_merged(entry)
 
         mock_delete.assert_called_once_with("feat/test", repo="owner/repo", github_user="user1")
-        mock_transition.assert_called_once_with("10", "owner/repo", "user1")
+        mock_transition.assert_called_once_with(42, "10", "owner/repo", "user1")
         mock_cleanup.assert_called_once()
         mock_emit.assert_called_once()
 
@@ -417,7 +418,8 @@ class TestHandleMerged:
         mock_delete.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_issue_skips_transition(self, project_dir: Path) -> None:
+    async def test_no_entry_issue_still_transitions_from_the_pr(self, project_dir: Path) -> None:
+        """On GitHub the PR body names the issues, so an entry without one still gets them handled."""
         await create_merge_queue_entry(
             pr_number=42,
             repo="owner/repo",
@@ -438,7 +440,7 @@ class TestHandleMerged:
         ):
             await monitor._handle_merged(entry)
 
-        mock_transition.assert_not_called()
+        mock_transition.assert_called_once_with(42, None, "owner/repo", monitor.github_user)
 
     @pytest.mark.asyncio
     async def test_adapter_construction_failure_still_marks_merged(self, project_dir: Path) -> None:
@@ -963,8 +965,11 @@ class TestCreateMonitorsForMergeQueue:
 
 
 class TestTransitionIssueState:
+    """Only the issues the merged PR body closes move to post_merge_state (#1340)."""
+
     @pytest.mark.asyncio
-    async def test_calls_handle_post_merge_state(self, project_dir: Path) -> None:
+    async def test_jira_calls_handle_post_merge_state_for_the_entry_ticket(self, project_dir: Path) -> None:
+        """A Jira PR body carries no GitHub closing keyword, so the entry's ticket is the one moved."""
         monitor = _make_monitor(project_dir)
 
         with (
@@ -973,36 +978,42 @@ class TestTransitionIssueState:
             patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as mock_handle,
         ):
             cfg = MagicMock()
-            cfg.task_source.type = "github"
-            cfg.task_source.github_project_number = None
+            cfg.task_source.type = "jira"
             mock_cfg.return_value = cfg
             mock_adapter = MagicMock()
             mock_adapter_factory.return_value = mock_adapter
 
-            await monitor._transition_issue_state("10", "owner/repo", "user1")
+            await monitor._transition_issue_state(42, "PROJ-10", "owner/repo", "user1")
 
         mock_handle.assert_called_once_with(
-            "10",
+            "PROJ-10",
             post_merge_state=monitor.integration_config.post_merge_state,
             repo="owner/repo",
             github_user="user1",
             adapter=mock_adapter,
         )
 
-    @pytest.mark.asyncio
-    async def test_calls_real_create_adapter_with_config(self, project_dir: Path) -> None:
-        """Exercises the real create_adapter(cfg) and handle_post_merge_state call paths.
+    @staticmethod
+    def _pr_body(body: str) -> AsyncMock:
+        return AsyncMock(return_value=ShellResult(returncode=0, stdout=json.dumps({"body": body}), stderr=""))
 
-        Only GitHubAdapter._gh is stubbed, so this reaches the real
-        GitHubAdapter.transition_state() and verifies the default "done"
-        post-merge state issues the expected issue-close gh call, not just
-        that some adapter object was constructed and passed through.
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("pr_body", "closed"), [("## Issue\nCloses #10", True), ("## Issue\nPart of #10", False)])
+    async def test_calls_real_create_adapter_with_config(self, project_dir: Path, pr_body: str, closed: bool) -> None:
+        """Exercises the real create_adapter(cfg), handle_merged_pr_issues and adapter call paths.
+
+        Only the gh calls are stubbed (the PR body read and GitHubAdapter._gh), so this
+        reaches the real GitHubAdapter.transition_state() and verifies the default "done"
+        post-merge state closes the issue a closing keyword names, and only that one.
         """
         monitor = _make_monitor(project_dir)
 
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
             patch.object(GitHubAdapter, "_gh", new_callable=AsyncMock) as mock_gh,
+            patch("sova.git.merge.run", new=self._pr_body(pr_body)),
+            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+            patch("sova.git.merge._comment_part_of", new_callable=AsyncMock, return_value=True),
         ):
             cfg = MagicMock()
             cfg.task_source.type = "github"
@@ -1013,9 +1024,61 @@ class TestTransitionIssueState:
             mock_cfg.return_value = cfg
             mock_gh.return_value = MagicMock(success=True)
 
-            await monitor._transition_issue_state("10", "owner/repo", "user1")
+            await monitor._transition_issue_state(42, "10", "owner/repo", "user1")
 
-        mock_gh.assert_awaited_once_with("issue", "close", "10", "--repo", "owner/repo")
+        if closed:
+            mock_gh.assert_awaited_once_with("issue", "close", "10", "--repo", "owner/repo")
+        else:
+            mock_gh.assert_not_awaited()
+
+    @staticmethod
+    def _cfg(task_source: str) -> MagicMock:
+        cfg = MagicMock()
+        cfg.task_source.type = task_source
+        return cfg
+
+    @pytest.mark.asyncio
+    async def test_github_reads_the_pr_body_not_the_entry_issue(self, project_dir: Path) -> None:
+        from sova.git.merge import MergedIssues
+
+        monitor = _make_monitor(project_dir)
+        merged = MergedIssues(commented=["10"])
+        with (
+            patch("sova.config.loader.load_config", return_value=self._cfg("github")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.git.merge.handle_merged_pr_issues", new_callable=AsyncMock, return_value=merged) as handle,
+            patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as single,
+        ):
+            actions = await monitor._transition_issue_state(42, "10", "owner/repo", "user1")
+
+        handle.assert_awaited_once()
+        assert handle.await_args.args == (42,)
+        single.assert_not_awaited()
+        assert actions == ["issue #10 left open (Part of), criteria comment in place"]
+
+    @pytest.mark.asyncio
+    async def test_github_unreadable_body_is_reported(self, project_dir: Path) -> None:
+        monitor = _make_monitor(project_dir)
+        with (
+            patch("sova.config.loader.load_config", return_value=self._cfg("github")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.git.merge.handle_merged_pr_issues", new_callable=AsyncMock, return_value=None),
+        ):
+            actions = await monitor._transition_issue_state(42, "10", "owner/repo", "user1")
+
+        assert actions == ["issues not updated: the body of PR #42 could not be read"]
+
+    @pytest.mark.asyncio
+    async def test_jira_without_a_ticket_does_nothing(self, project_dir: Path) -> None:
+        monitor = _make_monitor(project_dir)
+        with (
+            patch("sova.config.loader.load_config", return_value=self._cfg("jira")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as single,
+        ):
+            assert await monitor._transition_issue_state(42, None, "owner/repo", "user1") == []
+
+        single.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

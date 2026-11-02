@@ -11,7 +11,7 @@ from enum import Enum
 from pathlib import Path
 
 from sova.utils.logging import get_logger
-from sova.utils.markdown import extract_section
+from sova.utils.markdown import extract_section, mask_fenced_blocks
 from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="utils.gh")
@@ -321,6 +321,50 @@ def closing_pattern_for(issue_num: str) -> re.Pattern[str]:
 # own closing decision under, so an epic mention written earlier in
 # "## Summary" can never win a bare whole-body search.
 _PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
+
+# GitHub links nothing written in a code span, so a PR body that quotes `Closes #12` while
+# describing a test must not close #12.
+_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+@dataclass(frozen=True)
+class IssueLinks:
+    """The issues a PR body links to, split by what merging the PR must do to each.
+
+    ``closes`` holds every issue a closing keyword names (``Closes #N``, ``Fixed: #N``): the PR
+    finishes it. ``part_of`` holds the ``Part of #N`` issues the PR only partly satisfies, which
+    stay open. A bare ``#N`` is in neither: it is a mention, not a link. Both keep the body's
+    order without duplicates, and an issue the body both closes and calls "part of" is closed.
+    """
+
+    closes: tuple[str, ...]
+    part_of: tuple[str, ...]
+
+
+def parse_issue_links(body: str) -> IssueLinks:
+    """Split the issue references in a PR *body* into closing and "Part of" links.
+
+    Fenced blocks and code spans are ignored. Closing keywords are read from the whole body,
+    as GitHub reads them. A "Part of" link is read from the ``## Issue`` section when the body
+    has one (the section _pr_body.py and /pr write the closing decision under), so a
+    "Part of #<epic>" mention in ``## Summary`` is not taken for the PR's own issue; without
+    that section the whole body is read, as in resolve_linked_issue().
+
+    Keyword matching is textual and does not understand negation or quotation, which keeps it at
+    parity with GitHub: GitHub closes on "does not close #12" and "Doesn't fix #7 yet" too, so
+    ignoring such text here would not stop the close. A PR body that must mention a closing
+    phrase without linking has to put it in a code span or fenced block, or word it differently
+    (for example "stays open" instead of "does not close #12").
+    """
+    prose = _INLINE_CODE_RE.sub(" ", mask_fenced_blocks(body))
+    closes = tuple(dict.fromkeys(m.group(1) for m in CLOSES_RE.finditer(prose)))
+    part_of_scope = extract_section(prose, "Issue") or prose
+    part_of = tuple(
+        number
+        for number in dict.fromkeys(m.group(1) for m in _PART_OF_RE.finditer(part_of_scope))
+        if number not in closes
+    )
+    return IssueLinks(closes=closes, part_of=part_of)
 
 
 async def resolve_linked_issue(

@@ -180,15 +180,12 @@ class MergeQueueMonitor:
             except (RuntimeError, OSError):
                 log.warning("merge_queue_monitor.branch_delete_failed", branch=branch_name, exc_info=True)
 
-        if issue_number:
-            from sova.adapters.base import AdapterError
+        from sova.adapters.base import AdapterError
 
-            try:
-                await self._transition_issue_state(issue_number, repo, github_user)
-                state = self.integration_config.post_merge_state
-                cleanup_actions.append(f"issue #{issue_number} moved to {state}")
-            except (RuntimeError, OSError, ValueError, AdapterError):
-                log.warning("merge_queue_monitor.state_transition_failed", issue=issue_number, exc_info=True)
+        try:
+            cleanup_actions.extend(await self._transition_issue_state(pr_number, issue_number, repo, github_user))
+        except (RuntimeError, OSError, ValueError, AdapterError):
+            log.warning("merge_queue_monitor.state_transition_failed", pr=pr_number, issue=issue_number, exc_info=True)
 
         await self._cleanup_local_worktree(entry)
 
@@ -257,21 +254,37 @@ class MergeQueueMonitor:
             message=f"{repo}: exceeded {timeout}s",
         )
 
-    async def _transition_issue_state(self, issue_number: str, repo: str, github_user: str) -> None:
-        """Transition issue state after merge."""
+    async def _transition_issue_state(
+        self, pr_number: int, issue_number: str | None, repo: str, github_user: str
+    ) -> list[str]:
+        """Transition the merged PR's issues; returns one line per action for the feed event.
+
+        On GitHub the PR body decides which issues the merge finishes (handle_merged_pr_issues),
+        never the entry's issue number, which may be an issue the PR is only "Part of". A Jira PR
+        body carries no GitHub closing keyword, so there the entry's ticket is the one moved.
+        """
         from sova.adapters import create_adapter
         from sova.config.loader import load_config
-        from sova.git.merge import handle_post_merge_state
+        from sova.git.merge import handle_merged_pr_issues, handle_post_merge_state
 
         cfg = load_config(self.project_dir)
         adapter = create_adapter(cfg.model_copy(update={"github_repo": repo, "github_user": github_user}))
-        await handle_post_merge_state(
-            issue_number,
-            post_merge_state=self.integration_config.post_merge_state,
-            repo=repo,
-            github_user=github_user,
-            adapter=adapter,
+        state = self.integration_config.post_merge_state
+        if cfg.task_source.type != "github":
+            if not issue_number:
+                return []
+            moved = await handle_post_merge_state(
+                issue_number, post_merge_state=state, repo=repo, github_user=github_user, adapter=adapter
+            )
+            outcome = f"moved to {state}" if moved else "not updated (see log)"
+            return [f"issue #{issue_number} {outcome}"]
+
+        merged = await handle_merged_pr_issues(
+            pr_number, post_merge_state=state, repo=repo, github_user=github_user, adapter=adapter
         )
+        if merged is None:
+            return [f"issues not updated: the body of PR #{pr_number} could not be read"]
+        return merged.describe(state)
 
     async def _cleanup_local_worktree(self, entry: dict) -> None:
         """Remove local worktree if it exists."""

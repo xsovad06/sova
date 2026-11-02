@@ -31,7 +31,7 @@ from sova.dashboard.services.agent_pool import (
 from sova.dashboard.services.agent_validation import (
     _check_pr_merged_on_failure,
 )
-from sova.git.merge import delete_remote_branch, handle_post_merge_state
+from sova.git.merge import delete_remote_branch, handle_merged_pr_issues, handle_post_merge_state
 from sova.git.pr import get_pr_branch
 from sova.utils.logging import get_logger
 
@@ -92,6 +92,23 @@ async def _crash_recovery_cleanup(agent: AgentState) -> None:
             "finalize.crash_recovery_branch_lookup_failed",
             pr=agent.pr_number,
         )
+
+    if cfg.task_source.type == "github":
+        # The PR body decides which issues the merge finishes, never agent.issue: a merge agent
+        # started for an issue the PR is only "Part of" must leave that issue open (#1340).
+        merged = await handle_merged_pr_issues(
+            agent.pr_number,
+            post_merge_state=cfg.integration.post_merge_state,
+            repo=repo,
+            github_user=github_user,
+            adapter=create_adapter(cfg),
+        )
+        log.info(
+            "finalize.crash_recovery_issues_handled",
+            pr=agent.pr_number,
+            actions=merged.describe(cfg.integration.post_merge_state) if merged is not None else None,
+        )
+        return
 
     issue_number = agent.issue or await _resolve_issue_from_pr(
         agent.pr_number,

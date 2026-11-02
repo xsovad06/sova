@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
-from sova.utils.gh import resolve_gh_env
+from sova.utils.gh import IssueLinks, parse_issue_links, resolve_gh_env
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section, mask_fenced_blocks
 from sova.utils.shell import run
 
 if TYPE_CHECKING:
@@ -389,9 +391,13 @@ async def handle_post_merge_state(
     repo: str,
     github_user: str = "",
     adapter: TaskAdapter | None = None,
-) -> None:
+) -> bool:
+    """Move one issue to *post_merge_state*. Returns False when nothing was moved.
+
+    An adapter's own failure propagates as its exception; the gh fallback logs it and returns False.
+    """
     if not issue_number:
-        return
+        return False
 
     if adapter is not None:
         _VALID_POST_MERGE = {TaskState.DONE, TaskState.ON_QA}
@@ -404,7 +410,7 @@ async def handle_post_merge_state(
                 issue=issue_number,
                 msg="Invalid post_merge_state value, skipping adapter transition",
             )
-            return
+            return False
         if target_state not in _VALID_POST_MERGE:
             log.warning(
                 "git.merge.unknown_post_merge_state",
@@ -412,9 +418,9 @@ async def handle_post_merge_state(
                 issue=issue_number,
                 msg="Unsupported post_merge_state value, skipping adapter transition",
             )
-            return
+            return False
         await adapter.transition_state(str(issue_number), target_state)
-        return
+        return True
 
     env = await resolve_gh_env(github_user)
 
@@ -430,7 +436,7 @@ async def handle_post_merge_state(
         )
         if not result.success:
             log.warning("git.merge.close_issue_failed", issue=issue_number, stderr=result.stderr[:200])
-        return
+        return result.success
 
     if post_merge_state == "on_qa":
         result = await run(
@@ -446,7 +452,7 @@ async def handle_post_merge_state(
         )
         if not result.success:
             log.warning("git.merge.on_qa_label_failed", issue=issue_number, stderr=result.stderr[:200])
-        return
+        return result.success
 
     log.warning(
         "git.merge.unknown_post_merge_state",
@@ -454,3 +460,130 @@ async def handle_post_merge_state(
         issue=issue_number,
         msg="Unknown post_merge_state, skipping state transition",
     )
+    return False
+
+
+# Marks the comment a merged "Part of" PR leaves on its issue, so a re-run of /integrate-pr or
+# the merge queue monitor finds it and does not post a second one.
+_PART_OF_MARKER = "<!-- sova-part-of: pr={pr} -->"
+# An unindented, unchecked task-list item, the same top-level rule
+# sova/core/steps/_pr_body.py:extract_acceptance_criteria() applies to a criterion.
+_UNCHECKED_ITEM_RE = re.compile(r"^[-*+][ \t]+\[ \][ \t]*(\S.*)$")
+
+
+@dataclass
+class MergedIssues:
+    """What :func:`handle_merged_pr_issues` did to each issue a merged PR body links."""
+
+    transitioned: list[str] = field(default_factory=list)
+    commented: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+
+    def describe(self, post_merge_state: str) -> list[str]:
+        return (
+            [f"issue #{n} moved to {post_merge_state}" for n in self.transitioned]
+            + [f"issue #{n} left open (Part of), criteria comment in place" for n in self.commented]
+            + [f"issue #{n} not updated (see log)" for n in self.failed]
+        )
+
+
+def _render_part_of_comment(pr_number: int, issue_body: str) -> str:
+    section = mask_fenced_blocks(extract_section(issue_body, "Acceptance Criteria", ignore_case=True))
+    unchecked = [m.group(1).strip() for line in section.splitlines() if (m := _UNCHECKED_ITEM_RE.match(line))]
+    lines = [
+        _PART_OF_MARKER.format(pr=pr_number),
+        f"PR #{pr_number} was merged as part of this issue, so the issue stays open. "
+        "The PR description says what it left undone.",
+        "",
+    ]
+    if unchecked:
+        lines.append("Acceptance criteria still unchecked in this issue:")
+        lines.extend(f"- {item}" for item in unchecked)
+    else:
+        lines.append("This issue has no unchecked acceptance criteria: confirm the rest is done before closing it.")
+    return "\n".join(lines)
+
+
+async def _comment_part_of(issue: str, pr_number: int, *, repo: str, env: dict[str, str] | None) -> bool:
+    """Post the "Part of" comment on *issue* unless it already carries one. True once it does."""
+    view = await run("gh", "issue", "view", issue, "--repo", repo, "--json", "body,comments", env=env)
+    if not view.success:
+        log.warning("git.merge.part_of_issue_unreadable", issue=issue, pr=pr_number, stderr=view.stderr[:200])
+        return False
+    marker = _PART_OF_MARKER.format(pr=pr_number)
+    try:
+        data = json.loads(view.stdout)
+        issue_body = data.get("body") or ""
+        already_posted = any(marker in (comment.get("body") or "") for comment in data.get("comments") or [])
+    except (json.JSONDecodeError, AttributeError):
+        log.warning("git.merge.part_of_issue_unparseable", issue=issue, pr=pr_number)
+        return False
+    if already_posted:
+        return True
+    comment = _render_part_of_comment(pr_number, issue_body)
+    posted = await run("gh", "issue", "comment", issue, "--repo", repo, "--body", comment, env=env)
+    if not posted.success:
+        log.warning("git.merge.part_of_comment_failed", issue=issue, pr=pr_number, stderr=posted.stderr[:200])
+    return posted.success
+
+
+async def read_issue_links(pr_number: int, *, repo: str, env: dict[str, str] | None) -> IssueLinks | None:
+    """Read PR *pr_number*'s body and parse its issue links. None when the body cannot be read."""
+    result = await run("gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "body", env=env)
+    if not result.success:
+        log.warning("git.merge.pr_body_unreadable", pr=pr_number, stderr=result.stderr[:200])
+        return None
+    try:
+        body = json.loads(result.stdout).get("body") or ""
+    except (json.JSONDecodeError, AttributeError):
+        log.warning("git.merge.pr_body_unparseable", pr=pr_number)
+        return None
+    return parse_issue_links(body)
+
+
+async def handle_merged_pr_issues(
+    pr_number: int,
+    *,
+    post_merge_state: str,
+    repo: str,
+    github_user: str = "",
+    adapter: TaskAdapter | None = None,
+) -> MergedIssues | None:
+    """Apply *post_merge_state* to the issues a merged GitHub PR closes, and to no other.
+
+    The merged PR's body decides, through :func:`parse_issue_links`: an issue a closing keyword
+    names moves to *post_merge_state*; a ``Part of #N`` issue stays open with one comment naming
+    the PR and listing the acceptance criteria still unchecked in its body; a bare ``#N`` is left
+    alone. Which issue the caller associates with the PR plays no part, since a PR only "part
+    of" that issue must not close it (#1340). Returns None when the PR body cannot be read, so
+    "could not tell" never reads as "nothing linked".
+    """
+    env = await resolve_gh_env(github_user)
+    links = await read_issue_links(pr_number, repo=repo, env=env)
+    if links is None:
+        return None
+    outcome = MergedIssues()
+    for issue in links.closes:
+        try:
+            moved = await handle_post_merge_state(
+                issue, post_merge_state=post_merge_state, repo=repo, github_user=github_user, adapter=adapter
+            )
+        except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
+            log.warning("git.merge.post_merge_state_failed", issue=issue, pr=pr_number, exc_info=True)
+            moved = False
+        (outcome.transitioned if moved else outcome.failed).append(issue)
+    for issue in links.part_of:
+        try:
+            commented = await _comment_part_of(issue, pr_number, repo=repo, env=env)
+        except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
+            log.warning("git.merge.part_of_comment_raised", issue=issue, pr=pr_number, exc_info=True)
+            commented = False
+        (outcome.commented if commented else outcome.failed).append(issue)
+    log.info(
+        "git.merge.merged_pr_issues_handled",
+        pr=pr_number,
+        transitioned=outcome.transitioned,
+        commented=outcome.commented,
+        failed=outcome.failed,
+    )
+    return outcome

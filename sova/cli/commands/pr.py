@@ -1,8 +1,9 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, learn-from-pr."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, learn-from-pr."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -136,6 +137,68 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
         console.print(f"[green]Review complete: {result.summary}[/green]")
     else:
         console.print(f"[red]Review failed: {result.error}[/red]")
+        raise typer.Exit(code=1)
+
+
+def linked_issues(
+    pr: Annotated[int, typer.Argument(help="PR number.")],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="After the merge: move each issue the PR closes to integration.post_merge_state, "
+            "and comment on each issue it is only part of.",
+        ),
+    ] = False,
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Print the issues a PR closes and the ones it is only part of, or act on them after a merge.
+
+    Without --apply, prints {"closes": [...], "part_of": [...]} as JSON. Only a closing keyword
+    (Closes #N, Fixes #N, Resolves #N and their other forms) closes an issue: "Part of #N" leaves
+    it open, and a bare #N is a mention, not a link.
+    """
+    asyncio.run(_linked_issues(pr=pr, apply=apply, project_dir=project))
+
+
+async def _linked_issues(*, pr: int, apply: bool, project_dir: Path | None) -> None:
+    from sova.config.loader import load_config
+    from sova.git.merge import handle_merged_pr_issues, read_issue_links
+    from sova.utils.gh import resolve_gh_env
+    from sova.utils.shell import run
+
+    config = load_config(project_dir or Path.cwd())
+    repo = config.github_repo
+    env = await resolve_gh_env(config.github_user)
+    if not apply:
+        links = await read_issue_links(pr, repo=repo, env=env)
+        if links is None:
+            console.print(f"[red]Could not read the body of PR #{pr}.[/red]")
+            raise typer.Exit(code=1)
+        typer.echo(json.dumps({"closes": list(links.closes), "part_of": list(links.part_of)}))
+        return
+
+    if config.task_source.type != "github":
+        console.print("[red]--apply reads GitHub closing keywords; move a Jira ticket through its own workflow.[/red]")
+        raise typer.Exit(code=2)
+    state = await run("gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "--jq", ".state", env=env)
+    pr_state = state.stdout.strip() if state.success else ""
+    if pr_state != "MERGED":
+        console.print(f"[red]PR #{pr} is not merged ({pr_state or 'state unknown'}): no issue updated.[/red]")
+        raise typer.Exit(code=1)
+
+    from sova.adapters import create_adapter
+
+    post_merge_state = config.integration.post_merge_state
+    merged = await handle_merged_pr_issues(
+        pr, post_merge_state=post_merge_state, repo=repo, github_user=config.github_user, adapter=create_adapter(config)
+    )
+    if merged is None:
+        console.print(f"[red]Could not read the body of PR #{pr}: no issue updated.[/red]")
+        raise typer.Exit(code=1)
+    for line in merged.describe(post_merge_state) or [f"PR #{pr} closes no issue and is part of none."]:
+        typer.echo(line)
+    if merged.failed:
         raise typer.Exit(code=1)
 
 

@@ -1601,7 +1601,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "integration.post_merge_state",
         "Post-merge state",
-        "Issue state after merge: done (close) or on_qa (add label, keep open). Jira accepts arbitrary state names.",
+        "State for each issue a merged PR closes with a closing keyword: done (close) or on_qa (add label, keep open). "
+        "A Part of issue stays open with a comment. Jira accepts arbitrary state names.",
         "integration",
     ),
     # RTK
