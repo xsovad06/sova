@@ -20298,7 +20298,7 @@ class TestCrashRecoveryCleanup:
         )
 
     async def test_deletes_branch_and_transitions_state(self) -> None:
-        """Branch is deleted and issue state transitioned on successful merge."""
+        """Branch is deleted and the Jira ticket transitioned on successful merge."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         agent = self._make_agent()
@@ -20330,6 +20330,7 @@ class TestCrashRecoveryCleanup:
             mock_cfg.github_repo = "owner/repo"
             mock_cfg.github_user = "testuser"
             mock_cfg.integration.post_merge_state = "done"
+            mock_cfg.task_source.type = "jira"
             mock_load_config.return_value = mock_cfg
 
             from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
@@ -20344,6 +20345,61 @@ class TestCrashRecoveryCleanup:
         assert kwargs["post_merge_state"] == "done"
         assert kwargs["repo"] == "owner/repo"
         assert kwargs["github_user"] == "testuser"
+
+    async def test_github_lets_the_pr_body_decide_not_agent_issue(self) -> None:
+        """A merge agent started for issue 42 must not close it when the PR is only "Part of #42" (#1340)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.merge import MergedIssues
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.adapters.create_adapter"),
+            patch(
+                "sova.dashboard.services.agent_finalize.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-42",
+            ),
+            patch(
+                "sova.dashboard.services.agent_finalize.delete_remote_branch",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "sova.dashboard.services.agent_finalize.handle_merged_pr_issues",
+                new_callable=AsyncMock,
+                return_value=MergedIssues(commented=["42"]),
+            ) as mock_merged,
+            patch(
+                "sova.dashboard.services.agent_finalize.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+            patch(
+                "sova.dashboard.services.agent_finalize._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = "owner/repo"
+            mock_cfg.github_user = "testuser"
+            mock_cfg.integration.post_merge_state = "done"
+            mock_cfg.task_source.type = "github"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_merged.assert_awaited_once()
+        args, kwargs = mock_merged.call_args
+        assert args == (100,)
+        assert kwargs["post_merge_state"] == "done"
+        assert kwargs["repo"] == "owner/repo"
+        assert kwargs["github_user"] == "testuser"
+        mock_post_merge.assert_not_awaited()
+        mock_resolve.assert_not_awaited()
 
     async def test_continues_when_branch_deletion_fails(self) -> None:
         """State transition still runs even when branch deletion returns False."""
@@ -20378,6 +20434,7 @@ class TestCrashRecoveryCleanup:
             mock_cfg.github_repo = "owner/repo"
             mock_cfg.github_user = "testuser"
             mock_cfg.integration.post_merge_state = "done"
+            mock_cfg.task_source.type = "jira"
             mock_load_config.return_value = mock_cfg
 
             from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
@@ -20419,6 +20476,7 @@ class TestCrashRecoveryCleanup:
             mock_cfg.github_repo = "owner/repo"
             mock_cfg.github_user = "testuser"
             mock_cfg.integration.post_merge_state = "done"
+            mock_cfg.task_source.type = "jira"
             mock_load_config.return_value = mock_cfg
 
             from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup

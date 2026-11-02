@@ -367,7 +367,7 @@ log_backup_count = 5
 | **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
-| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
+| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply]`, `sova learn-from-pr <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search\|prune\|dump\|export\|import`, `sova assess set\|get\|clear <issue>` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |

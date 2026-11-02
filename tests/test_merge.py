@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
 from sova.git.merge import (
+    MergedIssues,
     MergeQueueStatus,
     _build_merge_args,
     _get_pr_base_branch,
+    _render_part_of_comment,
     delete_remote_branch,
     detect_merge_queue,
     get_merge_queue_status,
+    handle_merged_pr_issues,
     handle_post_merge_state,
     merge_pr,
     poll_merge_queue,
@@ -484,6 +488,259 @@ class TestHandlePostMergeStateWithAdapter:
         adapter = AsyncMock()
         await handle_post_merge_state("PROJ-123", post_merge_state="on_qa", repo="owner/repo", adapter=adapter)
         adapter.transition_state.assert_awaited_once_with("PROJ-123", TaskState.ON_QA)
+
+
+class TestHandlePostMergeStateResult:
+    """The return value says whether the issue moved, so a skip or a failure never reads as success."""
+
+    async def test_adapter_transition_returns_true(self) -> None:
+        assert await handle_post_merge_state(42, post_merge_state="done", repo="o/r", adapter=AsyncMock()) is True
+
+    async def test_adapter_unsupported_state_returns_false(self) -> None:
+        assert (
+            await handle_post_merge_state(42, post_merge_state="in_progress", repo="o/r", adapter=AsyncMock()) is False
+        )
+
+    async def test_gh_close_failure_returns_false(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock, return_value=_shell_fail()),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            assert await handle_post_merge_state(42, post_merge_state="done", repo="o/r") is False
+
+    async def test_gh_unknown_state_returns_false(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            assert await handle_post_merge_state(42, post_merge_state="custom_qa", repo="o/r") is False
+
+
+_ISSUE_BODY = """## Objective
+Ship it.
+
+## Acceptance Criteria
+- [x] Code merged
+- [ ] Rolled out on the host (owner)
+* [ ] Host check passes
+  - [ ] nested detail, not a criterion
+```
+- [ ] example inside a fence
+```
+
+## References
+- [ ] not a criterion either
+"""
+
+
+class TestRenderPartOfComment:
+    def test_lists_only_unchecked_top_level_criteria(self) -> None:
+        comment = _render_part_of_comment(884, _ISSUE_BODY)
+        assert comment.splitlines()[0] == "<!-- sova-part-of: pr=884 -->"
+        assert "PR #884 was merged as part of this issue, so the issue stays open." in comment
+        assert "- Rolled out on the host (owner)\n- Host check passes" in comment
+        for absent in ("Code merged", "nested detail", "inside a fence", "not a criterion either"):
+            assert absent not in comment
+
+    def test_no_unchecked_criteria_still_says_the_issue_stays_open(self) -> None:
+        comment = _render_part_of_comment(7, "## Acceptance Criteria\n- [x] done\n")
+        assert "stays open" in comment
+        assert "no unchecked acceptance criteria" in comment
+
+
+_FakeRun = Callable[..., Awaitable[ShellResult]]
+
+
+def _fake_gh(
+    pr_body: str,
+    *,
+    issues: dict[str, dict] | None = None,
+    failing: tuple[str, ...] = (),
+    not_json: tuple[str, ...] = (),
+) -> tuple[_FakeRun, list[tuple[str, ...]]]:
+    """A stand-in for sova.git.merge.run that answers the gh calls handle_merged_pr_issues makes.
+
+    *failing* names the calls that fail, as "pr view", "issue view <n>", "issue comment <n>" or "issue close <n>".
+    *not_json* names the view calls ("pr view", "issue view <n>") that succeed but print something that is not JSON.
+    """
+    calls: list[tuple[str, ...]] = []
+    issues = issues or {}
+
+    async def fake_run(*args: str, **_kwargs: object) -> ShellResult:
+        calls.append(args)
+        key = " ".join(args[1:3]) if args[1] == "pr" else " ".join(args[1:4])
+        if key in failing:
+            return _shell_fail()
+        if key in not_json:
+            return _shell_ok("not json")
+        if args[1:3] == ("pr", "view"):
+            return _shell_ok(json.dumps({"body": pr_body}))
+        if args[1:3] == ("issue", "view"):
+            return _shell_ok(json.dumps(issues.get(args[3], {"body": "", "comments": []})))
+        return _shell_ok()
+
+    return fake_run, calls
+
+
+async def _handle(fake_run: _FakeRun, *, post_merge_state: str = "done") -> MergedIssues | None:
+    with (
+        patch("sova.git.merge.run", new=fake_run),
+        patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+    ):
+        return await handle_merged_pr_issues(884, post_merge_state=post_merge_state, repo="o/r")
+
+
+class TestHandleMergedPrIssues:
+    async def test_part_of_comments_and_never_closes(self) -> None:
+        """The #1340 incident: a "Part of" PR merged and its issue was closed with criteria still open."""
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #779\n\nNot done in this PR:\n- host checks",
+            issues={
+                "779": {"body": _ISSUE_BODY, "comments": []},
+            },
+        )
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(transitioned=[], commented=["779"], failed=[])
+        assert not [c for c in calls if c[1:3] == ("issue", "close")]
+        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
+        assert comment[3] == "779"
+        assert "<!-- sova-part-of: pr=884 -->" in comment[comment.index("--body") + 1]
+
+    async def test_closing_keyword_closes_the_issue(self) -> None:
+        fake_run, calls = _fake_gh("## Issue\nCloses #1340")
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(transitioned=["1340"], commented=[], failed=[])
+        assert ("gh", "issue", "close", "1340", "--repo", "o/r") in calls
+
+    async def test_on_qa_applies_to_closing_issues_only(self) -> None:
+        fake_run, calls = _fake_gh("Fixes #5\n\n## Issue\nPart of #6")
+        outcome = await _handle(fake_run, post_merge_state="on_qa")
+
+        assert outcome == MergedIssues(transitioned=["5"], commented=["6"], failed=[])
+        edits = [c for c in calls if c[1:3] == ("issue", "edit")]
+        assert [e[3] for e in edits] == ["5"]
+
+    async def test_bare_reference_is_left_alone(self) -> None:
+        fake_run, calls = _fake_gh("Related: #12, and see #13.")
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues()
+        assert len(calls) == 1  # the PR body read, nothing else
+
+    async def test_existing_marker_is_not_posted_twice(self) -> None:
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #779",
+            issues={
+                "779": {"body": _ISSUE_BODY, "comments": [{"body": "<!-- sova-part-of: pr=884 -->\nPR #884 ..."}]},
+            },
+        )
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(commented=["779"])
+        assert not [c for c in calls if c[1:3] == ("issue", "comment")]
+
+    async def test_a_comment_from_another_pr_does_not_count(self) -> None:
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #779",
+            issues={
+                "779": {"body": _ISSUE_BODY, "comments": [{"body": "<!-- sova-part-of: pr=880 -->"}]},
+            },
+        )
+        await _handle(fake_run)
+
+        assert [c for c in calls if c[1:3] == ("issue", "comment")]
+
+    async def test_unreadable_pr_body_returns_none(self) -> None:
+        fake_run, calls = _fake_gh("Closes #1", failing=("pr view",))
+
+        assert await _handle(fake_run) is None
+        assert len(calls) == 1
+
+    async def test_unparseable_pr_body_returns_none(self) -> None:
+        """A body that cannot be parsed is "could not tell", never "nothing linked"."""
+        fake_run, calls = _fake_gh("Closes #1", not_json=("pr view",))
+
+        assert await _handle(fake_run) is None
+        assert len(calls) == 1
+
+    async def test_unparseable_issue_is_a_failure_with_no_comment(self) -> None:
+        fake_run, calls = _fake_gh("## Issue\nPart of #779", not_json=("issue view 779",))
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(failed=["779"])
+        assert not [c for c in calls if c[1:3] == ("issue", "comment")]
+
+    async def test_failed_comment_is_a_failure_not_a_comment(self) -> None:
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #779",
+            issues={"779": {"body": _ISSUE_BODY, "comments": []}},
+            failing=("issue comment 779",),
+        )
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(failed=["779"])
+        assert [c for c in calls if c[1:3] == ("issue", "comment")]
+
+    async def test_failures_are_reported_per_issue(self) -> None:
+        fake_run, _ = _fake_gh(
+            "Closes #1, closes #2\n\n## Issue\nPart of #3",
+            failing=("issue close 1", "issue view 3"),
+        )
+        outcome = await _handle(fake_run)
+
+        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1", "3"])
+
+    async def test_adapter_error_is_a_failure_not_an_abort(self) -> None:
+        fake_run, _ = _fake_gh("Closes #1, closes #2")
+        adapter = AsyncMock()
+        adapter.transition_state.side_effect = [RuntimeError("boom"), None]
+        with (
+            patch("sova.git.merge.run", new=fake_run),
+            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+        ):
+            outcome = await handle_merged_pr_issues(884, post_merge_state="done", repo="o/r", adapter=adapter)
+
+        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1"])
+
+    async def test_unexpected_adapter_error_is_a_failure_not_an_abort(self) -> None:
+        """An error outside RuntimeError/OSError/AdapterError (a malformed gh payload) must not lose the result."""
+        fake_run, _ = _fake_gh("Closes #1, closes #2")
+        adapter = AsyncMock()
+        adapter.transition_state.side_effect = [KeyError("name"), None]
+        with (
+            patch("sova.git.merge.run", new=fake_run),
+            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+        ):
+            outcome = await handle_merged_pr_issues(884, post_merge_state="done", repo="o/r", adapter=adapter)
+
+        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1"])
+
+    async def test_part_of_comment_error_is_a_failure_not_an_abort(self) -> None:
+        """A raise while commenting on one "Part of" issue is recorded and the next issue is still handled."""
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #7, part of #8",
+            issues={"7": {"body": _ISSUE_BODY, "comments": []}, "8": {"body": _ISSUE_BODY, "comments": []}},
+        )
+
+        async def raising_run(*args: str, **kwargs: object) -> ShellResult:
+            if args[1:4] == ("issue", "view", "7"):
+                raise OSError("gh vanished")
+            return await fake_run(*args, **kwargs)
+
+        outcome = await _handle(raising_run)
+
+        assert outcome == MergedIssues(commented=["8"], failed=["7"])
+        assert [c[3] for c in calls if c[1:3] == ("issue", "comment")] == ["8"]
+
+    def test_describe_lists_every_outcome(self) -> None:
+        outcome = MergedIssues(transitioned=["1"], commented=["2"], failed=["3"])
+        assert outcome.describe("done") == [
+            "issue #1 moved to done",
+            "issue #2 left open (Part of), criteria comment in place",
+            "issue #3 not updated (see log)",
+        ]
 
 
 class TestIntegrationConfigDefaults:

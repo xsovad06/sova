@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`), `checks` (`checks should-skip`, `checks record`)
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `linked-issues`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`), `checks` (`checks should-skip`, `checks record`)
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -282,6 +282,7 @@ Full narrative entries (the reasoning, the incident that motivated a fix, and th
 - A fix loop gets one cheap try and its escalation reason is step-scoped, never the run-wide one
 - One shared priority registry replaces per-tracker and per-consumer rank tables, and a default label must never be sent to a call that validates labels atomically
 - A PR's closing keyword is derived from acceptance-criteria verdicts, not emitted unconditionally, and a body refresh after address-review must target only the sections it generated
+- Only a closing keyword closes an issue after a merge, and the merged PR body decides which
 - A non-current spec is degraded with a caveat, not dropped, and the stamp writer and the freshness checker must agree on exactly one frontmatter span
 - Every untrusted issue-body block interpolated into a review prompt is quoted through one shared nonce-delimiting helper, never some of them
 - A project's own commit convention is config, not a hardcoded list, and a hook-fix must fold into the branch commit it belongs to rather than appending a new one
