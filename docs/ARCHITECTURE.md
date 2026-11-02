@@ -36,6 +36,7 @@ Every other file under `docs/`, grouped by purpose. Dated reports and drafts are
 | [handoff-protocol.md](handoff-protocol.md) | Agent handoff file format and lifecycle |
 | [awareness-setup.md](awareness-setup.md) | Setting up the awareness briefing providers |
 | [troubleshooting-config.md](troubleshooting-config.md) | Diagnosing config load and agent spawn failures |
+| [token-compression.md](token-compression.md) | Optional RTK and Headroom token compression setup |
 | [agent-spawn-guide.md](agent-spawn-guide.md) | Troubleshooting an agent that fails before its first step |
 | [github-token-setup.md](github-token-setup.md) | Making the `gh` token reachable from agent subprocesses |
 | [issue-organization.md](issue-organization.md) | Organizing issues with phase milestones for the Priority Queue |

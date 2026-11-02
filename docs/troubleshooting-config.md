@@ -39,6 +39,15 @@ Look for values that are NOT valid JSON (use `json_valid()` to check):
 sqlite3 .claude/sova.db "SELECT key, value FROM project_settings WHERE json_valid(value) = 0;"
 ```
 
+**Fix**: `sova config set` is config-tolerant, so it still works when the config no longer loads, and it
+writes valid JSON for you:
+```bash
+sova config set agent.model your-string-value
+```
+
+Or edit the row directly, keeping every stored value valid JSON (strings quoted, numbers, booleans and
+arrays unquoted).
+
 **Fix Examples**:
 
 String values need quotes:
