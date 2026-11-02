@@ -35,6 +35,7 @@ from sova.git.operations import (
     get_pr_files,
     get_pr_head_sha,
     get_pr_status,
+    get_pr_title_body_state,
     is_push_rejection,
     list_dropped_commits,
     push,
@@ -1385,6 +1386,21 @@ class TestGetPRBody:
 
             with pytest.raises(RuntimeError, match="Failed to get body"):
                 await get_pr_body(42, repo="user/repo")
+
+
+class TestGetPRTitleBodyState:
+    async def test_returns_title_and_body(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"title": "fix: x", "body": None, "state": "OPEN"}))
+
+            assert await get_pr_title_body_state(42, repo="user/repo") == ("fix: x", "", "OPEN")
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            with pytest.raises(RuntimeError, match="Failed to get title, body and state"):
+                await get_pr_title_body_state(42, repo="user/repo")
 
 
 class TestUpdatePRBody:

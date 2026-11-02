@@ -1515,6 +1515,133 @@ class TestReviewerRole:
         assert ctx.pr_number == 82
         assert ctx.branch_name == "feat/issue-42"
 
+    async def test_execute_reviews_issue_less_pr(self, tmp_path: Path) -> None:
+        """An address-pr handoff on a PR without a linked issue reviews the PR, not issue ''."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", adapter=adapter, issue_number="", pr_number=60)
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("ci/main-trunk", "abc123"),
+            ),
+            patch(
+                "sova.roles.reviewer.get_pr_title_body_state",
+                new_callable=AsyncMock,
+                return_value=("ci: make main the trunk", "PR body", "OPEN"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success, result.error
+        adapter.get_task.assert_not_called()
+        adapter.add_label.assert_not_called()
+        assert "ci: make main the trunk" in mock_invoke.call_args.args[0]
+
+    async def test_execute_issue_less_pr_continues_when_pr_text_fetch_fails(self, tmp_path: Path) -> None:
+        """A failed PR title fetch leaves the 'PR #N' placeholder and the review still runs."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", adapter=adapter, issue_number="", pr_number=60)
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("ci/main-trunk", "abc123"),
+            ),
+            patch(
+                "sova.roles.reviewer.get_pr_title_body_state",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh pr view failed"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+        ):
+            result = await ReviewerRole().execute(ctx)
+
+        assert result.success, result.error
+        assert "**Issue**: PR #60" in mock_invoke.call_args.args[0]
+
+    @pytest.mark.parametrize(("force", "reviewed"), [(False, False), (True, True)])
+    async def test_execute_issue_less_pr_requires_open_pr(self, tmp_path: Path, force: bool, reviewed: bool) -> None:
+        """A merged PR stands in for a closed issue: it is not reviewed unless forced."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", adapter=adapter, issue_number="", pr_number=60, force=force)
+        llm_result = LLMResult(
+            text=json.dumps({"findings": [], "summary": "OK"}), model="sonnet", cost_usd=Decimal("0")
+        )
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch_and_head_sha",
+                new_callable=AsyncMock,
+                return_value=("ci/main-trunk", "abc123"),
+            ),
+            patch(
+                "sova.roles.reviewer.get_pr_title_body_state",
+                new_callable=AsyncMock,
+                return_value=("ci: make main the trunk", "", "MERGED"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+        ):
+            result = await ReviewerRole().execute(ctx)
+
+        assert result.success is reviewed, result.error
+        assert mock_invoke.called is reviewed
+        if not reviewed:
+            assert "PR is MERGED" in (result.error or "")
+
+    async def test_execute_fails_without_issue_or_pr(self, tmp_path: Path) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(tmp_path, role="reviewer", adapter=adapter, issue_number="")
+
+        result = await ReviewerRole().execute(ctx)
+
+        assert not result.success
+        assert "requires a PR number" in (result.error or "")
+        adapter.get_task.assert_not_called()
+
     async def test_reviewer_discovers_branch_when_pr_number_preset(self, tmp_path: Path) -> None:
         """When pr_number is already set, reviewer should still discover branch_name."""
         import json

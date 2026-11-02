@@ -33,6 +33,7 @@ from sova.git.operations import (
     get_pr_diff,
     get_pr_files,
     get_pr_head_sha,
+    get_pr_title_body_state,
 )
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.handoff import (
@@ -205,15 +206,9 @@ class ReviewerRole(AgentRole):
                 await self._clear_current_step(ctx)
 
     async def _execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
-
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not in valid state for review",
-                error=f"Precondition failed: issue is in {task.state}, "
-                f"expected one of {', '.join(self.allowed_input_states)}",
-            )
+        task = await self._resolve_task(ctx)
+        if isinstance(task, RoleResult):
+            return task
 
         error_msg, head_sha = await self._discover_pr(ctx)
         if error_msg:
@@ -277,6 +272,50 @@ class ReviewerRole(AgentRole):
             output_state=TaskState.IN_REVIEW,
             findings=[f.description for f in review.findings],
         )
+
+    async def _resolve_task(self, ctx: ExecutionContext) -> Task | RoleResult:
+        """Resolve the task under review, or the failed result that stops the run.
+
+        A run with an issue reviews that issue, gated on its state. A run without
+        one (address-pr handoff on a PR with no linked issue) reviews the PR itself.
+        """
+        if ctx.has_issue:
+            task = await ctx.adapter.get_task(ctx.issue_number)
+            if not self.validate_preconditions(task, force=ctx.force):
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} not in valid state for review",
+                    error=f"Precondition failed: issue is in {task.state}, "
+                    f"expected one of {', '.join(self.allowed_input_states)}",
+                )
+            return task
+        if ctx.pr_number:
+            return await self._task_from_pr(ctx)
+        msg = "Issue-less review requires a PR number"
+        return RoleResult(success=False, summary=msg, error=msg)
+
+    async def _task_from_pr(self, ctx: ExecutionContext) -> Task | RoleResult:
+        """Build the review task from the PR title and body when the run has no issue.
+
+        The PR's own state stands in for the issue precondition: a closed or
+        merged PR is not reviewed unless forced. A failed fetch fails open with
+        a placeholder title, since an unverifiable state is not a closed PR.
+        """
+        title, body, state = f"PR #{ctx.pr_number}", "", ""
+        try:
+            pr_title, body, state = await get_pr_title_body_state(
+                ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user
+            )
+            title = pr_title or title
+        except (RuntimeError, OSError):
+            log.warning("reviewer.pr_text_fetch_failed", pr=ctx.pr_number, exc_info=True)
+        if state and state != "OPEN" and not ctx.force:
+            return RoleResult(
+                success=False,
+                summary=f"PR #{ctx.pr_number} not in valid state for review",
+                error=f"Precondition failed: PR is {state}, expected OPEN",
+            )
+        return Task(id="", title=title, body=body, state=TaskState.IN_REVIEW)
 
     async def _discover_pr(self, ctx: ExecutionContext) -> tuple[str | None, str]:
         """Discover PR number and branch for the issue.
@@ -914,6 +953,8 @@ class ReviewerRole(AgentRole):
 
     def _append_review_rationale(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Append review rationale to spec for findings with severity >= 5."""
+        if not ctx.has_issue:
+            return
         try:
             from sova.core.steps._spec_helpers import SECTION_REVIEW_RATIONALE, append_spec_section
 
