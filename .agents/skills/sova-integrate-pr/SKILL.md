@@ -59,7 +59,13 @@ gh pr view <PR_NUMBER> --json number,title,body,state,baseRefName,headRefName,st
   its post-merge silent-revert audit, which is the only check an out-of-band
   merge (web UI, another agent, a merge queue) ever gets.
 
-Extract the linked issue number from the PR body (patterns: `Closes #N`, `Fixes #N`, `Resolves #N`) or title (`#N`). This is optional: the pipeline works without a linked issue.
+Resolve the linked issue, which names the worktree to clean up and goes into the merge-queue marker. This is optional: the pipeline works without a linked issue. On a GitHub project, read it from the PR body:
+
+```bash
+sova linked-issues <PR_NUMBER>
+```
+
+It prints `{"closes": [...], "part_of": [...]}`: the issues a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms), then the `Part of #N` issues the PR only partly finishes. `<ISSUE_NUMBER>` is the first `closes` entry, else the first `part_of` entry. A bare `#N` in the body or the title is a mention, not a link. On a Jira project it is the ticket key the PR title starts with (`[PROJ-123]`). `<ISSUE_NUMBER>` never decides which issues get closed: Phase 6 does, from the merged PR's body.
 
 Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval.
 
@@ -636,7 +642,7 @@ i=load_config(Path('.')).integration; print(i.merge_method, i.delete_branch, i.p
 - `merge_method`: "auto" (repo default), "squash", "rebase", or "merge"
 - `delete_branch`: true/false (default true)
 - `merge_queue_enabled`: "auto" (detect via GraphQL), "true", "false"
-- `post_merge_state`: "done" (close issue) or "on_qa" (add label, keep open)
+- `post_merge_state`: "done" (close issue) or "on_qa" (add label, keep open), applied in Phase 6 only to the issues the PR body closes
 
 **Merge queue detection**: using the base branch from Phase 1, query the GraphQL API to check if a merge queue is configured.
 
@@ -800,13 +806,21 @@ fi
 
 If `-d` refuses ("not fully merged", expected after a rebase merge), confirm the diff against the base is empty (`BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName); git diff "origin/$BASE" <branch-name>`), then `git branch -D <branch-name>`. If the diff is non-empty only because the base branch moved on after the merge, compare against the merge commit instead (`git diff <MERGE_SHA> <branch-name>`); if that is not empty either, keep the branch and report it.
 
-Handle the linked issue based on `post_merge_state` from `[integration]` config.
+Handle the linked issues based on `post_merge_state` from `[integration]` config.
 
-**GitHub projects** (`task_source` is `github`, the default):
+**GitHub projects** (`task_source` is `github`, the default): the merged PR's body decides which issues the merge finishes, never `<ISSUE_NUMBER>`. Run:
 
-- **"done"** (default): close the issue (`gh issue close <ISSUE_NUMBER>`)
-- **"on_qa"**: add `agent:on-qa` label, keep the issue open
-- **Other value**: log a warning and skip the state transition
+```bash
+sova linked-issues <PR_NUMBER> --apply
+```
+
+It acts on each issue the body links and prints one line per issue:
+
+- **Closing keyword** (`Closes #N`, `Fixes #N`, `Resolves #N` or another GitHub form): the issue moves to `post_merge_state`. "done" (default) closes it; "on_qa" adds the `agent:on-qa` label and keeps it open; any other value leaves it as it is and is reported as not updated.
+- **`Part of #N`**: the issue stays open, whatever `post_merge_state` says. It gets one comment naming this PR and listing the acceptance criteria still unchecked in its body; a re-run does not post a second one.
+- **A bare `#N`**: left alone.
+
+A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead: closing a `Part of` issue is the bug this step exists to prevent.
 
 **Jira projects** (`task_source.type = "jira"`):
 
@@ -845,7 +859,7 @@ Output a concise summary covering:
 - Silent-revert checks: the Phase 2b and Phase 6 results (pass, or skipped because no guard honouring an explicit range exists at the path checked), which replay Phase 2b used (rebase, merged, or rebase-fallback), and how Phase 6 classified the landing, including any wide-window note
 - CI status (passed, retried, or skipped because nothing was re-pushed)
 - Branches cleaned up (local + remote), and any worktree or branch kept and why
-- Issue closed (or no linked issue)
+- Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue
 - Documentation and knowledge: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
 - **Manual post-merge actions** (omit if none apply), derived from `gh pr diff <PR_NUMBER> --name-only`:

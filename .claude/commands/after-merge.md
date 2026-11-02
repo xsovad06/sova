@@ -51,11 +51,13 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
    ```
    If `-d` refuses ("not fully merged", expected after a rebase merge), confirm `BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName); git diff "origin/$BASE" <branch-name>` prints nothing, then `git branch -D <branch-name>`. If the diff is non-empty only because the base branch moved on after the merge, compare against the PR's merge commit instead (`gh pr view <PR_NUMBER> --json mergeCommit --jq .mergeCommit.oid`); if that is not empty either, keep the branch and report it.
 
-5. **Close linked issue and clean up labels**:
+5. **Update the linked issues and clean up labels**. On a GitHub project, the merged PR's body decides which issues the merge finishes:
    ```bash
-   gh issue close <ISSUE_NUMBER> 2>/dev/null || true
+   sova linked-issues <PR_NUMBER> --apply
    ```
-   Remove stale workflow labels that are no longer meaningful on a closed issue:
+   Each issue a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms) moves to `integration.post_merge_state` ("done" closes it). Each `Part of #N` issue stays open and gets one comment listing its unchecked acceptance criteria. A bare `#N` is left alone. Never close an issue by hand instead: a `Part of` issue must stay open. A non-zero exit means an issue was not updated, so report its output. On a Jira project, move the ticket the PR title names through its workflow instead.
+
+   Then, for each issue the command printed, remove the workflow labels that no longer apply after the merge:
    ```bash
    gh issue edit <ISSUE_NUMBER> --remove-label "agent:in-review" --remove-label "agent:in-progress" --remove-label "sova:revise" --remove-label "sova:block" 2>/dev/null || true
    ```

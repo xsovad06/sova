@@ -1,12 +1,14 @@
 """Tests for closing only the issues a merged PR closes (#1340).
 
-Covers parse_issue_links() (sova/utils/gh.py) and the `sova linked-issues` CLI.
+Covers parse_issue_links() (sova/utils/gh.py), the `sova linked-issues` CLI that
+/integrate-pr and /after-merge call, and the command text that tells them to.
 handle_merged_pr_issues() itself is tested in tests/test_merge.py.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -177,3 +179,40 @@ class TestLinkedIssuesCli:
 
         assert result.exit_code == 2
         handle.assert_not_awaited()
+
+
+def _read(path: str) -> str:
+    return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+_PHASE_6 = re.compile(r"### Phase 6:.*?### Phase 7:", re.DOTALL)
+
+
+class TestCommandsCloseOnlyOnClosingKeywords:
+    @pytest.mark.parametrize(
+        "path", ["sova/commands/data/commands/integrate-pr.md", ".claude/commands/integrate-pr.md"]
+    )
+    def test_integrate_pr_phase_6_applies_the_cli(self, path: str) -> None:
+        phase_6 = _PHASE_6.search(_read(path)).group(0)
+        assert "sova linked-issues <PR_NUMBER> --apply" in phase_6
+        assert "`Part of #N`**: the issue stays open" in phase_6
+
+    @pytest.mark.parametrize(
+        "path", ["sova/commands/data/commands/integrate-pr.md", ".claude/commands/integrate-pr.md"]
+    )
+    def test_integrate_pr_never_closes_an_issue_itself(self, path: str) -> None:
+        assert "gh issue close" not in _read(path)
+
+    @pytest.mark.parametrize(
+        "path", ["sova/commands/data/commands/integrate-pr.md", ".claude/commands/integrate-pr.md"]
+    )
+    def test_integrate_pr_has_no_title_fallback(self, path: str) -> None:
+        text = _read(path)
+        assert "or title (`#N`)" not in text
+        assert "A bare `#N` in the body or the title is a mention, not a link." in text
+
+    @pytest.mark.parametrize("path", ["sova/commands/data/commands/after-merge.md", ".claude/commands/after-merge.md"])
+    def test_after_merge_applies_the_cli(self, path: str) -> None:
+        text = _read(path)
+        assert "sova linked-issues <PR_NUMBER> --apply" in text
+        assert "gh issue close" not in text
