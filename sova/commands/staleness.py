@@ -17,6 +17,7 @@ from sova.agents.claude_code import ClaudeCodeAdapter
 from sova.commands.catalog import get_canonical_dir
 from sova.commands.distribution import diff_commands
 from sova.config.models import ProjectConfig
+from sova.git.worktree import git_tracked_paths
 
 # Commands that rewrite, push or merge a PR branch, where running an outdated
 # recipe can silently lose or revert work.
@@ -48,7 +49,11 @@ def find_stale_command(
     so a project that commits ``.claude/commands/`` runs the branch's own copy,
     which can predate a fix the primary checkout already has. The copy and
     manifest are then read from ``run_dir``, while config still comes from
-    ``project_dir``: a worktree carries no ``sova.db`` of its own.
+    ``project_dir``: a worktree carries no ``sova.db`` of its own. A copy the
+    branch does not track (a project that gitignores ``.claude/``) is refreshed
+    when the worktree is reused, so it is stale only when that refresh failed,
+    and the message says so instead of suggesting a rebase. When git cannot say
+    whether the branch tracks it, the message names both fixes and when each applies.
 
     Raises on an unreadable install or config; callers decide whether that
     fails open.
@@ -62,11 +67,8 @@ def find_stale_command(
     if project_commands is None or not (project_commands / filename).is_file():
         return None
 
-    commands_dir = project_commands
-    on_branch = False
-    if run_dir is not None and run_dir.resolve() != project_dir.resolve():
-        on_branch = True
-        commands_dir = adapter.commands_dir(run_dir)
+    branch_dir = run_dir if run_dir is not None and run_dir.resolve() != project_dir.resolve() else None
+    commands_dir = project_commands if branch_dir is None else adapter.commands_dir(branch_dir)
     if commands_dir is None or not (commands_dir / filename).is_file():
         return None
 
@@ -76,16 +78,50 @@ def find_stale_command(
         cfg = load_config(project_dir)
 
     diff = diff_commands(get_canonical_dir(), commands_dir, cfg, adapter=adapter)
-    if on_branch:
-        where = f"The copy of /{command} committed on the branch checked out at {run_dir}"
-        fix = "Rebase the branch onto its base branch to pick up the current copy."
+    if filename in diff.changed:
+        problem = "predates the current SOVA version of it"
+    elif filename in diff.new:
+        problem = "has no sync record, so it cannot be verified as current"
     else:
+        return None
+
+    if branch_dir is None:
         where = f"Installed /{command}"
         fix = (
             f"Run `sova commands update --project {project_dir}` (add `--force` to replace a locally customized copy)."
         )
-    if filename in diff.changed:
-        return f"{where} predates the current SOVA version of it. {fix}"
-    if filename in diff.new:
-        return f"{where} has no sync record, so it cannot be verified as current. {fix}"
-    return None
+    elif (tracked := _is_tracked(branch_dir, commands_dir / filename)) is True:
+        where = f"The copy of /{command} committed on the branch checked out at {branch_dir}"
+        fix = "Rebase the branch onto its base branch to pick up the current copy."
+    elif tracked is False:
+        # Untracked: a copy of the primary checkout's, made when the worktree
+        # was created and normally refreshed on reuse, so reaching here means
+        # that refresh failed. Rebasing cannot change an untracked file.
+        where = f"The copy of /{command} in the worktree at {branch_dir}"
+        fix = (
+            f"It is not tracked by the branch and could not be refreshed from {project_dir}: "
+            f"delete {commands_dir / filename} so the next run copies the current one."
+        )
+    else:
+        # git could not say, so neither fix is known to be safe: deleting a
+        # committed copy dirties the tree, and a rebase cannot change an
+        # untracked one.
+        where = f"The copy of /{command} in the worktree at {branch_dir}"
+        fix = (
+            "Whether the branch tracks it could not be determined (git ls-files failed). "
+            f"If `git ls-files` run in {branch_dir} lists {commands_dir.relative_to(branch_dir) / filename}, "
+            f"rebase the branch onto its base branch; otherwise delete {commands_dir / filename} so the next "
+            f"run copies the current one from {project_dir}."
+        )
+    return f"{where} {problem}. {fix}"
+
+
+def _is_tracked(run_dir: Path, path: Path) -> bool | None:
+    """Whether the branch checked out at ``run_dir`` tracks ``path``, or ``None`` if git could not say.
+
+    Decides only which fix a stale-copy message gives. A git failure is not
+    "untracked": that reading would tell an operator to delete a committed file.
+    """
+    relative = path.relative_to(run_dir).as_posix()
+    found = git_tracked_paths(run_dir, pathspec=relative)
+    return None if found is None else relative in found
