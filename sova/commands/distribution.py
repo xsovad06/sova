@@ -74,6 +74,12 @@ class DiffResult:
     # settings review modal) don't have to read and render the file a second
     # time.
     rendered: dict[str, str] = field(default_factory=dict)
+    # Every filename whose rendered hash was compared with the manifest and
+    # matched. A source file that could not be read is skipped and appears in
+    # none of `changed`/`new`/`unchanged`, so "absent from changed and new"
+    # alone cannot tell "matches" from "was never compared"; a caller that
+    # must have positive evidence of a match checks this list.
+    unchanged: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -608,6 +614,8 @@ def _diff_files(
         elif entry.hash != new_hash:
             result.changed.append(filename)
             result.rendered[filename] = rendered
+        else:
+            result.unchanged.append(filename)
 
     for filename, entry in manifest.commands.items():
         if entry.managed and filename not in canonical_names:
