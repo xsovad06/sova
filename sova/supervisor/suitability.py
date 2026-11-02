@@ -5,15 +5,22 @@ Single source of truth for whether an issue is fit for autonomous agent work.
 `check_human_involvement_gate()` all route through `assess_suitability()` so the
 three call sites agree on one classification instead of each re-deriving a
 slightly different subset of the exclusion rules.
+
+`rank_next_tasks()` orders the autonomous issues among them for the dashboard's
+"Up next" list, and `rank_and_count_next_tasks()` also counts the ones still
+waiting for a classification; both draw on the same candidate pool.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import deque
+from collections.abc import Collection, Iterable, Iterator
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
+from sova.adapters.milestone import UNPHASED, extract_phase_order
 from sova.knowledge.assessments import SUITABILITY_SHORTHANDS
 from sova.supervisor.labels import is_epic, is_human_only, is_interactive_recommended, is_on_hold, is_ready
 
@@ -178,3 +185,167 @@ def assess_suitability(
         )
 
     return Suitability(mode=SuitabilityMode.UNCLASSIFIED)
+
+
+def suitability_payload(suitability: Suitability) -> dict:
+    """The API shape of a classification: exactly `mode`, `reasons` and `blocked_by`.
+
+    There is deliberately no schedulability flag: `mode` reflects labels and
+    dependencies alone and ignores the task's state, as `DependencyGraph.to_dict()`
+    documents for the graph node this mirrors.
+    """
+    return asdict(suitability)
+
+
+# The two tracker states an issue can be picked up from: triaged (no spec yet) or
+# researched (spec written). Earlier states still need triage or a spec, and later
+# ones already have an agent or a PR.
+_NEXT_TASK_STATES: frozenset[TaskState] = frozenset({TaskState.TRIAGED, TaskState.RESEARCHED})
+
+
+@dataclass(frozen=True, slots=True)
+class RankedTask:
+    """One entry of the ranked "Up next" list.
+
+    `rank` is the 1-based position in the full ordering, so a limited result
+    still reports each entry's true place. `why` is the machine-readable
+    explanation: `priority:<level>`, `unblocks:<n>` (only when n > 0),
+    `phase:<n>` (only when the milestone parses) and `state:<state>`, in that order.
+    """
+
+    task: Task
+    rank: int
+    unblocks: int
+    phase: int
+    mode: SuitabilityMode
+    why: list[str]
+
+
+def _candidates(
+    tasks: Iterable[Task],
+    graph: DependencyGraph,
+    running: Collection[int],
+    open_prs: Collection[int],
+) -> Iterator[tuple[int, Task, Suitability]]:
+    """Yield `(issue id, task, suitability)` for every issue that could be picked up next.
+
+    The one candidate pool behind `rank_next_tasks()` and `rank_and_count_next_tasks()`,
+    so the ranking and the unclassified count cannot disagree about it: triaged or
+    researched, no running agent, no open PR, classified exactly as the graph node
+    is (no local assessment record). An id that does not parse as an issue number is
+    skipped because it can never be a graph node.
+    """
+    for task in tasks:
+        try:
+            issue = int(task.id)
+        except (TypeError, ValueError):
+            continue
+        if task.state not in _NEXT_TASK_STATES or issue in running or issue in open_prs:
+            continue
+        yield issue, task, assess_suitability(task, graph)
+
+
+def _unblock_count(issue: int, graph: DependencyGraph) -> int:
+    """Count the open, non-epic issues that transitively depend on `issue`.
+
+    Mirrors `unsatisfied_dependencies()`: an epic is a tracking container and a
+    DONE issue has nothing left to unblock, so neither is counted and the walk does
+    not continue through them. The visited set makes a dependency cycle terminate
+    and keeps `issue` itself out of its own count.
+    """
+    seen = {issue}
+    pending = deque([issue])
+    count = 0
+    while pending:
+        for dependent in graph.get_dependents(pending.popleft()):
+            if dependent in seen:
+                continue
+            seen.add(dependent)
+            dependent_task = graph.get_task(dependent)
+            if dependent_task is None or dependent_task.state == TaskState.DONE or is_epic(dependent_task.labels):
+                continue
+            count += 1
+            pending.append(dependent)
+    return count
+
+
+def _why(task: Task, unblocks: int, phase: int) -> list[str]:
+    why = [f"priority:{task.priority.value}"]
+    if unblocks > 0:
+        why.append(f"unblocks:{unblocks}")
+    # Phase 0 is a real phase, so presence is an identity check, never truthiness.
+    if phase != UNPHASED:
+        why.append(f"phase:{phase}")
+    why.append(f"state:{task.state.value}")
+    return why
+
+
+def _rank_candidates(
+    candidates: Iterable[tuple[int, Task, Suitability]],
+    graph: DependencyGraph,
+    limit: int | None,
+) -> list[RankedTask]:
+    unranked = []
+    for issue, task, suitability in candidates:
+        if suitability.mode != SuitabilityMode.AUTONOMOUS:
+            continue
+        unblocks = _unblock_count(issue, graph)
+        phase = extract_phase_order(task.milestone)
+        unranked.append(
+            RankedTask(
+                task=task,
+                rank=0,
+                unblocks=unblocks,
+                phase=phase,
+                mode=suitability.mode,
+                why=_why(task, unblocks, phase),
+            )
+        )
+    unranked.sort(key=lambda r: (r.task.priority.rank, -r.unblocks, r.phase, int(r.task.id)))
+    ranked = [replace(r, rank=position) for position, r in enumerate(unranked, start=1)]
+    return ranked if limit is None else ranked[:limit]
+
+
+def _count_unclassified(candidates: Iterable[tuple[int, Task, Suitability]]) -> int:
+    return sum(1 for _issue, _task, suitability in candidates if suitability.mode == SuitabilityMode.UNCLASSIFIED)
+
+
+def rank_next_tasks(
+    tasks: Iterable[Task],
+    graph: DependencyGraph,
+    *,
+    running: Collection[int],
+    open_prs: Collection[int],
+    limit: int | None = None,
+) -> list[RankedTask]:
+    """Order the issues an agent should pick up next. Pure and LLM-free.
+
+    Keeps `autonomous` issues in `_NEXT_TASK_STATES` with no running agent and no
+    open PR (`unclassified` is deliberately left out). Orders them by priority rank,
+    then most transitive dependents unblocked, then milestone phase (`UNPHASED`
+    last), then issue number. The issue number is unique, so the order is total and
+    does not depend on the input order.
+
+    `limit=None` is unbounded; `0` is an empty result, not "no limit". A negative
+    `limit` is the caller's bug and is not validated here.
+    """
+    return _rank_candidates(_candidates(tasks, graph, running, open_prs), graph, limit)
+
+
+def rank_and_count_next_tasks(
+    tasks: Iterable[Task],
+    graph: DependencyGraph,
+    *,
+    running: Collection[int],
+    open_prs: Collection[int],
+    limit: int | None = None,
+) -> tuple[list[RankedTask], int]:
+    """`rank_next_tasks()` plus the count of candidates that no label has classified yet.
+
+    Each candidate is classified once, so the ranking and the count come from one
+    `assess_suitability()` pass. An unclassified candidate joins the ranking as soon
+    as it gains `agent:ready`; backlog and needs-spec issues are outside the pool, so
+    they are not counted. `limit` truncates the ranking only, never the count.
+    """
+    candidates = list(_candidates(tasks, graph, running, open_prs))
+    return _rank_candidates(candidates, graph, limit), _count_unclassified(candidates)
