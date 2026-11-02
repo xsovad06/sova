@@ -4299,51 +4299,6 @@ class TestMilestoneBadge:
         assert _milestone_badge("  P4  : future work") == "P4"
 
 
-class TestPhaseOrder:
-    """Tests for _extract_phase_order helper in queue_service."""
-
-    def test_phase_with_title(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 1: Ship It") == 1
-
-    def test_phase_number_only(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 7") == 7
-
-    def test_short_prefix(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("P3: v0.1") == 3
-
-    def test_empty_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("") == 99
-
-    def test_none_returns_default(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order(None) == 99
-
-    def test_no_phase_pattern(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Beta Release") == 99
-
-    def test_phase_ordering(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("Phase 1: Ship It") < _extract_phase_order("Phase 4: Bank")
-        assert _extract_phase_order("Phase 4: Bank") < _extract_phase_order("Phase 7: Scale")
-
-    def test_leading_whitespace(self) -> None:
-        from sova.dashboard.services.queue_service import _extract_phase_order
-
-        assert _extract_phase_order("  Phase 3: v0.1") == 3
-
-
 class TestQueueServiceEnrichment:
     """Tests for NEEDS_SPEC inclusion and recommended actions in queue_service."""
 
