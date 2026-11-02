@@ -640,6 +640,30 @@ class TestDependencyGraph:
 # ---------------------------------------------------------------------------
 
 
+class TestRequestedIssues:
+    def test_every_node_when_the_graph_was_not_filtered(self) -> None:
+        graph = DependencyGraph([_task(3), _task(1), _task(2)])
+        assert graph.requested_issues == [1, 2, 3]
+
+    def test_only_the_requested_nodes_for_a_filtered_graph(self) -> None:
+        graph = DependencyGraph([_task(1), _task(2), _task(3)], requested=[3, 2])
+        assert graph.requested_issues == [2, 3]
+        assert graph.nodes == [1, 2, 3]
+
+    def test_a_requested_id_without_a_node_is_ignored(self) -> None:
+        graph = DependencyGraph([_task(1)], requested=[1, 99])
+        assert graph.requested_issues == [1]
+
+    def test_an_empty_request_is_not_every_node(self) -> None:
+        """Falsy-default trap: an empty milestone must stay empty, not widen to the whole graph."""
+        graph = DependencyGraph([_task(1)], requested=[])
+        assert graph.requested_issues == []
+
+    def test_accepts_any_iterable(self) -> None:
+        graph = DependencyGraph([_task(1), _task(2)], requested=iter([2]))
+        assert graph.requested_issues == [2]
+
+
 class TestGetSpecMeta:
     @pytest.fixture(autouse=True)
     def _dummy_project_dir(self, tmp_path: Path) -> None:
@@ -827,6 +851,42 @@ class TestBuildDependencyGraph:
         filters = call_args[0][0] if call_args[0] else call_args[1].get("filters")
         assert filters is not None
         assert filters.milestone == "Phase 7"
+
+    @pytest.mark.asyncio
+    async def test_unfiltered_build_requests_every_node(self) -> None:
+        adapter = AsyncMock()
+        adapter.repo = ""
+        adapter.list_tasks.return_value = [_task(10, body="## Dependencies\n- #5\n")]
+        adapter.get_task.return_value = _task(5)
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.nodes == [5, 10]
+        assert graph.requested_issues == [5, 10]
+
+    @pytest.mark.asyncio
+    async def test_milestone_build_requests_only_what_the_fetch_returned(self) -> None:
+        """The dependency fetched one by one is a node (so it classifies the blocker) but was not requested."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            _task(10, milestone="Phase 1: Ship It", body="## Dependencies\n- #5\n"),
+            _task(11, milestone="Phase 1: Ship It"),
+        ]
+        adapter.get_task.return_value = _task(5, milestone="Phase 2")
+
+        graph = await build_dependency_graph(adapter, milestone="3")
+
+        assert graph.nodes == [5, 10, 11]
+        assert graph.requested_issues == [10, 11]
+
+    @pytest.mark.asyncio
+    async def test_milestone_build_requests_nothing_when_the_fetch_returns_nothing(self) -> None:
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = []
+
+        graph = await build_dependency_graph(adapter, milestone="Phase 9")
+
+        assert graph.requested_issues == []
 
     @pytest.mark.asyncio
     async def test_cache_returns_same_graph(self) -> None:

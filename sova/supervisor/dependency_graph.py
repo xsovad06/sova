@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -105,8 +106,11 @@ class DependencyGraph:
     on agent spawn or epic close. Milestone-filtered builds bypass the cache.
     """
 
-    def __init__(self, tasks: list[Task]) -> None:
+    def __init__(self, tasks: list[Task], *, requested: Iterable[int] | None = None) -> None:
         self._tasks: dict[int, Task] = {int(t.id): t for t in tasks}
+        # The issues the build was asked for, as opposed to the out-of-scope dependencies it also fetched
+        # individually so blockers classify. None means every node was asked for.
+        self._requested: frozenset[int] | None = None if requested is None else frozenset(requested)
         # adjacency: edges[A] = {B, C} means A depends on B and C
         self._deps: dict[int, set[int]] = defaultdict(set)
         # reverse: rdeps[B] = {A} means A depends on B
@@ -125,6 +129,19 @@ class DependencyGraph:
     def nodes(self) -> list[int]:
         """All issue IDs in the graph."""
         return sorted(self._tasks.keys())
+
+    @property
+    def requested_issues(self) -> list[int]:
+        """The issues this graph was built for, ascending.
+
+        Every node, except for a milestone-filtered build: there it is the issues the milestone
+        fetch returned, not the dependencies outside it that were fetched one by one. The adapter
+        decides what the milestone value matches (a number or a title, in any case), so callers
+        read this instead of comparing a task's ``milestone`` against the value they passed.
+        """
+        if self._requested is None:
+            return self.nodes
+        return sorted(issue for issue in self._requested if issue in self._tasks)
 
     @property
     def edges(self) -> list[tuple[int, int]]:
@@ -498,7 +515,8 @@ async def build_dependency_graph(
     - milestones where every issue is closed are excluded (feature is done)
 
     When *milestone* is provided, only tasks in that milestone are fetched.
-    Dependencies outside the filtered set are fetched individually.
+    Dependencies outside the filtered set are fetched individually, and the graph's
+    ``requested_issues`` names only the ones the milestone fetch returned.
 
     Results are cached per-repo for ``_GRAPH_CACHE_TTL`` seconds. Milestone-
     filtered builds bypass the cache (rare, manual-only path).
@@ -540,6 +558,9 @@ async def build_dependency_graph(
         or int(t.id) in tasks_with_deps
     ]
 
+    # What the milestone fetch returned, before dependencies outside it are added to classify blockers.
+    requested = {int(t.id) for t in tasks} if milestone else None
+
     # Collect all referenced deps and fetch missing ones
     all_dep_ids: set[int] = set()
     task_map: dict[int, Task] = {}
@@ -564,7 +585,7 @@ async def build_dependency_graph(
             if dep_task is not None:
                 task_map[int(dep_task.id)] = dep_task
 
-    graph = DependencyGraph(list(task_map.values()))
+    graph = DependencyGraph(list(task_map.values()), requested=requested)
     if not milestone and repo_key:
         _graph_cache[repo_key] = (time.monotonic(), graph)
     return graph
