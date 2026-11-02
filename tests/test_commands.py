@@ -874,6 +874,25 @@ class TestDistribution:
 
         diff = diff_commands(canonical_dir, target_dir, cfg)
         assert "new-cmd.md" in diff.new
+        assert "new-cmd.md" not in diff.unchanged
+
+    def test_diff_reports_files_matching_the_manifest_as_unchanged(self, canonical_dir: Path, target_dir: Path) -> None:
+        """`unchanged` is the positive evidence of a match, so a changed file must not be in it."""
+        from sova.commands.distribution import diff_commands, install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+        (canonical_dir / "develop.md").write_text(
+            "---\nname: develop\ndescription: Updated.\nuser-invocable: true\ncategory: core\n---\n\nNew content.\n"
+        )
+
+        diff = diff_commands(canonical_dir, target_dir, cfg)
+
+        assert "develop.md" in diff.changed
+        assert "develop.md" not in diff.unchanged
+        assert diff.unchanged, "every untouched command matches its manifest hash"
+        assert not set(diff.unchanged) & set(diff.changed + diff.new)
 
     def test_diff_unreadable_canonical_file_skipped_not_raised(self, canonical_dir: Path, target_dir: Path) -> None:
         """A canonical command file with invalid UTF-8 bytes is skipped, not raised.
@@ -899,6 +918,7 @@ class TestDistribution:
         diff = diff_commands(canonical_dir, target_dir, cfg)
         assert "develop.md" not in diff.changed
         assert "develop.md" not in diff.new
+        assert "develop.md" not in diff.unchanged
         assert "develop.md" in diff.removed
 
     def test_diff_unreadable_canonical_guideline_skipped_not_raised(
@@ -925,6 +945,7 @@ class TestDistribution:
         assert "security.md" not in diff.changed
         assert "security.md" not in diff.new
         assert "security.md" not in diff.removed
+        assert "security.md" not in diff.unchanged, "a skipped file was never compared, so it cannot count as a match"
 
     def test_list_commands(self, canonical_dir: Path, target_dir: Path) -> None:
         """list_commands() shows canonical and local commands."""

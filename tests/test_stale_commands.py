@@ -16,6 +16,7 @@ there is nothing stale to block.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,10 +26,11 @@ from structlog.testing import capture_logs
 
 from sova.agents.claude_code import ClaudeCodeAdapter
 from sova.commands.catalog import get_canonical_dir
-from sova.commands.distribution import install_commands, update_commands
+from sova.commands.distribution import diff_commands, install_commands, update_commands
 from sova.commands.manifest import ManifestEntry, file_hash, read_manifest, write_manifest
-from sova.commands.staleness import SAFETY_CRITICAL_COMMANDS, find_stale_command
+from sova.commands.staleness import BRANCH_TEMPLATE_DIR, SAFETY_CRITICAL_COMMANDS, find_stale_command
 from sova.config.models import ProjectConfig
+from sova.utils.files import read_text_or_none
 
 
 def _commands_dir(project: Path) -> Path:
@@ -190,6 +192,16 @@ class TestBranchCopyStaleness:
 
         assert find_stale_command(primary, "pr", cfg, run_dir=worktree) is None
 
+    def test_worktree_without_an_installed_copy_is_never_stale(
+        self, project: Path, tmp_path: Path, cfg: ProjectConfig
+    ) -> None:
+        """No copy in the worktree means none executes there, whatever state the primary's copy is in."""
+        _age_manifest_entry(project, "address-pr.md", "old recipe\n")
+        bare = tmp_path / "bare-worktree"
+        bare.mkdir()
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=bare) is None
+
     def test_run_dir_equal_to_project_dir_keeps_the_sync_fix(self, project: Path, cfg: ProjectConfig) -> None:
         _age_manifest_entry(project, "address-pr.md", "old recipe\n")
 
@@ -206,6 +218,350 @@ class TestBranchCopyStaleness:
             find_stale_command(project, "address-pr", run_dir=worktree)
 
         mock_load.assert_called_once_with(project)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    _git(repo, "add", "-f", ".")
+    _git(repo, "commit", "-q", "-m", message)
+
+
+def _sova_checkout(root: Path, cfg: ProjectConfig) -> Path:
+    """A SOVA-shaped branch: tracked templates plus the copies rendered from them, forked from `origin/<base>`."""
+    wt = root / "sova-worktree"
+    templates = wt / BRANCH_TEMPLATE_DIR
+    shutil.copytree(get_canonical_dir(), templates)
+    install_commands(templates, _commands_dir(wt), cfg, adapter=ClaudeCodeAdapter())
+    _git(wt, "init", "-q", "-b", cfg.base_branch)
+    _git(wt, "config", "user.name", "test")
+    _git(wt, "config", "user.email", "test@example.com")
+    _git(wt, "config", "commit.gpgsign", "false")
+    _commit_all(wt, "base")
+    _git(wt, "update-ref", f"refs/remotes/origin/{cfg.base_branch}", "HEAD")
+    _git(wt, "checkout", "-q", "-b", "feat/fix")
+    return wt
+
+
+def _edit_branch_template(wt: Path, cfg: ProjectConfig, *filenames: str) -> None:
+    """Change templates on the branch and re-render their copies, the way `make commands-render` does."""
+    for filename in filenames:
+        template = wt / BRANCH_TEMPLATE_DIR / filename
+        template.write_text(template.read_text(encoding="utf-8") + "\nBranch fix.\n", encoding="utf-8")
+    update_commands(wt / BRANCH_TEMPLATE_DIR, _commands_dir(wt), cfg, adapter=ClaudeCodeAdapter())
+    _commit_all(wt, "branch template fix")
+
+
+def _land_on_base(wt: Path, cfg: ProjectConfig, filename: str) -> None:
+    """Move `origin/<base>` past the fork point with a change to one template, leaving the branch where it is."""
+    fork = _git(wt, "rev-parse", f"origin/{cfg.base_branch}")
+    _git(wt, "checkout", "-q", "-b", "base-work", fork)
+    template = wt / BRANCH_TEMPLATE_DIR / filename
+    template.write_text(template.read_text(encoding="utf-8") + "\nBase fix.\n", encoding="utf-8")
+    _commit_all(wt, "base template fix")
+    _git(wt, "update-ref", f"refs/remotes/origin/{cfg.base_branch}", "HEAD")
+    _git(wt, "checkout", "-q", "feat/fix")
+
+
+class TestBranchTemplateExemption:
+    """A branch that fixes a command template carries the fixed copy, which the primary's canonical lacks.
+
+    Comparing that copy with the primary checkout's canonical can only say
+    "stale", and rebasing never helps because the fix is the branch's own. The
+    copy is current when it matches the branch's own template and the base has
+    not changed that template since the fork point. Any doubt keeps it stale.
+    """
+
+    @pytest.fixture
+    def sova_branch(self, tmp_path: Path, cfg: ProjectConfig) -> Path:
+        return _sova_checkout(tmp_path, cfg)
+
+    def test_copy_rendered_from_the_branchs_own_template_edit_is_current(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        differs = diff_commands(get_canonical_dir(), _commands_dir(sova_branch), cfg, adapter=ClaudeCodeAdapter())
+        assert "address-pr.md" in differs.changed, "the branch copy must differ from the primary canonical"
+
+        with capture_logs() as logs:
+            assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is None
+
+        events = [e for e in logs if e["event"] == "staleness.branch_template_current"]
+        assert [e["filename"] for e in events] == ["address-pr.md"]
+
+    def test_base_change_to_the_same_template_keeps_the_rebase_message(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        _land_on_base(sova_branch, cfg, "address-pr.md")
+
+        reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "committed on the branch" in reason
+        assert "Rebase the branch" in reason
+
+    def test_base_change_to_another_template_leaves_each_copy_judged_on_its_own_path(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md", "pr.md")
+        _land_on_base(sova_branch, cfg, "pr.md")
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is None
+        reason = find_stale_command(project, "pr", cfg, run_dir=sova_branch)
+        assert reason is not None
+        assert "Rebase the branch" in reason
+
+    def test_copy_matching_neither_the_branch_template_nor_the_canonical_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        _age_manifest_entry(sova_branch, "address-pr.md", "recipe from neither source\n")
+        _commit_all(sova_branch, "stale copy")
+
+        reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+
+    def test_copy_with_no_manifest_entry_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        commands = _commands_dir(sova_branch)
+        manifest = read_manifest(commands)
+        assert manifest is not None
+        del manifest.commands["address-pr.md"]
+        write_manifest(commands, manifest)
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is not None
+
+    def test_missing_base_ref_stays_stale(self, project: Path, sova_branch: Path, cfg: ProjectConfig) -> None:
+        """No `origin/<base>` means no way to prove the base left the template alone."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        _git(sova_branch, "update-ref", "-d", f"refs/remotes/origin/{cfg.base_branch}")
+
+        reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+
+    def test_unrelated_histories_stay_stale(self, project: Path, sova_branch: Path, cfg: ProjectConfig) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        _git(sova_branch, "checkout", "-q", "--orphan", "unrelated")
+        _git(sova_branch, "commit", "-q", "--allow-empty", "-m", "unrelated root")
+        _git(sova_branch, "update-ref", f"refs/remotes/origin/{cfg.base_branch}", "HEAD")
+        _git(sova_branch, "checkout", "-q", "-f", "feat/fix")
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is not None
+
+    def test_base_ref_follows_the_configured_base_branch(self, tmp_path: Path, project: Path) -> None:
+        develop = ProjectConfig(base_branch="develop")
+        wt = _sova_checkout(tmp_path, develop)
+        _edit_branch_template(wt, develop, "address-pr.md")
+        assert find_stale_command(project, "address-pr", develop, run_dir=wt) is None
+
+        _land_on_base(wt, develop, "address-pr.md")
+
+        assert find_stale_command(project, "address-pr", develop, run_dir=wt) is not None
+
+    def test_base_fix_in_the_canonical_stays_stale_when_the_base_ref_lags(
+        self, project: Path, sova_branch: Path, tmp_path: Path, cfg: ProjectConfig
+    ) -> None:
+        """`origin/<base>` is never fetched, so it can still equal the fork point after the base fixed the template.
+
+        The base fix has reached the primary checkout's canonical template, but
+        the remote-tracking ref shows nothing changed since the fork. The ref
+        alone would clear the branch's older copy; the canonical must agree too.
+        """
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        advanced = tmp_path / "advanced-canonical"
+        shutil.copytree(get_canonical_dir(), advanced)
+        fixed = advanced / "address-pr.md"
+        fixed.write_text(fixed.read_text(encoding="utf-8") + "\nBase fix.\n", encoding="utf-8")
+
+        with (
+            capture_logs() as logs,
+            patch("sova.commands.staleness.get_canonical_dir", return_value=advanced),
+        ):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+        # Distinguishes this from a plain base change in the logs: the rebase advice
+        # does not cover a primary checkout that is itself behind the fork point.
+        differs = [e for e in logs if e["event"] == "staleness.canonical_differs_from_fork"]
+        assert [e["template"] for e in differs] == [(BRANCH_TEMPLATE_DIR / "address-pr.md").as_posix()]
+
+    @pytest.mark.parametrize("command", ["rev-parse", "hash-object"])
+    @pytest.mark.parametrize("failure", ["exit", "raise"])
+    def test_unanswered_template_comparison_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig, command: str, failure: str
+    ) -> None:
+        """Neither blob id can be read, or git cannot run: no proof the canonical matches the fork, so no exemption."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        real_run = subprocess.run
+
+        def fail_command(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["git", command]:
+                if failure == "raise":
+                    raise subprocess.TimeoutExpired(args, 10)
+                return subprocess.CompletedProcess(args, 128, stdout="", stderr="fatal")
+            return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+        with (
+            capture_logs() as logs,
+            patch("sova.commands.staleness.subprocess.run", side_effect=fail_command),
+        ):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+        failed = [e["args"][0] for e in logs if e["event"] == "staleness.git_failed"]
+        assert failed == ([command] if failure == "raise" else [])
+
+    def test_diff_exit_code_other_than_zero_or_one_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        real_run = subprocess.run
+
+        def fail_diff(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["git", "diff"]:
+                return subprocess.CompletedProcess(args, 129, stdout="", stderr="usage")
+            return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+        with patch("sova.commands.staleness.subprocess.run", side_effect=fail_diff):
+            assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is not None
+
+    def test_git_that_cannot_run_stays_stale(self, project: Path, sova_branch: Path, cfg: ProjectConfig) -> None:
+        """Only merge-base fails, so the template is still read as tracked and the failure is the fork-point lookup."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        real_run = subprocess.run
+
+        def fail_merge_base(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["git", "merge-base"]:
+                raise subprocess.TimeoutExpired(args, 10)
+            return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+        with (
+            capture_logs() as logs,
+            patch("sova.commands.staleness.subprocess.run", side_effect=fail_merge_base),
+        ):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+        assert [e["args"][0] for e in logs if e["event"] == "staleness.git_failed"] == ["merge-base"]
+
+    def test_unanswered_ls_files_stays_stale_with_the_unanswered_message(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+
+        with patch("sova.commands.staleness.git_tracked_paths", return_value=None):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "could not be determined" in reason
+
+    def test_untracked_template_stays_stale(self, project: Path, sova_branch: Path, cfg: ProjectConfig) -> None:
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        _git(sova_branch, "rm", "-q", "--cached", f"{BRANCH_TEMPLATE_DIR.as_posix()}/address-pr.md")
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is not None
+
+    def test_template_without_frontmatter_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        """An unparseable template is skipped by the comparison, which must not read as "nothing changed"."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        (sova_branch / BRANCH_TEMPLATE_DIR / "address-pr.md").write_text("no frontmatter\n", encoding="utf-8")
+        _commit_all(sova_branch, "break template")
+
+        assert find_stale_command(project, "address-pr", cfg, run_dir=sova_branch) is not None
+
+    def test_template_with_non_utf8_bytes_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        """The real unreadable-template path: the comparison skips the file, which must not read as a match."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        (sova_branch / BRANCH_TEMPLATE_DIR / "address-pr.md").write_bytes(b"---\nname: x\n---\n\xff\xfe")
+        _commit_all(sova_branch, "corrupt template")
+
+        with capture_logs() as logs:
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+        assert not [e for e in logs if e["event"] == "staleness.branch_template_current"]
+
+    def test_template_that_becomes_unreadable_during_the_comparison_stays_stale(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        """Readable when discovered but not when hashed: skipped by the diff, so there is no positive match."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        template = sova_branch / BRANCH_TEMPLATE_DIR / "address-pr.md"
+        real_read = read_text_or_none
+
+        def unreadable_template(path: Path) -> str | None:
+            return None if path == template else real_read(path)
+
+        with patch("sova.commands.distribution.read_text_or_none", side_effect=unreadable_template):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+
+    def test_comparison_that_raises_stays_stale_without_raising(
+        self, project: Path, sova_branch: Path, cfg: ProjectConfig
+    ) -> None:
+        """Defensive floor only: the real diff swallows unreadable files, so this guards a future regression there."""
+        _edit_branch_template(sova_branch, cfg, "address-pr.md")
+        # The first call is the primary comparison, which must keep working; only the branch one fails.
+        primary = diff_commands(get_canonical_dir(), _commands_dir(sova_branch), cfg, adapter=ClaudeCodeAdapter())
+
+        with (
+            capture_logs() as logs,
+            patch("sova.commands.staleness.diff_commands", side_effect=[primary, OSError("disk gone")]),
+        ):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=sova_branch)
+
+        assert reason is not None
+        assert [e["filename"] for e in logs if e["event"] == "staleness.branch_template_unreadable"] == [
+            "address-pr.md"
+        ]
+
+    def test_checkout_without_the_template_directory_is_unchanged(
+        self, project: Path, tmp_path: Path, cfg: ProjectConfig
+    ) -> None:
+        """A non-SOVA project has nothing to compare against, so the exemption never asks git anything."""
+        wt = tmp_path / "plain-worktree"
+        install_commands(get_canonical_dir(), _commands_dir(wt), cfg, adapter=ClaudeCodeAdapter())
+        _age_manifest_entry(wt, "address-pr.md", "old recipe\n")
+        _git(wt, "init", "-q")
+        _git(wt, "add", "-f", ".claude/commands")
+        real_run = subprocess.run
+        git_calls: list[list[str]] = []
+
+        def record(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            git_calls.append(args[:2])
+            return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+        with patch("sova.commands.staleness.subprocess.run", side_effect=record):
+            reason = find_stale_command(project, "address-pr", cfg, run_dir=wt)
+
+        assert reason is not None
+        assert "Rebase the branch" in reason
+        assert ["git", "merge-base"] not in git_calls
+
+    def test_template_directory_constant_matches_the_packaged_layout(self) -> None:
+        """A directory move must not silently disable the exemption for this repository."""
+        repo_root = Path(__file__).resolve().parents[1]
+
+        assert (repo_root / BRANCH_TEMPLATE_DIR).resolve() == get_canonical_dir().resolve()
 
 
 class TestStaleCommandsGate:
