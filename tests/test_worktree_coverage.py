@@ -20,7 +20,9 @@ from sova.git.worktree import (
     cleanup_worktree,
     create_worktree,
     ensure_worktree_usable,
+    git_tracked_paths,
     missing_claude_artifacts,
+    tracked_paths,
 )
 from sova.utils.shell import ShellResult
 from sova.utils.shell import run as run_shell
@@ -547,6 +549,25 @@ class TestMissingClaudeArtifacts:
         assert missing_claude_artifacts(project, worktree) == []
 
 
+class TestGitTrackedPaths:
+    """`tracked_paths()` fails safe to the empty set; `git_tracked_paths()` says when git could not answer."""
+
+    def test_tracked_file_is_listed(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / "a.md").write_text("x")
+        subprocess.run(["git", "add", "a.md"], cwd=tmp_path, check=True)
+
+        assert git_tracked_paths(tmp_path, "a.md") == {"a.md"}
+
+    def test_directory_that_is_not_a_repository_tracks_nothing(self, tmp_path: Path) -> None:
+        assert git_tracked_paths(tmp_path, ".claude") == set()
+
+    def test_git_failure_is_none_while_tracked_paths_stays_empty(self, tmp_path: Path) -> None:
+        with patch("sova.git.worktree.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 10)):
+            assert git_tracked_paths(tmp_path) is None
+            assert tracked_paths(tmp_path) == set()
+
+
 class TestEnsureWorktreeUsable:
     async def test_healthy_worktree_returns_unchanged(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -580,6 +601,61 @@ class TestEnsureWorktreeUsable:
 
         assert result == worktree
         assert (worktree / ".claude" / "commands" / "dev.md").read_text() == "cmd"
+
+    async def test_outdated_untracked_copy_is_refreshed(self, tmp_path: Path) -> None:
+        """A gitignored .claude/ copy made at creation must pick up a later sync in the primary checkout."""
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "address-pr.md").write_text("old recipe")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").touch()
+        _copy_claude_artifacts(project, worktree)
+        (project / ".claude" / "commands" / "address-pr.md").write_text("current recipe")
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=_shell_ok()):
+            result = await ensure_worktree_usable(project, worktree, branch="feat/issue-1")
+
+        assert result == worktree
+        assert (worktree / ".claude" / "commands" / "address-pr.md").read_text() == "current recipe"
+
+    async def test_refresh_leaves_agent_memory_and_settings_alone(self, tmp_path: Path) -> None:
+        """A lesson written to the worktree's copy must not be overwritten by a reuse refresh."""
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "dev.md").write_text("cmd")
+        (project / ".claude" / "agent-memory").mkdir()
+        (project / ".claude" / "agent-memory" / "common-mistakes.md").write_text("primary")
+        (project / ".claude" / "settings.json").write_text("{}")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").touch()
+        _copy_claude_artifacts(project, worktree)
+        (worktree / ".claude" / "agent-memory" / "common-mistakes.md").write_text("worktree lesson")
+        (worktree / ".claude" / "settings.json").write_text('{"local": true}')
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=_shell_ok()):
+            await ensure_worktree_usable(project, worktree, branch="feat/issue-1")
+
+        assert (worktree / ".claude" / "agent-memory" / "common-mistakes.md").read_text() == "worktree lesson"
+        assert (worktree / ".claude" / "settings.json").read_text() == '{"local": true}'
+
+    async def test_failed_refresh_keeps_a_worktree_missing_nothing(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "dev.md").write_text("cmd")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").touch()
+        _copy_claude_artifacts(project, worktree)
+
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=_shell_ok()),
+            patch("sova.git.worktree.ensure_claude_artifacts", side_effect=OSError("permission denied")),
+        ):
+            result = await ensure_worktree_usable(project, worktree, branch="feat/issue-1")
+
+        assert result == worktree
 
     async def test_missing_directory_recreates_worktree(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
