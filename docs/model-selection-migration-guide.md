@@ -2,7 +2,7 @@
 
 This guide covers switching `llm.provider` to a non-default backend: `openai`, `ollama`, or
 `vertex`. All three route through the same `LiteLLMProvider` class that already backs
-`litellm`/`hybrid` (see `.claude/rules/architecture.md`, "Model Selection System"): they exist
+`litellm`/`hybrid` (see `docs/model-selection-architecture.md`, "Routing and Discovery Summary"): they exist
 as first-class `provider` values purely for config clarity, not new runtime capability. Everything
 below already works today via `llm.provider = "litellm"` plus a vendor-prefixed `llm.model`; the
 three new values just make that intent explicit and give each vendor its own settings-UI option

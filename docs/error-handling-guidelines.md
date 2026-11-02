@@ -90,6 +90,12 @@ A helper that swallows an error must never return a value inside its own success
 - When several independent checks feed one negative ("no PR", "no conflict"), require every check to succeed before trusting it (`and`, not `or`).
 - A function documented to fail open must guard every call that can raise, not just the one nearest the return: `asyncio.create_subprocess_exec` raises `FileNotFoundError` (an `OSError`) before any `ShellResult` exists, so a credential lookup placed above the `try` breaks the contract.
 
+## Reading Text Files
+
+Moved from `AGENTS.md` (issue #1338).
+
+- **Reading text files: always specify `encoding="utf-8"` and catch `(OSError, UnicodeDecodeError)`**: bare `path.read_text()` uses the platform default encoding, and `UnicodeDecodeError` is not a subclass of `OSError`, so an `except OSError` guard alone still crashes on a non-UTF-8 file. This applies to any "read a file, return `None` on failure" helper, and equally to any read inside a loop over many files where one bad file must not abort the whole batch. Confirmed three times: `sova/core/steps/spec.py` (PR #680), `sova/dashboard/services/settings_service.py` (PR #1070), and `sova/commands/distribution.py:_reverse_diff_files()` (issue #695, a per-file loop where the guard `continue`s past the unreadable file instead of returning `None`). By the third confirmation the pattern was extracted into a single shared helper, `read_text_or_none()` in `sova/utils/files.py`, used by `sova/commands/distribution.py` (`_diff_files`, `_reverse_diff_files`, `_update_files`) and `sova/dashboard/services/settings_service.py`, rather than adding a fourth and fifth hand-rolled copy in the same PR that documented the convention (issue #695 review).
+
 ## Typer Exit and Dashboard Endpoints
 
 `typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly: `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.

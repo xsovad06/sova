@@ -65,23 +65,7 @@ SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova
 
 ### Troubleshooting Config Load Errors
 
-If you see "Skipping setting 'X': invalid JSON value" when running commands:
-
-1. **Check the value**: `sqlite3 .claude/sova.db "SELECT key, value FROM project_settings WHERE key='X';"`
-2. **All values must be valid JSON**:
-   - Strings: `"value"` (with quotes)
-   - Numbers: `123` or `1.5` (no quotes)
-   - Arrays: `["item1","item2"]`
-   - Booleans: `true` or `false` (no quotes)
-3. **Fix non-JSON values** (`sova config set` is config-tolerant, so it still works when the config
-   no longer loads):
-   ```bash
-   sova config set agent.model your-string-value
-   ```
-   Or edit the row directly:
-   ```bash
-   sqlite3 .claude/sova.db "UPDATE project_settings SET value = '\"your-string-value\"' WHERE key = 'agent.model';"
-   ```
+For "Skipping setting 'X': invalid JSON value": every stored value must be valid JSON, and `sova config set <key> <value>` still works when the config no longer loads (full entry: docs/troubleshooting-config.md, "Config Load Errors").
 
 When Python upgrades (e.g., 3.13 → 3.14), reinstall SOVA:
 ```bash
@@ -95,93 +79,9 @@ For an unknown `llm.provider` value (e.g. after a typo or downgrade), see
 
 SOVA defaults to spawning Claude Code (`agent.runtime = "claude-code"`) to execute pipeline steps. Setting `agent.runtime = "codex"` spawns OpenAI's Codex CLI instead. See `docs/codex-runtime-setup.md` for authentication (browser login with keyring storage, device-auth and stdin API-key fallbacks, trusted-automation-only `CODEX_API_KEY`), sandbox configuration, and rollback.
 
-## RTK Token Compression (Optional)
+## Token Compression (Optional)
 
-SOVA supports RTK (Rust Token Killer) for reducing token consumption by 60-90% on bash command outputs. When RTK is installed, `sova install` automatically configures it.
-
-### Installation
-
-```bash
-# Install RTK via Homebrew (macOS/Linux)
-brew install rtk
-
-# Verify installation
-rtk --version
-```
-
-### Manual Setup
-
-If you installed RTK after running `sova install`, add the hook manually to `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
-    ]
-  }
-}
-```
-
-**Important**: The command must be `"rtk hook claude"`, not just `"rtk"`. The bare `rtk` command prints help and blocks tool calls. Keep the `matcher`/`hooks` wrapper, or Claude Code ignores the whole file (`sova install --update` repairs it).
-
-### Configuration
-
-RTK is enabled by default. Disable hook injection during `sova install` with:
-
-```bash
-sova config set rtk.enabled false
-```
-
-### Verification
-
-```bash
-# Check if RTK is available
-sova doctor
-
-# View RTK savings after a few sessions
-rtk gain
-```
-
-## Headroom Token Compression (Optional)
-
-Headroom is a broader context-compression tool (JSON, code, logs, prose) than RTK, and is separate from the in-process Headroom compression wired into `sova/llm/` for LLM invocations; see epic #894 for that integration. This section covers the standalone CLI for local use: SOVA's in-process path installs the `compression` extra declared in `pyproject.toml` (`headroom-ai>=0.3.0`), while local wrap/proxy usage below installs the full `headroom-ai[all]` bundle instead.
-
-### Headroom Installation
-
-```bash
-pip install "headroom-ai[all]"
-
-# Verify installation
-headroom --version
-```
-
-### Wrap Mode
-
-Run Claude Code through Headroom without a separate process to manage:
-
-```bash
-headroom wrap claude
-```
-
-### Proxy Mode
-
-Start a local compressing proxy:
-
-```bash
-headroom proxy --port 8787
-```
-
-Starting the proxy alone does not route traffic: point Claude Code at it by setting `ANTHROPIC_BASE_URL=http://localhost:8787` in the shell that runs `claude`.
-
-### Headroom Verification
-
-```bash
-# View durable compression savings (tokens, cost, per-model breakdown)
-headroom savings
-```
-
-Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check for it, and installing it is not required for SOVA to function.
+RTK compresses bash output and Headroom compresses broader context; both are optional. The RTK hook command must be `"rtk hook claude"`, never bare `rtk`, which blocks tool calls (full entry: docs/token-compression.md, "RTK Token Compression (Optional)").
 
 ## Knowledge System (4-Tier)
 
@@ -191,6 +91,7 @@ Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check
 - `.claude/rules/*.md`: Modular knowledge files:
   - `architecture.md`: Project structure, key paths, design decisions
   - `bash-patterns.md`: Shell scripting conventions and gotchas
+  - `workflow.md`: Development workflow, command maintenance, issue state
 - `.claude/commands/*.md`: Workflow commands (on-demand, loaded via `/command`)
 
 ### Tier 2: Agent Memory (persists across tasks, gitignored, primary checkout only)
@@ -206,6 +107,7 @@ Headroom is optional and licensed under Apache 2.0. `sova doctor` does not check
 - **New findings (not yet confirmed)**: Add to `.claude/agent-memory/` (Tier 2)
 - **Session state / preferences**: Auto-memory (Tier 3)
 - **Promote**: Tier 2 → Tier 1 when confirmed in 2+ tasks
+- **On-demand reference**: narrative and incident history go to `docs/*.md`, leaving a short rule line with a full-entry pointer in Tier 1; `tests/test_instruction_surface_budget.py` caps each Tier 1 file
 
 ## Claude Code Behavioral Preferences
 

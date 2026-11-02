@@ -17,6 +17,11 @@ Conventions and patterns for writing and running tests in the SOVA codebase.
 
 `make test-ci`'s `-n auto` shards across every core, so unlike `make test-py`, two or more concurrent `make check` runs (e.g. parallel pipeline steps) compete for the whole machine instead of yielding to each other: this is a deliberate tradeoff (#1209) in favor of `make check` never passing on an invocation CI wouldn't also pass on, at the cost of the isolation `make test-py` gives concurrent agents. Use `make test-py` directly for local iteration when several pipeline steps may be running checks at once: it deselects the `runtime`, `stress`, `chaos`, and `evaluation` markers CI does run (an `evaluation` test is kept out of CI only by its own env-var `skipif`, exactly as `codex_smoke` is), caps each test at pyproject's 30s rather than the 60s `make test-ci` passes, and uses the Makefile's `PYTEST_WORKERS` variable (default 2: `PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)`) instead of `-n auto`, overridable via `make test-py PYTEST_WORKERS=4` or the pytest-xdist-native `PYTEST_XDIST_AUTO_NUM_WORKERS` environment variable. Measured on a 14-core Apple Silicon machine: a single `make test-py` run at the default of 2 workers completes the full suite (11484 passed, 7 skipped) in about 378s wall time; two concurrent `make test-py` runs (4 pytest-xdist workers total) each complete in about 333s (#1156).
 
+## CI Matrix and Opt-in Targets
+
+- **Required-check name**: GitHub suffixes the matrix job's own check name per leg, so a separate unmatrixed `python-test` aggregator job owns the "Python Tests" required-check name that the main-protection ruleset matches by exact string. The matrix, `-n auto` and the `coverage-xml` artifact are described above; the artifact is uploaded from the 3.12 leg only.
+- **Opt-in, real-money targets**: `make test-codex-smoke` (shells out to a real `codex` CLI) and `make test-evaluation` (runs the model-evaluation fixture matrix against a live LLM provider; see `docs/model-selection-architecture.md` section 2.11). Neither is kept out of CI by its marker: CI collects both and each is skipped only by its own env-var `skipif` (`SOVA_CODEX_SMOKE`, `SOVA_EVAL_LIVE`). `make test-py` deselects `evaluation` but not `codex_smoke`, which its own `skipif` handles.
+
 ## Framework Configuration
 
 ```toml

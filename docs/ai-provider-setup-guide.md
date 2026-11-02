@@ -127,8 +127,8 @@ keeps a "Custom..." free-text escape hatch, so a valid-but-unlisted ID (a new re
 an unpulled Ollama tag) is never blocked. The launch modal's per-run override is different: it is a
 dropdown-only `<select>` with no free-text option, so it is only selectable from discovered IDs, and
 it is simply disabled (falling back to the configured model for that run) when discovery yields no
-real answer. See `.claude/rules/architecture.md`'s "Model Selection System" section and
-`docs/model-selection-architecture.md` section 2.7 for the full design.
+real answer. See `docs/model-selection-architecture.md`'s "Routing and Discovery Summary" and its
+section 2.7 for the full design.
 
 **Not every model family is reachable through every `llm.provider`:**
 
@@ -213,7 +213,7 @@ sova config set llm.provider claude-code
 sova config set llm.model ""   # let Claude Code choose
 ```
 
-This validates the value before writing it to `.claude/sova.db`. As a last resort, the same change can be made directly against the database (see CLAUDE.md's "Troubleshooting Config Load Errors"), but `sova config set` is the supported path.
+This validates the value before writing it to `.claude/sova.db`. As a last resort, the same change can be made directly against the database (see `docs/troubleshooting-config.md`'s "Config Load Errors"), but `sova config set` is the supported path.
 
 **Option B: Environment Variables (Temporary)**
 
