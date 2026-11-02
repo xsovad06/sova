@@ -13,7 +13,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `README.md` | Project overview, installation, usage |
 | `docs/VISION.md` | Product vision and roadmap |
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
-| `docs/architecture-deep-dive.md` | On-demand: full narrative entries indexed (not duplicated) in architecture.md's "Supporting Modules" and "Key Design Decisions" sections |
+| `docs/architecture-deep-dive.md` | On-demand: full component, module and decision entries (with the decision index); architecture.md keeps a rule line or index entry each |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
 | `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, model discovery/enumeration, design details |
@@ -31,68 +31,25 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
 | `docs/commit-convention-setup.md` | Per-project commit types/scopes (`commit.types`, `commit.scopes`) used for generated commit subjects and PR titles |
 | `docs/codex-runtime-setup.md` | Codex agent runtime setup (`agent.runtime = "codex"`): auth, sandbox, rollback |
+| `docs/invariants.md` | Per-invariant detail for the pre-push and CI checks in `invariants/` |
+| `docs/workflow-history.md` | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
+| `docs/token-compression.md` | Optional RTK and Headroom token compression setup |
 
 ## Project Structure
 
+Top level only (full tree, full entry: docs/ARCHITECTURE.md, "Project Structure"; components: `.claude/rules/architecture.md`).
+
 ```
-sova/
-  sova/                            # Python package (SOVA)
-    cli/                           # Typer CLI (sova run, sova triage, etc.)
-      app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, harden, project, pr, admin, briefing, memory, assess, migrate, commands, server, mcp, supervisor, checks)
-    core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
-    roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner, dispatcher)
-    adapters/                      # Task source plugins (github; jira, linear, manual planned)
-    llm/                           # Claude CLI wrapper, cost tracking
-    git/                           # Git operations (branch, pr, rebase), worktree management
-    ipc/                           # Inter-process: handoff protocol, process control, notifications
-    agents/                        # RuntimeAdapter ABC: where each coding-agent runtime (claude-code, codex) reads its commands/skills from on disk
-    knowledge/                     # Memory CRUD, tier loading, personas, review patterns, local suitability assessments
-    scheduler/                     # Watch loop, parallel executor, server daemon
-    dashboard/                     # FastAPI web UI
-      app.py                       # App factory
-      routers/                     # 33 API routers (auth, overview, runs, costs, briefing, feed, handoff, health, lifecycle, memory, models, logs, tasks, queue, quota, reliability, settings, setup, agents, work, roles, spec, prs, dependencies, dependency_health, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
-      services/                    # 48 services (run, cost, memory, models, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
-      templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
-      static/                      # JS + CSS + favicon + logo; js/pages/<page>/ holds a page's ES modules (agents: 8 modules + actions.js + the render-utils.js leaf)
-    a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping
-    mcp/                           # MCP stdio server (provider-agnostic agent tools via Model Context Protocol)
-    dashboard/routers/mcp.py       # MCP HTTP endpoint for agent self-inspection (read-only runtime queries)
-    dashboard/services/mcp_service.py  # MCP token generation/validation and tool handlers
-    awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models, rendering/cli_renderer.py Rich terminal output)
-    oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
-    supervisor/                    # Supervisor-level services (TaskProgressionEngine, CodeRabbit quota, task dependency graph, suitability classifier)
-      gates/                       # Gate check functions (one per module): rate_limit, connectivity, memory_pressure, dependency, human_involvement, quota, ci_budget, slots, budget, already_running, repeated_failure, ownership, file_conflict, review_completed, stale_commands
-    commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
-      data/commands/               # 28 canonical commands (markdown with category frontmatter); packaged here (not repo-root) so a wheel install ships them, resolved via sova.commands.catalog.get_canonical_dir()
-      data/guidelines/             # Distributable guideline templates (installed to .claude/rules/)
-      data/skills/                 # Distributable skill templates (installed to .claude/skills/, and rendered into .agents/skills/ for Codex)
-      data/personas/               # Tech-stack-specific guidance (markdown)
-    config/                        # Pydantic Settings + TOML config + project registry + request context
-    monitoring/                    # Resource monitoring (psutil-based CPU, memory, I/O tracking)
-    db/                            # SQLAlchemy ORM models + async session
-    utils/                         # Logging, shell, formatting
-  .claude/commands/                # Rendered copy Claude Code loads (generated by `make commands-render`)
-  .agents/skills/                  # Rendered copy Codex loads: one sova-<name> SKILL.md per command, plus one bare <name> per distributable skill (generated by `make skills-render`)
-  .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (direct-install source, points at plugins/sova)
-  plugins/sova/                    # Standalone Claude Code plugin: subset of commands (develop, spec, review, pr, debug, test) adapted for any project without installing SOVA
-  .githooks/                       # Git hooks (tracked, mirroring CI checks)
-  .github/scripts/                 # CI gate scripts (bash, unit-tested from tests/)
-  invariants/                      # Pre-push constraint check scripts (bash)
-  knowledge/
-    KNOWLEDGE.md                   # 4-tier knowledge management system
-  templates/                       # Project scaffolding templates
-  deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (13000+ tests)
-  docs/
-    VISION.md                      # Product vision and roadmap
-    ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
-    *-guidelines.md                # Domain-specific guidelines (7 files)
-    design-system.md               # Dashboard design system reference
-    handoff-protocol.md            # Agent handoff protocol
-    naming-journey.md              # How SOVA got its name
-  assets/
-    agent-icon.png                 # Notification icon
+sova/                  # Python package: cli, core, roles, adapters, llm, git, ipc, agents, knowledge,
+                       # scheduler, dashboard, a2a, mcp, awareness, oversight, supervisor, commands,
+                       # config, monitoring, db, utils
+sova/commands/data/    # canonical commands, skills, guidelines, personas: edit here, then re-render
+.claude/commands/      # rendered copy Claude Code loads (make commands-render)
+.agents/skills/        # rendered copy Codex loads (make skills-render)
+plugins/sova/          # generated Claude Code plugin (make marketplace)
+invariants/            # pre-push and CI constraint checks (bash)
+tests/                 # pytest suite (13000+ tests)
+.githooks/  .github/scripts/  knowledge/  templates/  deploy/  docs/  assets/
 ```
 
 ## Project Tracker
@@ -131,7 +88,7 @@ This project uses **GitHub Issues** with a project board.
 - **Failure must not look like success**: a helper that swallows an error returns a sentinel or a multi-state result, never a value in its success range (`0`, `[]`, `False`). See `docs/error-handling-guidelines.md` "Failure Must Not Look Like Success".
 - **Pass context explicitly into deferred work**: anything queued, scheduled, or run in a background task receives `project_dir` and `github_user` as arguments rather than reading an ambient contextvar or the current working directory, which belong to whoever happens to run it later.
 - **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.
-- **Reading text files: always specify `encoding="utf-8"` and catch `(OSError, UnicodeDecodeError)`**: bare `path.read_text()` uses the platform default encoding, and `UnicodeDecodeError` is not a subclass of `OSError`, so an `except OSError` guard alone still crashes on a non-UTF-8 file. This applies to any "read a file, return `None` on failure" helper, and equally to any read inside a loop over many files where one bad file must not abort the whole batch. Confirmed three times: `sova/core/steps/spec.py` (PR #680), `sova/dashboard/services/settings_service.py` (PR #1070), and `sova/commands/distribution.py:_reverse_diff_files()` (issue #695, a per-file loop where the guard `continue`s past the unreadable file instead of returning `None`). By the third confirmation the pattern was extracted into a single shared helper, `read_text_or_none()` in `sova/utils/files.py`, used by `sova/commands/distribution.py` (`_diff_files`, `_reverse_diff_files`, `_update_files`) and `sova/dashboard/services/settings_service.py`, rather than adding a fourth and fifth hand-rolled copy in the same PR that documented the convention (issue #695 review).
+- **Reading text files: always specify `encoding="utf-8"` and catch `(OSError, UnicodeDecodeError)`**: bare `path.read_text()` uses the platform default encoding, and `UnicodeDecodeError` is not a subclass of `OSError`, so an `except OSError` guard alone still crashes on a non-UTF-8 file. Use the shared `read_text_or_none()` (`sova/utils/files.py`) instead of another hand-rolled copy (full entry: docs/error-handling-guidelines.md, "Reading Text Files").
 
 ### Change Discipline
 - **Fan-out audit**: when adding a status value, schema field, signal, or helper, or changing a function's return contract, grep every producer, consumer, sibling closure, and mirrored function and update them in the same PR. A translation function's fallback bucket is where a new value is silently absorbed into the wrong category.
@@ -147,14 +104,13 @@ This project uses **GitHub Issues** with a project board.
 - **After any `pyproject.toml` dependency edit, run `uv lock` and commit `uv.lock`**: CI installs the exact versions in that universal lock (`uv export --locked`, which fails on a stale lock); local installs still use pip.
 
 ### Testing
-- **All checks**: `make check` (lint + `make test-bash` + `make test-ci`, the same pytest invocation CI runs; see below for what it does not cover)
-- **Bash scripts**: `make lint-bash` (shellcheck on `invariants/` + `.github/scripts/`) + `make test-bash` (`--help` smoke test on both)
-- **Dashboard JS**: `make lint-js` (`node --check` per script and ES module; also part of `make lint` and CI's Static Checks job). `node` is a dev requirement for it, and the node-backed pytest checks fail rather than skip when `CI` is set
-- **Python (local iteration)**: `make test-py` (pytest suite in `tests/` covering all `sova/` modules, excluding `runtime`/`stress`/`chaos`/`evaluation`). Runs pytest-xdist at `PYTEST_WORKERS` (default 2, not `-n auto`), so concurrent `make test-py` runs (e.g. parallel pipeline steps) don't each try to claim every core. Override with `make test-py PYTEST_WORKERS=4` or the pytest-xdist-native `PYTEST_XDIST_AUTO_NUM_WORKERS` env var (Makefile falls back to it if a developer already has it set). See `docs/testing-guidelines.md` for measured wall-time/CPU numbers (#1156)
-- **Opt-in, real-money targets**: `make test-codex-smoke` (shells out to a real `codex` CLI) and `make test-evaluation` (runs the model-evaluation fixture matrix against a live LLM provider; see `docs/model-selection-architecture.md` section 2.11). Neither is kept out of CI by its marker: CI collects both and each is skipped only by its own env-var `skipif` (`SOVA_CODEX_SMOKE`, `SOVA_EVAL_LIVE`). `make test-py` deselects `evaluation` but not `codex_smoke`, which its own `skipif` handles
-- **CI test invocation**: `make test-ci` (`pytest tests/ -n auto -q --cov=sova --cov-report=xml --cov-report=term:skip-covered --durations=25 --timeout=60` with `COVERAGE_CORE=sysmon` set in the recipe itself), invoked identically by the CI workflow and by `make check`, so a local `make check` run can't diverge from what CI executes (#1209). Sharded across runner cores, sys.monitoring coverage core, 60s per-test cap because xdist contention breaches the 30s global. CI runs it once per Python version in the `python-test-matrix` job's matrix (3.12 and 3.14 on a pull request; 3.12 only on a push to main, to avoid doubling cost on every merge). `coverage.xml` is uploaded as the `coverage-xml` artifact from the 3.12 leg only, which `sonarcloud.yml` consumes via a `workflow_run` trigger on CI's completion instead of re-running the suite itself (#1187). Unlike `make test-py`, `make test-ci` does not deselect the `runtime`, `stress`, `chaos`, and `evaluation` markers, so a test carrying one of them must gate itself with its own `skipif` rather than relying on the marker alone. The matrix job's own check name is suffixed per leg by GitHub, so a separate unmatrixed `python-test` aggregator job owns the "Python Tests" required-check name the main-protection ruleset matches by exact string
-- **Bash script contract**: every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
+- **All checks**: `make check` (lint + `make test-bash` + `make test-ci`, the same pytest invocation CI runs)
+- **Bash scripts**: `make lint-bash` + `make test-bash`; every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
+- **Dashboard JS**: `make lint-js` (`node --check` per script and ES module); `node` is a dev requirement
+- **Python (local iteration)**: `make test-py` (deselects `runtime`/`stress`/`chaos`/`evaluation`; `PYTEST_WORKERS`, default 2)
+- **CI test invocation**: `make test-ci`, which does not deselect those markers, so a test carrying one gates itself with its own `skipif`
 - **Commands**: validate markdown structure (frontmatter, sections)
+- Real-money targets, CI matrix, coverage artifact: full entry: docs/testing-guidelines.md, "CI Matrix and Opt-in Targets"
 
 ### Documentation
 - **Every code change must leave docs accurate**: verify before committing
@@ -220,7 +176,7 @@ Examples:
 
 ### Role Chaining and the Address-Review Budget
 
-Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -> Reviewer (re-review). A per-PR address-review budget prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address cycles for a PR: a `developer` run with an `address_review` `StepExecution`, or a `command:address-pr` run, so both the autonomous pipeline and the `/address-pr` command consume the same budget. When the count reaches `pipeline.max_address_review_cycles` (default 3, 0=unlimited), `resolve_next_action()` resolves the PR to `PR_REVIEW_EXHAUSTED` with an Integrate action instead of another address cycle, and the agent-exit breaker in `agent_handoff.py` stops the handoff chain from auto-spawning one more. Both the dashboard and the supervisor read that one resolver, so neither can propose another cycle. See `.claude/rules/architecture.md` for full details.
+Agents chain autonomously (Developer -> Reviewer -> Developer -> Reviewer); `pipeline.max_address_review_cycles` (default 3, 0=unlimited) caps address cycles per PR, then the PR resolves to `PR_REVIEW_EXHAUSTED` with Integrate (full entry: docs/architecture-deep-dive.md, "Role Chaining and the Address-Review Budget").
 
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key
@@ -231,33 +187,4 @@ Agents chain autonomously: Developer -> Reviewer -> Developer (address review) -
 
 ## Agentic Workflow Commands
 
-This repo has Claude Code commands in `.claude/commands/`:
-
-### Planning
-- `/spec`: produce a structured spec document for an issue; approving it guides `/develop`
-
-### Core Development
-- `/develop`: implement a feature or fix (TDD approach)
-- `/develop-full`: full workflow: TDD, lint, test, self-review, commit organization
-- `/test`: run linter and tests iteratively
-- `/review`: pre-push code review with scoring and auto-fix (>=3/10)
-- `/review-full`: full pre-push pipeline: simplify -> review -> rearrange-commits
-- `/debug`: systematic debugging workflow
-
-### Pull Requests
-- `/pr`: create PR with standard template (supports AI feedback + incremental workflows)
-- `/rearrange-commits`: reorganize branch commits into clean steps
-
-### Shipping Pipeline
-- `/integrate-pr`: full pipeline: rebase, CI, merge, cleanup, learn (one click)
-- `/agent-resume`: smart router: assess PR state and decide next action
-
-### Post-Work
-- `/after-merge`: post-merge cleanup
-- `/ingest-review`: extract review feedback into agent memory
-- `/extract-knowledge`: promote learnings across knowledge tiers
-
-### Project Management
-- `/new-feature`: set up a new feature branch
-- `/standup`: daily context summary
-- `/find-task`: browse GitHub Issues backlog
+Rendered from `sova/commands/data/commands/` into `.claude/commands/`; the harness lists them (grouped list, full entry: docs/ARCHITECTURE.md, "Agentic Workflow Commands").
