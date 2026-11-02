@@ -63,8 +63,13 @@ async def client(tmp_path):
 4. **Context factory**: define per-file:
    ```python
    def _make_ctx(**kwargs) -> ExecutionContext:
-       defaults = {"project_dir": Path("/tmp/test"), "config": ProjectConfig(),
-                   "adapter": _mock_adapter(), "issue_number": "42", "role": "developer"}
+       defaults = {
+           "project_dir": Path("/tmp/test"),
+           "config": ProjectConfig(),
+           "adapter": _mock_adapter(),
+           "issue_number": "42",
+           "role": "developer",
+       }
        defaults.update(kwargs)
        return ExecutionContext(**defaults)
    ```

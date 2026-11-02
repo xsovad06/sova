@@ -164,6 +164,7 @@ class LLMConfig(BaseSettings):
     batch_eligible_tasks: list[str] = []
     batch_gcs_bucket: str = ""  # Vertex AI GCS bucket
 
+
 class AgentConfig(BaseSettings):
     runtime: Literal["claude-code", "aider"] = "claude-code"
     model: str = "opus"  # Primary model (resolved by CLI)
@@ -263,7 +264,8 @@ class ModelAvailability:
     aliases: dict[str, str]  # "opus" → "claude-opus-4-6" (current binding)
     tiers: dict[str, list[str]]  # "fast" → ["haiku"], "smart" → ["opus"], "cheap" → ["haiku"]
     pricing: dict[str, PriceInfo]  # per model
-    
+
+
 # LLMProvider.get_availability() -> ModelAvailability
 # Called once at startup per provider, cached
 # Enables validation of user-specified models and intelligent fallback routing
@@ -306,11 +308,11 @@ class RolesConfig:
     # Already exists but underused
     developer_model: str = ""  # override agent.model for developer role
     researcher_model: str = ""
-    
+
     # New: task-type routing (currently unused)
     task_routing: dict[str, str] = {
         "triage": "haiku",
-        "research": "sonnet", 
+        "research": "sonnet",
         "develop": "opus",
         "review": "sonnet",
         "self_review": "haiku",

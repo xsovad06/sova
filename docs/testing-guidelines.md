@@ -59,6 +59,7 @@ Request the shared fixture; do not build an engine per test:
 # Whole module (replaces the old autouse per-file setup_db fixture)
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
+
 # Or one class / one test
 @pytest.mark.usefixtures("reset_db_rows")
 class TestSomething: ...
@@ -126,7 +127,7 @@ def _shell_result(stdout="", stderr="", returncode=0):
 ```python
 mock_run.side_effect = [
     _shell_result(stdout='{"labels": []}'),  # first call
-    _shell_result(),                          # second call
+    _shell_result(),  # second call
 ]
 ```
 
@@ -191,6 +192,7 @@ handoff_service._handoff_caches.clear()
 
 ```python
 from typer.testing import CliRunner
+
 runner = CliRunner()
 
 result = runner.invoke(app, ["status"])

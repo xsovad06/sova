@@ -30,21 +30,23 @@ The current supervisor fires actions mechanically when gate conditions pass. It 
 ```python
 @dataclass(frozen=True, slots=True)
 class PlannedAction:
-    action: str      # must match ProgressionAction enum values
-    issue: int       # issue number
-    priority: int    # 1 = highest
-    reason: str      # LLM's reasoning for this action
+    action: str  # must match ProgressionAction enum values
+    issue: int  # issue number
+    priority: int  # 1 = highest
+    reason: str  # LLM's reasoning for this action
+
 
 @dataclass(frozen=True, slots=True)
 class DeferredAction:
-    action: str      # what would have been done
-    issue: int       # issue number
-    reason: str      # why it was deferred
+    action: str  # what would have been done
+    issue: int  # issue number
+    reason: str  # why it was deferred
+
 
 @dataclass(frozen=True, slots=True)
 class PlanResult:
-    reasoning: str                    # overall reasoning narrative
-    actions: tuple[PlannedAction, ...]   # approved actions, priority-ordered
+    reasoning: str  # overall reasoning narrative
+    actions: tuple[PlannedAction, ...]  # approved actions, priority-ordered
     deferred: tuple[DeferredAction, ...]  # explicitly deferred with reasons
 ```
 
@@ -54,9 +56,7 @@ Tuples (not lists) for frozen dataclass compatibility and immutability.
 
 ```python
 class SupervisorPlanner:
-    def __init__(self, config: ProjectConfig, project_dir: Path,
-                 session_factory: async_sessionmaker) -> None:
-        ...
+    def __init__(self, config: ProjectConfig, project_dir: Path, session_factory: async_sessionmaker) -> None: ...
 
     async def plan(self, adapter: TaskAdapter) -> PlanResult | None:
         """Assemble context, call LLM, return structured plan.
@@ -98,6 +98,7 @@ Follow the pattern from `sova/dashboard/services/llm_suggestion_service.py` (lin
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-sonnet-4-20250514"
 _warned_no_key = False
+
 
 async def _call_llm(self, system_prompt: str, user_prompt: str) -> dict | None:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -220,13 +221,15 @@ if plan is not None:
                 detail="not in LLM plan; skipped",
             )
             # Convert to WAIT so it appears in the decision log
-            filtered.append(ProgressionDecision(
-                issue_number=d.issue_number,
-                action=ProgressionAction.WAIT,
-                reason=f"not in LLM plan (deterministic: {d.action.value})",
-                blocked_by=d.blocked_by,
-                pr_number=d.pr_number,
-            ))
+            filtered.append(
+                ProgressionDecision(
+                    issue_number=d.issue_number,
+                    action=ProgressionAction.WAIT,
+                    reason=f"not in LLM plan (deterministic: {d.action.value})",
+                    blocked_by=d.blocked_by,
+                    pr_number=d.pr_number,
+                )
+            )
     decisions = filtered
 ```
 
@@ -242,6 +245,7 @@ Add plan reasoning storage:
 _plan_reasoning: str | None = None
 _plan_deferred: list[dict] = []
 
+
 def set_pending_plan(
     decisions: list["ProgressionDecision"],
     *,
@@ -253,8 +257,10 @@ def set_pending_plan(
     _plan_reasoning = reasoning
     _plan_deferred = list(deferred) if deferred else []
 
+
 def get_plan_reasoning() -> str | None:
     return _plan_reasoning
+
 
 def get_plan_deferred() -> list[dict]:
     return list(_plan_deferred)
@@ -270,8 +276,11 @@ Extend `GET /api/supervisor/plan` response:
 @router.get("/plan")
 async def get_plan() -> dict:
     from sova.dashboard.services.supervisor_service import (
-        get_pending_plan, get_plan_reasoning, get_plan_deferred,
+        get_pending_plan,
+        get_plan_reasoning,
+        get_plan_deferred,
     )
+
     plan = get_pending_plan()
     return {
         "reasoning": get_plan_reasoning(),
@@ -338,15 +347,17 @@ No loader change needed: `supervisor` is already in `_NESTED_SECTIONS`.
 Add to the supervisor settings block (after `supervisor.task_queue`, around line 1049):
 
 ```python
-SettingMeta(
-    key="supervisor.llm_planning",
-    label="LLM Planning",
-    description="Enable LLM-based planning before each supervisor cycle. "
-    "Requires ANTHROPIC_API_KEY. When disabled, the supervisor runs in "
-    "purely deterministic mode.",
-    group="supervisor",
-    value_type="boolean",
-),
+(
+    SettingMeta(
+        key="supervisor.llm_planning",
+        label="LLM Planning",
+        description="Enable LLM-based planning before each supervisor cycle. "
+        "Requires ANTHROPIC_API_KEY. When disabled, the supervisor runs in "
+        "purely deterministic mode.",
+        group="supervisor",
+        value_type="boolean",
+    ),
+)
 ```
 
 ### 9. Prompt Design

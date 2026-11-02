@@ -81,26 +81,26 @@ sova/awareness/                          # New package
 class AwarenessItem:
     """A single piece of awareness data from any provider."""
 
-    id: str                              # unique across providers (e.g., "gmail:19f6f645")
-    provider: str                        # provider name: "gmail", "gcal", "reminders", etc.
-    category: ItemCategory               # needs_attention | informational | dismissed
-    title: str                           # human-readable summary (email subject, PR title, etc.)
-    body: str = ""                       # detail text (email snippet, PR description, etc.)
-    source_url: str = ""                 # link to the item in its native tool
-    timestamp: datetime | None = None    # when the item was created/received
+    id: str  # unique across providers (e.g., "gmail:19f6f645")
+    provider: str  # provider name: "gmail", "gcal", "reminders", etc.
+    category: ItemCategory  # needs_attention | informational | dismissed
+    title: str  # human-readable summary (email subject, PR title, etc.)
+    body: str = ""  # detail text (email snippet, PR description, etc.)
+    source_url: str = ""  # link to the item in its native tool
+    timestamp: datetime | None = None  # when the item was created/received
     metadata: dict = field(default_factory=dict)  # provider-specific data
-    urgency: int = 0                     # 0=normal, 1=high, 2=critical
-    action_hint: str = ""               # what the user should do ("review PR", "reply to email")
+    urgency: int = 0  # 0=normal, 1=high, 2=critical
+    action_hint: str = ""  # what the user should do ("review PR", "reply to email")
 ```
 
 ### 4.2 ItemCategory
 
 ```python
 class ItemCategory(StrEnum):
-    NEEDS_ATTENTION = "needs_attention"   # requires developer action
-    INFORMATIONAL = "informational"      # good to know, no action needed
-    SCHEDULE = "schedule"                # time-based items (calendar events, reminders)
-    DISMISSED = "dismissed"              # user dismissed or source resolved
+    NEEDS_ATTENTION = "needs_attention"  # requires developer action
+    INFORMATIONAL = "informational"  # good to know, no action needed
+    SCHEDULE = "schedule"  # time-based items (calendar events, reminders)
+    DISMISSED = "dismissed"  # user dismissed or source resolved
 ```
 
 ### 4.3 AwarenessProvider ABC
@@ -109,13 +109,13 @@ class ItemCategory(StrEnum):
 class AwarenessProvider(ABC):
     """Base class for awareness data sources."""
 
-    name: str = ""                       # provider identifier ("gmail", "gcal", etc.)
-    display_name: str = ""               # human-readable ("Gmail", "Google Calendar")
+    name: str = ""  # provider identifier ("gmail", "gcal", etc.)
+    display_name: str = ""  # human-readable ("Gmail", "Google Calendar")
 
     @abstractmethod
     async def fetch_items(
         self,
-        since: datetime | None = None,   # None = provider's default lookback
+        since: datetime | None = None,  # None = provider's default lookback
     ) -> list[AwarenessItem]:
         """Fetch awareness items from this source.
 
@@ -265,19 +265,21 @@ class BriefingService:
 @dataclass
 class Briefing:
     generated_at: datetime
-    attention_items: list[AwarenessItem]    # sorted by urgency desc, then timestamp desc
+    attention_items: list[AwarenessItem]  # sorted by urgency desc, then timestamp desc
     informational_items: list[AwarenessItem]  # sorted by timestamp desc
-    schedule: list[AwarenessItem]           # calendar events, chronological
-    project_pulses: list[ProjectPulse]      # 1-line per project
-    provider_statuses: list[ProviderStatus] # which providers succeeded/failed
-    since: datetime | None                  # the lookback window used
+    schedule: list[AwarenessItem]  # calendar events, chronological
+    project_pulses: list[ProjectPulse]  # 1-line per project
+    provider_statuses: list[ProviderStatus]  # which providers succeeded/failed
+    since: datetime | None  # the lookback window used
+
 
 @dataclass
 class ProjectPulse:
     project_slug: str
     open_prs: int
-    agent_status: str                       # "idle" | "running (2)" | "waiting handoff"
-    last_ci: str                            # "passing" | "failing" | "unknown"
+    agent_status: str  # "idle" | "running (2)" | "waiting handoff"
+    last_ci: str  # "passing" | "failing" | "unknown"
+
 
 @dataclass
 class ProviderStatus:
@@ -302,7 +304,7 @@ class AwarenessConfig(BaseSettings):
     providers: list[str] = Field(default_factory=list)
 
     # Gmail
-    gmail_token_path: str = ""            # path to OAuth token; empty = ~/.config/sova/google_token.pickle
+    gmail_token_path: str = ""  # path to OAuth token; empty = ~/.config/sova/google_token.pickle
     gmail_lookback_hours: int = 24
     gmail_ignore_labels: list[str] = Field(default_factory=lambda: ["SPAM", "TRASH"])
 
@@ -314,7 +316,7 @@ class AwarenessConfig(BaseSettings):
     reminders_lists: list[str] = Field(default_factory=lambda: ["Reminders"])
 
     # PRs (cross-project)
-    pr_github_user: str = ""              # GitHub username for "review requested" detection
+    pr_github_user: str = ""  # GitHub username for "review requested" detection
 
     model_config = SettingsConfigDict(env_prefix="SOVA_AWARENESS_")
 ```
@@ -363,8 +365,8 @@ SOVA needs its own OAuth2 credentials (or can reuse existing ones from the Googl
 
 ```python
 AWARENESS_GOOGLE_SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/calendar.readonly',
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
 ]
 ```
 
@@ -372,6 +374,7 @@ AWARENESS_GOOGLE_SCOPES = [
 
 ```python
 # sova/awareness/auth/google_oauth.py
+
 
 def authenticate_google(config: AwarenessConfig) -> Credentials:
     """Run OAuth2 flow for Gmail + Calendar.
