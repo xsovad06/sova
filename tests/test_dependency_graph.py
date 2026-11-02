@@ -1198,6 +1198,44 @@ def _mock_fetch_context(pr_map=None):
     )
 
 
+def _mock_ready_sources(prs=None, agents=None):
+    """Patch the PR and agent lookups behind `next_task_exclusions()`, which `/ready` and `/agents/next-tasks` share."""
+    return (
+        patch(
+            "sova.dashboard.services.work_item_service._safe_prs",
+            new_callable=AsyncMock,
+            return_value=prs or [],
+        ),
+        patch(
+            "sova.dashboard.services.work_item_service._safe_agents",
+            new_callable=AsyncMock,
+            return_value={"agents": agents or [], "completed": []},
+        ),
+    )
+
+
+def _milestone_adapter(by_milestone: dict[str, list[Task]], individually: dict[int, Task]):
+    """A tracker stub: ``list_tasks`` answers per milestone value, ``get_task`` serves the out-of-milestone issues.
+
+    Every spelling of a milestone that the real tracker resolves to the same milestone (its number, its
+    title in any case) is a key of ``by_milestone`` with the same tasks, so the stub does not pretend the
+    value equals the task's own ``milestone`` field.
+    """
+    adapter = AsyncMock()
+    adapter.repo = ""
+    adapter.project_key = ""
+
+    async def list_tasks(filters):
+        return list(by_milestone.get(filters.milestone, []))
+
+    async def get_task(task_id):
+        return individually[int(task_id)]
+
+    adapter.list_tasks.side_effect = list_tasks
+    adapter.get_task.side_effect = get_task
+    return adapter
+
+
 @pytest.fixture
 async def client(reset_db_rows):
     from sova.dashboard.app import create_app
@@ -1616,16 +1654,199 @@ class TestDependencyAPI:
     @pytest.mark.asyncio
     async def test_ready_endpoint(self, client: AsyncClient) -> None:
         tasks = [
-            _task(1, title="Ready Task", state=TaskState.BACKLOG),
+            _task(1, title="Ready Task", state=TaskState.RESEARCHED, labels=["agent:ready", "priority: high"]),
         ]
         p1, p2, p3 = _mock_graph_context(tasks)
-        with p1, p2, p3:
+        s1, s2 = _mock_ready_sources()
+        with p1, p2, p3, s1, s2:
             resp = await client.get("/api/dependencies/ready")
         assert resp.status_code == 200
         data = resp.json()
-        assert "ready" in data
-        assert len(data["ready"]) == 1
-        assert data["ready"][0]["id"] == 1
+        assert data["ready"] == [
+            {
+                "id": 1,
+                "title": "Ready Task",
+                "state": "researched",
+                "state_label": "Researched",
+                "state_color": "purple",
+                "milestone": "",
+                "url": "",
+                "priority": "high",
+                "mode": "autonomous",
+                "rank": 1,
+                "why": ["priority:high", "state:researched"],
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_ranks_by_priority_then_unblocks_then_phase(self, client: AsyncClient) -> None:
+        tasks = [
+            _task(1, state=TaskState.RESEARCHED, labels=["agent:ready", "priority: low"]),
+            _task(2, state=TaskState.TRIAGED, labels=["agent:ready", "priority: high"], milestone="Phase 2"),
+            _task(3, state=TaskState.TRIAGED, labels=["agent:ready", "priority: high"], milestone="Phase 1"),
+            _task(4, state=TaskState.RESEARCHED, labels=["agent:ready", "priority: high"], milestone="Phase 1"),
+            _task(5, state=TaskState.BACKLOG, body="## Dependencies\n- #4\n"),
+        ]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        s1, s2 = _mock_ready_sources()
+        with p1, p2, p3, s1, s2:
+            resp = await client.get("/api/dependencies/ready")
+        ready = resp.json()["ready"]
+        assert [r["id"] for r in ready] == [4, 3, 2, 1]
+        assert [r["rank"] for r in ready] == [1, 2, 3, 4]
+        assert ready[0]["why"] == ["priority:high", "unblocks:1", "phase:1", "state:researched"]
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_is_autonomous_only(self, client: AsyncClient) -> None:
+        """The old endpoint also listed `unclassified` issues in any non-excluded state."""
+        tasks = [
+            _task(1, state=TaskState.RESEARCHED),
+            _task(2, state=TaskState.BACKLOG, labels=["agent:ready"]),
+            _task(3, state=TaskState.RESEARCHED, labels=["agent:ready", "agent:human-only"]),
+            _task(4, state=TaskState.RESEARCHED, labels=["agent:ready"]),
+        ]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        s1, s2 = _mock_ready_sources()
+        with p1, p2, p3, s1, s2:
+            resp = await client.get("/api/dependencies/ready")
+        assert [r["id"] for r in resp.json()["ready"]] == [4]
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_excludes_running_and_open_pr_issues(self, client: AsyncClient) -> None:
+        tasks = [_task(n, state=TaskState.RESEARCHED, labels=["agent:ready"]) for n in (1, 2, 3, 4)]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        s1, s2 = _mock_ready_sources(
+            prs=[{"number": 9, "linked_issue": 2}, {"number": 10, "linked_issue": 3, "linked_issues": [3, 4]}],
+            agents=[{"issue": "1", "run_id": 5}],
+        )
+        with p1, p2, p3, s1, s2:
+            resp = await client.get("/api/dependencies/ready")
+        assert resp.json()["ready"] == []
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_excludes_an_agent_issue_written_with_a_hash(self, client: AsyncClient) -> None:
+        tasks = [_task(n, state=TaskState.RESEARCHED, labels=["agent:ready"]) for n in (1, 2)]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        s1, s2 = _mock_ready_sources(agents=[{"issue": "#1", "run_id": 5}])
+        with p1, p2, p3, s1, s2:
+            resp = await client.get("/api/dependencies/ready")
+        assert [r["id"] for r in resp.json()["ready"]] == [2]
+
+    @pytest.mark.asyncio
+    async def test_ready_and_next_tasks_return_the_same_entries(self, client: AsyncClient) -> None:
+        """Both endpoints read one exclusion helper and one ranker, so they cannot drift apart."""
+        tasks = [
+            _task(1, state=TaskState.RESEARCHED, labels=["agent:ready", "priority: low"]),
+            _task(2, state=TaskState.TRIAGED, labels=["agent:ready", "priority: high"], milestone="Phase 1"),
+            _task(3, state=TaskState.RESEARCHED, labels=["agent:ready"]),
+            _task(4, state=TaskState.RESEARCHED, labels=["agent:ready"]),
+        ]
+        prs = [{"number": 9, "linked_issue": 3}]
+        agents = [{"issue": "#4", "run_id": 5}]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        s1, s2 = _mock_ready_sources(prs=prs, agents=agents)
+        with p1, p2, p3, s1, s2:
+            ready = (await client.get("/api/dependencies/ready")).json()["ready"]
+            next_tasks = (await client.get("/api/agents/next-tasks?limit=50")).json()["tasks"]
+        assert [r["id"] for r in ready] == [2, 1]
+        assert ready == next_tasks
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("milestone", ["Phase 1: Ship It", "phase 1: ship it", "3"])
+    async def test_ready_milestone_lists_only_the_issues_the_fetch_returned(
+        self, client: AsyncClient, milestone: str
+    ) -> None:
+        """`gh issue list --milestone` takes a number or a title in any case; nodes carry the canonical title.
+
+        The out-of-milestone dependency (#1) is fetched to classify #2's blocker but is never offered, and
+        no spelling of the milestone makes the endpoint answer with an empty list.
+        """
+        outside = _task(1, state=TaskState.RESEARCHED, labels=["agent:ready"], milestone="Phase 2")
+        members = [
+            _task(
+                2,
+                state=TaskState.RESEARCHED,
+                labels=["agent:ready"],
+                milestone="Phase 1: Ship It",
+                body="## Dependencies\n- #1\n",
+            ),
+            _task(3, state=TaskState.RESEARCHED, labels=["agent:ready"], milestone="Phase 1: Ship It"),
+        ]
+        adapter = _milestone_adapter({milestone: members}, {1: outside})
+        s1, s2 = _mock_ready_sources()
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            s1,
+            s2,
+        ):
+            filtered = (await client.get("/api/dependencies/ready", params={"milestone": milestone})).json()["ready"]
+        assert [r["id"] for r in filtered] == [3]
+        assert [r["rank"] for r in filtered] == [1]
+
+    @pytest.mark.asyncio
+    async def test_ready_milestone_lists_every_issue_of_the_milestone_regardless_of_dependencies(
+        self, client: AsyncClient
+    ) -> None:
+        a = _task(5, state=TaskState.RESEARCHED, labels=["agent:ready"], milestone="Phase 1: Ship It")
+        b = _task(6, state=TaskState.TRIAGED, labels=["agent:ready"], milestone="Phase 1: Ship It")
+        adapter = _milestone_adapter({"3": [a, b]}, {})
+        s1, s2 = _mock_ready_sources()
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            s1,
+            s2,
+        ):
+            ready = (await client.get("/api/dependencies/ready?milestone=3")).json()["ready"]
+        assert [r["id"] for r in ready] == [5, 6]
+
+    @pytest.mark.asyncio
+    async def test_ready_milestone_matching_nothing_is_an_empty_list(self, client: AsyncClient) -> None:
+        adapter = _milestone_adapter({}, {})
+        s1, s2 = _mock_ready_sources()
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            s1,
+            s2,
+        ):
+            resp = await client.get("/api/dependencies/ready?milestone=Phase 9")
+        assert resp.status_code == 200
+        assert resp.json() == {"ready": []}
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_pr_source_failure_degrades_instead_of_a_500(self, client: AsyncClient) -> None:
+        """Any error from the PR source fails open here, exactly as it does for `/agents/next-tasks`."""
+        tasks = [_task(1, state=TaskState.RESEARCHED, labels=["agent:ready"])]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                side_effect=KeyError("linked_issues"),
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_unified_agents",
+                new_callable=AsyncMock,
+                return_value={"agents": [], "completed": []},
+            ),
+        ):
+            resp = await client.get("/api/dependencies/ready")
+        assert resp.status_code == 200
+        assert [r["id"] for r in resp.json()["ready"]] == [1]
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_empty_pool_is_an_empty_list_with_200(self, client: AsyncClient) -> None:
+        p1, p2, p3 = _mock_graph_context([])
+        s1, s2 = _mock_ready_sources()
+        with p1, p2, p3, s1, s2:
+            resp = await client.get("/api/dependencies/ready")
+        assert resp.status_code == 200
+        assert resp.json() == {"ready": []}
 
     @pytest.mark.asyncio
     async def test_chain_endpoint(self, client: AsyncClient) -> None:
@@ -1686,7 +1907,7 @@ class TestDependencyAPI:
     @pytest.mark.asyncio
     async def test_ready_endpoint_error(self, client: AsyncClient) -> None:
         with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
+            "sova.dashboard.routers.dependencies.load_ranking_graph",
             side_effect=RuntimeError("boom"),
         ):
             resp = await client.get("/api/dependencies/ready")
@@ -1697,7 +1918,7 @@ class TestDependencyAPI:
         from sova.dashboard.routers.dependencies import _ConfigError
 
         with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
+            "sova.dashboard.routers.dependencies.load_ranking_graph",
             side_effect=_ConfigError("bad config"),
         ):
             resp = await client.get("/api/dependencies/ready")

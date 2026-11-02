@@ -14,8 +14,13 @@ Split into focused modules:
 from __future__ import annotations
 
 import asyncio
+import time
+from collections.abc import Collection
+from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from sova.adapters.base import Task
 from sova.adapters.priority import Priority
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
@@ -77,7 +82,18 @@ from sova.dashboard.services.work_verdict import (
 from sova.dashboard.services.work_verdict import (
     clear_verdict_cache as clear_verdict_cache,
 )
+from sova.supervisor.suitability import (
+    RankedTask,
+    assess_suitability,
+    rank_and_count_next_tasks,
+    rank_next_tasks,
+    suitability_payload,
+)
+from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.supervisor.dependency_graph import DependencyGraph
 
 log = get_logger(component="dashboard.work_item")
 
@@ -133,6 +149,218 @@ def _synthesize_spec_actions(issue_number: str) -> list[dict]:
     ]
 
 
+# Dependency graph ------------------------------------------------------------
+
+
+class GraphConfigError(Exception):
+    """Raised when project config or adapter creation fails, so no dependency graph can be built."""
+
+
+async def load_dependency_graph(project_dir: Path | None, milestone: str = "") -> DependencyGraph:
+    """Build the project's dependency graph through ``build_dependency_graph()``.
+
+    Never touches the graph cache directly, so its TTL and the agent-spawn and
+    epic-close invalidations apply unchanged. A config or adapter failure raises
+    ``GraphConfigError``; a failure while fetching issues propagates as-is.
+    """
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.supervisor.dependency_graph import build_dependency_graph
+
+    try:
+        cfg = load_config(project_dir)
+        adapter = create_adapter(cfg)
+    except Exception as exc:  # noqa: BLE001 (config load and adapter construction fail in many ways; translated to GraphConfigError)
+        raise GraphConfigError(str(exc)) from exc
+    return await build_dependency_graph(adapter, milestone=milestone)
+
+
+# The Agents page polls the work items, so classification may wait only briefly for a graph build
+# (up to 500 issues plus every older open issue and one fetch per missing dependency). A slower build
+# keeps running in the background and warms the graph cache for the next poll; this response classifies
+# from the previous graph meanwhile, or as blocked when there has never been a good one.
+_GRAPH_WAIT_SECONDS = 3.0
+# Cap on the background build itself, so a hung tracker call cannot leave every later poll waiting on it.
+_GRAPH_BUILD_TIMEOUT_SECONDS = 120.0
+# After a failed build, polls skip the rebuild for this long instead of re-fetching the whole tracker each time.
+_GRAPH_FAILURE_BACKOFF_SECONDS = 30.0
+
+_graph_builds: dict[str, asyncio.Task[DependencyGraph]] = {}  # project -> the build in flight, shared by every caller
+_graph_failures: dict[str, tuple[float, BaseException]] = {}  # project -> (monotonic time, error) of its last failure
+_last_graphs: dict[str, DependencyGraph] = {}  # project -> the graph of its last build, until a build fails
+
+
+def reset_graph_load_state() -> None:
+    """Forget in-flight builds, recorded failures and last graphs. Test-only, like ``log_dedup.reset()``."""
+    _graph_builds.clear()
+    _graph_failures.clear()
+    _last_graphs.clear()
+
+
+async def cancel_graph_builds() -> None:
+    """Cancel every graph build in flight, so none outlives the lifespan shutdown."""
+    builds = list(_graph_builds.values())
+    for build in builds:
+        build.cancel()
+    if builds:
+        await asyncio.gather(*builds, return_exceptions=True)
+    _graph_builds.clear()
+
+
+async def _build_graph_bounded(project_dir: Path | None) -> DependencyGraph:
+    return await asyncio.wait_for(load_dependency_graph(project_dir), timeout=_GRAPH_BUILD_TIMEOUT_SECONDS)
+
+
+def _on_graph_build_done(key: str, build: asyncio.Task[DependencyGraph]) -> None:
+    """Forget a finished build, and remember its graph or how it failed.
+
+    A failure also drops the last graph: a tracker that keeps failing must read as an outage,
+    not keep classifying from an ever older snapshot. Reading the exception marks it
+    retrieved, so a build whose waiters all timed out and walked away does not log
+    "Task exception was never retrieved".
+    """
+    if _graph_builds.get(key) is build:
+        del _graph_builds[key]
+    if build.cancelled():
+        return
+    failure = build.exception()
+    if failure is not None:
+        _graph_failures[key] = (time.monotonic(), failure)
+        _last_graphs.pop(key, None)
+    else:
+        _graph_failures.pop(key, None)
+        _last_graphs[key] = build.result()
+
+
+def _recent_graph_failure(key: str) -> BaseException | None:
+    """The error of the project's last build while it is within ``_GRAPH_FAILURE_BACKOFF_SECONDS``."""
+    recorded = _graph_failures.get(key)
+    if recorded is not None and time.monotonic() - recorded[0] < _GRAPH_FAILURE_BACKOFF_SECONDS:
+        return recorded[1]
+    return None
+
+
+def _backoff_error(failure: BaseException) -> GraphConfigError | RuntimeError:
+    """A new exception for a caller within the backoff, chained to the recorded ``failure``.
+
+    Raising the recorded object itself would append every caller's frames to its one shared
+    ``__traceback__``, so a later log line would print the stacks of unrelated requests.
+    ``GraphConfigError`` keeps its type because the routers map it to 503. The chain is set here
+    (``__cause__`` is what ``raise ... from`` assigns), so a caller just raises the result.
+    """
+    error = (
+        GraphConfigError(str(failure))
+        if isinstance(failure, GraphConfigError)
+        else RuntimeError(f"dependency graph build failed recently: {failure}")
+    )
+    error.__cause__ = failure
+    return error
+
+
+def _shared_graph_build(project_dir: Path | None) -> asyncio.Task[DependencyGraph]:
+    """The project's build in flight, started when there is none.
+
+    The one build every caller of the unfiltered graph shares, so a work-items poll and a
+    next-tasks request on a cold cache run one full fetch between them. Callers await it
+    through ``asyncio.shield()``, so one of them leaving does not cancel it for the rest.
+    ``cancel_graph_builds()`` is the only thing that cancels it.
+    """
+    key = str(project_dir)
+    build = _graph_builds.get(key)
+    if build is None:
+        build = asyncio.create_task(_build_graph_bounded(project_dir))
+        _graph_builds[key] = build
+        build.add_done_callback(partial(_on_graph_build_done, key))
+    return build
+
+
+def _build_hit_its_cap(build: asyncio.Task[DependencyGraph]) -> bool:
+    """Whether ``build`` ended on ``_GRAPH_BUILD_TIMEOUT_SECONDS``, as opposed to a caller's wait running out.
+
+    Both reach a waiter as ``TimeoutError`` (the build's through ``asyncio.shield()``).
+    """
+    return build.done() and not build.cancelled() and isinstance(build.exception(), TimeoutError)
+
+
+async def _load_graph_or_none(project_dir: Path | None) -> DependencyGraph | None:
+    """Load the dependency graph for work item classification; None when it is unavailable.
+
+    Never waits longer than ``_GRAPH_WAIT_SECONDS``. Concurrent callers share one build per
+    project, the build outlives a caller that stops waiting (it is shielded), and a failed
+    build is not retried for ``_GRAPH_FAILURE_BACKOFF_SECONDS``. While a rebuild is slower
+    than the wait (the graph cache expired, or an agent spawn or epic close invalidated it),
+    the previous build's graph answers, so a working tracker does not flip every task card to
+    blocked for one poll. A failure, a backoff, or no build ever finished all return None, so
+    every queue task classifies as blocked rather than the response stalling or the tracker
+    being hit on every poll.
+    """
+    key = str(project_dir)
+    if _recent_graph_failure(key) is not None:
+        return None
+    build = _shared_graph_build(project_dir)
+    try:
+        return await asyncio.wait_for(asyncio.shield(build), timeout=_GRAPH_WAIT_SECONDS)
+    except TimeoutError:
+        if _build_hit_its_cap(build):
+            log.warning("work_items.graph_failed", exc_info=True)
+            return None
+        warn_once(log, "work_items.graph_timeout", key, ttl_seconds=60.0, wait_seconds=_GRAPH_WAIT_SECONDS)
+        return _last_graphs.get(key)
+    except Exception:  # noqa: BLE001 (work items must keep rendering; each classifies as blocked without a graph)
+        log.warning("work_items.graph_failed", exc_info=True)
+        return None
+
+
+async def load_ranking_graph(project_dir: Path | None, milestone: str = "") -> DependencyGraph:
+    """The dependency graph the "Up next" ranking reads. A failure raises: it must not look like an empty list.
+
+    Without ``milestone`` this awaits the same shared build as the work-items poll, with no wait
+    limit of its own (the build is capped by ``_GRAPH_BUILD_TIMEOUT_SECONDS``), so concurrent
+    cold-cache callers run one fetch. Within ``_GRAPH_FAILURE_BACKOFF_SECONDS`` of a failed build
+    it raises a new error chained to that failure instead of fetching again. A milestone-filtered
+    graph is a rare, manual build that bypasses the graph cache, so it is built on its own.
+    """
+    if milestone:
+        return await load_dependency_graph(project_dir, milestone)
+    failure = _recent_graph_failure(str(project_dir))
+    if failure is not None:
+        raise _backoff_error(failure)
+    return await asyncio.shield(_shared_graph_build(project_dir))
+
+
+def _classify_queue_item(task: dict, graph: DependencyGraph | None) -> dict:
+    """Classify a queue task from the dependency graph's own snapshot of it.
+
+    The graph's ``Task`` is preferred so labels, state and dependencies come from
+    one snapshot with the graph node, even while the queue cache (120s) and the
+    graph cache (180s) briefly disagree. Without a graph, or for an issue the graph
+    lacks, the classifier fails closed to ``blocked`` rather than guessing ``autonomous``;
+    label-driven modes (epic, human, on-hold) still take precedence.
+
+    The classifier reports both gaps as ``{"source": "graph", "value": "unavailable"}``. This
+    function, which alone knows whether a graph exists, refines the case of a graph that was
+    built but lacks a numeric issue to ``missing``: an issue created since the graph was cached,
+    or a closed issue outside the closed-issue window. A reader can then tell a tracker outage
+    from a gap in a healthy graph. The build lists every open issue on its own, so an open
+    issue is normally a node and ``missing`` clears on the next rebuild.
+    """
+    issue = str(task["issue"])
+    number = _parse_issue_number(issue)
+    classified = graph.get_task(number) if graph is not None and number is not None else None
+    graph_lacks_issue = classified is None and graph is not None and number is not None
+    if classified is None:
+        # The parsed number, so "#4" reads as the issue it names rather than as a non-numeric id.
+        classified = Task(
+            id=str(number) if number is not None else issue,
+            title=task.get("title", ""),
+            labels=list(task.get("labels", [])),
+        )
+    payload = suitability_payload(assess_suitability(classified, graph))
+    if graph_lacks_issue and payload["reasons"] == [{"source": "graph", "value": "unavailable"}]:
+        payload["reasons"] = [{"source": "graph", "value": "missing"}]
+    return payload
+
+
 # Item builders ---------------------------------------------------------------
 
 
@@ -172,6 +400,7 @@ def _build_task_item(
     *,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
+    suitability: dict | None = None,
 ) -> dict:
     """Build a work item from a queue task and its linked PR/handoff/agent."""
     issue_num = str(task["issue"])
@@ -238,6 +467,7 @@ def _build_task_item(
         jira_status=task.get("jira_status", ""),
         jira_priority=task.get("jira_priority", ""),
         updated_at=task.get("updated_at", ""),
+        suitability=suitability,
     )
 
 
@@ -412,9 +642,9 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         # pre-budget-cap routing rather than inventing an exhausted state.
         max_address_cycles = 0
 
-    queue, prs, handoffs, agents_data = await _fetch_all_sources(
-        project_dir=project_dir,
-        slug=slug,
+    (queue, prs, handoffs, agents_data), graph = await asyncio.gather(
+        _fetch_all_sources(project_dir=project_dir, slug=slug),
+        _load_graph_or_none(project_dir),
     )
 
     running_by_issue = _index_running_agents(agents_data)
@@ -441,6 +671,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 sova_verdict=verdicts_by_issue.get(issue_num) if pr_data else None,
                 external_reviews_enabled=external_reviews_enabled,
                 max_address_cycles=max_address_cycles,
+                suitability=_classify_queue_item(task, graph),
             )
         )
 
@@ -502,7 +733,137 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     }
 
 
+# Next tasks ------------------------------------------------------------------
+
+
+def ranked_task_payload(ranked: RankedTask) -> dict:
+    """The entry shape shared by ``/agents/next-tasks`` and ``/dependencies/ready``."""
+    task = ranked.task
+    state = task.state.value
+    return {
+        "id": int(task.id),
+        "title": task.title,
+        "state": state,
+        "state_label": state_label(state),
+        "state_color": state_color(state),
+        "milestone": task.milestone,
+        "url": task.url,
+        "priority": task.priority.value,
+        "mode": ranked.mode.value,
+        "rank": ranked.rank,
+        "why": ranked.why,
+    }
+
+
+def _graph_tasks(graph: DependencyGraph) -> list[Task]:
+    """The candidate pool for ranking: the issues the graph was built for.
+
+    A milestone-filtered graph also holds the out-of-milestone dependencies it fetched
+    individually (so blockers classify), and those are not part of the requested milestone.
+    The graph records what its fetch returned, so no milestone string is compared here: the
+    adapter decides what a milestone value matches (a number or a title, in any case).
+    """
+    return [task for issue in graph.requested_issues if (task := graph.get_task(issue)) is not None]
+
+
+def rank_graph_entries(
+    graph: DependencyGraph,
+    *,
+    running: Collection[int],
+    open_prs: Collection[int],
+    limit: int | None = None,
+) -> list[dict]:
+    """Ranked next-task entries for the issues ``graph`` was built for (``limit=None`` is unbounded).
+
+    For a milestone-filtered graph the pool is that milestone's issues, but ``unblocks`` still
+    counts dependents over the graph given, which is that milestone's subgraph, so it can be
+    lower than the same issue's count in the full graph.
+    """
+    ranked = rank_next_tasks(_graph_tasks(graph), graph, running=running, open_prs=open_prs, limit=limit)
+    return [ranked_task_payload(r) for r in ranked]
+
+
+def _parse_issue_number(raw: object) -> int | None:
+    """An issue reference such as ``507``, ``"507"`` or ``"#507"`` as an int; None when it is not one."""
+    text = "" if raw is None else str(raw).strip().removeprefix("#")
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _running_issues(agents_data: dict) -> set[int]:
+    """Every issue a running agent works on, however its issue string is written."""
+    numbers = (_parse_issue_number(agent.get("issue")) for agent in agents_data.get("agents", []))
+    return {n for n in numbers if n is not None}
+
+
+def _open_pr_issues(prs: list[dict]) -> set[int]:
+    """Every issue an open PR links to, not only its primary ``linked_issue``.
+
+    A PR closing several issues covers all of them, so none may be offered as "Up next".
+    """
+    issues: set[int] = set()
+    for pr in prs:
+        issues.update(pr.get("linked_issues") or [])
+        if pr.get("linked_issue") is not None:
+            issues.add(pr["linked_issue"])
+    return issues
+
+
+async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[int]]:
+    """The issues the ranker must skip: ``(running, open_prs)``, from the explicit project.
+
+    The one source both ``GET /agents/next-tasks`` and ``GET /dependencies/ready`` read, so
+    only the shared ranker decides what they return. Both lookups fail open (any error
+    degrades to no exclusions and is logged), leaving the ``triaged``/``researched`` state
+    filter as the only exclusion.
+    """
+    slug = project_dir.name if project_dir else None
+    prs, agents_data = await asyncio.gather(_safe_prs(project_dir), _safe_agents(slug))
+    return _running_issues(agents_data), _open_pr_issues(prs)
+
+
+async def get_next_tasks(project_dir: Path | None = None, *, limit: int | None = None) -> dict:
+    """Rank the issues an agent should pick up next: ``{tasks, unclassified_count}``.
+
+    ``unclassified_count`` covers the unclassified issues in the ranker's own pool
+    (triaged or researched, no running agent, no open PR), the ones that join
+    ``tasks`` once they gain ``agent:ready``. Local assessment records are not read.
+
+    A graph failure raises (``GraphConfigError`` for config or adapter problems):
+    an empty list means "nothing to do", so a failure must not look like one. The
+    graph is the build the work-items poll shares (see ``load_ranking_graph()``). The
+    running-agent and open-PR sources fail open, degrading to state-only filtering.
+    """
+    graph = await load_ranking_graph(project_dir)
+    running, open_prs = await next_task_exclusions(project_dir)
+    ranked, unclassified_count = rank_and_count_next_tasks(
+        _graph_tasks(graph), graph, running=running, open_prs=open_prs, limit=limit
+    )
+    return {"tasks": [ranked_task_payload(r) for r in ranked], "unclassified_count": unclassified_count}
+
+
 # Fetch helpers ---------------------------------------------------------------
+
+
+async def _safe_prs(project_dir: Path | None) -> list[dict]:
+    """Open PRs with computed state; an unavailable source degrades to no PRs."""
+    from sova.dashboard.services.pr_service import list_open_prs_with_state
+
+    try:
+        return await list_open_prs_with_state(project_dir)
+    except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
+        log.warning("work_items.prs_failed", exc_info=True)
+        return []
+
+
+async def _safe_agents(slug: str | None) -> dict:
+    """Running and completed agents; an unavailable source degrades to none."""
+    from sova.dashboard.services.agent_lifecycle import get_unified_agents
+
+    try:
+        return await get_unified_agents(slug)
+    except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
+        log.warning("work_items.agents_failed", exc_info=True)
+        return {"agents": [], "completed": []}
 
 
 async def _fetch_all_sources(
@@ -511,9 +872,7 @@ async def _fetch_all_sources(
     slug: str | None,
 ) -> tuple[list[dict], list[dict], list[dict], dict]:
     """Fetch queue, PRs, handoffs, and running agents concurrently."""
-    from sova.dashboard.services.agent_lifecycle import get_unified_agents
     from sova.dashboard.services.handoff_service import get_all_handoffs
-    from sova.dashboard.services.pr_service import list_open_prs_with_state
     from sova.dashboard.services.queue_service import get_priority_queue
 
     async def safe_queue() -> list[dict]:
@@ -523,20 +882,6 @@ async def _fetch_all_sources(
             log.warning("work_items.queue_failed", exc_info=True)
             return []
 
-    async def safe_prs() -> list[dict]:
-        try:
-            return await list_open_prs_with_state(project_dir)
-        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
-            log.warning("work_items.prs_failed", exc_info=True)
-            return []
-
-    async def safe_agents() -> dict:
-        try:
-            return await get_unified_agents(slug)
-        except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
-            log.warning("work_items.agents_failed", exc_info=True)
-            return {"agents": [], "completed": []}
-
     def safe_handoffs() -> list[dict]:
         try:
             return get_all_handoffs(project_dir)
@@ -545,8 +890,8 @@ async def _fetch_all_sources(
             return []
 
     queue_task = asyncio.create_task(safe_queue())
-    prs_task = asyncio.create_task(safe_prs())
-    agents_task = asyncio.create_task(safe_agents())
+    prs_task = asyncio.create_task(_safe_prs(project_dir))
+    agents_task = asyncio.create_task(_safe_agents(slug))
 
     handoffs = safe_handoffs()
     queue = await queue_task
@@ -684,4 +1029,6 @@ def _build_item(**kwargs: object) -> dict:
         "jira_status": kwargs.get("jira_status", ""),
         "jira_priority": kwargs.get("jira_priority", ""),
         "updated_at": kwargs.get("updated_at", ""),
+        # None for a standalone PR item: there is no issue to classify.
+        "suitability": kwargs.get("suitability"),
     }

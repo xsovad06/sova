@@ -591,6 +591,22 @@ def _reset_log_dedup() -> None:
     reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_work_item_graph_state() -> None:
+    """Forget the work-items poll's in-flight graph builds and recorded failures.
+
+    ``_load_graph_or_none`` keeps one shared build per project and skips the rebuild for a
+    while after a failure, both in module state. Without this reset, a test that makes the
+    build fail would leave every later test on the same project key classifying as blocked.
+    This only forgets the builds: it is sync, and cancelling a task needs the loop it runs on, so a
+    test that leaves a build running cancels it itself (``_cancel_builds_left_running`` in the
+    graph-load test classes of ``test_work_item_service.py``).
+    """
+    from sova.dashboard.services.work_item_service import reset_graph_load_state
+
+    reset_graph_load_state()
+
+
 def _seed_project_settings(project_dir: Path, values: dict[str, Any]) -> None:
     """Upsert flattened, JSON-encoded config values into ``project_settings``.
 
