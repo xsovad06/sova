@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,6 +21,7 @@ from sova.dashboard.services.pr_service import (
     _extract_pr_labels,
     _extract_review_logins,
     _is_bot_review,
+    _logged_closing_ties,
     _should_unblock_bot_reviews,
     _summarize_ci,
     compute_pr_state,
@@ -1450,6 +1451,148 @@ class TestExtractAllLinkedIssues:
     def test_part_of_in_body_is_linked(self) -> None:
         raw = {"closingIssuesReferences": [], "body": "Part of #88"}
         assert _extract_all_linked_issues(raw) == [88]
+
+
+class TestPrimaryClosingReference:
+    """With several closingIssuesReferences, the ## Issue section then the branch pick the primary."""
+
+    @staticmethod
+    def _raw(body: str = "", branch: str = "", numbers: tuple[int, ...] = (12, 1354)) -> dict:
+        return {
+            "number": 7,
+            "closingIssuesReferences": [{"number": n} for n in numbers],
+            "body": body,
+            "headRefName": branch,
+        }
+
+    def test_issue_section_beats_first_listed(self) -> None:
+        raw = self._raw(body="## Summary\nmentions Closes #12\n\n## Issue\n\nCloses #1354")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_issue_section_wins_over_branch(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354", branch="feat/issue-12")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_branch_breaks_tie_inside_issue_section(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #12\nCloses #1354", branch="feat/issue-1354")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_section_naming_several_without_branch_keeps_first_listed(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #12\nCloses #1354", branch="refactor/cleanup")
+        assert _extract_linked_issue(raw) == 12
+
+    def test_part_of_section_names_the_primary(self) -> None:
+        raw = self._raw(body="## Issue\n\nPart of #1354\n\nNot done in this PR:\n- A")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_branch_breaks_tie_without_issue_section(self) -> None:
+        raw = self._raw(body="Closes #12\nCloses #1354", branch="fix/issue-1354")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_branch_without_issue_number_leaves_first_listed(self) -> None:
+        raw = self._raw(body="Closes #12\nCloses #1354", branch="refactor/cleanup")
+        assert _extract_linked_issue(raw) == 12
+
+    def test_section_issue_not_listed_by_github_is_not_a_candidate(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #999", branch="feat/issue-1354")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_branch_issue_not_listed_by_github_is_not_a_candidate(self) -> None:
+        raw = self._raw(body="", branch="feat/issue-999")
+        assert _extract_linked_issue(raw) == 12
+
+    def test_jira_only_section_names_no_issue(self) -> None:
+        raw = self._raw(body="## Issue\n\n[PROJ-7](https://jira.example.com/browse/PROJ-7)", branch="feat/issue-1354")
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_code_span_in_section_is_not_read(self) -> None:
+        raw = self._raw(body="## Issue\n\nsee `Closes #1354`", branch="")
+        assert _extract_linked_issue(raw) == 12
+
+    def test_entries_without_number_are_skipped(self) -> None:
+        raw = {
+            "closingIssuesReferences": [{"foo": "bar"}, {"number": 12}, {"number": 1354}],
+            "body": "## Issue\n\nCloses #1354",
+        }
+        assert _extract_linked_issue(raw) == 1354
+
+    def test_single_reference_is_unchanged(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354", branch="feat/issue-1354", numbers=(12,))
+        assert _extract_linked_issue(raw) == 12
+
+    @pytest.fixture(autouse=True)
+    def _fresh_tie_log(self) -> None:
+        _logged_closing_ties.clear()
+
+    def test_disagreement_is_logged(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354")
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            _extract_linked_issue(raw)
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "pr_service.multiple_closing_references"
+        assert mock_log.warning.call_args.kwargs["chosen"] == 1354
+        assert mock_log.warning.call_args.kwargs["first_listed"] == 12
+        assert mock_log.warning.call_args.kwargs["signal"] == "section"
+
+    def test_untied_choice_is_logged(self) -> None:
+        raw = self._raw()
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_linked_issue(raw) == 12
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args.kwargs["signal"] == "none"
+        mock_log.warning.assert_not_called()
+
+    def test_primary_listed_first_still_logs_the_extra_closing_reference(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1340", branch="fix/issue-1340", numbers=(1340, 12))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_linked_issue(raw) == 1340
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args.args[0] == "pr_service.multiple_closing_references"
+        assert mock_log.info.call_args.kwargs["issues"] == [1340, 12]
+        mock_log.warning.assert_not_called()
+
+    def test_repeated_resolution_of_the_same_pr_head_logs_once(self) -> None:
+        raw = {**self._raw(body="## Issue\n\nCloses #1354"), "headRefOid": "abc"}
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            _extract_linked_issue(raw)
+            _extract_all_linked_issues(raw)
+            _extract_linked_issue(raw)
+        mock_log.warning.assert_called_once()
+
+    def test_new_head_sha_logs_again(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354")
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            _extract_linked_issue({**raw, "headRefOid": "abc"})
+            _extract_linked_issue({**raw, "headRefOid": "def"})
+        assert mock_log.warning.call_count == 2
+
+    def test_lowercase_issue_heading_is_not_the_section(self) -> None:
+        raw = self._raw(body="## issue\n\nCloses #1354")
+        assert _extract_linked_issue(raw) == 12
+
+    def test_all_linked_issues_lists_primary_first(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354")
+        assert _extract_all_linked_issues(raw) == [1354, 12]
+
+    def test_pr_1351_body_resolves_to_its_own_issue(self) -> None:
+        """The incident: GitHub listed #12 (from review-guidance prose) before #1340."""
+        body = (
+            "## Summary\n- Integrate and after-merge stop closing issues by hand.\n\n"
+            '## Review guidance\n- Keyword matching is textual: "does not close #12" still closes #12.\n\n'
+            "## Issue\n\nCloses #1340\n"
+        )
+        raw = self._raw(body=body, branch="fix/issue-1340", numbers=(12, 1340))
+        assert _extract_linked_issue(raw) == 1340
+        assert _extract_all_linked_issues(raw) == [1340, 12]
+
+    def test_both_extractors_agree_on_primary(self) -> None:
+        for raw in (
+            self._raw(body="## Issue\n\nCloses #1354"),
+            self._raw(branch="feat/issue-1354"),
+            self._raw(),
+            self._raw(numbers=(5, 6, 7), branch="feat/issue-7"),
+        ):
+            assert _extract_all_linked_issues(raw)[0] == _extract_linked_issue(raw)
 
 
 class TestSummarizeCiNoneState:

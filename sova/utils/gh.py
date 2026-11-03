@@ -296,6 +296,10 @@ CLOSING_SEPARATOR = r"\s*:?\s+"
 CLOSING_REFERENCE_PREFIX = rf"\b{CLOSING_KEYWORDS}{CLOSING_SEPARATOR}"
 CLOSES_RE = re.compile(rf"{CLOSING_REFERENCE_PREFIX}#(\d+)", re.IGNORECASE)
 
+# The issue number SOVA's own branches carry (``feat/issue-1354``); shared by the dashboard resolver and
+# resolve_linked_issue() so both break a multi-issue tie the same way.
+BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
+
 
 def closing_pattern_for(issue_num: str) -> re.Pattern[str]:
     """Pattern matching a closing keyword that references exactly *issue_num*.
@@ -375,10 +379,12 @@ async def resolve_linked_issue(
 ) -> str | None:
     """Extract the linked issue number from a PR body (e.g. 'Closes #26' or 'Part of #26').
 
-    A "Part of" match is scoped to the ``## Issue`` section first, falling
-    back to the whole body only when that section is absent or has no match,
-    so a "Part of #<epic>" mention written earlier in ``## Summary`` never
-    wins over the PR's own issue rendered under ``## Issue``.
+    References are read with parse_issue_links(), so keywords inside fenced blocks and code spans
+    are ignored. The ``## Issue`` section is read first, closing references before "Part of" ones, so
+    a "Part of #<epic>" mention or a stray closing phrase elsewhere in the body never wins over the
+    PR's own issue. Only when that section names no issue are the body's closing references, then
+    its "Part of" references, used. When several issues are named in the winning scope, the branch's
+    ``issue-N`` breaks the tie if it is one of them, otherwise the first is returned.
 
     Returns the issue number as a string, or None if the body has no link.
     Raises RuntimeError when the PR body cannot be fetched or parsed, so a
@@ -393,7 +399,7 @@ async def resolve_linked_issue(
         "--repo",
         repo,
         "--json",
-        "body",
+        "body,headRefName",
         env=env,
     )
     if not result.success:
@@ -401,16 +407,24 @@ async def resolve_linked_issue(
         raise RuntimeError(f"Failed to fetch PR #{pr_number} body: {result.stderr[:200]}")
 
     try:
-        body = json.loads(result.stdout).get("body", "") or ""
+        payload = json.loads(result.stdout)
+        body = payload.get("body", "") or ""
+        branch = payload.get("headRefName", "") or ""
     except (json.JSONDecodeError, TypeError, AttributeError) as exc:
         log.warning("gh.pr_body_parse_failed", pr=pr_number)
         raise RuntimeError(f"Failed to parse PR #{pr_number} body: {result.stdout[:200]}") from exc
 
-    match = CLOSES_RE.search(body) or _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
-    if match:
-        issue_num = match.group(1)
-        log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)
-        return issue_num
+    branch_match = BRANCH_ISSUE_RE.search(branch)
+    branch_issue = branch_match.group(1) if branch_match else None
+    section_links = parse_issue_links(extract_section(body, "Issue"))
+    body_links = parse_issue_links(body)
+    # The PR's own "## Issue" section is the authoritative decision, so it is read to the end before
+    # the rest of the body: a stray closing phrase elsewhere must not beat a "Part of" written there.
+    for candidates in (section_links.closes + section_links.part_of, body_links.closes, body_links.part_of):
+        if candidates:
+            issue_num = branch_issue if branch_issue in candidates else candidates[0]
+            log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)
+            return issue_num
 
     log.warning("gh.no_linked_issue", pr=pr_number)
     return None

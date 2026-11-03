@@ -1226,6 +1226,38 @@ class TestResolveLinkedIssue:
             result = await resolve_linked_issue(99, repo="user/repo")
             assert result == "42"
 
+    async def test_issue_section_wins_over_a_quoted_closing_phrase_earlier_in_the_body(self) -> None:
+        """PR #1351: "does not close #12" in Review guidance preceded "Closes #1340" in ## Issue."""
+        from sova.utils.gh import resolve_linked_issue
+
+        body = '## Review guidance\n- "does not close #12" still closes #12.\n\n## Issue\n\nCloses #1340\n'
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": body, "headRefName": "feat/issue-1340"}))
+            assert await resolve_linked_issue(1351, repo="user/repo") == "1340"
+
+    async def test_branch_issue_breaks_a_tie_between_section_closing_references(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        body = "## Issue\n\nCloses #7\nCloses #1340\n"
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": body, "headRefName": "feat/issue-1340"}))
+            assert await resolve_linked_issue(99, repo="user/repo") == "1340"
+
+    async def test_section_part_of_wins_over_a_stray_closing_phrase_outside_the_section(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        body = '## Review guidance\n- "does not close #12" still closes #12.\n\n## Issue\n\nPart of #1340\n'
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": body, "headRefName": "fix/issue-1340"}))
+            assert await resolve_linked_issue(99, repo="user/repo") == "1340"
+
+    async def test_part_of_inside_a_code_span_is_ignored(self) -> None:
+        from sova.utils.gh import resolve_linked_issue
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=json.dumps({"body": "Write `Part of #5` to link.\n"}))
+            assert await resolve_linked_issue(99, repo="user/repo") is None
+
     async def test_returns_none_when_body_has_no_link(self) -> None:
         from sova.utils.gh import resolve_linked_issue
 
