@@ -71,6 +71,11 @@ class TokenUsage:
     # documents) to avoid double counting.
     reasoning_tokens: int = 0
     reasoning_reported_calls: int = 0
+    # Agent-session turns (LLMResult.num_turns) and how many calls reported
+    # them: only the Claude CLI does, so a window of Codex or API calls keeps
+    # turns_reported_calls at 0 and its CostRecord.num_turns stays NULL.
+    turns: int = 0
+    turns_reported_calls: int = 0
 
     def __sub__(self, other: TokenUsage) -> TokenUsage:
         compressed_calls = self.compressed_calls - other.compressed_calls
@@ -84,6 +89,8 @@ class TokenUsage:
             cache_write_reported_calls=self.cache_write_reported_calls - other.cache_write_reported_calls,
             reasoning_tokens=self.reasoning_tokens - other.reasoning_tokens,
             reasoning_reported_calls=self.reasoning_reported_calls - other.reasoning_reported_calls,
+            turns=self.turns - other.turns,
+            turns_reported_calls=self.turns_reported_calls - other.turns_reported_calls,
         )
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
@@ -104,6 +111,8 @@ class TokenUsage:
             cache_write_reported_calls=self.cache_write_reported_calls + other.cache_write_reported_calls,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             reasoning_reported_calls=self.reasoning_reported_calls + other.reasoning_reported_calls,
+            turns=self.turns + other.turns,
+            turns_reported_calls=self.turns_reported_calls + other.turns_reported_calls,
         )
 
 
@@ -153,6 +162,8 @@ class ExecutionContext:
     cache_write_reported_calls: int = 0
     reasoning_tokens: int = 0
     reasoning_reported_calls: int = 0
+    turns: int = 0
+    turns_reported_calls: int = 0
     force: bool = False
     budget_override: bool = False
     task_run_id: int | None = None
@@ -341,6 +352,9 @@ class ExecutionContext:
         if result.reasoning_output_tokens is not None:
             self.reasoning_tokens += result.reasoning_output_tokens
             self.reasoning_reported_calls += 1
+        if result.num_turns is not None:
+            self.turns += result.num_turns
+            self.turns_reported_calls += 1
         if result.tokens_saved is not None:
             self.tokens_saved = (0 if self.tokens_saved is None else self.tokens_saved) + result.tokens_saved
             self.compressed_calls += 1
@@ -378,6 +392,8 @@ class ExecutionContext:
             cache_write_reported_calls=1 if result.cache_creation_tokens is not None else 0,
             reasoning_tokens=result.reasoning_output_tokens or 0,
             reasoning_reported_calls=1 if result.reasoning_output_tokens is not None else 0,
+            turns=result.num_turns or 0,
+            turns_reported_calls=1 if result.num_turns is not None else 0,
         )
         bucket.cost_usd += result.cost_usd
         bucket.cost_source = combine_cost_sources(bucket.cost_source, result.cost_source)
@@ -394,6 +410,8 @@ class ExecutionContext:
             cache_write_reported_calls=self.cache_write_reported_calls,
             reasoning_tokens=self.reasoning_tokens,
             reasoning_reported_calls=self.reasoning_reported_calls,
+            turns=self.turns,
+            turns_reported_calls=self.turns_reported_calls,
         )
 
     @property

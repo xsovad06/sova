@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -543,3 +545,139 @@ class TestCostRecordWrite:
         assert len(rows) == 1
         assert rows[0].input_tokens == 0
         assert rows[0].tokens_saved is None
+
+
+class TestNumTurnsParsing:
+    """build_claude_cli_result() keeps the CLI's own turn count (issue #1336)."""
+
+    def test_num_turns_read_from_result_event(self) -> None:
+        from sova.llm.models import build_claude_cli_result
+
+        assert build_claude_cli_result({"num_turns": 52}).num_turns == 52
+
+    @pytest.mark.parametrize("raw", [None, "52", 52.0, True, -1])
+    def test_absent_or_non_integer_num_turns_is_none(self, raw: object) -> None:
+        """None means "not reported", never zero: a bool, a string, a float or a negative is not a turn count."""
+        from sova.llm.models import build_claude_cli_result
+
+        data = {} if raw is None else {"num_turns": raw}
+        assert build_claude_cli_result(data).num_turns is None
+
+    def test_accumulated_results_sum_turns_and_keep_none_only_when_both_unreported(self) -> None:
+        from sova.llm.models import accumulate_llm_result
+
+        assert accumulate_llm_result(_llm_result(num_turns=3), _llm_result(num_turns=4)).num_turns == 7
+        assert accumulate_llm_result(_llm_result(num_turns=3), _llm_result()).num_turns == 3
+        assert accumulate_llm_result(_llm_result(), _llm_result()).num_turns is None
+
+
+class TestTurnCounters:
+    def test_add_usage_counts_turns_and_reporting_calls(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(_llm_result(num_turns=5))
+        ctx.add_usage(_llm_result())  # a provider that reports no turns (Codex)
+        ctx.add_usage(_llm_result(num_turns=2))
+
+        snapshot = ctx.usage_snapshot()
+        assert snapshot.turns == 7
+        assert snapshot.turns_reported_calls == 2
+
+    def test_delta_and_sum_carry_turns(self) -> None:
+        after = TokenUsage(turns=9, turns_reported_calls=3)
+        before = TokenUsage(turns=4, turns_reported_calls=1)
+
+        assert (after - before) == TokenUsage(turns=5, turns_reported_calls=2)
+        assert (before + before) == TokenUsage(turns=8, turns_reported_calls=2)
+
+    def test_routed_spend_bucket_carries_turns(self, ctx: ExecutionContext) -> None:
+        ctx.add_usage(
+            _llm_result(model="cheap", routed_task_type_model="cheap", num_turns=3),
+            routed_reason="task_type:fix",
+        )
+
+        assert ctx.routed_spend["cheap"].usage.turns == 3
+        assert ctx.routed_spend["cheap"].usage.turns_reported_calls == 1
+
+
+class TestNumTurnsCostRecord:
+    @pytest.fixture(autouse=True)
+    async def setup_db(self) -> AsyncIterator[None]:
+        import os
+
+        from sova.db.session import close_db, init_db
+
+        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+        await init_db(run_migrations=False)
+        yield
+        await close_db()
+        os.environ.pop("SOVA_DATABASE_URL", None)
+
+    async def _engine_with_run(self, ctx: ExecutionContext) -> WorkflowEngine:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            run = TaskRun(issue_number="123", role="developer", status="in_progress")
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+            run_id = run.id
+
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = run_id
+        return engine
+
+    async def _step_records(self, ctx: ExecutionContext, usage: TokenUsage) -> list:
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        engine = await self._engine_with_run(ctx)
+        step_exec_id = await engine._create_step_execution("develop")
+        result = StepResult(success=True, summary="done", cost_usd=Decimal("0.10"), usage=usage)
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=10)
+
+        async with await get_session() as session:
+            return list((await session.execute(select(CostRecord))).scalars().all())
+
+    async def test_step_turns_reach_the_cost_record(self, ctx: ExecutionContext) -> None:
+        rows = await self._step_records(ctx, TokenUsage(input_tokens=1000, turns=12, turns_reported_calls=2))
+
+        assert len(rows) == 1
+        assert rows[0].num_turns == 12
+
+    async def test_turns_null_when_no_call_reported_them(self, ctx: ExecutionContext) -> None:
+        """NULL means not reported (Codex, legacy rows), never zero."""
+        rows = await self._step_records(ctx, TokenUsage(input_tokens=1000))
+
+        assert rows[0].num_turns is None
+
+    async def test_a_share_reporting_only_turns_is_still_recorded(self, ctx: ExecutionContext) -> None:
+        """The provider-record gate counts reported turns, so a zero-cost, zero-token share keeps its turn count."""
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        engine = await self._engine_with_run(ctx)
+        step_exec_id = await engine._create_step_execution("develop")
+        result = StepResult(
+            success=True, summary="done", cost_usd=Decimal("0"), usage=TokenUsage(turns=3, turns_reported_calls=1)
+        )
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=10)
+
+        async with await get_session() as session:
+            rows = list((await session.execute(select(CostRecord))).scalars().all())
+
+        assert [row.num_turns for row in rows] == [3]
+
+    async def test_record_cost_writes_num_turns(self) -> None:
+        """Direct-call roles (triage) record through record_cost(), which carries the turn count too."""
+        from sova.llm.cost import record_cost
+
+        record = await record_cost(_llm_result(num_turns=4), phase="triage", issue="123")
+        unreported = await record_cost(_llm_result(), phase="triage", issue="123")
+
+        assert record.num_turns == 4
+        assert unreported.num_turns is None
+
