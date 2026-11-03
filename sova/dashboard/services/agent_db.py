@@ -17,6 +17,7 @@ from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.ipc.control import normalize_signal_exit
+from sova.llm.phase_usage import PhaseTally
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import SOVA_VERDICT_MARKER_RE
@@ -299,6 +300,7 @@ def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState
         cache_read_tokens=agent.last_result_cache_read_tokens,
         cache_write_tokens=agent.last_result_cache_write_tokens,
         reasoning_tokens=agent.last_result_reasoning_tokens,
+        num_turns=agent.last_result_num_turns if isinstance(agent.last_result_num_turns, int) else None,
     )
     session.add(cost_record)
 
@@ -362,6 +364,13 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                         **(task_run.assessment_json or {}),
                         "runtime": {"session_id": agent.runtime_session_id},
                     }
+
+                # Before the terminal-status return, for the same reason as the session id above.
+                # Tokens, turns and time only: no dollar figure is apportioned to a phase.
+                if isinstance(agent.phase_tally, PhaseTally):
+                    phase_usage = agent.phase_tally.snapshot()
+                    if phase_usage is not None:
+                        task_run.phase_usage = phase_usage
 
                 if task_run.status in _TERMINAL_STATUSES:
                     await _handle_terminal_status(task_run, file_handoff, session, run_id)
