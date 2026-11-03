@@ -32,6 +32,10 @@ If the project's CLAUDE.md or AGENTS.md names a different silent-revert guard sc
 
 ### Phase 1: Identify the PR
 
+```bash
+echo "::sova-phase::identify"
+```
+
 Determine the PR number from available context, in priority order:
 
 1. **From arguments** (`the arguments provided when this skill is invoked`): use directly if a number is provided
@@ -80,6 +84,7 @@ Reset the push-tracking state file first. It is a file rather than a shell
 variable because Phases 2 through 4 run as separate shell invocations:
 
 ```bash
+echo "::sova-phase::mergeability"
 COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
 case "$COMMON_DIR" in /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;; *) PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;; esac
 mkdir -p "$PRIMARY_ROOT/.claude/agent-control"
@@ -138,6 +143,7 @@ conflicts to resolve.
    fails or, worse, leaves uncommitted work that bleeds onto the base branch
    later. Resolve the worktree first:
    ```bash
+   echo "::sova-phase::update"
    git fetch origin || { echo "Fetch failed: STOP, refs may be stale" >&2; exit 1; }
    git worktree prune
    HEAD_BRANCH_REF="branch refs/heads/<HEAD_BRANCH>"
@@ -353,6 +359,7 @@ The reproduction follows the merge method Phase 5 will use (`merge_method` from 
 Run the whole gate as one block; the subshell's `trap` removes the trial worktree, the trial ref and the guard copy on every exit path:
 
 ```bash
+echo "::sova-phase::revert-gate"
 (
   PR=<PR_NUMBER>
   GUARD_PATH="${SILENT_REVERT_GUARD:-invariants/silent-revert-guard.sh}"
@@ -463,6 +470,7 @@ Knowledge capture and documentation freshness belong to the `sova-address-pr` sk
 
 **Skip this phase entirely if Phase 2 already pushed** (the state file reads `1`): the Update subroutine's step 7 already ran this exact check before that push, and a second run risks a confusing amend after the push has gone out. Read the state file from the primary checkout:
 ```bash
+echo "::sova-phase::docs"
 COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
 case "$COMMON_DIR" in /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;; *) PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;; esac
 PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null || echo 0)
@@ -533,6 +541,7 @@ still reads `0`, confirm the existing checks are green and proceed straight to
 Phase 5 without polling:
 
 ```bash
+echo "::sova-phase::ci-wait"
 COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
 case "$COMMON_DIR" in /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;; *) PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;; esac
 # Default to 0 if the state file is missing (defensive: never assume a push).
@@ -635,6 +644,7 @@ Act on the result:
 Resolve the merge settings through the config loader (they are not in the `sova config` table):
 
 ```bash
+echo "::sova-phase::merge"
 python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
 i=load_config(Path('.')).integration; print(i.merge_method, i.delete_branch, i.post_merge_state)"
 ```
@@ -680,6 +690,7 @@ If `merge_method` is "auto", omit strategy flags to use the GitHub repo default.
 Return to the primary checkout first: the Update subroutine may have `cd`'d into a per-issue worktree, where `git checkout <BASE_BRANCH>` fails (git refuses to check out a branch that is checked out elsewhere).
 
 ```bash
+echo "::sova-phase::cleanup"
 COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
 case "$COMMON_DIR" in
   /*) cd "${COMMON_DIR%/.git}" ;;   # linked worktree: return to primary checkout
@@ -848,6 +859,10 @@ sova cleanup --all --project <PROJECT_DIR>
 `sova cleanup --all` only removes a worktree once its own issue is confirmed closed on GitHub, no agent is actively using it, and its working tree is clean, so it will not touch other issues' in-progress work.
 
 ### Phase 7: Report
+
+```bash
+echo "::sova-phase::report"
+```
 
 Note: this command makes no post-merge commits. Documentation and knowledge are captured by the `sova-address-pr` skill on the branch; anything Phase 3 found missing was queued for the next branch rather than pushed.
 
