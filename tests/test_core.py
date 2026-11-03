@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
@@ -11902,6 +11903,225 @@ class TestRunWorkflowOutcome:
 
         messages = [call.args[0] for call in mock_print.call_args_list]
         assert any("Workflow failed (researcher)" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# _run_workflow: cost persistence for roles that bypass WorkflowEngine (issue #1368)
+# ---------------------------------------------------------------------------
+
+
+class TestRunWorkflowPersistsRoleCost:
+    """_run_workflow() writes ctx.cost_usd to the TaskRun after dispatch(), on success and on failure.
+
+    ReviewerRole, TriageRole and PlannerRole add their spend to ``ctx.cost_usd`` but never touch
+    ``TaskRun.total_cost_usd``: only WorkflowEngine does that, and only for the roles it runs.
+    """
+
+    @staticmethod
+    async def _seed_run(role: str, *, cost: Decimal = Decimal("0"), issue: str = "1368") -> int:
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number=issue, role=role, status="running", total_cost_usd=cost)
+                session.add(run)
+                await session.flush()
+                return run.id
+
+    @staticmethod
+    async def _recorded_cost(run_id: int) -> Decimal:
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run is not None
+            return run.total_cost_usd
+
+    @staticmethod
+    @contextmanager
+    def _patch_run_deps(dispatch_mock: AsyncMock) -> Iterator[None]:
+        with (
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.roles.dispatcher.dispatch", new=dispatch_mock),
+            patch("sova.cli.commands.run._install_sigterm_handler"),
+        ):
+            yield
+
+    @staticmethod
+    def _spending_dispatch(role_name: str, amount: Decimal, result: object) -> AsyncMock:
+        """A dispatch() stand-in that spends *amount* on the context the way a direct-spawn role does."""
+        role = MagicMock()
+        role.name = role_name
+
+        async def _dispatch(ctx: ExecutionContext, **_kwargs: object) -> tuple[object, object]:
+            ctx.add_cost(amount)
+            if isinstance(result, Exception):
+                raise result
+            return role, result
+
+        return AsyncMock(side_effect=_dispatch)
+
+    async def test_reviewer_success_records_cost(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer")
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.40"), RoleResult(success=True, summary="ok"))
+
+        with self._patch_run_deps(dispatch_mock):
+            await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id)
+
+        assert await self._recorded_cost(run_id) == Decimal("1.40")
+
+    async def test_reviewer_failed_result_still_records_cost(self, tmp_path: Path) -> None:
+        import typer
+
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer")
+        dispatch_mock = self._spending_dispatch(
+            "reviewer", Decimal("0.91"), RoleResult(success=False, summary="Review failed", error="boom")
+        )
+
+        with self._patch_run_deps(dispatch_mock):
+            with pytest.raises(typer.Exit):
+                await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id)
+
+        assert await self._recorded_cost(run_id) == Decimal("0.91")
+
+    async def test_role_raising_after_spend_still_records_cost_and_reraises(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+
+        run_id = await self._seed_run("reviewer")
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("2.10"), RuntimeError("provider exploded"))
+
+        with self._patch_run_deps(dispatch_mock):
+            with pytest.raises(RuntimeError, match="provider exploded"):
+                await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id)
+
+        assert await self._recorded_cost(run_id) == Decimal("2.10")
+
+    async def test_resumed_run_records_only_its_own_spend(self, tmp_path: Path) -> None:
+        """--resume seeds ctx.cost_usd with the prior run's cost; the prior row keeps that cost, so the
+        new row must not store it again or the per-issue budget sum counts it twice."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer")
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
+        checkpoint = {"role": "reviewer", "cost_usd": Decimal("4.00"), "completed_steps": set()}
+
+        with self._patch_run_deps(dispatch_mock):
+            with patch("sova.cli.commands.run._load_checkpoint", new=AsyncMock(return_value=checkpoint)):
+                await _run_workflow(
+                    "1368", project_dir=tmp_path, role_name="reviewer", force=False, resume_run_id=1, task_run_id=run_id
+                )
+
+        assert await self._recorded_cost(run_id) == Decimal("1.00")
+
+    async def test_engine_finalized_cost_is_not_double_counted(self, tmp_path: Path) -> None:
+        """A developer run: WorkflowEngine already stored 5.00 and ctx.cost_usd is the same 5.00."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("developer", cost=Decimal("5.00"))
+        dispatch_mock = self._spending_dispatch("developer", Decimal("5.00"), RoleResult(success=True, summary="ok"))
+
+        with self._patch_run_deps(dispatch_mock):
+            await _run_workflow("1368", project_dir=tmp_path, role_name="developer", force=False, task_run_id=run_id)
+
+        assert await self._recorded_cost(run_id) == Decimal("5.00")
+
+    async def test_zero_spend_never_overwrites_recorded_cost(self, tmp_path: Path) -> None:
+        """The dashboard finalizer may have stored a runtime-stream cost; a role with no spend must not zero it."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer", cost=Decimal("3.00"))
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("0"), RoleResult(success=True, summary="ok"))
+
+        with self._patch_run_deps(dispatch_mock):
+            await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id)
+
+        assert await self._recorded_cost(run_id) == Decimal("3.00")
+
+    async def test_failed_write_is_logged_and_does_not_replace_the_role_outcome(self, tmp_path: Path) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer")
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
+
+        with self._patch_run_deps(dispatch_mock):
+            with patch("sova.db.session.get_session", side_effect=OperationalError("stmt", {}, Exception("locked"))):
+                with patch("sova.cli.commands.run.log") as mock_log:
+                    await _run_workflow(
+                        "1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id
+                    )
+
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "run.cost_persist_failed"
+        assert await self._recorded_cost(run_id) == Decimal("0")
+
+    async def test_sigterm_during_the_write_takes_the_shutdown_path(self, tmp_path: Path) -> None:
+        """The write after dispatch() is a new cancellation point: SIGTERM there must still record cost."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
+        shutdown_calls = []
+
+        async def fake_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
+            shutdown_calls.append((task_run_id, ctx.cost_usd))
+
+        with self._patch_run_deps(dispatch_mock):
+            with (
+                patch("sova.cli.commands.run._persist_run_cost", new=AsyncMock(side_effect=asyncio.CancelledError)),
+                patch("sova.cli.commands.run._handle_sigterm_shutdown", side_effect=fake_shutdown),
+            ):
+                with pytest.raises(asyncio.CancelledError):
+                    await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=5)
+
+        assert shutdown_calls == [(5, Decimal("1.00"))]
+
+    async def test_no_task_run_id_skips_the_write(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
+
+        with self._patch_run_deps(dispatch_mock):
+            with patch("sova.db.session.get_session") as mock_get_session:
+                await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False)
+
+        mock_get_session.assert_not_called()
+
+    async def test_recorded_reviewer_cost_counts_toward_the_per_issue_budget(self, tmp_path: Path) -> None:
+        """WorkflowEngine._check_per_issue_budget() sums TaskRun.total_cost_usd, so a recorded review counts."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.base import RoleResult
+
+        reviewer_id = await self._seed_run("reviewer", issue="77")
+        async with await get_session() as session:
+            async with session.begin():
+                (await session.get(TaskRun, reviewer_id)).status = "done"
+        dispatch_mock = self._spending_dispatch("reviewer", Decimal("12.00"), RoleResult(success=True, summary="ok"))
+        with self._patch_run_deps(dispatch_mock):
+            await _run_workflow("77", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=reviewer_id)
+
+        config = ProjectConfig(agent=AgentConfig(max_issue_budget=Decimal("10.00")))
+        ctx = ExecutionContext(project_dir=tmp_path, config=config, adapter=MagicMock(), issue_number="77")
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        engine._task_run_id = await self._seed_run("developer", issue="77")
+        result = WorkflowResult(success=True, final_status=TaskStatus.DONE)
+
+        await engine._check_per_issue_budget(result)
+
+        assert result.final_status == TaskStatus.PAUSED
+        assert "Per-issue budget exceeded" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
