@@ -28,9 +28,9 @@ This command runs as a headless agent. You MUST execute every step below through
    ```
    Every shell block runs in a fresh shell, so variables do not carry over between blocks: each later block that uses `BASE` or `HEAD_BRANCH` re-assigns them first with the same two `gh pr view` lines (or the literal values printed here).
 
-3. **Verify this is your PR and that you can push to it** (STOP if not, before any worktree or commit work happens). A STOP anywhere in this step must end the run as a failure (a non-zero exit / an incomplete-run outcome), never a clean summary: the supervisor's address-cycle counter only increments on a posted `sova-addressed` marker (step 15), so a guard STOP that reports cleanly looks like "nothing to do" and the supervisor respawns the `sova-address-pr` skill on the same PR every poll with no cap on it. Reporting the STOP as a failed run at least makes the repetition visible in the run history; `check_repeated_failures_gate()` does not apply here (it only gates the `researcher` and `developer` roles, never `command:address-pr`), so today only the `already_running` concurrency guard prevents a second simultaneous spawn, and nothing caps the respawn *count* on an unpushable or foreign PR. Closing that gap means wiring `command:address-pr` into `check_repeated_failures_gate()`, which is out of scope for this change.
+3. **Verify this is your PR and that you can push to it** (STOP if not, before any worktree or commit work happens). A STOP anywhere in this step must end the run as a failure (a non-zero exit / an incomplete-run outcome), never a clean summary: the supervisor's address-cycle counter only increments on a posted `sova-addressed` marker (step 15), so a guard STOP that reports cleanly looks like "nothing to do" and the supervisor respawns the `sova-address-pr` skill on the same PR every poll with no cap on it. Reporting the STOP as a failed run at least makes the repetition visible in the run history; `check_repeated_failures_gate()` does not apply here (it only gates the `researcher` and `developer` roles, never `command:address-pr`), so today only the `already_running` concurrency guard prevents a second simultaneous spawn, and nothing caps the respawn *count* on an unpushable or foreign PR.
 
-   a. **Reconcile the GitHub account before resolving identity**, since comparing against the wrong account produces a false "not your PR": `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). If it differs, run `gh auth switch --user <github_user>` now, before step b. (Step 4f repeats this same check right before any thread/review write, since a long-running fix can leave time for the active account to drift again.)
+   a. **Reconcile the GitHub account before resolving identity**, since comparing against the wrong account produces a false "not your PR": `gh auth status` must show the account the project configures as its GitHub user (for SOVA projects, `sova config get github_user` prints it). If it differs, run `gh auth switch --user <github_user>` now, before step b.
 
    b. Resolve your authenticated login and the PR's author, state, and head repository, and print both so the comparison in step c has an input to compare against (every shell block is fresh, so nothing here survives into the next one):
       ```bash
@@ -125,6 +125,10 @@ This command runs as a headless agent. You MUST execute every step below through
 
 5. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
+   ```bash
+   echo "::sova-phase::fix"
+   ```
+
 6. **Score each comment 1-10**:
    - 1-2: low-priority: style preference, minor naming, formatting
    - 3-5: moderate: DRY violations, missing edge cases, error handling
@@ -194,6 +198,10 @@ This command runs as a headless agent. You MUST execute every step below through
    the relevant commit in the next step. Never create a standalone docs commit.
 
 10. **Squash fixes into original commits** (MANDATORY, no fix-on-fix commits):
+
+   ```bash
+   echo "::sova-phase::squash-rebase"
+   ```
 
    The PR must read as clean feature development. Do NOT create a separate "address review findings" commit: fold each fix into the commit that introduced the code being fixed. The final history should look as if the code was written correctly from the start.
 
@@ -300,6 +308,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
 12. **Push and wait for CI** (MANDATORY, do not skip):
    ```bash
+   echo "::sova-phase::push-ci-wait"
    BACKUP=<backup branch printed in step 10c>
    git push --force-with-lease && git branch -D "$BACKUP"
    ```
@@ -358,6 +367,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
 13. **Fetch all unresolved review threads** using GraphQL (`--paginate` follows `endCursor`, so a PR with more than 100 threads is not silently truncated):
     ```bash
+    echo "::sova-phase::threads-summary"
     gh api graphql --paginate -f owner='<OWNER>' -f repo='<REPO>' -F pr=<PR_NUMBER> -f query='
       query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
         repository(owner: $owner, name: $repo) {
