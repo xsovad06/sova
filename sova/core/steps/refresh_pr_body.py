@@ -21,7 +21,9 @@ from sova.core.steps._pr_body import (
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.pr import get_pr_body, update_pr_body
 from sova.llm.client import invoke
+from sova.utils.gh import parse_issue_links
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section
 from sova.utils.shell import run
 
 log = get_logger(component="step.refresh_pr_body")
@@ -35,6 +37,37 @@ class RefreshPrBodyStep(BaseStep):
 
         if not ctx.pr_number:
             return StepResult(success=True, summary="No PR to refresh")
+
+        # Read the body and check the Issue section first: a mismatch discards the whole
+        # refresh, so the diff collection and the LLM call below would be paid for nothing.
+        try:
+            current_body = await get_pr_body(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        except Exception:  # noqa: BLE001 (advisory step; a push/auth failure must not abort the round)
+            log.warning("step.refresh_pr_body.fetch_failed", pr=ctx.pr_number, exc_info=True)
+            return StepResult(success=True, summary="PR body refresh skipped (non-fatal): could not read PR body")
+
+        mismatch = self._issue_section_mismatch(current_body, ctx.issue_number) if ctx.has_issue else []
+        if mismatch:
+            # The existing section was written by /pr or create_pr with the
+            # correct closing decision; the run's own issue is the value in
+            # doubt (the resolver can pick the wrong one of several closed
+            # issues). The fresh sections would be generated from that
+            # issue's title and criteria (PR #1351's "Scope gap against
+            # issue #12" landed in Review guidance), so keep the whole body.
+            log.warning(
+                "step.refresh_pr_body.issue_section_mismatch",
+                pr=ctx.pr_number,
+                run_issue=ctx.issue_number,
+                section_issues=mismatch,
+            )
+            named = ", ".join(f"#{n}" for n in mismatch)
+            return StepResult(
+                success=True,
+                summary=(
+                    f"PR #{ctx.pr_number} body refresh skipped: its Issue section names {named}, "
+                    f"not run issue #{ctx.issue_number}"
+                ),
+            )
 
         task_title, issue_body, resolved = await self._resolve_task(ctx)
 
@@ -72,7 +105,6 @@ class RefreshPrBodyStep(BaseStep):
             return StepResult(success=True, summary="PR body refresh skipped: LLM output had no sections")
 
         try:
-            current_body = await get_pr_body(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
             if _ISSUE_SECTION_HEADING in sections:
                 # Strip any closing keyword the existing body carries outside a
                 # "## Issue" heading (pre-migration bodies, or a round whose
@@ -86,6 +118,20 @@ class RefreshPrBodyStep(BaseStep):
             return StepResult(success=True, summary="PR body refresh skipped (non-fatal): could not update PR body")
 
         return StepResult(success=True, summary=f"Refreshed PR #{ctx.pr_number} body")
+
+    @staticmethod
+    def _issue_section_mismatch(current_body: str, issue_number: str) -> list[str]:
+        """Return the issues the body's ``## Issue`` section names when the run's is not one of them.
+
+        Reads the section with ``parse_issue_links()``, like the ``/pr`` check and
+        ``linked-issues``. A section naming no GitHub issue (none, or only a Jira
+        link) or naming the run's issue among several is not a mismatch.
+        """
+        links = parse_issue_links(extract_section(current_body, _ISSUE_SECTION_HEADING))
+        named = [*links.closes, *links.part_of]
+        if not named or str(issue_number) in named:
+            return []
+        return named
 
     @staticmethod
     async def _collect_diff(ctx: ExecutionContext) -> tuple[str, str, str] | None:

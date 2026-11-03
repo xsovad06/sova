@@ -12,7 +12,9 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.work_state import state_color, state_label
+from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
 from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
+from sova.utils.gh import parse_issue_links
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
@@ -34,7 +36,6 @@ _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
 _TITLE_ISSUE_RE = re.compile(r"[(\[]#(\d+)[)\]]")
 _TITLE_JIRA_KEY_RE = re.compile(r"\[[A-Z]+-(\d+)\]")
-_BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
 _BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
 
 _PR_CACHE_TTL = 120  # seconds (shared across supervisor, PR monitor, dashboard)
@@ -44,6 +45,12 @@ _pr_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 # compares its captured generation before caching so it can't resurrect the
 # pre-invalidation result and undo the invalidation for the rest of the TTL.
 _pr_cache_generation: dict[tuple[str, str], int] = {}
+
+# Multi-reference resolutions already logged, keyed by (PR number, head SHA, issues). The resolver runs on
+# every cache refresh, so without this a PR that stays open would repeat the same line every TTL.
+# Cache invalidation does not clear it (that would re-log other repos' PRs too): a new push changes the head SHA.
+_logged_closing_ties: set[tuple[int | None, str, tuple[int, ...]]] = set()
+_LOGGED_CLOSING_TIES_MAX = 1000
 
 _last_known_states: dict[int, str] = {}
 _bg_tasks: set[asyncio.Task[None]] = set()
@@ -140,29 +147,88 @@ def _title_or_branch_linked_issue(raw: dict) -> int | None:
     return None
 
 
+def _closing_references(raw: dict) -> list[int]:
+    """Issue numbers GitHub lists in closingIssuesReferences, entries without a number skipped."""
+    return [r["number"] for r in raw.get("closingIssuesReferences") or [] if r.get("number") is not None]
+
+
+def _primary_closing_reference(refs: list[int], raw: dict) -> int:
+    """Pick the PR's own issue out of several closingIssuesReferences entries.
+
+    GitHub lists every issue a body closes in the order it chooses, so ``refs[0]``
+    can be an issue the body only mentions in passing (a quoted ``Closes #12`` in
+    a review note closed #12 once). The tie is broken by the issue the ``## Issue``
+    section names (the branch's issue first when the section names several), then
+    the one the branch name carries; only a listed issue can win, so an issue
+    GitHub does not link is never invented. With neither signal the first entry
+    stays primary, as before. One ``multiple_closing_references`` event records
+    every multi-reference resolution (once per PR, head SHA and reference set),
+    at warning when the signals disagree with each other or with ``refs[0]``.
+    """
+    section = parse_issue_links(extract_section(raw.get("body") or "", "Issue"))
+    section_issues = {int(n) for n in (*section.closes, *section.part_of)}
+    branch_match = _BRANCH_ISSUE_RE.search(raw.get("headRefName") or "")
+    branch_issue = int(branch_match.group(1)) if branch_match else None
+    from_branch = branch_issue if branch_issue in refs else None
+    section_matches = [n for n in refs if n in section_issues]
+    if from_branch in section_matches:
+        from_section = from_branch
+    else:
+        from_section = section_matches[0] if section_matches else None
+
+    chosen = from_section if from_section is not None else from_branch
+    if chosen is None:
+        chosen = refs[0]
+        signal = "none"
+    else:
+        signal = "section" if from_section is not None else "branch"
+    disagreement = signal != "none" and (chosen != refs[0] or (from_branch is not None and from_branch != chosen))
+
+    key = (raw.get("number"), raw.get("headRefOid") or "", tuple(refs))
+    if key not in _logged_closing_ties:
+        if len(_logged_closing_ties) >= _LOGGED_CLOSING_TIES_MAX:
+            _logged_closing_ties.clear()
+        _logged_closing_ties.add(key)
+        emit = log.warning if disagreement else log.info
+        emit(
+            "pr_service.multiple_closing_references",
+            pr=raw.get("number"),
+            issues=refs,
+            first_listed=refs[0],
+            chosen=chosen,
+            signal=signal,
+            section_issue=from_section,
+            branch_issue=from_branch,
+            disagreement=disagreement,
+        )
+    return chosen
+
+
 def _extract_linked_issue(raw: dict) -> int | None:
     """Extract linked issue from closingIssuesReferences, PR body, title, or branch.
 
-    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs)
+    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs; with several
+    entries the ``## Issue`` section then the branch name pick the primary, see
+    :func:`_primary_closing_reference`)
     > body keywords (Closes/Fixes/Resolves/Part of #N, JIRA links)
     > title (#N or [PROJ-N]) > branch (issue-N or PROJ-N).
     """
-    refs = raw.get("closingIssuesReferences") or []
-    if refs:
-        return refs[0].get("number")
-    from_body = parse_linked_issue(raw.get("body"))
-    if from_body is not None:
-        return from_body
-    return _title_or_branch_linked_issue(raw)
+    issues = _extract_all_linked_issues(raw)
+    return issues[0] if issues else None
 
 
 def _extract_all_linked_issues(raw: dict) -> list[int]:
     """Return all issue numbers linked to a PR from closingIssuesReferences, body,
     or (with the same fallback chain as :func:`_extract_linked_issue`) title/branch.
+
+    The primary issue, the one :func:`_extract_linked_issue` returns, comes first.
     """
-    refs = raw.get("closingIssuesReferences") or []
+    refs = _closing_references(raw)
+    if len(refs) > 1:
+        primary = _primary_closing_reference(refs, raw)
+        return [primary, *(n for n in refs if n != primary)]
     if refs:
-        return [r.get("number") for r in refs if r.get("number") is not None]
+        return refs
     single = parse_linked_issue(raw.get("body"))
     if single is not None:
         return [single]
@@ -389,6 +455,15 @@ def _count_pr_commits(raw: dict) -> int:
     return len(commits_node) if isinstance(commits_node, list) else 0
 
 
+def _thread_resolution(raw: dict) -> tuple[int | None, int | None, bool | None]:
+    """Return (total, resolved, all_resolved) review-thread counts, all None when uncounted."""
+    thread_counts = raw.get("_thread_counts")
+    if thread_counts is None:
+        return None, None, None
+    thread_total, thread_resolved = thread_counts
+    return thread_total, thread_resolved, thread_total == 0 or thread_resolved >= thread_total
+
+
 def _enrich_pr(raw: dict, now: float) -> dict:
     """Transform a raw gh pr list entry into a PR tracker dict."""
     ci_status = _summarize_ci(raw.get("statusCheckRollup"))
@@ -397,14 +472,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     mergeable = raw.get("mergeable") or ""
     merge_state = raw.get("mergeStateStatus") or ""
     latest_reviews = raw.get("latestReviews") or None
-    thread_counts = raw.get("_thread_counts")
-    if thread_counts is None:
-        thread_total: int | None = None
-        thread_resolved: int | None = None
-        all_threads_resolved: bool | None = None
-    else:
-        thread_total, thread_resolved = thread_counts
-        all_threads_resolved = thread_total == 0 or thread_resolved >= thread_total
+    thread_total, thread_resolved, all_threads_resolved = _thread_resolution(raw)
     superseded_by_new_commit = bool(raw.get("_superseded_by_new_commit", False))
 
     computed = compute_pr_state(
@@ -422,6 +490,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     labels = _extract_pr_labels(raw)
     pr_assignees = _extract_pr_assignees(raw)
     commit_count = _count_pr_commits(raw)
+    linked_issues = _extract_all_linked_issues(raw)
 
     return {
         "number": raw["number"],
@@ -439,8 +508,8 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "merge_state": merge_state,
         "is_draft": is_draft,
         "author": author.get("login", ""),
-        "linked_issue": _extract_linked_issue(raw),
-        "linked_issues": _extract_all_linked_issues(raw),
+        "linked_issue": linked_issues[0] if linked_issues else None,
+        "linked_issues": linked_issues,
         "age_seconds": _age_seconds(raw.get("createdAt") or "", now),
         "updated_at": raw.get("updatedAt") or "",
         "labels": labels,
