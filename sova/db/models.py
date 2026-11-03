@@ -51,6 +51,15 @@ class TaskRun(Base):
     project_slug: Mapped[str] = mapped_column(String(100), default="")
     assessment_json: Mapped[dict | None] = mapped_column(JSON)
     handoff_json: Mapped[dict | None] = mapped_column(JSON)
+    # Per-phase breakdown of a command:* run, in first-seen order: a list of
+    # {"phase", "model_calls", "input_tokens", "cache_read_tokens",
+    # "cache_write_tokens", "context_tokens", "duration_ms"} dicts tallied from
+    # the stream's per-message usage and the command's ::sova-phase:: markers.
+    # NULL for every other run and for a stream with no per-message usage
+    # (Codex). Tokens and time only: no dollar figure is apportioned.
+    # none_as_null: a None write stays SQL NULL rather than the JSON text
+    # "null", so `phase_usage IS NULL` means "no breakdown" for every row.
+    phase_usage: Mapped[list | None] = mapped_column(JSON(none_as_null=True), nullable=True, default=None)
     resumed_from_id: Mapped[int | None] = mapped_column(Integer)
     output_file_path: Mapped[str | None] = mapped_column(String(500))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -171,6 +180,10 @@ class CostRecord(Base):
     # LLMResult.reasoning_output_tokens). NULL means no source in this record
     # reported the figure (every non-Codex row, and any legacy row).
     reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Agent-session turns as the Claude CLI counts them (num_turns: one per
+    # tool result, plus the prompt), summed over the record's calls. NULL
+    # means not reported (Codex, API providers, legacy rows), never zero.
+    num_turns: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     # Provenance of cost_usd (sova.llm.models.CostSource's value, e.g.
     # "priced"/"subscription"/"unknown"). NULL means legacy (pre-#1128) data
