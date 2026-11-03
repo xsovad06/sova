@@ -469,6 +469,116 @@ async def test_migration_034_revision_chain() -> None:
     assert mod.down_revision == "033"
 
 
+async def test_migration_041_upgrade_adds_both_columns() -> None:
+    """Migration 041 adds cost_records.num_turns and task_runs.phase_usage."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("041")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        tables = [c.args[0] for c in mock_op.batch_alter_table.call_args_list]
+        batch_op = mock_op.batch_alter_table.return_value.__enter__.return_value
+        added = [c.args[0].name for c in batch_op.add_column.call_args_list]
+        assert tables == ["cost_records", "task_runs"]
+        assert added == ["num_turns", "phase_usage"]
+
+
+async def test_migration_041_upgrade_skip_when_exists() -> None:
+    """Migration 041 upgrade is idempotent."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("041")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "num_turns"}, {"name": "phase_usage"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        mock_op.batch_alter_table.assert_not_called()
+
+
+async def test_migration_041_downgrade_drops_both_columns() -> None:
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("041")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "num_turns"}, {"name": "phase_usage"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.downgrade()
+        # batch mode, so a SQLite build without native DROP COLUMN still downgrades (database-guidelines.md)
+        tables = [c.args[0] for c in mock_op.batch_alter_table.call_args_list]
+        batch_op = mock_op.batch_alter_table.return_value.__enter__.return_value
+        dropped = [c.args[0] for c in batch_op.drop_column.call_args_list]
+        assert tables == ["task_runs", "cost_records"]
+        assert dropped == ["phase_usage", "num_turns"]
+        mock_op.drop_column.assert_not_called()
+
+
+async def test_migration_041_skips_a_missing_table() -> None:
+    """A partial schema (no cost_records yet) is left to create_all instead of crashing the upgrade."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("041")
+
+    mock_inspector = MagicMock()
+    mock_inspector.has_table.side_effect = lambda name: name == "task_runs"
+    mock_inspector.get_columns.return_value = [{"name": "id"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        mod.downgrade()
+        # Only the existing table is altered, once, by the upgrade; the downgrade finds nothing to drop.
+        assert [c.args[0] for c in mock_op.batch_alter_table.call_args_list] == ["task_runs"]
+
+
+async def test_migration_041_revision_chain() -> None:
+    mod = _import_migration("041")
+
+    assert mod.revision == "041"
+    assert mod.down_revision == "040"
+
+
+async def test_migration_041_round_trips_on_a_real_sqlite_file(tmp_path: Path) -> None:
+    """Upgrade to head adds both nullable columns; downgrade to 040 removes them; re-upgrade restores them."""
+    import asyncio
+    import sqlite3
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    db_path = tmp_path / "turns.db"
+    alembic_cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+
+    def columns() -> tuple[set[str], set[str]]:
+        raw = sqlite3.connect(str(db_path))
+        try:
+            cost = {r[1] for r in raw.execute("PRAGMA table_info(cost_records)")}
+            runs = {r[1] for r in raw.execute("PRAGMA table_info(task_runs)")}
+        finally:
+            raw.close()
+        return cost, runs
+
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    cost, runs = columns()
+    assert "num_turns" in cost and "phase_usage" in runs
+
+    await asyncio.to_thread(command.downgrade, alembic_cfg, "040")
+    cost, runs = columns()
+    assert "num_turns" not in cost and "phase_usage" not in runs
+
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    cost, runs = columns()
+    assert "num_turns" in cost and "phase_usage" in runs
+
+
 async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None:
     """Every new connection should get PRAGMA synchronous=NORMAL, not the FULL default.
 
