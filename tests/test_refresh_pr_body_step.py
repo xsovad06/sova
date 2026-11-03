@@ -259,6 +259,42 @@ class TestRefreshPrBodyStepSuccess:
         assert new_body.count("Part of #42") == 1
 
 
+class TestRefreshPrBodyStepCiGatedCriteria:
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_ci_gated_criteria_reported_unmet_keep_closes(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        """PR #1364's refresh turned a complete PR into "Part of #1354" over the two check criteria."""
+        mock_run.side_effect = _git_results(
+            "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
+        )
+        mock_invoke.return_value = LLMResult(
+            text=(
+                "## Summary\n- stuff\n\n## Review guidance\n- stuff\n\n## Test plan\n- stuff\n"
+                "<!-- ACCEPTANCE_VERDICTS -->\n- [met] Fix works\n- [unmet] No new lint warnings (`make lint`)"
+            ),
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+        mock_get_body.return_value = "## Summary\nold\n\n## Review guidance\nold\n\n## Test plan\nold\n\nCloses #42\n"
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Fix the bug",
+            body="## Acceptance Criteria\n- [ ] Fix works\n- [ ] No new lint warnings (`make lint`)\n",
+        )
+
+        result = await RefreshPrBodyStep().execute(_make_ctx(tmp_path, adapter=adapter))
+
+        assert result.success
+        new_body = mock_update_body.call_args.kwargs["body"]
+        assert "Closes #42" in new_body
+        assert "Part of #42" not in new_body
+
+
 class TestRefreshPrBodyStepUnresolvedTask:
     """An unresolvable issue body must never flip an existing "Part of #N"
     decision back to an unconditional "Closes #N": that is the exact

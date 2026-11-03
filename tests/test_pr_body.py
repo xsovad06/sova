@@ -6,11 +6,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sova.config.models import ProjectConfig
+from sova.config.models import CommitConfig, ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     TITLE_MARKER,
     VERDICT_MARKER,
+    apply_ci_gated_overrides,
     apply_owner_overrides,
     apply_sections,
     compose_body,
@@ -24,6 +25,11 @@ from sova.core.steps._pr_body import (
 )
 from sova.core.steps._pr_body import build_prompt as build_pr_body_prompt
 from sova.utils.gh import IssueLinks, parse_issue_links
+
+
+def _commit(*, owner: list[str] | None = None, ci_gated: list[str] | None = None) -> CommitConfig:
+    """A CommitConfig with only the given override patterns (none by default)."""
+    return CommitConfig(owner_only_patterns=owner or [], ci_gated_patterns=ci_gated or [])
 
 
 def _ctx(tmp_path: Path, issue_number: str = "42") -> ExecutionContext:
@@ -186,19 +192,90 @@ class TestApplyOwnerOverrides:
         assert apply_owner_overrides(verdicts, []) == verdicts
 
 
+class TestApplyCiGatedOverrides:
+    def test_default_patterns_match_the_template_check_criteria(self) -> None:
+        """The issue template's two closing criteria are settled by the merge gate (required CI
+        checks, and /integrate-pr waiting for green CI), not by anything the PR-body LLM can see."""
+        from sova.config.models import CommitConfig
+
+        defaults = CommitConfig().ci_gated_patterns
+        verdicts = [
+            ("All existing tests pass (`make check`)", "unmet"),
+            ("No new lint warnings (`make lint`)", "unknown"),
+            ("The resolver returns 1340", "unmet"),
+        ]
+        assert apply_ci_gated_overrides(verdicts, defaults) == [
+            ("All existing tests pass (`make check`)", "met"),
+            ("No new lint warnings (`make lint`)", "met"),
+            ("The resolver returns 1340", "unmet"),
+        ]
+
+    def test_default_patterns_do_not_match_a_criterion_about_the_make_target(self) -> None:
+        from sova.config.models import CommitConfig
+
+        verdicts = [("Add a coverage threshold to the make check target", "unmet")]
+        assert apply_ci_gated_overrides(verdicts, CommitConfig().ci_gated_patterns) == verdicts
+
+    def test_case_insensitive_match(self) -> None:
+        verdicts = [("ALL EXISTING TESTS PASS", "unmet")]
+        assert apply_ci_gated_overrides(verdicts, ["all existing tests pass"]) == [("ALL EXISTING TESTS PASS", "met")]
+
+    def test_empty_patterns_is_noop(self) -> None:
+        verdicts = [("All existing tests pass (`make check`)", "unmet")]
+        assert apply_ci_gated_overrides(verdicts, []) == verdicts
+
+    def test_whitespace_only_patterns_are_ignored(self) -> None:
+        verdicts = [("All existing tests pass (`make check`)", "unmet")]
+        assert apply_ci_gated_overrides(verdicts, [" ", "\t"]) == verdicts
+
+    def test_pattern_whitespace_is_trimmed_before_matching(self) -> None:
+        verdicts = [("All existing tests pass", "unmet"), ("Something else", "unmet")]
+        assert apply_ci_gated_overrides(verdicts, ["  all existing tests pass "]) == [
+            ("All existing tests pass", "met"),
+            ("Something else", "unmet"),
+        ]
+
+
 class TestProcessLlmResult:
     def test_unparseable_verdict_block_becomes_unknown_not_unmet(self) -> None:
         """An unparseable block must degrade to a distinct "unknown" token,
         not the model-reportable "unmet", so a human reviewer can tell the
         two apart in the rendered closing block."""
         raw = "## Summary\n- stuff\n"  # no verdict block at all
-        _, verdicts = process_llm_result(raw, ["First", "Second"], owner_only_patterns=[])
+        _, verdicts = process_llm_result(raw, ["First", "Second"], _commit())
         assert verdicts == [("First", "unknown"), ("Second", "unknown")]
 
     def test_owner_patterns_still_apply_on_the_unparseable_path(self) -> None:
         raw = "## Summary\n- stuff\n"
-        _, verdicts = process_llm_result(raw, ["Deploy it (owner only)"], owner_only_patterns=["(owner"])
+        _, verdicts = process_llm_result(raw, ["Deploy it (owner only)"], _commit(owner=["(owner"]))
         assert verdicts == [("Deploy it (owner only)", "owner")]
+
+    def test_ci_gated_criteria_are_met_on_the_unparseable_path(self) -> None:
+        raw = "## Summary\n- stuff\n"
+        _, verdicts = process_llm_result(
+            raw, ["Feature works", "All existing tests pass"], _commit(ci_gated=["tests pass"])
+        )
+        assert verdicts == [("Feature works", "unknown"), ("All existing tests pass", "met")]
+
+    def test_owner_pattern_wins_over_a_ci_gated_one(self) -> None:
+        raw = f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [unmet] Run make check in an interactive session\n"
+        _, verdicts = process_llm_result(
+            raw,
+            ["Run make check in an interactive session"],
+            _commit(owner=["interactive session"], ci_gated=["make check"]),
+        )
+        assert verdicts == [("Run make check in an interactive session", "owner")]
+
+    def test_only_ci_gated_criteria_unmet_renders_closes(self) -> None:
+        """PR #1364 implemented all of #1354 yet rendered "Part of #1354", listing only the two
+        check criteria as not done, because the model cannot see test results when it writes the body."""
+        criteria = ["Resolver picks the branch issue", "All existing tests pass (`make check`)"]
+        raw = (
+            f"## Summary\n- stuff\n{VERDICT_MARKER}\n"
+            "- [met] Resolver picks the branch issue\n- [unmet] All existing tests pass (`make check`)\n"
+        )
+        _, verdicts = process_llm_result(raw, criteria, CommitConfig())
+        assert render_closing_block("1354", verdicts) == "Closes #1354"
 
 
 class TestRenderClosingBlock:

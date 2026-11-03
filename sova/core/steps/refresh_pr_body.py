@@ -186,7 +186,7 @@ class RefreshPrBodyStep(BaseStep):
         create_pr's correct decision with an unconditional "Closes #N" (or a
         false "Part of #N") derived from no evidence at all.
         """
-        sections_markdown, verdicts = process_llm_result(llm_text, criteria, ctx.config.commit.owner_only_patterns)
+        sections_markdown, verdicts = process_llm_result(llm_text, criteria, ctx.config.commit)
 
         if ctx.has_issue:
             ts = ctx.config.task_source
