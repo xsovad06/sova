@@ -156,6 +156,13 @@ class LLMResult:
     # actually routed.
     routed_task_type_model: str | None = None
 
+    # The Claude CLI result event's num_turns: one per user-side message (each
+    # tool result, plus the prompt and any injected message), so it grows with
+    # how much tool work a session did. Not the number of model calls, which a
+    # reply running tools in parallel makes fewer (see sova.llm.phase_usage).
+    # None means not reported (Codex, the API providers), never zero.
+    num_turns: int | None = None
+
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
@@ -189,6 +196,10 @@ def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
     except (ArithmeticError, ValueError, TypeError):
         cost_usd = Decimal(0)
 
+    # bool is an int subclass, so it is excluded explicitly: True is not one turn.
+    raw_turns = data.get("num_turns")
+    num_turns = raw_turns if isinstance(raw_turns, int) and not isinstance(raw_turns, bool) and raw_turns >= 0 else None
+
     return LLMResult(
         text=str(data.get("result", "")),
         model=model,
@@ -201,6 +212,7 @@ def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
         duration_ms=data.get("duration_ms", 0),
         session_id=str(data.get("session_id", "")),
         stop_reason=stop_reason,
+        num_turns=num_turns,
     )
 
 
@@ -237,6 +249,7 @@ def accumulate_llm_result(previous: LLMResult | None, latest: LLMResult) -> LLMR
         cache_read_tokens=previous.cache_read_tokens + latest.cache_read_tokens,
         cache_creation_tokens=_sum_optional(previous.cache_creation_tokens, latest.cache_creation_tokens),
         reasoning_output_tokens=_sum_optional(previous.reasoning_output_tokens, latest.reasoning_output_tokens),
+        num_turns=_sum_optional(previous.num_turns, latest.num_turns),
         duration_ms=previous.duration_ms + latest.duration_ms,
         tokens_saved=_sum_optional(previous.tokens_saved, latest.tokens_saved),
         pre_compression_input_tokens=_sum_optional(

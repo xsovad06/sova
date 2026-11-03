@@ -42,6 +42,7 @@ async def record_cost(
         cost_usd=result.cost_usd,
         cost_source=result.cost_source.value if result.cost_source is not None else None,
         reasoning_tokens=result.reasoning_output_tokens,
+        num_turns=result.num_turns,
         duration_ms=result.duration_ms,
         model_selection_reason=model_selection_reason,
         pre_compression_input_tokens=result.pre_compression_input_tokens,

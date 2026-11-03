@@ -1123,6 +1123,8 @@ class WorkflowEngine:
             or usage.output_tokens > 0
             or usage.cache_read_tokens > 0
             or usage.cache_write_tokens > 0
+            # A share that reported turns but no tokens still recorded real agent work.
+            or usage.turns_reported_calls > 0
         )
 
     def _build_cost_record(
@@ -1142,6 +1144,7 @@ class WorkflowEngine:
         # not a fabricated 0 confirmed-zero reading.
         cache_write_tokens = usage.cache_write_tokens if usage.cache_write_reported_calls > 0 else None
         reasoning_tokens = usage.reasoning_tokens if usage.reasoning_reported_calls > 0 else None
+        num_turns = usage.turns if usage.turns_reported_calls > 0 else None
         return CostRecord(
             task_run_id=self._task_run_id,
             phase=step_name,
@@ -1157,6 +1160,7 @@ class WorkflowEngine:
             cache_read_tokens=usage.cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             reasoning_tokens=reasoning_tokens,
+            num_turns=num_turns,
             tokens_saved=usage.tokens_saved,
             pre_compression_input_tokens=(
                 usage.input_tokens + usage.tokens_saved if usage.tokens_saved is not None else None
