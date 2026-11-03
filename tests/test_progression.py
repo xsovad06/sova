@@ -212,6 +212,12 @@ class TestDetermineTransition:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.NEEDS_SPEC) is None
 
+    def test_needs_spec_is_a_parked_state_the_researcher_does_not_accept(self) -> None:
+        """NEEDS_SPEC waits for a human or `sova harden`; neither scheduling nor the researcher picks it up."""
+        from sova.roles.researcher import ResearcherRole
+
+        assert TaskState.NEEDS_SPEC not in ResearcherRole.allowed_input_states
+
     def test_human_only_returns_none(self) -> None:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.HUMAN_ONLY) is None

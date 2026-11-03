@@ -49,7 +49,8 @@ _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
 _STATE_ACTIONS: dict[TaskState, list[dict]] = {
     TaskState.BACKLOG: [{"id": "triage", "label": "Triage", "role": "triage"}],
     TaskState.TRIAGED: [{"id": "researcher", "label": "Run Researcher", "role": "researcher"}],
-    TaskState.NEEDS_SPEC: [{"id": "researcher", "label": "Run Researcher", "role": "researcher"}],
+    # Parked for a human or `sova harden`: the researcher accepts only TRIAGED, so offering it here would fail.
+    TaskState.NEEDS_SPEC: [],
     TaskState.RESEARCHED: [{"id": "developer", "label": "Run Developer", "role": "developer"}],
     TaskState.IN_PROGRESS: [],
     TaskState.IN_REVIEW: [

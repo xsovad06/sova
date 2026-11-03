@@ -259,7 +259,8 @@ def _get_actions(
 
     actions: dict[WorkItemState, tuple[dict | None, list[dict]]] = {
         S.BACKLOG: (agent("triage", "Triage", "warning", "triage"), []),
-        S.NEEDS_SPEC: (agent("research", "Research", "purple", "researcher"), []),
+        # Parked hand-off state: the researcher only accepts TRIAGED, so no card action; harden is the exit.
+        S.NEEDS_SPEC: (None, []),
         S.TRIAGED: (agent("research", "Research", "purple", "researcher"), []),
         S.RESEARCHED: (agent("develop", "Develop", "primary", "developer"), []),
         S.IN_PROGRESS: (agent("resume", "Resume", "primary", "developer"), []),

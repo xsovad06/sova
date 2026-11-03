@@ -609,6 +609,68 @@ for (let i = 0; i < 3; i++) { toggle(); out.visible.push(group.visible()); }
 process.stdout.write(JSON.stringify(out));
 """
 
+# The Agents task list buckets by work state, never by run history: every item the API returns must be
+# reachable under "All", and an old failed run must not lift an issue above higher-priority work.
+_TASK_BUCKETS_SCENARIO = r"""
+globalThis._priorityRankMap = () => ({ critical: 0, high: 1, medium: 2, low: 3 });
+const item = (n, state, extra) => Object.assign(
+  { issue_number: n, title: 'T' + n, state, issue_priority: 'medium', priority: 0, assignees: [] }, extra || {});
+const items = [
+  item(1, 'agent_running', { running_agent: { role: 'developer', run_id: 'r1' }, assignees: ['octocat'] }),
+  item(2, 'pr_awaiting_review', { pr_number: 20 }),
+  item(3, 'in_progress'),
+  item(4, 'spec_review'),
+  item(5, 'pr_draft', { pr_number: 50 }),
+  item(6, 'triaged', { issue_priority: 'low', last_run: { status: 'failed' } }),
+  item(7, 'researched', { issue_priority: 'critical' }),
+  item(8, 'backlog', { issue_priority: 'high', assignees: ['octocat'] }),
+  item(9, 'needs_spec', { issue_priority: 'medium', assignees: ['octocat'] }),
+  item(10, 'human_only', { issue_priority: 'low', assignees: ['octocat'] }),
+  item(11, 'triaged', { issue_priority: 'medium', last_run: { status: 'interrupted' } }),
+  item(12, '', { assignees: ['octocat'] }),
+  item(13, 'some_future_state'),
+  item(14, 'merged', { assignees: ['octocat'] }),
+];
+const grid = { html: '', get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; } };
+const search = { value: '', addEventListener() {} };
+const baseGetElementById = doc.getElementById;
+doc.getElementById = (id) => (id === 'task-grid' ? grid : id === 'task-search' ? search : baseGetElementById(id));
+const clickHandlers = [];
+doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
+globalThis.fetch = () => Promise.resolve({
+  ok: true,
+  json: () => Promise.resolve({ items, slots_available: 1, max_concurrent: 2, github_user: 'octocat' }),
+});
+(await load('actions')).init();
+const workItems = await load('work-items');
+workItems.init();
+await workItems.loadWorkItems();
+
+const click = (action, args) => {
+  const attrs = { 'data-action': action, 'data-args': args === undefined ? null : JSON.stringify(args) };
+  const event = { target: { closest: () => ({ getAttribute: (n) => attrs[n] ?? null }) }, stopPropagation() {} };
+  clickHandlers.forEach((fn) => fn(event));
+};
+const shown = () => [...grid.html.matchAll(/>T(\d+)</g)].map((m) => Number(m[1]));
+out.collapsed = shown();
+out.hasShowMore = grid.html.includes('expand-suggested');
+click('expand-suggested');
+out.expanded = shown();
+out.hasShowLess = grid.html.includes('collapse-suggested');
+click('collapse-suggested');
+out.recollapsed = shown();
+// "Mine" renders its matches uncapped; "All" caps each block until expanded, so the criterion is that every
+// item "Mine" shows stays reachable under "All" once both blocks are expanded.
+click('set-task-assignee', 'mine');
+out.mine = shown();
+click('set-task-assignee', 'all');
+click('expand-tasks');
+click('expand-tasks');
+click('expand-suggested');
+out.allExpanded = shown();
+process.stdout.write(JSON.stringify(out));
+"""
+
 # Storage that throws (blocked cookies, some private-browsing modes) must not stop a module from evaluating:
 # one that throws while the import graph loads leaves no init() running and the whole page blank.
 _THROWING_STORAGE_SCENARIO = r"""
@@ -1715,7 +1777,8 @@ console.log(JSON.stringify(items.sort(_sortWorkItems).map(i => i.n)));
 
     def test_suggested_tasks_use_the_shared_sort(self) -> None:
         source = _module_source("work-items")
-        assert "(i.state === 'triaged' || i.state === 'researched');\n    }).sort(_sortWorkItems);" in source
+        assert "_workItems.filter(_isNotStarted).sort(_sortSuggested);" in source
+        assert "return _sortWorkItems(a, b);" in source, "ties on issue priority fall back to the shared sort"
 
 
 class TestVisualAuditSkillChecksTheClientPatterns:
@@ -1839,6 +1902,23 @@ class TestLogViewerResumeAfterHiddenTab:
         result = self._run(tmp_path, _PR_GROUP_TOGGLE_SCENARIO)
         assert result["rendered"] is True
         assert result["visible"] == [False, True, False, True]
+
+    def test_task_list_follows_work_state_and_reaches_every_item(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _TASK_BUCKETS_SCENARIO)
+        # Active work first (running, PR stage, spec review, in progress, draft PR); an empty, unknown or
+        # terminal (merged) state lands here too, on purpose, instead of vanishing.
+        assert result["collapsed"][:8] == [1, 2, 4, 3, 5, 12, 13, 14]
+        assert result["collapsed"][8:] == [7, 8, 9, 11, 6], "only the first five Suggested items show collapsed"
+        assert result["hasShowMore"] is True, "the Suggested block pages instead of capping"
+        # Highest issue priority first, regardless of run history: 7 (critical) before 8 (high), then 9 and 11
+        # (medium), then the low ones; the old failed run on 6 must not lift it.
+        assert result["expanded"][8:] == [7, 8, 9, 11, 6, 10]
+        assert sorted(result["expanded"]) == list(range(1, 15)), "All renders every item the API returned"
+        assert result["hasShowLess"] is True
+        assert result["recollapsed"] == result["collapsed"]
+        assert sorted(result["mine"]) == [1, 8, 9, 10, 12, 14], "Mine lists only the user's items, uncapped"
+        assert set(result["mine"]) <= set(result["allExpanded"]), "every item Mine shows is reachable under All"
+        assert sorted(result["allExpanded"]) == list(range(1, 15))
 
     def test_modules_evaluate_when_storage_throws(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _THROWING_STORAGE_SCENARIO)
