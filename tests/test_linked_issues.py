@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -216,3 +218,79 @@ class TestCommandsCloseOnlyOnClosingKeywords:
         text = _read(path)
         assert "sova linked-issues <PR_NUMBER> --apply" in text
         assert "gh issue close" not in text
+
+
+_PY_HEREDOC = re.compile(r"<<'PY'\n(.*?)\n\s*PY\n", re.DOTALL)
+
+
+class TestPrCommandStopsOnStrayClosingReference:
+    """/pr step 9 runs parse_issue_links() on the body file before push or create (#1354)."""
+
+    @staticmethod
+    def _run_check(
+        path: str, tmp_path: Path, body: str, issue: str, *, hide_sova: bool = False
+    ) -> subprocess.CompletedProcess:
+        scripts = [m for m in _PY_HEREDOC.findall(_read(path)) if "parse_issue_links" in m]
+        assert len(scripts) == 1, f"expected exactly one closing-reference check in {path}"
+        script = scripts[0]
+        if hide_sova:
+            # A None entry in sys.modules makes the import raise ImportError, as a python3 without the install does.
+            script = 'import sys\nsys.modules["sova.utils.gh"] = None\n' + script
+        script = "\n".join(line[3:] if line.startswith("   ") else line for line in script.splitlines())
+        body_file = tmp_path / "body.md"
+        body_file.write_text(body, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-c", script, str(body_file), issue],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/pr.md",
+            ".claude/commands/pr.md",
+            ".agents/skills/sova-pr/SKILL.md",
+            "plugins/sova/commands/pr.md",
+        ],
+    )
+    def test_pr_1351_body_is_stopped(self, path: str, tmp_path: Path) -> None:
+        body = '## Review guidance\n- "does not close #12" still closes #12.\n\n## Issue\n\nCloses #1340\n'
+        result = self._run_check(path, tmp_path, body, "1340")
+        assert result.returncode == 1
+        assert "#12" in result.stdout
+
+    @pytest.mark.parametrize(
+        ("body", "issue"),
+        [
+            ("## Issue\n\nCloses #1340\n", "1340"),
+            ("## Issue\n\nCloses #1340\n", "#1340"),
+            ("Quoted `Closes #12` stays open.\n\n## Issue\n\nPart of #1340\n", "1340"),
+            ("Quoted `Closes #12` stays open.\n", ""),
+        ],
+    )
+    def test_safe_body_prints_nothing(self, body: str, issue: str, tmp_path: Path) -> None:
+        result = self._run_check("sova/commands/data/commands/pr.md", tmp_path, body, issue)
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_closing_reference_without_an_issue_argument_is_stopped(self, tmp_path: Path) -> None:
+        """With no issue given step 8 writes no closing link, so any closing reference is stray."""
+        result = self._run_check("sova/commands/data/commands/pr.md", tmp_path, "Closes #12\n", "")
+        assert result.returncode == 1
+        assert result.stdout.strip() == "STOP: the PR body would close #12, but no issue was given"
+
+    def test_unimportable_sova_is_a_distinct_skip_not_a_stop(self, tmp_path: Path) -> None:
+        """A python3 that cannot see the sova install (an active virtualenv) must not look like a stray close."""
+        result = self._run_check(
+            "sova/commands/data/commands/pr.md",
+            tmp_path,
+            "## Issue\n\nCloses #1340\n",
+            "1340",
+            hide_sova=True,
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("SKIP:")

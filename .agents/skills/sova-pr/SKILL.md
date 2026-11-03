@@ -206,6 +206,33 @@ Create a pull request for the current branch using the project's standard PR tem
    ```
    A hit inside a fenced code sample in the body (a literal end-of-options separator) is acceptable; a hit in prose is not: use a colon, a comma, or a single hyphen instead.
 
+   For a GitHub issue, also stop if the body would close an issue other than the intended one. A quoted `Closes #12` in prose closes #12 on merge, and a later bot or resolver can then take it for the PR's own issue. Set `ISSUE` to the issue number from `the arguments provided when this skill is invoked` (empty when there is none: step 8 then writes no closing link, so any closing reference in the body is stray and stops the check). The check prints nothing when the body is safe; a printed `STOP` line (exit 1) is a hard stop: reword the body file (put the phrase in a code span, or say "stays open"), then re-run it before pushing. A `SKIP` line on stderr (exit 2) means `python3` cannot import `sova` (an active virtualenv hides the user-site install), so nothing was checked: run the same script with the interpreter `sova` is installed under, or read the body file yourself for any `Closes`, `Fixes` or `Resolves` followed by an issue number other than `ISSUE`, and treat a hit as the same hard stop.
+   ```bash
+   BODY_FILE=<path printed in step 7>
+   ISSUE=<issue number from the arguments, digits only, or empty>
+   python3 - "$BODY_FILE" "$ISSUE" <<'PY'
+   import sys
+   from pathlib import Path
+
+   body_file, issue = sys.argv[1], sys.argv[2].lstrip("#")
+   try:
+       from sova.utils.gh import parse_issue_links
+   except ImportError:
+       print("SKIP: sova is not importable from python3, the closing-reference check did not run", file=sys.stderr)
+       sys.exit(2)
+
+   body = Path(body_file).read_text(encoding="utf-8")
+   extra = [n for n in parse_issue_links(body).closes if n != issue]
+   if extra:
+       closed = ", ".join("#" + n for n in extra)
+       if issue:
+           print(f"STOP: the PR body would close {closed}, not only #{issue}")
+       else:
+           print(f"STOP: the PR body would close {closed}, but no issue was given")
+       sys.exit(1)
+   PY
+   ```
+
 10. **Push the branch**:
     - New PR: `git push -u origin $(git branch --show-current)`
     - Existing PR (AI feedback): push, then delete the step 5 backup only once the push has succeeded. If the push fails, keep the backup and report its name:
