@@ -681,3 +681,327 @@ class TestNumTurnsCostRecord:
         assert record.num_turns == 4
         assert unreported.num_turns is None
 
+
+def _assistant(message_id: str, *, usage: dict | None = None, command: str | None = None, text: str = "") -> dict:
+    """One stream-json assistant event: the CLI repeats a message across one event per content block."""
+    block: dict = {"type": "text", "text": text}
+    if command is not None:
+        block = {"type": "tool_use", "name": "Bash", "input": {"command": command}}
+    message: dict = {"id": message_id, "content": [block]}
+    if usage is not None:
+        message["usage"] = usage
+    return {"type": "assistant", "message": message}
+
+
+def _usage(input_tokens: int, cache_read: int, cache_write: int) -> dict:
+    return {
+        "input_tokens": input_tokens,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_write,
+        "output_tokens": 1,
+    }
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TestPhaseTally:
+    def test_turns_before_the_first_marker_go_to_unmarked(self) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("m1", usage=_usage(2, 100, 10)))
+
+        assert tally.snapshot() == [
+            {
+                "phase": "unmarked",
+                "model_calls": 1,
+                "input_tokens": 2,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 10,
+                "context_tokens": 112,
+                "duration_ms": 0,
+            }
+        ]
+
+    def test_a_repeated_message_id_is_one_model_call_counted_in_the_phase_of_its_first_event(self) -> None:
+        """The marker's own message started in the old phase; the switch applies from the next message."""
+        from sova.llm.phase_usage import PhaseTally
+
+        clock = _FakeClock()
+        tally = PhaseTally(started_at=100.0, clock=clock)
+        tally.observe(_assistant("m1", usage=_usage(1, 50, 5), text="thinking"))
+        clock.now = 102.5
+        tally.observe(_assistant("m1", usage=_usage(1, 50, 5), command='echo "::sova-phase::ci-wait"\ngh pr checks 1'))
+        clock.now = 104.0
+        tally.observe(_assistant("m2", usage=_usage(1, 60, 0)))
+
+        phases = {p["phase"]: p for p in tally.snapshot()}
+        assert phases["unmarked"]["model_calls"] == 1
+        assert phases["unmarked"]["context_tokens"] == 56
+        assert phases["unmarked"]["duration_ms"] == 2500
+        assert phases["ci-wait"]["model_calls"] == 1
+        assert phases["ci-wait"]["context_tokens"] == 61
+        assert phases["ci-wait"]["duration_ms"] == 1500
+
+    def test_a_phase_entered_twice_accumulates_into_one_entry_in_first_seen_order(self) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        for i, marker in enumerate(["fix", "ci-wait", "fix"]):
+            tally.observe(_assistant(f"marker-{i}", usage=_usage(1, 1, 0), command=f"echo '::sova-phase::{marker}'"))
+            tally.observe(_assistant(f"work-{i}", usage=_usage(1, 1, 0)))
+
+        snapshot = tally.snapshot()
+        assert [p["phase"] for p in snapshot] == ["unmarked", "fix", "ci-wait"]
+        assert [p["model_calls"] for p in snapshot] == [1, 3, 2]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -n '::sova-phase::ci-wait' integrate-pr.md",  # a command that mentions the marker
+            'echo "the marker looks like ::sova-phase::ci-wait"',  # prose, not a standalone marker
+            'echo "::sova-phase::Bad_Name"',  # not a valid phase name
+        ],
+    )
+    def test_only_a_standalone_marker_line_switches_the_phase(self, command: str) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0), command=command))
+        tally.observe(_assistant("m2", usage=_usage(1, 1, 0)))
+
+        assert [p["phase"] for p in tally.snapshot()] == ["unmarked"]
+
+    def test_the_last_marker_in_one_command_wins(self) -> None:
+        """An agent that merges two phase blocks into one Bash call lands in the later phase."""
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        merged = 'echo "::sova-phase::fix"\ngit status\necho "::sova-phase::squash-rebase"'
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0), command=merged))
+        tally.observe(_assistant("m2", usage=_usage(1, 1, 0)))
+
+        snapshot = tally.snapshot()
+        assert snapshot[-1]["phase"] == "squash-rebase"
+        assert snapshot[-1]["model_calls"] == 1
+
+    def test_a_marker_from_a_non_bash_tool_is_ignored(self) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        event = _assistant("m1", usage=_usage(1, 1, 0))
+        event["message"]["content"] = [
+            {"type": "tool_use", "name": "Write", "input": {"command": 'echo "::sova-phase::fix"'}}
+        ]
+        tally.observe(event)
+        tally.observe(_assistant("m2", usage=_usage(1, 1, 0)))
+
+        assert [p["phase"] for p in tally.snapshot()] == ["unmarked"]
+
+    def test_a_subagent_message_is_a_model_call_in_the_current_phase(self) -> None:
+        """Messages with parent_tool_use_id set come from a subagent: real model calls, charged where they ran."""
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0), command='echo "::sova-phase::fix"'))
+        subagent = _assistant("sub-1", usage=_usage(1, 40, 0))
+        subagent["parent_tool_use_id"] = "toolu_1"
+        tally.observe(subagent)
+
+        assert tally.snapshot()[1] == {**tally.snapshot()[1], "phase": "fix", "model_calls": 1, "cache_read_tokens": 40}
+
+    def test_no_per_message_usage_snapshots_to_none(self) -> None:
+        """A stream without per-message usage stores NULL, never a fabricated zero breakdown."""
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        assert tally.snapshot() is None
+        tally.observe(_assistant("m1"))
+        tally.observe({"type": "user", "message": {"content": []}})
+        assert tally.snapshot() is None
+
+    def test_snapshot_does_not_close_the_open_phase(self) -> None:
+        """Snapshots are taken while the run is live too; reading one must not shift later durations."""
+        from sova.llm.phase_usage import PhaseTally
+
+        clock = _FakeClock()
+        tally = PhaseTally(started_at=100.0, clock=clock)
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0)))
+        clock.now = 101.0
+        assert tally.snapshot()[0]["duration_ms"] == 1000
+        clock.now = 103.0
+        assert tally.snapshot()[0]["duration_ms"] == 3000
+
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "address_pr_two_markers.stream.jsonl"
+
+
+def _command_agent(role: str = "command:address-pr") -> Any:
+    from sova.dashboard.services.agent_pool import AgentState
+
+    return AgentState(run_id=1, issue="1336", role=role, process=MagicMock(), project_dir=Path("."))
+
+
+class TestStreamReplay:
+    """Replays the first seven messages of command:address-pr run 2921 with two markers inserted.
+
+    Message ids, the repeated event per content block and every per-message usage figure are the
+    recorded ones; text and commands are replaced, and the markers sit on messages 2 and 5.
+    """
+
+    def test_phase_breakdown_from_a_recorded_stream(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        for line in _FIXTURE.read_text(encoding="utf-8").splitlines():
+            _parse_stream_line(line, agent)
+
+        phases = {p["phase"]: p for p in agent.phase_tally.snapshot()}
+        assert list(phases) == ["unmarked", "fix", "push-ci-wait"]
+        assert [phases[p]["model_calls"] for p in phases] == [2, 3, 2]
+        assert phases["unmarked"]["context_tokens"] == 76_563 + 91_205
+        assert phases["fix"]["context_tokens"] == 93_944 + 96_629 + 96_954
+        assert phases["push-ci-wait"]["context_tokens"] == 98_163 + 98_772
+        assert phases["fix"]["cache_read_tokens"] == 91_203 + 93_942 + 96_627
+        # The CLI's num_turns counts user-side messages (each tool result, plus the prompt), a different
+        # quantity from model calls: it is stored as reported, never derived from the phase counts.
+        assert agent.last_result_num_turns == 9
+
+    def test_num_turns_sums_across_result_events(self) -> None:
+        """A session that resumes after background tasks emits one result per segment, each with its own
+        num_turns (run 2915: 43, 1, 4, 3, 1, 1 and 9), while total_cost_usd is cumulative."""
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        for turns, cost in ((43, 2.49), (1, 2.54), (9, 3.42)):
+            _parse_stream_line(json.dumps({"type": "result", "num_turns": turns, "total_cost_usd": cost}), agent)
+
+        assert agent.last_result_num_turns == 53
+        assert agent.last_result_cost == 3.42
+
+    def test_a_result_without_num_turns_keeps_the_running_total(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        _parse_stream_line(json.dumps({"type": "result", "num_turns": 5}), agent)
+        _parse_stream_line(json.dumps({"type": "result"}), agent)
+
+        assert agent.last_result_num_turns == 5
+
+    def test_only_command_runs_keep_a_tally(self) -> None:
+        assert _command_agent(role="reviewer").phase_tally is None
+        assert _command_agent(role="command:integrate-pr").phase_tally is not None
+
+
+class TestFinalizeWritesTurnsAndPhases:
+    @pytest.fixture(autouse=True)
+    async def setup_db(self) -> AsyncIterator[None]:
+        import os
+
+        from sova.db.session import close_db, init_db
+
+        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+        await init_db(run_migrations=False)
+        yield
+        await close_db()
+        os.environ.pop("SOVA_DATABASE_URL", None)
+
+    async def _run(self, status: str) -> int:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            run = TaskRun(issue_number="1336", role="command:address-pr", status=status)
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+            return run.id
+
+    def _replayed_agent(self, run_id: int) -> Any:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        agent.run_id = run_id
+        agent.project_dir = None
+        for line in _FIXTURE.read_text(encoding="utf-8").splitlines():
+            _parse_stream_line(line, agent)
+        return agent
+
+    async def test_finalize_writes_phase_usage_and_agent_record_turns(self) -> None:
+        from sqlalchemy import select
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.db.models import CostRecord, TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._run("running")
+        await _finalize_task_run(run_id, exit_code=0, agent=self._replayed_agent(run_id))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            record = (await session.execute(select(CostRecord).where(CostRecord.task_run_id == run_id))).scalar_one()
+
+        assert [p["phase"] for p in task_run.phase_usage] == ["unmarked", "fix", "push-ci-wait"]
+        assert record.phase == "agent"
+        assert record.num_turns == 9
+
+    async def test_phase_usage_written_when_the_run_is_already_terminal(self) -> None:
+        """The terminal-status early return must not drop the breakdown."""
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._run("done")
+        await _finalize_task_run(run_id, exit_code=0, agent=self._replayed_agent(run_id))
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+
+        assert task_run.phase_usage is not None
+
+    async def test_run_without_a_tally_keeps_phase_usage_null(self) -> None:
+        from sqlalchemy import text
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._run("running")
+        agent = _command_agent(role="reviewer")
+        agent.run_id = run_id
+        agent.project_dir = None
+        await _finalize_task_run(run_id, exit_code=0, agent=agent)
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            # SQL NULL, not the JSON text "null" (database-guidelines.md, "JSON Column NULL Gotcha"),
+            # so a report can filter on phase_usage IS NULL.
+            is_sql_null = (
+                await session.execute(text("SELECT phase_usage IS NULL FROM task_runs WHERE id = :id"), {"id": run_id})
+            ).scalar_one()
+
+        assert task_run.phase_usage is None
+        assert is_sql_null == 1
+
+    async def test_explicit_none_is_stored_as_sql_null(self) -> None:
+        """A later write of None (clearing a breakdown) must not turn into the JSON text "null"."""
+        from sqlalchemy import text
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            run = TaskRun(issue_number="1336", role="command:address-pr", status="done", phase_usage=None)
+            session.add(run)
+            await session.commit()
+            is_sql_null = (
+                await session.execute(text("SELECT phase_usage IS NULL FROM task_runs WHERE id = :id"), {"id": run.id})
+            ).scalar_one()
+
+        assert is_sql_null == 1

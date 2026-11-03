@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.context import get_project_dir, get_project_slug
+from sova.llm.phase_usage import PhaseTally
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -118,6 +119,20 @@ class AgentState:
     # model of its own: honest attribution to the runtime that ran, rather
     # than the hardcoded Claude Code default.
     runtime_name: str | None = None
+    # The Claude Code result events' num_turns (LLMResult.num_turns), summed
+    # across a session's segments and written on the run's "agent"
+    # CostRecord. None until a result reports it, and for Codex, whose stream
+    # reports no turn count.
+    last_result_num_turns: int | None = None
+    # Per-phase model-call, token and time tally for a command:* run, fed by
+    # _parse_stream_line() and persisted as TaskRun.phase_usage on finalize.
+    # Built here from the role so the spawn path needs no change; None for
+    # every other role.
+    phase_tally: PhaseTally | None = None
+
+    def __post_init__(self) -> None:
+        if self.phase_tally is None and self.role.startswith("command:"):
+            self.phase_tally = PhaseTally(started_at=self.started_at)
 
 
 @dataclass

@@ -180,6 +180,9 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
     except json.JSONDecodeError:
         return line
 
+    if agent.phase_tally is not None and isinstance(data, dict):
+        agent.phase_tally.observe(data)
+
     msg_type = data.get("type", "")
 
     if msg_type == "assistant":
@@ -218,6 +221,11 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
         agent.last_result_cache_read_tokens = result.cache_read_tokens
         if result.cache_creation_tokens is not None:
             agent.last_result_cache_write_tokens = result.cache_creation_tokens
+        # Summed, unlike the cost above: a session that resumes after background
+        # tasks emits one result per segment, and while total_cost_usd is
+        # cumulative across them, num_turns covers its own segment only.
+        if result.num_turns is not None:
+            agent.last_result_num_turns = (agent.last_result_num_turns or 0) + result.num_turns
         return f"\n--- Result [cost: ${result.cost_usd}] ---"
 
     return ""
