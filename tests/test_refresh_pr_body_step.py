@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
+from sova.core.steps.base import StepResult
 from sova.core.steps.create_pr import _title_from_branch
 from sova.core.steps.refresh_pr_body import RefreshPrBodyStep
 from sova.llm.models import LLMResult
@@ -340,6 +341,7 @@ class TestRefreshPrBodyStepGitFailure:
         self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
     ) -> None:
         mock_run.return_value = MagicMock(success=False, stdout="")
+        mock_get_body.return_value = "## Summary\nold\n"
 
         adapter = _mock_adapter()
         adapter.get_task.return_value = Task(
@@ -352,7 +354,7 @@ class TestRefreshPrBodyStepGitFailure:
         assert result.success
         assert "could not collect the branch diff" in result.summary
         mock_invoke.assert_not_called()
-        mock_get_body.assert_not_awaited()
+        mock_get_body.assert_awaited_once()
         mock_update_body.assert_not_awaited()
 
 
@@ -388,7 +390,9 @@ class TestRefreshPrBodyStepFailures:
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_pr_update_failure_is_non_fatal(self, mock_run, mock_invoke, mock_get_body, tmp_path: Path) -> None:
+    async def test_pr_body_read_failure_is_non_fatal(
+        self, mock_run, mock_invoke, mock_get_body, tmp_path: Path
+    ) -> None:
         mock_run.side_effect = _git_results()
         mock_invoke.return_value = LLMResult(
             text="## Summary\n- a\n\n## Review guidance\n- b\n\n## Test plan\n- c", model="sonnet"
@@ -399,12 +403,12 @@ class TestRefreshPrBodyStepFailures:
         result = await RefreshPrBodyStep().execute(ctx)
 
         assert result.success
-        assert "skipped" in result.summary
+        assert "could not read PR body" in result.summary
 
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_pr_update_non_runtime_error_is_also_non_fatal(
+    async def test_pr_body_read_non_runtime_error_is_also_non_fatal(
         self, mock_run, mock_invoke, mock_get_body, tmp_path: Path
     ) -> None:
         mock_run.side_effect = _git_results()
@@ -417,7 +421,7 @@ class TestRefreshPrBodyStepFailures:
         result = await RefreshPrBodyStep().execute(ctx)
 
         assert result.success
-        assert "skipped" in result.summary
+        assert "could not read PR body" in result.summary
 
 
 class TestRefreshPrBodyStepNoSections:
@@ -443,7 +447,7 @@ class TestRefreshPrBodyStepNoSections:
 
         assert result.success
         assert "no sections" in result.summary.lower()
-        mock_get_body.assert_not_awaited()
+        mock_get_body.assert_awaited_once()
         mock_update_body.assert_not_awaited()
 
 
@@ -538,3 +542,109 @@ class TestRefreshPrBodyStepResolveTask:
         assert body == ""
         assert title == _title_from_branch("feat/make-it-work")
         assert resolved is False
+
+
+class TestRefreshPrBodyStepIssueSectionMismatch:
+    """An existing "## Issue" section naming a different issue from the run's
+    leaves the whole body untouched: the run's issue is the value in doubt, and
+    every fresh section was generated from that issue's title and criteria."""
+
+    @staticmethod
+    async def _run_step(
+        tmp_path: Path, existing_body: str, *, issue_number: str = "42", **ctx_kwargs
+    ) -> tuple[StepResult, AsyncMock, MagicMock]:
+        with (
+            patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock) as mock_update_body,
+            patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock) as mock_get_body,
+            patch("sova.core.steps.refresh_pr_body.invoke") as mock_invoke,
+            patch("sova.core.steps.refresh_pr_body.run") as mock_run,
+        ):
+            mock_run.side_effect = _git_results("abc123 fix: thing\n", " src/app.py | 1 +\n", "diff --git a/x\n")
+            mock_invoke.return_value = LLMResult(
+                text="## Summary\n- new\n\n## Review guidance\n- new\n\n## Test plan\n- new", model="sonnet"
+            )
+            mock_get_body.return_value = existing_body
+            ctx = _make_ctx(tmp_path, issue_number=issue_number, **ctx_kwargs)
+            result = await RefreshPrBodyStep().execute(ctx)
+        return result, mock_update_body, mock_invoke
+
+    async def test_closes_section_naming_another_issue_is_kept(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nCloses #12\n")
+
+        assert result.success
+        update.assert_not_awaited()
+        assert "skipped" in result.summary
+        assert "#12" in result.summary
+        assert "#42" in result.summary
+
+    async def test_part_of_section_naming_another_issue_is_kept(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nPart of #12\n")
+
+        update.assert_not_awaited()
+        assert "#12" in result.summary
+
+    async def test_pr_1351_body_with_run_resolved_to_the_stray_issue_is_kept(self, tmp_path: Path) -> None:
+        """The incident: PR #1351 (branch fix/issue-1340) also closed #12, the run was
+        recorded as issue 12, and the refresh rewrote "Closes #1340" as "Closes #12"."""
+        body = (
+            "## Summary\n- Integrate and after-merge stop closing issues by hand.\n\n"
+            '## Review guidance\n- Keyword matching is textual: "does not close #12" still closes #12.\n\n'
+            "## Issue\n\nCloses #1340\n"
+        )
+        result, update, _ = await self._run_step(tmp_path, body, issue_number="12", branch_name="fix/issue-1340")
+
+        update.assert_not_awaited()
+        assert "#1340" in result.summary
+        assert "#12" in result.summary
+
+    async def test_section_naming_the_run_issue_among_several_is_rewritten(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nCloses #12\nCloses #42\n")
+
+        new_body = update.call_args.kwargs["body"]
+        assert "Closes #42" in new_body
+        assert "Closes #12" not in new_body
+        assert result.summary == "Refreshed PR #99 body"
+
+    async def test_jira_only_section_is_not_a_mismatch(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(
+            tmp_path, "## Summary\nold\n\n## Issue\n\n[PROJ-7](https://jira.example.com/browse/PROJ-7)\n"
+        )
+
+        assert result.summary == "Refreshed PR #99 body"
+        assert update.call_args.kwargs["body"].count("## Issue") == 1
+
+    async def test_body_without_issue_section_is_not_a_mismatch(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n")
+
+        assert "Closes #42" in update.call_args.kwargs["body"]
+        assert result.summary == "Refreshed PR #99 body"
+
+    async def test_closing_keyword_in_code_span_is_not_a_mismatch(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nSee `Closes #12`\n")
+
+        assert "Closes #42" in update.call_args.kwargs["body"]
+        assert result.summary == "Refreshed PR #99 body"
+
+    async def test_issueless_run_reports_no_mismatch(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(
+            tmp_path, "## Summary\nold\n\n## Issue\n\nCloses #12\n", issue_number=""
+        )
+
+        assert result.success
+        assert result.summary == "Refreshed PR #99 body"
+
+    async def test_mismatch_skips_diff_collection_and_the_llm_call(self, tmp_path: Path) -> None:
+        with patch.object(RefreshPrBodyStep, "_collect_diff", new_callable=AsyncMock) as mock_collect:
+            result, update, invoke_mock = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nCloses #12\n")
+            mock_collect.assert_not_called()
+
+        invoke_mock.assert_not_called()
+        update.assert_not_awaited()
+        assert "skipped" in result.summary
+
+    async def test_lowercase_issue_heading_is_not_read_as_the_section(self, tmp_path: Path) -> None:
+        """Same casing rule as the dashboard resolver and parse_issue_links(): only ``## Issue`` counts."""
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## issue\n\nCloses #12\n")
+
+        assert result.summary == "Refreshed PR #99 body"
+        update.assert_awaited_once()

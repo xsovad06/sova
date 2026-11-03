@@ -23,6 +23,7 @@ from sova.core.steps._pr_body import (
     split_verdict_tail,
 )
 from sova.core.steps._pr_body import build_prompt as build_pr_body_prompt
+from sova.utils.gh import IssueLinks, parse_issue_links
 
 
 def _ctx(tmp_path: Path, issue_number: str = "42") -> ExecutionContext:
@@ -321,6 +322,24 @@ class TestComposeBody:
         body = compose_body("## Summary\n- stuff\n\n## Review guidance\n- more stuff", "42", None, is_jira=False)
         sections = split_sections(body)
         assert sections["Issue"] == "Closes #42"
+
+    def test_closing_keyword_for_another_issue_is_put_in_a_code_span(self) -> None:
+        """PR #1364's generated Test plan said "its original text closes #12 and #1340", so GitHub
+        listed the PR as closing #12 and the dashboard showed it as issue 12's PR."""
+        sections = "## Test plan\n- cases for the PR #1351 body (its original text closes #12 and #1340)"
+        body = compose_body(sections, "1354", [("A", "unmet")], is_jira=False)
+        assert "(its original text `closes #12` and #1340)" in body
+        assert parse_issue_links(body) == IssueLinks(closes=(), part_of=("1354",))
+
+    def test_closing_keyword_for_another_issue_is_defused_under_a_closes_decision(self) -> None:
+        body = compose_body("## Summary\n- Also fixes: #7, and Resolves\n#8.", "42", None, is_jira=False)
+        assert "Also `fixes: #7`, and `Resolves #8`." in body
+        assert parse_issue_links(body).closes == ("42",)
+
+    def test_closing_keyword_already_in_code_is_left_alone(self) -> None:
+        sections = "## Summary\n- quotes `Closes #7` verbatim\n\n```text\nCloses #8\n```"
+        body = compose_body(sections, "42", None, is_jira=False)
+        assert "- quotes `Closes #7` verbatim\n\n```text\nCloses #8\n```" in body
 
     def test_jira_adds_link_once(self) -> None:
         body = compose_body("## Summary\n- stuff", "42", None, is_jira=True, jira_link="JIRA: https://x/42")

@@ -328,7 +328,7 @@ _PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 
 # GitHub links nothing written in a code span, so a PR body that quotes `Closes #12` while
 # describing a test must not close #12.
-_INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 
 
 @dataclass(frozen=True)
@@ -360,7 +360,7 @@ def parse_issue_links(body: str) -> IssueLinks:
     phrase without linking has to put it in a code span or fenced block, or word it differently
     (for example "stays open" instead of "does not close #12").
     """
-    prose = _INLINE_CODE_RE.sub(" ", mask_fenced_blocks(body))
+    prose = INLINE_CODE_RE.sub(" ", mask_fenced_blocks(body))
     closes = tuple(dict.fromkeys(m.group(1) for m in CLOSES_RE.finditer(prose)))
     part_of_scope = extract_section(prose, "Issue") or prose
     part_of = tuple(

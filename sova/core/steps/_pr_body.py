@@ -15,7 +15,7 @@ import re
 from typing import TYPE_CHECKING
 
 from sova.utils.formatting import truncate
-from sova.utils.gh import CLOSING_KEYWORDS, CLOSING_SEPARATOR
+from sova.utils.gh import CLOSES_RE, CLOSING_KEYWORDS, CLOSING_SEPARATOR, INLINE_CODE_RE
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section, mask_fenced_blocks, strip_preamble, upsert_section
 
@@ -505,6 +505,25 @@ def _neutralize_inline_closing_keyword(body: str, issue_number: str) -> str:
     return pattern.sub(r"addresses\1", body)
 
 
+def _quote_foreign_closing_keywords(body: str, issue_number: str) -> str:
+    """Put a closing keyword that names any issue but *issue_number* in a code span.
+
+    The run works on one issue, so a closing reference to another one in LLM prose is never
+    intended, yet GitHub links it all the same: PR #1364's Test plan said "its original text
+    closes #12", GitHub listed the PR as closing #12, and the dashboard showed it as #12's PR.
+    GitHub links nothing in a code span, and ``parse_issue_links()`` skips code spans too, so
+    the quoted text reads the same and every reader agrees it closes nothing. Text already in a
+    code span or fenced block is left alone.
+    """
+    masked = INLINE_CODE_RE.sub(lambda m: " " * len(m.group()), mask_fenced_blocks(body))
+    for match in reversed(list(CLOSES_RE.finditer(masked))):
+        if match.group(1) == issue_number:
+            continue
+        quoted = re.sub(r"\s+", " ", body[match.start() : match.end()])
+        body = f"{body[: match.start()]}`{quoted}`{body[match.end() :]}"
+    return body
+
+
 def compose_body(
     sections_markdown: str,
     issue_number: str,
@@ -539,6 +558,7 @@ def compose_body(
         closing_block = render_closing_block(issue_number, verdicts)
         if not closing_block.startswith("Closes #"):
             body = _neutralize_inline_closing_keyword(body, issue_number)
+    body = _quote_foreign_closing_keywords(body, issue_number)
     return upsert_section(body, _ISSUE_SECTION_HEADING, closing_block)
 
 
