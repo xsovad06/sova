@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
 from rich.console import Console
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.logging import get_logger
 
@@ -139,12 +140,22 @@ async def _run_workflow(
     else:
         console.print(f"[bold]Starting workflow for {ctx.display_label}[/bold]")
 
+    # A resume seeds ctx.cost_usd with the prior run's cost, which stays recorded on that run.
+    prior_cost = ctx.cost_usd
+
     _install_sigterm_handler(task_run_id)
 
     try:
         role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
+        # Inside the try: a SIGTERM landing during this write takes the shielded shutdown path below,
+        # which records the cost itself, instead of cancelling the write with nothing to replace it.
+        await _persist_run_cost(ctx, task_run_id, prior_cost)
     except asyncio.CancelledError:
         await asyncio.shield(_handle_sigterm_shutdown(ctx, task_run_id))
+        raise
+    except Exception:
+        # A role that raised after spending still owes its cost to the TaskRun.
+        await _persist_run_cost(ctx, task_run_id, prior_cost)
         raise
 
     if result.success:
@@ -154,6 +165,42 @@ async def _run_workflow(
     else:
         console.print(f"[red]Workflow failed ({role.name}): {result.error}[/red]")
         raise typer.Exit(code=1)
+
+
+async def _persist_run_cost(ctx: ExecutionContext, task_run_id: int | None, prior_cost: Decimal) -> None:
+    """Record this run's own spend on the TaskRun after ``dispatch()`` returns or raises.
+
+    WorkflowEngine writes ``total_cost_usd`` itself, but only for the roles it runs (developer,
+    researcher). Reviewer, triage and planner add to ``ctx.cost_usd`` and bypass the engine, so
+    nothing else persists their spend (issue #1368). A custom role spends nothing itself: its DAG
+    nodes start separate command runs that record their own cost. The write is an assignment
+    guarded by "only raise the recorded value": a role the engine already finalized holds the same
+    figure and is left untouched (no double count), and a context with no spend never zeroes a
+    cost the dashboard finalizer stored from the runtime stream.
+
+    The recorded figure is ``ctx.cost_usd - prior_cost``: on ``--resume`` the context starts from the
+    prior run's cost, which that run's own row already holds, so storing the cumulative total here
+    would count it twice in the per-issue budget sum.
+
+    A failed write is logged, not raised: it must not replace the role's own outcome.
+    """
+    run_cost = ctx.cost_usd - prior_cost
+    if task_run_id is None or run_cost <= 0:
+        return
+
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(ctx.project_dir) as session, session.begin():
+            task_run = await session.get(TaskRun, task_run_id)
+            if task_run is None:
+                return
+            recorded = task_run.total_cost_usd if task_run.total_cost_usd is not None else Decimal("0")
+            if run_cost > recorded:
+                task_run.total_cost_usd = run_cost
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("run.cost_persist_failed", run_id=task_run_id, cost_usd=str(run_cost), exc_info=True)
 
 
 async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
