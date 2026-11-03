@@ -159,12 +159,16 @@ async def _retriage_task(
         triage_cfg = config.triage
         assessment = role.heuristic_assess(enriched_task, triage_cfg)
         verdict = assessment.suitability
+        # `task` was snapshotted before the 300s LLM enrichment call above, so one fresh read is taken
+        # here, BEFORE the verdict label is written: a `needs_spec` or `human_only` label outranks
+        # RESEARCHED and IN_PROGRESS in the adapter's state derivation, so a read after the write would
+        # report the verdict's own state and defeat the transition guard.
+        fresh = await adapter.get_task(task.id)
         if triage_cfg.auto_label:
-            # No known_labels: `task` was snapshotted before the 300s LLM
-            # enrichment call above, so a label change made during that
-            # window (by a human, by /find-task, or by a concurrent batch
-            # item) must come from a fresh refetch, not this stale snapshot.
-            await role.apply_suitability_label(adapter, task.id, assessment.suitability, triage_cfg)
+            await role.apply_suitability_label(
+                adapter, task.id, assessment.suitability, triage_cfg, known_labels=fresh.labels
+            )
+        await role.apply_retriage_transition(adapter, task.id, verdict, triage_cfg, fresh)
         console.print(f"[green]  Re-triaged: {verdict}[/green]")
         return verdict
     except Exception as exc:  # noqa: BLE001 (one issue must not abort the harden batch)

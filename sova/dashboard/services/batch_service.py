@@ -181,7 +181,6 @@ async def start_batch_run(
 async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
     try:
         from sova.adapters import create_adapter
-        from sova.adapters.base import TaskState
         from sova.config.loader import load_config
         from sova.db.session import init_db
         from sova.roles.triage import TriageRole
@@ -236,7 +235,7 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                         await adapter.edit_body(task.id, updated_body)
 
                     if triage_cfg.write_transition and task.state in role.allowed_input_states:
-                        await adapter.transition_state(task.id, TaskState.TRIAGED)
+                        await adapter.transition_state(task.id, role.target_state(assessment.suitability))
 
                     item.status = "done"
                     item.detail = f"Suitability: {assessment.suitability}"
@@ -349,11 +348,18 @@ async def _run_batch_harden(
                             role = TriageRole()
                             triage_cfg = config.triage
                             assessment = role.heuristic_assess(enriched_task, triage_cfg)
+                            # `task` was snapshotted before the 300s LLM call above, so one fresh read is
+                            # taken here, BEFORE the verdict label is written: a `needs_spec` or
+                            # `human_only` label outranks RESEARCHED and IN_PROGRESS in the adapter's
+                            # state derivation and would defeat the transition guard if read after.
+                            fresh = await adapter.get_task(task.id)
                             if triage_cfg.auto_label:
-                                # No known_labels: `task` was snapshotted before the
-                                # 300s LLM call above, so a label change made during
-                                # that window must come from a fresh refetch.
-                                await role.apply_suitability_label(adapter, task.id, assessment.suitability, triage_cfg)
+                                await role.apply_suitability_label(
+                                    adapter, task.id, assessment.suitability, triage_cfg, known_labels=fresh.labels
+                                )
+                            await role.apply_retriage_transition(
+                                adapter, task.id, assessment.suitability, triage_cfg, fresh
+                            )
                             triage_detail = f", re-triaged: {assessment.suitability}"
                         except Exception:  # noqa: BLE001 (re-triage is a best-effort extra; hardening already succeeded)
                             log.warning("batch.harden.retriage_failed", issue=item.issue_id, exc_info=True)

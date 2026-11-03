@@ -417,7 +417,8 @@ class TestDependencyGraph:
         assert any(a["role"] == "integrate-pr" for a in by_id[3])
         assert by_id[4] == []
         assert by_id[5] == []
-        assert any(a["role"] == "researcher" for a in by_id[6])
+        # NEEDS_SPEC is a parked hand-off state: the researcher only accepts TRIAGED, so no researcher action.
+        assert by_id[6] == []
         assert by_id[7] == []
 
     def test_backlog_node_has_triage_action(self) -> None:

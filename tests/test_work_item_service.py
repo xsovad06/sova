@@ -548,6 +548,12 @@ class TestGetActions:
         assert primary is None
         assert secondary == []
 
+    def test_needs_spec_offers_no_researcher_action(self) -> None:
+        """NEEDS_SPEC is parked: the researcher only accepts TRIAGED, so a Research button would always fail."""
+        primary, secondary = _get_actions(WorkItemState.NEEDS_SPEC, issue_number="42", pr_number=None)
+        assert primary is None
+        assert not any(a["handler_args"].get("role") == "researcher" for a in secondary)
+
     def test_done_has_no_action(self) -> None:
         primary, _ = _get_actions(WorkItemState.DONE, issue_number="42", pr_number=None)
         assert primary is None

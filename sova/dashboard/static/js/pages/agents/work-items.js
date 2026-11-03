@@ -22,6 +22,8 @@ function stateTag(state, stateLabel, stateColor) {
 var _TIER2_PAGE_SIZE = 15;
 var _MIN_BEFORE_COLLAPSE = 8;
 var _expansionTier = 0; // 0=top 8, 1=+15 more, 2=show all
+var _SUGGESTED_INITIAL_COUNT = 5;
+var _suggestedExpanded = false;
 var _cardMenuOpen = false;
 var _workItems = [];
 var _githubUser = '';
@@ -100,10 +102,10 @@ export async function loadWorkItems() {
       return _runningAgents[k].run_id;
     }).sort().join(',');
 
-    _agentHistory = _workItems.filter(function(i) { return i.last_run || i.pr_number; });
-    _suggested = _workItems.filter(function(i) {
-      return !i.last_run && !i.pr_number && (i.state === 'triaged' || i.state === 'researched');
-    }).sort(_sortWorkItems);
+    // Bucketed by work state, never by run history: an old failed run must not lift an issue above
+    // higher-priority work, and an item with no run must still be reachable under "All".
+    _agentHistory = _workItems.filter(function(i) { return !_isNotStarted(i); });
+    _suggested = _workItems.filter(_isNotStarted).sort(_sortSuggested);
 
     var attentionCount = _workItems.filter(function(i) {
       return i.state === 'spec_review' ||
@@ -195,6 +197,7 @@ function setTaskAssigneeFilter(value) {
   safeStorageSet('sova-task-assignee-filter', value);
   _updateTaskAssigneeToggleUI();
   _expansionTier = 0;
+  _suggestedExpanded = false;
   renderTaskCards();
 }
 
@@ -202,6 +205,7 @@ function setTaskStateFilter(value) {
   _taskStateFilter = value;
   safeStorageSet('sova-task-state-filter', value);
   _expansionTier = 0;
+  _suggestedExpanded = false;
   renderTaskCards();
 }
 
@@ -280,9 +284,23 @@ function _stateSortTier(item) {
   return 7;
 }
 
+// Not-started work plus human-only items: everything the Suggested block lists. The Active block is the
+// complement, so a state added later lands there (visible) instead of being dropped from both. Terminal
+// states (merged, done) fall to the Active block the same way, on purpose: the API does not normally return
+// them, and one that slips through stays visible rather than vanishing.
+function _isNotStarted(item) {
+  return _stateSortTier(item) === _NOT_STARTED_TIER || item.state === 'human_only';
+}
+
 function _issuePriorityRank(item) {
   var rank = _priorityRankMap()[item.issue_priority];
   return rank === undefined ? 99 : rank;
+}
+
+function _sortSuggested(a, b) {
+  var ra = _issuePriorityRank(a), rb = _issuePriorityRank(b);
+  if (ra !== rb) return ra - rb;
+  return _sortWorkItems(a, b);
 }
 
 function _sortWorkItems(a, b) {
@@ -301,6 +319,16 @@ function expandTasks() {
 
 function collapseTasks() {
   _expansionTier = 0;
+  renderTaskCards();
+}
+
+function expandSuggested() {
+  _suggestedExpanded = true;
+  renderTaskCards();
+}
+
+function collapseSuggested() {
+  _suggestedExpanded = false;
   renderTaskCards();
 }
 
@@ -592,6 +620,8 @@ function renderTaskCards() {
   var hasActiveFilter = _taskAssigneeFilter !== 'all' || _taskStateFilter ||
     (document.getElementById('task-search').value || '').trim();
 
+  // A filtered view lists every match uncapped. The unfiltered "All" view caps each block behind a Show more
+  // control instead, so "never fewer than Mine" means reachable: every item Mine shows is one expansion away.
   if (hasActiveFilter) {
     if (!filtered.length) {
       grid.innerHTML = '<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>';
@@ -651,16 +681,18 @@ function renderTaskCards() {
   }
 
   if (hasSuggested) {
-    var suggestedVisible = _suggested.slice(0, 5);
+    var suggestedVisible = _suggestedExpanded ? _suggested : _suggested.slice(0, _SUGGESTED_INITIAL_COUNT);
     html += '<div class="flex items-center gap-2 px-4 py-2 border-t border-gray-700/30">' +
       '<span class="text-xs text-gray-500">Suggested</span>' +
       '<div class="flex-1 border-t border-gray-700/20"></div>' +
     '</div>';
     html += '<div class="opacity-80">' + suggestedVisible.map(renderTaskCard).join('') + '</div>';
-    if (_suggested.length > 5) {
-      html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
-        '<a href="' + prefix + '/queue" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
-        (_suggested.length - 5) + ' more in Priority Queue</a></div>';
+    if (_suggested.length > _SUGGESTED_INITIAL_COUNT) {
+      var suggestedToggle = _suggestedExpanded
+        ? '<button' + actionAttrs('collapse-suggested') + ' class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Show less</button>'
+        : '<button' + actionAttrs('expand-suggested') + ' class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Show ' +
+          (_suggested.length - _SUGGESTED_INITIAL_COUNT) + ' more</button>';
+      html += '<div class="px-4 py-2 border-t border-gray-700/30">' + suggestedToggle + '</div>';
     }
   }
 
@@ -893,6 +925,8 @@ export function init() {
     'toggle-card-menu': function(el, e, issue) { toggleCardMenu(e, issue); },
     'expand-tasks': function() { expandTasks(); },
     'collapse-tasks': function() { collapseTasks(); },
+    'expand-suggested': function() { expandSuggested(); },
+    'collapse-suggested': function() { collapseSuggested(); },
     'llm-feedback': function(el, e, issueKey, choice) { submitLlmFeedback(e, issueKey, choice); },
     'flag-wrong': function(el, e, issueKey) { submitFlagWrong(e, issueKey); },
     'set-task-assignee': function(el, e, value) { setTaskAssigneeFilter(value); },

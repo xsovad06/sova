@@ -172,7 +172,7 @@ async def _apply_triage_actions(
         await adapter.edit_body(task.id, updated_body)
 
     if triage_cfg.write_transition and not force and task.state in role.allowed_input_states:
-        await adapter.transition_state(task.id, TaskState.TRIAGED)
+        await adapter.transition_state(task.id, role.target_state(assessment.suitability))
 
     return assessment
 

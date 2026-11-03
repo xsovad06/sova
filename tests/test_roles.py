@@ -129,12 +129,44 @@ class TestTriageRole:
         adapter = _mock_adapter(TaskState.BACKLOG)
         ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
+        assessment = role.heuristic_assess(adapter.get_task.return_value, ctx.config.triage)
+        assessment.suitability = "interactive"
 
-        result = await role.execute(ctx)
+        with patch.object(TriageRole, "heuristic_assess", return_value=assessment):
+            result = await role.execute(ctx)
 
         assert result.success
         assert result.output_state == TaskState.TRIAGED
         adapter.transition_state.assert_awaited_once_with("42", TaskState.TRIAGED)
+
+    @pytest.mark.parametrize(
+        ("suitability", "expected"),
+        [
+            ("ready", TaskState.TRIAGED),
+            ("interactive", TaskState.TRIAGED),
+            ("needs_research", TaskState.TRIAGED),
+            ("needs_spec", TaskState.NEEDS_SPEC),
+            ("human_only", TaskState.HUMAN_ONLY),
+            ("unknown-verdict", TaskState.TRIAGED),
+        ],
+    )
+    def test_target_state_follows_the_verdict_label(self, suitability: str, expected: TaskState) -> None:
+        from sova.roles.triage import TriageRole
+
+        assert TriageRole.target_state(suitability) == expected
+
+    async def test_execute_transitions_to_the_verdict_state(self, tmp_path: Path) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(tmp_path, role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        role = TriageRole()
+
+        # The fixture issue has a one-line body, so the quality gate yields a needs_spec verdict.
+        result = await role.execute(ctx)
+
+        assert result.output_state == TaskState.NEEDS_SPEC
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.NEEDS_SPEC)
 
     async def test_execute_rejects_wrong_state(self, tmp_path: Path) -> None:
         from sova.roles.triage import TriageRole

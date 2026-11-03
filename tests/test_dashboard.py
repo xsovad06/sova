@@ -4359,9 +4359,11 @@ class TestQueueServiceEnrichment:
 
     def test_needs_spec_recommended_action(self) -> None:
         from sova.adapters.base import TaskState
-        from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
+        from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION, VALID_STATES_FOR_ACTION
 
-        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "research"
+        # The researcher only accepts TRIAGED, so a parked NEEDS_SPEC issue exits through harden.
+        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "harden"
+        assert TaskState.NEEDS_SPEC in VALID_STATES_FOR_ACTION["harden"]
 
     def test_researched_default_action_is_review_spec(self) -> None:
         from sova.adapters.base import TaskState
