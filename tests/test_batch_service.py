@@ -262,6 +262,38 @@ class TestBatchTriage:
         assert mock_role.apply_suitability_label.await_count == 2
         assert adapter.transition_state.call_count == 2
 
+    @pytest.mark.parametrize(
+        ("suitability", "expected"),
+        [("ready", TaskState.TRIAGED), ("needs_spec", TaskState.NEEDS_SPEC), ("human_only", TaskState.HUMAN_ONLY)],
+    )
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    async def test_triage_transitions_to_the_verdict_state(
+        self,
+        mock_create_adapter,
+        mock_config,
+        mock_init_db,
+        suitability: str,
+        expected: TaskState,
+        tmp_path: Path,
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+        from sova.roles.base import TaskAssessment
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter()
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        assessment = TaskAssessment(suitability=suitability, confidence=0.9, reasoning="r")
+        job = BatchJob(batch_id="t3", action="triage", results=[BatchItemResult(issue_id="1")])
+
+        with patch.object(TriageRole, "heuristic_assess", return_value=assessment):
+            await _run_batch_triage(job, tmp_path)
+
+        assert job.results[0].status == "done"
+        adapter.transition_state.assert_awaited_once_with("1", expected)
+
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
     @patch("sova.config.loader.load_config")
     @patch("sova.adapters.create_adapter")
@@ -429,6 +461,111 @@ class TestBatchHarden:
         assert job.results[0].detail == "Hardened, re-triaged: interactive"
         adapter.remove_label.assert_awaited_once_with("1", "agent:ready")
         adapter.add_label.assert_awaited_once_with("1", "agent:interactive-recommended")
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_retriage_moves_a_needs_spec_issue_to_triaged_on_a_ready_verdict(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db, tmp_path: Path
+    ) -> None:
+        """The stale needs_spec state is cleared through the same transition the CLI harden path writes."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [
+            Task(
+                id="1",
+                title="Fix bug",
+                body="Body",
+                state=TaskState.NEEDS_SPEC,
+                labels=["agent:ready", "agent:needs-spec"],
+            ),
+        ]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="## Objective\nEnriched content", model="claude")
+        job = BatchJob(batch_id="h6", action="harden", results=[BatchItemResult(issue_id="1")])
+
+        with patch("sova.roles.triage.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = "ready"
+            await _run_batch_harden(job, tmp_path, skip_triage=False)
+
+        assert job.results[0].status == "done"
+        adapter.transition_state.assert_awaited_once_with("1", TaskState.TRIAGED)
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_retriage_never_moves_a_human_only_issue_on_a_weaker_verdict(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db, tmp_path: Path
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        # Eligible when the batch picked it up; a human marked it human-only during the enrichment call.
+        eligible = Task(id="1", title="Fix bug", body="Body", state=TaskState.BACKLOG)
+        marked = Task(id="1", title="Fix bug", body="Body", state=TaskState.HUMAN_ONLY, labels=["agent:human-only"])
+        adapter = _mock_adapter([eligible])
+        adapter.get_task.side_effect = [eligible, marked]
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+        mock_invoke.return_value = LLMResult(text="## Objective\nEnriched content", model="claude")
+        job = BatchJob(batch_id="h7", action="harden", results=[BatchItemResult(issue_id="1")])
+
+        with patch("sova.roles.triage.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = "ready"
+            await _run_batch_harden(job, tmp_path, skip_triage=False)
+
+        assert job.results[0].status == "done"
+        adapter.transition_state.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("verdict", "label"),
+        [("needs_spec", "agent:researched"), ("human_only", "agent:in-progress")],
+    )
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_guard_reads_state_before_the_verdict_label(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db, tmp_path: Path, verdict, label
+    ) -> None:
+        """A needs_spec or human_only label outranks the advanced state label, so it must be read first."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        labels = [label]
+        # The GitHub adapter's state priority, restricted to the labels this test can produce.
+        priority = (
+            ("agent:human-only", TaskState.HUMAN_ONLY),
+            ("agent:in-progress", TaskState.IN_PROGRESS),
+            ("agent:needs-spec", TaskState.NEEDS_SPEC),
+            ("agent:researched", TaskState.RESEARCHED),
+        )
+
+        async def _get_task(task_id: str) -> Task:
+            state = next((st for lbl, st in priority if lbl in labels), TaskState.BACKLOG)
+            return Task(id=task_id, title="Fix bug", body="Body", state=state, labels=list(labels))
+
+        adapter = _mock_adapter()
+        adapter.get_task.side_effect = _get_task
+        adapter.add_label.side_effect = lambda _tid, lbl: labels.append(lbl)
+        mock_create_adapter.return_value = adapter
+        config = _mock_config()
+        config.triage.auto_label = True
+        mock_config.return_value = config
+        mock_invoke.return_value = LLMResult(text="Enriched content", model="claude")
+
+        job = BatchJob(batch_id="h-guard", action="harden", results=[BatchItemResult(issue_id="1")])
+
+        with patch("sova.roles.triage.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = verdict
+            await _run_batch_harden(job, tmp_path, skip_triage=False)
+
+        adapter.transition_state.assert_not_awaited()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
     @patch("sova.config.loader.load_config")

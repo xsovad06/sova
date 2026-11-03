@@ -309,6 +309,54 @@ class TriageRole(AgentRole):
     # outcome is never the authority for erasing a stronger block).
     _CONSERVATISM_RANK: dict[str, int] = {"ready": 0, "interactive": 1, "human_only": 2}
 
+    # Verdicts whose label is also a tracker state label. Transitioning to TRIAGED
+    # instead would make the adapter strip that label (it clears every state label
+    # before setting the new one), leaving the verdict invisible on the tracker.
+    _SUITABILITY_TARGET_STATES: dict[str, TaskState] = {
+        "needs_spec": TaskState.NEEDS_SPEC,
+        "human_only": TaskState.HUMAN_ONLY,
+    }
+
+    @classmethod
+    def target_state(cls, suitability: str) -> TaskState:
+        """State a triage verdict transitions the issue to; TRIAGED when the verdict has no state label."""
+        return cls._SUITABILITY_TARGET_STATES.get(suitability, TaskState.TRIAGED)
+
+    # Re-triage after harden may only move an issue between these states: a transition from anywhere
+    # else (researched, in progress, a PR state) would regress work that has advanced.
+    _RETRIAGE_TRANSITION_FROM: frozenset[TaskState] = frozenset(
+        {TaskState.BACKLOG, TaskState.TRIAGED, TaskState.NEEDS_SPEC, TaskState.HUMAN_ONLY}
+    )
+
+    async def apply_retriage_transition(
+        self,
+        adapter: TaskAdapter,
+        task_id: str,
+        suitability: str,
+        triage_cfg: TriageConfig,
+        fresh_task: Task,
+    ) -> bool:
+        """Move a hardened issue to the state its fresh verdict maps to; True when a transition was written.
+
+        Shared by the CLI and dashboard harden paths so they cannot drift. Honors `triage.write_transition`
+        and guards on `fresh_task`, which the caller must fetch AFTER the enrichment call (its earlier snapshot
+        predates the 300s call, and a run dispatched in that window must not be moved back to a not-started
+        state, since the transition strips its in-flight label) but BEFORE `apply_suitability_label()` writes
+        the verdict label. A `needs_spec` or `human_only` label is also a tracker state label that outranks
+        RESEARCHED and IN_PROGRESS when the adapter derives state, so a refetch taken after the label write
+        would report the verdict's own state instead of the state the issue was really in.
+        """
+        if not triage_cfg.write_transition:
+            return False
+        current_state = fresh_task.state
+        target = self.target_state(suitability)
+        # A weaker verdict never leaves HUMAN_ONLY: the transition would strip the sticky `agent:human-only` label.
+        sticky_block = current_state == TaskState.HUMAN_ONLY and target != TaskState.HUMAN_ONLY
+        if current_state not in self._RETRIAGE_TRANSITION_FROM or sticky_block:
+            return False
+        await adapter.transition_state(task_id, target)
+        return True
+
     def resolve_label(self, suitability: str, triage_cfg: TriageConfig) -> str | None:
         """Resolve the label for a suitability outcome, respecting config overrides.
 
@@ -1004,14 +1052,15 @@ class TriageRole(AgentRole):
                 ctx.adapter, ctx.issue_number, assessment.suitability, triage_cfg, known_labels=known_labels
             )
 
+        target_state = self.target_state(assessment.suitability)
         if triage_cfg.write_transition:
-            await ctx.adapter.transition_state(ctx.issue_number, TaskState.TRIAGED)
+            await ctx.adapter.transition_state(ctx.issue_number, target_state)
 
         log.info("triage.done", issue=ctx.issue_number, mode=triage_cfg.mode)
         return RoleResult(
             success=True,
             summary=f"Issue #{ctx.issue_number} triaged as {assessment.suitability} (quality {quality.total}/8)",
-            output_state=TaskState.TRIAGED if triage_cfg.write_transition else None,
+            output_state=target_state if triage_cfg.write_transition else None,
         )
 
     async def _apply_quality_gate(

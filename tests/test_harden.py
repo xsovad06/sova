@@ -436,3 +436,203 @@ class TestRetriageTask:
 
         adapter.get_task.assert_awaited_once_with("42")
         adapter.remove_label.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("verdict", "expected"),
+        [
+            ("ready", TaskState.TRIAGED),
+            ("needs_spec", TaskState.NEEDS_SPEC),
+            ("human_only", TaskState.HUMAN_ONLY),
+            ("interactive", TaskState.TRIAGED),
+            ("needs_research", TaskState.TRIAGED),
+        ],
+    )
+    async def test_transitions_to_the_state_the_verdict_maps_to(self, verdict: str, expected: TaskState) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(
+            id="42", title="Test", body="old", state=TaskState.NEEDS_SPEC, labels=["agent:ready", "agent:needs-spec"]
+        )
+        adapter = AsyncMock()
+        adapter.get_task.return_value = task
+        config = ProjectConfig(github_repo="owner/repo")
+
+        with patch("sova.cli.commands.harden.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = verdict
+            result = await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, skip_triage=False)
+
+        assert result == verdict
+        adapter.transition_state.assert_awaited_once_with("42", expected)
+        # One refetch, shared by the stale-label strip and the transition guard.
+        adapter.get_task.assert_awaited_once_with("42")
+
+    @pytest.mark.parametrize(
+        "state",
+        [TaskState.RESEARCHED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.ON_QA, TaskState.DONE],
+    )
+    async def test_never_moves_an_issue_that_has_advanced(self, state: TaskState) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=state)
+        adapter = AsyncMock()
+        adapter.get_task.return_value = task
+
+        await _retriage_task(task, "## Objective\nEnriched.\n", ProjectConfig(github_repo="o/r"), adapter, False)
+
+        adapter.transition_state.assert_not_awaited()
+
+    @pytest.mark.parametrize("verdict", ["ready", "interactive", "needs_spec"])
+    async def test_weaker_verdict_never_leaves_human_only(self, verdict: str) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.HUMAN_ONLY, labels=["agent:human-only"])
+        adapter = AsyncMock()
+        adapter.get_task.return_value = task
+
+        with patch("sova.cli.commands.harden.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = verdict
+            await _retriage_task(task, "## Objective\nEnriched.\n", ProjectConfig(github_repo="o/r"), adapter, False)
+
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_human_only_verdict_on_human_only_issue_is_idempotent(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.HUMAN_ONLY, labels=["agent:human-only"])
+        adapter = AsyncMock()
+        adapter.get_task.return_value = task
+
+        with patch("sova.cli.commands.harden.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = "human_only"
+            await _retriage_task(task, "## Objective\nEnriched.\n", ProjectConfig(github_repo="o/r"), adapter, False)
+
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.HUMAN_ONLY)
+
+    async def test_uses_refetched_state_not_the_stale_snapshot(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.TRIAGED)
+        adapter = AsyncMock()
+        adapter.get_task.return_value = Task(id="42", title="Test", body="old", state=TaskState.IN_PROGRESS)
+
+        await _retriage_task(task, "## Objective\nEnriched.\n", ProjectConfig(github_repo="o/r"), adapter, False)
+
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_write_transition_false_writes_no_state(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.BACKLOG)
+        adapter = AsyncMock()
+        config = ProjectConfig(github_repo="o/r", triage={"write_transition": False})
+
+        await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, skip_triage=False)
+
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_skip_triage_touches_no_state(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.BACKLOG)
+        adapter = AsyncMock()
+
+        assert await _retriage_task(task, "body", ProjectConfig(github_repo="o/r"), adapter, skip_triage=True) is None
+
+        adapter.transition_state.assert_not_awaited()
+        adapter.add_label.assert_not_awaited()
+
+    async def test_transition_failure_is_not_reported_as_a_verdict(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        task = Task(id="42", title="Test", body="old", state=TaskState.BACKLOG)
+        adapter = AsyncMock()
+        adapter.get_task.return_value = task
+        adapter.transition_state.side_effect = RuntimeError("label write failed")
+
+        config = ProjectConfig(github_repo="o/r")
+
+        result = await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, skip_triage=False)
+
+        assert result is None
+
+
+class _LabelDerivedAdapter:
+    """Tracker double that derives state from labels in the GitHub adapter's priority order.
+
+    A mocked `get_task` returns a fixed state, so it cannot see that writing a `needs_spec` or
+    `human_only` verdict label changes the state a later read reports.
+    """
+
+    _PRIORITY = (
+        ("agent:human-only", TaskState.HUMAN_ONLY),
+        ("agent:in-review", TaskState.IN_REVIEW),
+        ("agent:in-progress", TaskState.IN_PROGRESS),
+        ("agent:needs-spec", TaskState.NEEDS_SPEC),
+        ("agent:researched", TaskState.RESEARCHED),
+        ("agent:triaged", TaskState.TRIAGED),
+    )
+
+    def __init__(self, labels: list[str]) -> None:
+        self.labels = list(labels)
+        self.transition_state = AsyncMock()
+
+    async def get_task(self, task_id: str) -> Task:
+        state = next((st for lbl, st in self._PRIORITY if lbl in self.labels), TaskState.BACKLOG)
+        return Task(id=task_id, title="Test", body="old", state=state, labels=list(self.labels))
+
+    async def add_label(self, task_id: str, label: str) -> None:
+        self.labels.append(label)
+
+    async def remove_label(self, task_id: str, label: str) -> None:
+        self.labels.remove(label)
+
+
+class TestRetriageGuardReadsStateBeforeTheVerdictLabel:
+    """The transition guard must see the issue's real state, not the one the verdict label implies."""
+
+    @pytest.mark.parametrize(
+        ("verdict", "labels"),
+        [
+            ("needs_spec", ["agent:researched"]),
+            ("human_only", ["agent:in-progress"]),
+            ("human_only", ["agent:in-review"]),
+        ],
+    )
+    async def test_verdict_label_cannot_mask_an_advanced_state(self, verdict: str, labels: list[str]) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        adapter = _LabelDerivedAdapter(labels)
+        task = Task(id="42", title="Test", body="old", state=TaskState.TRIAGED)
+        config = ProjectConfig(github_repo="o/r", triage={"auto_label": True})
+
+        with patch("sova.cli.commands.harden.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = verdict
+            await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, False)  # type: ignore[arg-type]
+
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_state_is_read_once_before_any_label_write(self) -> None:
+        from sova.cli.commands.harden import _retriage_task
+
+        adapter = _LabelDerivedAdapter(["agent:triaged"])
+        calls: list[str] = []
+        real_get, real_add = adapter.get_task, adapter.add_label
+
+        async def _get(task_id: str) -> Task:
+            calls.append("get")
+            return await real_get(task_id)
+
+        async def _add(task_id: str, label: str) -> None:
+            calls.append("add")
+            await real_add(task_id, label)
+
+        adapter.get_task, adapter.add_label = _get, _add  # type: ignore[method-assign]
+        task = Task(id="42", title="Test", body="old", state=TaskState.TRIAGED)
+        config = ProjectConfig(github_repo="o/r", triage={"auto_label": True})
+
+        with patch("sova.cli.commands.harden.TriageRole.heuristic_assess") as assess:
+            assess.return_value.suitability = "needs_spec"
+            await _retriage_task(task, "## Objective\nEnriched.\n", config, adapter, False)  # type: ignore[arg-type]
+
+        assert calls == ["get", "add"]
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.NEEDS_SPEC)

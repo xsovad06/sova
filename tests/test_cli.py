@@ -1528,6 +1528,31 @@ class TestTriageHelpers:
         assert len(result) == 1
         assert result[0].id == "1"
 
+    @pytest.mark.parametrize(
+        ("suitability", "expected"),
+        [
+            # A one-line body fails the quality gate, which downgrades "ready" to needs_spec.
+            ("ready", TaskState.NEEDS_SPEC),
+            ("human_only", TaskState.HUMAN_ONLY),
+            ("interactive", TaskState.TRIAGED),
+        ],
+    )
+    async def test_apply_triage_actions_transitions_to_the_verdict_state(
+        self, suitability: str, expected: TaskState
+    ) -> None:
+        from sova.cli.commands.triage import _apply_triage_actions
+        from sova.config.models import TriageConfig
+        from sova.roles.base import TaskAssessment
+        from sova.roles.triage import TriageRole
+
+        task = Task(id="42", title="Test", body="Short.", state=TaskState.BACKLOG, labels=[])
+        assessment = TaskAssessment(suitability=suitability, confidence=0.9, reasoning="r")
+        adapter = AsyncMock()
+
+        await _apply_triage_actions(adapter, TriageRole(), task, assessment, TriageConfig(), force=False)
+
+        adapter.transition_state.assert_awaited_once_with("42", expected)
+
 
 # ---------------------------------------------------------------------------
 # Harden helper functions
