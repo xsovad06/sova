@@ -20,7 +20,7 @@ from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section, mask_fenced_blocks, strip_preamble, upsert_section
 
 if TYPE_CHECKING:
-    from sova.config.models import TaskSourceConfig
+    from sova.config.models import CommitConfig, TaskSourceConfig
     from sova.core.context import ExecutionContext
 
 log = get_logger(component="step._pr_body")
@@ -410,6 +410,20 @@ def parse_verdicts(tail: str, criteria: list[str]) -> list[tuple[str, str]] | No
     return results
 
 
+def _force_verdict(verdicts: list[tuple[str, str]], patterns: list[str], forced: str) -> list[tuple[str, str]]:
+    """Set a criterion's verdict to *forced* when its text contains any of *patterns*, ignoring case.
+
+    Entries are trimmed and blank ones dropped: a whitespace-only entry is a substring of every
+    multiword criterion and would force them all.
+    """
+    lowered_patterns = [stripped for p in patterns if (stripped := p.strip().lower())]
+    if not lowered_patterns:
+        return verdicts
+    return [
+        (text, forced if any(p in text.lower() for p in lowered_patterns) else verdict) for text, verdict in verdicts
+    ]
+
+
 def apply_owner_overrides(verdicts: list[tuple[str, str]], patterns: list[str]) -> list[tuple[str, str]]:
     """Force a criterion's verdict to "owner" when its text matches *patterns*.
 
@@ -419,23 +433,33 @@ def apply_owner_overrides(verdicts: list[tuple[str, str]], patterns: list[str]) 
     plain case-insensitive substrings (the documented defaults, e.g.
     ``"(interactive"``, are not valid regexes).
     """
-    lowered_patterns = [p.lower() for p in patterns if p]
-    if not lowered_patterns:
-        return verdicts
-    overridden = []
-    for text, verdict in verdicts:
-        lowered_text = text.lower()
-        if any(p in lowered_text for p in lowered_patterns):
-            verdict = "owner"
-        overridden.append((text, verdict))
-    return overridden
+    return _force_verdict(verdicts, patterns, "owner")
+
+
+def apply_ci_gated_overrides(verdicts: list[tuple[str, str]], patterns: list[str]) -> list[tuple[str, str]]:
+    """Force a criterion's verdict to "met" when its text matches *patterns*.
+
+    These are criteria the merge gate settles ("All existing tests pass (`make check`)"):
+    the body is written before ``monitor_ci``, so the model has no test result to read
+    and reports them unmet, which turned PR #1364 into "Part of #1354" although it
+    finished the issue. The closing keyword only acts at merge, when required CI has
+    passed. Applied before :func:`apply_owner_overrides`, so an owner-only match wins.
+    """
+    return _force_verdict(verdicts, patterns, "met")
+
+
+def apply_verdict_overrides(verdicts: list[tuple[str, str]], commit: CommitConfig) -> list[tuple[str, str]]:
+    """Apply the CI-gated and then the owner-only overrides, so an owner-only match wins."""
+    return apply_owner_overrides(
+        apply_ci_gated_overrides(verdicts, commit.ci_gated_patterns), commit.owner_only_patterns
+    )
 
 
 _UNPARSEABLE_NOTE = "Per-criterion verdicts could not be parsed; every criterion is listed conservatively below."
 
 
 def process_llm_result(
-    raw_text: str, criteria: list[str], owner_only_patterns: list[str]
+    raw_text: str, criteria: list[str], commit: CommitConfig
 ) -> tuple[str, list[tuple[str, str]] | None]:
     """Split the LLM's output into (markdown_body, verdicts).
 
@@ -445,8 +469,8 @@ def process_llm_result(
     "met". "unknown" is kept distinct from a genuine model-reported "unmet"
     so :func:`render_closing_block` can tell a human reviewer the verdicts
     were never actually obtained, rather than silently asserting that named
-    criteria were checked and found not done. Owner-only overrides are then
-    applied deterministically on top, in both cases.
+    criteria were checked and found not done. :func:`apply_verdict_overrides`
+    then applies *commit*'s patterns deterministically on top, in both cases.
     """
     body, tail = split_verdict_tail(strip_preamble(raw_text))
     if not criteria:
@@ -455,7 +479,7 @@ def process_llm_result(
     if parsed is None:
         log.warning("step._pr_body.verdicts_unparseable", criteria_count=len(criteria))
         parsed = [(c, "unknown") for c in criteria]
-    return body, apply_owner_overrides(parsed, owner_only_patterns)
+    return body, apply_verdict_overrides(parsed, commit)
 
 
 def render_closing_block(issue_number: str, verdicts: list[tuple[str, str]] | None) -> str:

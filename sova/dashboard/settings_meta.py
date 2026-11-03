@@ -924,6 +924,15 @@ _REGISTRY: list[SettingMeta] = [
         "commit",
         "list",
     ),
+    SettingMeta(
+        "commit.ci_gated_patterns",
+        "CI-gated criteria patterns",
+        "Plain, case-insensitive substrings (not regexes) marking an acceptance criterion the merge gate settles "
+        "(required CI checks), so the PR body counts it as met instead of listing it as not done. "
+        "Set an empty list when merges are not gated on CI; owner-only patterns win over these",
+        "commit",
+        "list",
+    ),
     # Triage
     SettingMeta(
         "triage.mode",

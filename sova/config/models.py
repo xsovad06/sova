@@ -523,6 +523,21 @@ class CommitConfig(BaseSettings):
             "interactive confirmation",
         ]
     )
+    # Substrings (case-insensitive, not regexes) that force an acceptance
+    # criterion's verdict to "met": criteria the merge gate settles (required
+    # CI checks, /integrate-pr waiting for green CI) but that the PR body is
+    # written too early to see, since create_pr and refresh_pr_body run before
+    # monitor_ci. A closing keyword only acts at merge, so these hold by then.
+    # The defaults match the issue template's two closing criteria; a project
+    # whose merges are not gated on CI sets this to an empty list.
+    ci_gated_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "`make check`",
+            "`make lint`",
+            "all existing tests pass",
+            "no new lint warnings",
+        ]
+    )
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMMIT_")
 

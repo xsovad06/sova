@@ -16,6 +16,7 @@ from sova.core.steps._pr_body import (
     _ISSUE_BODY_EXCERPT_LIMIT,
     _UNAVAILABLE,
     _jira_ticket_link,
+    apply_verdict_overrides,
     build_prompt,
     compose_body,
     extract_acceptance_criteria,
@@ -595,7 +596,7 @@ class CreatePRStep(BaseStep):
             and is_valid_commit_line(title_candidate, types=ctx.config.commit.types, scopes=ctx.config.commit.scopes)
         ):
             title = title_candidate
-        sections_markdown, verdicts = process_llm_result(body_text, criteria, ctx.config.commit.owner_only_patterns)
+        sections_markdown, verdicts = process_llm_result(body_text, criteria, ctx.config.commit)
         diff_ok = log_result.success and diff_stat_result.success and diff_content_result.success
         if verdicts and not diff_ok:
             # The model still answered "met" for every criterion checkable
@@ -603,8 +604,10 @@ class CreatePRStep(BaseStep):
             # crediting that guess would violate the fail-toward-"Part of"
             # rule the rest of this PR follows. A genuine "unmet"/"owner"
             # verdict can still come from the issue text alone, so only
-            # "met" is demoted.
-            verdicts = [(text, "unknown" if verdict == "met" else verdict) for text, verdict in verdicts]
+            # "met" is demoted. A CI-gated "met" never came from the diff,
+            # so the overrides are re-applied.
+            demoted = [(text, "unknown" if verdict == "met" else verdict) for text, verdict in verdicts]
+            verdicts = apply_verdict_overrides(demoted, ctx.config.commit)
 
         if not ctx.has_issue:
             return sections_markdown, title
@@ -622,8 +625,10 @@ class CreatePRStep(BaseStep):
         acceptance criteria (via :func:`compose_body`), the same fail-toward-
         "Part of #N" rule every other generation path follows: a criterion
         that cannot be verified here (no LLM ran) must never be credited as
-        met, so any criteria present yield ``Part of #N`` rather than an
-        unconditional ``Closes #N``.
+        met, so any criterion that is not CI-gated yields ``Part of #N``
+        rather than an unconditional ``Closes #N``. A criterion matching
+        ``commit.ci_gated_patterns`` counts as met, since the merge gate
+        settles it, unless an owner-only pattern also matches.
         """
         ts = ctx.config.task_source
         lines = [
@@ -667,7 +672,9 @@ class CreatePRStep(BaseStep):
         # was actually checked. "unmet" would claim the criteria were
         # verified and found incomplete, which render_closing_block()
         # reserves for a real model-reported verdict.
-        verdicts = [(c, "unknown") for c in criteria] if criteria else None
+        # The CI-gated and owner-only overrides still apply: neither needs
+        # an LLM, and both keep this path's decision equal to the LLM path's.
+        verdicts = apply_verdict_overrides([(c, "unknown") for c in criteria], ctx.config.commit) if criteria else None
         return compose_body(body, ctx.issue_number, verdicts, is_jira=False)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
