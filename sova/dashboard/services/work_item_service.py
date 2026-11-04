@@ -82,6 +82,7 @@ from sova.dashboard.services.work_verdict import (
 from sova.dashboard.services.work_verdict import (
     clear_verdict_cache as clear_verdict_cache,
 )
+from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state, pr_open_state_from_list
 from sova.supervisor.suitability import (
     RankedTask,
     assess_suitability,
@@ -93,6 +94,7 @@ from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
     from sova.supervisor.dependency_graph import DependencyGraph
 
 log = get_logger(component="dashboard.work_item")
@@ -401,14 +403,22 @@ def _build_task_item(
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
     suitability: dict | None = None,
+    open_pr_numbers: Collection[int] | None = None,
 ) -> dict:
-    """Build a work item from a queue task and its linked PR/handoff/agent."""
+    """Build a work item from a queue task and its linked PR/handoff/agent.
+
+    ``open_pr_numbers`` is the fetched open-PR list, or ``None`` when that fetch failed. A PR number
+    carried over from the last run is dropped only when that list proves the PR is no longer open.
+    """
     issue_num = str(task["issue"])
     pr_number = None
     if pr_data:
         pr_number = pr_data.get("number")
     elif task.get("last_run") and task["last_run"].get("pr_number"):
         pr_number = task["last_run"]["pr_number"]
+        if pr_open_state_from_list(pr_number, open_pr_numbers) is PROpenState.NOT_OPEN:
+            log.debug("work_items.stale_pr_number_dropped", issue=issue_num, pr=pr_number)
+            pr_number = None
 
     resolution, facts = compute_work_item_resolution(
         task_state=task.get("state"),
@@ -615,6 +625,62 @@ def _attach_merge_blockers(
 # Main entry point ------------------------------------------------------------
 
 
+def _open_pr_numbers(fetched_prs: list[dict] | None, cfg: ProjectConfig | None) -> set[int] | None:
+    """The open PR numbers, or ``None`` when they cannot be known.
+
+    That is a failed PR fetch, no configured repo, or a list as long as ``OPEN_PR_LIST_LIMIT``
+    (``gh pr list --limit`` may have cut an open PR off).
+    """
+    if fetched_prs is None or cfg is None or not cfg.github_repo:
+        return None
+    if len(fetched_prs) >= OPEN_PR_LIST_LIMIT:
+        return None
+    return {pr["number"] for pr in fetched_prs}
+
+
+_CONFIRM_CONCURRENCY = 4
+_CONFIRM_BACKOFF = 30.0  # seconds without lookups for a repo after one came back UNKNOWN
+_confirm_backoff_until: dict[str, float] = {}
+
+
+async def _confirm_open_pr_numbers(
+    open_numbers: set[int] | None, queue: list[dict], cfg: ProjectConfig | None
+) -> set[int] | None:
+    """Add last-run PRs the open list lacks but a direct lookup does not confirm as closed.
+
+    The open list is cached, so a PR a still-running developer run just created can be missing from it.
+    A PR numbered below the highest listed one existed when the list was fetched, so its absence is
+    conclusive and costs no call; only a higher number can be newer than the list. Lookups run a few at a
+    time, and after an ``UNKNOWN`` (an outage or rate limit) the repo is not asked again for a while.
+    Only ``NOT_OPEN`` lets ``_build_task_item`` drop a number; ``OPEN`` and ``UNKNOWN`` keep it.
+    """
+    if open_numbers is None or cfg is None:
+        return open_numbers
+    newest_listed = max(open_numbers, default=0)
+    candidates = {
+        pr
+        for task in queue
+        if (pr := (task.get("last_run") or {}).get("pr_number")) and pr not in open_numbers and pr > newest_listed
+    }
+    if not candidates:
+        return open_numbers
+    now = time.monotonic()
+    if now < _confirm_backoff_until.get(cfg.github_repo, 0.0):
+        return open_numbers | candidates
+    ordered = sorted(candidates)
+    semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
+
+    async def _lookup(pr: int) -> PROpenState:
+        async with semaphore:
+            return await get_pr_open_state(pr, repo=cfg.github_repo, github_user=cfg.github_user)
+
+    states = await asyncio.gather(*(_lookup(pr) for pr in ordered))
+    if PROpenState.UNKNOWN in states:
+        _confirm_backoff_until[cfg.github_repo] = time.monotonic() + _CONFIRM_BACKOFF
+    confirmed = {pr for pr, state in zip(ordered, states, strict=True) if state is not PROpenState.NOT_OPEN}
+    return open_numbers | confirmed
+
+
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
@@ -642,10 +708,12 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         # pre-budget-cap routing rather than inventing an exhausted state.
         max_address_cycles = 0
 
-    (queue, prs, handoffs, agents_data), graph = await asyncio.gather(
+    (queue, fetched_prs, handoffs, agents_data), graph = await asyncio.gather(
         _fetch_all_sources(project_dir=project_dir, slug=slug),
         _load_graph_or_none(project_dir),
     )
+    open_pr_numbers = await _confirm_open_pr_numbers(_open_pr_numbers(fetched_prs, cfg), queue, cfg)
+    prs = fetched_prs if fetched_prs is not None else []
 
     running_by_issue = _index_running_agents(agents_data)
     handoffs_by_issue = _index_handoffs(handoffs)
@@ -672,6 +740,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 external_reviews_enabled=external_reviews_enabled,
                 max_address_cycles=max_address_cycles,
                 suitability=_classify_queue_item(task, graph),
+                open_pr_numbers=open_pr_numbers,
             )
         )
 
@@ -818,7 +887,7 @@ async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[
     """
     slug = project_dir.name if project_dir else None
     prs, agents_data = await asyncio.gather(_safe_prs(project_dir), _safe_agents(slug))
-    return _running_issues(agents_data), _open_pr_issues(prs)
+    return _running_issues(agents_data), _open_pr_issues(prs or [])
 
 
 async def get_next_tasks(project_dir: Path | None = None, *, limit: int | None = None) -> dict:
@@ -844,15 +913,19 @@ async def get_next_tasks(project_dir: Path | None = None, *, limit: int | None =
 # Fetch helpers ---------------------------------------------------------------
 
 
-async def _safe_prs(project_dir: Path | None) -> list[dict]:
-    """Open PRs with computed state; an unavailable source degrades to no PRs."""
+async def _safe_prs(project_dir: Path | None) -> list[dict] | None:
+    """Open PRs with computed state; an unavailable source degrades to ``None``, not an empty list.
+
+    ``None`` keeps a failed fetch apart from "no open PRs", so a caller never reads an outage as
+    every PR having been merged. Callers that only need the PRs treat ``None`` as no PRs.
+    """
     from sova.dashboard.services.pr_service import list_open_prs_with_state
 
     try:
-        return await list_open_prs_with_state(project_dir)
+        return await list_open_prs_with_state(project_dir, raise_on_error=True)
     except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
         log.warning("work_items.prs_failed", exc_info=True)
-        return []
+        return None
 
 
 async def _safe_agents(slug: str | None) -> dict:
@@ -870,8 +943,8 @@ async def _fetch_all_sources(
     *,
     project_dir: Path | None,
     slug: str | None,
-) -> tuple[list[dict], list[dict], list[dict], dict]:
-    """Fetch queue, PRs, handoffs, and running agents concurrently."""
+) -> tuple[list[dict], list[dict] | None, list[dict], dict]:
+    """Fetch queue, PRs (``None`` when unavailable), handoffs, and running agents concurrently."""
     from sova.dashboard.services.handoff_service import get_all_handoffs
     from sova.dashboard.services.queue_service import get_priority_queue
 
