@@ -429,6 +429,98 @@ class TestRecoverLastPrNumber:
             assert await _first_open_pr([300, 200], tmp_path) == 300
 
 
+class TestDeveloperStartPrNumber:
+    """A developer start with a caller-supplied PR (a Rerun button on an old run row) drops it once it is closed."""
+
+    @staticmethod
+    async def _pr_for_start(
+        tmp_path: Path, requested: int | None, state: PROpenState, *, resuming: bool = False
+    ) -> tuple[int | None, AsyncMock]:
+        from sova.dashboard.services.agent_lifecycle import _developer_pr_number
+
+        recover = AsyncMock(return_value=500)
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="o/r", github_user="u")),
+            patch("sova.git.pr.get_pr_open_state", new=AsyncMock(return_value=state)),
+            patch("sova.dashboard.services.agent_lifecycle._recover_last_pr_number", new=recover),
+        ):
+            return await _developer_pr_number("42", requested, tmp_path, resuming=resuming), recover
+
+    async def test_merged_requested_pr_is_dropped_for_a_recovered_open_one(self, tmp_path: Path) -> None:
+        pr, recover = await self._pr_for_start(tmp_path, 88, PROpenState.NOT_OPEN)
+        assert pr == 500
+        recover.assert_awaited_once_with("42", tmp_path)
+
+    @pytest.mark.parametrize("state", [PROpenState.OPEN, PROpenState.UNKNOWN])
+    async def test_open_or_unconfirmed_requested_pr_is_kept(self, tmp_path: Path, state: PROpenState) -> None:
+        pr, recover = await self._pr_for_start(tmp_path, 88, state)
+        assert pr == 88
+        recover.assert_not_awaited()
+
+    async def test_resumed_run_with_a_merged_pr_recovers_no_other_pr(self, tmp_path: Path) -> None:
+        pr, recover = await self._pr_for_start(tmp_path, 88, PROpenState.NOT_OPEN, resuming=True)
+        assert pr is None
+        recover.assert_not_awaited()
+
+    @pytest.mark.parametrize("state", [PROpenState.OPEN, PROpenState.UNKNOWN])
+    async def test_resumed_run_keeps_an_open_or_unconfirmed_pr(self, tmp_path: Path, state: PROpenState) -> None:
+        pr, recover = await self._pr_for_start(tmp_path, 88, state, resuming=True)
+        assert pr == 88
+        recover.assert_not_awaited()
+
+    async def test_no_requested_pr_recovers_one(self, tmp_path: Path) -> None:
+        pr, recover = await self._pr_for_start(tmp_path, None, PROpenState.OPEN)
+        assert pr == 500
+        recover.assert_awaited_once()
+
+    async def test_start_agent_applies_it_to_developer_runs_only(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import agent_lifecycle
+
+        pick = AsyncMock(return_value=None)
+        recover = AsyncMock(return_value=None)
+        with (
+            patch.object(agent_lifecycle, "_developer_pr_number", new=pick),
+            patch.object(agent_lifecycle, "_recover_last_pr_number", new=recover),
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=MagicMock(project_dir=tmp_path)),
+            patch.object(agent_lifecycle, "check_memory_pressure", side_effect=RuntimeError("stop here")),
+        ):
+            for role in ("developer", None, "reviewer"):
+                with pytest.raises(RuntimeError, match="stop here"):
+                    await agent_lifecycle.start_agent("42", role=role, pr_number=88)
+            # An unspecified role leaves a supplied PR alone but still recovers a missing one.
+            with pytest.raises(RuntimeError, match="stop here"):
+                await agent_lifecycle.start_agent("42", role=None)
+        assert [c.args for c in pick.await_args_list] == [("42", 88, tmp_path)]
+        recover.assert_awaited_once_with("42", tmp_path)
+
+    async def test_start_agent_resume_with_a_merged_pr_does_not_spawn_with_another_pr(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import agent_lifecycle
+
+        class _StopLock:
+            async def __aenter__(self) -> None:
+                raise RuntimeError("stop here")
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        agents = MagicMock(project_dir=tmp_path, _lock=_StopLock(), agents={})
+        recover = AsyncMock(return_value=500)
+        capture = AsyncMock(return_value=None)
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="o/r", github_user="u")),
+            patch("sova.git.pr.get_pr_open_state", new=AsyncMock(return_value=PROpenState.NOT_OPEN)),
+            patch.object(agent_lifecycle, "_recover_last_pr_number", new=recover),
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=agents),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_network_connectivity", return_value=(None, None)),
+            patch("sova.dashboard.services.agent_db._capture_pr_head_sha", new=capture),
+            pytest.raises(RuntimeError, match="stop here"),
+        ):
+            await agent_lifecycle.start_agent("42", role="developer", resume_run_id=5, pr_number=88)
+        recover.assert_not_awaited()
+        capture.assert_not_awaited()
+
+
 class TestRunKeepsStoredPrForDispatch:
     """`sova run` hands the stored PR to dispatch() untouched: only DeveloperRole resets on a closed PR."""
 
