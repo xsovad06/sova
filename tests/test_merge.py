@@ -6,11 +6,14 @@ import json
 from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
 from sova.git.merge import (
     MergedIssues,
     MergeQueueStatus,
+    OpenedPrIssues,
     _build_merge_args,
     _get_pr_base_branch,
     _render_part_of_comment,
@@ -19,6 +22,7 @@ from sova.git.merge import (
     get_merge_queue_status,
     handle_merged_pr_issues,
     handle_post_merge_state,
+    mark_pr_issues_in_review,
     merge_pr,
     poll_merge_queue,
     should_use_merge_queue,
@@ -740,6 +744,80 @@ class TestHandleMergedPrIssues:
             "issue #1 moved to done",
             "issue #2 left open (Part of), criteria comment in place",
             "issue #3 not updated (see log)",
+        ]
+
+
+class TestMarkPrIssuesInReview:
+    """An opened PR moves its linked issues to in_review, never over a person's call or past it."""
+
+    @staticmethod
+    def _adapter(states: dict[str, TaskState]) -> AsyncMock:
+        adapter = AsyncMock()
+        adapter.get_state.side_effect = lambda issue: states[issue]
+        return adapter
+
+    @staticmethod
+    async def _mark(body: str, adapter: AsyncMock, *, failing: tuple[str, ...] = ()) -> OpenedPrIssues | None:
+        fake_run, _ = _fake_gh(body, failing=failing)
+        with (
+            patch("sova.git.merge.run", new=fake_run),
+            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+        ):
+            return await mark_pr_issues_in_review(884, repo="o/r", adapter=adapter)
+
+    @pytest.mark.parametrize(
+        "state", [TaskState.BACKLOG, TaskState.TRIAGED, TaskState.RESEARCHED, TaskState.IN_PROGRESS]
+    )
+    async def test_closing_and_part_of_issues_move_forward(self, state: TaskState) -> None:
+        """The #1281 incident: a Part of merge stripped the state label, so the next PR's issue read as backlog."""
+        adapter = self._adapter({"1": state, "2": state})
+        outcome = await self._mark("Closes #1\n\n## Issue\nPart of #2", adapter)
+
+        assert outcome == OpenedPrIssues(moved=["1", "2"])
+        assert [c.args for c in adapter.transition_state.await_args_list] == [
+            ("1", TaskState.IN_REVIEW),
+            ("2", TaskState.IN_REVIEW),
+        ]
+
+    @pytest.mark.parametrize("state", [TaskState.HUMAN_ONLY, TaskState.NEEDS_SPEC, TaskState.ON_QA, TaskState.DONE])
+    async def test_a_state_that_is_not_behind_review_is_left_alone(self, state: TaskState) -> None:
+        """transition_state() replaces every state label, so moving would drop agent:human-only or agent:needs-spec."""
+        adapter = self._adapter({"1": state})
+        outcome = await self._mark("Closes #1", adapter)
+
+        assert outcome == OpenedPrIssues(left=[("1", state)])
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_an_issue_already_in_review_is_not_rewritten(self) -> None:
+        adapter = self._adapter({"1": TaskState.IN_REVIEW})
+        assert await self._mark("Closes #1", adapter) == OpenedPrIssues(already=["1"])
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_a_failure_is_recorded_and_the_next_issue_still_moves(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state.side_effect = [RuntimeError("gh down"), TaskState.RESEARCHED, TaskState.TRIAGED]
+        adapter.transition_state.side_effect = [KeyError("labels"), None]
+        outcome = await self._mark("Closes #1, closes #2, closes #3", adapter)
+
+        assert outcome == OpenedPrIssues(moved=["3"], failed=["1", "2"])
+
+    async def test_a_bare_reference_is_left_alone(self) -> None:
+        adapter = AsyncMock()
+        assert await self._mark("Related: #12", adapter) == OpenedPrIssues()
+        adapter.get_state.assert_not_awaited()
+
+    async def test_unreadable_pr_body_returns_none(self) -> None:
+        adapter = AsyncMock()
+        assert await self._mark("Closes #1", adapter, failing=("pr view",)) is None
+        adapter.get_state.assert_not_awaited()
+
+    def test_describe_lists_every_outcome(self) -> None:
+        outcome = OpenedPrIssues(moved=["1"], already=["2"], left=[("3", TaskState.HUMAN_ONLY)], failed=["4"])
+        assert outcome.describe() == [
+            "issue #1 moved to in_review",
+            "issue #2 already in_review",
+            "issue #3 left at human_only (not moved)",
+            "issue #4 not updated (see log)",
         ]
 
 

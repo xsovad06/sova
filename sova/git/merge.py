@@ -587,3 +587,64 @@ async def handle_merged_pr_issues(
         failed=outcome.failed,
     )
     return outcome
+
+
+# States an opened PR moves forward to IN_REVIEW. HUMAN_ONLY and NEEDS_SPEC are a person's call and ON_QA and
+# DONE are past review; transition_state() replaces every state label, so moving those would erase that call.
+_IN_REVIEW_FROM = frozenset({TaskState.BACKLOG, TaskState.TRIAGED, TaskState.RESEARCHED, TaskState.IN_PROGRESS})
+
+
+@dataclass
+class OpenedPrIssues:
+    """What :func:`mark_pr_issues_in_review` did to each issue an open PR body links."""
+
+    moved: list[str] = field(default_factory=list)
+    already: list[str] = field(default_factory=list)
+    left: list[tuple[str, TaskState]] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+
+    def describe(self) -> list[str]:
+        return (
+            [f"issue #{n} moved to {TaskState.IN_REVIEW.value}" for n in self.moved]
+            + [f"issue #{n} already {TaskState.IN_REVIEW.value}" for n in self.already]
+            + [f"issue #{n} left at {state.value} (not moved)" for n, state in self.left]
+            + [f"issue #{n} not updated (see log)" for n in self.failed]
+        )
+
+
+async def mark_pr_issues_in_review(
+    pr_number: int, *, repo: str, adapter: TaskAdapter, github_user: str = ""
+) -> OpenedPrIssues | None:
+    """Move each issue an open PR closes or is part of to IN_REVIEW, as the pipeline's create_pr step does.
+
+    An interactive ``/pr`` has no create_pr step, and a ``Part of`` merge strips the issue's state label, so
+    without this the issue's next PR leaves it reading as BACKLOG and a developer run on it fails its state
+    gate. Only an issue in ``_IN_REVIEW_FROM`` moves. Returns None when the PR body cannot be read.
+    """
+    env = await resolve_gh_env(github_user)
+    links = await read_issue_links(pr_number, repo=repo, env=env)
+    if links is None:
+        return None
+    outcome = OpenedPrIssues()
+    for issue in (*links.closes, *links.part_of):
+        try:
+            state = await adapter.get_state(issue)
+            if state is TaskState.IN_REVIEW:
+                outcome.already.append(issue)
+            elif state in _IN_REVIEW_FROM:
+                await adapter.transition_state(issue, TaskState.IN_REVIEW)
+                outcome.moved.append(issue)
+            else:
+                outcome.left.append((issue, state))
+        except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
+            log.warning("git.merge.mark_in_review_failed", issue=issue, pr=pr_number, exc_info=True)
+            outcome.failed.append(issue)
+    log.info(
+        "git.merge.opened_pr_issues_handled",
+        pr=pr_number,
+        moved=outcome.moved,
+        already=outcome.already,
+        left=[issue for issue, _ in outcome.left],
+        failed=outcome.failed,
+    )
+    return outcome

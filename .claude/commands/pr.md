@@ -170,7 +170,7 @@ Create a pull request for the current branch using the project's standard PR tem
    - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), fetch the issue body (`gh issue view 42 --json body`) and check its `## Acceptance Criteria` section against the actual diff on this branch:
      - If every criterion is met by this PR (or the issue has no `## Acceptance Criteria` section at all), add a `## Issue` section containing `Closes #42`.
      - Count a criterion that matches one of the project's CI-gated patterns (`sova config get commit.ci_gated_patterns`, plain case-insensitive substrings; by default the `make check` and `make lint` criteria) as met: the merge gate settles it, and the closing keyword only acts at merge. An owner/interactive/manual-only criterion stays unmet even when it also matches.
-     - If any criterion is unmet, marked owner/interactive/manual-only, or has an unknown/unparseable verdict (you cannot tell from the diff whether it was met), do NOT use `Closes #42`: add a `## Issue` section containing `Part of #42`, a blank line, `Not done in this PR:`, and a bullet for each unmet, owner-only, or unknown criterion instead. Reserve `Closes #42` for when every criterion is verified as met or the issue has no acceptance criteria at all. This mirrors the deterministic decision the autonomous pipeline makes from the same acceptance criteria (`sova/core/steps/_pr_body.py`); the two paths must agree, since a later `/address-pr` round reuses whichever decision is already in the body.
+     - If any criterion is unmet, marked owner/interactive/manual-only, or has an unknown/unparseable verdict (you cannot tell from the diff whether it was met), do NOT use `Closes #42`: add a `## Issue` section containing `Part of #42`, a blank line, `Not done in this PR:`, and a bullet for each unmet, owner-only, or unknown criterion instead. Reserve `Closes #42` for when every criterion is verified as met or the issue has no acceptance criteria at all. This mirrors the autonomous pipeline's decision (`sova/core/steps/_pr_body.py`); the two must agree.
      - Always place the decision under its own `## Issue` heading, not as trailing text inside another section, so a later `/address-pr` round can find and replace it without disturbing other sections.
 
    **Save the body to a file** so step 9 can check it and step 11 can submit it unchanged. Note the printed path: later shell blocks are fresh shells and must re-assign `BODY_FILE` to it.
@@ -214,7 +214,7 @@ Create a pull request for the current branch using the project's standard PR tem
    ```
    A hit inside a fenced code sample in the body (a literal end-of-options separator) is acceptable; a hit in prose is not: use a colon, a comma, or a single hyphen instead.
 
-   For a GitHub issue, also stop if the body would close an issue other than the intended one. A quoted `Closes #12` in prose closes #12 on merge, and a later bot or resolver can then take it for the PR's own issue. Set `ISSUE` to the issue number from `$ARGUMENTS` (empty when there is none: step 8 then writes no closing link, so any closing reference in the body is stray and stops the check). The check prints nothing when the body is safe; a printed `STOP` line (exit 1) is a hard stop: reword the body file (put the phrase in a code span, or say "stays open"), then re-run it before pushing. A `SKIP` line on stderr (exit 2) means `python3` cannot import `sova` (an active virtualenv hides the user-site install), so nothing was checked: run the same script with the interpreter `sova` is installed under, or read the body file yourself for any `Closes`, `Fixes` or `Resolves` followed by an issue number other than `ISSUE`, and treat a hit as the same hard stop.
+   For a GitHub issue, also stop if the body would close an issue other than the intended one. A quoted `Closes #12` in prose closes #12 on merge. Set `ISSUE` to the issue number from `$ARGUMENTS` (empty when there is none: step 8 then writes no closing link, so any closing reference in the body is stray and stops the check). The check prints nothing when the body is safe; a printed `STOP` line (exit 1) is a hard stop: reword the body file (put the phrase in a code span, or say "stays open"), then re-run it before pushing. A `SKIP` line on stderr (exit 2) means `python3` cannot import `sova` (an active virtualenv hides the user-site install), so nothing was checked: run the same script with the interpreter `sova` is installed under, or read the body file yourself for any `Closes`, `Fixes` or `Resolves` followed by an issue number other than `ISSUE`, and treat a hit as the same hard stop.
    ```bash
    BODY_FILE=<path printed in step 7>
    ISSUE=<issue number from the arguments, digits only, or empty>
@@ -254,22 +254,32 @@ Create a pull request for the current branch using the project's standard PR tem
     ```bash
     BODY_FILE=<path printed in step 7>
     # New PR (--assignee @me ensures creator is always assigned)
-    gh pr create --assignee @me --title "THE_TITLE" --body-file "$BODY_FILE"
+    gh pr create --assignee @me --title "THE_TITLE" --body-file "$BODY_FILE" \
+      || { echo "PR create failed: STOP" >&2; exit 1; }
 
     # Update existing PR
-    gh pr edit <PR_NUMBER> --title "THE_TITLE" --body-file "$BODY_FILE"
+    gh pr edit <PR_NUMBER> --title "THE_TITLE" --body-file "$BODY_FILE" \
+      || { echo "PR edit failed: STOP" >&2; exit 1; }
 
     # Once the PR is created or updated, remove the temporary body file
     rm -f "$BODY_FILE"
+
+    # Move linked issues to in review (GitHub only); a worktree has no sova.db
+    PRIMARY=$(cd "$(git rev-parse --git-common-dir)/.." && pwd)
+    if [ "$(sova config get task_source.type --project "$PRIMARY")" = github ]; then
+      REPO=$(sova config get github_repo --project "$PRIMARY")
+      test -n "$REPO" || { echo "STOP: github_repo is unset" >&2; exit 1; }
+      PR_NUM=$(gh pr view "$(git branch --show-current)" --repo "$REPO" --json number --jq .number) && sova linked-issues "$PR_NUM" --mark-in-review
+    fi
     ```
 
-12. **Trigger CodeRabbit review** (if configured): do this only once the code it should review is final. When steps 14-18 will run (they push again: visual fixes, CI fixes, self-review fixes), defer this step until step 19, after the last push; a review of pre-fix code spends the bot's limited quota and its findings go stale on the next push.
+12. **Trigger CodeRabbit review** (if configured): only once the code it should review is final. When steps 14-18 will run (they push again), defer this step until step 19, after the last push: a review of pre-fix code spends the bot's limited quota and goes stale.
     This key is not in the `sova config` table, so resolve it through the config loader:
     ```bash
     python3 -c "from pathlib import Path; from sova.config.loader import load_config; \
 print(load_config(Path('.')).external_reviews.coderabbit.trigger_review)"
     ```
-    If it prints `True` and the PR was newly created (not an update), post a comment to trigger CodeRabbit. This is a fresh shell, so resolve the PR number in the same block:
+    If it prints `True` and the PR was newly created (not an update), post a comment to trigger CodeRabbit. This is a fresh shell, so resolve the PR number again:
     ```bash
     PR_NUM=$(gh pr view --json number --jq .number) || { echo "Unable to resolve the PR number" >&2; exit 1; }
     gh pr comment "$PR_NUM" --body "@coderabbitai review"

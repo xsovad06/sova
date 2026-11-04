@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 console = Console(stderr=True)
 
@@ -154,26 +157,53 @@ def linked_issues(
             "and comment on each issue it is only part of.",
         ),
     ] = False,
+    mark_in_review: Annotated[
+        bool,
+        typer.Option(
+            "--mark-in-review",
+            help="Once the PR is open: move each issue it closes or is part of to in_review, "
+            "from backlog, triaged, researched or in_progress only.",
+        ),
+    ] = False,
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
 ) -> None:
-    """Print the issues a PR closes and the ones it is only part of, or act on them after a merge.
+    """Print the issues a PR closes and the ones it is only part of, or act on them.
 
-    Without --apply, prints {"closes": [...], "part_of": [...]} as JSON. Only a closing keyword
+    Without a flag, prints {"closes": [...], "part_of": [...]} as JSON. Only a closing keyword
     (Closes #N, Fixes #N, Resolves #N and their other forms) closes an issue: "Part of #N" leaves
     it open, and a bare #N is a mention, not a link.
     """
-    asyncio.run(_linked_issues(pr=pr, apply=apply, project_dir=project))
+    asyncio.run(_linked_issues(pr=pr, apply=apply, mark_in_review=mark_in_review, project_dir=project))
 
 
-async def _linked_issues(*, pr: int, apply: bool, project_dir: Path | None) -> None:
-    from sova.config.loader import load_config
-    from sova.git.merge import handle_merged_pr_issues, read_issue_links
-    from sova.utils.gh import resolve_gh_env
+async def _pr_state(pr: int, repo: str, env: dict[str, str] | None) -> str:
+    """The PR's GitHub state (OPEN, MERGED, CLOSED), or "" when it cannot be read (the gh error is printed)."""
     from sova.utils.shell import run
 
-    config = load_config(project_dir or Path.cwd())
+    state = await run("gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "--jq", ".state", env=env)
+    if not state.success:
+        # An auth or repository-access error must not read the same as an unreadable PR.
+        console.print(f"[red]gh pr view {pr} failed: {state.stderr.strip() or 'no error output'}[/red]")
+        return ""
+    return state.stdout.strip()
+
+
+async def _linked_issues(*, pr: int, apply: bool, mark_in_review: bool, project_dir: Path | None) -> None:
+    from sova.config.loader import load_config
+    from sova.git.merge import handle_merged_pr_issues, read_issue_links
+    from sova.git.worktree import get_primary_worktree_root
+    from sova.utils.gh import resolve_gh_env
+
+    if apply and mark_in_review:
+        console.print("[red]--apply (after the merge) and --mark-in-review (once open) are separate steps.[/red]")
+        raise typer.Exit(code=2)
+    # A linked worktree has no sova.db, so its own config has no repo: read the primary checkout's, as `sova run` does.
+    config = load_config(project_dir or await get_primary_worktree_root())
     repo = config.github_repo
     env = await resolve_gh_env(config.github_user)
+    if mark_in_review:
+        await _mark_linked_issues_in_review(pr, config, env)
+        return
     if not apply:
         links = await read_issue_links(pr, repo=repo, env=env)
         if links is None:
@@ -185,8 +215,7 @@ async def _linked_issues(*, pr: int, apply: bool, project_dir: Path | None) -> N
     if config.task_source.type != "github":
         console.print("[red]--apply reads GitHub closing keywords; move a Jira ticket through its own workflow.[/red]")
         raise typer.Exit(code=2)
-    state = await run("gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "--jq", ".state", env=env)
-    pr_state = state.stdout.strip() if state.success else ""
+    pr_state = await _pr_state(pr, repo, env)
     if pr_state != "MERGED":
         console.print(f"[red]PR #{pr} is not merged ({pr_state or 'state unknown'}): no issue updated.[/red]")
         raise typer.Exit(code=1)
@@ -203,6 +232,31 @@ async def _linked_issues(*, pr: int, apply: bool, project_dir: Path | None) -> N
     for line in merged.describe(post_merge_state) or [f"PR #{pr} closes no issue and is part of none."]:
         typer.echo(line)
     if merged.failed:
+        raise typer.Exit(code=1)
+
+
+async def _mark_linked_issues_in_review(pr: int, config: ProjectConfig, env: dict[str, str] | None) -> None:
+    """Move the issues an open PR links to in_review, as the pipeline's create_pr step does (see /pr step 11)."""
+    from sova.adapters import create_adapter
+    from sova.git.merge import mark_pr_issues_in_review
+
+    if config.task_source.type != "github":
+        # /pr runs this on every project, so a Jira one must not fail the command.
+        typer.echo("--mark-in-review reads GitHub issue links: no Jira ticket moved.")
+        return
+    pr_state = await _pr_state(pr, config.github_repo, env)
+    if pr_state != "OPEN":
+        console.print(f"[red]PR #{pr} is not open ({pr_state or 'state unknown'}): no issue updated.[/red]")
+        raise typer.Exit(code=1)
+    opened = await mark_pr_issues_in_review(
+        pr, repo=config.github_repo, github_user=config.github_user, adapter=create_adapter(config)
+    )
+    if opened is None:
+        console.print(f"[red]Could not read the body of PR #{pr}: no issue updated.[/red]")
+        raise typer.Exit(code=1)
+    for line in opened.describe() or [f"PR #{pr} closes no issue and is part of none."]:
+        typer.echo(line)
+    if opened.failed:
         raise typer.Exit(code=1)
 
 
