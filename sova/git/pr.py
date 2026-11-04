@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import StrEnum
 from urllib.parse import urlparse
@@ -20,6 +21,18 @@ log = get_logger(component="git.pr")
 _FIND_PR_CACHE_TTL = 90.0  # seconds
 _find_pr_cache: dict[tuple[str, str, str], tuple[float, PRInfo | None]] = {}
 _SEARCH_FAILED = object()
+
+# Short on purpose: a closed PR can be reopened, and a longer TTL would keep a
+# stale "not open" answer alive.
+_PR_OPEN_CACHE_TTL = 30.0  # seconds
+# A merged PR is terminal and cannot reopen, so repeating its lookup can never change the answer.
+_PR_MERGED_CACHE_TTL = 3600.0  # seconds
+_PR_OPEN_CACHE_MAX = 256  # entries; expired ones are evicted on write once the dict passes this
+# Value is (expiry on the monotonic clock, state): the TTL depends on the state.
+_pr_open_cache: dict[tuple[str, str, int], tuple[float, PROpenState]] = {}
+
+# ``gh pr list --limit`` for list_open_prs(): a list this long may be truncated.
+OPEN_PR_LIST_LIMIT = 100
 
 
 def _track_gh_rate_limit(result: ShellResult, github_user: str = "") -> None:
@@ -195,10 +208,12 @@ async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: st
 
 
 class PRLookupError(RuntimeError):
-    """Raised by :func:`find_pr_for_issue_checked` when the lookup could not be confirmed.
+    """A GitHub PR lookup or listing that could not be confirmed.
 
-    Distinct from "no PR found": every underlying search (body and branch, or
-    a quota-forced skip) failed, so the negative result is not trustworthy.
+    Distinct from an empty result ("no PR found", "no open PRs"): the call failed or its output was
+    unreadable, so the negative result is not trustworthy. Raised by :func:`find_pr_for_issue_checked`
+    (every underlying search failed, or a quota-forced skip) and by ``list_open_prs(raise_on_error=True)``,
+    and passed on by ``list_open_prs_with_state(raise_on_error=True)`` and ``/api/prs/open``.
     """
 
 
@@ -396,8 +411,14 @@ def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None | object:
     return PRInfo.from_gh_json(part_of_match) if part_of_match is not None else None
 
 
-async def list_open_prs(*, repo: str, github_user: str = "", author: str | None = None) -> list[dict]:
-    """List open PRs (up to 100) with metadata via a single gh CLI call."""
+async def list_open_prs(
+    *, repo: str, github_user: str = "", author: str | None = None, raise_on_error: bool = False
+) -> list[dict]:
+    """List open PRs (up to ``OPEN_PR_LIST_LIMIT``) with metadata via a single gh CLI call.
+
+    A failed or unparseable call returns ``[]``, which looks the same as "no open PRs";
+    pass ``raise_on_error=True`` to get a :class:`PRLookupError` instead.
+    """
     env = await resolve_gh_env(github_user)
     cmd: list[str] = [
         "gh",
@@ -413,7 +434,7 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
         "latestReviews,closingIssuesReferences,"
         "additions,deletions,changedFiles,assignees",
         "--limit",
-        "100",
+        str(OPEN_PR_LIST_LIMIT),
     ]
     if author:
         cmd.extend(["--author", author])
@@ -421,12 +442,16 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
     _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.list_open_prs.failed", stderr=result.stderr[:200])
+        if raise_on_error:
+            raise PRLookupError(f"Could not list open PRs in repo {repo!r}")
         return []
 
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         log.warning("git.list_open_prs.parse_failed", stdout=result.stdout[:200], exc_info=True)
+        if raise_on_error:
+            raise PRLookupError(f"Could not parse the open PR list for repo {repo!r}") from None
         return []
 
 
@@ -751,6 +776,75 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
         title=data.get("title", ""),
         merge_state=data.get("mergeStateStatus") or "",
     )
+
+
+def _evict_expired_open_states(now: float) -> None:
+    """Bound ``_pr_open_cache``: drop expired entries, then the soonest to expire, once it passes the cap."""
+    if len(_pr_open_cache) <= _PR_OPEN_CACHE_MAX:
+        return
+    for key in [k for k, (expires, _) in _pr_open_cache.items() if expires <= now]:
+        del _pr_open_cache[key]
+    overflow = len(_pr_open_cache) - _PR_OPEN_CACHE_MAX
+    if overflow > 0:
+        for key in sorted(_pr_open_cache, key=lambda k: _pr_open_cache[k][0])[:overflow]:
+            del _pr_open_cache[key]
+
+
+class PROpenState(StrEnum):
+    """Whether a PR is still open. ``UNKNOWN`` means the lookup failed, never "merged"."""
+
+    OPEN = "open"
+    NOT_OPEN = "not_open"
+    UNKNOWN = "unknown"
+
+
+def pr_open_state_from_list(pr_number: int, open_prs: Collection[int] | None) -> PROpenState:
+    """Classify *pr_number* against an already-fetched open-PR number list, with no GitHub call.
+
+    ``None`` (a failed fetch) is ``UNKNOWN``. An empty list from a successful fetch means no PR is
+    open. The caller that fetched the list decides whether it was truncated at ``OPEN_PR_LIST_LIMIT``
+    and passes ``None`` then: the length of a list merged with other numbers says nothing about that.
+    """
+    if open_prs is None:
+        return PROpenState.UNKNOWN
+    return PROpenState.OPEN if pr_number in open_prs else PROpenState.NOT_OPEN
+
+
+async def get_pr_open_state(pr_number: int, *, repo: str, github_user: str = "") -> PROpenState:
+    """Look up whether a PR is open: one ``get_pr_status()`` call, cached for ``_PR_OPEN_CACHE_TTL``.
+
+    ``MERGED`` and ``CLOSED`` are ``NOT_OPEN``; drafts are still ``OPEN``. A merged result is cached
+    for ``_PR_MERGED_CACHE_TTL`` (it is terminal), the others for ``_PR_OPEN_CACHE_TTL``. A lookup
+    failure or an unrecognised state is ``UNKNOWN``, logged and never cached, so callers keep their
+    current behavior and the next call retries.
+    """
+    cache_key = (repo, github_user, pr_number)
+    now = time.monotonic()
+    cached = _pr_open_cache.get(cache_key)
+    if cached and now < cached[0]:
+        return cached[1]
+
+    try:
+        status = await get_pr_status(pr_number, repo=repo, github_user=github_user)
+    except (RuntimeError, OSError, KeyError, ValueError):
+        # KeyError/ValueError: a malformed gh payload (get_pr_status indexes data["number"]).
+        log.warning("git.pr_open_state.lookup_failed", pr=pr_number, repo=repo, exc_info=True)
+        return PROpenState.UNKNOWN
+
+    gh_state = status.state.upper()
+    if gh_state == "OPEN":
+        state, ttl = PROpenState.OPEN, _PR_OPEN_CACHE_TTL
+    elif gh_state == "MERGED":
+        state, ttl = PROpenState.NOT_OPEN, _PR_MERGED_CACHE_TTL
+    elif gh_state == "CLOSED":
+        state, ttl = PROpenState.NOT_OPEN, _PR_OPEN_CACHE_TTL
+    else:
+        # A missing or unexpected state is not proof the PR is gone: failure must not look like merged.
+        log.warning("git.pr_open_state.unexpected_state", pr=pr_number, repo=repo, state=status.state)
+        return PROpenState.UNKNOWN
+    _evict_expired_open_states(now)
+    _pr_open_cache[cache_key] = (now + ttl, state)
+    return state
 
 
 async def get_pr_body(pr_number: int, *, repo: str, github_user: str = "") -> str:
