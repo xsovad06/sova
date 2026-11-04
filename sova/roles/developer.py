@@ -78,7 +78,12 @@ class DeveloperRole(AgentRole):
         # Use pr_number (set by handoff) as primary signal: task.state is
         # unreliable because the dashboard may transition it before we read it.
         if ctx.pr_number and await self._pr_not_open(ctx):
-            log.info("developer.pr_not_open", issue=ctx.issue_number, pr=ctx.pr_number)
+            log.info(
+                "developer.pr_not_open",
+                issue=ctx.issue_number,
+                pr=ctx.pr_number,
+                message=f"PR #{ctx.pr_number} is merged or closed: dropped the PR number, running development",
+            )
             start_fresh_after_closed_pr(ctx, ctx.pr_number)
         if ctx.pr_number:
             return await self._execute_address_review(ctx)

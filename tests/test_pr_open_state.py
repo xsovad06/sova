@@ -576,6 +576,57 @@ class TestRunKeepsStoredPrForDispatch:
         assert ctx.completed_steps == frozenset({"create_worktree", "validate", "push"})
 
 
+class TestDeveloperResumeWithClosedCheckpointPr:
+    """`sova run --resume` on a checkpoint holding a merged PR reaches the development pipeline via dispatch()."""
+
+    @pytest.mark.parametrize("role_name", ["developer", None])
+    async def test_resume_runs_development_on_a_fresh_branch(self, tmp_path: Path, role_name: str | None) -> None:
+        from sova.cli.commands.run import _run_workflow
+        from sova.core.workflow import WorkflowResult
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        checkpoint = {
+            "role": "developer",
+            "pr_number": 88,
+            "branch_name": "feat/issue-42",
+            "worktree_dir": worktree,
+            "completed_steps": {"create_worktree", "develop", "push", "create_pr"},
+        }
+        adapter = AsyncMock()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        seen: dict[str, object] = {}
+
+        class _RecordingEngine:
+            def __init__(self, steps: list, ctx: ExecutionContext) -> None:
+                seen["steps"] = [step.name for step in steps]
+                seen["ctx"] = ctx
+
+            async def run(self) -> WorkflowResult:
+                ctx = seen["ctx"]
+                seen["at_run"] = (ctx.pr_number, ctx.branch_name, ctx.worktree_dir, ctx.completed_steps)
+                return WorkflowResult(success=True, final_status="done")
+
+        lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
+        with (
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.cli.commands.run._install_sigterm_handler"),
+            patch("sova.cli.commands.run._load_checkpoint", new=AsyncMock(return_value=checkpoint)),
+            patch("sova.roles.developer.get_pr_open_state", new=lookup),
+            patch("sova.roles.developer.WorkflowEngine", new=_RecordingEngine),
+        ):
+            await _run_workflow("42", project_dir=tmp_path, role_name=role_name, force=False, resume_run_id=5)
+
+        lookup.assert_awaited_once()
+        assert lookup.await_args.args == (88,)
+        assert "create_worktree" in seen["steps"]
+        assert "address_review" not in seen["steps"]
+        assert seen["at_run"] == (None, "feat/issue-42-after-pr-88", None, frozenset())
+
+
 class TestStartFreshAfterClosedPr:
     @staticmethod
     def _ctx(tmp_path: Path, **kwargs: object) -> ExecutionContext:
@@ -658,6 +709,24 @@ class TestDeveloperRoutesOnPrState:
         assert ctx.branch_name == "feat/issue-42-after-pr-88"
         assert ctx.worktree_dir is None
         assert ctx.completed_steps == frozenset()
+
+    async def test_drop_is_logged_as_a_dropped_pr_number(self, tmp_path: Path) -> None:
+        import structlog
+
+        from sova.roles.developer import DeveloperRole
+
+        role = DeveloperRole()
+        with (
+            structlog.testing.capture_logs() as logs,
+            patch("sova.roles.developer.get_pr_open_state", new=AsyncMock(return_value=PROpenState.NOT_OPEN)),
+            patch.object(role, "_execute_development", new=AsyncMock()),
+        ):
+            await role.execute(self._ctx(tmp_path, 88))
+
+        [entry] = [e for e in logs if e["event"] == "developer.pr_not_open"]
+        assert entry["pr"] == 88
+        assert "dropped" in entry["message"]
+        assert "#88" in entry["message"]
 
     async def test_merged_pr_then_new_run_replays_the_1251_sequence(self, tmp_path: Path) -> None:
         """A later run carrying a merged PR's number runs the development pipeline on a fresh branch."""
