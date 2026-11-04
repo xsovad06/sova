@@ -617,10 +617,10 @@ const item = (n, state, extra) => Object.assign(
   { issue_number: n, title: 'T' + n, state, issue_priority: 'medium', priority: 0, assignees: [] }, extra || {});
 const items = [
   item(1, 'agent_running', { running_agent: { role: 'developer', run_id: 'r1' }, assignees: ['octocat'] }),
-  item(2, 'pr_awaiting_review', { pr_number: 20 }),
+  item(2, 'pr_awaiting_review', { pr_number: 20, pr_details: { author: 'someone', assignees: ['OctoCat'] } }),
   item(3, 'in_progress'),
   item(4, 'spec_review'),
-  item(5, 'pr_draft', { pr_number: 50 }),
+  item(5, 'pr_draft', { pr_number: 50, pr_details: { author: 'someone', assignees: ['other'] } }),
   item(6, 'triaged', { issue_priority: 'low', last_run: { status: 'failed' } }),
   item(7, 'researched', { issue_priority: 'critical' }),
   item(8, 'backlog', { issue_priority: 'high', assignees: ['octocat'] }),
@@ -854,6 +854,61 @@ out.afterFilterClickOverFailure = list.html;
 prsOk = true;
 await loadPrs();
 out.afterRecovery = list.html.includes('pr-group-draft-in-progress');
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+# The PR tracker's Mine filter keeps a PR the user authored or is assigned to, once each, in any letter case.
+_PR_TRACKER_MINE_SCENARIO = r"""
+const workItems = await load('work-items');
+const list = {
+  html: '', style: {},
+  classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+  get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; },
+};
+const baseGetElementById = doc.getElementById;
+doc.getElementById = (id) => (id === 'pr-tracker-list' ? list : baseGetElementById(id));
+const clickHandlers = [];
+doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
+(await load('actions')).init();
+const polled = [];
+globalThis.visibilityAwarePoll = (fn) => { polled.push(fn); return { id: null }; };
+const pr = (number, extra) => Object.assign({
+  number, title: 't' + number, computed_state: 'draft', ci_status: 'pending', age_seconds: 60,
+  state_label: 'Draft PR', state_color: 'gray', is_draft: true, author: 'someone', assignees: [],
+}, extra);
+globalThis.fetch = (url) => {
+  if (url.includes('/prs/open')) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ prs: [
+      pr(1, { author: 'octocat' }),
+      pr(2, { author: 'someone', assignees: ['OctoCat'] }),
+      pr(3, { author: null, assignees: ['octocat'] }),
+      pr(4, { author: 'OCTOCAT', assignees: ['octocat'] }),
+      pr(5, { author: 'someone', assignees: ['other'] }),
+      pr(6, { author: 'someone', assignees: undefined }),
+      pr(7, { author: 'someone', assignees: null }),
+    ] }) });
+  }
+  return Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ items: [], github_user: 'octocat', slots_available: 1, max_concurrent: 2 }),
+  });
+};
+console.warn = () => {};
+(await load('pr-tracker')).init();
+await workItems.loadWorkItems();
+await polled[0]();
+const click = (action, args) => {
+  const attrs = { 'data-action': action, 'data-args': JSON.stringify(args) };
+  const node = { getAttribute: (n) => attrs[n] ?? null };
+  clickHandlers.forEach((fn) => fn({ target: { closest: () => node }, stopPropagation() {} }));
+};
+click('set-pr-filter', ['mine']);
+out.mine = [];
+for (let n = 1; n <= 7; n++) {
+  const hits = list.html.split('PR #' + n + '<').length - 1;
+  if (hits) out.mine.push([n, hits]);
+}
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -1897,6 +1952,10 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["afterFilterClickOverFailure"] == result["afterFailedLoad"]
         assert result["afterRecovery"] is True, "the next good poll renders the list"
 
+    def test_pr_tracker_mine_matches_author_or_assignee_once_in_any_case(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _PR_TRACKER_MINE_SCENARIO)
+        assert result["mine"] == [[1, 1], [2, 1], [3, 1], [4, 1]], "author or assignee, each PR once"
+
     def test_a_collapsed_pr_group_expands_and_collapses_on_successive_clicks(self, tmp_path: Path) -> None:
         """Collapsed on first render means a class togglePrGroup can clear, not a bare `hidden` attribute."""
         result = self._run(tmp_path, _PR_GROUP_TOGGLE_SCENARIO)
@@ -1916,7 +1975,8 @@ class TestLogViewerResumeAfterHiddenTab:
         assert sorted(result["expanded"]) == list(range(1, 15)), "All renders every item the API returned"
         assert result["hasShowLess"] is True
         assert result["recollapsed"] == result["collapsed"]
-        assert sorted(result["mine"]) == [1, 8, 9, 10, 12, 14], "Mine lists only the user's items, uncapped"
+        # 2 is the user's through its PR's assignees alone (issue unassigned, PR authored by someone else).
+        assert sorted(result["mine"]) == [1, 2, 8, 9, 10, 12, 14], "Mine lists only the user's items, uncapped"
         assert set(result["mine"]) <= set(result["allExpanded"]), "every item Mine shows is reachable under All"
         assert sorted(result["allExpanded"]) == list(range(1, 15))
 

@@ -363,8 +363,9 @@ function _renderPrTracker() {
       return;
     }
     var user = getGithubUser().toLowerCase();
+    var isUser = function(login) { return (login || '').toLowerCase() === user; };
     visible = all.filter(function(pr) {
-      return (pr.author || '').toLowerCase() === user;
+      return isUser(pr.author) || (pr.assignees || []).some(isUser);
     });
   }
   var list = document.getElementById('pr-tracker-list');

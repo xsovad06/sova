@@ -3927,6 +3927,23 @@ class TestCreatePRStep:
         assert "## Summary" in body_arg
         assert "Closes #42" in body_arg
 
+    @pytest.mark.parametrize("configured_user", ["xsovad06", ""])
+    @patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock)
+    async def test_immediate_create_passes_configured_github_user(
+        self, mock_create_pr, configured_user: str, tmp_path: Path
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+        ctx = _make_ctx(tmp_path, config=ProjectConfig(github_user=configured_user), branch_name="feat/issue-42")
+        step = CreatePRStep()
+        step._post_create_side_effects = AsyncMock()
+
+        result = await step._create_pr_immediate(ctx, "title", "body")
+
+        assert result.success
+        assert mock_create_pr.call_args.kwargs["github_user"] == configured_user
+
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
