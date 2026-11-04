@@ -5,18 +5,24 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.work_state import state_color, state_label
+from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state
 from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
 from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
 from sova.utils.gh import parse_issue_links
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.pr_service")
 
@@ -629,6 +635,58 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     task.add_done_callback(_bg_tasks.discard)
 
     return result
+
+
+def known_open_pr_numbers(fetched_prs: list[dict] | None, cfg: ProjectConfig | None) -> set[int] | None:
+    """The open PR numbers, or ``None`` when they cannot be known.
+
+    That is a failed PR fetch, no configured repo, or a list as long as ``OPEN_PR_LIST_LIMIT``
+    (``gh pr list --limit`` may have cut an open PR off).
+    """
+    if fetched_prs is None or cfg is None or not cfg.github_repo:
+        return None
+    if len(fetched_prs) >= OPEN_PR_LIST_LIMIT:
+        return None
+    return {pr["number"] for pr in fetched_prs}
+
+
+_CONFIRM_CONCURRENCY = 4
+_CONFIRM_BACKOFF = 30.0  # seconds without lookups for a repo after one came back UNKNOWN
+_confirm_backoff_until: dict[str, float] = {}
+
+
+async def confirm_open_pr_numbers(
+    open_numbers: set[int] | None, candidates: Iterable[int], cfg: ProjectConfig | None
+) -> set[int] | None:
+    """Add candidate PRs the open list lacks but a direct lookup does not confirm as closed.
+
+    The open list is cached, so a PR a still-running developer run just created can be missing from it.
+    A PR numbered below the highest listed one existed when the list was fetched, so its absence is
+    conclusive and costs no call; only a higher number can be newer than the list. Lookups run a few at a
+    time, and after an ``UNKNOWN`` (an outage or rate limit) the repo is not asked again for a while.
+    Only ``NOT_OPEN`` leaves a candidate out; ``OPEN`` and ``UNKNOWN`` add it.
+    """
+    if open_numbers is None or cfg is None:
+        return open_numbers
+    newest_listed = max(open_numbers, default=0)
+    unsettled = {pr for pr in candidates if pr and pr not in open_numbers and pr > newest_listed}
+    if not unsettled:
+        return open_numbers
+    now = time.monotonic()
+    if now < _confirm_backoff_until.get(cfg.github_repo, 0.0):
+        return open_numbers | unsettled
+    ordered = sorted(unsettled)
+    semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
+
+    async def _lookup(pr: int) -> PROpenState:
+        async with semaphore:
+            return await get_pr_open_state(pr, repo=cfg.github_repo, github_user=cfg.github_user)
+
+    states = await asyncio.gather(*(_lookup(pr) for pr in ordered))
+    if PROpenState.UNKNOWN in states:
+        _confirm_backoff_until[cfg.github_repo] = time.monotonic() + _CONFIRM_BACKOFF
+    confirmed = {pr for pr, state in zip(ordered, states, strict=True) if state is not PROpenState.NOT_OPEN}
+    return open_numbers | confirmed
 
 
 async def _record_state_transitions(prs: list[dict], *, repo: str, project_dir: Path) -> None:

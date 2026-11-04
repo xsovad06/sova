@@ -31,11 +31,11 @@ def _status(state: str) -> PRStatus:
 
 @pytest.fixture(autouse=True)
 def _clear_open_cache() -> None:
-    from sova.dashboard.services import pr_service, work_item_service
+    from sova.dashboard.services import pr_service
 
     pr_module._pr_open_cache.clear()
     pr_service._pr_fetch_failed_until.clear()
-    work_item_service._confirm_backoff_until.clear()
+    pr_service._confirm_backoff_until.clear()
 
 
 class TestPrOpenStateFromList:
@@ -268,25 +268,25 @@ class TestOpenPrsEndpoint:
 
 class TestOpenPrNumbers:
     def test_fetched_list_gives_its_numbers(self) -> None:
-        from sova.dashboard.services.work_item_service import _open_pr_numbers
+        from sova.dashboard.services.pr_service import known_open_pr_numbers
 
-        assert _open_pr_numbers([{"number": 1}, {"number": 2}], MagicMock(github_repo="o/r")) == {1, 2}
+        assert known_open_pr_numbers([{"number": 1}, {"number": 2}], MagicMock(github_repo="o/r")) == {1, 2}
 
     def test_list_at_the_fetch_limit_is_none(self) -> None:
-        from sova.dashboard.services.work_item_service import _open_pr_numbers
+        from sova.dashboard.services.pr_service import known_open_pr_numbers
 
         full = [{"number": n} for n in range(1000, 1000 + OPEN_PR_LIST_LIMIT)]
-        assert _open_pr_numbers(full, MagicMock(github_repo="o/r")) is None
-        assert _open_pr_numbers(full[:-1], MagicMock(github_repo="o/r")) == {pr["number"] for pr in full[:-1]}
+        assert known_open_pr_numbers(full, MagicMock(github_repo="o/r")) is None
+        assert known_open_pr_numbers(full[:-1], MagicMock(github_repo="o/r")) == {pr["number"] for pr in full[:-1]}
 
     @pytest.mark.parametrize(
         ("prs", "cfg"),
         [(None, MagicMock(github_repo="o/r")), ([], None), ([], MagicMock(github_repo=""))],
     )
     def test_unknown_open_state_is_none(self, prs: list[dict] | None, cfg: MagicMock | None) -> None:
-        from sova.dashboard.services.work_item_service import _open_pr_numbers
+        from sova.dashboard.services.pr_service import known_open_pr_numbers
 
-        assert _open_pr_numbers(prs, cfg) is None
+        assert known_open_pr_numbers(prs, cfg) is None
 
 
 class TestSafePrs:
@@ -308,13 +308,21 @@ class TestBuildTaskItemStalePr:
     def _build(self, pr_number: int | None, open_prs: set[int] | None) -> dict:
         return _build_task_item(self._task(pr_number), None, None, None, open_pr_numbers=open_prs)
 
+    @staticmethod
+    def _action_prs(item: dict) -> list[object]:
+        actions = [item["primary_action"], *item["secondary_actions"], *item["handoff_actions"]]
+        return [a["handler_args"]["pr"] for a in actions if a and "pr" in a.get("handler_args", {})]
+
     def test_merged_pr_is_dropped(self) -> None:
         item = self._build(100, {200})
         assert item["pr_number"] is None
-        assert "pr" not in item["primary_action"].get("params", {})
+        assert item["primary_action"]["handler_args"]["role"] == "developer"
+        assert self._action_prs(item) == []
 
     def test_open_pr_is_kept(self) -> None:
-        assert self._build(100, {100, 200})["pr_number"] == 100
+        item = self._build(100, {100, 200})
+        assert item["pr_number"] == 100
+        assert self._action_prs(item) == [100]
 
     def test_empty_successful_list_drops_the_pr(self) -> None:
         assert self._build(100, set())["pr_number"] is None
@@ -649,7 +657,7 @@ class TestGetWorkItemsStalePr:
             patch("sova.dashboard.services.agent_pool._get_project_agents", MagicMock(return_value=None)),
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.services.work_item_service.get_pr_open_state",
+                "sova.dashboard.services.pr_service.get_pr_open_state",
                 new=AsyncMock(return_value=lookup),
             ),
         ):
@@ -680,38 +688,34 @@ class TestConfirmOpenPrNumbers:
     """The per-row lookup is limited to PRs the cached open list cannot settle."""
 
     @staticmethod
-    def _queue(*prs: int) -> list[dict]:
-        return [{"issue": str(i), "last_run": {"pr_number": pr}} for i, pr in enumerate(prs, start=1)]
-
-    @staticmethod
-    async def _confirm(open_numbers: set[int] | None, queue: list[dict], lookup: AsyncMock) -> set[int] | None:
-        from sova.dashboard.services.work_item_service import _confirm_open_pr_numbers
+    async def _confirm(open_numbers: set[int] | None, candidates: list[int], lookup: AsyncMock) -> set[int] | None:
+        from sova.dashboard.services.pr_service import confirm_open_pr_numbers
 
         cfg = MagicMock(github_repo="o/r", github_user="u")
-        with patch("sova.dashboard.services.work_item_service.get_pr_open_state", new=lookup):
-            return await _confirm_open_pr_numbers(open_numbers, queue, cfg)
+        with patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup):
+            return await confirm_open_pr_numbers(open_numbers, candidates, cfg)
 
     async def test_pr_below_the_newest_listed_needs_no_lookup(self) -> None:
         lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
-        result = await self._confirm({500}, self._queue(100, 200, 300), lookup)
+        result = await self._confirm({500}, [100, 200, 300], lookup)
         assert result == {500}
         lookup.assert_not_awaited()
 
     async def test_pr_above_the_newest_listed_is_looked_up(self) -> None:
         lookup = AsyncMock(return_value=PROpenState.OPEN)
-        assert await self._confirm({500}, self._queue(100, 501), lookup) == {500, 501}
+        assert await self._confirm({500}, [100, 501], lookup) == {500, 501}
         lookup.assert_awaited_once()
 
     async def test_unknown_lookup_backs_off_instead_of_retrying_every_poll(self) -> None:
         lookup = AsyncMock(return_value=PROpenState.UNKNOWN)
-        queue = self._queue(601, 602)
-        assert await self._confirm({500}, queue, lookup) == {500, 601, 602}
+        candidates = [601, 602]
+        assert await self._confirm({500}, candidates, lookup) == {500, 601, 602}
         assert lookup.await_count == 2
-        assert await self._confirm({500}, queue, lookup) == {500, 601, 602}
+        assert await self._confirm({500}, candidates, lookup) == {500, 601, 602}
         assert lookup.await_count == 2
 
     async def test_lookups_are_bounded(self) -> None:
-        from sova.dashboard.services.work_item_service import _CONFIRM_CONCURRENCY
+        from sova.dashboard.services.pr_service import _CONFIRM_CONCURRENCY
 
         running = peak = 0
 
@@ -723,26 +727,228 @@ class TestConfirmOpenPrNumbers:
             running -= 1
             return PROpenState.NOT_OPEN
 
-        await self._confirm(set(), self._queue(*range(1, 21)), AsyncMock(side_effect=lookup))
+        await self._confirm(set(), list(range(1, 21)), AsyncMock(side_effect=lookup))
         assert 0 < peak <= _CONFIRM_CONCURRENCY
 
     async def test_confirmed_candidates_do_not_make_a_short_list_unknown(self) -> None:
         """99 fetched PRs plus 2 confirmed last-run PRs must still drop a PR that is not open."""
-        from sova.dashboard.services.work_item_service import _open_pr_numbers
+        from sova.dashboard.services.pr_service import known_open_pr_numbers
 
         fetched = [{"number": n} for n in range(1000, 1000 + OPEN_PR_LIST_LIMIT - 1)]
         cfg = MagicMock(github_repo="o/r", github_user="u")
-        open_numbers = _open_pr_numbers(fetched, cfg)
+        open_numbers = known_open_pr_numbers(fetched, cfg)
         lookup = AsyncMock(return_value=PROpenState.OPEN)
-        merged = await self._confirm(open_numbers, self._queue(2000, 2001), lookup)
+        merged = await self._confirm(open_numbers, [2000, 2001], lookup)
         assert merged is not None and len(merged) >= OPEN_PR_LIST_LIMIT
         assert pr_open_state_from_list(5, merged) is PROpenState.NOT_OPEN
 
     async def test_truncated_list_makes_no_lookups(self) -> None:
-        from sova.dashboard.services.work_item_service import _open_pr_numbers
+        from sova.dashboard.services.pr_service import known_open_pr_numbers
 
         full = [{"number": n} for n in range(1000, 1000 + OPEN_PR_LIST_LIMIT)]
         lookup = AsyncMock()
-        open_numbers = _open_pr_numbers(full, MagicMock(github_repo="o/r"))
-        assert await self._confirm(open_numbers, self._queue(2000), lookup) is None
+        open_numbers = known_open_pr_numbers(full, MagicMock(github_repo="o/r"))
+        assert await self._confirm(open_numbers, [2000], lookup) is None
         lookup.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestQueueLastRunPrNumber:
+    """The queue's ``last_run.pr_number`` never falls back to a PR the open list proves is not open."""
+
+    @staticmethod
+    async def _seed(*runs: tuple[str, int | None]) -> None:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        session = await get_session()
+        async with session.begin():
+            for role, pr in runs:
+                session.add(TaskRun(issue_number="42", role=role, status="done", pr_number=pr))
+
+    @staticmethod
+    def _one_queued_issue() -> object:
+        from sova.adapters.base import Task
+        from sova.dashboard.services import queue_service
+
+        task = Task(id="42", title="t", state=TaskState.IN_PROGRESS)
+        return patch.object(queue_service, "_get_actionable_tasks", new=AsyncMock(return_value=[task]))
+
+    async def _queue_pr(
+        self, open_prs: list[dict] | None, *, repo: str = "o/r", lookup: PROpenState = PROpenState.NOT_OPEN
+    ) -> int | None:
+        from sova.dashboard.services import queue_service
+
+        async def _fetched() -> list[dict] | None:
+            return open_prs
+
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo=repo, github_user="u")),
+            patch("sova.dashboard.services.pr_service.get_pr_open_state", new=AsyncMock(return_value=lookup)),
+        ):
+            queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
+        return queue[0]["last_run"]["pr_number"]
+
+    async def test_merged_pr_from_an_earlier_run_is_not_inherited(self) -> None:
+        await self._seed(("developer", 1257), ("triage", None))
+        assert await self._queue_pr([{"number": 1300}]) is None
+
+    async def test_1251_sequence_runs_carrying_the_merged_pr_show_none(self) -> None:
+        await self._seed(("developer", 1257), ("triage", 1257), ("researcher", 1257), ("developer", 1257))
+        assert await self._queue_pr([{"number": 1300}]) is None
+
+    async def test_older_open_pr_wins_over_a_newer_merged_one(self) -> None:
+        await self._seed(("developer", 1300), ("developer", 1320), ("reviewer", None))
+        assert await self._queue_pr([{"number": 1300}, {"number": 1400}]) == 1300
+
+    async def test_open_pr_is_kept(self) -> None:
+        await self._seed(("developer", 1300), ("reviewer", None))
+        assert await self._queue_pr([{"number": 1300}]) == 1300
+
+    async def test_failed_fetch_keeps_the_highest_pr(self) -> None:
+        await self._seed(("developer", 1300), ("developer", 1320), ("triage", None))
+        assert await self._queue_pr(None) == 1320
+
+    async def test_supplied_config_is_used_without_a_second_load(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        await self._seed(("developer", 1300), ("triage", None))
+
+        async def _fetched() -> list[dict] | None:
+            return [{"number": 1400}]
+
+        load = MagicMock(side_effect=AssertionError("load_config must not run"))
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", new=load),
+            patch(
+                "sova.dashboard.services.pr_service.get_pr_open_state", new=AsyncMock(return_value=PROpenState.NOT_OPEN)
+            ),
+        ):
+            queue = await queue_service.get_priority_queue(
+                None,
+                open_prs=asyncio.ensure_future(_fetched()),
+                cfg=ProjectConfig(github_repo="o/r", github_user="u"),
+            )
+        assert queue[0]["last_run"]["pr_number"] is None
+        load.assert_not_called()
+
+    async def test_unconfigured_repo_keeps_the_highest_pr(self) -> None:
+        await self._seed(("developer", 1300), ("developer", 1320), ("triage", None))
+        assert await self._queue_pr([], repo="") == 1320
+
+    @pytest.mark.parametrize(
+        ("lookup", "expected"),
+        [(PROpenState.OPEN, 1500), (PROpenState.UNKNOWN, 1500), (PROpenState.NOT_OPEN, None)],
+    )
+    async def test_pr_newer_than_the_cached_list_is_looked_up(self, lookup: PROpenState, expected: int | None) -> None:
+        await self._seed(("developer", 1500), ("triage", None))
+        assert await self._queue_pr([{"number": 1300}], lookup=lookup) == expected
+
+    async def test_pr_behind_a_listed_open_one_is_never_looked_up(self) -> None:
+        """1500 (newer than the list) cannot win over the run's own open 1300, so it costs no lookup."""
+        from sova.dashboard.services import queue_service
+
+        await self._seed(("developer", 1500), ("developer", 1300))
+        lookup = AsyncMock(return_value=PROpenState.OPEN)
+
+        async def _fetched() -> list[dict]:
+            return [{"number": 1300}]
+
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
+        ):
+            queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
+        assert queue[0]["last_run"]["pr_number"] == 1300
+        lookup.assert_not_awaited()
+
+    async def test_empty_open_list_with_many_historical_prs_makes_bounded_lookups(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        await self._seed(*(("developer", pr) for pr in range(1200, 1210)))
+        lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
+
+        async def _fetched() -> list[dict]:
+            return []
+
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
+        ):
+            queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
+        assert queue[0]["last_run"]["pr_number"] is None
+        assert lookup.await_count == queue_service._MAX_PR_CANDIDATES_PER_ISSUE
+
+    async def test_issue_outside_the_queue_costs_no_lookup(self) -> None:
+        from sova.dashboard.services import queue_service
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        await self._seed(("developer", 1500))
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="99", role="developer", status="done", pr_number=1600))
+        lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
+
+        async def _fetched() -> list[dict]:
+            return []
+
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
+        ):
+            await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
+        assert [c.args[0] for c in lookup.await_args_list] == [1500]
+
+    async def test_queue_endpoint_reads_the_cached_open_list_itself(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        await self._seed(("developer", 1257), ("triage", None))
+        listing = AsyncMock(return_value=[{"number": 1300}])
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing),
+        ):
+            queue = await queue_service.get_priority_queue(None)
+        assert queue[0]["last_run"]["pr_number"] is None
+        listing.assert_awaited_once_with(None, raise_on_error=True)
+
+    async def test_no_pr_numbers_fetch_no_open_list(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        await self._seed(("triage", None))
+        listing = AsyncMock(return_value=[])
+        with (
+            self._one_queued_issue(),
+            patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing),
+        ):
+            queue = await queue_service.get_priority_queue(None)
+        assert queue[0]["last_run"]["pr_number"] is None
+        assert "pr_candidates" not in queue[0]["last_run"]
+        listing.assert_not_awaited()
+
+    async def test_work_items_poll_shares_one_open_pr_fetch_with_the_queue(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_all_sources
+
+        await self._seed(("developer", 1257), ("triage", None))
+        listing = AsyncMock(return_value=[{"number": 1300}])
+        with (
+            self._one_queued_issue(),
+            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_unified_agents",
+                new=AsyncMock(return_value={"agents": [], "completed": []}),
+            ),
+            patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=[]),
+        ):
+            queue, prs, _, _ = await _fetch_all_sources(project_dir=None, slug=None)
+        assert queue[0]["last_run"]["pr_number"] is None
+        assert prs == [{"number": 1300}]
+        listing.assert_awaited_once()
