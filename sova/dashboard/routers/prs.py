@@ -13,6 +13,7 @@ from sova.config.loader import load_config
 from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.pr_service import ComputedPRState, list_open_prs_with_state
 from sova.dashboard.services.work_state import VALID_MERGE_STATES
+from sova.git.pr import PRLookupError
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.prs")
@@ -99,10 +100,17 @@ class PRFeedbackRequest(BaseModel):
     user_choice: str
 
 
-@router.get("/open")
+@router.get("/open", responses={502: {"description": "The GitHub open-PR listing failed"}})
 async def get_open_prs() -> dict:
-    """List all open PRs with computed lifecycle state."""
-    prs = await list_open_prs_with_state()
+    """List all open PRs with computed lifecycle state.
+
+    A failed GitHub listing is a 502, not ``{"prs": []}``: an empty list would tell the PR tracker
+    there are no open PRs and replace its last good list.
+    """
+    try:
+        prs = await list_open_prs_with_state(raise_on_error=True)
+    except PRLookupError:
+        raise HTTPException(status_code=502, detail="Failed to load open PRs") from None
     return {"prs": prs}
 
 

@@ -2614,7 +2614,7 @@ class TestFetchAllSourcesProjectDir:
         ):
             await _fetch_all_sources(project_dir=tmp_path, slug=None)
 
-        mock_prs.assert_awaited_once_with(tmp_path)
+        mock_prs.assert_awaited_once_with(tmp_path, raise_on_error=True)
 
 
 class TestBuildPrFactsMergeState:

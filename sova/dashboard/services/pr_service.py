@@ -45,6 +45,10 @@ _pr_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 # compares its captured generation before caching so it can't resurrect the
 # pre-invalidation result and undo the invalidation for the rest of the TTL.
 _pr_cache_generation: dict[tuple[str, str], int] = {}
+# A failed fetch is not cached as a result, but it is remembered briefly so an outage costs one
+# `gh pr list` per window instead of one per poll per open tab. Value: monotonic time the pause ends.
+_PR_FETCH_FAILURE_PAUSE = 30  # seconds
+_pr_fetch_failed_until: dict[tuple[str, str], float] = {}
 
 # Multi-reference resolutions already logged, keyed by (PR number, head SHA, issues). The resolver runs on
 # every cache refresh, so without this a PR that stays open would repeat the same line every TTL.
@@ -74,6 +78,7 @@ def invalidate_pr_cache(repo: str) -> None:
     keys = {k for k in _pr_cache if k[0] == repo} | {k for k in _pr_cache_generation if k[0] == repo}
     for key in keys:
         _pr_cache.pop(key, None)
+        _pr_fetch_failed_until.pop(key, None)
         _pr_cache_generation[key] = _pr_cache_generation.get(key, 0) + 1
 
 
@@ -554,7 +559,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     from sova.config.context import resolve_project_dir
     from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
-    from sova.git.pr import get_pr_review_data, list_open_prs
+    from sova.git.pr import PRLookupError, get_pr_review_data, list_open_prs
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
@@ -575,10 +580,23 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     cached = _pr_cache.get(cache_key)
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
+    if _pr_fetch_failed_until.get(cache_key, 0.0) > now:
+        if raise_on_error:
+            raise PRLookupError(f"Open PR listing for {repo!r} failed recently; not retrying yet")
+        return []
     # setdefault, not get: the key must exist in the dict *before* the await
     # below so a concurrent invalidate_pr_cache() can see and bump it.
     generation = _pr_cache_generation.setdefault(cache_key, 0)
-    raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user)
+    # Always raise here so a failed fetch is never cached: a cached [] would read as "no open PRs"
+    # to a raise_on_error caller for the rest of the TTL.
+    try:
+        raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user, raise_on_error=True)
+    except PRLookupError:
+        _pr_fetch_failed_until[cache_key] = time.monotonic() + _PR_FETCH_FAILURE_PAUSE
+        if raise_on_error:
+            raise
+        return []
+    _pr_fetch_failed_until.pop(cache_key, None)
 
     pr_numbers = [p["number"] for p in raw_prs]
     try:

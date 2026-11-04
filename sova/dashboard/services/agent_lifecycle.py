@@ -394,8 +394,50 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 # Agent lifecycle
 
 
+# Recent runs scanned for a recoverable PR; each distinct PR among them may cost one GitHub lookup.
+_RECOVER_PR_RUN_LIMIT = 20
+# Overall cap on those serial lookups, so a slow GitHub cannot hold start_agent() before the spawn.
+_RECOVER_PR_DEADLINE = 10.0  # seconds
+
+
+async def _first_open_pr(candidates: list[int], project_dir: "Path") -> int | None:
+    """Return the first candidate PR (newest first) confirmed open, so a newer merged PR cannot mask an older open one.
+
+    A candidate whose state could not be confirmed is the fallback (today's behavior) when none is confirmed open,
+    and every candidate is that fallback when no GitHub repo is configured or the config cannot be loaded. Lookups
+    stop at ``_RECOVER_PR_DEADLINE``: the candidate being looked up then counts as unconfirmed.
+    """
+    from sova.config.loader import load_config
+    from sova.git.pr import PROpenState, get_pr_open_state
+
+    try:
+        cfg = load_config(project_dir)
+    except Exception:  # noqa: BLE001 (an unreadable config leaves open-ness unknown rather than proving a PR closed)
+        log.warning("start_agent.pr_state_config_failed", exc_info=True)
+        return candidates[0]
+    if not cfg.github_repo:
+        return candidates[0]
+
+    unconfirmed: int | None = None
+    checked = 0
+    try:
+        async with asyncio.timeout(_RECOVER_PR_DEADLINE):
+            for pr in candidates:
+                state = await get_pr_open_state(pr, repo=cfg.github_repo, github_user=cfg.github_user)
+                checked += 1
+                if state is PROpenState.OPEN:
+                    return pr
+                if state is PROpenState.UNKNOWN and unconfirmed is None:
+                    unconfirmed = pr
+    except TimeoutError:
+        log.warning("start_agent.pr_state_deadline", checked=checked, candidates=candidates)
+        if unconfirmed is None:
+            unconfirmed = candidates[checked]
+    return unconfirmed
+
+
 async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None:
-    """Return the pr_number from the most recent non-successful terminal developer run for an issue."""
+    """Return the pr_number of the most recent non-successful terminal developer run whose PR is still open."""
     try:
         from sqlalchemy import select
 
@@ -412,13 +454,19 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
                     TaskRun.status.in_({"interrupted", "failed", "paused", "stopped"}),
                 )
                 .order_by(TaskRun.id.desc())
-                .limit(1)
+                .limit(_RECOVER_PR_RUN_LIMIT)
             )
             result = await session.execute(stmt)
-            pr = result.scalar_one_or_none()
-            if pr is not None:
-                log.info("start_agent.recovered_pr_number", issue=issue, pr_number=pr)
-            return pr
+            candidates = list(dict.fromkeys(result.scalars().all()))
+
+        if not candidates:
+            return None
+        pr = await _first_open_pr(candidates, project_dir)
+        if pr is None:
+            log.info("start_agent.no_open_pr_to_recover", issue=issue, candidates=candidates)
+        else:
+            log.info("start_agent.recovered_pr_number", issue=issue, pr_number=pr)
+        return pr
     except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("start_agent.recover_pr_number_failed", issue=issue, exc_info=True)
         return None
