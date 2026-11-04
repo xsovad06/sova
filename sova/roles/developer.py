@@ -21,8 +21,10 @@ from sova.core.steps import (
     get_developer_steps,
 )
 from sova.core.steps.base import BaseStep
+from sova.core.steps.create_worktree import start_fresh_after_closed_pr
 from sova.core.workflow import WorkflowEngine
 from sova.git.operations import get_pr_branch
+from sova.git.pr import PROpenState, get_pr_open_state
 from sova.git.worktree import find_worktree_by_branch
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
@@ -75,10 +77,24 @@ class DeveloperRole(AgentRole):
         # Address-review mode: respawned to fix reviewer findings.
         # Use pr_number (set by handoff) as primary signal: task.state is
         # unreliable because the dashboard may transition it before we read it.
+        if ctx.pr_number and await self._pr_not_open(ctx):
+            log.info("developer.pr_not_open", issue=ctx.issue_number, pr=ctx.pr_number)
+            start_fresh_after_closed_pr(ctx, ctx.pr_number)
         if ctx.pr_number:
             return await self._execute_address_review(ctx)
 
         return await self._execute_development(ctx)
+
+    async def _pr_not_open(self, ctx: ExecutionContext) -> bool:
+        """True only when GitHub confirms ctx.pr_number is no longer open (merged or closed).
+
+        A merged PR must not route the run into address-review. An unconfirmed state (no repo, lookup
+        failure) is not "not open", so routing stays as it was.
+        """
+        if not ctx.repo:
+            return False
+        state = await get_pr_open_state(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        return state is PROpenState.NOT_OPEN
 
     async def _execute_development(self, ctx: ExecutionContext) -> RoleResult:
         log.info("developer.start", label=ctx.display_label)
