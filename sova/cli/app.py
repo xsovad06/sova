@@ -10,6 +10,8 @@ from rich.console import Console
 
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.assess import app as assess_app
+from sova.cli.commands.audit import app as audit_app
+from sova.cli.commands.board import app as board_app
 from sova.cli.commands.briefing import briefing
 from sova.cli.commands.checks import app as checks_app
 from sova.cli.commands.commands import app as commands_app
@@ -93,6 +95,12 @@ app.add_typer(db_app)
 # Checks cache (subcommand group)
 app.add_typer(checks_app)
 
+# Project board (subcommand group)
+app.add_typer(board_app)
+
+# Health-audit gate verdicts (subcommand group)
+app.add_typer(audit_app)
+
 console = Console(stderr=True)
 
 
@@ -100,7 +108,14 @@ console = Console(stderr=True)
 # doctor` exists to diagnose exactly that state and already reports config
 # failures as failed checks rather than crashing; `sova config set` is how the
 # operator repairs the offending key, so it must not be aborted by it either.
+# `sova audit` and `sova board` back the distributed health-audit command's gates
+# and never use the LLM provider, so a broken provider setting must not block them.
 _CONFIG_TOLERANT_COMMANDS = frozenset({"doctor", "config"})
+
+# Commands that never use the LLM provider, so the callback skips provider setup for them entirely. Catching the
+# config errors is not enough: load_config() can also raise OSError, sqlite3.Error or SQLAlchemyError (an unreadable
+# sova.toml, a locked database), which would escape the callback as a traceback and take both health-audit gates down.
+_LLM_FREE_COMMANDS = frozenset({"audit", "board"})
 
 
 def _init_llm_provider() -> None:
@@ -132,6 +147,8 @@ def main(
     ] = None,
 ) -> None:
     """SOVA: an autonomous AI development crew."""
+    if ctx.invoked_subcommand in _LLM_FREE_COMMANDS:
+        return
     try:
         _init_llm_provider()
     except (RuntimeError, ValueError, ImportError) as exc:
