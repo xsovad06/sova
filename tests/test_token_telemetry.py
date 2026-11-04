@@ -791,6 +791,64 @@ class TestPhaseTally:
         assert snapshot[-1]["phase"] == "squash-rebase"
         assert snapshot[-1]["model_calls"] == 1
 
+    @pytest.mark.parametrize(
+        ("command", "phase"),
+        [
+            # The forms the first live runs used (3036, 3039): the marker chained with the phase's first command.
+            ('echo "::sova-phase::fix"; sed -n 100,175p sova/cli/app.py', "fix"),
+            ("echo '::sova-phase::identify' && gh pr view 1370 --json number", "identify"),
+            ('cd /tmp/wt && echo "::sova-phase::push-ci-wait"', "push-ci-wait"),
+            ("git fetch origin; echo ::sova-phase::squash-rebase; git log -1", "squash-rebase"),
+            ('echo "::sova-phase::merge" || true', "merge"),
+        ],
+    )
+    def test_a_marker_chained_with_other_commands_switches_the_phase(self, command: str, phase: str) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0), command=command))
+        tally.observe(_assistant("m2", usage=_usage(1, 1, 0)))
+
+        assert tally.snapshot()[-1]["phase"] == phase
+
+    def test_the_chained_marker_sequence_of_run_3036(self) -> None:
+        """Run 3036 (command:address-pr) printed all four markers chained with other work; all four must land."""
+        from sova.llm.phase_usage import PhaseTally
+
+        commands = [  # the marker lines as run 3036 sent them, each followed by one working call
+            'echo "::sova-phase::fix"; sed -n 100,175p sova/cli/app.py',
+            'echo "::sova-phase::squash-rebase"; git fetch origin || exit 1',
+            'echo "::sova-phase::push-ci-wait"; PRIMARY_ROOT=$(dirname "$(git rev-parse --git-common-dir)")',
+            'echo "::sova-phase::threads-summary"; SHA=$(git rev-parse --short HEAD)',
+        ]
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("setup", usage=_usage(1, 1, 0)))
+        for i, command in enumerate(commands):
+            tally.observe(_assistant(f"marker-{i}", usage=_usage(1, 1, 0), command=command))
+            tally.observe(_assistant(f"work-{i}", usage=_usage(1, 1, 0)))
+
+        snapshot = tally.snapshot()
+        assert [p["phase"] for p in snapshot] == ["unmarked", "fix", "squash-rebase", "push-ci-wait", "threads-summary"]
+        assert [p["model_calls"] for p in snapshot] == [2, 2, 2, 2, 1]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git log --grep='::sova-phase::fix'; echo done",  # the marker as an argument, not an echo
+            'echo done; echo "phase ::sova-phase::fix"',  # prose before the marker inside the echo
+            'echo "::sova-phase::fix" | tee out.txt',  # piped into another command: not a standalone marker
+            'echo "::sova-phase::fix"x; true',  # trailing text glued to the marker
+        ],
+    )
+    def test_a_chained_look_alike_does_not_switch_the_phase(self, command: str) -> None:
+        from sova.llm.phase_usage import PhaseTally
+
+        tally = PhaseTally(started_at=100.0, clock=_FakeClock())
+        tally.observe(_assistant("m1", usage=_usage(1, 1, 0), command=command))
+        tally.observe(_assistant("m2", usage=_usage(1, 1, 0)))
+
+        assert [p["phase"] for p in tally.snapshot()] == ["unmarked"]
+
     def test_a_marker_from_a_non_bash_tool_is_ignored(self) -> None:
         from sova.llm.phase_usage import PhaseTally
 

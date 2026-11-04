@@ -48,13 +48,19 @@ COMMAND_PHASES: dict[str, tuple[str, ...]] = {
     "address-pr": ("fix", "squash-rebase", "push-ci-wait", "threads-summary"),
 }
 
-# A whole line that only echoes the marker, so a command that merely mentions
-# one (a grep for it, prose inside a longer echo) never switches the phase.
-_MARKER_LINE = re.compile(r"""^\s*echo\s+(["']?)::sova-phase::([a-z][a-z0-9-]*)\1\s*$""", re.MULTILINE)
+# An `echo` of the marker as a command of its own: at a line start or after
+# `;` or `&&`, and ending at the line end or the next `;`, `&&` or `||`.
+# Agents chain the marker with the phase's first command
+# (`echo "::sova-phase::fix"; sed -n 1,5p f`, issue #1376), while a command
+# that merely mentions one (a grep for it, prose inside a longer echo, a pipe
+# into another command) never switches the phase.
+_MARKER_LINE = re.compile(
+    r"""(?:^|;|&&)\s*echo\s+(["']?)::sova-phase::([a-z][a-z0-9-]*)\1\s*(?=$|;|&&|\|\|)""", re.MULTILINE
+)
 
 
 def find_phase_marker(command: str) -> str | None:
-    """Return the phase a shell command switches to (the last marker line in it), or None."""
+    """Return the phase a shell command switches to (the last marker echo in it), or None."""
     matches = _MARKER_LINE.findall(command)
     return matches[-1][1] if matches else None
 
