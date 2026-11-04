@@ -472,6 +472,32 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
         return None
 
 
+async def _developer_pr_number(
+    issue: str, requested: int | None, project_dir: "Path", *, resuming: bool = False
+) -> int | None:
+    """The PR a developer run on *issue* continues: *requested* unless GitHub confirms it closed, else a recovered one.
+
+    A Rerun button on an old run row sends that run's PR, which may have been merged since. Keeping it would
+    start the run in the merged branch's worktree and store the merged number on the new run.
+
+    A resumed run keeps the checkpoint's branch, worktree and completed steps, which belong to its own PR. When
+    that PR is closed no other PR is substituted: the number is dropped so ``DeveloperRole`` resets the
+    checkpoint, and a recovered PR would otherwise be paired with the closed PR's worktree.
+    """
+    if requested:
+        if await _first_open_pr([requested], project_dir) is not None:
+            return requested
+        log.info(
+            "start_agent.pr_not_open",
+            issue=issue,
+            pr=requested,
+            message=f"PR #{requested} is merged or closed: dropped the PR number",
+        )
+        if resuming:
+            return None
+    return await _recover_last_pr_number(issue, project_dir)
+
+
 def _resolve_config_model(project_dir: Path) -> str | None:
     """Return the agent model alias from SOVA config, or None if unset."""
     try:
@@ -578,7 +604,11 @@ async def start_agent(
     if not issue and pr_number:
         issue = await _resolve_issue_from_pr(pr_number, pa.project_dir)
 
-    if issue and (role or "developer") == "developer" and not pr_number:
+    if issue and role == "developer":
+        pr_number = await _developer_pr_number(issue, pr_number, pa.project_dir, resuming=bool(resume_run_id))
+    elif issue and role is None and not pr_number:
+        # `sova run` lets dispatch() pick the role from tracker state, so a caller's PR (possibly merged, for a
+        # reviewer run on an IN_REVIEW issue) is left untouched: only a missing one is recovered.
         pr_number = await _recover_last_pr_number(issue, pa.project_dir)
 
     if not force:
