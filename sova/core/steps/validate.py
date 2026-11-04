@@ -34,6 +34,7 @@ from sova.core.steps.commit import is_agent_artifact
 from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.git.branch import get_current_branch
 from sova.llm.errors import format_fix_llm_failure
+from sova.llm.payload import trim_payload
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked
 
@@ -69,9 +70,7 @@ async def build_pre_push_stdin(cwd: Path | None, branch: str) -> str:
 
 def _truncate_hook_output(output: str) -> str:
     """Keep the tail of hook output, where actionable errors appear."""
-    if len(output) <= _HOOK_OUTPUT_LIMIT:
-        return output
-    return "...(truncated)\n" + output[-_HOOK_OUTPUT_LIMIT:]
+    return trim_payload(output, _HOOK_OUTPUT_LIMIT, label="pre_push_hook_output")
 
 
 async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
