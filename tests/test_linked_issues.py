@@ -18,8 +18,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from sova.adapters.base import TaskState
 from sova.cli.app import app
-from sova.git.merge import MergedIssues
+from sova.git.merge import MergedIssues, OpenedPrIssues
 from sova.utils.gh import IssueLinks, parse_issue_links
 from sova.utils.shell import ShellResult
 
@@ -112,6 +113,7 @@ def _patched(*, cfg: MagicMock | None = None, pr_state: str = "MERGED", **merge_
     state_result = ShellResult(returncode=0, stdout=f"{pr_state}\n", stderr="")
     patches = [
         patch("sova.config.loader.load_config", return_value=cfg or _config()),
+        patch("sova.git.worktree.get_primary_worktree_root", new_callable=AsyncMock, return_value=REPO_ROOT),
         patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
         patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=state_result),
         patch("sova.adapters.create_adapter", return_value=MagicMock()),
@@ -183,6 +185,92 @@ class TestLinkedIssuesCli:
         handle.assert_not_awaited()
 
 
+class TestLinkedIssuesMarkInReview:
+    """`sova linked-issues <PR> --mark-in-review`, which /pr runs once the PR is open (#1281 follow-up)."""
+
+    def test_prints_one_line_per_issue(self) -> None:
+        outcome = OpenedPrIssues(moved=["1281"], left=[("7", TaskState.HUMAN_ONLY)])
+        mark = AsyncMock(return_value=outcome)
+        result = _run_with(_patched(pr_state="OPEN", mark_pr_issues_in_review=mark), "1389", "--mark-in-review")
+
+        assert result.exit_code == 0
+        assert result.stdout.splitlines() == outcome.describe()
+        assert mark.await_args.args == (1389,)
+        assert mark.await_args.kwargs["repo"] == "o/r"
+
+    def test_with_nothing_linked_says_so(self) -> None:
+        mark = AsyncMock(return_value=OpenedPrIssues())
+        result = _run_with(_patched(pr_state="OPEN", mark_pr_issues_in_review=mark), "1389", "--mark-in-review")
+
+        assert result.exit_code == 0
+        assert "closes no issue" in result.stdout
+
+    def test_exits_non_zero_when_an_issue_was_not_updated(self) -> None:
+        mark = AsyncMock(return_value=OpenedPrIssues(moved=["1"], failed=["2"]))
+        result = _run_with(_patched(pr_state="OPEN", mark_pr_issues_in_review=mark), "1389", "--mark-in-review")
+
+        assert result.exit_code == 1
+        assert "issue #2 not updated (see log)" in result.stdout
+
+    def test_exits_non_zero_when_the_body_is_unreadable(self) -> None:
+        mark = AsyncMock(return_value=None)
+        result = _run_with(_patched(pr_state="OPEN", mark_pr_issues_in_review=mark), "1389", "--mark-in-review")
+        assert result.exit_code == 1
+
+    @pytest.mark.parametrize("pr_state", ["MERGED", "CLOSED", ""])
+    def test_refuses_a_pr_that_is_not_open(self, pr_state: str) -> None:
+        mark = AsyncMock()
+        result = _run_with(_patched(pr_state=pr_state, mark_pr_issues_in_review=mark), "1389", "--mark-in-review")
+
+        assert result.exit_code == 1
+        mark.assert_not_awaited()
+
+    def test_a_gh_failure_reason_reaches_the_user(self) -> None:
+        mark = AsyncMock()
+        patches = _patched(mark_pr_issues_in_review=mark)
+        failed = ShellResult(returncode=1, stdout="", stderr="HTTP 401: Bad credentials")
+        patches[3] = patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=failed)
+        result = _run_with(patches, "1389", "--mark-in-review")
+
+        assert result.exit_code == 1
+        assert "HTTP 401: Bad credentials" in result.output
+        mark.assert_not_awaited()
+
+    def test_a_jira_project_is_skipped_without_failing(self) -> None:
+        """/pr runs the step on every project, so a Jira one must not fail the command."""
+        mark = AsyncMock()
+        result = _run_with(
+            _patched(cfg=_config("jira"), pr_state="OPEN", mark_pr_issues_in_review=mark), "1389", "--mark-in-review"
+        )
+
+        assert result.exit_code == 0
+        mark.assert_not_awaited()
+
+    def test_reads_the_primary_checkout_config_from_a_worktree(self) -> None:
+        """/pr runs in a worktree, which has no sova.db: its config would have no repo and the step would fail."""
+        mark = AsyncMock(return_value=OpenedPrIssues())
+        loader = MagicMock(return_value=_config())
+        primary = AsyncMock(return_value=Path("/primary"))
+        patches = [
+            *_patched(pr_state="OPEN", mark_pr_issues_in_review=mark),
+            patch("sova.config.loader.load_config", new=loader),
+            patch("sova.git.worktree.get_primary_worktree_root", new=primary),
+        ]
+        result = _run_with(patches, "1389", "--mark-in-review")
+
+        assert result.exit_code == 0
+        loader.assert_called_once_with(Path("/primary"))
+
+    def test_cannot_be_combined_with_apply(self) -> None:
+        mark, handle = AsyncMock(), AsyncMock()
+        patches = _patched(pr_state="OPEN", mark_pr_issues_in_review=mark, handle_merged_pr_issues=handle)
+        result = _run_with(patches, "1389", "--mark-in-review", "--apply")
+
+        assert result.exit_code == 2
+        mark.assert_not_awaited()
+        handle.assert_not_awaited()
+
+
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
@@ -212,6 +300,50 @@ class TestCommandsCloseOnlyOnClosingKeywords:
         text = _read(path)
         assert "or title (`#N`)" not in text
         assert "A bare `#N` in the body or the title is a mention, not a link." in text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/pr.md",
+            ".claude/commands/pr.md",
+            ".agents/skills/sova-pr/SKILL.md",
+            "plugins/sova/commands/pr.md",
+        ],
+    )
+    def test_pr_marks_the_linked_issues_in_review_after_creating_the_pr(self, path: str) -> None:
+        step_11 = re.search(r"11\. \*\*Create or update PR\*\*.*?\n12\. ", _read(path), re.DOTALL).group(0)
+        create = step_11.index("gh pr create")
+        assert step_11.index('sova linked-issues "$PR_NUM" --mark-in-review') > create
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/pr.md",
+            ".claude/commands/pr.md",
+            ".agents/skills/sova-pr/SKILL.md",
+            "plugins/sova/commands/pr.md",
+        ],
+    )
+    def test_pr_looks_the_pr_up_in_the_configured_repository(self, path: str) -> None:
+        step_11 = re.search(r"11\. \*\*Create or update PR\*\*.*?\n12\. ", _read(path), re.DOTALL).group(0)
+        assert '--repo "$REPO"' in step_11
+        assert 'sova config get github_repo --project "$PRIMARY"' in step_11
+        assert 'test -n "$REPO"' in step_11
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/pr.md",
+            ".claude/commands/pr.md",
+            ".agents/skills/sova-pr/SKILL.md",
+            "plugins/sova/commands/pr.md",
+        ],
+    )
+    def test_pr_stops_before_marking_issues_when_create_or_edit_fails(self, path: str) -> None:
+        step_11 = re.search(r"11\. \*\*Create or update PR\*\*.*?\n12\. ", _read(path), re.DOTALL).group(0)
+        for verb in ("create", "edit"):
+            line = step_11[step_11.index(f"gh pr {verb}") :].split("\n\n")[0]
+            assert f"PR {verb} failed: STOP" in line
 
     @pytest.mark.parametrize("path", ["sova/commands/data/commands/after-merge.md", ".claude/commands/after-merge.md"])
     def test_after_merge_applies_the_cli(self, path: str) -> None:
