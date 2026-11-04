@@ -142,6 +142,12 @@ filterwarnings = [
     # deallocator"; CI runs both. The 3.12 colon is matched with "." because
     # a literal colon would end the filter's message field.
     "ignore:Exception ignored (in.|while calling deallocator) <function Connection\\.__del__:pytest.PytestUnraisableExceptionWarning",
+    # The same leaked aiosqlite connection, when garbage collection finalizes a
+    # cursor() coroutine that was still suspended on the worker thread's reply
+    # (Python 3.14 words it "Exception ignored while finalizing coroutine").
+    # Scoped to aiosqlite's Connection.cursor so any other coroutine finalized
+    # this way still fails.
+    "ignore:Exception ignored while finalizing coroutine <coroutine object Connection\\.cursor at:pytest.PytestUnraisableExceptionWarning",
     # The same unclosed connection seen from aiosqlite's worker thread: once
     # the test's event loop has closed, the thread's attempt to hand back a
     # result raises "Event loop is closed", which pytest reports per thread.
