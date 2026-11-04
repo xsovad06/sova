@@ -297,6 +297,7 @@ class CreatePRStep(BaseStep):
                 base=ctx.base_branch,
                 head=ctx.branch_name,
                 repo=ctx.repo,
+                github_user=ctx.config.github_user,
             )
             ctx.pr_number = pr_info.number
             ctx.pr_url = pr_info.url

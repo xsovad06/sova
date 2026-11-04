@@ -237,8 +237,9 @@ function _applyTaskFilters(items) {
     var user = _githubUser.toLowerCase();
     var jiraUser = _jiraDisplayName ? _jiraDisplayName.toLowerCase() : '';
     filtered = filtered.filter(function(t) {
-      var assignees = (t.assignees || []).map(function(a) { return a.toLowerCase(); });
-      var author = ((t.pr_details || {}).author || '').toLowerCase();
+      var pr = t.pr_details || {};
+      var assignees = (t.assignees || []).concat(pr.assignees || []).map(function(a) { return a.toLowerCase(); });
+      var author = (pr.author || '').toLowerCase();
       return assignees.indexOf(user) !== -1 || author === user ||
         (jiraUser && assignees.indexOf(jiraUser) !== -1);
     });
