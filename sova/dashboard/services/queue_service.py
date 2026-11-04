@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable
+from itertools import takewhile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,6 +15,9 @@ from sova.adapters.milestone import extract_phase_order
 from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.queue")
 
@@ -97,19 +103,30 @@ def invalidate_queue_cache(project_dir: Path) -> None:
         _queue_cache_generation[key] = _queue_cache_generation.get(key, 0) + 1
 
 
-async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
+async def get_priority_queue(
+    project_dir: Path | None = None,
+    *,
+    open_prs: Awaitable[list[dict] | None] | None = None,
+    cfg: ProjectConfig | None = None,
+) -> list[dict]:
     """Fetch open issues and return a priority-sorted queue.
 
     Uses the GitHub adapter via the project's SOVA config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url, last_run.
     The adapter's task list is cached for 120 seconds per project to reduce API
     calls; last_run and spec_status are local reads, refreshed on every call.
+    ``open_prs`` is an open-PR fetch the caller already started (``None`` result: it failed); without
+    it the queue reads the cached open-PR list itself, and only when a run carries a PR number.
+    ``cfg`` is the config the caller already loaded; without it the queue loads its own, and only when
+    a run carries a PR number.
     """
     actionable = await _get_actionable_tasks(project_dir)
     if not actionable:
         return []
 
-    last_runs = await _get_last_runs_by_issue(project_dir)
+    queued = {t.id for t in actionable}
+    last_runs = {issue: run for issue, run in (await _get_last_runs_by_issue(project_dir)).items() if issue in queued}
+    await _drop_closed_pr_numbers(last_runs, project_dir, open_prs, cfg)
 
     queue = []
     for t in actionable:
@@ -253,7 +270,9 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
     """Get the most recent TaskRun for each issue number.
 
     Uses a subquery to find max(id) per issue, avoiding loading all rows.
-    Also finds pr_number across ALL runs (reviewer runs often lack it).
+    Also collects the PR numbers of ALL the issue's runs (reviewer runs often lack it) as
+    ``pr_candidates``: the run's own first, then the rest highest first. ``pr_number`` is the first
+    of them until ``_drop_closed_pr_numbers()`` skips the ones the open-PR list proves closed.
     """
     try:
         from sqlalchemy import func, select
@@ -269,24 +288,87 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
                 runs = result.scalars().all()
 
                 pr_stmt = (
-                    select(TaskRun.issue_number, func.max(TaskRun.pr_number).label("pr"))
-                    .where(TaskRun.pr_number.isnot(None))
-                    .group_by(TaskRun.issue_number)
+                    select(TaskRun.issue_number, TaskRun.pr_number).where(TaskRun.pr_number.isnot(None)).distinct()
                 )
                 pr_result = await session.execute(pr_stmt)
-                pr_by_issue = {row.issue_number: row.pr for row in pr_result}
+                prs_by_issue: dict[str, list[int]] = {}
+                for row in pr_result:
+                    prs_by_issue.setdefault(row.issue_number, []).append(row.pr_number)
 
-        return {
-            r.issue_number: {
+        last_runs = {}
+        for r in runs:
+            others = sorted((pr for pr in prs_by_issue.get(r.issue_number, []) if pr != r.pr_number), reverse=True)
+            candidates = [r.pr_number, *others] if r.pr_number else others
+            last_runs[r.issue_number] = {
                 "id": r.id,
                 "status": r.status,
                 "role": r.role,
-                "pr_number": r.pr_number or pr_by_issue.get(r.issue_number),
+                "pr_number": candidates[0] if candidates else None,
+                "pr_candidates": candidates,
                 "ended_at": iso_utc(r.ended_at),
                 "started_at": iso_utc(r.started_at),
             }
-            for r in runs
-        }
+        return last_runs
     except (OSError, RuntimeError, SQLAlchemyError):
         log.debug("Failed to fetch last runs for queue enrichment", exc_info=True)
         return {}
+
+
+_MAX_PR_CANDIDATES_PER_ISSUE = 3  # bounds the direct lookups a queue poll can make for an issue's PR history
+
+
+async def _drop_closed_pr_numbers(
+    last_runs: dict[str, dict],
+    project_dir: Path | None,
+    open_prs: Awaitable[list[dict] | None] | None,
+    cfg: ProjectConfig | None = None,
+) -> None:
+    """Point each run's ``pr_number`` at its first candidate the open-PR list does not prove closed.
+
+    Settled from the cached open-PR list; ``confirm_open_pr_numbers()`` looks up only a PR newer than
+    that list. When the open state is unknown (failed fetch, truncated list, no repo) every run keeps
+    its own PR or the issue's highest one, as before. Removes ``pr_candidates`` from every run. Only the
+    newest ``_MAX_PR_CANDIDATES_PER_ISSUE`` candidates of each (queued) issue are considered.
+    """
+    candidates_by_issue = {
+        issue: run.pop("pr_candidates", [])[:_MAX_PR_CANDIDATES_PER_ISSUE] for issue, run in last_runs.items()
+    }
+    if not any(candidates_by_issue.values()):
+        return
+
+    from sova.config.loader import load_config
+    from sova.dashboard.services.pr_service import (
+        confirm_open_pr_numbers,
+        known_open_pr_numbers,
+        list_open_prs_with_state,
+    )
+
+    if cfg is None:
+        try:
+            cfg = load_config(project_dir)
+        except Exception:  # noqa: BLE001 (keeps every PR number, as when the open state is unknown)
+            log.debug("queue.config_load_failed", exc_info=True)
+            return
+    if not cfg.github_repo:
+        return
+    if open_prs is not None:
+        fetched = await open_prs
+    else:
+        try:
+            fetched = await list_open_prs_with_state(project_dir, raise_on_error=True)
+        except Exception:  # noqa: BLE001 (a failed listing leaves the open state unknown, never "all closed")
+            log.warning("queue.open_prs_failed", exc_info=True)
+            fetched = None
+    listed = known_open_pr_numbers(fetched, cfg)
+    if listed is None:
+        return
+    # A candidate after one the list shows open can never be chosen, so it is never looked up.
+    reachable = [pr for prs in candidates_by_issue.values() for pr in takewhile(lambda p: p not in listed, prs)]
+    open_numbers = await confirm_open_pr_numbers(listed, reachable, cfg)
+
+    for issue, candidates in candidates_by_issue.items():
+        run = last_runs[issue]
+        current = next((pr for pr in candidates if pr in open_numbers), None)
+        if current != run["pr_number"]:
+            log.debug("queue.closed_pr_number_dropped", issue=issue, pr=run["pr_number"], current=current)
+            run["pr_number"] = current

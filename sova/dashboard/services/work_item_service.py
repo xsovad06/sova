@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task
 from sova.adapters.priority import Priority
+from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
 )
@@ -82,7 +83,7 @@ from sova.dashboard.services.work_verdict import (
 from sova.dashboard.services.work_verdict import (
     clear_verdict_cache as clear_verdict_cache,
 )
-from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state, pr_open_state_from_list
+from sova.git.pr import PROpenState, pr_open_state_from_list
 from sova.supervisor.suitability import (
     RankedTask,
     assess_suitability,
@@ -625,62 +626,6 @@ def _attach_merge_blockers(
 # Main entry point ------------------------------------------------------------
 
 
-def _open_pr_numbers(fetched_prs: list[dict] | None, cfg: ProjectConfig | None) -> set[int] | None:
-    """The open PR numbers, or ``None`` when they cannot be known.
-
-    That is a failed PR fetch, no configured repo, or a list as long as ``OPEN_PR_LIST_LIMIT``
-    (``gh pr list --limit`` may have cut an open PR off).
-    """
-    if fetched_prs is None or cfg is None or not cfg.github_repo:
-        return None
-    if len(fetched_prs) >= OPEN_PR_LIST_LIMIT:
-        return None
-    return {pr["number"] for pr in fetched_prs}
-
-
-_CONFIRM_CONCURRENCY = 4
-_CONFIRM_BACKOFF = 30.0  # seconds without lookups for a repo after one came back UNKNOWN
-_confirm_backoff_until: dict[str, float] = {}
-
-
-async def _confirm_open_pr_numbers(
-    open_numbers: set[int] | None, queue: list[dict], cfg: ProjectConfig | None
-) -> set[int] | None:
-    """Add last-run PRs the open list lacks but a direct lookup does not confirm as closed.
-
-    The open list is cached, so a PR a still-running developer run just created can be missing from it.
-    A PR numbered below the highest listed one existed when the list was fetched, so its absence is
-    conclusive and costs no call; only a higher number can be newer than the list. Lookups run a few at a
-    time, and after an ``UNKNOWN`` (an outage or rate limit) the repo is not asked again for a while.
-    Only ``NOT_OPEN`` lets ``_build_task_item`` drop a number; ``OPEN`` and ``UNKNOWN`` keep it.
-    """
-    if open_numbers is None or cfg is None:
-        return open_numbers
-    newest_listed = max(open_numbers, default=0)
-    candidates = {
-        pr
-        for task in queue
-        if (pr := (task.get("last_run") or {}).get("pr_number")) and pr not in open_numbers and pr > newest_listed
-    }
-    if not candidates:
-        return open_numbers
-    now = time.monotonic()
-    if now < _confirm_backoff_until.get(cfg.github_repo, 0.0):
-        return open_numbers | candidates
-    ordered = sorted(candidates)
-    semaphore = asyncio.Semaphore(_CONFIRM_CONCURRENCY)
-
-    async def _lookup(pr: int) -> PROpenState:
-        async with semaphore:
-            return await get_pr_open_state(pr, repo=cfg.github_repo, github_user=cfg.github_user)
-
-    states = await asyncio.gather(*(_lookup(pr) for pr in ordered))
-    if PROpenState.UNKNOWN in states:
-        _confirm_backoff_until[cfg.github_repo] = time.monotonic() + _CONFIRM_BACKOFF
-    confirmed = {pr for pr, state in zip(ordered, states, strict=True) if state is not PROpenState.NOT_OPEN}
-    return open_numbers | confirmed
-
-
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
@@ -709,10 +654,11 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         max_address_cycles = 0
 
     (queue, fetched_prs, handoffs, agents_data), graph = await asyncio.gather(
-        _fetch_all_sources(project_dir=project_dir, slug=slug),
+        _fetch_all_sources(project_dir=project_dir, slug=slug, cfg=cfg),
         _load_graph_or_none(project_dir),
     )
-    open_pr_numbers = await _confirm_open_pr_numbers(_open_pr_numbers(fetched_prs, cfg), queue, cfg)
+    last_run_prs = [pr for task in queue if (pr := (task.get("last_run") or {}).get("pr_number"))]
+    open_pr_numbers = await confirm_open_pr_numbers(known_open_pr_numbers(fetched_prs, cfg), last_run_prs, cfg)
     prs = fetched_prs if fetched_prs is not None else []
 
     running_by_issue = _index_running_agents(agents_data)
@@ -943,6 +889,7 @@ async def _fetch_all_sources(
     *,
     project_dir: Path | None,
     slug: str | None,
+    cfg: "ProjectConfig | None" = None,
 ) -> tuple[list[dict], list[dict] | None, list[dict], dict]:
     """Fetch queue, PRs (``None`` when unavailable), handoffs, and running agents concurrently."""
     from sova.dashboard.services.handoff_service import get_all_handoffs
@@ -950,7 +897,7 @@ async def _fetch_all_sources(
 
     async def safe_queue() -> list[dict]:
         try:
-            return await get_priority_queue(project_dir)
+            return await get_priority_queue(project_dir, open_prs=prs_task, cfg=cfg)
         except Exception:  # noqa: BLE001 (aggregate endpoint must not fail if one source is down)
             log.warning("work_items.queue_failed", exc_info=True)
             return []
@@ -962,8 +909,9 @@ async def _fetch_all_sources(
             log.warning("work_items.handoffs_failed", exc_info=True)
             return []
 
-    queue_task = asyncio.create_task(safe_queue())
+    # The queue awaits this same fetch to judge last-run PR numbers, so one poll lists open PRs once.
     prs_task = asyncio.create_task(_safe_prs(project_dir))
+    queue_task = asyncio.create_task(safe_queue())
     agents_task = asyncio.create_task(_safe_agents(slug))
 
     handoffs = safe_handoffs()
