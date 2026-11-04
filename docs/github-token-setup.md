@@ -105,8 +105,8 @@ gh auth switch --user <target-username>
 Moved from `.claude/rules/workflow.md` (issue #1338).
 
 - **Add a newly created issue to the board**: `gh project item-add 2 --owner xsovad06 --url <issue-url>`.
-  - Missing `project` scope: the command fails with a scope error; run `gh auth refresh -s project` and retry rather than leaving the issue off the board. If `GH_TOKEN` is set in the environment, `gh auth refresh` refuses to run while it supplies auth; in that case rotate to a replacement token with the `project` scope instead.
-  - Missing `read:org` scope: `gh`'s own owner-type resolution inside `project item-add` can demand `read:org` even to add an item to a user-owned board (this repo's board is owned by `xsovad06`, a user, not an org). The GraphQL mutation fallback (exact commands, including the stdout-on-error capture guard) lives in `sova/commands/data/commands/health-audit.md`'s "Add issues to the project board" section, the single copy to edit when the mutation changes.
+  - Missing `project` scope: the command fails with a scope error; run `gh auth refresh -s project` and retry rather than leaving the issue off the board. If `GH_TOKEN`, `GITHUB_TOKEN` or `GH_ENTERPRISE_TOKEN` is set in the environment, `gh auth refresh` refuses to run while it supplies auth; in that case rotate to a replacement token with the `project` scope instead.
+  - Missing `read:org` scope: `gh`'s own owner-type resolution inside `project item-add` can demand `read:org` even to add an item to a user-owned board (this repo's board is owned by `xsovad06`, a user, not an org). `sova board add` (`sova/cli/commands/board.py`) falls back to a GraphQL mutation in that case, the single copy to edit when the mutation changes.
 
 ## Related Issues
 
