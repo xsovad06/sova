@@ -35,6 +35,7 @@ from sova.git.operations import (
 )
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import format_fix_llm_failure
+from sova.llm.payload import trim_payload
 from sova.utils.logging import get_logger
 
 _ShellRunner = Callable[..., Any]
@@ -720,9 +721,7 @@ class MonitorCIStep(BaseStep):
                 repo=ctx.repo,
                 github_user=ctx.config.github_user,
             )
-            ci_logs = _redact_logs(raw_logs)
-            if len(ci_logs) > _CI_LOG_LIMIT:
-                ci_logs = "...(truncated)\n" + ci_logs[-_CI_LOG_LIMIT:]
+            ci_logs = trim_payload(_redact_logs(raw_logs), _CI_LOG_LIMIT, label="ci_failure_logs")
             log_result = await run("git", "log", "--oneline", "-5", cwd=ctx.working_dir)
             recent_commits = log_result.stdout.strip() if log_result.success else ""
             prompt = self._build_fix_prompt(failed_checks, ci_logs, recent_commits, ctx)

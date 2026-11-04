@@ -22,6 +22,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
+from sova.llm.payload import TRUNCATION_MARKER, trim_payload
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -54,6 +55,31 @@ async def _ensure_task(ctx: ExecutionContext) -> None:
         log.warning("step.develop.task_fetch_failed", issue=ctx.issue_number, exc_info=True)
 
 
+# Cap on the approved-spec context injected into the /develop arguments.
+_SPEC_CONTEXT_LIMIT = 12_000
+# Share of the cap an Open Questions section may claim, so a pathological one cannot crowd out the Solution.
+_SPEC_QUESTIONS_LIMIT = _SPEC_CONTEXT_LIMIT // 4
+
+
+def _cap_spec_context(body: str, questions: str) -> str:
+    """Join *body* and *questions* within ``_SPEC_CONTEXT_LIMIT``, trimming *body* first.
+
+    Open Questions holds the user's recorded decisions (``write_answers()``) and the agent cannot
+    re-fetch them, so when the whole context fits nothing is trimmed. Only an oversized context caps
+    the questions at ``_SPEC_QUESTIONS_LIMIT`` and lets the head-kept *body* give way. ``trim_payload``
+    adds its marker on top of the limit, so the marker (and its newline) is reserved to keep the
+    result within the cap.
+    """
+    separator = "\n\n" if body and questions else ""
+    if len(body) + len(separator) + len(questions) <= _SPEC_CONTEXT_LIMIT:
+        return f"{body}{separator}{questions}"
+    questions = trim_payload(questions, _SPEC_QUESTIONS_LIMIT, label="develop_spec_questions", keep="head")
+    separator = "\n\n" if body and questions else ""
+    marker_overhead = len(TRUNCATION_MARKER) + 1
+    body_budget = _SPEC_CONTEXT_LIMIT - len(separator) - len(questions) - marker_overhead
+    return f"{trim_payload(body, body_budget, label='develop_spec_context', keep='head')}{separator}{questions}"
+
+
 def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
     """Load approved spec sections as compressed context for the develop step.
 
@@ -71,7 +97,7 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
     """
     try:
         from sova.core.spec_utils import SpecFreshness, check_spec_freshness, read_spec, spec_freshness_caveat
-        from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, extract_sections_from_text
+        from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, SECTION_OPEN_QUESTIONS, extract_sections_from_text
 
         spec_data = read_spec(ctx.issue_number, ctx.project_dir)
         if spec_data is None or spec_data.get("status") != "approved":
@@ -81,10 +107,12 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
         if not raw_content:
             return "", ""
 
-        content = extract_sections_from_text(raw_content, DEVELOP_SECTIONS)
-        if not content:
+        content = extract_sections_from_text(
+            raw_content, tuple(h for h in DEVELOP_SECTIONS if h != SECTION_OPEN_QUESTIONS)
+        )
+        questions = extract_sections_from_text(raw_content, (SECTION_OPEN_QUESTIONS,))
+        if not content and not questions:
             return "", ""
-
         note = ""
         freshness = check_spec_freshness(raw_content, ctx.task)
         if freshness is not SpecFreshness.CURRENT:
@@ -97,6 +125,10 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
             caveat = spec_freshness_caveat(freshness)
             content = f"{caveat}\n\n{content}"
             note = f"spec may not reflect the current issue ({freshness.value})"
+
+        # Backstop for outlier specs, applied after the caveat so the cap covers the whole context.
+        # Keeps the head because the caveat and the Solution section come first.
+        content = _cap_spec_context(content, questions)
 
         log.info(
             "step.develop.spec_compression",
@@ -238,6 +270,9 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
 # ``make check``) prints lint/build output first and the failing test names
 # last.
 _CHECK_OUTPUT_TAIL_CHARS = 500
+
+# Check output kept for the fix prompt, and for the duplicate-failure comparison between cycles.
+_CHECK_OUTPUT_PROMPT_CHARS = 3000
 
 
 def _with_check_output_tail(summary: str, check_output: str) -> str:
@@ -459,7 +494,7 @@ class DevelopStep(BaseStep):
         check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
         log.warning("step.develop.checks_failed", output=check_output[-_CHECK_OUTPUT_TAIL_CHARS:])
 
-        last_check_output_tail: str = check_output[-3000:]
+        last_check_output_tail: str = check_output[-_CHECK_OUTPUT_PROMPT_CHARS:]
 
         for cycle in range(1, max_cycles + 1):
             budget_check = self._check_loop_budget(
@@ -507,7 +542,7 @@ class DevelopStep(BaseStep):
             if duplicate_check is not None:
                 return False, _with_check_output_tail(duplicate_check, check_output)
 
-            last_check_output_tail = check_output[-3000:]
+            last_check_output_tail = check_output[-_CHECK_OUTPUT_PROMPT_CHARS:]
             log.warning(
                 "step.develop.checks_still_failing", cycle=cycle, output=check_output[-_CHECK_OUTPUT_TAIL_CHARS:]
             )
@@ -606,7 +641,7 @@ class DevelopStep(BaseStep):
 
         Returns error summary if duplicate detected, None otherwise.
         """
-        check_output_tail = check_output[-3000:]
+        check_output_tail = check_output[-_CHECK_OUTPUT_PROMPT_CHARS:]
         if check_output_tail == last_check_output_tail:
             log.warning("step.develop.duplicate_failure_detected", cycle=cycle)
             return f"checks still failing after {cycle} fix cycle(s) (duplicate failure)"
@@ -695,7 +730,7 @@ class DevelopStep(BaseStep):
         """Invoke the LLM to fix check failures. Returns error summary or None on success."""
         prompt = (
             f"The project's check command (`{check_cmd}`) failed with the following output:\n\n"
-            f"```\n{check_output[-3000:]}\n```\n\n"
+            f"```\n{trim_payload(check_output, _CHECK_OUTPUT_PROMPT_CHARS, label='develop_check_output')}\n```\n\n"
             f"Fix ALL issues causing the check failures. Modify only the source code: "
             f"do NOT weaken, delete, or skip tests. Do NOT commit: just fix and stage the changes."
         )
