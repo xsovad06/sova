@@ -12,9 +12,12 @@ verified before writing exploit detail into it, the canonical issue template
 was unreachable from any branch, the `SECURITY.md` check looked in the wrong
 places and had no effect, the board-scope remedy didn't distinguish `project`
 from `read:org` failures, and `gh project list` truncated at the default
-limit. These tests assert on the raw command text (no LLM execution) that
-each fix is present in both the canonical `commands/` copy and the rendered
-`.claude/commands/` copy, following the content-assertion pattern in
+limit. Issue #1363 cut the command to a size cap: the report path check, the visibility and
+policy lookup and the board add moved into deterministic `sova audit` and `sova board`
+subcommands (tested in `test_audit_cli.py` and `test_board_cli.py`), and the command
+now carries one instruction per verdict they print. These tests assert on the raw
+command text (no LLM execution) that each gate is still present in both the canonical
+`commands/` copy and the rendered `.claude/commands/` copy, following the content-assertion pattern in
 `tests/test_ci_docs_only.py`. Assertions that could straddle a markdown line
 wrap use the whitespace-normalized fixtures (`*_norm`) so a rewrap alone
 cannot break the test.
@@ -63,24 +66,22 @@ class TestDisclosurePreflight:
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
     def test_checks_repo_visibility(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
-        assert "gh repo view --json visibility" in text
+        assert "sova audit disclosure" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
-    def test_checks_security_policy_at_all_conventional_locations(
-        self, fixture: str, request: pytest.FixtureRequest
-    ) -> None:
-        """GitHub honours SECURITY.md at the repo root, .github/, and docs/."""
+    def test_every_disclosure_verdict_has_an_instruction(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """The verdict command prints three tokens; each needs its own branch in the command."""
         text = request.getfixturevalue(fixture)
-        assert "SECURITY.md" in text
-        assert ".github/SECURITY.md" in text
-        assert "docs/SECURITY.md" in text
+        assert "- **`private`**" in text
+        assert "- **`public-policy <path>`**" in text
+        assert "- **`public-no-policy`**" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_security_policy_has_an_actual_effect(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """A found policy must change the question, not just be detected and ignored."""
         text = request.getfixturevalue(fixture)
         assert "quote its private reporting instructions" in text
-        assert "private reporting channel" in text
+        assert "so withholding is not the only path to disclosure" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
     def test_three_way_disclosure_choice(self, fixture: str, request: pytest.FixtureRequest) -> None:
@@ -93,7 +94,21 @@ class TestDisclosurePreflight:
     def test_failed_check_defaults_to_public(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """A failed visibility/policy check must fail toward asking, not toward silent filing."""
         text = request.getfixturevalue(fixture)
-        assert "treat visibility as `PUBLIC`" in text
+        assert (
+            "A failed or unrecognised visibility check is reported as public, so the gate fails toward asking" in text
+        )
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_failed_disclosure_call_counts_as_public(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A missing or older `sova` must not leave the pre-flight with no verdict, which would skip it."""
+        text = request.getfixturevalue(fixture)
+        assert "A failed call or any other last line counts as `public-no-policy`" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_only_the_last_line_is_the_disclosure_verdict(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A log line above the verdict must not be read as "any other output" and drop a found policy."""
+        text = request.getfixturevalue(fixture)
+        assert "The verdict is the last line printed:" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
     def test_preflight_precedes_issue_creation(self, fixture: str, request: pytest.FixtureRequest) -> None:
@@ -111,14 +126,14 @@ class TestDisclosurePreflight:
         carry-over clause and restore that exact bug with no test noticing."""
         text = request.getfixturevalue(fixture)
         assert "plus every carry-over group the user chose to file" in text
-        assert "must gain an issue above and drop out of `withheld=` in the same write" in text
+        assert "must gain an issue and drop out of `withheld=` in the same write" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_carry_over_groups_feed_the_preflight(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """A withheld group carried in from Step 1 must reach this run's three-way question."""
         text = request.getfixturevalue(fixture)
         assert "carry-over group" in text
-        assert "carry-over group name Step 1 surfaced from the prior run's `withheld=` field" in text
+        assert "plus every carry-over group Step 1 surfaced that is still unresolved" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_private_or_internal_repo_still_resolves_carry_overs(
@@ -128,7 +143,7 @@ class TestDisclosurePreflight:
         never becomes resolvable later on its own, so it must be resolved here regardless of
         visibility, not left permanently stuck in `withheld=`."""
         text = request.getfixturevalue(fixture)
-        assert "resolve every carry-over group regardless of visibility" in text
+        assert "still resolve every carry-over group regardless of visibility" in text
         assert "Only once every carry-over group is resolved" in text
 
 
@@ -149,7 +164,7 @@ class TestWithheldTracking:
     def test_step1_carries_over_unresolved_withheld_groups(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """Step 1 must re-surface a prior withheld group as a carry-over, not silently drop it."""
         text = request.getfixturevalue(fixture)
-        assert "record them as **carry-over groups** for this run" in text
+        assert "record it as a **carry-over group**" in text
         assert "unresolved carry-over group is never silently dropped" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
@@ -175,9 +190,8 @@ class TestWithheldTracking:
         report before Phase A overwrites it, not re-read from the (by then rewritten) file at
         the point Phase C needs them."""
         text = request.getfixturevalue(fixture)
-        assert "Carry-over group content" in text
-        assert "before anything later overwrites the existing" in text
-        assert "by the time Phase C executes, Phase A has already overwritten it" in text
+        assert "Before anything overwrites the report, capture each carry-over group's verbatim finding blocks" in text
+        assert "by the time Phase C executes, Phase A has already overwritten the file" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_withheld_only_branch_records_full_audit_mode(self, fixture: str, request: pytest.FixtureRequest) -> None:
@@ -194,7 +208,7 @@ class TestWithheldTracking:
         can only ever be re-asked forever, since Withhold just re-adds it to `withheld=`."""
         text = request.getfixturevalue(fixture)
         assert "**Drop** (carry-over groups only" in text
-        assert "it is not" in text and "re-surfaced on a future run" in text
+        assert "It is not re-surfaced on a future run" in text
 
 
 class TestReportConfidentiality:
@@ -204,16 +218,17 @@ class TestReportConfidentiality:
     ) -> None:
         """A tracked or unignored report path would publish withheld exploit detail via a commit."""
         text = request.getfixturevalue(fixture)
-        assert "git check-ignore -q docs/HEALTH-AUDIT.md" in text
-        assert "git ls-files --error-unmatch docs/HEALTH-AUDIT.md" in text
+        assert "sova audit report-path" in text
+        for verdict in ("safe", "unsafe-untracked", "unsafe-tracked", "unsafe-not-a-git-repo"):
+            assert f"- `{verdict}`:" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_confidentiality_check_precedes_writing_the_report(
         self, fixture: str, request: pytest.FixtureRequest
     ) -> None:
         text = request.getfixturevalue(fixture)
-        check = text.index("git check-ignore -q docs/HEALTH-AUDIT.md")
-        write = text.index("write the full audit to `docs/HEALTH-AUDIT.md`")
+        check = text.index("sova audit report-path")
+        write = text.index("Write the full audit to `docs/HEALTH-AUDIT.md`")
         assert check < write
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
@@ -224,9 +239,9 @@ class TestReportConfidentiality:
         which is exactly the `untracked-and-not-ignored` case the check itself calls the
         default state of a fresh project."""
         text = request.getfixturevalue(fixture)
-        assert "regardless of whether `docs/HEALTH-AUDIT.md` exists yet" in text
-        check = text.index("git check-ignore -q docs/HEALTH-AUDIT.md")
-        exists_check = text.index("check if `docs/HEALTH-AUDIT.md` already exists")
+        assert "whether or not `docs/HEALTH-AUDIT.md` exists yet" in text
+        check = text.index("sova audit report-path")
+        exists_check = text.index("check whether `docs/HEALTH-AUDIT.md` already exists")
         assert check < exists_check
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
@@ -239,6 +254,30 @@ class TestReportConfidentiality:
         text = request.getfixturevalue(fixture)
         assert "Phase A has already written the full report" in text
         assert "git rm --cached docs/HEALTH-AUDIT.md" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_step_one_does_not_untrack_the_report(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Step 1 runs on every audit, so an unconditional `git rm --cached` there would stage a deletion in a
+        project that deliberately tracks its report. Only Phase C's Withhold or File neutrally choice untracks."""
+        text = request.getfixturevalue(fixture)
+        assert (
+            "Do not untrack it now: only a Withhold or File neutrally choice makes Phase C run `git rm --cached`"
+            in text
+        )
+        step_one = text[: text.index("### Step 2")]
+        assert "must also leave version control" not in step_one
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_failed_report_path_call_counts_as_unsafe(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A missing or older `sova` must not leave the gate with no verdict, which would read as safe."""
+        text = request.getfixturevalue(fixture)
+        assert "a failed call or any other last line counts as `unsafe-untracked`" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_report_path_verdict_is_the_last_line_printed(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """Stderr notices share the Bash tool's output with the verdict, as the disclosure gate already allows for."""
+        text = request.getfixturevalue(fixture)
+        assert "The verdict is the last line printed; a failed call" in text
 
 
 class TestPhaseDCarryOverInvariant:
@@ -257,44 +296,108 @@ class TestBoardMembership:
     def test_board_add_step_present(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "### Add issues to the project board" in text
-        assert "task_source.github_project_number" in text
-        assert "gh project item-add" in text
+        assert "sova board add" in text
+        assert "**`skip: ...`**: skip board membership and say why" in " ".join(text.split())
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
-    def test_repo_owner_is_resolved_not_assumed(self, fixture: str, request: pytest.FixtureRequest) -> None:
-        """<repo-owner> must be derived, not left for the agent to guess (it is not github_user)."""
+    def test_board_mechanics_live_in_the_subcommand_not_the_command(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """The gh calls, GraphQL fallback and board discovery are deterministic code now."""
         text = request.getfixturevalue(fixture)
-        assert "gh repo view --json owner" in text
+        assert "gh project item-add" not in text
+        assert "addProjectV2ItemById" not in text
+        assert "gh project list" not in text
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
     def test_missing_project_scope_reported_not_skipped(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "gh auth refresh -s project" in text
 
-    @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
-    def test_missing_read_org_scope_has_its_own_graphql_remedy(
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_missing_project_scope_is_retried_after_the_refresh(
         self, fixture: str, request: pytest.FixtureRequest
     ) -> None:
-        """`gh auth refresh -s project` does not fix a missing read:org scope."""
         text = request.getfixturevalue(fixture)
-        assert "Missing `read:org` scope" in text
-        assert "addProjectV2ItemById" in text
+        assert "If the line says to run `gh auth refresh -s project`, run it, then re-run `sova board add`" in text
 
-    @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
-    def test_board_discovery_fallback_uses_limit_1000(self, fixture: str, request: pytest.FixtureRequest) -> None:
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_missing_read_org_scope_names_the_remedy(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
-        assert "gh project list --owner <repo-owner> --limit 1000 --format json" in text
+        assert "**`failed` with a missing read:org scope**: report it, ask for a token with `read:org`," in text
+        assert "and skip the board for this run" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_configuration_error_without_url_lines_skips_the_board(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "Any other non-zero exit with no per-URL line: report it and skip the board" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_urlless_failed_board_line_follows_the_remedy_it_names(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """A board listing blocked by project scope needs the refresh remedy, not a read:org request or a skip."""
+        text = request.getfixturevalue(fixture)
+        assert "**A `failed:` line with no URL** is board-level: follow the bullet above its text matches" in text
+        assert "This includes a `failed:` board line" not in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_discovered_board_is_named_and_used_by_phase_d(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "A `board:` line names the board used (with its title when known)" in text
+        assert "Skip this check when `sova board add` printed `skip`" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_phase_d_takes_the_title_from_the_board_line_before_calling_gh_project_view(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """`gh project view` needs read:org, so the title printed by `sova board add` comes first."""
+        text = request.getfixturevalue(fixture)
+        assert "Take the title from the `board:` line, else run `gh project view" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_other_board_failures_are_reported_not_retried(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert 'report it as "could not add to board"' in text
+        assert "Do not retry automatically" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_gh_token_set_changes_the_scope_remedy(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "If it names a token variable such as `GH_TOKEN`, `gh auth refresh` refuses to run" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
     def test_phase_d_verifies_board_membership_per_issue(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "gh issue view <n> --json projectItems" in text
+        assert "sova config get task_source.github_project_number" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_phase_d_failure_not_read_as_absent(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """A failed projectItems query must be reported as unverifiable, not as 'not on the board'."""
         text = request.getfixturevalue(fixture)
         assert "could not verify board membership" in text
+
+
+class TestIncrementalMode:
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_step_four_uses_the_recorded_mode_not_the_existing_report(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "### Step 4: Incremental mode check" in text
+        assert "Use the mode recorded in Step 1; an existing report alone does not select incremental mode" in text
+
+
+class TestLabelValidation:
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_only_existing_labels_are_used(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "Only use labels and milestones that exist in the project" in text
+        assert "If a label is missing, create it with `gh label create` or use the closest existing one" in text
+        assert "Confirm it appears in the list before passing it to `--milestone`" in text
 
 
 class TestClaimsLedger:
@@ -307,7 +410,7 @@ class TestClaimsLedger:
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_every_finding_re_derived(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
-        assert "For every finding, not a sample of them" in text
+        assert "for every finding, not a sample of them" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_ledger_has_a_budget_shape_not_one_call_per_claim(
@@ -319,15 +422,15 @@ class TestClaimsLedger:
         assert "Or delegate" in text
         assert "Budget rule" in text
 
-    @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_traced_in_code_marker(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "traced in code, not executed" in text
 
-    @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_unverifiable_claims_dropped(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
-        assert "drop the claim from the report entirely" in text
+        assert "drop the claim entirely" in text
 
 
 class TestNoTruncatedLimits:
@@ -361,6 +464,19 @@ class TestNoTruncatedLimits:
     def test_milestones_paginate(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "/milestones --paginate" in text
+
+
+class TestRationaleLivesOutsideTheCommand:
+    @pytest.mark.parametrize("fixture", HEALTH_FIXTURES)
+    def test_command_carries_no_pointer_to_the_maintainer_doc(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """Text the agent does not act on leaves the distributed surface entirely, pointer included."""
+        text = request.getfixturevalue(fixture)
+        assert "docs/commands/health-audit.md" not in text
+
+    def test_maintainer_doc_exists(self) -> None:
+        assert (REPO_ROOT / "docs" / "commands" / "health-audit.md").is_file()
 
 
 class TestIssueBodyTemplate:

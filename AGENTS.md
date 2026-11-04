@@ -34,6 +34,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/invariants.md` | Per-invariant detail for the pre-push and CI checks in `invariants/` |
 | `docs/workflow-history.md` | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
 | `docs/token-compression.md` | Optional RTK and Headroom token compression setup |
+| `docs/commands/health-audit.md` | Maintainer rationale for the health-audit command; not distributed, so the command stays under its size cap (`tests/test_command_size_budget.py`) |
 
 ## Project Structure
 
