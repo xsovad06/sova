@@ -1,4 +1,4 @@
-"""Environment sanitization for spawned LLM subprocesses.
+"""Environment sanitization for LLM subprocesses and project check commands.
 
 SOVA launches the Claude Code CLI from two places: as a long-lived agent
 process (``sova/ipc/runtime.py``) and as a per-step LLM invocation
@@ -20,6 +20,29 @@ from collections.abc import Iterable, Mapping
 from sova.utils.logging import get_logger
 
 log = get_logger(component="utils.env")
+
+
+# Select the orchestrator's own database. A project's checks and a coding agent that
+# runs them create their own, and inheriting the URL points every explicit project
+# path at the orchestrator's database instead: SOVA's own suite fails sixteen writer
+# tests that way. A nested `sova run` still needs it, so it is never in SCRUBBED_VARS.
+# Only CodexRuntime scrubs it from its agent, a deliberate trade: the Codex agent runs the
+# project's suite itself, and that suite must not open the orchestrator's database. The cost
+# is that its `sova config get` / `sova checks record` calls (the rendered skills make them
+# too) resolve the project's default database instead. Settings still agree for the
+# SOVA_<SECTION>_<FIELD> overrides, which stay in its environment, and for a pilot copy of
+# the project database; a `sova checks record` from Codex lands in the default database.
+# Claude Code and Aider agents keep the URL so those calls resolve the orchestrator's database.
+ORCHESTRATOR_ONLY_VARS: frozenset[str] = frozenset({"SOVA_DATABASE_URL"})
+
+
+def scrub_check_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a copy of the environment for a project check command, minus ORCHESTRATOR_ONLY_VARS.
+
+    A copy, so the pipeline keeps its connection and every other variable reaches the check.
+    """
+    source = os.environ if env is None else env
+    return {key: value for key, value in source.items() if key not in ORCHESTRATOR_ONLY_VARS}
 
 
 # Third-party provider routing and model pinning. When present, these make the

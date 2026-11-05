@@ -23,6 +23,7 @@ from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
 from sova.llm.payload import TRUNCATION_MARKER, trim_payload
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -484,6 +485,7 @@ class DevelopStep(BaseStep):
             check_cmd,
             cwd=ctx.working_dir,
             timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
+            env=scrub_check_env(),
         )
         last_check_duration = time.monotonic() - check_start
         max_check_duration = last_check_duration
@@ -530,6 +532,7 @@ class DevelopStep(BaseStep):
                 check_cmd,
                 cwd=ctx.working_dir,
                 timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
+                env=scrub_check_env(),
             )
             last_check_duration = time.monotonic() - check_start
             max_check_duration = max(max_check_duration, last_check_duration)

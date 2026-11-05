@@ -25,7 +25,12 @@ from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.errors import ConfigurationError
 from sova.llm.models import CURATED_MODELS, CostSource, StreamEvent, build_claude_cli_result
-from sova.utils.env import ANTHROPIC_CREDENTIAL_VARS, configured_passthrough, scrub_agent_env
+from sova.utils.env import (
+    ANTHROPIC_CREDENTIAL_VARS,
+    ORCHESTRATOR_ONLY_VARS,
+    configured_passthrough,
+    scrub_agent_env,
+)
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, write_stdin_and_close
 
@@ -634,7 +639,12 @@ class ClaudeCodeRuntime(AgentRuntime):
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 
         return await _spawn_agent_process(
-            args, cwd, env, output_dir, run_label, stdin_payload=_HEADLESS_PREAMBLE + prompt
+            args,
+            cwd,
+            env,
+            output_dir,
+            run_label,
+            stdin_payload=_HEADLESS_PREAMBLE + prompt,
         )
 
     def parse_output(self, line: str) -> StreamEvent | None:
@@ -1428,7 +1438,7 @@ class CodexRuntime(AgentRuntime):
             env,
             output_dir,
             run_label,
-            extra_scrub=ANTHROPIC_CREDENTIAL_VARS,
+            extra_scrub=ANTHROPIC_CREDENTIAL_VARS | ORCHESTRATOR_ONLY_VARS,
             extra_env=_codex_extra_env(env),
             stdin_payload=stdin_payload,
         )

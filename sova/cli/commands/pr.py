@@ -56,6 +56,7 @@ def maintain_pr(
 
 async def _maintain_pr(*, pr: int, project_dir: Path | None) -> None:
     from sova.config.loader import load_config
+    from sova.utils.env import scrub_check_env
     from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
 
@@ -83,7 +84,7 @@ async def _maintain_pr(*, pr: int, project_dir: Path | None) -> None:
         raise typer.Exit(code=1)
 
     # Force-push
-    result = await run("git", "push", "--force-with-lease", cwd=resolved_dir)
+    result = await run("git", "push", "--force-with-lease", cwd=resolved_dir, env=scrub_check_env())
     if not result.success:
         console.print(f"[red]Push failed: {result.stderr}[/red]")
         raise typer.Exit(code=1)

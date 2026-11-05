@@ -36,6 +36,7 @@ from sova.git.operations import (
 from sova.llm.egress import scan_and_redact
 from sova.llm.errors import format_fix_llm_failure
 from sova.llm.payload import trim_payload
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 
 _ShellRunner = Callable[..., Any]
@@ -788,6 +789,7 @@ class MonitorCIStep(BaseStep):
             "-m",
             f"{format_type_scope(commit_type, scope)}: address CI failures",
             cwd=ctx.working_dir,
+            env=scrub_check_env(),
         )
         if commit.success:
             log.info("step.monitor_ci.auto_committed")
@@ -822,7 +824,7 @@ class MonitorCIStep(BaseStep):
 
         hook = await find_pre_push_hook(ctx.working_dir)
         if hook:
-            hook_result = await run(hook, "origin", "unused", cwd=ctx.working_dir, timeout=120)
+            hook_result = await run(hook, "origin", "unused", cwd=ctx.working_dir, timeout=120, env=scrub_check_env())
             if not hook_result.success:
                 hook_output = (hook_result.stdout + "\n" + hook_result.stderr).strip()
                 log.warning(

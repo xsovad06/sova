@@ -238,6 +238,16 @@ class TestRunTestSuite:
         assert result.exit_code == 0
         assert result.tests == []
 
+    async def test_suite_does_not_inherit_orchestrator_database_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project's tests create their own databases; the orchestrator's URL would redirect them."""
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite:////tmp/orchestrator.db")
+        with patch("sova.core.test_baseline.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, success=True, stdout="", stderr="")
+            await run_test_suite("npm test", tmp_path, cmd_timeout=60)
+        assert "SOVA_DATABASE_URL" not in mock_run.call_args.kwargs["env"]
+
     async def test_pytest_with_json_report(self, tmp_path: Path) -> None:
         sova_dir = tmp_path / ".sova"
         sova_dir.mkdir()

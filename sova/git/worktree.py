@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES, pathspec_exclude
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
@@ -120,7 +121,7 @@ async def preserve_partial_work(
             return False
 
         message = f"{format_type_scope(commit_type, scope)}: preserve partial work from {reason}"
-        commit_result = await run("git", "commit", "-m", message, cwd=work_dir)
+        commit_result = await run("git", "commit", "-m", message, cwd=work_dir, env=scrub_check_env())
         if not commit_result.success:
             log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
             return False

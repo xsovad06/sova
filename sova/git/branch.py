@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from sova.git.safety import unstage_suspicious_files
+from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked, subprocess_error
@@ -143,7 +144,8 @@ async def commit(
     args = ["git", "commit", "-m", message]
     if no_verify:
         args.append("--no-verify")
-    await run_checked(*args, cwd=cwd)
+    # The project's pre-commit hook runs here: keep the orchestrator's database URL out of it.
+    await run_checked(*args, cwd=cwd, env=scrub_check_env())
 
 
 async def push(
@@ -198,7 +200,9 @@ async def push(
         # own auth.
         log.debug("git.push_gh_env_resolve_failed", branch=branch, exc_info=True)
         env = None
-    await run_checked(*args, cwd=cwd, env=env)
+    # The project's pre-push hook runs here: keep the orchestrator's database URL out of it
+    # (scrubs the resolved GH_TOKEN env when there is one, the ambient env otherwise).
+    await run_checked(*args, cwd=cwd, env=scrub_check_env(env))
 
 
 class DivergenceStatus(StrEnum):

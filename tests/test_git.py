@@ -59,6 +59,7 @@ from sova.git.worktree import (
     list_worktrees,
     resolve_worktree_conflict,
 )
+from sova.utils.env import scrub_check_env
 from sova.utils.shell import ShellResult
 
 # ---------------------------------------------------------------------------
@@ -601,7 +602,37 @@ class TestPush:
 
             await push("feat/login", cwd=Path("/repo"))
 
-            assert mock_run.call_args.kwargs["env"] is None
+            assert mock_run.call_args.kwargs["env"] == scrub_check_env()
+
+    async def test_push_and_commit_hooks_do_not_see_the_orchestrator_database_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """git push / git commit run the project's pre-push / pre-commit hooks, so
+        SOVA_DATABASE_URL must be absent from the env they get, with or without a resolved GH_TOKEN."""
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite:///pilot.db")
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.resolve_gh_env", new_callable=AsyncMock) as mock_resolve,
+            patch("sova.git.safety.run", new_callable=AsyncMock) as mock_safety,
+        ):
+            mock_run.return_value = _shell_ok()
+            mock_safety.return_value = _shell_ok(stdout="")
+
+            mock_resolve.return_value = {"GH_TOKEN": "t", "SOVA_DATABASE_URL": "sqlite+aiosqlite:///pilot.db"}
+            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+            push_env = mock_run.call_args.kwargs["env"]
+            assert "SOVA_DATABASE_URL" not in push_env
+            assert push_env["GH_TOKEN"] == "t"
+
+            mock_resolve.return_value = None
+            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+            assert "SOVA_DATABASE_URL" not in mock_run.call_args.kwargs["env"]
+
+            mock_run.reset_mock()
+            await commit("feat: x", cwd=Path("/repo"))
+            commit_calls = [c for c in mock_run.call_args_list if "commit" in c[0]]
+            assert commit_calls
+            assert "SOVA_DATABASE_URL" not in commit_calls[0].kwargs["env"]
 
     async def test_pushes_resolves_gh_token_for_configured_user(self) -> None:
         """A configured github_user must resolve its GH_TOKEN and forward it
@@ -634,7 +665,7 @@ class TestPush:
 
             await push("feat/login", cwd=Path("/repo"), github_user="alice")
 
-            assert mock_run.call_args.kwargs["env"] is None
+            assert mock_run.call_args.kwargs["env"] == scrub_check_env()
 
     async def test_pushes_falls_back_to_ambient_env_when_gh_not_installed(self) -> None:
         """resolve_gh_env() raises OSError (via run()'s create_subprocess_exec)
@@ -650,7 +681,7 @@ class TestPush:
 
             await push("feat/login", cwd=Path("/repo"), github_user="alice")
 
-            assert mock_run.call_args.kwargs["env"] is None
+            assert mock_run.call_args.kwargs["env"] == scrub_check_env()
 
     async def test_pushes_with_force_and_lease_sha(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:

@@ -26,6 +26,7 @@ from sova.git.pr import find_pr_for_issue
 from sova.git.rebase import rebase_with_conflict_resolution
 from sova.git.worktree import check_worktree_active_agent, cleanup_worktree, create_worktree, find_worktree_by_branch
 from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -343,7 +344,9 @@ async def _run_rebase_and_push(
         )
         return {"status": "failed", "pr_number": pr_number, "error": "Pre-push hook failed after rebase"}
 
-    push_result = await ops.run("git", "push", "origin", branch, "--force-with-lease", cwd=worktree_path)
+    push_result = await ops.run(
+        "git", "push", "origin", branch, "--force-with-lease", cwd=worktree_path, env=scrub_check_env()
+    )
     if not push_result.success:
         if "stale info" in push_result.stderr or "rejected" in push_result.stderr:
             log.info("auto_rebase.branch_changed", issue=issue_number, pr=pr_number)
@@ -472,7 +475,7 @@ async def _run_pre_push_hook(worktree_path: Path) -> dict[str, Any]:
     if not hook_path.exists():
         return {"passed": True, "output": ""}
 
-    result = await run(str(hook_path), cwd=worktree_path, timeout=300)
+    result = await run(str(hook_path), cwd=worktree_path, timeout=300, env=scrub_check_env())
     return {"passed": result.success, "output": (result.stdout or "") + (result.stderr or "")}
 
 
