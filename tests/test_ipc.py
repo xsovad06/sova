@@ -1958,6 +1958,41 @@ class TestSpawnDirect:
             await CodexRuntime().spawn("do work", tmp_path, env=hostile)
         assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
 
+    async def test_orchestrator_database_url_is_scrubbed_only_for_codex(self, tmp_path: Path) -> None:
+        """Codex runs the project's own suite, which must not open the orchestrator's database.
+
+        The nested `sova run` from spawn_direct() keeps the URL, and so do the Claude Code and Aider
+        agents: their commands call `sova config get` and `sova checks record`, which resolve the
+        database through it and must read the one the orchestrator uses.
+        """
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, CodexRuntime, spawn_direct
+
+        env = {"PATH": "/usr/bin", "SOVA_DATABASE_URL": "postgresql://team/sova"}
+        mock_proc = AsyncMock()
+        mock_proc.pid = 82
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await spawn_direct(["sova", "run", "42"], tmp_path, env=env)
+        assert mock_exec.call_args.kwargs["env"]["SOVA_DATABASE_URL"] == "postgresql://team/sova"
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await ClaudeCodeRuntime().spawn("do work", tmp_path, env=env)
+        assert mock_exec.call_args.kwargs["env"]["SOVA_DATABASE_URL"] == "postgresql://team/sova"
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await AiderRuntime().spawn("do work", tmp_path, env=env)
+        assert mock_exec.call_args.kwargs["env"]["SOVA_DATABASE_URL"] == "postgresql://team/sova"
+
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+        ):
+            await CodexRuntime().spawn("do work", tmp_path, env=env)
+        assert "SOVA_DATABASE_URL" not in mock_exec.call_args.kwargs["env"]
+
     def test_pipeline_roles_set(self) -> None:
         """developer/researcher/planner use spawn_direct() via `_PIPELINE_ROLES`.
         Post-#1126, reviewer also uses spawn_direct(), but via a local extension of

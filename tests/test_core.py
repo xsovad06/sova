@@ -12369,6 +12369,25 @@ class TestDevelopStepInnerCheckLoop:
         assert passed is True
         assert summary == "checks passed"
 
+    async def test_check_run_does_not_inherit_orchestrator_database_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pilot's checks opened the orchestrator's database through an inherited URL."""
+        from sova.core.steps.develop import DevelopStep
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite:////tmp/orchestrator.db")
+        cfg = ProjectConfig(check_cmd="make check")
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="", stderr=""),  # command -v probe
+                MagicMock(success=True, stdout="All tests passed", stderr=""),  # check run
+            ]
+            await DevelopStep()._run_inner_check_loop(ctx)
+
+        assert "SOVA_DATABASE_URL" not in mock_run.call_args.kwargs["env"]
+
     async def test_fix_cycle_succeeds(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult

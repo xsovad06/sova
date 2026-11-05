@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -108,7 +109,7 @@ async def run_test_suite(
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     enriched_cmd = f"{test_cmd} --json-report --json-report-file={report_path} --tb=no -q"
-    result = await run("sh", "-c", enriched_cmd, cwd=cwd, timeout=cmd_timeout)
+    result = await run("sh", "-c", enriched_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env())
 
     if report_path.exists():
         try:
@@ -130,7 +131,7 @@ async def run_test_suite(
 
 async def _run_exit_code_only(test_cmd: str, cwd: Path, cmd_timeout: int) -> BaselineSnapshot:
     """Capture only the exit code from the test command."""
-    result = await run("sh", "-c", test_cmd, cwd=cwd, timeout=cmd_timeout)
+    result = await run("sh", "-c", test_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env())
     return BaselineSnapshot(mode="exit_code", exit_code=result.returncode, tests=[])
 
 

@@ -35,6 +35,7 @@ from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.git.branch import get_current_branch
 from sova.llm.errors import format_fix_llm_failure
 from sova.llm.payload import trim_payload
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run, run_checked
 
@@ -135,7 +136,9 @@ class ValidateStep(BaseStep):
 
         hook_timeout = ctx.config.validation.hook_timeout
         hook_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
-        result = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=hook_stdin)
+        result = await run(
+            hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=hook_stdin, env=scrub_check_env()
+        )
         if result.success:
             return StepResult(success=True, summary="Pre-push hook passed")
 
@@ -245,7 +248,9 @@ class ValidateStep(BaseStep):
                 )
 
             retry_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
-            retry = await run(hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=retry_stdin)
+            retry = await run(
+                hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=retry_stdin, env=scrub_check_env()
+            )
             if retry.success:
                 if not folded and await self._worktree_is_dirty(cwd):
                     # The hook passed because it reads the worktree, not the

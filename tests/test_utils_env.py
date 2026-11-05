@@ -176,3 +176,20 @@ class TestScrubbedVarSets:
     def test_codex_api_key_is_scrubbed_by_default(self) -> None:
         assert "CODEX_API_KEY" in SCRUBBED_VARS
         assert "CODEX_API_KEY" in CODEX_CREDENTIAL_VARS
+
+
+class TestScrubCheckEnv:
+    """Project check commands must not inherit the orchestrator's database URL."""
+
+    def test_drops_only_the_database_url(self) -> None:
+        from sova.utils.env import scrub_check_env
+
+        source = {"SOVA_DATABASE_URL": "sqlite+aiosqlite:////tmp/orchestrator.db", "PATH": "/bin", "SOVA_X": "1"}
+        assert scrub_check_env(source) == {"PATH": "/bin", "SOVA_X": "1"}
+        assert "SOVA_DATABASE_URL" in source
+
+    def test_reads_os_environ_by_default(self) -> None:
+        from sova.utils.env import scrub_check_env
+
+        with patch.dict("os.environ", {"SOVA_DATABASE_URL": "postgresql://team/sova"}):
+            assert "SOVA_DATABASE_URL" not in scrub_check_env()

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from sova.llm.client import invoke_command
 from sova.llm.models import LLMResult
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -461,7 +462,7 @@ async def rebase_with_conflict_resolution(
     hit_commit_cap = False
     for commit_idx in range(max_commits):
         if not conflicted:
-            env = {**os.environ, "GIT_EDITOR": "true"}
+            env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
             cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
             if cont.success:
                 if not await _pop_stash():
@@ -502,7 +503,7 @@ async def rebase_with_conflict_resolution(
                     return await _abort_unverifiable(conflicts_resolved)
                 if not remaining:
                     conflicts_resolved += len(conflicted)
-                    env = {**os.environ, "GIT_EDITOR": "true"}
+                    env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
                     cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
                     if cont.success:
                         if not await _pop_stash():
@@ -564,7 +565,7 @@ async def rebase_with_conflict_resolution(
                 ), cost
 
         conflicts_resolved += len(conflicted)
-        env = {**os.environ, "GIT_EDITOR": "true"}
+        env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
         cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
             if not await _pop_stash():
