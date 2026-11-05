@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, RolesConfig
-from sova.core.agent_dispatch import AgentRuntimeUnavailableError, dispatch_command, dispatch_prompt
+from sova.core.agent_dispatch import (
+    AgentRuntimeUnavailableError,
+    dispatch_command,
+    dispatch_prompt,
+    dispatch_runtime_prompt,
+)
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, AgentRuntime
@@ -454,6 +459,26 @@ class TestDispatchPrompt:
         assert runtime.spawn_calls[0]["prompt"] == "fix the failing checks"
         assert runtime.spawn_calls[0]["model"] == "routed-model"
 
+    @pytest.mark.parametrize(("enforced", "warns"), [(False, True), (True, False)])
+    async def test_read_only_warns_when_runtime_does_not_enforce_it(
+        self, enforced: bool, warns: bool, tmp_path: Path
+    ) -> None:
+        class _Runtime(_StubRuntime):
+            @property
+            def enforces_read_only(self) -> bool:
+                return enforced
+
+        runtime = _Runtime(_StubProcess(stdout=["__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            patch("sova.core.agent_dispatch.log") as mock_log,
+            _stub_preflight("routed-model", 60.0),
+        ):
+            await dispatch_runtime_prompt(_TextOnlyStep(), "research it", cwd=tmp_path, read_only=True)
+
+        warned = [c.args[0] for c in mock_log.warning.call_args_list]
+        assert ("agent_dispatch.read_only_unenforced" in warned) is warns
+
     async def test_tool_step_fails_fast_when_runtime_unavailable(self, tmp_path: Path) -> None:
         step = _ToolStep()
         runtime = _StubRuntime(_StubProcess(), available=False, detail="claude CLI not found")
@@ -888,11 +913,11 @@ class TestRequiresToolsOptIn:
         assert step_cls.requires_tools is True
 
     def test_research_step_holdout_stays_text_only(self) -> None:
-        """ResearchStep deliberately stays on invoke_command()/LLMProvider.
+        """ResearchStep never edits the worktree, so it is not a tool-using step.
 
-        /research never edits the worktree, only appends a '## Research'
-        section to the issue/ticket body via gh/jira CLI calls, and its own
-        validate_output() already gates on that section existing.
+        On a tool-capable provider /research runs through invoke_command(); a
+        text-only provider reaches the runtime through dispatch_runtime_prompt()
+        in a read-only spawn instead, and SOVA writes the section itself.
         """
         from sova.core.steps.research import ResearchStep
 

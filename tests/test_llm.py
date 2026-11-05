@@ -2073,6 +2073,7 @@ class TestLLMProvider:
             supports_budget_cap=False,
             reports_cost=False,
             dynamic_models=False,
+            runs_commands_with_tools=False,
         )
 
     async def test_check_available_version_fails(self) -> None:

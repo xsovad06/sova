@@ -20,7 +20,7 @@ SOVA has four main components:
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
   - **Planner pipeline** (4 steps): scan_project -> generate_tasks -> validate_tasks -> extract_memory
 - `core/dag.py` (DAGExecutor): runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
-- `core/agent_dispatch.py`: dispatch boundary between the text-only LLMProvider path and AgentRuntime. A step declaring `requires_tools = True` dispatches through `get_runtime()` and fails fast when that runtime is unusable, never degrading to a provider that cannot edit files. Every step that edits the worktree sets the flag; `ResearchStep` deliberately does not (full entry: docs/architecture-deep-dive.md, "Agent dispatch boundary").
+- `core/agent_dispatch.py`: dispatch boundary between the text-only LLMProvider path and AgentRuntime. A step declaring `requires_tools = True` dispatches through `get_runtime()` and fails fast when that runtime is unusable, never degrading to a provider that cannot edit files. Every step that edits the worktree sets the flag; `ResearchStep` does not, and on a text-only provider runs a read-only agent through `dispatch_runtime_prompt()` and writes the section itself (full entry: docs/architecture-deep-dive.md, "Agent dispatch boundary").
 - `roles/`: AgentRole ABC with 6 implementations: triage, researcher, developer, reviewer, custom, planner
 - `roles/custom.py` (CustomRole): executes user-defined DAG workflows via DAGExecutor
 - `roles/dispatcher.py`: routes tasks to appropriate roles based on state; `get_role_async()` falls back to DB lookup for custom roles

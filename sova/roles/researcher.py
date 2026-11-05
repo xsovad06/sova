@@ -12,6 +12,7 @@ from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
 from sova.core.steps import build_configured_pipeline, get_researcher_step_names, get_researcher_steps
 from sova.core.steps.base import BaseStep
+from sova.core.steps.research import has_research_section
 from sova.core.workflow import WorkflowEngine
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
@@ -54,7 +55,7 @@ class ResearcherRole(AgentRole):
                 suggested_role="researcher",
             )
 
-        if "## Research" in task.body:
+        if has_research_section(task.body):
             return TaskAssessment(
                 suitability="ready",
                 confidence=0.9,

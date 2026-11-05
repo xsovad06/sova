@@ -64,6 +64,7 @@ class ClaudeCodeProvider(LLMProvider):
             supports_budget_cap=True,
             reports_cost=True,
             dynamic_models=True,
+            runs_commands_with_tools=True,
         )
 
     async def invoke(

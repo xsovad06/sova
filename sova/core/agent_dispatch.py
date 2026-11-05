@@ -332,6 +332,7 @@ async def _dispatch_to_runtime(
     pin: tuple[str, str] | None = None,
     route_honoured: bool = False,
     task_type: str | None = None,
+    read_only: bool = False,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime*, walking the configured model fallback chain.
 
@@ -389,6 +390,7 @@ async def _dispatch_to_runtime(
                 pin=pin,
                 route_honoured=route_honoured,
                 task_type=task_type,
+                read_only=read_only,
             )
         except Exception:
             if baseline is not None:
@@ -611,6 +613,7 @@ async def _run_agent_process(
     pin: tuple[str, str] | None = None,
     route_honoured: bool = False,
     task_type: str | None = None,
+    read_only: bool = False,
 ) -> LLMResult:
     """Spawn *prompt* on *runtime* and wait for its terminal result.
 
@@ -668,6 +671,7 @@ async def _run_agent_process(
         model=model,
         fallback_model=fallback_model,
         max_budget_usd=max_budget_usd,
+        read_only=read_only,
     )
     parser = runtime.create_stream_parser()
     parse_line = parser.parse_line if parser is not None else runtime.parse_output
@@ -956,8 +960,48 @@ async def dispatch_prompt(
             max_budget_usd=max_budget_usd,
             timeout=timeout,
         )
+    return await dispatch_runtime_prompt(
+        step,
+        prompt,
+        model=model,
+        fallback_model=fallback_model,
+        task_type=task_type,
+        cwd=cwd,
+        max_budget_usd=max_budget_usd,
+        timeout=timeout,
+        ctx=ctx,
+    )
 
+
+async def dispatch_runtime_prompt(
+    step: BaseStep,
+    prompt: str,
+    *,
+    model: str | None = None,
+    fallback_model: str | None = None,
+    task_type: str | None = None,
+    cwd: Path | str | None = None,
+    max_budget_usd: Decimal | None = None,
+    timeout: float | None = None,
+    ctx: ExecutionContext | None = None,
+    read_only: bool = False,
+) -> LLMResult:
+    """Run *prompt* on the configured AgentRuntime, whatever *step*.requires_tools says.
+
+    ``dispatch_prompt()``'s tool path, callable directly by a step that needs a
+    repository-aware agent only when the configured ``LLMProvider`` cannot run
+    one itself (``ResearchStep`` on a text-only provider). *read_only* asks the
+    runtime to deny writes (and, for Codex, network) to the whole process tree,
+    for an analysis whose result the calling step persists itself.
+    """
     runtime = await _require_runtime(step)
+    if read_only and not runtime.enforces_read_only:
+        log.warning(
+            "agent_dispatch.read_only_unenforced",
+            step=step.name,
+            runtime=runtime.name,
+            message=f"{runtime.name} treats read_only as advisory: the prompt alone keeps the agent from writing",
+        )
     cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
         model=model, task_type=task_type, timeout=timeout, cwd=cwd
     )
@@ -973,7 +1017,13 @@ async def dispatch_prompt(
         resolved_model, route_honoured = _ensure_task_type_model_compatible(
             runtime, cfg, task_type, model, resolved_model
         )
-    log.info("agent_dispatch.invoke_prompt", step=step.name, runtime=runtime.name, prompt_len=len(prompt))
+    log.info(
+        "agent_dispatch.invoke_prompt",
+        step=step.name,
+        runtime=runtime.name,
+        prompt_len=len(prompt),
+        read_only=read_only,
+    )
     result = await _dispatch_to_runtime(
         runtime,
         prompt,
@@ -987,6 +1037,7 @@ async def dispatch_prompt(
         pin=pin,
         route_honoured=route_honoured,
         task_type=task_type,
+        read_only=read_only,
     )
     _attribute_pinned_result(result, runtime, ctx, pin)
     if route_honoured:
