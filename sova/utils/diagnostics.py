@@ -613,6 +613,102 @@ async def _guarded(label: str, check: Callable[..., Any], *args: Any) -> list[Di
     return result if isinstance(result, list) else [result]
 
 
+_CLAUDE_ALIASES = frozenset({"opus", "sonnet", "haiku"})
+_LABEL_OPENAI_MODELS = "openai-only models"
+
+
+def names_claude_model(value: str) -> bool:
+    """True for a bare Claude alias (``sonnet``) or a Claude model ID, with or without a provider prefix."""
+    lowered = value.strip().lower()
+    return lowered in _CLAUDE_ALIASES or lowered.startswith("claude-") or "/claude-" in lowered or ".claude-" in lowered
+
+
+def names_non_openai_model(value: str) -> bool:
+    """True for a Claude alias or ID, or a Vertex or Gemini ID: anything an OpenAI-only run must not reach."""
+    lowered = value.strip().lower()
+    return names_claude_model(lowered) or "vertex" in lowered or "gemini" in lowered
+
+
+# Model fields only the agent runtime consumes. Under a non-Codex runtime they legitimately name that
+# runtime's models (Claude IDs for claude-code), so a mixed setup does not fail on them.
+_RUNTIME_MODEL_KEYS = frozenset({"agent.model", "roles.developer_runtime_model"})
+
+
+def claude_model_references(cfg: ProjectConfig, *, include_runtime_fields: bool = True) -> list[tuple[str, str]]:
+    """List every resolved model field of *cfg* whose value is a Claude, Vertex or Gemini ID, as (key, value).
+
+    Covers the llm (routing and tier aliases included), agent, roles, oversight, confidence, review-panel and
+    conflict-resolution model fields, so an OpenAI-only run can prove no step is still routed away from
+    OpenAI. ``include_runtime_fields=False`` leaves out the fields only the agent runtime consumes
+    (``agent.model``, ``agent.fallback_models``, ``roles.developer_runtime_model``).
+    """
+    scalar_fields = {
+        "llm.model": cfg.llm.model,
+        "llm.fallback_model": cfg.llm.fallback_model,
+        "agent.model": cfg.agent.model,
+        "roles.researcher_model": cfg.roles.researcher_model,
+        "roles.triage_model": cfg.roles.triage_model,
+        "roles.reviewer_model": cfg.roles.reviewer_model,
+        "roles.developer_model": cfg.roles.developer_model,
+        "roles.planner_model": cfg.roles.planner_model,
+        "roles.developer_runtime_model": cfg.roles.developer_runtime_model,
+        "oversight.analysis_model": cfg.oversight.analysis_model,
+        "confidence.model": cfg.confidence.model,
+    }
+    found = [
+        (key, value)
+        for key, value in scalar_fields.items()
+        if value and names_non_openai_model(value) and (include_runtime_fields or key not in _RUNTIME_MODEL_KEYS)
+    ]
+    if include_runtime_fields:
+        for index, value in enumerate(cfg.agent.fallback_models):
+            if names_non_openai_model(value):
+                found.append((f"agent.fallback_models[{index}]", value))
+    for task_type, value in cfg.llm.routing.items():
+        if names_non_openai_model(value):
+            found.append((f"llm.routing.{task_type}", value))
+    for alias, value in cfg.llm.model_aliases.items():
+        if names_non_openai_model(value):
+            found.append((f"llm.model_aliases.{alias}", value))
+    for index, value in enumerate(cfg.conflict_resolution.models):
+        if names_non_openai_model(value):
+            found.append((f"conflict_resolution.models[{index}]", value))
+    for dimension, value in cfg.review.panel.dimension_models.items():
+        if names_non_openai_model(value):
+            found.append((f"review.panel.dimension_models.{dimension}", value))
+    return found
+
+
+async def _check_openai_models(project_dir: Path) -> list[DiagnosticCheck]:
+    """With ``llm.provider = "openai"``, warn about model fields that name a non-OpenAI model.
+
+    Under a Codex runtime every model field is checked. Under any other runtime the runtime-consumed fields
+    (``agent.model``, ``agent.fallback_models``, ``roles.developer_runtime_model``) name that runtime's own
+    models, so a mixed setup (OpenAI for text calls, the default runtime for tool steps) is not failed for
+    them: the row passes with a note that the tool steps spawn that runtime, and fails only on the fields
+    the OpenAI provider itself must serve.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        cfg = load_config(project_dir)
+    except Exception:  # noqa: BLE001 (the config check already reports an unloadable config; stay silent here)
+        return []
+    if cfg.llm.provider != "openai":
+        return []
+    codex = cfg.agent.runtime == "codex"
+    found = claude_model_references(cfg, include_runtime_fields=codex)
+    if found:
+        detail = f"{len(found)} field(s) name a Claude, Vertex or Gemini model: " + ", ".join(
+            f"{k}={v}" for k, v in found
+        )
+        return [DiagnosticCheck(_LABEL_OPENAI_MODELS, False, detail, False)]
+    if codex:
+        return [DiagnosticCheck(_LABEL_OPENAI_MODELS, True, "no Claude, Vertex or Gemini model in any field", False)]
+    note = f"provider fields are OpenAI; tool steps spawn agent.runtime={cfg.agent.runtime} (use codex for OpenAI-only)"
+    return [DiagnosticCheck(_LABEL_OPENAI_MODELS, True, note, False)]
+
+
 async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     """Run every diagnostic check in the canonical `sova doctor` order.
 
@@ -635,6 +731,7 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     checks.extend(await _guarded("install completeness", _check_install_completeness, project_dir))
     checks.extend(await _guarded(_LABEL_DATABASE_SCHEMA, _check_database_schema, project_dir))
     checks.extend(await _guarded(_LABEL_LLM_PROVIDER, _check_llm_provider, project_dir))
+    checks.extend(await _guarded(_LABEL_OPENAI_MODELS, _check_openai_models, project_dir))
     checks.extend(await _guarded("keyring secrets", _check_keyring_secrets, project_dir))
     checks.extend(await _guarded("ollama", _check_ollama, project_dir))
     checks.extend(await _guarded(_LABEL_AGENT_RUNTIME, _check_agent_runtime, project_dir))
