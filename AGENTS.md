@@ -31,6 +31,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
 | `docs/commit-convention-setup.md` | Per-project commit types/scopes (`commit.types`, `commit.scopes`) used for generated commit subjects and PR titles |
 | `docs/codex-runtime-setup.md` | Codex agent runtime setup (`agent.runtime = "codex"`): auth, sandbox, rollback |
+| `docs/openai-only-runbook.md` | Run one pipeline OpenAI-only by env overrides: model fields, isolation, what runs where, rollback, pilot log |
 | `docs/invariants.md` | Per-invariant detail for the pre-push and CI checks in `invariants/` |
 | `docs/workflow-history.md` | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
 | `docs/token-compression.md` | Optional RTK and Headroom token compression setup |
