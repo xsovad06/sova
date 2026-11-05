@@ -951,15 +951,9 @@ def create_app(
     if host is None:
         host = os.environ.get("SOVA_DASHBOARD_HOST", "127.0.0.1")
     if port is None:
-        env_port = os.environ.get("SOVA_DASHBOARD_PORT")
-        try:
-            port = int(env_port) if env_port else cfg.dashboard.port
-        except ValueError:
-            # A non-numeric override must not take the whole dashboard down. Pydantic
-            # does not catch it first: a [dashboard] port in sova.toml is passed as an
-            # init kwarg, which outranks the env var, so the bad value reaches here.
-            log.warning("dashboard.invalid_port_env", value=env_port)
-            port = cfg.dashboard.port
+        # cfg.dashboard.port already carries SOVA_DASHBOARD_PORT: load_config() lets it
+        # beat sova.toml, and rejects a non-numeric value as a config error.
+        port = cfg.dashboard.port
     app.state.is_loopback_bind = is_loopback_host(host)
     app.state.allowed_origins = build_allowed_origins(host, port)
     # A wildcard bind (0.0.0.0, ::) has no computable allowed-origin entry a real

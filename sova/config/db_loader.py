@@ -286,14 +286,33 @@ def _flatten_config_dict(config: dict[str, Any], prefix: str = "") -> dict[str, 
     return flat
 
 
+def _sqlite_file_from_url(url: str) -> Path | None:
+    """Return the existing file a ``sqlite[+driver]:///path`` URL names, else None."""
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    try:
+        parsed = make_url(url)
+    except ArgumentError:
+        return None
+    if parsed.get_backend_name() != "sqlite" or parsed.database in (None, "", ":memory:"):
+        return None
+    db_path = Path(parsed.database)
+    return db_path if db_path.exists() else None
+
+
 def _resolve_db_path(project_dir: Path | None) -> Path | None:
     """Resolve the SQLite DB path without side effects (no mkdir).
 
-    Returns None when an env-var URL is set (caller must use the full
-    _get_database_url path) or when the DB file does not exist yet.
+    A ``SOVA_DATABASE_URL`` wins over *project_dir*, exactly as it does for the
+    async engine (``sova.db.session._get_database_url``): a SQLite file URL
+    resolves to that file, so config loads the same rows the run writes.
+    Returns None for an in-memory or non-SQLite URL (the sync bridge has no
+    PostgreSQL driver) and when the DB file does not exist yet.
     """
-    if os.environ.get("SOVA_DATABASE_URL"):
-        return None
+    env_url = os.environ.get("SOVA_DATABASE_URL")
+    if env_url:
+        return _sqlite_file_from_url(env_url)
 
     if project_dir is not None:
         db_path = project_dir / ".claude" / _DB_FILENAME

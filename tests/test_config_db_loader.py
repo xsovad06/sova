@@ -261,13 +261,34 @@ auto_address_review = true
 
 
 class TestResolveDbPath:
-    def test_returns_none_when_env_var_set(self, monkeypatch) -> None:
-        """SOVA_DATABASE_URL env var skips file-based path."""
+    def test_returns_none_for_non_sqlite_env_url(self, monkeypatch) -> None:
+        """The sync bridge has no PostgreSQL driver, so a server URL yields no file path."""
         from sova.config.db_loader import _resolve_db_path
 
         monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://localhost/sova")
         result = _resolve_db_path(Path("/some/dir"))
         assert result is None
+
+    def test_returns_none_for_in_memory_env_url(self, monkeypatch) -> None:
+        from sova.config.db_loader import _resolve_db_path
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        assert _resolve_db_path(Path("/some/dir")) is None
+
+    def test_sqlite_file_env_url_wins_over_project_dir(self, monkeypatch, tmp_path) -> None:
+        """Regression: a file URL was ignored, so load_config() lost every stored setting."""
+        from sova.config.db_loader import _resolve_db_path
+
+        db_file = tmp_path / "elsewhere.db"
+        db_file.touch()
+        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+        assert _resolve_db_path(tmp_path / "project") == db_file
+
+    def test_missing_sqlite_file_env_url_is_none(self, monkeypatch, tmp_path) -> None:
+        from sova.config.db_loader import _resolve_db_path
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite:///{tmp_path / 'absent.db'}")
+        assert _resolve_db_path(tmp_path) is None
 
     def test_uses_home_config_when_no_project_dir(self, monkeypatch, tmp_path) -> None:
         """project_dir=None falls back to ~/.config/sova/sova.db."""
@@ -488,28 +509,31 @@ class TestFlattenTomlRootLevelKeys:
 
 
 class TestApplyEnvOverrides:
-    def test_telemetry_env_vars_override(self, monkeypatch) -> None:
-        """Telemetry env vars win over merged config."""
-        from sova.config.loader import _apply_env_overrides
+    """A set ``SOVA_<SECTION>_<FIELD>`` beats a merged TOML/DB value for every section."""
 
+    @staticmethod
+    def _resolve(merged: dict[str, Any]) -> Any:
+        from sova.config.loader import _apply_env_overrides
+        from sova.config.models import ProjectConfig
+
+        _apply_env_overrides(merged)
+        return ProjectConfig(**merged)
+
+    def test_telemetry_env_vars_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SOVA_TELEMETRY_HUB_URL", "https://env.example.com")
         monkeypatch.setenv("SOVA_TELEMETRY_HUB_TOKEN", "env-token")
 
-        merged: dict[str, Any] = {"telemetry": {"hub_url": "https://toml.example.com"}}
-        _apply_env_overrides(merged)
-        assert merged["telemetry"]["hub_url"] == "https://env.example.com"
-        assert merged["telemetry"]["hub_token"] == "env-token"
+        cfg = self._resolve({"telemetry": {"hub_url": "https://toml.example.com"}})
+        assert cfg.telemetry.hub_url == "https://env.example.com"
+        assert cfg.telemetry.hub_token == "env-token"
 
-    def test_creates_telemetry_section_when_env_set(self, monkeypatch) -> None:
-        """Telemetry section created when env vars set but section absent."""
-        from sova.config.loader import _apply_env_overrides
-
+    def test_env_applies_when_section_absent(self, monkeypatch) -> None:
         monkeypatch.setenv("SOVA_TELEMETRY_HUB_URL", "https://env.example.com")
-        merged: dict[str, Any] = {"github_repo": "user/repo"}
-        _apply_env_overrides(merged)
-        assert merged["telemetry"]["hub_url"] == "https://env.example.com"
 
-    def test_noop_when_telemetry_not_dict(self, monkeypatch) -> None:
+        cfg = self._resolve({"github_repo": "user/repo"})
+        assert cfg.telemetry.hub_url == "https://env.example.com"
+
+    def test_noop_when_section_not_dict(self, monkeypatch) -> None:
         from sova.config.loader import _apply_env_overrides
 
         monkeypatch.setenv("SOVA_TELEMETRY_HUB_URL", "https://env.example.com")
@@ -517,16 +541,79 @@ class TestApplyEnvOverrides:
         _apply_env_overrides(merged)
         assert merged["telemetry"] == "not-a-dict"
 
-    def test_no_change_when_env_vars_unset(self, monkeypatch) -> None:
+    def test_stored_value_kept_when_env_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("SOVA_TELEMETRY_HUB_URL", raising=False)
+        monkeypatch.delenv("SOVA_AGENT_MODEL", raising=False)
+
+        cfg = self._resolve({"telemetry": {"hub_url": "https://toml.example.com"}, "agent": {"model": "stored-model"}})
+        assert cfg.telemetry.hub_url == "https://toml.example.com"
+        assert cfg.agent.model == "stored-model"
+
+    def test_empty_env_value_keeps_stored_value(self, monkeypatch) -> None:
+        """A blank SOVA_AGENT_MODEL counts as unset: it must not discard the stored model."""
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "")
+
+        cfg = self._resolve({"agent": {"model": "stored-model"}})
+        assert cfg.agent.model == "stored-model"
+
+    def test_unlisted_section_field_beats_stored_value(self, monkeypatch) -> None:
+        """Regression: SOVA_AGENT_MODEL was ignored whenever agent.model was stored."""
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "openai/gpt-6.1-sol")
+
+        cfg = self._resolve({"agent": {"model": "claude-sonnet-5-5", "max_budget": 7}})
+        assert cfg.agent.model == "openai/gpt-6.1-sol"
+        assert cfg.agent.max_budget == 7
+
+    def test_json_dict_and_list_fields_parse_from_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("SOVA_LLM_ROUTING", json.dumps({"review": "openai/gpt-6.1-sol"}))
+        monkeypatch.setenv("SOVA_AGENT_FALLBACK_MODELS", json.dumps(["openai/gpt-6-sol"]))
+
+        cfg = self._resolve(
+            {
+                "llm": {"routing": {"review": "claude-opus-5-5", "triage": "claude-haiku-5-5"}},
+                "agent": {"fallback_models": ["claude-sonnet-5-5"]},
+            }
+        )
+        assert cfg.llm.routing == {"review": "openai/gpt-6.1-sol"}
+        assert cfg.agent.fallback_models == ["openai/gpt-6-sol"]
+
+    def test_nested_sub_section_field_beats_stored_value(self, monkeypatch) -> None:
+        """review.panel and mcp.atlassian are nested settings models with their own env prefix."""
+        monkeypatch.setenv("SOVA_REVIEW_PANEL_ENABLED", "true")
+        monkeypatch.setenv("SOVA_MCP_ATLASSIAN_JIRA_URL", "https://env.example.com")
+
+        cfg = self._resolve(
+            {
+                "review": {"panel": {"enabled": False, "line_proximity": 5}},
+                "mcp": {"atlassian": {"jira_url": "https://stored.example.com"}},
+            }
+        )
+        assert cfg.review.panel.enabled is True
+        assert cfg.review.panel.line_proximity == 5
+        assert cfg.mcp.atlassian.jira_url == "https://env.example.com"
+
+    def test_does_not_mutate_a_nested_stored_dict(self, monkeypatch) -> None:
         from sova.config.loader import _apply_env_overrides
 
-        monkeypatch.delenv("SOVA_TELEMETRY_HUB_URL", raising=False)
-        monkeypatch.delenv("SOVA_TELEMETRY_HUB_TOKEN", raising=False)
-        monkeypatch.delenv("SOVA_TELEMETRY_MACHINE_ID", raising=False)
-
-        merged: dict[str, Any] = {"telemetry": {"hub_url": "https://toml.example.com"}}
+        monkeypatch.setenv("SOVA_REVIEW_PANEL_ENABLED", "true")
+        panel = {"enabled": False, "line_proximity": 5}
+        review = {"panel": panel}
+        merged: dict[str, Any] = {"review": review}
         _apply_env_overrides(merged)
-        assert merged["telemetry"]["hub_url"] == "https://toml.example.com"
+        assert panel == {"enabled": False, "line_proximity": 5}
+        assert review == {"panel": panel}
+        assert merged["review"]["panel"] == {"line_proximity": 5}
+
+    def test_does_not_mutate_the_stored_section_dict(self, monkeypatch) -> None:
+        """The section dict may be shared with the TOML layer, so it is replaced, not edited."""
+        from sova.config.loader import _apply_env_overrides
+
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "env-model")
+        stored = {"model": "stored-model"}
+        merged: dict[str, Any] = {"agent": stored}
+        _apply_env_overrides(merged)
+        assert stored == {"model": "stored-model"}
+        assert "model" not in merged["agent"]
 
 
 class TestMigrateDeprecatedKeys:

@@ -1657,7 +1657,7 @@ def test_ldap_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.Monkey
     """SOVA_LDAP_* env vars override TOML/database ldap settings.
 
     Previously the merged TOML dict was passed straight to ProjectConfig
-    without going through _apply_nested_env_overrides(), so SOVA_LDAP_ENABLED
+    without going through _apply_env_overrides(), so SOVA_LDAP_ENABLED
     (and other SOVA_LDAP_* vars) had no effect once [ldap] was present in
     sova.toml.
     """
@@ -1692,8 +1692,7 @@ def test_codex_reader_drain_timeout_env_override_beats_toml(tmp_path: Path, monk
     """SOVA_CODEX_READER_DRAIN_TIMEOUT overrides TOML/database codex settings.
 
     Mirrors test_codex_env_overrides_beat_toml for the reader_drain_timeout
-    field, which is registered in the same _apply_nested_env_overrides() call
-    but had no dedicated regression test.
+    field, which the same generic _apply_env_overrides() pass covers.
     """
     toml_file = tmp_path / "sova.toml"
     toml_file.write_text("[codex]\nreader_drain_timeout = 5.0\n")
