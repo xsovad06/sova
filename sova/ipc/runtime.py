@@ -1169,6 +1169,11 @@ async def _probe_codex_stdin_prompt_support() -> bool:
     return False
 
 
+# The positive status is also a line of its own: a mid-line mention ("Error: No API key configured") is not one.
+_CODEX_API_KEY_CONFIGURED_RE = re.compile(r"^\s*api key configured\b", re.MULTILINE)
+_CODEX_NO_API_KEY_RE = re.compile(r"^\s*(?:no api key(?: configured)?|api key not configured)\b", re.MULTILINE)
+
+
 def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
     """Interpret ``codex login status`` output.
 
@@ -1211,8 +1216,15 @@ def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
         return None, _AUTH_UNKNOWN_DETAIL
 
     lowered = text.lower()
-    if any(phrase in lowered for phrase in ("not logged in", "not authenticated", "logged out", "no credentials")):
+    negatives = ("not logged in", "not authenticated", "logged out", "no credentials")
+    # codex-cli's "No API key configured" is a status line of its own. Anchored to the line start,
+    # a ChatGPT login whose status mentions an API key, or "proxy not configured", is not a logout.
+    if any(phrase in lowered for phrase in negatives) or _CODEX_NO_API_KEY_RE.search(lowered):
         return False, "not authenticated (run: codex login)"
+    # codex-cli 0.166 replaced "Logged in using an API key" with "API key configured",
+    # adding that the key itself is only checked on the first request.
+    if _CODEX_API_KEY_CONFIGURED_RE.search(lowered):
+        return True, "API key configured"
     if any(phrase in lowered for phrase in ("logged in", "authenticated")):
         return True, "authenticated"
 

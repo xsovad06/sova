@@ -4053,6 +4053,33 @@ class TestInterpretCodexAuthProbe:
 
         assert _interpret_codex_auth_probe("Not logged in. Run codex login.")[0] is False
 
+    def test_api_key_configured_wording_is_authenticated(self) -> None:
+        """codex-cli 0.166 output, which no longer says "logged in" for an API-key login."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        text = "API key configured - sk-svcac***-abcd\nAuthentication is checked when you send a request."
+        assert _interpret_codex_auth_probe(text) == (True, "API key configured")
+
+    def test_no_api_key_configured_is_logged_out(self) -> None:
+        """The negative scan runs first, so "No API key configured" is never read as configured."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        assert _interpret_codex_auth_probe("No API key configured.")[0] is False
+
+    def test_a_prefixed_no_api_key_line_is_never_read_as_configured(self) -> None:
+        """A mid-line "No API key configured" is not the positive status line, whatever prefix codex adds."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        for text in ("Error: No API key configured", "Status: no API key configured"):
+            assert _interpret_codex_auth_probe(text)[0] is not True
+
+    def test_chatgpt_login_mentioning_an_api_key_is_still_authenticated(self) -> None:
+        """Only a status line that starts with the codex wording is a logout, not any mention of it."""
+        from sova.ipc.runtime import _interpret_codex_auth_probe
+
+        text = "Logged in using ChatGPT\nNote: no API key is set; proxy not configured."
+        assert _interpret_codex_auth_probe(text)[0] is True
+
     def test_unrecognized_output_is_unknown(self) -> None:
         from sova.ipc.runtime import _interpret_codex_auth_probe
 
