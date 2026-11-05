@@ -16,8 +16,8 @@ own read-only `codex exec` repo-context sub-call, which reads `codex.model`
 even while `agent.runtime = "claude-code"` (see
 `ReviewerRole._gather_repo_context()`).
 
-Command surface verified against `@openai/codex` 0.162.1 (npm, checked
-2026-10-12). Codex CLI releases are external to SOVA: if a command below no
+Command surface verified against `@openai/codex` 0.166.0 (npm, checked
+2026-11-04). Codex CLI releases are external to SOVA: if a command below no
 longer matches `codex --help` / `codex login --help` on your installed
 version, trust the installed CLI's own `--help` output over this document,
 and see "CLI version drift" below.
@@ -227,7 +227,21 @@ Connections page uses (it probes whichever runtime `agent.runtime` names, so
 set that to `"codex"` first): CLI presence (`codex --version`), then
 `codex login status` to distinguish "not installed" from "installed but
 logged out" from "installed and authenticated". No model request is made by
-either check.
+either check. For an API-key login, codex-cli 0.166 prints `API key configured`
+and adds that the key is only checked when a request is sent, so doctor
+reports `(API key configured)`: a revoked key still surfaces on the first
+real `codex exec`, not here.
+
+## No Network Inside the Sandbox
+
+`workspace-write` and `read-only` both run `codex exec` without network access, so an
+agent cannot call `gh` or reach the tracker. SOVA does those calls itself: it passes
+`/develop` the issue title, body and comments when there is no approved spec, runs
+research on a text-only provider as a read-only agent whose section SOVA writes to the
+issue, and pushes and opens PRs from its own process. A command that still tells the
+agent to fetch something over the network will see `error connecting to api.github.com`
+in the agent transcript. For a full OpenAI-only run, see
+[openai-only-runbook.md](openai-only-runbook.md).
 
 ## Rollback to Claude Code
 
