@@ -1315,3 +1315,114 @@ class TestRemainingCheckBranches:
         assert checks[0].passed is False
         assert checks[0].required is False
         assert "config unreadable" in checks[0].detail
+
+
+# ---------------------------------------------------------------------------
+# openai-only models
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIOnlyModels:
+    """With llm.provider = "openai", every model field that still names a Claude model is listed."""
+
+    def _cfg(self, **overrides: object):  # noqa: ANN202
+        from sova.config.models import ProjectConfig
+
+        return ProjectConfig(**overrides)
+
+    def test_lists_the_fields_a_runbook_export_block_can_miss(self) -> None:
+        from sova.utils.diagnostics import claude_model_references
+
+        cfg = self._cfg(
+            llm={"provider": "openai", "model": "openai/gpt-6", "routing": {"review": "claude-opus-5-5"}},
+            roles={"planner_model": "sonnet", "developer_model": "anthropic/claude-sonnet-5-5"},
+            confidence={"model": "sonnet"},
+            review={"panel": {"dimension_models": {"security": "opus"}}},
+        )
+        keys = {key for key, _ in claude_model_references(cfg)}
+        assert {
+            "llm.routing.review",
+            "roles.planner_model",
+            "roles.developer_model",
+            "confidence.model",
+            "review.panel.dimension_models.security",
+            "roles.triage_model",
+        } <= keys
+        assert "llm.model" not in keys
+
+    async def test_row_only_for_the_openai_provider(self, tmp_path: Path) -> None:
+        from sova.utils import diagnostics as mod
+
+        with patch("sova.config.loader.load_config", return_value=self._cfg()):
+            assert await mod._check_openai_models(tmp_path) == []
+        with patch(
+            "sova.config.loader.load_config",
+            return_value=self._cfg(llm={"provider": "openai", "model": "openai/gpt-6"}),
+        ):
+            [row] = await mod._check_openai_models(tmp_path)
+        assert not row.passed
+        assert not row.required
+        assert "confidence.model=sonnet" in row.detail
+
+    async def test_non_codex_runtime_is_informational_for_a_mixed_setup(self, tmp_path: Path) -> None:
+        """OpenAI text calls with the default claude-code runtime: the runtime's own Claude IDs do not fail the row."""
+        from sova.utils import diagnostics as mod
+
+        mixed = {
+            "llm": {"provider": "openai", "model": "openai/gpt-6", "fallback_model": "openai/gpt-6"},
+            "agent": {"model": "claude-sonnet-5-5", "fallback_models": ["claude-opus-5-5"], "runtime": "claude-code"},
+            "roles": {
+                "triage_model": "openai/gpt-6",
+                "researcher_model": "openai/gpt-6",
+                "reviewer_model": "openai/gpt-6",
+                "planner_model": "openai/gpt-6",
+                "developer_model": "openai/gpt-6",
+                "developer_runtime_model": "claude-sonnet-5-5",
+            },
+            "oversight": {"analysis_model": "openai/gpt-6"},
+            "confidence": {"model": "openai/gpt-6"},
+        }
+        with patch("sova.config.loader.load_config", return_value=self._cfg(**mixed)):
+            [row] = await mod._check_openai_models(tmp_path)
+        assert row.passed
+        assert "agent.runtime=claude-code" in row.detail
+
+        mixed["confidence"] = {"model": "sonnet"}  # a field the OpenAI provider itself must serve
+        with patch("sova.config.loader.load_config", return_value=self._cfg(**mixed)):
+            [row] = await mod._check_openai_models(tmp_path)
+        assert not row.passed
+        assert "confidence.model=sonnet" in row.detail
+        assert "agent.model" not in row.detail
+
+    async def test_codex_runtime_checks_the_runtime_fields_too(self, tmp_path: Path) -> None:
+        from sova.utils import diagnostics as mod
+
+        cfg = self._cfg(
+            llm={"provider": "openai", "model": "openai/gpt-6"},
+            agent={"model": "claude-sonnet-5-5", "runtime": "codex"},
+        )
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            [row] = await mod._check_openai_models(tmp_path)
+        assert not row.passed
+        assert "agent.model=claude-sonnet-5-5" in row.detail
+
+    def test_aliases_conflict_models_and_vertex_ids_are_listed(self) -> None:
+        from sova.utils.diagnostics import claude_model_references
+
+        cfg = self._cfg(
+            llm={"model_aliases": {"fast": "claude-haiku-5-5", "smart": "openai/gpt-6"}},
+            conflict_resolution={"models": ["openai/gpt-6", "vertex_ai/gemini-2.5-pro"]},
+            roles={"planner_model": "vertex_ai/gemini-2.5-flash"},
+        )
+        keys = {key for key, _ in claude_model_references(cfg)}
+        assert {"llm.model_aliases.fast", "conflict_resolution.models[1]", "roles.planner_model"} <= keys
+        assert "llm.model_aliases.smart" not in keys
+        assert "conflict_resolution.models[0]" not in keys
+
+    def test_names_claude_model_is_public_and_handles_prefixes(self) -> None:
+        from sova.utils.diagnostics import names_claude_model
+
+        assert all(
+            names_claude_model(v) for v in ("sonnet", "anthropic/claude-sonnet-5-5", "us.anthropic.claude-opus-5-5")
+        )
+        assert not names_claude_model("openai/gpt-6.1-sol")
