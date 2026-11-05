@@ -103,6 +103,7 @@ async def _kill_process(pid: int) -> None:
             pass
 
 
+_AGENT_MARKER_ENV = "SOVA_AGENT_RUN"  # set to 1 on every agent spawn by sova.ipc.runtime._inject_agent_marker
 _MERGE_CHECK_TIMEOUT = 10.0  # per-PR GitHub check during recovery
 _RECOVERY_TOTAL_TIMEOUT = 20.0  # hard cap on the entire recover_stale_runs() call
 
@@ -135,6 +136,50 @@ def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
     except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; fall back to a plain PID check)
         log.debug("recovery.pid_probe_failed", pid=pid, exc_info=True)
         return _is_process_alive(pid)
+
+
+def _is_sova_cmdline(cmdline: list[str]) -> bool:
+    """True when *cmdline* starts a SOVA process: a ``sova`` executable or shim, or ``python -m sova...``.
+
+    Matches the program, never a substring of the whole command line, so a parent whose path merely
+    contains ``sova`` (a home directory such as ``/Users/dsova/``, a checkout named ``sova``) is not
+    mistaken for a live SOVA launcher.
+    """
+    if any(os.path.basename(token) == "sova" for token in cmdline[:2]):
+        return True
+    return any(
+        flag == "-m" and (module == "sova" or module.startswith("sova.")) for flag, module in zip(cmdline, cmdline[1:])
+    )
+
+
+def _is_orphaned_process(pid: int) -> bool:
+    """True when a live agent process this dashboard launched has lost its launcher.
+
+    Only a process carrying the ``SOVA_AGENT_RUN=1`` marker that ``_inject_agent_marker()``
+    sets on every agent spawn can be an orphan: anything else (a terminal ``sova run``,
+    ``sova watch`` or ``sova parallel`` sharing the database, a ``sova server`` running its
+    watch loop in-process, a ``nohup``'d run reparented to init) is someone else's run and is
+    never signalled. This dashboard never signals itself. A marked process is an orphan when
+    its parent is init (ppid 0 or 1), this dashboard (an untracked child), or anything that is
+    not itself a SOVA process (a ``systemd --user`` or container subreaper adopts an orphan on
+    Linux); a marked agent under a live ``sova`` parent belongs to that other run. A probe
+    failure answers False: an unverifiable process is left alone rather than killed.
+    """
+    if pid == os.getpid():
+        return False
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        if proc.environ().get(_AGENT_MARKER_ENV) != "1":
+            return False
+        ppid = proc.ppid()
+        if ppid <= 1 or ppid == os.getpid():
+            return True
+        return not _is_sova_cmdline(psutil.Process(ppid).cmdline())
+    except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; leave the process alone)
+        log.debug("recovery.parent_probe_failed", pid=pid, exc_info=True)
+        return False
 
 
 def _get_managed_run_ids() -> tuple[set[int], bool]:
@@ -249,7 +294,13 @@ async def _get_pr_branch_for_recovery(pr_number: int, repo: str, project_dir: Pa
 
 
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
-    """Detect and mark stale non-terminal TaskRuns on dashboard startup.
+    """Detect and mark stale non-terminal TaskRuns, on dashboard startup and in the periodic sweep.
+
+    A live run this dashboard instance does not manage is killed and marked interrupted
+    only when ``_is_orphaned_process`` confirms it is an orphaned agent this dashboard launched
+    (it carries the agent marker and has lost its launcher). Any other live unmanaged run belongs
+    to another process sharing the database (a terminal or service ``sova run``, ``sova watch``,
+    ``sova parallel`` or ``sova server``) and is left running, at startup and in the sweep alike.
 
     Three-phase approach to keep startup fast regardless of stale-run count:
       1. Read-only query + handoff checks (synchronous, fast).
@@ -294,6 +345,9 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     continue
                 if not _managed_loaded:
                     log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                    continue
+                if not _is_orphaned_process(run.pid):
+                    log.info("recovery.still_alive_unmanaged", run_id=run.id, pid=run.pid)
                     continue
                 log.warning("recovery.killing_orphan", run_id=run.id, pid=run.pid)
                 orphan_kill_tasks.append(asyncio.ensure_future(_kill_process(run.pid)))
