@@ -37,6 +37,7 @@ coverage.xml
 coverage-check.xml
 htmlcov/
 .coverage
+.coverage.*
 
 # Claude Code (commands/rules tracked)
 .claude/settings.json
