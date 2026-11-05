@@ -17,6 +17,7 @@ import os
 import time
 from collections.abc import AsyncIterator
 from decimal import Decimal
+from importlib import metadata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -200,6 +201,14 @@ def _as_llm_error(exc: BaseException) -> LLMError:
     """
     error_cls = ProviderUnavailableError if _is_connection_error(exc) else classify_exception(exc)
     return error_cls(str(exc))
+
+
+def _installed_litellm_version() -> str:
+    """Return the installed litellm version, which recent releases no longer expose as ``__version__``."""
+    try:
+        return metadata.version("litellm")
+    except metadata.PackageNotFoundError:
+        return "unknown"
 
 
 class LiteLLMProvider(LLMProvider):
@@ -620,7 +629,7 @@ class LiteLLMProvider(LLMProvider):
         """
         if not _HAS_LITELLM:
             return False, "litellm is not installed (pip install sova[litellm])"
-        version = getattr(litellm, "__version__", "unknown")
+        version = getattr(litellm, "__version__", None) or _installed_litellm_version()
 
         if self.vendor == "openai":
             if not (self.api_key or os.environ.get("OPENAI_API_KEY", "").strip()):
