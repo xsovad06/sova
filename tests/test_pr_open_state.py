@@ -692,6 +692,81 @@ class TestDeveloperRoutesOnPrState:
         assert develop.await_count == int(not address_review)
         assert ctx.pr_number == (88 if address_review else None)
 
+    @pytest.mark.parametrize(("state", "address_review"), [(PROpenState.OPEN, True), (PROpenState.NOT_OPEN, False)])
+    async def test_gate_3_applies_to_development_but_not_to_an_open_pr(
+        self, tmp_path: Path, state: PROpenState, address_review: bool
+    ) -> None:
+        """A triaged issue (PR opened by /pr, or only "Part of" the issue) must not block addressing its PR.
+
+        Regression: the dashboard's address action on PR #1391 failed in a second because
+        issue #1130 was still triaged. Once the PR is closed the run starts fresh development,
+        where the gate still applies.
+        """
+        from sova.roles.developer import DeveloperRole
+
+        role = DeveloperRole()
+        ctx = self._ctx(tmp_path, 88)
+        ctx.force = False
+        ctx.adapter.get_task.return_value = MagicMock(state=TaskState.TRIAGED, labels=[])
+        with (
+            patch("sova.roles.developer.get_pr_open_state", new=AsyncMock(return_value=state)),
+            patch.object(role, "_execute_address_review", new=AsyncMock()) as address,
+            patch.object(role, "_execute_development", new=AsyncMock()) as develop,
+        ):
+            result = await role.execute(ctx)
+
+        assert address.await_count == int(address_review)
+        develop.assert_not_awaited()
+        if not address_review:
+            assert not result.success
+            assert "Gate 3" in result.error
+
+    @pytest.mark.parametrize(
+        ("state", "labels", "blocked"),
+        [
+            (TaskState.DONE, [], True),
+            (TaskState.HUMAN_ONLY, [], True),
+            (TaskState.TRIAGED, ["agent:on-hold"], True),
+            (TaskState.TRIAGED, [" Agent:On-Hold "], True),
+            (TaskState.TRIAGED, ["agent:triaged"], False),
+            (TaskState.IN_REVIEW, [], False),
+        ],
+    )
+    async def test_open_pr_is_not_addressed_for_an_issue_closed_off_from_agents(
+        self, tmp_path: Path, state: TaskState, labels: list[str], blocked: bool
+    ) -> None:
+        """Gate 3 is lifted for an open PR, but a done, human-only or on-hold issue is still refused."""
+        from sova.roles.developer import DeveloperRole
+
+        role = DeveloperRole()
+        ctx = self._ctx(tmp_path, 88)
+        ctx.force = False
+        ctx.adapter.get_task.return_value = MagicMock(state=state, labels=labels)
+        with (
+            patch("sova.roles.developer.get_pr_open_state", new=AsyncMock(return_value=PROpenState.OPEN)),
+            patch.object(role, "_execute_address_review", new=AsyncMock()) as address,
+        ):
+            result = await role.execute(ctx)
+
+        assert address.await_count == int(not blocked)
+        if blocked:
+            assert not result.success
+            assert "Gate 3" in result.error
+
+    async def test_force_addresses_an_open_pr_of_a_closed_off_issue(self, tmp_path: Path) -> None:
+        from sova.roles.developer import DeveloperRole
+
+        role = DeveloperRole()
+        ctx = self._ctx(tmp_path, 88)
+        ctx.adapter.get_task.return_value = MagicMock(state=TaskState.DONE, labels=[])
+        with (
+            patch("sova.roles.developer.get_pr_open_state", new=AsyncMock(return_value=PROpenState.OPEN)),
+            patch.object(role, "_execute_address_review", new=AsyncMock()) as address,
+        ):
+            await role.execute(ctx)
+
+        address.assert_awaited_once()
+
     async def test_closed_pr_leaves_its_branch_and_worktree(self, tmp_path: Path) -> None:
         from sova.roles.developer import DeveloperRole
 

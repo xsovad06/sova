@@ -27,6 +27,7 @@ from sova.git.operations import get_pr_branch
 from sova.git.pr import PROpenState, get_pr_open_state
 from sova.git.worktree import find_worktree_by_branch
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
+from sova.supervisor.labels import is_on_hold
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.developer")
@@ -36,6 +37,18 @@ def _pipeline_config_error(exc: ValueError) -> RoleResult:
     """Turn an invalid [pipelines] config into a failed run instead of a crash."""
     log.error("developer.pipeline_config_invalid", error=str(exc), exc_info=True)
     return RoleResult(success=False, summary="Invalid pipeline configuration", error=str(exc))
+
+
+_ADDRESS_REVIEW_BLOCKED_STATES = frozenset({TaskState.DONE, TaskState.HUMAN_ONLY})
+
+
+def _address_review_blocked_by(task: Task) -> str | None:
+    """Why an open PR's review must not be addressed for this issue, or None when it may be."""
+    if task.state in _ADDRESS_REVIEW_BLOCKED_STATES:
+        return str(task.state)
+    if is_on_hold(task.labels or []):
+        return "on hold"
+    return None
 
 
 class DeveloperRole(AgentRole):
@@ -62,18 +75,6 @@ class DeveloperRole(AgentRole):
         return get_developer_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
-        if ctx.has_issue:
-            task = await ctx.adapter.get_task(ctx.issue_number)
-
-            if not self.validate_preconditions(task, force=ctx.force):
-                return RoleResult(
-                    success=False,
-                    summary=f"Issue #{ctx.issue_number} not ready for development",
-                    error=f"Gate 3: issue must be in researched, in_progress, or in_review state "
-                    f"(current: {task.state}). Run triage and research first, "
-                    f"or use --force to bypass.",
-                )
-
         # Address-review mode: respawned to fix reviewer findings.
         # Use pr_number (set by handoff) as primary signal: task.state is
         # unreliable because the dashboard may transition it before we read it.
@@ -86,7 +87,31 @@ class DeveloperRole(AgentRole):
             )
             start_fresh_after_closed_pr(ctx, ctx.pr_number)
         if ctx.pr_number:
+            # Gate 3 guards starting development, not addressing an open PR's review:
+            # a PR opened outside the pipeline, or one only "Part of" its issue, leaves
+            # the issue triaged, and the gate would refuse the run before it read the PR.
+            # A narrower check still refuses an issue a human closed off from agents.
+            if ctx.has_issue and not ctx.force:
+                task = await ctx.adapter.get_task(ctx.issue_number)
+                if (reason := _address_review_blocked_by(task)) is not None:
+                    return RoleResult(
+                        success=False,
+                        summary=f"Issue #{ctx.issue_number} is closed off from address-review",
+                        error=f"Gate 3: PR #{ctx.pr_number} is open but the issue is {reason}. Use --force to bypass.",
+                    )
             return await self._execute_address_review(ctx)
+
+        if ctx.has_issue:
+            task = await ctx.adapter.get_task(ctx.issue_number)
+
+            if not self.validate_preconditions(task, force=ctx.force):
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} not ready for development",
+                    error=f"Gate 3: issue must be in researched, in_progress, or in_review state "
+                    f"(current: {task.state}). Run triage and research first, "
+                    f"or use --force to bypass.",
+                )
 
         return await self._execute_development(ctx)
 
