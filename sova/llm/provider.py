@@ -105,6 +105,11 @@ class ProviderCapabilities:
     supports_budget_cap: bool = False
     reports_cost: bool = False
     dynamic_models: bool = False
+    # invoke_command() runs the slash command's own body with repository and
+    # shell tools (the claude CLI). Without it, the command name is sent as
+    # plain text, so a step whose command must read code or call gh has to
+    # reach an AgentRuntime instead.
+    runs_commands_with_tools: bool = False
 
 
 class LLMProvider(ABC):

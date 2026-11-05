@@ -361,6 +361,16 @@ class AgentRuntime(ABC):
         return False
 
     @property
+    def enforces_read_only(self) -> bool:
+        """Whether ``spawn(read_only=True)`` is enforced by the runtime rather than only the prompt.
+
+        Defaults to False: Claude Code and Aider treat the flag as advisory. ``CodexRuntime``
+        overrides it to True because its sandbox denies writes to the whole process tree.
+        ``dispatch_runtime_prompt()`` warns when a read-only request lands on a runtime without it.
+        """
+        return False
+
+    @property
     def honours_model_override(self) -> bool:
         """Whether ``spawn(model=...)`` actually selects the model used.
 
@@ -1319,6 +1329,10 @@ class CodexRuntime(AgentRuntime):
     @property
     def name(self) -> str:
         return "codex"
+
+    @property
+    def enforces_read_only(self) -> bool:
+        return True
 
     @property
     def honours_model_override(self) -> bool:
