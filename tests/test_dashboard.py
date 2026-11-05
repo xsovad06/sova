@@ -20851,17 +20851,22 @@ class TestDashboardCsrfGuard:
         assert app.state.is_loopback_bind is False
         assert app.state.csrf_fail_closed is True
 
-    async def test_invalid_port_env_falls_back_to_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A non-numeric SOVA_DASHBOARD_PORT must not take app creation down.
+    async def test_port_env_beats_toml_port(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "sova.toml").write_text("[dashboard]\nport = 8111\n")
+        monkeypatch.setenv("SOVA_DASHBOARD_PORT", "9123")
+        app = create_app(project_dir=tmp_path, host="127.0.0.1")
+        assert "http://127.0.0.1:9123" in app.state.allowed_origins
 
-        Only reachable when sova.toml sets [dashboard] port: that TOML value is passed
-        as an init kwarg, which outranks the env var, so Pydantic never rejects the bad
-        value and it reaches create_app's own int() parse.
+    async def test_invalid_port_env_is_a_config_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-numeric SOVA_DASHBOARD_PORT fails like any invalid setting, TOML port or not.
+
+        It used to be silently ignored whenever sova.toml set [dashboard] port, because the
+        TOML value outranked the env var.
         """
         (tmp_path / "sova.toml").write_text("[dashboard]\nport = 8111\n")
         monkeypatch.setenv("SOVA_DASHBOARD_PORT", "not-a-port")
-        app = create_app(project_dir=tmp_path, host="127.0.0.1")
-        assert "http://127.0.0.1:8111" in app.state.allowed_origins
+        with pytest.raises(SystemExit):
+            create_app(project_dir=tmp_path, host="127.0.0.1")
 
     async def test_default_bind_matches_127_0_0_1_and_localhost_origins(self, tmp_path: Path) -> None:
         app = create_app(project_dir=tmp_path, port=8111)

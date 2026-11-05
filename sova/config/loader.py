@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from pydantic_settings import BaseSettings
 
 from sova.config.models import (
     ProjectConfig,
@@ -184,10 +185,19 @@ def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, An
 
 
 def _apply_env_overrides(merged: dict[str, Any]) -> None:
-    """Apply env var overrides so env vars beat init kwargs in Pydantic Settings.
+    """Make env vars beat merged TOML/DB values, for top-level fields and every section.
 
-    Must run AFTER all merges (TOML + DB) so env vars have highest priority.
-    Handles both top-level SOVA_ vars and nested SOVA_SECTION_ vars.
+    Must run AFTER all merges (TOML + DB) so env vars have highest priority. A
+    top-level ``SOVA_<FIELD>`` replaces the merged value. A nested
+    ``SOVA_<SECTION>_<FIELD>`` (the section model's own ``env_prefix``) instead
+    drops that field from the merged section dict, so the section's Pydantic
+    Settings reads it from the environment with its native parsing (JSON for list
+    and dict fields). Left in the dict, the stored value would reach the section
+    as an init kwarg and win over the env var: that is how ``SOVA_AGENT_MODEL``
+    and ``SOVA_LLM_ROUTING`` were silently ignored whenever the database held a
+    value for the same field. Nested sub-sections (``review.panel`` via
+    ``SOVA_REVIEW_PANEL_*``, ``mcp.atlassian`` via ``SOVA_MCP_ATLASSIAN_*``) are
+    handled the same way, each with its own ``env_prefix``.
     """
     prefix = "SOVA_"
     known_fields = ProjectConfig.model_fields
@@ -198,134 +208,22 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
         if field_name in known_fields:
             merged[field_name] = env_val
 
-    _apply_nested_env_overrides(
-        merged,
-        "telemetry",
-        "SOVA_TELEMETRY_",
-        [
-            ("hub_url", "SOVA_TELEMETRY_HUB_URL"),
-            ("hub_token", "SOVA_TELEMETRY_HUB_TOKEN"),
-            ("machine_id", "SOVA_TELEMETRY_MACHINE_ID"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "feed",
-        "SOVA_FEED_",
-        [
-            ("retention_days", "SOVA_FEED_RETENTION_DAYS"),
-            ("page_size", "SOVA_FEED_PAGE_SIZE"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "compression",
-        "SOVA_COMPRESSION_",
-        [
-            ("enabled", "SOVA_COMPRESSION_ENABLED"),
-            ("min_chars", "SOVA_COMPRESSION_MIN_CHARS"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "network_guard",
-        "SOVA_NETWORK_GUARD_",
-        [
-            ("enabled", "SOVA_NETWORK_GUARD_ENABLED"),
-            ("block_spawns", "SOVA_NETWORK_GUARD_BLOCK_SPAWNS"),
-            ("auto_resume", "SOVA_NETWORK_GUARD_AUTO_RESUME"),
-            ("recovery_grace_seconds", "SOVA_NETWORK_GUARD_RECOVERY_GRACE_SECONDS"),
-            ("resume_window_minutes", "SOVA_NETWORK_GUARD_RESUME_WINDOW_MINUTES"),
-            ("max_auto_resumes_per_hour", "SOVA_NETWORK_GUARD_MAX_AUTO_RESUMES_PER_HOUR"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "confidence",
-        "SOVA_CONFIDENCE_",
-        [
-            ("enabled", "SOVA_CONFIDENCE_ENABLED"),
-            ("gate_enabled", "SOVA_CONFIDENCE_GATE_ENABLED"),
-            ("auto_merge_threshold", "SOVA_CONFIDENCE_AUTO_MERGE_THRESHOLD"),
-            ("review_threshold", "SOVA_CONFIDENCE_REVIEW_THRESHOLD"),
-            ("critical_threshold", "SOVA_CONFIDENCE_CRITICAL_THRESHOLD"),
-            ("model", "SOVA_CONFIDENCE_MODEL"),
-            ("max_budget_usd", "SOVA_CONFIDENCE_MAX_BUDGET_USD"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "ldap",
-        "SOVA_LDAP_",
-        [
-            ("enabled", "SOVA_LDAP_ENABLED"),
-            ("server", "SOVA_LDAP_SERVER"),
-            ("base_dn", "SOVA_LDAP_BASE_DN"),
-            ("group_base_dn", "SOVA_LDAP_GROUP_BASE_DN"),
-            ("timeout_seconds", "SOVA_LDAP_TIMEOUT_SECONDS"),
-            ("cache_ttl_seconds", "SOVA_LDAP_CACHE_TTL_SECONDS"),
-            ("uid_attribute", "SOVA_LDAP_UID_ATTRIBUTE"),
-            ("allow_insecure", "SOVA_LDAP_ALLOW_INSECURE"),
-            ("ca_cert_file", "SOVA_LDAP_CA_CERT_FILE"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "codex",
-        "SOVA_CODEX_",
-        [
-            ("model", "SOVA_CODEX_MODEL"),
-            ("sandbox", "SOVA_CODEX_SANDBOX"),
-            ("reader_drain_timeout", "SOVA_CODEX_READER_DRAIN_TIMEOUT"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "agent",
-        "SOVA_AGENT_",
-        [
-            ("step_timeout_normal", "SOVA_AGENT_STEP_TIMEOUT_NORMAL"),
-            ("step_timeout_complex", "SOVA_AGENT_STEP_TIMEOUT_COMPLEX"),
-        ],
-    )
-
-    _apply_nested_env_overrides(
-        merged,
-        "develop",
-        "SOVA_DEVELOP_",
-        [
-            ("step_timeout_normal", "SOVA_DEVELOP_STEP_TIMEOUT_NORMAL"),
-            ("step_timeout_complex", "SOVA_DEVELOP_STEP_TIMEOUT_COMPLEX"),
-        ],
-    )
+    # An empty variable is unset: it must not discard the stored value for a blank override.
+    _drop_env_shadowed(merged, ProjectConfig, {key.upper() for key, val in os.environ.items() if val})
 
 
-def _apply_nested_env_overrides(
-    merged: dict[str, Any],
-    section: str,
-    _prefix: str,
-    field_env_pairs: list[tuple[str, str]],
-) -> None:
-    """Apply env var overrides for a nested config section, creating it if needed."""
-    existing = merged.get(section)
-    if section in merged and not isinstance(existing, dict):
-        return
-    tel = dict(existing) if isinstance(existing, dict) else {}
-    changed = False
-    for field, env_var in field_env_pairs:
-        env_val = os.environ.get(env_var)
-        if env_val is not None:
-            tel[field] = env_val
-            changed = True
-    if changed:
-        merged[section] = tel
+def _drop_env_shadowed(stored: dict[str, Any], settings_model: type[BaseSettings], env_keys: set[str]) -> None:
+    """Remove stored section fields (recursively, for nested sub-sections) that an env var names."""
+    for name, field in settings_model.model_fields.items():
+        value = stored.get(name)
+        model = field.annotation
+        if not isinstance(value, dict) or not (isinstance(model, type) and issubclass(model, BaseSettings)):
+            continue
+        section_prefix = str(model.model_config.get("env_prefix", "")).upper()
+        # Replaced, not edited: the section dict may be shared with the TOML layer.
+        value = {key: val for key, val in value.items() if f"{section_prefix}{key}".upper() not in env_keys}
+        stored[name] = value
+        _drop_env_shadowed(value, model, env_keys)
 
 
 def _migrate_deprecated_keys(flat: dict[str, Any]) -> None:

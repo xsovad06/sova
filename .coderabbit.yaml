@@ -49,12 +49,11 @@ reviews:
           from a contextvar or the working directory instead of taking them as arguments.
     - path: "sova/config/**"
       instructions: |
-        A new nested config section needs four registrations: the model in models.py, the
-        section name in `_NESTED_SECTIONS` (loader.py), a SettingMeta entry in
-        sova/dashboard/settings_meta.py, and an `_apply_nested_env_overrides()` call inside
-        `_apply_env_overrides()` for every field settable as SOVA_<SECTION>_<FIELD>. The
-        env override is the one most often missed: without it the env var silently does
-        nothing, and no generic test catches it.
+        A new nested config section needs three registrations: the model in models.py (a
+        BaseSettings with its own env_prefix), the section name in `_NESTED_SECTIONS`
+        (loader.py), and a SettingMeta entry in sova/dashboard/settings_meta.py. Env vars
+        need no per-field wiring: `_apply_env_overrides()` lets every SOVA_<SECTION>_<FIELD>
+        beat a stored value generically, so flag any new per-field env override list.
     - path: "sova/dashboard/**"
       instructions: |
         FastAPI dashboard with Jinja2 templates. Verify proper async patterns,
