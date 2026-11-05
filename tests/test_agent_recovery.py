@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -416,12 +417,147 @@ class TestTerminalZombieRecovery:
 
         with (
             patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
             patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
         ):
             interrupted = await recover_stale_runs()
 
         assert any(r["run_id"] == run_id for r in interrupted)
         mock_kill.assert_any_call(999999)
+
+    async def test_live_unmanaged_run_with_a_live_parent_survives_recovery(self) -> None:
+        """A terminal ``sova run`` sharing the DB has a live parent: not an orphan, at startup or in the sweep."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="904", role="developer", status="running", pid=999998)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_kill.assert_not_called()
+        assert all(r["run_id"] != run_id for r in interrupted)
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "running"
+
+
+class TestIsOrphanedProcess:
+    """_is_orphaned_process: only a marked agent this dashboard launched, whose launcher is gone."""
+
+    @staticmethod
+    def _procs(*, env: dict[str, str], ppid: int, parent_cmdline: list[str] | None = None):  # noqa: ANN205
+        from unittest.mock import MagicMock
+
+        child = MagicMock()
+        child.environ.return_value = env
+        child.ppid.return_value = ppid
+        parent = MagicMock()
+        parent.cmdline.return_value = parent_cmdline or []
+        return lambda pid: child if pid == 777 else parent
+
+    @pytest.mark.parametrize("ppid", [1, 0, -1, "dashboard"])
+    def test_marked_agent_under_init_or_this_dashboard_is_an_orphan(self, ppid: int | str) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        real_ppid = os.getpid() if ppid == "dashboard" else ppid
+        with patch("psutil.Process", side_effect=self._procs(env={"SOVA_AGENT_RUN": "1"}, ppid=real_ppid)):
+            assert _is_orphaned_process(777) is True
+
+    def test_unmarked_process_under_init_is_someone_elses_run(self) -> None:
+        """A `nohup sova run N &` or a service-run `sova watch` is reparented to init but is not an agent."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        with patch("psutil.Process", side_effect=self._procs(env={}, ppid=1)):
+            assert _is_orphaned_process(777) is False
+
+    def test_dashboard_never_signals_itself(self) -> None:
+        """`sova server` runs the watch loop in-process, so a TaskRun's pid can be the dashboard's own."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        with patch("psutil.Process", side_effect=AssertionError("must not probe itself")):
+            assert _is_orphaned_process(os.getpid()) is False
+
+    def test_marked_agent_reparented_to_a_subreaper_is_an_orphan(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        procs = self._procs(env={"SOVA_AGENT_RUN": "1"}, ppid=4242, parent_cmdline=["systemd", "--user"])
+        with patch("psutil.Process", side_effect=procs):
+            assert _is_orphaned_process(777) is True
+
+    def test_marked_agent_under_a_live_sova_run_is_left_alone(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        procs = self._procs(env={"SOVA_AGENT_RUN": "1"}, ppid=4242, parent_cmdline=["python", "-m", "sova", "run", "7"])
+        with patch("psutil.Process", side_effect=procs):
+            assert _is_orphaned_process(777) is False
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            ["/Users/dsova/bin/tmux", "new", "-s", "sova"],
+            ["/usr/bin/python3", "/Users/dsova/Code/sova/scripts/tool.py"],
+            ["systemd", "--user"],
+        ],
+    )
+    def test_a_parent_whose_path_merely_contains_sova_is_not_a_sova_launcher(self, cmdline: list[str]) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        procs = self._procs(env={"SOVA_AGENT_RUN": "1"}, ppid=4242, parent_cmdline=cmdline)
+        with patch("psutil.Process", side_effect=procs):
+            assert _is_orphaned_process(777) is True
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            ["/usr/local/bin/sova", "watch"],
+            ["python3", "/home/u/.local/bin/sova", "run", "7"],
+            ["python", "-m", "sova.cli"],
+        ],
+    )
+    def test_a_parent_running_the_sova_program_is_a_live_launcher(self, cmdline: list[str]) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        procs = self._procs(env={"SOVA_AGENT_RUN": "1"}, ppid=4242, parent_cmdline=cmdline)
+        with patch("psutil.Process", side_effect=procs):
+            assert _is_orphaned_process(777) is False
+
+    def test_unverifiable_process_is_left_alone(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_orphaned_process
+
+        with patch("psutil.Process", side_effect=OSError("no such process")):
+            assert _is_orphaned_process(777) is False
+
+    def test_marker_name_matches_the_spawn_side(self) -> None:
+        from sova.dashboard.services.agent_recovery import _AGENT_MARKER_ENV
+        from sova.ipc.runtime import _SOVA_AGENT_ENV_KEY
+
+        assert _AGENT_MARKER_ENV == _SOVA_AGENT_ENV_KEY
 
 
 class TestSynthesizePrActions:
