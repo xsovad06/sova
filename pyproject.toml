@@ -106,6 +106,10 @@ known-first-party = ["sova", "app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Left unset, pytest-asyncio raises a deprecation warning while configuring,
+# which "error" below turns into a session abort from pytest 9.2 on. No async
+# fixture declares a wider scope, so "function" matches the implicit default.
+asyncio_default_fixture_loop_scope = "function"
 timeout = 30
 markers = [
     "runtime: tests requiring real process lifecycle (deselect with -m 'not runtime')",
