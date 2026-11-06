@@ -888,7 +888,7 @@ class TestStartBatchRun:
 
         assert result["started"] == "10"
         assert result["remaining"] == ["20", "30"]
-        mock_start.assert_called_once_with(issue="10")
+        mock_start.assert_called_once_with(issue="10", enforce_suitability=True)
 
     async def test_empty_issues_returns_error(self, tmp_path: Path) -> None:
         result = await start_batch_run([], tmp_path)
