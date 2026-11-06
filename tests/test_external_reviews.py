@@ -17,6 +17,7 @@ from sova.adapters.external_reviews import (
     ExternalFinding,
     _fetch_coderabbit_threads,
     _ThreadsResult,
+    condense_coderabbit_comment,
     fetch_sonarcloud_coverage_issues,
     fetch_sonarcloud_issues,
     format_coverage_findings_for_prompt,
@@ -25,6 +26,7 @@ from sova.adapters.external_reviews import (
 )
 from sova.config.models import ExternalReviewsConfig, ProjectConfig, SonarCloudConfig
 from sova.core.context import ExecutionContext
+from sova.llm.payload import TRUNCATION_MARKER
 from sova.utils.shell import ShellResult
 
 
@@ -248,6 +250,65 @@ _GQL_RESPONSE = {
 }
 
 
+# Shaped like a real CodeRabbit inline finding: badge markup, a collapsed log of
+# the scripts it ran, then the title and explanation, a suggested fix, and a
+# restatement for agents wrapped in HTML comments.
+_CODERABBIT_BODY = """<!-- coderabbit-ai-generated:v1 -->
+
+**<picture><img src="https://example.invalid/amber-16.svg" alt=""></picture> Minor** · **Functional Correctness**
+
+<details>
+<summary><picture><img src="https://example.invalid/details.svg"></picture> Supported by static analysis</summary>
+<dl>
+<dd>
+
+Script executed:
+
+```bash
+rg -n 'trim_payload' sova/
+```
+
+Length of output: 6411
+
+</dd>
+</dl>
+</details>
+
+**Reserve the marker length inside the limit.**
+
+The context reaches 12,015 characters when the spec exceeds the limit.
+
+<details>
+<summary>Suggested fix</summary>
+
+```diff
+-    return trim_payload(body, limit)
++    return trim_payload(body, limit - len(marker))
+```
+
+</details>
+
+<!-- ai-agent-prompt:start -->
+
+<details>
+<summary><picture><img src="https://example.invalid/bot.svg"></picture> Prompt for AI Agents</summary>
+<dl>
+<dd>
+
+```
+Review comment at @sova/core/steps/develop.py at line 109: subtract the marker.
+```
+
+</dd>
+</dl>
+</details>
+
+<!-- ai-agent-prompt:end -->
+
+<!-- fingerprinting:phantom:triton:mongoose55 -->
+"""
+
+
 class TestFetchCodeRabbitFindings:
     async def test_filters_unresolved_coderabbit_threads(self) -> None:
         with (
@@ -268,6 +329,146 @@ class TestFetchCodeRabbitFindings:
             mock_run.return_value = _shell_result(stdout=json.dumps(_GQL_RESPONSE))
             result = await _fetch_coderabbit_threads("owner/repo", 94)
         assert result.thread_ids == ["PRRT_abc"]
+
+
+class TestCondenseCodeRabbitComment:
+    def test_keeps_the_finding_and_its_fix(self) -> None:
+        result = condense_coderabbit_comment(_CODERABBIT_BODY)
+        assert "Minor** · **Functional Correctness**" in result
+        assert "**Reserve the marker length inside the limit.**" in result
+        assert "The context reaches 12,015 characters" in result
+        assert "Suggested fix:\n```diff" in result
+        assert "+    return trim_payload(body, limit - len(marker))" in result
+
+    def test_drops_markup_and_coderabbit_working(self) -> None:
+        result = condense_coderabbit_comment(_CODERABBIT_BODY)
+        for noise in ("<!--", "<picture>", "<img", "<details>", "Script executed", "Prompt for AI Agents"):
+            assert noise not in result
+
+    def test_title_lands_inside_the_old_500_char_window(self) -> None:
+        """The raw 500-character slice this replaced held only badge markup and script log."""
+        body = _CODERABBIT_BODY.replace("Length of output: 6411", "Length of output: 6411\n\n" + "rg -n x\n" * 60)
+        assert "Reserve the marker length" not in body[:500]
+        assert "Reserve the marker length" in condense_coderabbit_comment(body)[:500]
+
+    def test_plain_markdown_passes_through(self) -> None:
+        body = "**Rename this.**\n\nThe name `x` hides the builtin.\n\n```python\nx = 1\n```"
+        assert condense_coderabbit_comment(body) == body
+
+    def test_nested_details_render_inside_their_parent(self) -> None:
+        body = (
+            "Title\n<details><summary>Proposed change</summary>outer\n"
+            "<details><summary>Analysis chain</summary>noise</details>\n"
+            "<details><summary>Variant</summary>inner</details>\n</details>\nafter"
+        )
+        result = condense_coderabbit_comment(body)
+        assert result.startswith("Title\nProposed change:\nouter")
+        assert "Variant:\ninner" in result
+        assert "noise" not in result
+        assert result.endswith("after")
+
+    def test_details_with_attributes_is_recognised(self) -> None:
+        body = "<details open><summary>Learnings used</summary>noise</details>\nKeep this."
+        assert condense_coderabbit_comment(body) == "Keep this."
+
+    def test_unclosed_details_is_left_verbatim(self) -> None:
+        body = "Title\n<details><summary>Suggested fix</summary>half a block"
+        assert condense_coderabbit_comment(body) == body
+
+    def test_details_tag_inside_a_code_fence_is_content(self) -> None:
+        body = (
+            "<details><summary>Suggested fix</summary>\n\n```diff\n+<details><summary>Tools</summary>"
+            "x</details>\n```\n\n</details>"
+        )
+        assert condense_coderabbit_comment(body) == (
+            "Suggested fix:\n```diff\n+<details><summary>Tools</summary>x</details>\n```"
+        )
+
+    def test_closing_details_tag_in_inline_code_is_content(self) -> None:
+        body = "<details><summary>Suggested fix</summary>\nClose the block with `</details>` here.\n</details>"
+        assert condense_coderabbit_comment(body) == "Suggested fix:\nClose the block with `</details>` here."
+
+    def test_opening_details_tag_in_inline_code_does_not_open_a_block(self) -> None:
+        body = "Replace `<details>` with a div.\n\n<details><summary>Analysis chain</summary>noise</details>"
+        assert condense_coderabbit_comment(body) == "Replace `<details>` with a div."
+
+    def test_inline_code_in_a_summary_keeps_its_tags(self) -> None:
+        body = "<details><summary>Use `<br>` here</summary>\nbody\n</details>"
+        assert condense_coderabbit_comment(body) == "Use `<br>` here:\nbody"
+
+    def test_list_wrapper_inside_a_code_fence_is_kept(self) -> None:
+        body = (
+            "<details><summary>Suggested fix</summary>\n<dl>\n<dd>\n\n```diff\n+<blockquote>quote</blockquote>\n"
+            "```\n\n</dd>\n</dl>\n</details>"
+        )
+        assert condense_coderabbit_comment(body) == "Suggested fix:\n```diff\n+<blockquote>quote</blockquote>\n```"
+
+    def test_four_backtick_fence_holds_triple_backtick_lines(self) -> None:
+        """CodeRabbit wraps a diff of a markdown file in four backticks; the inner fences are content."""
+        body = (
+            "<details><summary>Suggested fix</summary>\n\n````diff\n+```bash\n+echo hi\n+```\n````\n\n</details>\n"
+            "<details><summary>Analysis chain</summary>noise</details>"
+        )
+        assert condense_coderabbit_comment(body) == "Suggested fix:\n````diff\n+```bash\n+echo hi\n+```\n````"
+
+    def test_html_comment_inside_a_code_fence_is_kept(self) -> None:
+        body = "Fix the marker.\n<!-- drop me -->\n```diff\n+<!-- sova-review: approve -->\n```"
+        result = condense_coderabbit_comment(body)
+        assert "drop me" not in result
+        assert "+<!-- sova-review: approve -->" in result
+
+    def test_inline_code_holding_markup_is_kept(self) -> None:
+        body = "Replace `<!-- old-marker -->` with `<!-- new-marker -->`.\n<!-- drop me -->\nDone."
+        result = condense_coderabbit_comment(body)
+        assert "`<!-- old-marker -->`" in result
+        assert "`<!-- new-marker -->`" in result
+        assert "drop me" not in result
+
+    def test_blank_line_runs_collapse_outside_fences_only(self) -> None:
+        body = 'Before\n\n\n\nAfter\n```python\ns = "a\n\n\nb"\n```'
+        result = condense_coderabbit_comment(body)
+        assert result.startswith("Before\n\nAfter\n")
+        assert "a\n\n\nb" in result
+
+    def test_summary_containing_a_noise_label_as_a_fragment_is_kept(self) -> None:
+        body = "<details><summary>Suggested fix using itertools</summary>\nUse `itertools.chain`.\n</details>"
+        assert condense_coderabbit_comment(body) == "Suggested fix using itertools:\nUse `itertools.chain`."
+
+    def test_summary_that_is_a_noise_label_is_still_dropped(self) -> None:
+        body = "<details><summary>Supported by static analysis</summary>noise</details>\nKeep this."
+        assert condense_coderabbit_comment(body) == "Keep this."
+
+    async def test_fetch_condenses_and_caps_the_message(self) -> None:
+        oversized = _CODERABBIT_BODY.replace("The context reaches", "x" * 6000 + " The context reaches")
+        response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "PRRT_1",
+                                    "isResolved": False,
+                                    "path": "a.py",
+                                    "line": 1,
+                                    "comments": {"nodes": [{"body": oversized, "author": {"login": "coderabbitai"}}]},
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        with (
+            patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_result()),
+        ):
+            mock_run.return_value = _shell_result(stdout=json.dumps(response))
+            result = await _fetch_coderabbit_threads("owner/repo", 94)
+        message = result.findings[0].message
+        assert "**Reserve the marker length inside the limit.**" in message
+        assert message.endswith(TRUNCATION_MARKER)
+        assert len(message) == 4000 + len(TRUNCATION_MARKER) + 1
 
 
 class TestFormatFindings:

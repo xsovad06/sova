@@ -9,11 +9,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
+from sova.llm.payload import trim_payload
 from sova.utils.logging import get_logger
+from sova.utils.markdown import mask_fenced_blocks
 from sova.utils.shell import run
 
 log = get_logger(component="adapters.external_reviews")
@@ -338,6 +341,129 @@ class _ThreadsResult:
 _DEFAULT_CODERABBIT_AUTHORS = frozenset({"coderabbitai", "coderabbitai[bot]", "coderabbit[bot]"})
 DEFAULT_CODERABBIT_AUTHORS = _DEFAULT_CODERABBIT_AUTHORS
 
+# Across 123 CodeRabbit findings on this repository's PRs a condensed comment ran
+# to a median of about 900 characters and a 95th percentile of about 2300, so
+# this cap only fires on an outlier. It replaces a raw 500-character slice that
+# cut the title off 42% of those findings, because the raw comment leads with
+# badge markup and a collapsed log of the scripts CodeRabbit ran.
+_CODERABBIT_MESSAGE_LIMIT = 4000
+
+# Collapsed sections holding CodeRabbit's own working rather than the finding:
+# the scripts it ran, the learnings it applied, and a restatement of the finding
+# for agents. The title, explanation and any suggested diff sit outside them.
+_CODERABBIT_NOISE_SUMMARIES = ("static analysis", "analysis chain", "learnings used", "tools", "prompt for ai agents")
+# Whole-word match, so a summary such as "Suggested fix using itertools" is not read as the "tools" label.
+_CODERABBIT_NOISE_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(label) for label in _CODERABBIT_NOISE_SUMMARIES) + r")(?!\w)",
+    re.IGNORECASE,
+)
+
+_DETAILS_TAG_RE = re.compile(r"<details\b[^>]*>|</details>", re.IGNORECASE)
+_SUMMARY_RE = re.compile(r"\s*<summary>(.*?)</summary>", re.DOTALL | re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_LIST_WRAPPER_RE = re.compile(r"</?(?:dl|dd|blockquote)>", re.IGNORECASE)
+_MARKUP_RE = re.compile(r"<!--.*?-->|<picture>.*?</picture>|<img[^>]*>", re.DOTALL | re.IGNORECASE)
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)+?(?<!`)\1(?!`)", re.DOTALL)
+
+
+def _mask_code(text: str) -> str:
+    """Return *text* with fenced blocks and inline code spans blanked, keeping offsets.
+
+    Newlines survive, so a match found on the masked copy maps 1:1 onto *text*.
+    """
+    masked = mask_fenced_blocks(text)
+    return _INLINE_CODE_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), masked)
+
+
+def _sub_outside_code(text: str, pattern: re.Pattern[str], repl: str = "") -> str:
+    """Replace every *pattern* match in *text* that sits in neither a code fence nor an inline code span.
+
+    Matches are found on the ``_mask_code()`` copy, which keeps offsets unchanged,
+    so code content (a suggested diff of an HTML file, an HTML comment quoted in
+    backticks) survives.
+    """
+    out: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(_mask_code(text)):
+        out.append(text[cursor : match.start()])
+        out.append(repl)
+        cursor = match.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _collapse_blank_runs(text: str) -> str:
+    """Collapse runs of empty lines to one, except inside code fences.
+
+    ``mask_fenced_blocks()`` leaves an empty line empty, so a fenced one cannot be told from an
+    unfenced one on the masked copy. Each empty line is therefore marked first: the mask then
+    turns a fenced marker into a space and leaves an unfenced one alone.
+    """
+    marked = [line or "\x00" for line in text.split("\n")]
+    masked = mask_fenced_blocks("\n".join(marked)).split("\n")
+    out: list[str] = []
+    previous_blank = False
+    for line, mark, mask in zip(text.split("\n"), marked, masked, strict=True):
+        blank = not line and mask == mark
+        if not (blank and previous_blank):
+            out.append(line)
+        previous_blank = blank
+    return "\n".join(out)
+
+
+def _render_details(inner: str) -> str:
+    """Render one ``<details>`` block's inner text: dropped when it is noise, else unwrapped."""
+    summary_match = _SUMMARY_RE.match(inner)
+    summary = _sub_outside_code(summary_match.group(1), _HTML_TAG_RE).strip() if summary_match else ""
+    if _CODERABBIT_NOISE_RE.search(summary):
+        return ""
+    body = inner[summary_match.end() :] if summary_match else inner
+    body = _sub_outside_code(_condense_details(body), _LIST_WRAPPER_RE).strip()
+    return f"{summary}:\n{body}" if summary else body
+
+
+def _condense_details(text: str) -> str:
+    """Replace each top-level ``<details>`` block in *text* with its rendering.
+
+    Tracks nesting depth rather than matching with one regex, since a kept block
+    can hold another. Tags are found on the code-masked copy, so one inside a
+    code fence or an inline code span is content, not structure (a suggested diff
+    of an HTML template, a tag quoted in backticks).
+    An unclosed block is left verbatim.
+    """
+    out: list[str] = []
+    depth = 0
+    cursor = 0
+    inner_start = 0
+    for match in _DETAILS_TAG_RE.finditer(_mask_code(text)):
+        if not match.group(0).startswith("</"):
+            if depth == 0:
+                out.append(text[cursor : match.start()])
+                cursor = match.start()
+                inner_start = match.end()
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0:
+                out.append(_render_details(text[inner_start : match.start()]))
+                cursor = match.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def condense_coderabbit_comment(body: str) -> str:
+    """Reduce a CodeRabbit review comment to the text an agent needs to fix it.
+
+    Drops the collapsed noise sections (``_CODERABBIT_NOISE_SUMMARIES``), HTML
+    comments and badge images, and unwraps the remaining collapsed sections
+    (a suggested fix, a committable suggestion) into plain labelled text. Code
+    fences and inline code spans are left untouched, so a suggested diff of a
+    file that itself holds HTML comments keeps them. Plain markdown, as a human
+    writes it, passes through unchanged apart from blank-line runs outside code.
+    """
+    text = _sub_outside_code(_condense_details(body), _MARKUP_RE)
+    return _collapse_blank_runs(text).strip()
+
 
 async def _fetch_coderabbit_threads(
     repo: str,
@@ -398,7 +524,8 @@ async def _fetch_coderabbit_threads(
         if author not in allowed:
             continue
 
-        body = sanitize_external_input(comments[0].get("body") or "", source="coderabbit_review")
+        body = condense_coderabbit_comment(comments[0].get("body") or "")
+        body = sanitize_external_input(body, source="coderabbit_review")
 
         out.findings.append(
             ExternalFinding(
@@ -406,7 +533,7 @@ async def _fetch_coderabbit_threads(
                 file_path=thread.get("path", ""),
                 line=thread.get("line"),
                 severity="MAJOR",
-                message=body[:500],
+                message=trim_payload(body, _CODERABBIT_MESSAGE_LIMIT, label="coderabbit_finding", keep="head"),
                 tool_id=thread.get("id", ""),
             )
         )
