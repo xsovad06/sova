@@ -849,6 +849,23 @@ class TestGetUsageByStep:
             rows = await reliability_service.get_usage_by_step(session)
         assert [(r["name"], r["runs"]) for r in rows] == [("report", 1)]
 
+    async def test_phase_usage_of_a_non_command_run_is_ignored(self) -> None:
+        command = _done("command:/integrate-pr")
+        developer = _done("developer")
+        outside = _done("command:/integrate-pr", started_at=NOW - timedelta(days=60))
+        await _add(command, developer, outside)
+        command.phase_usage = [{"phase": "merge", "model_calls": 2, "context_tokens": 20, "duration_ms": 2000}]
+        developer.phase_usage = [{"phase": "develop", "model_calls": 9, "context_tokens": 90, "duration_ms": 9000}]
+        outside.phase_usage = [{"phase": "stale", "model_calls": 1, "context_tokens": 1, "duration_ms": 1}]
+        async with await get_session() as session:
+            session.add_all([command, developer, outside])
+            await session.commit()
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_step(session)
+        assert [(r["kind"], r["command"], r["name"], r["avg_model_calls"]) for r in rows] == [
+            ("command_phase", "command:integrate-pr", "merge", 2.0)
+        ]
+
     async def test_role_filter_uses_the_display_role(self) -> None:
         initial = _done("developer")
         addressing = _done("developer")
