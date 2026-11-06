@@ -45,6 +45,35 @@
     <p class="text-gray-500 text-sm">Loading...</p>
   </div>
 </div>
+
+<!-- Usage per role per month -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Usage by Role per Month</h3>
+    <p class="text-xs text-gray-500 mt-1">Averages per done run over the last 6 UTC months. Turns average only the runs that reported them.</p>
+  </div>
+  <div class="p-4 overflow-x-auto" id="usage-by-role">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Usage per step and command phase -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between gap-2">
+    <div>
+      <h3 class="text-sm font-medium text-gray-400">Usage by Step and Command Phase</h3>
+      <p class="text-xs text-gray-500 mt-1">Averages per done run. Command phases report model calls, tokens and time, never dollars.</p>
+    </div>
+    <label for="step-role-select" class="sr-only">Role filter for step usage</label>
+    <select id="step-role-select" aria-label="Role filter for step usage"
+            class="bg-surface-card border border-gray-700/50 rounded px-2 py-1 text-sm text-gray-300">
+      <option value="">All roles</option>
+    </select>
+  </div>
+  <div class="p-4 overflow-x-auto" id="usage-by-step">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -176,6 +205,121 @@ async function loadFailureTaxonomy(days) {
   }
 }
 
+function formatCount(value) {
+  return value == null ? '' : formatTokenCount(Math.round(value));
+}
+
+function formatSeconds(value) {
+  return value == null ? '' : formatDuration(value * 1000);
+}
+
+function formatUsd(value) {
+  return value == null ? '' : '$' + parseFloat(value).toFixed(2);
+}
+
+function formatAverage(value, placeholder) {
+  return value == null ? (placeholder || '') : String(value);
+}
+
+var stepRoleOptionsLoaded = false;
+
+function syncStepRoleOptions(rows) {
+  if (stepRoleOptionsLoaded) return;
+  var select = document.getElementById('step-role-select');
+  var roles = [];
+  rows.forEach(function(row) {
+    if (roles.indexOf(row.role) === -1) roles.push(row.role);
+  });
+  roles.sort().forEach(function(role) {
+    var option = document.createElement('option');
+    option.value = role;
+    option.textContent = role;
+    select.appendChild(option);
+  });
+  stepRoleOptionsLoaded = true;
+}
+
+async function loadUsageByRole() {
+  try {
+    var rows = await fetchAPI(apiUrl('/reliability/usage-by-role-month'));
+    if (rows.length === 0) {
+      renderEmpty('usage-by-role', 'No done runs in the last 6 months');
+      return;
+    }
+    syncStepRoleOptions(rows);
+    document.getElementById('usage-by-role').innerHTML = `<table class="w-full text-sm">
+      <thead><tr class="text-gray-500 text-xs uppercase">
+        <th class="text-left pb-2">Month</th>
+        <th class="text-left pb-2">Role</th>
+        <th class="text-right pb-2">Done Runs</th>
+        <th class="text-right pb-2">Turns</th>
+        <th class="text-right pb-2">Context Tokens</th>
+        <th class="text-right pb-2">Output Tokens</th>
+        <th class="text-right pb-2">Cost</th>
+        <th class="text-right pb-2">Duration</th>
+      </tr></thead>
+      <tbody>${rows.map(function(row) {
+        return `<tr class="border-t border-gray-700/30">
+          <td class="py-2 text-gray-400">${escapeHtml(row.month)}</td>
+          <td class="py-2 text-accent">${escapeHtml(row.role)}</td>
+          <td class="py-2 text-right text-gray-400">${row.done_runs}</td>
+          <td class="py-2 text-right text-gray-400">${formatAverage(row.avg_turns, '-')}</td>
+          <td class="py-2 text-right text-gray-400">${formatCount(row.avg_context_tokens)}</td>
+          <td class="py-2 text-right text-gray-400">${formatCount(row.avg_output_tokens)}</td>
+          <td class="py-2 text-right text-accent-green">${formatUsd(row.avg_cost_usd)}</td>
+          <td class="py-2 text-right text-gray-400">${formatSeconds(row.avg_duration_seconds)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  } catch (err) {
+    renderSectionError('usage-by-role', 'Failed to load usage by role');
+    console.error('Failed to load usage-by-role:', err);
+  }
+}
+
+async function loadUsageByStep(days) {
+  try {
+    var role = document.getElementById('step-role-select').value;
+    var query = '?days=' + days + (role ? '&role=' + encodeURIComponent(role) : '');
+    var rows = await fetchAPI(apiUrl('/reliability/usage-by-step' + query));
+    if (rows.length === 0) {
+      renderEmpty('usage-by-step', 'No done runs with step usage in the last ' + days + ' days');
+      return;
+    }
+    document.getElementById('usage-by-step').innerHTML = `<table class="w-full text-sm">
+      <thead><tr class="text-gray-500 text-xs uppercase">
+        <th class="text-left pb-2">Kind</th>
+        <th class="text-left pb-2">Step / Phase</th>
+        <th class="text-right pb-2">Runs</th>
+        <th class="text-right pb-2">Turns</th>
+        <th class="text-right pb-2">Model Calls</th>
+        <th class="text-right pb-2">Context Tokens</th>
+        <th class="text-right pb-2">Output Tokens</th>
+        <th class="text-right pb-2">Cost</th>
+        <th class="text-right pb-2">Duration</th>
+      </tr></thead>
+      <tbody>${rows.map(function(row) {
+        var isPhase = row.kind === 'command_phase';
+        var label = isPhase ? row.command + ' / ' + row.name : row.name;
+        return `<tr class="border-t border-gray-700/30">
+          <td class="py-2 text-gray-500">${isPhase ? 'command phase' : 'step'}</td>
+          <td class="py-2 text-accent">${escapeHtml(label)}</td>
+          <td class="py-2 text-right text-gray-400">${row.runs}</td>
+          <td class="py-2 text-right text-gray-400">${formatAverage(row.avg_turns, isPhase ? '' : '-')}</td>
+          <td class="py-2 text-right text-gray-400">${formatAverage(row.avg_model_calls)}</td>
+          <td class="py-2 text-right text-gray-400">${formatCount(row.avg_context_tokens)}</td>
+          <td class="py-2 text-right text-gray-400">${formatCount(row.avg_output_tokens)}</td>
+          <td class="py-2 text-right text-accent-green">${formatUsd(row.avg_cost_usd)}</td>
+          <td class="py-2 text-right text-gray-400">${formatSeconds(row.avg_duration_seconds)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  } catch (err) {
+    renderSectionError('usage-by-step', 'Failed to load usage by step');
+    console.error('Failed to load usage-by-step:', err);
+  }
+}
+
 async function loadReliability() {
   var days = getSelectedDays();
   document.getElementById('reliability-subtitle').textContent =
@@ -184,10 +328,15 @@ async function loadReliability() {
     loadSuccessByRole(days),
     loadSpendByOutcome(days),
     loadFailureTaxonomy(days),
+    loadUsageByRole(),
+    loadUsageByStep(days),
   ]);
 }
 
 document.getElementById('days-select').addEventListener('change', loadReliability);
+document.getElementById('step-role-select').addEventListener('change', function() {
+  loadUsageByStep(getSelectedDays());
+});
 
 loadReliability();
 </script>

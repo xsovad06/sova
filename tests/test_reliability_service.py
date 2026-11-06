@@ -499,3 +499,377 @@ class TestGetSpendByOutcome:
             data = await reliability_service.get_spend_by_outcome(session)
         assert set(data["non_completing_statuses"]) == TASK_RUN_TERMINAL - {"done"}
         assert data["non_completing_statuses"] == sorted(data["non_completing_statuses"])
+
+
+def _month_start(months_back: int = 0) -> datetime:
+    index = NOW.year * 12 + NOW.month - 1 - months_back
+    return datetime(index // 12, index % 12 + 1, 10, 12, tzinfo=timezone.utc)
+
+
+def _done(
+    role: str | None, *, started_at: datetime | None = None, minutes: int | None = 10, cost: str = "1"
+) -> TaskRun:
+    started = started_at or NOW - timedelta(days=1)
+    return TaskRun(
+        role=role,
+        status="done",
+        started_at=started,
+        ended_at=started + timedelta(minutes=minutes) if minutes is not None else None,
+        total_cost_usd=Decimal(cost),
+    )
+
+
+def _cost(run: TaskRun, phase: str = "develop", **kwargs) -> CostRecord:
+    values = {"input_tokens": 0, "output_tokens": 0, "model": "claude-sonnet-5-5"} | kwargs
+    # Every writer stores cache_tokens as the granular sum (sova/llm/cost.py, agent_db.py).
+    values.setdefault("cache_tokens", (values.get("cache_read_tokens") or 0) + (values.get("cache_write_tokens") or 0))
+    return CostRecord(task_run_id=run.id, phase=phase, **values)
+
+
+def _step(run: TaskRun, name: str) -> StepExecution:
+    return StepExecution(task_run_id=run.id, step_name=name, status="done")
+
+
+class TestDisplayRole:
+    @pytest.mark.parametrize(
+        ("role", "steps", "expected"),
+        [
+            (None, (), "unknown"),
+            ("", (), "unknown"),
+            ("command:", (), "unknown"),
+            ("command:   ", (), "unknown"),
+            ("command:/", (), "unknown"),
+            ("command:/integrate-pr 123", (), "command:integrate-pr"),
+            ("command:/integrate-pr", (), "command:integrate-pr"),
+            ("command:integrate-pr", (), "command:integrate-pr"),
+            ("developer", ("develop",), "developer:develop"),
+            ("developer", ("address_review",), "developer:address-review"),
+            ("developer", ("develop", "address_review"), "developer:develop"),
+            ("developer", (), "developer"),
+            ("reviewer", ("develop",), "reviewer"),
+        ],
+    )
+    def test_display_role(self, role: str | None, steps: tuple[str, ...], expected: str) -> None:
+        assert reliability_service._display_role(role, steps) == expected
+
+
+class TestStepNamesExist:
+    def test_split_step_names_are_registered(self) -> None:
+        from sova.core.steps import STEP_REGISTRY
+
+        assert reliability_service._DEVELOP_STEP in STEP_REGISTRY
+        assert reliability_service._ADDRESS_REVIEW_STEP in STEP_REGISTRY
+
+
+class TestMonthWindowStart:
+    def test_one_month_is_the_current_month(self) -> None:
+        start = reliability_service._month_window_start(1)
+        assert (start.year, start.month, start.day) == (NOW.year, NOW.month, 1)
+        assert start.tzinfo is not None
+
+    def test_crosses_a_year_boundary(self) -> None:
+        start = reliability_service._month_window_start(14)
+        expected = _month_start(13)
+        assert (start.year, start.month) == (expected.year, expected.month)
+
+
+class TestGetUsageByRole:
+    async def test_empty(self) -> None:
+        async with await get_session() as session:
+            assert await reliability_service.get_usage_by_role(session) == []
+
+    async def test_averages_per_month_and_role(self) -> None:
+        a = _done("reviewer", started_at=_month_start(), minutes=10, cost="1")
+        b = _done("reviewer", started_at=_month_start(), minutes=20, cost="2")
+        older = _done("reviewer", started_at=_month_start(1), minutes=5, cost="4")
+        await _add(a, b, older)
+        await _add(
+            _cost(a, num_turns=10, input_tokens=100, cache_read_tokens=50, cache_write_tokens=50, output_tokens=20),
+            _cost(b, num_turns=20, input_tokens=300, cache_read_tokens=100, cache_write_tokens=None, output_tokens=40),
+            _cost(older, num_turns=4, input_tokens=10, output_tokens=2),
+        )
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_role(session, months=3)
+
+        assert [r["month"] for r in rows] == [f"{_month_start(1):%Y-%m}", f"{_month_start():%Y-%m}"]
+        previous, current = rows
+        assert previous["done_runs"] == 1
+        assert previous["avg_cost_usd"] == Decimal("4")
+        assert current["role"] == "reviewer"
+        assert current["done_runs"] == 2
+        assert current["avg_cost_usd"] == Decimal("1.5")
+        assert current["avg_duration_seconds"] == 900.0
+        assert current["avg_turns"] == 15.0
+        assert current["avg_context_tokens"] == 300.0
+        assert current["avg_output_tokens"] == 30.0
+
+    async def test_only_done_runs_count(self) -> None:
+        failed = _done("reviewer")
+        failed.status = "failed"
+        await _add(_done("reviewer"), failed)
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_role(session)
+        assert rows[0]["done_runs"] == 1
+
+    async def test_runs_before_the_window_are_excluded(self) -> None:
+        await _add(_done("reviewer", started_at=_month_start(5)), _done("triage", started_at=_month_start(1)))
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_role(session, months=2)
+        assert [r["role"] for r in rows] == ["triage"]
+
+    async def test_legacy_command_roles_fold_and_empty_role_is_unknown(self) -> None:
+        await _add(
+            _done("command:/integrate-pr 123"),
+            _done("command:/integrate-pr"),
+            _done("command:"),
+            _done(""),
+        )
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_role(session)
+        counts = {r["role"]: r["done_runs"] for r in rows}
+        assert counts == {"command:integrate-pr": 2, "unknown": 2}
+
+    async def test_developer_split_by_step_with_develop_taking_precedence(self) -> None:
+        initial = _done("developer")
+        addressing = _done("developer")
+        both = _done("developer")
+        bare = _done("developer")
+        await _add(initial, addressing, both, bare)
+        await _add(
+            _step(initial, "develop"),
+            _step(addressing, "address_review"),
+            _step(both, "address_review"),
+            _step(both, "develop"),
+            _step(both, "develop"),
+        )
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_role(session)
+        counts = {r["role"]: r["done_runs"] for r in rows}
+        assert counts == {"developer": 1, "developer:address-review": 1, "developer:develop": 2}
+
+    async def test_runs_without_cost_records_are_not_averaged_as_zero(self) -> None:
+        with_usage = _done("reviewer", cost="2")
+        without = _done("reviewer", cost="0")
+        await _add(with_usage, without)
+        await _add(_cost(with_usage, num_turns=8, input_tokens=100, output_tokens=10))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["done_runs"] == 2
+        assert row["avg_cost_usd"] == Decimal("1")
+        assert row["avg_turns"] == 8.0
+        assert row["avg_context_tokens"] == 100.0
+        assert row["avg_output_tokens"] == 10.0
+
+    async def test_turns_average_only_over_runs_that_reported_them(self) -> None:
+        reported = _done("reviewer")
+        legacy = _done("reviewer")
+        await _add(reported, legacy)
+        await _add(_cost(reported, num_turns=6), _cost(legacy, num_turns=None, input_tokens=40))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_turns"] == 6.0
+
+    async def test_turns_none_when_no_run_reported(self) -> None:
+        run = _done("reviewer")
+        await _add(run)
+        await _add(_cost(run, num_turns=None, input_tokens=40))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_turns"] is None
+        assert row["avg_context_tokens"] == 40.0
+
+    async def test_tokens_none_when_no_run_has_cost_records(self) -> None:
+        await _add(_done("reviewer"))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_context_tokens"] is None
+        assert row["avg_output_tokens"] is None
+
+    async def test_null_ended_at_falls_back_to_cost_record_duration(self) -> None:
+        run = _done("reviewer", minutes=None)
+        await _add(run)
+        await _add(_cost(run, duration_ms=30_000), _cost(run, phase="commit", duration_ms=15_000))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_duration_seconds"] == 45.0
+
+    async def test_unknown_duration_is_not_averaged_as_zero(self) -> None:
+        unknown = _done("reviewer", minutes=None)
+        no_duration = _done("reviewer", minutes=None)
+        known = _done("reviewer", minutes=10)
+        await _add(unknown, no_duration, known)
+        await _add(_cost(no_duration, duration_ms=0))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["done_runs"] == 3
+        assert row["avg_duration_seconds"] == 600.0
+
+    async def test_duration_none_when_no_run_has_one(self) -> None:
+        await _add(_done("reviewer", minutes=None))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_duration_seconds"] is None
+
+    async def test_legacy_cache_tokens_without_granular_columns_count_as_context(self) -> None:
+        run = _done("reviewer")
+        await _add(run)
+        await _add(_cost(run, input_tokens=100, cache_tokens=900, cache_read_tokens=None, cache_write_tokens=None))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+            (step,) = await reliability_service.get_usage_by_step(session)
+        assert row["avg_context_tokens"] == 1000.0
+        assert step["avg_context_tokens"] == 1000.0
+
+    async def test_negative_duration_is_clamped(self) -> None:
+        run = _done("reviewer", minutes=-5)
+        await _add(run)
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["avg_duration_seconds"] == 0.0
+
+    async def test_naive_started_at_is_bucketed_as_utc(self) -> None:
+        naive = _month_start().replace(tzinfo=None)
+        await _add(_done("reviewer", started_at=naive))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_role(session)
+        assert row["month"] == f"{_month_start():%Y-%m}"
+        assert row["avg_duration_seconds"] == 600.0
+
+
+class TestGetUsageByStep:
+    async def test_empty(self) -> None:
+        async with await get_session() as session:
+            assert await reliability_service.get_usage_by_step(session) == []
+
+    async def test_step_rows(self) -> None:
+        a = _done("developer")
+        b = _done("developer")
+        await _add(a, b)
+        await _add(
+            _cost(
+                a,
+                "develop",
+                num_turns=30,
+                input_tokens=100,
+                cache_read_tokens=400,
+                cache_write_tokens=100,
+                output_tokens=50,
+                cost_usd=Decimal("1"),
+                duration_ms=60_000,
+            ),
+            _cost(
+                b, "develop", num_turns=10, input_tokens=200, output_tokens=150, cost_usd=Decimal("3"), duration_ms=0
+            ),
+            _cost(a, "commit", num_turns=2),
+            _cost(a, "agent", num_turns=99),
+        )
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_step(session)
+
+        assert [r["name"] for r in rows] == ["commit", "develop"]
+        develop = rows[1]
+        assert develop["kind"] == "step"
+        assert develop["command"] is None
+        assert develop["runs"] == 2
+        assert develop["avg_turns"] == 20.0
+        assert develop["avg_model_calls"] is None
+        assert develop["avg_context_tokens"] == 400.0
+        assert develop["avg_output_tokens"] == 100.0
+        assert develop["avg_cost_usd"] == Decimal("2")
+        assert develop["avg_duration_seconds"] == 30.0
+
+    async def test_a_steps_records_are_summed_per_run_before_averaging(self) -> None:
+        run = _done("developer")
+        await _add(run)
+        await _add(_cost(run, "develop", num_turns=4), _cost(run, "develop", num_turns=6))
+        async with await get_session() as session:
+            (row,) = await reliability_service.get_usage_by_step(session)
+        assert row["runs"] == 1
+        assert row["avg_turns"] == 10.0
+
+    async def test_only_done_runs_within_window(self) -> None:
+        failed = _done("developer")
+        failed.status = "failed"
+        old = _done("developer", started_at=NOW - timedelta(days=60))
+        await _add(failed, old)
+        await _add(_cost(failed), _cost(old))
+        async with await get_session() as session:
+            assert await reliability_service.get_usage_by_step(session, days=30) == []
+
+    async def test_command_phase_rows(self) -> None:
+        one = _done("command:/integrate-pr 7")
+        two = _done("command:/integrate-pr")
+        other = _done("command:/address-pr 9")
+        await _add(one, two, other)
+        one.phase_usage = [
+            {"phase": "ci-wait", "model_calls": 4, "context_tokens": 4000, "duration_ms": 10_000},
+            {"phase": "merge", "model_calls": 2, "context_tokens": 2000, "duration_ms": 2_000},
+        ]
+        two.phase_usage = [{"phase": "ci-wait", "model_calls": 8, "context_tokens": 8000, "duration_ms": 30_000}]
+        other.phase_usage = [{"phase": "fix", "model_calls": 5, "context_tokens": 500, "duration_ms": 1_000}]
+        async with await get_session() as session:
+            session.add_all([one, two, other])
+            await session.commit()
+        await _add(_cost(one, "agent", num_turns=50, output_tokens=999, cost_usd=Decimal("5")))
+
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_step(session)
+
+        assert [(r["kind"], r["command"], r["name"]) for r in rows] == [
+            ("command_phase", "command:address-pr", "fix"),
+            ("command_phase", "command:integrate-pr", "ci-wait"),
+            ("command_phase", "command:integrate-pr", "merge"),
+        ]
+        ci_wait = rows[1]
+        assert ci_wait["runs"] == 2
+        assert ci_wait["avg_model_calls"] == 6.0
+        assert ci_wait["avg_context_tokens"] == 6000.0
+        assert ci_wait["avg_duration_seconds"] == 20.0
+        assert ci_wait["avg_turns"] is None
+        assert ci_wait["avg_output_tokens"] is None
+        assert ci_wait["avg_cost_usd"] is None
+
+    async def test_malformed_phase_usage_is_skipped(self) -> None:
+        bad_shape = _done("command:/integrate-pr")
+        mixed = _done("command:/integrate-pr")
+        await _add(bad_shape, mixed)
+        bad_shape.phase_usage = {"phase": "merge"}
+        mixed.phase_usage = [
+            "merge",
+            {"phase": "merge"},
+            {"phase": "", "model_calls": 1, "context_tokens": 1, "duration_ms": 1},
+            {"phase": "merge", "model_calls": True, "context_tokens": 1, "duration_ms": 1},
+            {"phase": "merge", "model_calls": -1, "context_tokens": 1, "duration_ms": 1},
+            {"phase": "report", "model_calls": 3, "context_tokens": 30, "duration_ms": 3000},
+        ]
+        async with await get_session() as session:
+            session.add_all([bad_shape, mixed])
+            await session.commit()
+        async with await get_session() as session:
+            rows = await reliability_service.get_usage_by_step(session)
+        assert [(r["name"], r["runs"]) for r in rows] == [("report", 1)]
+
+    async def test_role_filter_uses_the_display_role(self) -> None:
+        initial = _done("developer")
+        addressing = _done("developer")
+        command = _done("command:/integrate-pr 1")
+        await _add(initial, addressing, command)
+        await _add(_step(initial, "develop"), _step(addressing, "address_review"))
+        await _add(_cost(initial, "develop"), _cost(addressing, "address_review"), _cost(addressing, "commit"))
+        command.phase_usage = [{"phase": "merge", "model_calls": 1, "context_tokens": 10, "duration_ms": 1000}]
+        async with await get_session() as session:
+            session.add(command)
+            await session.commit()
+
+        async with await get_session() as session:
+            addressed = await reliability_service.get_usage_by_step(session, role="developer:address-review")
+            initial_rows = await reliability_service.get_usage_by_step(session, role="developer:develop")
+            commands = await reliability_service.get_usage_by_step(session, role="command:integrate-pr")
+            nobody = await reliability_service.get_usage_by_step(session, role="nobody")
+            everyone = await reliability_service.get_usage_by_step(session)
+
+        assert [r["name"] for r in addressed] == ["address_review", "commit"]
+        assert [r["name"] for r in initial_rows] == ["develop"]
+        assert [(r["kind"], r["name"]) for r in commands] == [("command_phase", "merge")]
+        assert nobody == []
+        assert len(everyone) == 4
