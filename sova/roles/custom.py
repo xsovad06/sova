@@ -45,7 +45,7 @@ class CustomRole(AgentRole):
         if ctx.has_issue:
             task = await ctx.adapter.get_task(ctx.issue_number)
 
-            if not self.validate_preconditions(task, force=ctx.force):
+            if not self.validate_preconditions(task, force=ctx.force, override_suitability=ctx.override_suitability):
                 return RoleResult(
                     success=False,
                     summary=f"Issue #{ctx.issue_number} not ready for custom role '{self.name}'",

@@ -48,6 +48,16 @@ def _resolve_nickname(name: str, config: RolesConfig | None) -> str:
     return name
 
 
+def resolve_role_nickname(name: str, config: RolesConfig | None) -> str:
+    """The canonical role name for *name*, a configured nickname resolved (the public form of the lookup)."""
+    return _resolve_nickname(name, config)
+
+
+def role_for_state(state: TaskState) -> str | None:
+    """The name of the role that handles an issue in *state*, or None when no role does (e.g. HUMAN_ONLY, DONE)."""
+    return _STATE_TO_ROLE.get(state)
+
+
 def get_role(name: str, *, config: RolesConfig | None = None) -> AgentRole:
     """Get a role instance by name, resolving nicknames if configured.
 

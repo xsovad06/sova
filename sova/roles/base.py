@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from sova.adapters.base import Task, TaskState
-from sova.core.context import ExecutionContext
+from sova.core.context import ExecutionContext, state_accepted
 from sova.core.steps.base import BaseStep
 
 
@@ -64,15 +64,16 @@ class AgentRole(ABC):
     async def assess_task(self, task: Task) -> TaskAssessment:
         """Assess a task's suitability for this role."""
 
-    def validate_preconditions(self, task: Task, force: bool = False) -> bool:
+    def validate_preconditions(self, task: Task, force: bool = False, override_suitability: bool = False) -> bool:
         """Check that the task is in an allowed state for this role.
 
         Returns True if the task can be picked up, False otherwise.
         When force=True, always returns True (bypasses state checks).
+        When override_suitability=True, a human-only task is accepted; every other state is still checked.
         """
-        if force:
-            return True
-        return task.state in self.allowed_input_states
+        return state_accepted(
+            task.state, self.allowed_input_states, force=force, override_suitability=override_suitability
+        )
 
     def get_steps(self) -> list[BaseStep]:
         """Return role-specific step pipeline for the WorkflowEngine.

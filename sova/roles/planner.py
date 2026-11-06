@@ -98,7 +98,7 @@ class PlannerRole(AgentRole):
     allowed_input_states: frozenset[TaskState] = frozenset()
     output_state: TaskState | None = None
 
-    def validate_preconditions(self, task: Task, force: bool = False) -> bool:
+    def validate_preconditions(self, task: Task, force: bool = False, override_suitability: bool = False) -> bool:
         return True
 
     async def assess_task(self, task: Task) -> TaskAssessment:
