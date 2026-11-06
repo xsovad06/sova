@@ -596,6 +596,16 @@ async def get_usage_by_step(session: AsyncSession, days: int = 30, role: str | N
         return []
 
     window_ids = _done_run_ids(cutoff)
+    rows = await _step_usage_rows(session, runs, window_ids)
+    if any(run.role.startswith(_COMMAND_ROLE_PREFIX) for run in runs.values()):
+        rows.extend(await _command_phase_usage_rows(session, runs, window_ids))
+    return rows
+
+
+async def _step_usage_rows(
+    session: AsyncSession, runs: dict[int, _DoneRun], window_ids: ScalarSelect[int]
+) -> list[dict]:
+    """The "step" rows of get_usage_by_step(): CostRecord usage per step, averaged over the runs in `runs`."""
     step_rows = (
         await session.execute(
             select(
@@ -617,59 +627,64 @@ async def get_usage_by_step(session: AsyncSession, days: int = 30, role: str | N
         if row.task_run_id in runs:
             by_step[row.phase].append(row)
 
-    rows = []
-    for name in sorted(by_step):
-        group = by_step[name]
-        rows.append(
-            {
-                "kind": _KIND_STEP,
-                "command": None,
-                "name": name,
-                "runs": len(group),
-                "avg_turns": _mean(r.turns for r in group if r.turns is not None),
-                "avg_model_calls": None,
-                "avg_context_tokens": _mean(((r.input or 0) + (r.cache or 0) for r in group), 0),
-                "avg_output_tokens": _mean((r.output or 0 for r in group), 0),
-                "avg_cost_usd": round(sum((Decimal(str(r.cost or 0)) for r in group), Decimal("0")) / len(group), 4),
-                "avg_duration_seconds": _mean(((r.duration_ms or 0) / 1000 for r in group)),
-            }
-        )
+    return [
+        {
+            "kind": _KIND_STEP,
+            "command": None,
+            "name": name,
+            "runs": len(group),
+            "avg_turns": _mean(r.turns for r in group if r.turns is not None),
+            "avg_model_calls": None,
+            "avg_context_tokens": _mean(((r.input or 0) + (r.cache or 0) for r in group), 0),
+            "avg_output_tokens": _mean((r.output or 0 for r in group), 0),
+            "avg_cost_usd": round(sum((Decimal(str(r.cost or 0)) for r in group), Decimal("0")) / len(group), 4),
+            "avg_duration_seconds": _mean(((r.duration_ms or 0) / 1000 for r in group)),
+        }
+        for name, group in sorted(by_step.items())
+    ]
 
-    if any(run.role.startswith(_COMMAND_ROLE_PREFIX) for run in runs.values()):
-        usage_rows = (
-            await session.execute(
-                select(TaskRun.id, TaskRun.phase_usage).where(
-                    TaskRun.id.in_(window_ids), TaskRun.phase_usage.is_not(None)
-                )
-            )
-        ).all()
-        # Per (command, phase), one summed (model_calls, context_tokens, duration_ms) per run.
-        by_phase: defaultdict[tuple[str, str], list[list[int]]] = defaultdict(list)
-        for run_id, phase_usage in usage_rows:
-            run = runs.get(run_id)
-            if run is None or not run.role.startswith(_COMMAND_ROLE_PREFIX):
-                continue
-            per_run: dict[str, list[int]] = {}
-            for phase, model_calls, context_tokens, duration_ms in _phase_usage_entries(phase_usage):
-                totals = per_run.setdefault(phase, [0, 0, 0])
-                totals[0] += model_calls
-                totals[1] += context_tokens
-                totals[2] += duration_ms
-            for phase, totals in per_run.items():
-                by_phase[(run.role, phase)].append(totals)
-        for (command, phase), group in sorted(by_phase.items()):
-            rows.append(
-                {
-                    "kind": _KIND_COMMAND_PHASE,
-                    "command": command,
-                    "name": phase,
-                    "runs": len(group),
-                    "avg_turns": None,
-                    "avg_model_calls": _mean(g[0] for g in group),
-                    "avg_context_tokens": _mean((g[1] for g in group), 0),
-                    "avg_output_tokens": None,
-                    "avg_cost_usd": None,
-                    "avg_duration_seconds": _mean(g[2] / 1000 for g in group),
-                }
-            )
-    return rows
+
+def _phase_totals(phase_usage: object) -> dict[str, list[int]]:
+    """One run's phase_usage summed per phase into [model_calls, context_tokens, duration_ms]."""
+    per_run: dict[str, list[int]] = {}
+    for phase, model_calls, context_tokens, duration_ms in _phase_usage_entries(phase_usage):
+        totals = per_run.setdefault(phase, [0, 0, 0])
+        totals[0] += model_calls
+        totals[1] += context_tokens
+        totals[2] += duration_ms
+    return per_run
+
+
+async def _command_phase_usage_rows(
+    session: AsyncSession, runs: dict[int, _DoneRun], window_ids: ScalarSelect[int]
+) -> list[dict]:
+    """The "command_phase" rows of get_usage_by_step(): phase_usage per (command, phase) over command:* runs."""
+    usage_rows = (
+        await session.execute(
+            select(TaskRun.id, TaskRun.phase_usage).where(TaskRun.id.in_(window_ids), TaskRun.phase_usage.is_not(None))
+        )
+    ).all()
+    # Per (command, phase), one summed (model_calls, context_tokens, duration_ms) per run.
+    by_phase: defaultdict[tuple[str, str], list[list[int]]] = defaultdict(list)
+    for run_id, phase_usage in usage_rows:
+        run = runs.get(run_id)
+        if run is None or not run.role.startswith(_COMMAND_ROLE_PREFIX):
+            continue
+        for phase, totals in _phase_totals(phase_usage).items():
+            by_phase[(run.role, phase)].append(totals)
+
+    return [
+        {
+            "kind": _KIND_COMMAND_PHASE,
+            "command": command,
+            "name": phase,
+            "runs": len(group),
+            "avg_turns": None,
+            "avg_model_calls": _mean(g[0] for g in group),
+            "avg_context_tokens": _mean((g[1] for g in group), 0),
+            "avg_output_tokens": None,
+            "avg_cost_usd": None,
+            "avg_duration_seconds": _mean(g[2] / 1000 for g in group),
+        }
+        for (command, phase), group in sorted(by_phase.items())
+    ]
