@@ -1026,7 +1026,9 @@ class WorkflowEngine:
                 if self._ctx.pr_number:
                     task_run.pr_number = self._ctx.pr_number
                 if self._ctx.confidence_score is not None:
+                    # Merged: the launch records its suitability check in the same column.
                     task_run.assessment_json = {
+                        **(task_run.assessment_json or {}),
                         "confidence_score": self._ctx.confidence_score,
                         "confidence_details": self._ctx.confidence_details,
                     }
