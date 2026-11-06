@@ -13,6 +13,7 @@ sova install /path/to/project       # Install SOVA into a project
 sova setup /path/to/project         # Run setup wizard
 sova uninstall /path/to/project     # Remove SOVA from a project
 sova run 42                         # Work on issue #42
+sova run 42 --override-suitability  # Work on an epic or human-only issue anyway
 sova triage 42                      # Triage a single issue
 sova briefing                       # Show awareness briefing
 sova dashboard --project /path      # Start web UI at http://localhost:8111
