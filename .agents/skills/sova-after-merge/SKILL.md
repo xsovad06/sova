@@ -48,11 +48,21 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
    ```bash
    sova linked-issues <PR_NUMBER> --apply
    ```
-   Each issue a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms) moves to `integration.post_merge_state` ("done" closes it). Each `Part of #N` issue stays open and gets one comment listing its unchecked acceptance criteria. A bare `#N` is left alone. Never close an issue by hand instead: a `Part of` issue must stay open. A non-zero exit means an issue was not updated, so report its output. On a Jira project, move the ticket the PR title names through its workflow instead.
+   Each issue a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms) moves to `integration.post_merge_state` ("done" closes it). Each `Part of #N` issue stays open, gets one comment listing its unchecked acceptance criteria, and loses the workflow labels `agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block` it carries, unless another open PR still links the issue (those labels then stay, and the output says so), so a half-finished issue no longer reads as awaiting review. A bare `#N` is left alone. Never close an issue by hand instead: a `Part of` issue must stay open. A non-zero exit means an issue was not updated (a failed comment or label removal included), so name each such issue from the output in the final report and carry on. On a Jira project, move the ticket the PR title names through its workflow instead.
 
-   Then, for each issue the command printed, remove the workflow labels that no longer apply after the merge:
+   Then, for each issue the command moved (a closing reference, not a `Part of` or bare one), remove the workflow labels that no longer apply after the merge. Only the labels the issue carries are passed, since `gh` errors on a label the repository never created (for example `sova:block`); name any failure in the final report instead of discarding it:
    ```bash
-   gh issue edit <ISSUE_NUMBER> --remove-label "agent:in-review" --remove-label "agent:in-progress" --remove-label "sova:revise" --remove-label "sova:block" 2>/dev/null || true
+   if ! LABELS=$(gh issue view <ISSUE_NUMBER> --json labels --jq '.labels[].name'); then
+     echo "FAILED: could not read the labels of #<ISSUE_NUMBER>" >&2
+   else
+     ARGS=()
+     for label in agent:in-review agent:in-progress sova:revise sova:block; do
+       if printf '%s\n' "$LABELS" | grep -qxF "$label"; then ARGS+=(--remove-label "$label"); fi
+     done
+     if [ "${#ARGS[@]}" -gt 0 ] && ! gh issue edit <ISSUE_NUMBER> "${ARGS[@]}"; then
+       echo "FAILED: could not remove the workflow labels of #<ISSUE_NUMBER>" >&2
+     fi
+   fi
    ```
 
 6. **Capture learnings** from the PR review (run the `sova-ingest-review` skill):
