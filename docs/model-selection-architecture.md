@@ -22,6 +22,32 @@ Model routing is config-driven via three mechanisms: task-type-specific override
 
 **Alias resolution is backend-aware, not just provider-aware (#1033).** `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` silently redirect the CLI to a deployment that rejects a bare tier name and needs a fully-qualified, dialect-specific ID. `sova/llm/backends.py` adds `detect_backend()`, `backend_can_serve()`, and `tier_candidates_for()`; `sova/llm/client.py:resolve_alias()` is the one choke point `select_model()`, `create_provider()`, and `llm_suggestion_service.py` all share, falling through to a servable candidate when the resolved one is unservable for the backend detected from the spawned CLI child's actual (scrubbed) environment. `llm.resolve_tier_aliases=false` restores byte-identical passthrough. See section 2.7 below for the full design.
 
+**Configured model diagnostics (#923).** `sova doctor` and the dashboard health panel warn when a configured
+model ID is absent from a discovered catalog. The fields come from `configured_model_fields()`
+(`sova/utils/diagnostics.py`), the same enumeration the openai-only check filters. Fields `llm.provider` serves
+(`llm.*`, routing and alias targets, role models, `agent.model`/`agent.fallback_models`, oversight, confidence,
+review-panel dimension models) are resolved through `resolve_alias()` and then the provider's own `normalize_model_name()` (so a bare tier such
+as `sonnet` behind an alias, or with `llm.resolve_tier_aliases = false`, is checked as the ID the provider sends) and
+compared with the provider's catalog;
+`conflict_resolution.models` is left out, since rebase consensus builds its own provider per entry. Runtime pins
+(`roles.developer_runtime_model`, and `codex.model` when Codex is selected) are compared verbatim with the layer-1
+catalog, as `resolve_runtime_model_pin()` hands them to the runtime unresolved, but only when a runtime exposes an
+independent catalog. No current runtime does: Claude Code declares a curated list, Codex echoes `codex.model`, and
+Aider does not override `_probe_models()`, so its models service answer is `reachable` with no model list. Runtime
+pins are therefore always listed under "not checked" today (a typo there surfaces only when the run fails); the
+comparison path exists for a future runtime that enumerates its own models. Provider discovery reuses the
+enumeration cache and capability timeout; runtime discovery reuses the project-scoped models service cache and
+timeout. Claude Code provider probes are disabled because they run billable turns. A field no catalog can settle
+(curated answer, unavailable or empty catalog, missing backend or Vertex publisher, Claude Code's curated runtime
+dialect, Codex's echo of its configured model) gets no row of its own: all of them are listed in one informational
+"configured models" row, so a provider that cannot enumerate never produces a warning. A Vertex `@`-pinned snapshot
+matches its publisher catalog entry by model name, and an undated Anthropic API ID such as `claude-sonnet-4-5`
+matches a catalog entry that adds an 8-digit date suffix (the floating `-0` and `-latest` aliases, such as
+`claude-sonnet-4-0`, match the same way after dropping that suffix). An `llm.model_aliases` row checks its target
+without a second alias hop, since `resolve_alias()` is a single hop, and `roles.reviewer_model` is checked as the ID
+`ReviewerRole` sends (the shared `resolve_bare_tier_for_provider()` rule: a bare tier on a non-Claude provider falls
+back to `llm.model`). Discovery errors are isolated per layer and never expose their exception text. Configuration loading remains offline and performs no discovery.
+
 ## 1. Executive summary
 
 SOVA's model selection is not one broken thing; it is four disconnected mechanisms plus one
@@ -456,7 +482,7 @@ A dropdown fed only by 2.9 would therefore offer models the active runtime canno
   `get_runtime()`/`get_provider()` currently point at (both kept in sync with config by
   `reload_runtime()`/`reload_provider()`, so no credential or config argument is threaded
   through). Each layer is probed under its own `try`/`except` and its own
-  `_CAPABILITY_PROBE_TIMEOUT` (45s, the same figure as `models_service`'s
+  `CAPABILITY_PROBE_TIMEOUT` (45s, the same figure as `models_service`'s
   `_ENUMERATION_TIMEOUT_SECONDS`, duplicated rather than imported because `sova.llm` must not
   depend on `sova.dashboard`), so a provider that raises on a misconfigured deployment, or a CLI
   probe that hangs, degrades that one layer while the other still reports its real catalog.
