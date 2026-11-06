@@ -20,7 +20,7 @@ from sova.dashboard.services.merge_queue_monitor import (
 )
 from sova.db.models import MergeQueueEntry
 from sova.db.session import close_db, get_session, init_db
-from sova.git.merge import MergeQueueStatus
+from sova.git.merge import MergeQueueStatus, _PartOfResult
 from sova.utils.shell import ShellResult
 
 
@@ -1013,7 +1013,7 @@ class TestTransitionIssueState:
             patch.object(GitHubAdapter, "_gh", new_callable=AsyncMock) as mock_gh,
             patch("sova.git.merge.run", new=self._pr_body(pr_body)),
             patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
-            patch("sova.git.merge._comment_part_of", new_callable=AsyncMock, return_value=True),
+            patch("sova.git.merge._update_part_of_issue", new_callable=AsyncMock, return_value=_PartOfResult.STRIPPED),
         ):
             cfg = MagicMock()
             cfg.task_source.type = "github"
@@ -1054,7 +1054,7 @@ class TestTransitionIssueState:
         handle.assert_awaited_once()
         assert handle.await_args.args == (42,)
         single.assert_not_awaited()
-        assert actions == ["issue #10 left open (Part of), criteria comment in place"]
+        assert actions == ["issue #10 left open (Part of), criteria comment in place, workflow labels cleared"]
 
     @pytest.mark.asyncio
     async def test_github_unreadable_body_is_reported(self, project_dir: Path) -> None:

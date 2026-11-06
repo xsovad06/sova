@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import TaskState
@@ -469,20 +470,54 @@ _PART_OF_MARKER = "<!-- sova-part-of: pr={pr} -->"
 # An unindented, unchecked task-list item, the same top-level rule
 # sova/core/steps/_pr_body.py:extract_acceptance_criteria() applies to a criterion.
 _UNCHECKED_ITEM_RE = re.compile(r"^[-*+][ \t]+\[ \][ \t]*(\S.*)$")
+# The labels that say a PR is still being worked on or reviewed. A merged "Part of" PR is neither, so they come
+# off its issue; every other label (agent:ready, priority:, area:) stays.
+_PART_OF_STRIP_LABELS = frozenset({"agent:in-review", "agent:in-progress", "sova:revise", "sova:block"})
+
+
+# Open PRs read when checking whether another PR still works on an issue; a repo with more is read in part.
+_OPEN_PR_LIMIT = 200
+
+
+class _PartOfResult(Enum):
+    """How one "Part of" issue came out: labels removed, none to remove, kept for another open PR, or failed."""
+
+    STRIPPED = "stripped"
+    NO_LABELS = "no_labels"
+    KEPT = "kept"
+    FAILED = "failed"
 
 
 @dataclass
 class MergedIssues:
-    """What :func:`handle_merged_pr_issues` did to each issue a merged PR body links."""
+    """What :func:`handle_merged_pr_issues` did to each issue a merged PR body links.
+
+    ``commented``, ``unlabeled`` and ``kept`` are all "Part of" issues with their criteria comment in place;
+    they differ in what happened to the workflow labels (removed, none present, left for another open PR).
+    """
 
     transitioned: list[str] = field(default_factory=list)
     commented: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    unlabeled: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
 
     def describe(self, post_merge_state: str) -> list[str]:
         return (
             [f"issue #{n} moved to {post_merge_state}" for n in self.transitioned]
-            + [f"issue #{n} left open (Part of), criteria comment in place" for n in self.commented]
+            + [
+                f"issue #{n} left open (Part of), criteria comment in place, workflow labels cleared"
+                for n in self.commented
+            ]
+            + [
+                f"issue #{n} left open (Part of), criteria comment in place, no workflow labels to remove"
+                for n in self.unlabeled
+            ]
+            + [
+                f"issue #{n} left open (Part of), criteria comment in place, "
+                "workflow labels kept (another open PR still links it)"
+                for n in self.kept
+            ]
             + [f"issue #{n} not updated (see log)" for n in self.failed]
         )
 
@@ -504,27 +539,111 @@ def _render_part_of_comment(pr_number: int, issue_body: str) -> str:
     return "\n".join(lines)
 
 
-async def _comment_part_of(issue: str, pr_number: int, *, repo: str, env: dict[str, str] | None) -> bool:
-    """Post the "Part of" comment on *issue* unless it already carries one. True once it does."""
-    view = await run("gh", "issue", "view", issue, "--repo", repo, "--json", "body,comments", env=env)
+class _OpenPrLinks:
+    """The issues the open PRs link, read from GitHub at most once per :func:`handle_merged_pr_issues` call.
+
+    A merged body can name several "Part of" issues, and each one asks the same question, so the open-PR list is
+    fetched the first time it is needed and the parsed links are reused. A failed or unparseable read is kept too,
+    so a broken listing is not retried once per issue.
+    """
+
+    def __init__(self, *, repo: str, env: dict[str, str] | None) -> None:
+        self._repo = repo
+        self._env = env
+        self._loaded = False
+        self._prs: list[tuple[int | None, IssueLinks]] | None = None
+        self._truncated = False
+
+    async def _load(self, pr_number: int) -> None:
+        self._loaded = True
+        listed = await run(
+            "gh", "pr", "list", "--repo", self._repo, "--state", "open", "--limit", str(_OPEN_PR_LIMIT),
+            "--json", "number,body", env=self._env,
+        )  # fmt: skip
+        if not listed.success:
+            log.warning("git.merge.open_prs_unreadable", pr=pr_number, stderr=listed.stderr[:200])
+            return
+        try:
+            open_prs = json.loads(listed.stdout)
+            self._prs = [(other.get("number"), parse_issue_links(other.get("body") or "")) for other in open_prs]
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            log.warning("git.merge.open_prs_unparseable", pr=pr_number)
+            return
+        self._truncated = len(open_prs) >= _OPEN_PR_LIMIT
+        if self._truncated:
+            log.warning("git.merge.open_prs_truncated", pr=pr_number, limit=_OPEN_PR_LIMIT)
+
+    async def another_links(self, issue: str, pr_number: int) -> bool | None:
+        """True when an open PR other than *pr_number* closes or is part of *issue*; None when that cannot be told.
+
+        A listing cut off at ``_OPEN_PR_LIMIT`` that shows no such PR is "cannot be told", not "none": the PRs it
+        left out are the older ones, which are the likeliest to still link a long-running issue.
+        """
+        if not self._loaded:
+            await self._load(pr_number)
+        if self._prs is None:
+            return None
+        for number, links in self._prs:
+            if number != pr_number and (issue in links.closes or issue in links.part_of):
+                return True
+        if self._truncated:
+            log.warning("git.merge.open_prs_truncated_no_match", issue=issue, pr=pr_number, limit=_OPEN_PR_LIMIT)
+            return None
+        return False
+
+
+async def _strip_workflow_labels(
+    issue: str, present: set[str], pr_number: int, *, repo: str, env: dict[str, str] | None, open_prs: _OpenPrLinks
+) -> _PartOfResult:
+    """Remove the workflow labels of *_PART_OF_STRIP_LABELS* that *issue* carries.
+
+    The labels stay when another open PR still closes or is part of the issue: they describe that PR's review
+    too, and nothing re-applies them until a further PR opens.
+    """
+    to_remove = sorted(present & _PART_OF_STRIP_LABELS)
+    if not to_remove:
+        return _PartOfResult.NO_LABELS
+    other_open = await open_prs.another_links(issue, pr_number)
+    if other_open is None:
+        return _PartOfResult.FAILED
+    if other_open:
+        log.info("git.merge.part_of_label_strip_skipped", issue=issue, pr=pr_number, reason="another_open_pr")
+        return _PartOfResult.KEPT
+    args = [flag for label in to_remove for flag in ("--remove-label", label)]
+    edited = await run("gh", "issue", "edit", issue, "--repo", repo, *args, env=env)
+    if not edited.success:
+        log.warning("git.merge.part_of_label_strip_failed", issue=issue, pr=pr_number, stderr=edited.stderr[:200])
+        return _PartOfResult.FAILED
+    return _PartOfResult.STRIPPED
+
+
+async def _update_part_of_issue(
+    issue: str, pr_number: int, *, repo: str, env: dict[str, str] | None, open_prs: _OpenPrLinks
+) -> _PartOfResult:
+    """Leave the "Part of" comment on *issue* unless it carries one, and strip its workflow labels.
+
+    FAILED when either step failed, so a comment that posted next to a failed label edit still reads as a failure.
+    """
+    view = await run("gh", "issue", "view", issue, "--repo", repo, "--json", "body,comments,labels", env=env)
     if not view.success:
         log.warning("git.merge.part_of_issue_unreadable", issue=issue, pr=pr_number, stderr=view.stderr[:200])
-        return False
+        return _PartOfResult.FAILED
     marker = _PART_OF_MARKER.format(pr=pr_number)
     try:
         data = json.loads(view.stdout)
         issue_body = data.get("body") or ""
         already_posted = any(marker in (comment.get("body") or "") for comment in data.get("comments") or [])
+        labels = {str(label.get("name")) for label in data.get("labels") or []}
     except (json.JSONDecodeError, AttributeError):
         log.warning("git.merge.part_of_issue_unparseable", issue=issue, pr=pr_number)
-        return False
-    if already_posted:
-        return True
-    comment = _render_part_of_comment(pr_number, issue_body)
-    posted = await run("gh", "issue", "comment", issue, "--repo", repo, "--body", comment, env=env)
-    if not posted.success:
-        log.warning("git.merge.part_of_comment_failed", issue=issue, pr=pr_number, stderr=posted.stderr[:200])
-    return posted.success
+        return _PartOfResult.FAILED
+    if not already_posted:
+        comment = _render_part_of_comment(pr_number, issue_body)
+        posted = await run("gh", "issue", "comment", issue, "--repo", repo, "--body", comment, env=env)
+        if not posted.success:
+            log.warning("git.merge.part_of_comment_failed", issue=issue, pr=pr_number, stderr=posted.stderr[:200])
+            return _PartOfResult.FAILED
+    return await _strip_workflow_labels(issue, labels, pr_number, repo=repo, env=env, open_prs=open_prs)
 
 
 async def read_issue_links(pr_number: int, *, repo: str, env: dict[str, str] | None) -> IssueLinks | None:
@@ -553,9 +672,10 @@ async def handle_merged_pr_issues(
 
     The merged PR's body decides, through :func:`parse_issue_links`: an issue a closing keyword
     names moves to *post_merge_state*; a ``Part of #N`` issue stays open with one comment naming
-    the PR and listing the acceptance criteria still unchecked in its body; a bare ``#N`` is left
-    alone. Which issue the caller associates with the PR plays no part, since a PR only "part
-    of" that issue must not close it (#1340). Returns None when the PR body cannot be read, so
+    the PR and listing the acceptance criteria still unchecked in its body, and loses the
+    workflow labels of ``_PART_OF_STRIP_LABELS`` it carries unless another open PR still links it; a
+    bare ``#N`` is left alone. Which issue the caller associates with the PR plays no part, since a PR
+    only "part of" that issue must not close it (#1340). Returns None when the PR body cannot be read, so
     "could not tell" never reads as "nothing linked".
     """
     env = await resolve_gh_env(github_user)
@@ -572,18 +692,27 @@ async def handle_merged_pr_issues(
             log.warning("git.merge.post_merge_state_failed", issue=issue, pr=pr_number, exc_info=True)
             moved = False
         (outcome.transitioned if moved else outcome.failed).append(issue)
+    open_prs = _OpenPrLinks(repo=repo, env=env)
     for issue in links.part_of:
         try:
-            commented = await _comment_part_of(issue, pr_number, repo=repo, env=env)
+            result = await _update_part_of_issue(issue, pr_number, repo=repo, env=env, open_prs=open_prs)
         except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
-            log.warning("git.merge.part_of_comment_raised", issue=issue, pr=pr_number, exc_info=True)
-            commented = False
-        (outcome.commented if commented else outcome.failed).append(issue)
+            log.warning("git.merge.part_of_update_raised", issue=issue, pr=pr_number, exc_info=True)
+            result = _PartOfResult.FAILED
+        bucket = {
+            _PartOfResult.STRIPPED: outcome.commented,
+            _PartOfResult.NO_LABELS: outcome.unlabeled,
+            _PartOfResult.KEPT: outcome.kept,
+            _PartOfResult.FAILED: outcome.failed,
+        }[result]
+        bucket.append(issue)
     log.info(
         "git.merge.merged_pr_issues_handled",
         pr=pr_number,
         transitioned=outcome.transitioned,
         commented=outcome.commented,
+        unlabeled=outcome.unlabeled,
+        kept=outcome.kept,
         failed=outcome.failed,
     )
     return outcome
