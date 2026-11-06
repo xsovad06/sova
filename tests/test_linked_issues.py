@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 from sova.adapters.base import TaskState
 from sova.cli.app import app
 from sova.git.merge import MergedIssues, OpenedPrIssues
-from sova.utils.gh import IssueLinks, parse_issue_links
+from sova.utils.gh import IssueLinks, parse_issue_links, parse_not_done_items
 from sova.utils.shell import ShellResult
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -93,6 +93,85 @@ class TestParseIssueLinks:
         open") or put the phrase in a code span. This pins the limitation the docstring states.
         """
         assert parse_issue_links(body) == IssueLinks(closes=closes, part_of=())
+
+
+class TestParseNotDoneItems:
+    def test_lists_the_writer_output_verbatim(self) -> None:
+        body = (
+            "## Summary\nwork\n\n## Issue\n\nPart of #42\n\nNot done in this PR:\n"
+            "- rollout (requires owner/manual action)\n- `check` closes #9 (unverified)\n"
+        )
+        assert parse_not_done_items(body) == (
+            "rollout (requires owner/manual action)",
+            "`check` closes #9 (unverified)",
+        )
+
+    def test_finds_the_list_after_the_unparseable_note(self) -> None:
+        body = "## Issue\nPart of #42\n\nThe verdict could not be parsed.\n\nNot done in this PR:\n- a (unverified)"
+        assert parse_not_done_items(body) == ("a (unverified)",)
+
+    def test_normalizes_marker_and_trailing_whitespace_only(self) -> None:
+        body = "## Issue\nPart of #42\n\nNot done in this PR:\n* first   \n+ second  x\n"
+        assert parse_not_done_items(body) == ("first", "second  x")
+
+    def test_round_trips_render_closing_block(self) -> None:
+        from sova.core.steps._pr_body import render_closing_block
+
+        verdicts = [("done", "met"), ("rollout", "owner"), ("check", "unknown"), ("x", "unmet")]
+        block = render_closing_block("42", verdicts)
+        assert parse_not_done_items(f"## Summary\nwork\n\n## Issue\n\n{block}\n") == (
+            "rollout (requires owner/manual action)",
+            "check (unverified)",
+            "x",
+        )
+
+    def test_skips_blank_lines_before_the_first_bullet(self) -> None:
+        body = "## Issue\nPart of #42\n\nNot done in this PR:\n\n- a\n- b\n"
+        assert parse_not_done_items(body) == ("a", "b")
+
+    def test_stops_at_the_first_non_bullet_line(self) -> None:
+        body = "## Issue\nPart of #42\n\nNot done in this PR:\n- a\n- b\n\n- c after a blank\nprose\n"
+        assert parse_not_done_items(body) == ("a", "b")
+
+    def test_keeps_wrapped_lines_and_sub_bullets_with_their_item(self) -> None:
+        body = (
+            "## Issue\nPart of #42\n\nNot done in this PR:\n- first item that\n  wraps\n"
+            "- second\n  - nested sub-bullet\n\t- tab-indented\n- third\nprose\n"
+        )
+        assert parse_not_done_items(body) == (
+            "first item that\n  wraps",
+            "second\n  - nested sub-bullet\n\t- tab-indented",
+            "third",
+        )
+
+    def test_stops_at_a_heading_outside_the_item_and_keeps_one_nested_in_it(self) -> None:
+        stops = "## Issue\nPart of #42\n\nNot done in this PR:\n- rollout\n ## References\n- architecture diagram\n"
+        assert parse_not_done_items(stops) == ("rollout",)
+        nested = "## Issue\nPart of #42\n\nNot done in this PR:\n- rollout\n  ### Detail\n- next\n"
+        assert parse_not_done_items(nested) == ("rollout\n  ### Detail", "next")
+
+    def test_does_not_attach_an_indented_line_before_the_first_bullet(self) -> None:
+        body = "## Issue\nPart of #42\n\nNot done in this PR:\n  indented prose\n- a\n"
+        assert parse_not_done_items(body) is None
+
+    def test_skips_an_empty_label_for_a_later_list(self) -> None:
+        body = "## Issue\nPart of #42\n\nNot done in this PR:\n\nprose\n\nNot done in this PR:\n- a\n- b\n"
+        assert parse_not_done_items(body) == ("a", "b")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "## Issue\nPart of #42\n\nNot done in this PR:\n\nprose",
+            "## Issue\nPart of #42\n\nNot done in this PR:",
+            "## Issue\nPart of #42\n",
+            "Part of #42\n\nNot done in this PR:\n- a",
+            "## Summary\nNot done in this PR:\n- a\n\n## Issue\nPart of #42\n",
+            "## Issue\nPart of #42\n\n```text\nNot done in this PR:\n- a\n```\n",
+            "",
+        ],
+    )
+    def test_returns_none_when_there_is_no_usable_list(self, body: str) -> None:
+        assert parse_not_done_items(body) is None
 
 
 def _invoke(*args: str) -> object:

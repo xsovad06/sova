@@ -552,6 +552,25 @@ class TestRenderPartOfComment:
         assert "stays open" in comment
         assert "no unchecked acceptance criteria" in comment
 
+    def test_lists_the_pr_not_done_items_instead_of_the_issue_boxes(self) -> None:
+        comment = _render_part_of_comment(
+            884, _ISSUE_BODY, ("host check (unverified)", "rollout (requires owner/manual action)")
+        )
+        assert "Not done in this PR:\n- host check (unverified)\n- rollout (requires owner/manual action)" in comment
+        assert "Acceptance criteria still unchecked" not in comment
+        assert "Host check passes" not in comment
+
+    def test_keeps_a_wrapped_pr_item_and_its_sub_bullet_nested(self) -> None:
+        from sova.utils.gh import parse_not_done_items
+
+        body = "## Issue\nPart of #884\n\nNot done in this PR:\n- host check\n  on staging\n  - sub step\n- rollout\n"
+        comment = _render_part_of_comment(884, _ISSUE_BODY, parse_not_done_items(body))
+        assert "Not done in this PR:\n- host check\n  on staging\n  - sub step\n- rollout" in comment
+
+    def test_empty_not_done_falls_back_to_the_issue_boxes(self) -> None:
+        comment = _render_part_of_comment(884, _ISSUE_BODY, ())
+        assert "- Rolled out on the host (owner)\n- Host check passes" in comment
+
 
 _FakeRun = Callable[..., Awaitable[ShellResult]]
 
@@ -616,6 +635,27 @@ class TestHandleMergedPrIssues:
         comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
         assert comment[3] == "779"
         assert "<!-- sova-part-of: pr=884 -->" in comment[comment.index("--body") + 1]
+
+    async def test_part_of_comment_lists_the_pr_body_items_and_reads_the_body_once(self) -> None:
+        fake_run, calls = _fake_gh(
+            "## Issue\nPart of #779\n\nNot done in this PR:\n- host checks (unverified)\n"
+            "- rollout (requires owner/manual action)",
+            issues={"779": {"body": _ISSUE_BODY, "comments": []}},
+        )
+        await _handle(fake_run)
+
+        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
+        body = comment[comment.index("--body") + 1]
+        assert "- host checks (unverified)\n- rollout (requires owner/manual action)" in body
+        assert "Host check passes" not in body
+        assert len([c for c in calls if c[1:3] == ("pr", "view")]) == 1
+
+    async def test_part_of_comment_falls_back_without_a_pr_list(self) -> None:
+        fake_run, calls = _fake_gh("## Issue\nPart of #779", issues={"779": {"body": _ISSUE_BODY, "comments": []}})
+        await _handle(fake_run)
+
+        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
+        assert "- Rolled out on the host (owner)\n- Host check passes" in comment[comment.index("--body") + 1]
 
     async def test_closing_keyword_closes_the_issue(self) -> None:
         fake_run, calls = _fake_gh("## Issue\nCloses #1340")

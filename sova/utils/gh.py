@@ -371,6 +371,51 @@ def parse_issue_links(body: str) -> IssueLinks:
     return IssueLinks(closes=closes, part_of=part_of)
 
 
+# The label render_closing_block() (sova/core/steps/_pr_body.py) writes above the unmet criteria, shared so
+# the writer and parse_not_done_items() cannot drift apart.
+NOT_DONE_LABEL = "Not done in this PR:"
+_NOT_DONE_ITEM_RE = re.compile(r"^[-*+][ \t]+(\S.*)$")
+# An ATX heading indented less than a bullet's content (two columns) is not part of the bullet: Markdown
+# ends the list there, so parse_not_done_items() must too. A heading indented to the content is nested.
+_SHALLOW_HEADING_RE = re.compile(r"^ {0,1}#{1,6}(?:[ \t]|$)")
+
+
+def parse_not_done_items(body: str) -> tuple[str, ...] | None:
+    """Read the bullets under ``Not done in this PR:`` in a PR *body*'s ``## Issue`` section.
+
+    Returns the bullet texts verbatim (``(unverified)`` and ``(requires owner/manual action)`` suffixes,
+    inline code and ``#N`` text included), with only the list marker and trailing whitespace normalized.
+    Blank lines between the label and the first bullet are skipped. An indented line after a bullet (a
+    wrapped line or a nested sub-bullet) belongs to that bullet and is kept on its own line with its
+    indentation, so re-rendering the item under a ``- `` marker keeps the nesting. Any other non-bullet
+    line ends the list, including a heading indented less than the bullet's content (a heading indented
+    to the content is nested in the bullet and kept). A label with nothing listed under it is skipped in
+    favor of a later one. None when
+    the body has no ``## Issue`` section, the section has no label (or only inside a fenced block), or no
+    label has anything listed under it: an empty list would claim nothing is left, which the body does not
+    establish, so the caller falls back.
+    """
+    lines = extract_section(mask_fenced_blocks(body), "Issue").splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != NOT_DONE_LABEL:
+            continue
+        items: list[str] = []
+        for candidate in lines[index + 1 :]:
+            if not items and not candidate.strip():
+                continue  # a hand-written /pr body may leave a blank line under the label
+            line_text = candidate.rstrip()
+            match = _NOT_DONE_ITEM_RE.match(line_text)
+            if match:
+                items.append(match.group(1))
+            elif items and line_text and line_text[0] in " \t" and not _SHALLOW_HEADING_RE.match(line_text):
+                items[-1] += f"\n{line_text}"  # a wrapped line or nested sub-bullet of the previous item
+            else:
+                break
+        if items:
+            return tuple(items)
+    return None
+
+
 async def resolve_linked_issue(
     pr_number: int,
     *,

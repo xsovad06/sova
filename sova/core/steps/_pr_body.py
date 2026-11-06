@@ -15,7 +15,7 @@ import re
 from typing import TYPE_CHECKING
 
 from sova.utils.formatting import truncate
-from sova.utils.gh import CLOSES_RE, CLOSING_KEYWORDS, CLOSING_SEPARATOR, INLINE_CODE_RE
+from sova.utils.gh import CLOSES_RE, CLOSING_KEYWORDS, CLOSING_SEPARATOR, INLINE_CODE_RE, NOT_DONE_LABEL
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section, mask_fenced_blocks, strip_preamble, upsert_section
 
@@ -500,7 +500,7 @@ def render_closing_block(issue_number: str, verdicts: list[tuple[str, str]] | No
     lines = [f"Part of #{issue_number}", ""]
     if any(verdict == "unknown" for _, verdict in unmet):
         lines.extend([_UNPARSEABLE_NOTE, ""])
-    lines.append("Not done in this PR:")
+    lines.append(NOT_DONE_LABEL)
     for text, verdict in unmet:
         if verdict == "owner":
             suffix = " (requires owner/manual action)"
