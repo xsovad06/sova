@@ -52,10 +52,11 @@ function runCommandWithMergeBlockers(command, args, blockers) {
   runCommand(command, args);
 }
 
-async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride, llmModelOverride, dismissRunId) {
+async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride, llmModelOverride, dismissRunId, overrideSuitability) {
   if (!force && blockedByConnectivity('starting an agent')) return;
   try {
     var payload = { issue: String(issue), role: role, force: force, budget_override: budgetOverride || false };
+    if (overrideSuitability) payload.override_suitability = true;
     if (prNumber) payload.pr_number = prNumber;
     if (model) payload.model = model;
     if (llmModelOverride) payload.llm_model_override = llmModelOverride;
@@ -76,7 +77,21 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
           { title: 'Budget Exceeded', confirmText: 'Override', confirmClass: 'danger' }
         );
         if (confirmed) {
-          await _doStartAgent(issue, role, force, prNumber, model, true, llmModelOverride, dismissRunId);
+          await _doStartAgent(issue, role, force, prNumber, model, true, llmModelOverride, dismissRunId, overrideSuitability);
+        }
+        return;
+      }
+      if (res.status === 409 && detail && detail.code === 'suitability_blocked') {
+        // The retry resends this exact request plus the override, so role, model and PR are kept.
+        var humanNote = detail.mode === 'human'
+          ? ' The agent:human-only label is replaced once the run moves the issue on.'
+          : '';
+        var launchAnyway = await sovaConfirm(
+          detail.message + humanNote + ' Launch anyway?',
+          { title: 'Not meant for an agent', confirmText: 'Launch anyway', confirmClass: 'danger' }
+        );
+        if (launchAnyway) {
+          await _doStartAgent(issue, role, force, prNumber, model, budgetOverride, llmModelOverride, dismissRunId, true);
         }
         return;
       }
@@ -278,6 +293,7 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
     dismissRunId: dismissRunId || null,
   };
   _launchModalTrigger = document.activeElement;
+  _setSuitabilityWarning(null);
   _prepareLlmOverrideSelect(role);
   // Bumped before the no-issue branch too, so an earlier issue's in-flight
   // complexity fetch can never act on (or overwrite) this launch.
@@ -289,7 +305,10 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
     return;
   }
 
-  fetch(apiUrl('/agents/issue/' + encodeURIComponent(issue) + '/complexity'))
+  // The role lets the server skip the epic/human warning for runs that are never refused (triage, reviewer).
+  var complexityUrl = '/agents/issue/' + encodeURIComponent(issue) + '/complexity'
+    + (role ? '?role=' + encodeURIComponent(role) : '');
+  fetch(apiUrl(complexityUrl))
     .then(function(res) {
       if (!res.ok) throw new Error('Failed to fetch complexity');
       return res.json();
@@ -297,8 +316,11 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
     .then(function(data) {
       if (requestId !== _launchRequestId) return;
       var confirmMode = data.confirm_model || 'always';
+      // A suitability warning always opens the modal: the user must see it before the run starts,
+      // whatever the model-confirmation setting, since an interactive or on-hold issue is never refused later.
       var shouldPrompt = confirmMode === 'always'
-        || (confirmMode === 'complex_only' && _CONFIRM_TIERS[data.complexity]);
+        || (confirmMode === 'complex_only' && _CONFIRM_TIERS[data.complexity])
+        || !!data.suitability;
 
       if (!shouldPrompt) {
         _launchModalState = null;
@@ -314,6 +336,7 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
       _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
       _prepareRuntimeModelSelect(role, data.suggested_model_id || data.suggested_model);
       document.getElementById('launch-reason').textContent = data.reason;
+      _setSuitabilityWarning(data.suitability);
       document.getElementById('launch-modal-loading').classList.add('hidden');
       document.getElementById('launch-modal-body').classList.remove('hidden');
     })
@@ -322,6 +345,20 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
       _showModalChrome();
       _populateLaunchDefaults();
     });
+}
+
+// Written with textContent: the reasons come from issue content. Cleared on every launch so a previous
+// issue's warning never shows for the next one.
+function _setSuitabilityWarning(suitability) {
+  var el = document.getElementById('launch-suitability');
+  if (!suitability) {
+    el.textContent = '';
+    el.classList.add('hidden');
+    return;
+  }
+  var reasons = (suitability.reasons || []).map(function(r) { return r.source + ': ' + r.value; }).join(', ');
+  el.textContent = 'This issue is classified ' + suitability.mode + (reasons ? ' (' + reasons + ')' : '') + '.';
+  el.classList.remove('hidden');
 }
 
 function _showModalChrome() {

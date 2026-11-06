@@ -491,8 +491,13 @@ async function executeBulkAction(action) {
         return;
       }
       var data = await resp.json();
+      var failed = data.failed || [];
+      failed.forEach(function(f) { showToast(f.error, 'error'); });
       if (data.started) {
-        window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
+        // Navigating away removes the toasts, so a skipped issue's toast stays readable before the redirect.
+        setTimeout(function() {
+          window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
+        }, failed.length ? 3000 : 0);
       }
     } catch (e) {
       showToast('Failed to start agent: ' + e.message, 'error');

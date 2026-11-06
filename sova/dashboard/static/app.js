@@ -51,6 +51,8 @@ async function getErrorDetail(res, fallback) {
         return (item && typeof item === 'object' && item.msg) ? item.msg : JSON.stringify(item);
       }).join('; ') || fallback;
     }
+    // A structured detail (budget_exceeded, suitability_blocked) carries its readable text as `message`.
+    if (typeof body.detail === 'object' && body.detail.message) return body.detail.message;
     return body.detail;
   }
   catch (_e) { return fallback; }
