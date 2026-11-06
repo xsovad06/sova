@@ -46,8 +46,7 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key, _resolve_codex_cost_source
-from sova.llm.backends import TIER_NAMES
-from sova.llm.client import invoke, resolve_alias, resolve_model
+from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model
 from sova.llm.models import CostSource, accumulate_llm_result
 
 if TYPE_CHECKING:
@@ -609,20 +608,19 @@ class ReviewerRole(AgentRole):
         )
         model, reason = resolved if resolved is not None else (_DEFAULT_REVIEW_MODEL, "default")
 
-        provider = ctx.config.llm.provider
-        if provider not in ("claude-code", "anthropic") and model in TIER_NAMES:
-            resolved_id = resolve_alias(model, ctx.config.llm)
-            if resolved_id != model:
-                log.info("reviewer.model_resolved", model=resolved_id, reason=f"{reason}+alias")
-                return resolved_id
-            if ctx.config.llm.model:
+        tier_model = resolve_bare_tier_for_provider(model, ctx.config.llm)
+        if tier_model is not None:
+            model_id, kind = tier_model
+            if kind == "alias":
+                log.info("reviewer.model_resolved", model=model_id, reason=f"{reason}+alias")
+            else:
                 log.info(
                     "reviewer.model_fallback_provider_aware",
                     alias=model,
-                    provider=provider,
-                    model=ctx.config.llm.model,
+                    provider=ctx.config.llm.provider,
+                    model=model_id,
                 )
-                return ctx.config.llm.model
+            return model_id
 
         log.info("reviewer.model_resolved", model=model, reason=reason)
         return model

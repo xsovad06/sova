@@ -1118,6 +1118,25 @@ def resolve_alias(model: str, cfg: LLMConfig) -> str:
     return resolved
 
 
+def resolve_bare_tier_for_provider(model: str, cfg: LLMConfig) -> tuple[str, str] | None:
+    """Return ``(model_id, "alias" | "fallback")`` for a bare tier on a non-Claude provider, else None.
+
+    The one rule for a bare tier name (``sonnet``) under a provider that sends model strings straight to its
+    backend (anything but claude-code and anthropic): run it through ``resolve_alias()``, and when that leaves
+    it unchanged, fall back to ``cfg.model`` if one is set. ``ReviewerRole`` applies it to the reviewer model
+    and the configured-models doctor check applies it to ``roles.reviewer_model``, so they cannot drift apart.
+    Returns None when the rule does not apply (Claude provider, not a tier, or nothing to substitute).
+    """
+    if cfg.provider in ("claude-code", "anthropic") or model not in TIER_NAMES:
+        return None
+    resolved_id = resolve_alias(model, cfg)
+    if resolved_id != model:
+        return resolved_id, "alias"
+    if cfg.model:
+        return cfg.model, "fallback"
+    return None
+
+
 def select_model(model: str | None, cfg: ProjectConfig | None) -> str | None:
     """Resolve *model* through the client-side ``llm.model_aliases`` map.
 
