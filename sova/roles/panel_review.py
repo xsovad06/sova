@@ -38,6 +38,8 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from sova.llm.models import LLMResult
+
 log = get_logger(component="role.panel_review")
 
 _DEFAULT_MODEL = "sonnet"
@@ -399,9 +401,11 @@ class _PanelState:
     findings: list[ReviewFinding] = field(default_factory=list)
     critical_exit: bool = False
 
-    def record_call(self, cost: Decimal) -> None:
-        """Charge one LLM call against the review total and remaining budget."""
+    def record_call(self, llm_result: LLMResult) -> None:
+        """Charge one LLM call against the review total and remaining budget, and keep it for its CostRecord."""
+        cost = llm_result.cost_usd
         self.result.total_cost += cost
+        self.result.llm_results.append(llm_result)
         if self.budget_remaining is not None:
             self.budget_remaining -= cost
 
@@ -495,7 +499,7 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
             log.warning("panel_review.dimension_failed", dimension=dim, error=str(exc), exc_info=True)
             continue
 
-        state.record_call(llm_result.cost_usd)
+        state.record_call(llm_result)
         findings, summary = _parse_findings(llm_result.text)
         state.findings.extend(findings)
         if request.is_first and summary:
@@ -542,7 +546,7 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
             log.warning("panel_review.group_failed", dimensions=active, error=str(exc), exc_info=True)
             continue
 
-        state.record_call(llm_result.cost_usd)
+        state.record_call(llm_result)
         response = _parse_multi_dimension_findings(llm_result.text)
 
         if not response.parsed:
@@ -573,6 +577,7 @@ async def run_panel_review(
     addressed_findings: list[dict] | None = None,
     default_model: str = "sonnet",
     revise_at: int = _SEVERITY_MEDIUM,
+    result: ReviewResult | None = None,
 ) -> ReviewResult:
     """Run the dimension reviewers and aggregate their results.
 
@@ -589,8 +594,11 @@ async def run_panel_review(
     ``revise_at`` is the severity threshold below which a finding is advisory
     rather than blocking; threaded into every dimension/combined prompt so the
     panel's own reporting language matches ``review.revise_severity``.
+
+    ``result`` is the accumulator the calls are recorded on; a caller passes its own to keep the calls
+    already made when the panel is cancelled part-way.
     """
-    state = _PanelState(result=ReviewResult(), budget_remaining=budget_remaining)
+    state = _PanelState(result=result if result is not None else ReviewResult(), budget_remaining=budget_remaining)
     chunks = _chunk_diff(diff)
     dimensions = sorted(panel_config.dimensions, key=lambda d: _DIMENSION_PRIORITY.get(d, 99))
     groups = _group_dimensions_by_model(dimensions, panel_config, default_model)

@@ -12,6 +12,7 @@ class.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 from decimal import Decimal
@@ -243,7 +244,17 @@ class ReviewerRole(AgentRole):
         # turn entirely when panel review is enabled.
         repo_context = "" if ctx.config.review.panel.enabled else await self._gather_repo_context(ctx, files)
 
-        review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed, repo_context=repo_context)
+        # The calls made so far survive a cancellation (SIGTERM) or an error mid-review: each completed
+        # LLMResult is appended here as it returns, so its CostRecord is still written.
+        accumulator = ReviewResult()
+        try:
+            review = await self._run_review(
+                ctx, task, diff, files, addressed_findings=addressed, repo_context=repo_context, result=accumulator
+            )
+        except BaseException:
+            await asyncio.shield(self._record_review_costs(ctx, accumulator))
+            raise
+        await self._record_review_costs(ctx, review)
 
         protected = _check_protected_paths(files, ctx.config.review.protected_paths)
         if protected:
@@ -425,6 +436,28 @@ class ReviewerRole(AgentRole):
 
         return []
 
+    async def _record_review_costs(self, ctx: ExecutionContext, review: ReviewResult) -> None:
+        """Write a CostRecord per review call, labelled with the model that served it (issue #1403).
+
+        ReviewerRole bypasses WorkflowEngine, whose step records are the only other writer, so without
+        this a review's model, tokens and cost appeared nowhere but the log. Linked to ``ctx.task_run_id``
+        (the dashboard's row, or the one dispatch() opens for a terminal run). Non-fatal: a failed write
+        must not lose the review itself.
+        """
+        from sova.llm.cost import record_cost
+
+        for llm_result in review.llm_results:
+            try:
+                await record_cost(
+                    llm_result,
+                    phase="review",
+                    issue=ctx.issue_number,
+                    task_run_id=ctx.task_run_id,
+                    project_dir=ctx.project_dir,
+                )
+            except (OSError, RuntimeError, SQLAlchemyError):
+                log.warning("reviewer.cost_record_failed", model=llm_result.model, exc_info=True)
+
     async def _extract_review_memories(self, ctx: ExecutionContext, task: Task, review: ReviewResult) -> None:
         """No-op: automatic memory extraction is disabled.
 
@@ -539,8 +572,12 @@ class ReviewerRole(AgentRole):
         files: list[str],
         addressed_findings: list[dict] | None = None,
         repo_context: str = "",
+        result: ReviewResult | None = None,
     ) -> ReviewResult:
-        """Send diff to LLM for review, chunking if too large."""
+        """Send diff to LLM for review, chunking if too large.
+
+        *result* is filled in as calls complete, so a caller holding it keeps them if the review is cancelled.
+        """
         spec_sections = self._load_spec_sections(ctx, task)
         staleness_note = spec_sections.get(_STALENESS_NOTE_HEADING) if spec_sections else None
 
@@ -559,7 +596,9 @@ class ReviewerRole(AgentRole):
             # separate, already-elaborate chunking path, and the feature
             # (opt-in sub-call) is deliberately scoped to the default
             # single-reviewer path.
-            result = await self._run_panel_review(ctx, task, diff, files, spec_sections, addressed_findings)
+            result = await self._run_panel_review(
+                ctx, task, diff, files, spec_sections, addressed_findings, result=result
+            )
         else:
             result = await self._run_single_review(
                 ctx,
@@ -569,6 +608,7 @@ class ReviewerRole(AgentRole):
                 spec_sections,
                 addressed_findings=addressed_findings,
                 repo_context=repo_context,
+                result=result,
             )
 
         if staleness_note:
@@ -633,6 +673,7 @@ class ReviewerRole(AgentRole):
         files: list[str],
         spec_sections: dict[str, str] | None,
         addressed_findings: list[dict] | None = None,
+        result: ReviewResult | None = None,
     ) -> ReviewResult:
         """Delegate to the dimension review panel."""
         from sova.roles.panel_review import run_panel_review
@@ -640,20 +681,27 @@ class ReviewerRole(AgentRole):
         budget_remaining = ctx.config.agent.max_budget - ctx.cost_usd
         log.info("reviewer.panel_mode", dimensions=ctx.config.review.panel.dimensions)
 
-        result = await run_panel_review(
-            task=task,
-            diff=diff,
-            files=files,
-            panel_config=ctx.config.review.panel,
-            spec_sections=spec_sections,
-            cwd=ctx.working_dir,
-            budget_remaining=budget_remaining,
-            addressed_findings=addressed_findings,
-            default_model=self._resolve_review_model(ctx),
-            revise_at=ctx.config.review.revise_severity,
-        )
-        ctx.add_cost(result.total_cost)
-        return result
+        partial = result if result is not None else ReviewResult()
+        try:
+            reviewed = await run_panel_review(
+                task=task,
+                diff=diff,
+                files=files,
+                panel_config=ctx.config.review.panel,
+                spec_sections=spec_sections,
+                cwd=ctx.working_dir,
+                budget_remaining=budget_remaining,
+                addressed_findings=addressed_findings,
+                default_model=self._resolve_review_model(ctx),
+                revise_at=ctx.config.review.revise_severity,
+                result=partial,
+            )
+        except BaseException:
+            # The panel's spend is only added to ctx on return; a cancelled or failed panel still spent it.
+            ctx.add_cost(partial.total_cost)
+            raise
+        ctx.add_cost(reviewed.total_cost)
+        return reviewed
 
     async def _run_single_review(
         self,
@@ -664,10 +712,11 @@ class ReviewerRole(AgentRole):
         spec_sections: dict[str, str] | None,
         addressed_findings: list[dict] | None = None,
         repo_context: str = "",
+        result: ReviewResult | None = None,
     ) -> ReviewResult:
         """Original single-reviewer path."""
         chunks = _chunk_diff(diff)
-        result = ReviewResult()
+        result = result if result is not None else ReviewResult()
         # Resolved once so every chunk and every schema retry share one model.
         model = self._resolve_review_model(ctx)
 
@@ -698,6 +747,7 @@ class ReviewerRole(AgentRole):
                 )
                 ctx.add_cost(llm_result.cost_usd)
                 result.total_cost += llm_result.cost_usd
+                result.llm_results.append(llm_result)
 
                 chunk_spent = llm_result.cost_usd
                 last_retry_text = llm_result.text
@@ -716,20 +766,22 @@ class ReviewerRole(AgentRole):
                         max_budget_usd=max_retry_budget,
                     )
                     chunk_spent += retry_result.cost_usd
+                    # Counted as each retry completes, so a cancellation of a later retry still keeps this one.
+                    ctx.add_cost(retry_result.cost_usd)
+                    result.total_cost += retry_result.cost_usd
                     last_retry_text = retry_result.text
+                    result.llm_results.append(retry_result)
                     return retry_result
 
                 # Validate output with retry on failure
                 try:
-                    data, retry_cost = await validate_step_output(
+                    data, _ = await validate_step_output(
                         raw_text=llm_result.text,
                         schema=get_review_schema(),
                         llm_invoke=retry_review,
                         original_prompt=prompt,
                         max_retries=2,
                     )
-                    ctx.add_cost(retry_cost)
-                    result.total_cost += retry_cost
 
                     # Convert validated dict to ReviewFinding objects
                     findings = [
@@ -746,8 +798,6 @@ class ReviewerRole(AgentRole):
                     summary = data.get("summary", "")
                 except ValidationError as ve:
                     log.warning("reviewer.validation_failed", chunk=i + 1, error=str(ve), exc_info=True)
-                    ctx.add_cost(ve.retry_cost)
-                    result.total_cost += ve.retry_cost
                     findings, summary = _parse_findings(last_retry_text)
 
                 result.findings.extend(findings)

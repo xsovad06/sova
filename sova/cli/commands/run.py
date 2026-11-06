@@ -163,13 +163,15 @@ async def _run_workflow(
         role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
         # Inside the try: a SIGTERM landing during this write takes the shielded shutdown path below,
         # which records the cost itself, instead of cancelling the write with nothing to replace it.
-        await _persist_run_cost(ctx, task_run_id, prior_cost)
+        # ctx.task_run_id, not task_run_id: dispatch() opens a TaskRun for a role outside WorkflowEngine
+        # when none was passed (issue #1403), and its cost belongs there too.
+        await _persist_run_cost(ctx, ctx.task_run_id, prior_cost)
     except asyncio.CancelledError:
-        await asyncio.shield(_handle_sigterm_shutdown(ctx, task_run_id))
+        await asyncio.shield(_handle_sigterm_shutdown(ctx, ctx.task_run_id, prior_cost))
         raise
     except Exception:
         # A role that raised after spending still owes its cost to the TaskRun.
-        await _persist_run_cost(ctx, task_run_id, prior_cost)
+        await _persist_run_cost(ctx, ctx.task_run_id, prior_cost)
         raise
 
     if result.success:
@@ -248,13 +250,17 @@ async def _persist_run_cost(ctx: ExecutionContext, task_run_id: int | None, prio
         log.warning("run.cost_persist_failed", run_id=task_run_id, cost_usd=str(run_cost), exc_info=True)
 
 
-async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
+async def _handle_sigterm_shutdown(
+    ctx: ExecutionContext, task_run_id: int | None, prior_cost: Decimal = Decimal("0")
+) -> None:
     """Best-effort cleanup during the SIGTERM->SIGKILL grace period.
 
     Commits any partial work (tracked and new files) so a terminated process
     does not lose in-progress edits, and (when this run is DB-tracked via
     --run-id) records elapsed cost so a delayed or absent external finalizer
-    still sees accurate numbers. Status is deliberately left untouched here:
+    still sees accurate numbers. Only this run's own spend is stored
+    (``ctx.cost_usd - prior_cost``): a resume starts from the prior run's cost,
+    which that run's row already holds. Status is deliberately left untouched here:
     whichever process classifies the final exit (the dashboard's
     _finalize_task_run, or the liveness sweep for a standalone run with no
     dashboard) decides "stopped" vs "interrupted" vs "failed" from the exit
@@ -288,7 +294,7 @@ async def _handle_sigterm_shutdown(ctx: ExecutionContext, task_run_id: int | Non
         async with await get_session(ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, task_run_id)
             if task_run is not None:
-                task_run.total_cost_usd = ctx.cost_usd
+                task_run.total_cost_usd = ctx.cost_usd - prior_cost
     except Exception:  # noqa: BLE001 (best-effort cleanup during shutdown must not raise)
         log.warning("run.sigterm_db_update_failed", run_id=task_run_id, exc_info=True)
 

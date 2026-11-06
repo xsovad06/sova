@@ -55,6 +55,10 @@ class AgentRole(ABC):
     description: str = ""
     allowed_input_states: frozenset[TaskState] = frozenset()
     output_state: TaskState = TaskState.DONE
+    # True when the role records its own TaskRun: WorkflowEngine creates one for a pipeline role, and a
+    # custom role's DAG nodes each start a command run with its own. For every other role, dispatch()
+    # creates and finalizes the TaskRun when the caller passed none (issue #1403).
+    creates_own_task_run: bool = False
 
     @abstractmethod
     async def execute(self, ctx: ExecutionContext) -> RoleResult:

@@ -188,12 +188,13 @@ as `$0` `unknown` until #1394; text-call spend is what LiteLLM priced.
 |---|---|---|---|---|---|---|
 | 3 | researcher, #2 | `## Research` written; paused at the spec gate (`awaiting_approval`) | research `gpt-6.1-sol` (Codex, read-only); spec `gpt-6.1-sol` | 100,684 / 2,024; 849 / 887 | $0.0748 Codex; $0.0106 | `unknown`; `priced` |
 | 5 | developer, #1 | `done`: all 17 steps, PR #4 opened, sandbox CI green, handed to the reviewer | develop, simplify, self-review `gpt-6.1-sol` (Codex); routed develop call and PR body `gpt-6-luna`; commit subject `gpt-6.1-sol` | 280,229 / 3,353 develop, 92,474 / 558 simplify, 83,626 / 772 self-review; 386 / 126, 1,894 / 967, 347 / 12 | $0.2614 Codex; $0.0016 | `unknown` for Codex; `priced` for text |
-| (C) | reviewer, #1 | APPROVE posted on the PR head, `sova:approved` label, no findings | `openai/gpt-6.1-sol` (from `sova.log`: role and `review` route) | not recorded | not recorded | none: a terminal reviewer run writes no `TaskRun` or `CostRecord` |
+| (C) | reviewer, #1 | APPROVE posted on the PR head, `sova:approved` label, no findings | `openai/gpt-6.1-sol` (from `sova.log`: role and `review` route) | not recorded | not recorded | none: a terminal reviewer run wrote no `TaskRun` or `CostRecord` (#1403) |
+| 7 | reviewer, #1, rerun on the #1403 fix | `done`: APPROVE re-posted on PR #4's head | review `gpt-6.1-sol` | 2,176 / 109 | $0.0065 | `priced` |
 | 6 | developer, #2, `codex.model = not-a-real-model-1130` | `failed` at `develop`, naming the model: "does not exist or you do not have access to it" | `not-a-real-model-1130` | 0 / 0 (two Codex attempts) | $0 | `unknown` |
 
 No run launched Claude: the `claude` shim on `PATH` recorded nothing, Anthropic and Vertex credentials
 were unset, and every recorded model is an OpenAI one. Total spend was about $0.70: $0.668 Codex across
-every attempt below (including a killed research turn and the lost developer run), plus about $0.02 of
+every attempt below (including a killed research turn and the lost developer run), plus about $0.03 of
 priced text calls.
 
 Quality: PR #4 implements `median()` correctly with the issue's cases and more (odd, even, tuple,
@@ -210,7 +211,7 @@ What the pilot found:
 | `SyncStep` runs `git stash --include-untracked` in the primary checkout | a pilot database there with un-ignored `-wal`/`-shm` lost every write after `sync`, and `sova.log` lost the rest of the run; the run still pushed and opened a PR ($0.20, discarded) | #1402; until then keep the database outside the checkout (see Isolate): `sova install` writes no ignore rules for SOVA's own runtime files |
 | the commit step stages an untracked `.sova/test-baseline.json` | SOVA's baseline file landed in the PR | #1402; until then ignore `.sova/` in the project |
 | `test_cmd`/`lint_cmd` default to `make test`/`make lint` | in a repository without a Makefile the baseline recorded exit code 2 and validation had nothing to run | operator setup: give the test repository real commands |
-| a terminal `sova run` of the reviewer role records no `TaskRun` and no `CostRecord` | the review's model, tokens and cost are only in `sova.log` and the posted review | #1403 |
+| a terminal `sova run` of the reviewer role records no `TaskRun` and no `CostRecord` | the review's model, tokens and cost are only in `sova.log` and the posted review | #1403: fixed, and the rerun (run 7) recorded its row and a priced `CostRecord` |
 
 ## Pilot Log (2026-11-04)
 
@@ -267,5 +268,5 @@ test-weakening guard reverted, so the fix was moved into this change by hand.
   refuses the SOVA and GWYM repositories. A second issue named by `SOVA_LIVE_PILOT_FAILURE_ISSUE`
   enables the unavailable-model failure case: it sets a bogus `SOVA_CODEX_MODEL` (Codex ignores
   `agent.model`), drops `SOVA_LLM_ROUTING`, and asserts the run fails and names that model.
-- Still open on #1130: a terminal reviewer run records no `TaskRun` or `CostRecord` (#1403), so the
-  live pilot's reviewer run cannot pass its own record checks (2026-11-06 log above).
+- The live pilot now passes for the researcher, developer and reviewer roles and the unavailable-model
+  case (2026-11-06 log above); the reviewer passed once #1403 recorded its run.

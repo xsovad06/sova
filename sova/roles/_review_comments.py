@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sova.adapters.base import Task
+from sova.llm.models import LLMResult
 from sova.llm.payload import trim_payload
 from sova.roles._review_format import (
     _SEVERITY_CRITICAL,
@@ -134,6 +135,9 @@ class ReviewResult:
     summary: str = ""
     total_cost: Decimal = Decimal("0")
     post_failed: bool = False
+    # Every provider call the review made (chunks, schema retries, panel calls), so the reviewer can
+    # write a CostRecord per call with the model that served it (issue #1403).
+    llm_results: list[LLMResult] = field(default_factory=list)
 
     @property
     def actionable(self) -> list[ReviewFinding]:
