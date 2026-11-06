@@ -65,7 +65,7 @@ ldap = ["ldap3>=2.9"]
 keyring = ["keyring>=24.0"]
 dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=1.4.1",
+    "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=6.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
