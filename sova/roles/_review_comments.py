@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sova.adapters.base import Task
+from sova.llm.payload import trim_payload
 from sova.roles._review_format import (
     _SEVERITY_CRITICAL,
     _SEVERITY_MEDIUM,
@@ -148,6 +149,10 @@ class ReviewResult:
         return [f for f in self.actionable if clamp_severity(f.severity) >= revise_at]
 
 
+# The reviewer only verifies that a fix landed, so an addressed finding is shown in brief, not in full.
+_ADDRESSED_FINDING_LIMIT = 500
+
+
 def _format_addressed_findings(findings: list[dict] | None) -> str:
     """Format addressed external findings into a prompt section."""
     if not findings:
@@ -177,7 +182,12 @@ def _format_addressed_findings(findings: list[dict] | None) -> str:
             # findings (addressed by the address-review pipeline) carry
             # file/description.
             file_path = item.get("file_path") or item.get("file") or "unknown"
-            msg = item.get("message") or item.get("description") or ""
+            msg = trim_payload(
+                item.get("message") or item.get("description") or "",
+                _ADDRESSED_FINDING_LIMIT,
+                label="addressed_finding",
+                keep="head",
+            )
             tool_tag = f" [{tool_id}]" if tool_id else ""
             lines.append(f"- [{severity}]{tool_tag} `{file_path}`: {msg}")
         lines.append("")
