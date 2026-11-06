@@ -504,6 +504,19 @@ class TestFormatAddressedFindings:
         result = _format_addressed_findings(findings)
         assert "[F401]" in result
 
+    def test_long_message_is_capped(self) -> None:
+        findings = [{"source": "coderabbit", "file_path": "a.py", "message": "x" * 4000}]
+        result = _format_addressed_findings(findings)
+        assert "x" * 500 in result
+        assert "x" * 501 not in result
+        assert "(truncated)" in result
+
+    def test_short_message_is_untouched(self) -> None:
+        findings = [{"source": "ruff", "file_path": "a.py", "message": "y" * 500}]
+        result = _format_addressed_findings(findings)
+        assert "y" * 500 in result
+        assert "(truncated)" not in result
+
 
 # _build_review_prompt
 
