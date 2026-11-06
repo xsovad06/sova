@@ -314,6 +314,16 @@ async def _load_graph_or_none(project_dir: Path | None) -> DependencyGraph | Non
         return None
 
 
+async def load_classification_graph(project_dir: Path | None) -> DependencyGraph | None:
+    """The dependency graph for classifying one issue, or None when it is unavailable within the short wait.
+
+    The public form of ``_load_graph_or_none()``: the same shared build, wait limit and failure backoff as
+    the work-items poll, so a caller outside this module (the launch modal's suitability warning) cannot
+    start a second build or stall on a slow tracker.
+    """
+    return await _load_graph_or_none(project_dir)
+
+
 async def load_ranking_graph(project_dir: Path | None, milestone: str = "") -> DependencyGraph:
     """The dependency graph the "Up next" ranking reads. A failure raises: it must not look like an empty list.
 

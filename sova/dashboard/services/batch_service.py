@@ -162,20 +162,37 @@ async def start_batch_run(
     issue_ids: list[str],
     _project_dir: Path,
 ) -> dict:
-    """Start an agent for the first issue. Returns status dict."""
+    """Start an agent for the first issue that may be started. Returns status dict.
+
+    An epic or human-only issue is reported in ``failed`` and skipped, so one of them in a selection
+    does not stop the rest. Any other launch error (budget, conflict, capacity) is reported in ``failed``
+    too, but stops the batch with ``started`` left None: the next issue would most likely hit it as well.
+    """
     from sova.dashboard.services.control_service import start_agent
 
     if not issue_ids:
         return {"error": "No issues provided"}
 
-    first = issue_ids[0]
-    result = await start_agent(issue=first)
+    failed: list[dict] = []
+    for index, issue in enumerate(issue_ids):
+        result = await start_agent(issue=issue, enforce_suitability=True)
+        if isinstance(result, dict) and result.get("code") == "suitability_blocked":
+            log.info("batch.run_issue_blocked", issue=issue, mode=result.get("mode"))
+            failed.append({"issue": issue, "error": result["error"]})
+            continue
+        if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+            error = result.get("error") or result.get("detail") or "Agent start failed"
+            log.info("batch.run_issue_failed", issue=issue, code=result.get("code"))
+            failed.append({"issue": issue, "error": error})
+            return {"started": None, "remaining": issue_ids[index + 1 :], "agent_result": result, "failed": failed}
+        return {
+            "started": issue,
+            "remaining": issue_ids[index + 1 :],
+            "agent_result": result,
+            "failed": failed,
+        }
 
-    return {
-        "started": first,
-        "remaining": issue_ids[1:],
-        "agent_result": result,
-    }
+    return {"started": None, "remaining": [], "agent_result": None, "failed": failed}
 
 
 async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:

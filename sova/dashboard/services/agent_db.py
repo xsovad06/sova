@@ -114,10 +114,44 @@ def _build_exit_failure_message(exit_code: int, output_lines: Sequence[str], cur
     return message[:_ERROR_MESSAGE_MAX_LENGTH]
 
 
+# Key in TaskRun.assessment_json recording how the launch's suitability check went, so a resume of the run
+# can tell a run the user chose to launch anyway from one that was checked and passed.
+SUITABILITY_CHECK_KEY = "suitability_check"
+SUITABILITY_OVERRIDDEN = "overridden"  # the user confirmed "Launch anyway" on an epic or human-only issue
+SUITABILITY_SKIPPED = "skipped"  # an autonomous or continuation launch, which never enforces the check
+# A resume of a run carrying one of these is not refused for the issue's suitability.
+SUITABILITY_RESUMABLE = frozenset({SUITABILITY_OVERRIDDEN, SUITABILITY_SKIPPED})
+
+
+async def _load_suitability_check(run_id: int, project_dir: Path) -> str | None:
+    """How the suitability check went for run *run_id* (see ``SUITABILITY_CHECK_KEY``), None when unrecorded.
+
+    Unrecorded covers a run that was enforced and passed, one that predates the marker, and a read failure
+    (logged): the resume is then checked like a fresh launch, which is the safe side.
+    """
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            value = (task_run.assessment_json or {}).get(SUITABILITY_CHECK_KEY) if task_run else None
+            return value if isinstance(value, str) else None
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("task_run.suitability_check_read_failed", run_id=run_id, exc_info=True)
+        return None
+
+
 async def _create_task_run(
-    issue: str | None, role: str, project_dir: Path, *, pid: int | None = None, pr_number: int | None = None
+    issue: str | None,
+    role: str,
+    project_dir: Path,
+    *,
+    pid: int | None = None,
+    pr_number: int | None = None,
+    assessment: dict | None = None,
 ) -> int | None:
-    """Create a TaskRun record and return its ID."""
+    """Create a TaskRun record and return its ID; *assessment* seeds ``assessment_json`` when given."""
     try:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -131,6 +165,7 @@ async def _create_task_run(
                     current_step="agent",
                     pid=pid,
                     pr_number=pr_number,
+                    assessment_json=assessment,
                 )
                 session.add(task_run)
                 await session.flush()
