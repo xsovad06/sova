@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.db.models import CostRecord
 from sova.db.session import get_session
 from sova.llm.models import LLMResult
@@ -16,6 +18,7 @@ async def record_cost(
     issue: str = "",
     task_run_id: int | None = None,
     model_selection_reason: str | None = None,
+    project_dir: Path | None = None,
 ) -> CostRecord:
     """Persist an LLM invocation cost to the database.
 
@@ -25,6 +28,7 @@ async def record_cost(
         issue: Issue number/identifier.
         task_run_id: Optional FK to the TaskRun this belongs to.
         model_selection_reason: Why this model was selected (e.g., "role:triage->haiku").
+        project_dir: Project whose database receives the record; the ambient default when omitted.
 
     Returns:
         The created CostRecord.
@@ -49,7 +53,7 @@ async def record_cost(
         tokens_saved=result.tokens_saved,
     )
 
-    async with await get_session() as session:
+    async with await get_session(project_dir) as session:
         session.add(record)
         await session.commit()
         await session.refresh(record)

@@ -542,12 +542,14 @@ async def test_reviewer_validation_fallback_uses_parse_findings(tmp_path: Path):
     mock_invoke_result = AsyncMock()
     mock_invoke_result.text = llm_text
     mock_invoke_result.cost_usd = Decimal("0.01")
+    mock_retry_result = AsyncMock()
+    mock_retry_result.text = llm_text
+    mock_retry_result.cost_usd = Decimal("0.02")
 
     mock_ctx = AsyncMock()
     mock_ctx.working_dir = str(tmp_path)
     mock_ctx.config.agent.max_budget = Decimal("1.00")
     mock_ctx.cost_usd = Decimal("0")
-    mock_ctx.add_cost = lambda x: None
 
     mock_task = AsyncMock()
     mock_task.id = "1"
@@ -561,12 +563,18 @@ async def test_reviewer_validation_fallback_uses_parse_findings(tmp_path: Path):
 
     mock_ctx.add_cost = track_cost
 
+    async def exhausted(*, llm_invoke, **_kwargs):
+        # One schema retry runs (and is counted as it completes), then validation gives up.
+        await llm_invoke("retry")
+        raise ValidationError("exhausted retries", retry_cost=Decimal("0.02"))
+
     with (
-        patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=mock_invoke_result),
         patch(
-            "sova.roles.reviewer.validate_step_output",
-            side_effect=ValidationError("exhausted retries", retry_cost=Decimal("0.02")),
+            "sova.roles.reviewer.invoke",
+            new_callable=AsyncMock,
+            side_effect=[mock_invoke_result, mock_retry_result],
         ),
+        patch("sova.roles.reviewer.validate_step_output", side_effect=exhausted),
     ):
         result = await reviewer._run_single_review(
             ctx=mock_ctx,
@@ -579,7 +587,8 @@ async def test_reviewer_validation_fallback_uses_parse_findings(tmp_path: Path):
     assert isinstance(result, ReviewResult)
     expected_findings, expected_summary = _parse_findings(llm_text)
     assert len(result.findings) == len(expected_findings)
-    assert Decimal("0.02") in costs_added
+    assert costs_added == [Decimal("0.01"), Decimal("0.02")]
+    assert result.total_cost == Decimal("0.03")
 
 
 # --- Integration: triage fallback on ValidationError ---

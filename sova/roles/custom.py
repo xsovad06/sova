@@ -17,6 +17,8 @@ _STATE_MAP: dict[str, TaskState] = {s.value: s for s in TaskState}
 class CustomRole(AgentRole):
     """A role defined by a WorkflowDefinition DAG rather than hardcoded steps."""
 
+    creates_own_task_run = True
+
     def __init__(self, definition: WorkflowDefinition) -> None:
         self._definition = definition
         self.name = definition.name

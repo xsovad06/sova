@@ -7,9 +7,19 @@ pipeline order: Triage -> Research -> Develop.
 
 from __future__ import annotations
 
+import asyncio
+import os
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import TaskState
 from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
+from sova.core.state import TASK_RUN_TERMINAL, TaskStatus
+from sova.db.models import TaskRun
+from sova.db.session import get_session
 from sova.roles.base import AgentRole, RoleResult
 from sova.roles.developer import DeveloperRole
 from sova.roles.planner import PlannerRole
@@ -148,5 +158,116 @@ async def dispatch(
 
     log.info("dispatch", issue=ctx.issue_number or "", label=ctx.display_label, role=role.name)
     ctx.role = role.name
-    result = await role.execute(ctx)
+    created = None
+    cost_before = ctx.cost_usd
+    if ctx.task_run_id is None and not role.creates_own_task_run:
+        created = await _create_shielded(ctx)
+    try:
+        result = await role.execute(ctx)
+    except Exception as exc:
+        # A cancellation (SIGTERM) is not caught: the row stays running for the liveness sweep to classify,
+        # as for a pipeline run, rather than being recorded as a failure.
+        if created is not None:
+            await _finalize_shielded(ctx, created, TaskStatus.FAILED, cost_before, error=str(exc) or type(exc).__name__)
+        raise
+    if created is not None:
+        if result.success:
+            status = TaskStatus.DONE
+        elif result.awaiting_approval:
+            status = TaskStatus.AWAITING_APPROVAL
+        else:
+            status = TaskStatus.FAILED
+        await _finalize_shielded(ctx, created, status, cost_before, error=None if result.success else result.error)
     return role, result
+
+
+async def _create_shielded(ctx: ExecutionContext) -> int | None:
+    """Run ``_create_task_run`` to completion even when SIGTERM cancels the awaiting task.
+
+    A cancellation landing mid-write would otherwise abandon the insert, or commit it without
+    ``ctx.task_run_id`` set, orphaning a running row the shutdown handler cannot finalize. The write is
+    shielded and, on cancellation, awaited (so ``ctx.task_run_id`` is assigned) before re-raising.
+    """
+    write = asyncio.ensure_future(_create_task_run(ctx))
+    try:
+        return await asyncio.shield(write)
+    except asyncio.CancelledError:
+        await write
+        raise
+
+
+async def _create_task_run(ctx: ExecutionContext) -> int | None:
+    """Record a TaskRun for a role that runs outside WorkflowEngine, and point *ctx* at it.
+
+    A terminal ``sova run`` (or ``sova watch``) of the reviewer, triage or planner role used to leave no
+    row at all, so its model, tokens and cost were only in the log (issue #1403). A failed write is
+    logged and the role runs untracked, as before.
+    """
+    try:
+        async with await get_session(ctx.project_dir) as session, session.begin():
+            task_run = TaskRun(
+                issue_number=ctx.issue_number.lstrip("#") or None,
+                run_label=ctx.run_label,
+                role=ctx.role,
+                status=TaskStatus.RUNNING.value,
+                pr_number=ctx.pr_number,
+                resumed_from_id=ctx.resume_run_id,
+                pid=os.getpid(),
+            )
+            session.add(task_run)
+            await session.flush()
+            run_id = task_run.id
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("dispatch.task_run_create_failed", role=ctx.role, exc_info=True)
+        return None
+    ctx.task_run_id = run_id
+    log.info("dispatch.task_run_created", run_id=run_id, role=ctx.role, label=ctx.display_label)
+    return run_id
+
+
+async def _finalize_shielded(
+    ctx: ExecutionContext, run_id: int, status: TaskStatus, cost_before: Decimal, *, error: str | None
+) -> None:
+    """Run ``_finalize_task_run`` to completion even when SIGTERM cancels the awaiting task.
+
+    A cancellation landing mid-write would otherwise skip the status and ``ended_at`` update and leave a
+    finished review for the liveness sweep to classify as interrupted. The write is shielded and, on
+    cancellation, awaited before the cancellation is re-raised.
+    """
+    write = asyncio.ensure_future(_finalize_task_run(ctx, run_id, status, cost_before, error=error))
+    try:
+        await asyncio.shield(write)
+    except asyncio.CancelledError:
+        await write
+        raise
+
+
+async def _finalize_task_run(
+    ctx: ExecutionContext, run_id: int, status: TaskStatus, cost_before: Decimal, *, error: str | None
+) -> None:
+    """Close the TaskRun ``_create_task_run`` opened, with the spend the role added to *ctx*.
+
+    Recorded here rather than left to the CLI: ``sova watch`` and ``sova parallel`` never call
+    ``_persist_run_cost()``, and the per-issue budget gate sums ``total_cost_usd``. Only raises the
+    recorded value, so the CLI writing the same figure afterwards is a no-op.
+    """
+    try:
+        async with await get_session(ctx.project_dir) as session, session.begin():
+            task_run = await session.get(TaskRun, run_id)
+            if task_run is None:
+                return
+            # Another path (the dashboard finalizer, the liveness sweep) may have closed the row already:
+            # keep its terminal status and end time, and still record the cost below.
+            if task_run.status not in TASK_RUN_TERMINAL:
+                task_run.status = status.value
+                task_run.current_step = None
+                task_run.ended_at = datetime.now(timezone.utc)
+            run_cost = ctx.cost_usd - cost_before
+            if run_cost > (task_run.total_cost_usd or Decimal("0")):
+                task_run.total_cost_usd = run_cost
+            if ctx.pr_number is not None:
+                task_run.pr_number = ctx.pr_number
+            if error:
+                task_run.error_message = error
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("dispatch.task_run_finalize_failed", run_id=run_id, status=status.value, exc_info=True)

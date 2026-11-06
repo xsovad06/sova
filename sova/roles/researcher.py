@@ -33,6 +33,7 @@ class ResearcherRole(AgentRole):
     description = "Investigate triaged issues and prepare them for development"
     allowed_input_states = frozenset({TaskState.TRIAGED})
     output_state = TaskState.RESEARCHED
+    creates_own_task_run = True
 
     async def assess_task(self, task: Task) -> TaskAssessment:
         """Assess research suitability using heuristics."""

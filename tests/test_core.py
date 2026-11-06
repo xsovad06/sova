@@ -12181,6 +12181,25 @@ class TestRunWorkflowPersistsRoleCost:
 
         assert await self._recorded_cost(run_id) == Decimal("3.00")
 
+    async def test_cost_lands_on_the_run_dispatch_opened_when_none_was_passed(self, tmp_path: Path) -> None:
+        """A terminal run passes no --run-id; dispatch() opens the row for a non-engine role (issue #1403)."""
+        from sova.cli.commands.run import _run_workflow
+        from sova.roles.base import RoleResult
+
+        run_id = await self._seed_run("reviewer")
+        role = MagicMock()
+        role.name = "reviewer"
+
+        async def _dispatch(ctx: ExecutionContext, **_kwargs: object) -> tuple[object, object]:
+            ctx.task_run_id = run_id
+            ctx.add_cost(Decimal("0.75"))
+            return role, RoleResult(success=True, summary="ok")
+
+        with self._patch_run_deps(AsyncMock(side_effect=_dispatch)):
+            await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False)
+
+        assert await self._recorded_cost(run_id) == Decimal("0.75")
+
     async def test_failed_write_is_logged_and_does_not_replace_the_role_outcome(self, tmp_path: Path) -> None:
         from sqlalchemy.exc import OperationalError
 
@@ -12209,7 +12228,7 @@ class TestRunWorkflowPersistsRoleCost:
         dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
         shutdown_calls = []
 
-        async def fake_shutdown(ctx: ExecutionContext, task_run_id: int | None) -> None:
+        async def fake_shutdown(ctx: ExecutionContext, task_run_id: int | None, prior_cost: Decimal) -> None:
             shutdown_calls.append((task_run_id, ctx.cost_usd))
 
         with self._patch_run_deps(dispatch_mock):
@@ -12329,6 +12348,29 @@ class TestHandleSigtermShutdown:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.total_cost_usd == Decimal("1.23")
 
+    async def test_a_resumed_run_stores_only_its_own_spend(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="978", role="reviewer", status="running")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        ctx = MagicMock()
+        ctx.worktree_dir = None
+        ctx.project_dir = None
+        ctx.cost_usd = Decimal("1.50")  # seeded with the prior run's 1.00 on resume
+
+        await _handle_sigterm_shutdown(ctx, run_id, Decimal("1.00"))
+
+        async with await get_session() as session:
+            async with session.begin():
+                assert (await session.get(TaskRun, run_id)).total_cost_usd == Decimal("0.50")
+
     async def test_no_task_run_id_skips_db_update(self, tmp_path: Path) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
@@ -12378,7 +12420,7 @@ class TestRunWorkflowCancellation:
 
         shutdown_calls = []
 
-        async def fake_shutdown(ctx, task_run_id):
+        async def fake_shutdown(ctx, task_run_id, prior_cost):
             shutdown_calls.append(task_run_id)
 
         from sova.config.models import ProjectConfig

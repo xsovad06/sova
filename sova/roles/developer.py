@@ -56,6 +56,7 @@ class DeveloperRole(AgentRole):
     description = "Develop features and fixes using TDD workflow"
     allowed_input_states = frozenset({TaskState.RESEARCHED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW})
     output_state = TaskState.IN_REVIEW
+    creates_own_task_run = True
 
     async def assess_task(self, task: Task) -> TaskAssessment:
         return TaskAssessment(
