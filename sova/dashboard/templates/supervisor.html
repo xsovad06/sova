@@ -1406,15 +1406,26 @@ function hideDrawer() {
   document.getElementById('action-drawer').classList.add('hidden');
 }
 
-async function spawnAgent(issue, role) {
+async function spawnAgent(issue, role, overrideSuitability = false) {
   try {
+    const body = { issue: String(issue), role };
+    if (overrideSuitability) body.override_suitability = true;
     const r = await fetch(`${apiBase}/agents/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issue: String(issue), role }),
+      body: JSON.stringify(body),
     });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || 'Spawn failed');
+    if (r.status === 409 && data.detail && data.detail.code === 'suitability_blocked') {
+      const humanNote = data.detail.mode === 'human'
+        ? ' The agent:human-only label is replaced once the run moves the issue on.' : '';
+      const launchAnyway = await sovaConfirm(`${data.detail.message}${humanNote} Launch anyway?`, {
+        title: 'Not meant for an agent', confirmText: 'Launch anyway', confirmClass: 'danger',
+      });
+      if (launchAnyway) await spawnAgent(issue, role, true);
+      return;
+    }
+    if (!r.ok) throw new Error((data.detail && data.detail.message) || data.detail || 'Spawn failed');
     hideDrawer();
     setTimeout(loadGraph, 1500);
   } catch (e) {
