@@ -12,6 +12,7 @@ from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import read_handoff, read_handoff_file
 from sova.llm.guard import sanitize_external_input, scan_prompt
+from sova.llm.payload import trim_payload
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import (
     INLINE_COMMENT_STUB,
@@ -21,6 +22,15 @@ from sova.utils.review_markers import (
 from sova.utils.shell import run
 
 log = get_logger(component="step.address_review")
+
+# Per-field cap on a finding's description and suggestion, applied where every
+# finding source meets in _format_findings_prompt(). On this repository's PRs a
+# human inline comment stays under 3000 characters and a condensed CodeRabbit
+# comment is capped at 4000, but a whole review body that degrades to one finding
+# reaches 20,000, so the cap keeps one free-text review from swamping the prompt.
+# The findings themselves are never capped in number: the prompt asks for every
+# one to be addressed.
+_FINDING_TEXT_LIMIT = 8000
 
 
 def _load_review_findings(project_dir: Path, issue: str = "") -> list[dict]:
@@ -287,7 +297,7 @@ def _parse_review_body(body: str) -> list[dict]:
                 "line": None,
                 "severity": 7,
                 "category": "review",
-                "description": body[:3000],
+                "description": body,
                 "suggestion": "",
                 "source": "github-review",
             }
@@ -642,10 +652,12 @@ def _format_findings_prompt(
             # SOVA-authored scaffolding text).
             source = f.get("source") or "review_finding"
             description = sanitize_external_input(f.get("description", ""), source=source)
+            description = trim_payload(description, _FINDING_TEXT_LIMIT, label="review_finding", keep="head")
             description = _fence_if_high_risk(description, source=source, loc=loc, threshold=prompt_guard_threshold)
             lines.append(f"   {description}")
             if f.get("suggestion"):
                 suggestion = sanitize_external_input(f["suggestion"], source=source)
+                suggestion = trim_payload(suggestion, _FINDING_TEXT_LIMIT, label="review_suggestion", keep="head")
                 suggestion = _fence_if_high_risk(suggestion, source=source, loc=loc, threshold=prompt_guard_threshold)
                 lines.append(f"   Fix: {suggestion}")
             lines.append("")

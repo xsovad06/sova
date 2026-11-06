@@ -23,8 +23,14 @@ import pytest
 from sova.adapters.base import TaskState
 from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
-from sova.core.steps.address_review import AddressReviewStep, _format_findings_prompt
+from sova.core.steps.address_review import (
+    _FINDING_TEXT_LIMIT,
+    AddressReviewStep,
+    _format_findings_prompt,
+    _parse_review_body,
+)
 from sova.llm.models import LLMResult
+from sova.llm.payload import TRUNCATION_MARKER
 
 
 @pytest.fixture
@@ -63,6 +69,48 @@ def execution_context(mock_config: MagicMock, mock_adapter: AsyncMock, tmp_path:
         run_label="test-run",
         pr_number=42,
     )
+
+
+class TestFindingTextCap:
+    """Each finding's description and suggestion is capped where every source meets."""
+
+    def _finding(self, description: str, suggestion: str = "") -> dict:
+        return {
+            "file": "a.py",
+            "line": 1,
+            "severity": 7,
+            "category": "review",
+            "description": description,
+            "suggestion": suggestion,
+        }
+
+    def test_oversized_description_keeps_its_head(self) -> None:
+        description = "Root cause first. " + "x" * (_FINDING_TEXT_LIMIT * 2)
+        prompt = _format_findings_prompt([self._finding(description)])
+        assert "Root cause first." in prompt
+        assert TRUNCATION_MARKER in prompt
+        assert "x" * (_FINDING_TEXT_LIMIT + 1) not in prompt
+
+    def test_oversized_suggestion_is_capped(self) -> None:
+        prompt = _format_findings_prompt([self._finding("bug", suggestion="y" * (_FINDING_TEXT_LIMIT * 2))])
+        assert f"Fix: {'y' * _FINDING_TEXT_LIMIT}\n{TRUNCATION_MARKER}" in prompt
+
+    def test_finding_at_the_limit_is_untouched(self) -> None:
+        prompt = _format_findings_prompt([self._finding("z" * _FINDING_TEXT_LIMIT)])
+        assert "z" * _FINDING_TEXT_LIMIT in prompt
+        assert TRUNCATION_MARKER not in prompt
+
+    def test_every_finding_survives_however_many(self) -> None:
+        findings = [self._finding(f"finding {i} " + "w" * _FINDING_TEXT_LIMIT) for i in range(30)]
+        prompt = _format_findings_prompt(findings)
+        assert all(f"finding {i} " in prompt for i in range(30))
+
+    def test_whole_review_fallback_no_longer_cuts_at_3000(self) -> None:
+        """The free-text fallback used to slice the body at 3000 with no marker; the prompt cap now decides."""
+        body = "Please rework the retry loop. " + "r" * 5000 + " Also fix the timeout."
+        [finding] = _parse_review_body(body)
+        assert finding["description"] == body
+        assert "Also fix the timeout." in _format_findings_prompt([finding])
 
 
 class TestFormatFindingsPromptWithoutFindings:
