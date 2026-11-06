@@ -29,6 +29,26 @@ BUDGET_STOP_RETRY_THRESHOLD = 0.20
 BUDGET_SKIP_HOOKS_THRESHOLD = 0.08
 
 
+def state_accepted(
+    state: TaskState,
+    allowed: frozenset[TaskState] | set[TaskState],
+    *,
+    force: bool = False,
+    override_suitability: bool = False,
+) -> bool:
+    """Whether a role or step may pick up an issue in *state*.
+
+    ``force`` accepts any state. ``override_suitability`` accepts a human-only issue and nothing else, so every
+    other state is still checked against *allowed*. Shared by ``AgentRole.validate_preconditions`` and
+    ``FetchTaskStep`` so the override rule cannot drift between the developer and researcher pipelines.
+    """
+    if force:
+        return True
+    if override_suitability and state == TaskState.HUMAN_ONLY:
+        return True
+    return state in allowed
+
+
 def _delta_saved(after: int | None, before: int | None, compressed_calls: int) -> int | None:
     """Compression saving attributable to one window.
 
@@ -165,6 +185,9 @@ class ExecutionContext:
     turns: int = 0
     turns_reported_calls: int = 0
     force: bool = False
+    # Set by `sova run --override-suitability`: lets a role accept a human-only issue (and nothing else
+    # --force would) after the user chose to run an agent on it anyway.
+    override_suitability: bool = False
     budget_override: bool = False
     task_run_id: int | None = None
     plan_result: PlanResult | None = None

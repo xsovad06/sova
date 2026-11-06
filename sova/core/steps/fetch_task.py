@@ -8,7 +8,7 @@ precondition (replaces pre-engine checks that bypassed step tracking).
 
 from __future__ import annotations
 
-from sova.core.context import ExecutionContext
+from sova.core.context import ExecutionContext, state_accepted
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.utils.logging import get_logger
 
@@ -28,7 +28,11 @@ class FetchTaskStep(BaseStep):
         ctx.task = task
 
         if ctx.allowed_input_states and not ctx.force:
-            if task.state not in ctx.allowed_input_states:
+            if not state_accepted(
+                task.state,
+                ctx.allowed_input_states,
+                override_suitability=ctx.override_suitability,
+            ):
                 allowed = ", ".join(sorted(ctx.allowed_input_states))
                 log.warning(
                     "step.fetch_task.state_rejected",
