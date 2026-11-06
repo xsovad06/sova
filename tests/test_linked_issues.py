@@ -351,6 +351,29 @@ class TestCommandsCloseOnlyOnClosingKeywords:
         assert "sova linked-issues <PR_NUMBER> --apply" in text
         assert "gh issue close" not in text
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/after-merge.md",
+            ".claude/commands/after-merge.md",
+            "sova/commands/data/commands/integrate-pr.md",
+            ".claude/commands/integrate-pr.md",
+        ],
+    )
+    def test_part_of_issue_loses_its_workflow_labels(self, path: str) -> None:
+        """#1266: a merged "Part of" PR strips the four workflow labels without closing the issue."""
+        text = _read(path)
+        assert "`agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block`" in text, (
+            "the command must say a Part of issue loses its workflow labels"
+        )
+
+    @pytest.mark.parametrize("path", ["sova/commands/data/commands/after-merge.md", ".claude/commands/after-merge.md"])
+    def test_after_merge_reports_a_failed_label_edit(self, path: str) -> None:
+        """#1266: a failed label edit is named, never discarded by `2>/dev/null || true`."""
+        text = _read(path)
+        assert "2>/dev/null || true" not in text
+        assert "FAILED: could not remove the workflow labels" in text
+
 
 _PY_HEREDOC = re.compile(r"<<'PY'\n(.*?)\n\s*PY\n", re.DOTALL)
 

@@ -828,7 +828,7 @@ sova linked-issues <PR_NUMBER> --apply
 It acts on each issue the body links and prints one line per issue:
 
 - **Closing keyword** (`Closes #N`, `Fixes #N`, `Resolves #N` or another GitHub form): the issue moves to `post_merge_state`. "done" (default) closes it; "on_qa" adds the `agent:on-qa` label and keeps it open; any other value leaves it as it is and is reported as not updated.
-- **`Part of #N`**: the issue stays open, whatever `post_merge_state` says. It gets one comment naming this PR and listing the acceptance criteria still unchecked in its body; a re-run does not post a second one.
+- **`Part of #N`**: the issue stays open, whatever `post_merge_state` says. It gets one comment naming this PR and listing the acceptance criteria still unchecked in its body; a re-run posts no second. It also loses the `agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block` labels unless another open PR links it.
 - **A bare `#N`**: left alone.
 
 A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead: closing a `Part of` issue is the bug this step exists to prevent.
