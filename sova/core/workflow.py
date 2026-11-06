@@ -604,6 +604,7 @@ class WorkflowEngine:
         # reading a value a completely different, earlier step's runtime set.
         self._ctx.runtime_model = None
         self._ctx.runtime_model_reason = None
+        self._ctx.provider_model = None
         self._ctx.runtime_cost_source = None
         self._ctx.runtime_usage = None
         self._ctx.runtime_cost_usd = Decimal("0")
@@ -630,7 +631,6 @@ class WorkflowEngine:
                     summary=message,
                     error=message,
                     partial_work=partial_work,
-                    cost_usd=self._ctx.cost_usd - cost_before,
                     runaway_triggered=True,
                 )
             else:
@@ -639,7 +639,6 @@ class WorkflowEngine:
                     summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
                     error="step_hard_timeout",
                     partial_work=partial_work,
-                    cost_usd=self._ctx.cost_usd - cost_before,
                 )
         except Exception as exc:  # noqa: BLE001 (documented boundary: any step failure becomes StepResult(success=False))
             log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
@@ -647,14 +646,18 @@ class WorkflowEngine:
                 success=False,
                 summary=f"Exception in {step.name}",
                 error=str(exc),
-                cost_usd=self._ctx.cost_usd - cost_before,
             )
-        # Spend before a timeout or exception is still billed. The synthetic
-        # results above carry it explicitly because _update_step_execution only
-        # writes a CostRecord when there is cost, token usage, or a
-        # runtime-reported model, so leaving it at the default would discard
-        # both the cost and the usage attached below.
+        # The step's spend is the context delta whenever its result carries less: the synthetic
+        # timeout and exception results above, a step that records its calls through
+        # ctx.add_usage() and returns no cost of its own (CommitStep's subject, CreatePRStep's and
+        # RefreshPrBodyStep's body; issue #1396), and a partial result that leaves out a priced
+        # failed fix attempt the context already recorded. _update_step_execution only writes a CostRecord
+        # when there is cost, token usage, or a runtime-reported model, and a record with tokens
+        # but no cost would read as a priced $0 call.
         result.usage = self._ctx.usage_snapshot() - usage_before
+        step_cost = self._ctx.cost_usd - cost_before
+        if step_cost > result.cost_usd:
+            result.cost_usd = step_cost
         return result
 
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
@@ -1236,7 +1239,7 @@ class WorkflowEngine:
                         self._build_cost_record(
                             record.step_name,
                             elapsed_ms,
-                            model=self._ctx.resolved_model or "claude",
+                            model=self._ctx.provider_model or self._ctx.resolved_model or "unknown",
                             cost_usd=provider_cost,
                             cost_source=self._ctx.cost_source,
                             model_selection_reason=(

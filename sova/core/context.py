@@ -282,6 +282,14 @@ class ExecutionContext:
     runtime_model: str | None = None
     runtime_model_reason: str | None = None
 
+    # Step-scoped: the model the provider reported for this attempt's provider-path
+    # results (the last one that named a model), set by add_usage(). The CostRecord
+    # writer labels the provider share with it before resolved_model: a step with no
+    # resolved model (the researcher's spec call, a routed commit subject) used to be
+    # stored as a literal "claude" whatever served it. Reset before every step
+    # attempt, like runtime_model. Issue #1396.
+    provider_model: str | None = None
+
     # Provenance of the dollars behind this step's spend, mirroring
     # runtime_model/resolved_model's split. add_usage() writes both: a result
     # tagged with LLMResult.runtime_name (a model-ignoring runtime's dispatch,
@@ -387,6 +395,7 @@ class ExecutionContext:
                 self._add_routed_spend(result, routed_reason)
                 return
             self.cost_source = combine_cost_sources(self.cost_source, result.cost_source)
+            self.provider_model = result.model or self.provider_model
             return
         delta = self.usage_snapshot() - runtime_before
         self.runtime_usage = delta if self.runtime_usage is None else self.runtime_usage + delta

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -350,6 +350,48 @@ class TestEngineAttribution:
         assert result.cost_usd == Decimal("0.10")
 
     @pytest.mark.asyncio
+    async def test_step_that_returns_no_cost_takes_the_context_delta(self, ctx: ExecutionContext) -> None:
+        """CommitStep's shape: ctx.add_usage() for its call, then a StepResult with no cost (issue #1396)."""
+
+        class _UnpricedReturnStep(_SpendingStep):
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                ctx.add_usage(_llm_result(cost_usd=Decimal("0.0014")))
+                return StepResult(success=True, summary="done")
+
+        step = _UnpricedReturnStep()
+        result = await WorkflowEngine(steps=[step], ctx=ctx)._run_step_with_timeout(step)
+
+        assert result.cost_usd == Decimal("0.0014")
+
+    @pytest.mark.asyncio
+    async def test_result_cost_below_the_context_delta_is_raised_to_it(self, ctx: ExecutionContext) -> None:
+        """A partial result that omits a priced failed fix attempt must not understate the step's spend."""
+
+        class _PartialCostStep(_SpendingStep):
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                ctx.add_usage(_llm_result(cost_usd=Decimal("0.01")))
+                ctx.add_usage(_llm_result(cost_usd=Decimal("0.02")))
+                return StepResult(success=True, summary="done", cost_usd=Decimal("0.01"))
+
+        step = _PartialCostStep()
+        result = await WorkflowEngine(steps=[step], ctx=ctx)._run_step_with_timeout(step)
+
+        assert result.cost_usd == Decimal("0.03")
+
+    @pytest.mark.asyncio
+    async def test_provider_model_is_reset_before_each_attempt(self, ctx: ExecutionContext) -> None:
+        ctx.provider_model = "openai/gpt-6.1-sol"
+
+        class _SilentStep(_SpendingStep):
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="done")
+
+        step = _SilentStep()
+        await WorkflowEngine(steps=[step], ctx=ctx)._run_step_with_timeout(step)
+
+        assert ctx.provider_model is None
+
+    @pytest.mark.asyncio
     async def test_delta_excludes_spend_from_earlier_steps(self, ctx: ExecutionContext) -> None:
         """Per-step attribution must not re-count what earlier steps already spent."""
         ctx.add_usage(_llm_result())
@@ -545,6 +587,88 @@ class TestCostRecordWrite:
         assert len(rows) == 1
         assert rows[0].input_tokens == 0
         assert rows[0].tokens_saved is None
+
+    async def _provider_rows(self, engine: WorkflowEngine, phase: str, result: StepResult) -> list:
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        step_exec_id = await engine._create_step_execution(phase)
+        await engine._update_step_execution(step_exec_id, result, elapsed_ms=10)
+        async with await get_session() as session:
+            return list((await session.execute(select(CostRecord))).scalars().all())
+
+    async def test_provider_share_is_labelled_with_the_model_the_provider_reported(self, ctx: ExecutionContext) -> None:
+        """The researcher's spec call has no resolved model; it used to be stored as "claude" (issue #1396)."""
+        engine = await self._engine_with_run(ctx)
+        ctx.resolved_model = None
+        usage_before = ctx.usage_snapshot()
+        ctx.add_usage(_llm_result(model="openai/gpt-6.1-sol", cost_source=CostSource.PRICED))
+        result = StepResult(success=True, summary="done", cost_usd=Decimal("0.10"))
+        result.usage = ctx.usage_snapshot() - usage_before
+
+        rows = await self._provider_rows(engine, "spec", result)
+
+        assert [(row.model, row.cost_source) for row in rows] == [("openai/gpt-6.1-sol", "priced")]
+
+    async def test_reported_model_outranks_the_resolved_model(self, ctx: ExecutionContext) -> None:
+        engine = await self._engine_with_run(ctx)
+        ctx.resolved_model = "openai/gpt-6.1-sol"
+        ctx.add_usage(_llm_result(model="gpt-6.1-sol-2026-10-01"))
+        result = StepResult(success=True, summary="done", cost_usd=Decimal("0.10"), usage=TokenUsage(input_tokens=1))
+
+        rows = await self._provider_rows(engine, "create_pr", result)
+
+        assert rows[0].model == "gpt-6.1-sol-2026-10-01"
+
+    async def test_unlabelled_provider_share_falls_back_to_unknown(self, ctx: ExecutionContext) -> None:
+        engine = await self._engine_with_run(ctx)
+        ctx.resolved_model = None
+        ctx.provider_model = None
+        result = StepResult(success=True, summary="done", cost_usd=Decimal("0.01"), usage=TokenUsage(input_tokens=5))
+
+        rows = await self._provider_rows(engine, "commit", result)
+
+        assert rows[0].model == "unknown"
+
+    async def test_commit_step_records_the_cost_of_its_subject_call(self, ctx: ExecutionContext) -> None:
+        """The real CommitStep, git and the LLM mocked: no more tokens with a priced $0 (issue #1396)."""
+        from sova.core.steps.commit import CommitStep
+
+        engine = await self._engine_with_run(ctx)
+        ctx.resolved_model = None
+        subject = LLMResult(
+            text="fix(core): handle the empty case",
+            model="openai/gpt-6.1-sol",
+            cost_usd=Decimal("0.0014"),
+            cost_source=CostSource.PRICED,
+            input_tokens=336,
+            output_tokens=74,
+        )
+        step = CommitStep()
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock),
+            patch("sova.core.steps.commit.invoke", new_callable=AsyncMock, return_value=subject),
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" sova/core/a.py | 2 +-\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout="sova/core/a.py\0"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await engine._run_step_with_timeout(step)
+
+        assert result.success, result.error
+        rows = await self._provider_rows(engine, "commit", result)
+
+        assert [(r.model, r.cost_usd, r.cost_source, r.input_tokens) for r in rows] == [
+            ("openai/gpt-6.1-sol", Decimal("0.0014"), "priced", 336)
+        ]
+        assert not [r for r in rows if r.input_tokens and r.cost_usd == 0 and r.cost_source == "priced"]
 
 
 class TestNumTurnsParsing:
