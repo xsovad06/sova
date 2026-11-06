@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from sova.config.context import get_project_dir
 from sova.dashboard.services import batch_service
+from sova.dashboard.services.agent_validation import suitability_blocked_detail
 from sova.dashboard.services.control_service import start_agent
 from sova.dashboard.services.queue_service import get_priority_queue
 
@@ -57,11 +58,16 @@ async def queue() -> dict:
     return {"queue": items}
 
 
-@router.post("/queue/start/{issue}")
+@router.post(
+    "/queue/start/{issue}",
+    responses={409: {"description": "Agent already running, budget exceeded, or issue not meant for an agent"}},
+)
 async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pattern=r"^\d+$")) -> dict:
     """Start an agent run for an issue from the queue."""
-    result = await start_agent(issue=issue, role=req.role, force=req.force)
+    result = await start_agent(issue=issue, role=req.role, force=req.force, enforce_suitability=True)
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+        if result.get("code") == "suitability_blocked":
+            raise HTTPException(status_code=409, detail=suitability_blocked_detail(result))
         raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Agent start failed")
     return result
 

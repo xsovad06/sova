@@ -5,14 +5,22 @@ Separated from agent_lifecycle to isolate validation and guard logic.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.adapters.base import Task
 from sova.dashboard.services.agent_pool import ProjectAgents
+from sova.supervisor.suitability import Suitability, SuitabilityMode, assess_suitability
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
+    from sova.supervisor.dependency_graph import DependencyGraph
 
 log = get_logger(component="dashboard.control.validation")
 
@@ -134,6 +142,241 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
         log.warning("issue_budget_check.failed", issue=issue, exc_info=True)
 
     return None
+
+
+# Roles that classify or review an issue, which is always allowed whatever the issue's suitability.
+SUITABILITY_EXEMPT_ROLES = frozenset({"triage", "reviewer"})
+# Only these two modes stop a manual launch: interactive and blocked issues are shown, never refused.
+_SUITABILITY_BLOCKING_MODES = frozenset({SuitabilityMode.EPIC, SuitabilityMode.HUMAN})
+# One deadline for the whole launch-time check (task fetch and classification together). It runs while
+# start_agent() holds the project lock, so a stalled tracker must not hold it for long.
+_SUITABILITY_CHECK_TIMEOUT_S = 10.0
+
+
+class RolePinUnavailable(Exception):
+    """The tracker state of an issue could not be read, so a role-less override cannot pick a safe role."""
+
+
+async def classify_issue_suitability(
+    issue: str,
+    project_dir: Path,
+    task: Task | None = None,
+    cfg: ProjectConfig | None = None,
+    graph: DependencyGraph | None = None,
+) -> Suitability | None:
+    """Classify *issue* for a manual launch, or return None when the classification could not be read.
+
+    None means unknown, never allowed: the caller decides what an unknown issue does. The local `sova assess`
+    record is read only when no tracker label already decides the outcome, as the autonomous
+    human-involvement gate does. A caller that already fetched the issue passes it as *task* (and its loaded
+    config as *cfg*) to save a second read. Dependencies are considered only when the caller passes a *graph*
+    that contains the issue (the launch modal's display; `blocked` never stops a launch, so the launch-time
+    check passes none). A graph that lacks the issue is ignored rather than failing closed to `blocked`. This
+    function sets no deadline of its own: `classify_for_launch()` bounds the whole read.
+    """
+    try:
+        return await _read_issue_suitability(issue, project_dir, task, cfg, graph)
+    except Exception:  # noqa: BLE001 (a tracker or config or DB failure leaves the classification unknown)
+        log.warning("issue_suitability_check.failed", issue=issue, exc_info=True)
+        return None
+
+
+def _graph_has_task(task: Task, graph: DependencyGraph | None) -> bool:
+    """Whether *graph* holds *task*, so its dependencies can be read from it."""
+    if graph is None:
+        return False
+    try:
+        return graph.has_task(int(task.id))
+    except (TypeError, ValueError):
+        return False
+
+
+async def _read_issue_suitability(
+    issue: str, project_dir: Path, task: Task | None, cfg: ProjectConfig | None, graph: DependencyGraph | None
+) -> Suitability:
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.supervisor.labels import local_assessment_applies
+
+    if cfg is None:
+        cfg = load_config(project_dir)
+    if task is None:
+        task = await create_adapter(cfg).get_task(issue)
+
+    local_assessment: str | None = None
+    if local_assessment_applies(task.labels):
+        local_assessment = await _latest_local_suitability(task.id or issue, issue, project_dir, cfg.github_repo)
+    with_dependencies = _graph_has_task(task, graph)
+    return assess_suitability(
+        task,
+        graph if with_dependencies else None,
+        local_assessment=local_assessment,
+        consider_dependencies=with_dependencies,
+    )
+
+
+async def _latest_local_suitability(canonical: str, typed: str, project_dir: Path, project_slug: str) -> str | None:
+    """The latest `sova assess` suitability for the issue, keyed by the tracker's own id first.
+
+    A launch for `007` fetches issue `7`, and the record is stored under `7`; the id as typed is still
+    tried when it differs, so a record written under that spelling is not lost.
+    """
+    from sova.db.session import get_session
+    from sova.knowledge.assessments import get_latest_assessment
+
+    async with await get_session(project_dir=project_dir) as session:
+        for key in dict.fromkeys((canonical, typed)):
+            record = await get_latest_assessment(session, issue_number=key, project_slug=project_slug)
+            if record is not None:
+                return record.suitability
+    return None
+
+
+def canonical_role(role: str | None, cfg: ProjectConfig | None) -> str:
+    """The role name the dispatcher would run for an explicit *role*: a configured nickname resolved."""
+    from sova.roles.dispatcher import resolve_role_nickname
+
+    return resolve_role_nickname(role or "developer", cfg.roles if cfg is not None else None)
+
+
+def dispatched_role(role: str | None, task: Task, cfg: ProjectConfig | None) -> str | None:
+    """The role a run launches as: *role* resolved, or for no role the one `dispatch()` picks from the state.
+
+    `sova run` with no `--role` routes by tracker state (BACKLOG to triage, IN_REVIEW to reviewer), and a
+    state no role handles (HUMAN_ONLY) has none: None, which is never exempt from the suitability check.
+    """
+    if role:
+        return canonical_role(role, cfg)
+    from sova.roles.dispatcher import role_for_state
+
+    return role_for_state(task.state)
+
+
+async def pin_override_role(issue: str, role: str | None, project_dir: Path) -> str | None:
+    """The role to launch with when a suitability override has none: the default for a human-only issue.
+
+    `dispatch()` has no role for a HUMAN_ONLY issue and raises, so an override without an explicit role would
+    be reported as started and then fail. Any other state keeps routing by state (None is returned).
+    Raises `RolePinUnavailable` when the state cannot be read: that is neither "not human-only" nor a role, and
+    the caller must refuse the launch and ask for an explicit role instead of spawning one that may fail.
+    """
+    if role or not issue:
+        return role
+    try:
+        from sova.adapters import create_adapter
+        from sova.adapters.base import TaskState
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        async with asyncio.timeout(_SUITABILITY_CHECK_TIMEOUT_S):
+            state = await create_adapter(cfg).get_state(issue)
+    except Exception as exc:  # noqa: BLE001 (any tracker or config failure leaves the state unread)
+        log.warning("issue_suitability_check.role_pin_failed", issue=issue, exc_info=True)
+        raise RolePinUnavailable(
+            f"Cannot read the state of issue #{issue} to choose a role for the override. "
+            "Pick an explicit role and launch again."
+        ) from exc
+    return cfg.roles.default if state == TaskState.HUMAN_ONLY else None
+
+
+async def classify_for_launch(
+    issue: str,
+    role: str | None,
+    project_dir: Path,
+    task: Task | None = None,
+    cfg: ProjectConfig | None = None,
+    graph: DependencyGraph | None = None,
+    timeout_s: float | None = None,
+) -> Suitability | None:
+    """The suitability of *issue* for a launch as *role*, or None when it is exempt or could not be read.
+
+    A triage or reviewer run is exempt, whether *role* names it, a nickname resolves to it, or (with no *role*)
+    `dispatch()` would choose it from the tracker state; the tracker is not read for the classification then.
+    The task fetch and the classification share one *timeout_s* deadline (`_SUITABILITY_CHECK_TIMEOUT_S` when
+    not given); a timeout reads as unknown (None).
+    """
+    timeout_s = timeout_s if timeout_s is not None else _SUITABILITY_CHECK_TIMEOUT_S
+    try:
+        async with asyncio.timeout(timeout_s):
+            return await _classify_for_launch(issue, role, project_dir, task, cfg, graph)
+    except TimeoutError:
+        log.warning("issue_suitability_check.timed_out", issue=issue, timeout_s=timeout_s)
+        return None
+
+
+async def _classify_for_launch(
+    issue: str,
+    role: str | None,
+    project_dir: Path,
+    task: Task | None,
+    cfg: ProjectConfig | None,
+    graph: DependencyGraph | None,
+) -> Suitability | None:
+    if role:
+        if canonical_role(role, cfg) in SUITABILITY_EXEMPT_ROLES:
+            return None
+    else:
+        if task is None:
+            task = await _fetch_launch_task(issue, project_dir, cfg)
+        if task is None or dispatched_role(role, task, cfg) in SUITABILITY_EXEMPT_ROLES:
+            return None
+    return await classify_issue_suitability(issue, project_dir, task=task, cfg=cfg, graph=graph)
+
+
+async def check_issue_suitability(issue: str, role: str | None, project_dir: Path) -> dict | None:
+    """Refuse a manual launch on an epic or human-only issue.
+
+    Returns an error dict (``code="suitability_blocked"``, with ``mode`` and ``reasons``) when the issue is
+    classified `epic` or `human`, None when the launch may proceed. Triage and reviewer runs are never
+    blocked: named directly, through a configured nickname, or (with no *role*) chosen by `dispatch()` from
+    the tracker state. An issue whose classification or state cannot be read is let through: a tracker outage
+    must not make every manual launch impossible, and the failure has already been logged. The whole check
+    (task fetch included) is bounded by one `_SUITABILITY_CHECK_TIMEOUT_S` deadline.
+    """
+    if not issue:
+        return None
+    cfg: ProjectConfig | None = None
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+    except Exception:  # noqa: BLE001 (an unreadable config leaves nicknames unresolved and classify retries it)
+        log.warning("issue_suitability_check.config_failed", issue=issue, exc_info=True)
+    suitability = await classify_for_launch(issue, role, project_dir, cfg=cfg)
+    if suitability is None or suitability.mode not in _SUITABILITY_BLOCKING_MODES:
+        return None
+
+    reasons = suitability.reasons
+    described = ", ".join(f"{r.get('source')}: {r.get('value')}" for r in reasons) or "no reason recorded"
+    log.info("issue_suitability_check.blocked", issue=issue, role=role, mode=suitability.mode.value, reasons=reasons)
+    return {
+        "code": "suitability_blocked",
+        "error": f"Issue #{issue} is classified {suitability.mode.value} ({described}) and is not meant for an agent.",
+        "mode": suitability.mode.value,
+        "reasons": reasons,
+    }
+
+
+async def _fetch_launch_task(issue: str, project_dir: Path, cfg: ProjectConfig | None) -> Task | None:
+    """The tracker issue, or None (logged) when it cannot be read; the caller's deadline bounds the read."""
+    try:
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+
+        return await create_adapter(cfg or load_config(project_dir)).get_task(issue)
+    except Exception:  # noqa: BLE001 (a tracker or config failure leaves the launch role unknown)
+        log.warning("issue_suitability_check.task_fetch_failed", issue=issue, exc_info=True)
+        return None
+
+
+def suitability_blocked_detail(result: dict) -> dict:
+    """The 409 body for a ``suitability_blocked`` start: the clients key on ``code`` and render ``message``."""
+    return {
+        "code": "suitability_blocked",
+        "message": result["error"],
+        "mode": result.get("mode"),
+        "reasons": result.get("reasons", []),
+    }
 
 
 def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:

@@ -21,10 +21,16 @@ from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services import control_service
 from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
+from sova.dashboard.services.agent_validation import (
+    classify_for_launch,
+    suitability_blocked_detail,
+)
 from sova.dashboard.services.output_stream_service import get_output_stream_service
+from sova.dashboard.services.work_item_service import load_classification_graph
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
+from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, Suitability
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
@@ -163,6 +169,7 @@ class StartAgentRequest(BaseModel):
     role: str | None = None
     force: bool = False
     budget_override: bool = False
+    override_suitability: bool = False
     resume_run_id: int | None = None
     pr_number: int | None = None
     model: str | None = None
@@ -306,14 +313,68 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     return {"created": created, "errors": errors}
 
 
+# The launch modal's warning waits this long for the tracker, the dependency graph and the classification
+# together, so a slow tracker delays the modal by at most this and only loses the warning.
+_SUITABILITY_DISPLAY_TIMEOUT_S = 5.0
+
+
+async def _fetch_task_or_none(cfg: Any, issue_number: str) -> Any:
+    """The tracker issue for the launch modal, or None (logged) when it cannot be read."""
+    from sova.adapters import create_adapter
+
+    try:
+        return await create_adapter(cfg).get_task(issue_number)
+    except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
+        log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
+        return None
+
+
+async def _display_suitability(
+    issue_number: str, role: str | None, project_dir: Path, cfg: Any, task_future: asyncio.Future
+) -> Suitability | None:
+    """The issue's classification for the launch modal, dependencies included, or None when unknown.
+
+    Runs concurrently with the complexity resolution, sharing its task fetch (*task_future*, shielded so this
+    wait running out does not cancel the fetch the complexity step still needs). The dependency graph comes
+    from the shared work-items build; with none available the classification falls back to labels only, rather
+    than failing closed to a `blocked` that says nothing about the issue.
+    """
+    try:
+        async with asyncio.timeout(_SUITABILITY_DISPLAY_TIMEOUT_S):
+            task = await asyncio.shield(task_future)
+            if task is None:
+                return None
+            graph = await load_classification_graph(project_dir)
+            return await classify_for_launch(
+                issue_number,
+                role,
+                project_dir,
+                task=task,
+                cfg=cfg,
+                graph=graph,
+                timeout_s=_SUITABILITY_DISPLAY_TIMEOUT_S,
+            )
+    except TimeoutError:
+        log.warning("complexity.suitability_timed_out", issue=issue_number, timeout_s=_SUITABILITY_DISPLAY_TIMEOUT_S)
+        return None
+    except Exception:  # noqa: BLE001 (a warning must never fail the launch modal)
+        log.warning("complexity.suitability_failed", issue=issue_number, exc_info=True)
+        return None
+
+
 @router.get("/agents/issue/{issue_number}/complexity")
-async def get_issue_complexity(issue_number: str) -> dict:
+async def get_issue_complexity(issue_number: str, role: str | None = None) -> dict:
     """Return complexity tier and suggested model for an issue.
 
     Checks TaskAssessmentRecord first; falls back to on-the-fly assessment
-    via ``assess_complexity()`` using issue metadata from the adapter.
+    via ``assess_complexity()`` using issue metadata from the adapter. ``suitability`` is the issue's
+    classification (``mode`` and ``reasons``, open dependencies included) when it is anything but autonomous or
+    unclassified, so the launch modal can warn before the user starts a run; null when the issue is fit or
+    could not be classified within ``_SUITABILITY_DISPLAY_TIMEOUT_S``. It is resolved concurrently with the
+    complexity, so a slow tracker costs the modal at most that timeout.
+    The optional *role* names the run being launched: a triage or reviewer run is never refused, so for those
+    (or a nickname of them, or no role on an issue the dispatcher would route to one) ``suitability`` is null.
     """
-    from sova.adapters import create_adapter
     from sova.config.context import get_project_dir
     from sova.config.loader import load_config
     from sova.db.models import TaskAssessmentRecord
@@ -323,34 +384,44 @@ async def get_issue_complexity(issue_number: str) -> dict:
     project_dir = get_project_dir()
     cfg = load_config(project_dir)
 
-    # 1. Check DB for existing assessment
-    complexity_str: str | None = None
-    async with await get_session(project_dir) as session:
-        row = (
-            await session.execute(
-                select(TaskAssessmentRecord.estimated_complexity)
-                .where(TaskAssessmentRecord.issue_number == issue_number)
-                .order_by(TaskAssessmentRecord.assessed_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if row:
-            complexity_str = row
+    # One tracker read serves the complexity fallback and the suitability warning, started up front so the
+    # DB lookup below overlaps it.
+    task_future = asyncio.ensure_future(_fetch_task_or_none(cfg, issue_number))
+    suitability_future = asyncio.ensure_future(_display_suitability(issue_number, role, project_dir, cfg, task_future))
+    try:
+        # 1. Check DB for existing assessment
+        complexity_str: str | None = None
+        async with await get_session(project_dir) as session:
+            row = (
+                await session.execute(
+                    select(TaskAssessmentRecord.estimated_complexity)
+                    .where(TaskAssessmentRecord.issue_number == issue_number)
+                    .order_by(TaskAssessmentRecord.assessed_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row:
+                complexity_str = row
 
-    # 2. Compute on-the-fly if no DB record
-    if complexity_str is None:
-        try:
-            adapter = create_adapter(cfg)
-            task = await adapter.get_task(issue_number)
-            tier = assess_complexity(
-                task.title,
-                task.description or "",
-                labels=list(task.labels or []),
-            )
-            complexity_str = tier.value
-        except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
-            log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
+        # 2. Compute on-the-fly if no DB record
+        if complexity_str is None:
             complexity_str = ComplexityTier.MODERATE.value
+            task = await task_future
+            if task is not None:
+                try:
+                    complexity_str = assess_complexity(
+                        task.title,
+                        task.description or "",
+                        labels=list(task.labels or []),
+                    ).value
+                except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
+                    log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
+
+        suitability = await suitability_future
+    finally:
+        for pending in (suitability_future, task_future):
+            if not pending.done():
+                pending.cancel()
 
     try:
         tier = ComplexityTier(complexity_str)
@@ -372,6 +443,8 @@ async def get_issue_complexity(issue_number: str) -> dict:
         log.debug("complexity.resolve_alias_failed", alias=model_alias, exc_info=True)
         suggested_model_id = model_alias
 
+    warn = suitability is not None and suitability.mode not in AGENT_ELIGIBLE_MODES
+
     # No per-tier option list: the launch modal's Model select is populated
     # from runtime-layer discovery (GET /api/models/available?layer=runtime,
     # #1039) and reads only the suggestion below, as the default it
@@ -382,6 +455,7 @@ async def get_issue_complexity(issue_number: str) -> dict:
         "suggested_model_id": suggested_model_id,
         "reason": reason,
         "confirm_model": cfg.dashboard.confirm_model,
+        "suitability": {"mode": suitability.mode.value, "reasons": suitability.reasons} if warn else None,
     }
 
 
@@ -646,12 +720,37 @@ async def _validate_runtime_model(model_id: str) -> None:
     "/agents/start",
     responses={
         400: {"description": "Invalid request, or a model or internal LLM model override the run cannot honor"},
-        409: {"description": "Agent already running for this issue, or budget exceeded"},
+        409: {"description": "Agent already running for this issue, budget exceeded, or issue not meant for an agent"},
         503: {"description": "Model discovery unavailable to verify a model or internal LLM model override"},
     },
 )
 async def start_agent(req: StartAgentRequest) -> dict:
-    """Start a new agent process."""
+    """Start a new agent process.
+
+    Every request here is a user's click (internal continuations call ``control_service.start_agent`` directly),
+    so it is checked for suitability, a resume from the run page included: an epic or human-only issue returns
+    the structured 409 whose message the page shows in a toast, and only ``override_suitability`` lets it start.
+    """
+    await _validate_start_request(req)
+    result = await control_service.start_agent(
+        req.issue,
+        role=req.role,
+        force=req.force,
+        budget_override=req.budget_override,
+        enforce_suitability=True,
+        override_suitability=req.override_suitability,
+        resume_run_id=req.resume_run_id,
+        pr_number=req.pr_number,
+        model=req.model,
+        llm_model_override=req.llm_model_override,
+    )
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+        raise HTTPException(status_code=409, detail=_start_error_detail(result))
+    return result
+
+
+async def _validate_start_request(req: StartAgentRequest) -> None:
+    """Raise the 400 (or the discovery 503) for a start request the run could not honor."""
     if not req.issue and not req.role:
         raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
     if req.model is not None and req.model not in TIER_NAMES:
@@ -660,27 +759,20 @@ async def start_agent(req: StartAgentRequest) -> dict:
             await _validate_runtime_model(req.model)
     if req.llm_model_override is not None:
         await _validate_llm_model_override(req.role, req.llm_model_override)
-    result = await control_service.start_agent(
-        req.issue,
-        role=req.role,
-        force=req.force,
-        budget_override=req.budget_override,
-        resume_run_id=req.resume_run_id,
-        pr_number=req.pr_number,
-        model=req.model,
-        llm_model_override=req.llm_model_override,
-    )
-    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
-        detail: dict | str = result.get("detail") or result.get("error") or "Command failed"
-        if result.get("code") == "budget_exceeded":
-            detail = {
-                "code": "budget_exceeded",
-                "message": result["error"],
-                "total_cost_usd": result.get("total_cost_usd"),
-                "max_issue_budget": result.get("max_issue_budget"),
-            }
-        raise HTTPException(status_code=409, detail=detail)
-    return result
+
+
+def _start_error_detail(result: dict) -> dict | str:
+    """The 409 detail for a failed start: structured for a budget or suitability refusal, text otherwise."""
+    if result.get("code") == "budget_exceeded":
+        return {
+            "code": "budget_exceeded",
+            "message": result["error"],
+            "total_cost_usd": result.get("total_cost_usd"),
+            "max_issue_budget": result.get("max_issue_budget"),
+        }
+    if result.get("code") == "suitability_blocked":
+        return suitability_blocked_detail(result)
+    return result.get("detail") or result.get("error") or "Command failed"
 
 
 @router.post("/agents/{run_id}/stop")

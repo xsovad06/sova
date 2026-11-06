@@ -62,9 +62,14 @@ from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_db import (
+    SUITABILITY_CHECK_KEY,
+    SUITABILITY_OVERRIDDEN,
+    SUITABILITY_RESUMABLE,
+    SUITABILITY_SKIPPED,
     _create_task_run,
     _fetch_run_states,
     _finalize_orphaned_run,
+    _load_suitability_check,
     _update_task_run_output_path,
     _update_task_run_pid,
 )
@@ -157,6 +162,10 @@ from sova.dashboard.services.agent_resource import (
 from sova.dashboard.services.agent_resource import (
     cancel_background_tasks as cancel_background_tasks,
 )
+from sova.dashboard.services.agent_validation import (
+    RolePinUnavailable,
+    pin_override_role,
+)
 from sova.dashboard.services.agent_validation import (  # re-export facade
     _check_issue_budget as _check_issue_budget,
 )
@@ -168,6 +177,9 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.agent_validation import (
     _transition_to_in_progress as _transition_to_in_progress,
+)
+from sova.dashboard.services.agent_validation import (
+    check_issue_suitability as check_issue_suitability,
 )
 from sova.dashboard.services.agent_validation import (
     check_memory_pressure as check_memory_pressure,
@@ -576,6 +588,8 @@ async def start_agent(
     role: str | None = None,
     force: bool = False,
     budget_override: bool = False,
+    enforce_suitability: bool = False,
+    override_suitability: bool = False,
     slug: str | None = None,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
@@ -590,6 +604,12 @@ async def start_agent(
     written to config or the DB. Callers validate the model ID against
     discovery first (see the ``/agents/start`` router); the role check is
     repeated here so no caller can launch a run whose override is ignored.
+
+    *enforce_suitability* is set by callers where a user picked the issue: an epic or human-only issue then
+    returns a ``suitability_blocked`` error unless *override_suitability* is set. It is separate from *force*,
+    which never implies the override. Autonomous and continuation callers leave it off. An override with no
+    *role* on a human-only issue launches as the configured default role, since the dispatcher has no role for
+    that state and the run would otherwise fail after being reported as started.
     """
     from sova.dashboard.services.agent_db import _capture_pr_head_sha
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
@@ -603,6 +623,21 @@ async def start_agent(
     pa = _get_project_agents(slug)
     if not issue and pr_number:
         issue = await _resolve_issue_from_pr(pr_number, pa.project_dir)
+
+    if issue and resume_run_id and enforce_suitability and not override_suitability:
+        # A resume continues a run that already started: one the user launched anyway, or an autonomous one,
+        # is not refused again for the issue's suitability (the run page has no override of its own).
+        prior_check = await _load_suitability_check(resume_run_id, pa.project_dir)
+        if prior_check in SUITABILITY_RESUMABLE:
+            log.info("start_agent.resume_suitability_inherited", run_id=resume_run_id, prior=prior_check)
+            enforce_suitability = prior_check != SUITABILITY_SKIPPED
+            override_suitability = prior_check == SUITABILITY_OVERRIDDEN
+
+    if override_suitability and not resume_run_id:
+        try:
+            role = await pin_override_role(issue, role, pa.project_dir)
+        except RolePinUnavailable as exc:
+            return {"error": str(exc), "code": "suitability_role_unresolved"}
 
     if issue and role == "developer":
         pr_number = await _developer_pr_number(issue, pr_number, pa.project_dir, resuming=bool(resume_run_id))
@@ -638,6 +673,10 @@ async def start_agent(
             conflict = await _check_issue_conflict(issue, pa, force=force)
             if conflict:
                 return conflict
+            if enforce_suitability and not override_suitability:
+                suitability_error = await check_issue_suitability(issue, role, pa.project_dir)
+                if suitability_error:
+                    return suitability_error
             _evict_completed_for_issue(pa, issue)
 
         project_dir = pa.project_dir
@@ -663,7 +702,18 @@ async def start_agent(
                 detail="Per-issue budget N/A; per-run budget still applies",
             )
 
-        run_id = await _create_task_run(issue or None, role or "developer", project_dir, pr_number=pr_number)
+        suitability_check = None
+        if override_suitability:
+            suitability_check = SUITABILITY_OVERRIDDEN
+        elif issue and not enforce_suitability:
+            suitability_check = SUITABILITY_SKIPPED
+        run_id = await _create_task_run(
+            issue or None,
+            role or "developer",
+            project_dir,
+            pr_number=pr_number,
+            assessment={SUITABILITY_CHECK_KEY: suitability_check} if suitability_check else None,
+        )
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
@@ -693,6 +743,10 @@ async def start_agent(
             cmd_parts.append("--force")
         if budget_override:
             cmd_parts.append("--budget-override")
+        if override_suitability:
+            # The CLI's own suitability check is skipped for a --run-id spawn; the flag lets the developer
+            # role's state gate accept a human-only issue the user chose to launch anyway.
+            cmd_parts.append("--override-suitability")
         if pr_number:
             cmd_parts.extend(["--pr", str(pr_number)])
 
