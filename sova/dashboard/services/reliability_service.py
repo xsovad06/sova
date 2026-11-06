@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, ScalarSelect, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.core.state import TASK_RUN_TERMINAL
@@ -28,7 +29,10 @@ from sova.llm.errors import (
     RateLimitError,
     classify_error,
 )
+from sova.utils.logging import get_logger
 from sova.utils.network import looks_like_network_outage
+
+log = get_logger(component="dashboard.reliability_service")
 
 # Below this many terminal runs in the window, a role's success rate is too
 # noisy to act on. Mirrors get_monthly_projection()'s insufficient_data
@@ -342,3 +346,345 @@ async def get_spend_by_outcome(session: AsyncSession, days: int = 30) -> dict:
         # _INCOMPLETE_STATUSES by TestStatusPartition) cannot leave the UI label stale.
         "non_completing_statuses": sorted(TASK_RUN_TERMINAL - {"done"}),
     }
+
+
+# Step names that tell a developer run's pipeline apart (STEP_REGISTRY names in
+# sova/core/steps/): the initial pipeline runs "develop", the address-review
+# pipeline runs "address_review". The step is the only durable record of which
+# pipeline ran; run_label and current_step are not.
+_DEVELOP_STEP = "develop"
+_ADDRESS_REVIEW_STEP = "address_review"
+
+_UNKNOWN_ROLE = "unknown"
+_COMMAND_ROLE_PREFIX = "command:"
+
+# CostRecord.phase for an agent-session run (agent_db.py), which is not a pipeline
+# step: a command:* run's usage is reported per command phase from phase_usage instead.
+_AGENT_SESSION_PHASE = "agent"
+
+_KIND_STEP = "step"
+_KIND_COMMAND_PHASE = "command_phase"
+
+
+@dataclass(frozen=True)
+class _DoneRun:
+    id: int
+    role: str
+    started_at: datetime
+    ended_at: datetime | None
+    cost: Decimal
+
+
+def _as_utc(value: datetime) -> datetime:
+    # SQLite returns naive datetimes even for timezone=True columns (they hold UTC);
+    # PostgreSQL returns aware ones. Normalize both so month bucketing and duration
+    # arithmetic never mix the two.
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _month_window_start(months: int) -> datetime:
+    """Aware UTC start of the earliest calendar month in a window of `months` months, current included."""
+    now = datetime.now(timezone.utc)
+    year, month_index = divmod(now.year * 12 + now.month - 1 - (months - 1), 12)
+    return datetime(year, month_index + 1, 1, tzinfo=timezone.utc)
+
+
+def _display_role(role: str | None, step_names: Collection[str]) -> str:
+    """Normalize a raw TaskRun.role into the label the usage tables group by.
+
+    - NULL or empty role -> "unknown".
+    - "command:/integrate-pr 123" and "command:/integrate-pr" -> "command:integrate-pr" (the
+      legacy strings carry a slash and an argument); a bare "command:" -> "unknown".
+    - "developer" -> "developer:develop" or "developer:address-review", decided by which step
+      the run executed. A run with both steps (resumed or merged) is "developer:develop":
+      develop takes precedence, since it means the run started the PR. A run with neither
+      (no StepExecution rows) stays plain "developer" rather than being dropped.
+    - anything else is returned as stored.
+    """
+    if not role:
+        return _UNKNOWN_ROLE
+    if role.startswith(_COMMAND_ROLE_PREFIX):
+        words = role[len(_COMMAND_ROLE_PREFIX) :].split()
+        name = words[0].lstrip("/") if words else ""
+        return f"{_COMMAND_ROLE_PREFIX}{name}" if name else _UNKNOWN_ROLE
+    if role == "developer":
+        if _DEVELOP_STEP in step_names:
+            return "developer:develop"
+        if _ADDRESS_REVIEW_STEP in step_names:
+            return "developer:address-review"
+    return role
+
+
+def _done_window(cutoff: datetime) -> tuple[ColumnElement[bool], ...]:
+    """WHERE clauses selecting the done runs started at or after `cutoff`."""
+    return (TaskRun.started_at >= cutoff, TaskRun.status == "done")
+
+
+def _done_run_ids(cutoff: datetime) -> ScalarSelect[int]:
+    """Done run ids in the window as a subquery, not an id list (bound-parameter ceiling, see get_failure_taxonomy)."""
+    return select(TaskRun.id).where(*_done_window(cutoff)).scalar_subquery()
+
+
+async def _load_done_runs(session: AsyncSession, cutoff: datetime) -> list[_DoneRun]:
+    """Done runs started at or after `cutoff`, each with its display role resolved."""
+    runs = (
+        await session.execute(
+            select(TaskRun.id, TaskRun.role, TaskRun.started_at, TaskRun.ended_at, TaskRun.total_cost_usd)
+            .where(*_done_window(cutoff))
+            .order_by(TaskRun.id)
+        )
+    ).all()
+    if not runs:
+        return []
+
+    window_ids = _done_run_ids(cutoff)
+    step_rows = (
+        await session.execute(
+            select(StepExecution.task_run_id, StepExecution.step_name)
+            .where(
+                StepExecution.task_run_id.in_(window_ids),
+                StepExecution.step_name.in_((_DEVELOP_STEP, _ADDRESS_REVIEW_STEP)),
+            )
+            .distinct()
+        )
+    ).all()
+    steps_by_run: defaultdict[int, set[str]] = defaultdict(set)
+    for row in step_rows:
+        steps_by_run[row.task_run_id].add(row.step_name)
+
+    return [
+        _DoneRun(
+            id=run.id,
+            role=_display_role(run.role, steps_by_run.get(run.id, ())),
+            started_at=_as_utc(run.started_at),
+            ended_at=_as_utc(run.ended_at) if run.ended_at is not None else None,
+            cost=Decimal(str(run.total_cost_usd or 0)),
+        )
+        for run in runs
+    ]
+
+
+def _mean(values: Iterable[int | float | Decimal], digits: int = 1) -> float | None:
+    """Mean rounded to `digits`, or None when there is nothing to average (never 0)."""
+    collected = list(values)
+    return round(float(sum(collected)) / len(collected), digits) if collected else None
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+async def get_usage_by_role(session: AsyncSession, months: int = 6) -> list[dict]:
+    """Average turns, tokens, cost and duration of done runs, per UTC month and role.
+
+    One row per (month, role) with at least one done run, oldest month first then role. Only
+    status "done" runs count (unlike get_success_by_role(), which counts every terminal run).
+    The window starts at the first of the earliest of the last `months` UTC calendar months,
+    current month included, and months are bucketed on TaskRun.started_at in Python so SQLite
+    and PostgreSQL agree.
+
+    Roles are normalized by _display_role(). Cost is TaskRun.total_cost_usd. Duration is
+    ended_at minus started_at, falling back to the sum of the run's CostRecord.duration_ms
+    when ended_at is NULL, and never negative; a run with neither is left out of the duration
+    average rather than averaged in as zero (None when no run has one). Turns and tokens come
+    from CostRecord rows:
+    avg_turns divides by the runs that reported turns, the token averages by the runs that have
+    any CostRecord, so a pre-#1336 or cost-less run still counts in done_runs, cost and
+    duration but is not averaged in as a zero. avg_turns is None when no run reported turns.
+    avg_context_tokens is input + cache_tokens (cache read + cache write, also set on rows
+    from before the granular cache columns), as phase_usage.context_tokens is.
+    """
+    cutoff = _month_window_start(months)
+    runs = await _load_done_runs(session, cutoff)
+    if not runs:
+        return []
+
+    window_ids = _done_run_ids(cutoff)
+    usage_rows = (
+        await session.execute(
+            select(
+                CostRecord.task_run_id,
+                func.sum(CostRecord.num_turns).label("turns"),
+                func.sum(CostRecord.input_tokens).label("input"),
+                func.sum(CostRecord.cache_tokens).label("cache"),
+                func.sum(CostRecord.output_tokens).label("output"),
+                func.sum(CostRecord.duration_ms).label("duration_ms"),
+            )
+            .where(CostRecord.task_run_id.in_(window_ids))
+            .group_by(CostRecord.task_run_id)
+        )
+    ).all()
+    usage_by_run = {row.task_run_id: row for row in usage_rows}
+
+    buckets: defaultdict[tuple[str, str], list[_DoneRun]] = defaultdict(list)
+    for run in runs:
+        buckets[(f"{run.started_at.year:04d}-{run.started_at.month:02d}", run.role)].append(run)
+
+    rows = []
+    for (month, role), bucket in sorted(buckets.items()):
+        usages = [usage_by_run[run.id] for run in bucket if run.id in usage_by_run]
+        durations = []
+        for run in bucket:
+            if run.ended_at is not None:
+                durations.append(max((run.ended_at - run.started_at).total_seconds(), 0.0))
+                continue
+            usage = usage_by_run.get(run.id)
+            if usage is not None and usage.duration_ms:
+                durations.append(usage.duration_ms / 1000)
+        rows.append(
+            {
+                "month": month,
+                "role": role,
+                "done_runs": len(bucket),
+                "avg_cost_usd": round(sum((run.cost for run in bucket), Decimal("0")) / len(bucket), 4),
+                "avg_duration_seconds": _mean(durations),
+                "avg_turns": _mean((u.turns for u in usages if u.turns is not None)),
+                "avg_context_tokens": _mean(((u.input or 0) + (u.cache or 0) for u in usages), 0),
+                "avg_output_tokens": _mean((u.output or 0 for u in usages), 0),
+            }
+        )
+    return rows
+
+
+def _phase_usage_entries(phase_usage: object) -> list[tuple[str, int, int, int]]:
+    """Valid (phase, model_calls, context_tokens, duration_ms) entries of a TaskRun.phase_usage value.
+
+    A value that is not a list, or an entry that is not a dict with a non-empty string phase and
+    non-negative integer counts, is skipped rather than raised on: the column is written by the
+    stream reader and read back from JSON, so its shape is not guaranteed.
+    """
+    if not isinstance(phase_usage, list):
+        return []
+    entries = []
+    for entry in phase_usage:
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("phase"), str)
+            and entry["phase"]
+            and _is_count(entry.get("model_calls"))
+            and _is_count(entry.get("context_tokens"))
+            and _is_count(entry.get("duration_ms"))
+        ):
+            entries.append((entry["phase"], entry["model_calls"], entry["context_tokens"], entry["duration_ms"]))
+        else:
+            log.debug("reliability.usage_by_step.skip_phase_entry", entry=repr(entry)[:200])
+    return entries
+
+
+async def get_usage_by_step(session: AsyncSession, days: int = 30, role: str | None = None) -> list[dict]:
+    """Average usage per pipeline step and per command phase over done runs in the window.
+
+    Pipeline steps ("step" rows) come from CostRecord rows keyed by CostRecord.phase (the step
+    name), summed per run then averaged over the runs that executed the step: avg_turns (CLI
+    num_turns, over the runs that reported it, None when none did), avg_context_tokens (input +
+    cache_tokens), avg_output_tokens, avg_cost_usd and avg_duration_seconds. The
+    "agent" phase of an agent-session run is not a step and is skipped.
+
+    Command phases ("command_phase" rows) come from TaskRun.phase_usage of command:* runs, per
+    (command, phase), with avg_model_calls instead of avg_turns: phase_usage tallies model
+    calls, which are not the CLI's num_turns and are never derived from it (sova/llm/phase_usage.py).
+    avg_cost_usd and avg_output_tokens are None for them, since no dollar or output figure is
+    apportioned to a phase. A malformed phase_usage is skipped, not raised on.
+
+    `role` keeps only runs whose _display_role() equals it (for example "developer:address-review"
+    or "command:integrate-pr"), so the value a caller read from get_usage_by_role() round-trips.
+    Only groups with at least one run are returned: steps first, then command phases, by name.
+    """
+    cutoff = _window_cutoff(days)
+    runs = {run.id: run for run in await _load_done_runs(session, cutoff) if role is None or run.role == role}
+    if not runs:
+        return []
+
+    window_ids = _done_run_ids(cutoff)
+    rows = await _step_usage_rows(session, runs, window_ids)
+    if any(run.role.startswith(_COMMAND_ROLE_PREFIX) for run in runs.values()):
+        rows.extend(await _command_phase_usage_rows(session, runs, window_ids))
+    return rows
+
+
+async def _step_usage_rows(
+    session: AsyncSession, runs: dict[int, _DoneRun], window_ids: ScalarSelect[int]
+) -> list[dict]:
+    """The "step" rows of get_usage_by_step(): CostRecord usage per step, averaged over the runs in `runs`."""
+    step_rows = (
+        await session.execute(
+            select(
+                CostRecord.task_run_id,
+                CostRecord.phase,
+                func.sum(CostRecord.num_turns).label("turns"),
+                func.sum(CostRecord.input_tokens).label("input"),
+                func.sum(CostRecord.cache_tokens).label("cache"),
+                func.sum(CostRecord.output_tokens).label("output"),
+                func.sum(CostRecord.cost_usd).label("cost"),
+                func.sum(CostRecord.duration_ms).label("duration_ms"),
+            )
+            .where(CostRecord.task_run_id.in_(window_ids), CostRecord.phase != _AGENT_SESSION_PHASE)
+            .group_by(CostRecord.task_run_id, CostRecord.phase)
+        )
+    ).all()
+    by_step: defaultdict[str, list] = defaultdict(list)
+    for row in step_rows:
+        if row.task_run_id in runs:
+            by_step[row.phase].append(row)
+
+    return [
+        {
+            "kind": _KIND_STEP,
+            "command": None,
+            "name": name,
+            "runs": len(group),
+            "avg_turns": _mean(r.turns for r in group if r.turns is not None),
+            "avg_model_calls": None,
+            "avg_context_tokens": _mean(((r.input or 0) + (r.cache or 0) for r in group), 0),
+            "avg_output_tokens": _mean((r.output or 0 for r in group), 0),
+            "avg_cost_usd": round(sum((Decimal(str(r.cost or 0)) for r in group), Decimal("0")) / len(group), 4),
+            "avg_duration_seconds": _mean(((r.duration_ms or 0) / 1000 for r in group)),
+        }
+        for name, group in sorted(by_step.items())
+    ]
+
+
+def _phase_totals(phase_usage: object) -> dict[str, list[int]]:
+    """One run's phase_usage summed per phase into [model_calls, context_tokens, duration_ms]."""
+    per_run: dict[str, list[int]] = {}
+    for phase, model_calls, context_tokens, duration_ms in _phase_usage_entries(phase_usage):
+        totals = per_run.setdefault(phase, [0, 0, 0])
+        totals[0] += model_calls
+        totals[1] += context_tokens
+        totals[2] += duration_ms
+    return per_run
+
+
+async def _command_phase_usage_rows(
+    session: AsyncSession, runs: dict[int, _DoneRun], window_ids: ScalarSelect[int]
+) -> list[dict]:
+    """The "command_phase" rows of get_usage_by_step(): phase_usage per (command, phase) over command:* runs."""
+    usage_rows = (
+        await session.execute(
+            select(TaskRun.id, TaskRun.phase_usage).where(TaskRun.id.in_(window_ids), TaskRun.phase_usage.is_not(None))
+        )
+    ).all()
+    # Per (command, phase), one summed (model_calls, context_tokens, duration_ms) per run.
+    by_phase: defaultdict[tuple[str, str], list[list[int]]] = defaultdict(list)
+    for run_id, phase_usage in usage_rows:
+        run = runs.get(run_id)
+        if run is None or not run.role.startswith(_COMMAND_ROLE_PREFIX):
+            continue
+        for phase, totals in _phase_totals(phase_usage).items():
+            by_phase[(run.role, phase)].append(totals)
+
+    return [
+        {
+            "kind": _KIND_COMMAND_PHASE,
+            "command": command,
+            "name": phase,
+            "runs": len(group),
+            "avg_turns": None,
+            "avg_model_calls": _mean(g[0] for g in group),
+            "avg_context_tokens": _mean((g[1] for g in group), 0),
+            "avg_output_tokens": None,
+            "avg_cost_usd": None,
+            "avg_duration_seconds": _mean(g[2] / 1000 for g in group),
+        }
+        for (command, phase), group in sorted(by_phase.items())
+    ]

@@ -1,4 +1,4 @@
-"""Reliability API: success rate, failure taxonomy, and spend by outcome."""
+"""Reliability API: success rate, failure taxonomy, spend by outcome, and usage by role and step."""
 
 from __future__ import annotations
 
@@ -52,3 +52,34 @@ async def spend_by_outcome(days: int = Query(default=30, ge=1, le=365)) -> dict:
     except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("reliability.spend_by_outcome.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch spend by outcome")
+
+
+@router.get(
+    "/reliability/usage-by-role-month",
+    response_model=None,
+    responses={500: {"description": "Failed to fetch usage by role"}},
+)
+async def usage_by_role(months: int = Query(default=6, ge=1, le=24)) -> list[dict]:
+    try:
+        async with await get_session() as session:
+            return await reliability_service.get_usage_by_role(session, months)
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("reliability.usage_by_role.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch usage by role")
+
+
+@router.get(
+    "/reliability/usage-by-step",
+    response_model=None,
+    responses={500: {"description": "Failed to fetch usage by step"}},
+)
+async def usage_by_step(
+    days: int = Query(default=30, ge=1, le=365),
+    role: str | None = Query(default=None, max_length=100),
+) -> list[dict]:
+    try:
+        async with await get_session() as session:
+            return await reliability_service.get_usage_by_step(session, days, role)
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("reliability.usage_by_step.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch usage by step")

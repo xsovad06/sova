@@ -32,7 +32,7 @@ API contract patterns, request/response models, and integration conventions used
 | prs | PR tracker |
 | queue | Priority-sorted issue queue |
 | quota | CodeRabbit quota: rate-limit status, sync, and PR queue |
-| reliability | Success rate, failure taxonomy, and spend by outcome |
+| reliability | Success rate, failure taxonomy, spend by outcome, and per-role monthly and per-step usage averages |
 | resources | Resource monitoring data for agent runs |
 | roles | CRUD for workflow definitions and role introspection |
 | runs | Task run history from the database |

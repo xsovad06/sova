@@ -85,6 +85,41 @@ class TestReliabilityAPI:
         assert data["completing"]["run_count"] == 6
         assert data["non_completing"]["run_count"] == 4
 
+    async def test_usage_by_role_endpoint(self, client: AsyncClient) -> None:
+        await _seed_runs()
+        resp = await client.get("/api/reliability/usage-by-role-month")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["role"] == "developer"
+        assert data[0]["done_runs"] == 6
+        assert data[0]["avg_cost_usd"] == 1.0
+        assert data[0]["avg_turns"] is None
+
+    async def test_usage_by_step_endpoint(self, client: AsyncClient) -> None:
+        await _seed_runs()
+        resp = await client.get("/api/reliability/usage-by-step?role=developer")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_usage_by_role_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/reliability/usage-by-role-month")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/api/reliability/usage-by-role-month?months=0",
+            "/api/reliability/usage-by-role-month?months=25",
+            "/api/reliability/usage-by-step?days=0",
+            "/api/reliability/usage-by-step?days=366",
+        ],
+    )
+    async def test_usage_bounds_validation(self, client: AsyncClient, url: str) -> None:
+        resp = await client.get(url)
+        assert resp.status_code == 422
+
     async def test_days_validation(self, client: AsyncClient) -> None:
         resp = await client.get("/api/reliability/success-by-role?days=0")
         assert resp.status_code == 422
@@ -93,6 +128,8 @@ class TestReliabilityAPI:
         resp = await client.get("/reliability")
         assert resp.status_code == 200
         assert b"Reliability" in resp.content
+        assert b"usage-by-role" in resp.content
+        assert b"usage-by-step" in resp.content
 
 
 class TestReliabilityProjectScoped:
