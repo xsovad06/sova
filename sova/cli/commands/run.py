@@ -30,6 +30,10 @@ def run_issue(
     budget_override: Annotated[
         bool, typer.Option("--budget-override", help="Explicitly confirm bypassing the per-issue budget check.")
     ] = False,
+    override_suitability: Annotated[
+        bool,
+        typer.Option("--override-suitability", help="Run on an epic or human-only issue instead of refusing it."),
+    ] = False,
     resume: Annotated[Optional[int], typer.Option("--resume", help="Resume from a previous run ID.")] = None,
     pr: Annotated[Optional[int], typer.Option("--pr", help="PR number (skips PR discovery).")] = None,
     run_id: Annotated[Optional[int], typer.Option("--run-id", help="Reuse an existing TaskRun.")] = None,
@@ -46,6 +50,7 @@ def run_issue(
                 role_name=role,
                 force=force,
                 budget_override=budget_override,
+                override_suitability=override_suitability,
                 resume_run_id=resume,
                 pr_number=pr,
                 task_run_id=run_id,
@@ -67,6 +72,7 @@ async def _run_workflow(
     role_name: str | None,
     force: bool,
     budget_override: bool = False,
+    override_suitability: bool = False,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
     task_run_id: int | None = None,
@@ -97,18 +103,25 @@ async def _run_workflow(
 
     adapter = create_adapter(config)
 
-    checkpoint = {}
-    if resume_run_id is not None:
-        checkpoint = await _load_checkpoint(resume_run_id, issue)
-        if checkpoint.get("error"):
-            console.print(f"[red]Cannot resume: {checkpoint['error']}[/red]")
-            raise typer.Exit(code=1)
-        console.print(
-            f"[bold]Resuming from run #{resume_run_id} "
-            f"(skipping {len(checkpoint.get('completed_steps', set()))} completed steps)[/bold]"
-        )
+    checkpoint = await _resume_checkpoint(resume_run_id, issue)
+
+    if override_suitability and resume_run_id is None and task_run_id is None:
+        # dispatch() has no role for a human-only issue, so an override without --role would fail after this point.
+        # A dashboard-spawned run (--run-id) was already pinned by start_agent(), so it skips the second tracker read.
+        from sova.dashboard.services.agent_validation import RolePinUnavailable, pin_override_role
+
+        try:
+            role_name = await pin_override_role(issue.lstrip("#").strip(), role_name, resolved_dir)
+        except RolePinUnavailable as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
 
     actual_role = role_name or checkpoint.get("role") or config.roles.default
+
+    # A dashboard-spawned run (--run-id) was already checked, or deliberately not, by start_agent(), and a
+    # resume continues a run that started. Only an issue the user typed on the command line is checked here.
+    if task_run_id is None and resume_run_id is None and not override_suitability:
+        await _refuse_unsuitable_issue(issue, role_name, resolved_dir)
 
     # Generate a run_label for issue-less runs
     run_label = ""
@@ -123,6 +136,7 @@ async def _run_workflow(
         role=actual_role,
         run_label=run_label,
         force=force or bool(resume_run_id),
+        override_suitability=override_suitability,
         budget_override=budget_override,
         resume_run_id=resume_run_id,
         completed_steps=frozenset(checkpoint.get("completed_steps", set())),
@@ -164,6 +178,37 @@ async def _run_workflow(
         console.print(f"[yellow]Workflow paused ({role.name}): {result.summary}[/yellow]")
     else:
         console.print(f"[red]Workflow failed ({role.name}): {result.error}[/red]")
+        raise typer.Exit(code=1)
+
+
+async def _resume_checkpoint(resume_run_id: int | None, issue: str) -> dict:
+    """The checkpoint of the run being resumed, or an empty one; exits 1 when it cannot be loaded."""
+    if resume_run_id is None:
+        return {}
+    checkpoint = await _load_checkpoint(resume_run_id, issue)
+    if checkpoint.get("error"):
+        console.print(f"[red]Cannot resume: {checkpoint['error']}[/red]")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[bold]Resuming from run #{resume_run_id} "
+        f"(skipping {len(checkpoint.get('completed_steps', set()))} completed steps)[/bold]"
+    )
+    return checkpoint
+
+
+async def _refuse_unsuitable_issue(issue: str, role: str | None, project_dir: Path) -> None:
+    """Exit 1 when the typed *issue* is an epic or human-only issue for *role*; no issue is never refused.
+
+    *role* is the ``--role`` as typed, None when the run's role is chosen from the tracker state.
+    """
+    if not issue:
+        return
+    from sova.dashboard.services.agent_validation import check_issue_suitability
+
+    blocked = await check_issue_suitability(issue.lstrip("#").strip(), role, project_dir)
+    if blocked:
+        console.print(f"[red]{blocked['error']}[/red]")
+        console.print("[red]Pass --override-suitability to run it anyway.[/red]")
         raise typer.Exit(code=1)
 
 
