@@ -264,6 +264,25 @@ def _runs_since(db: Path, issue: str, after_id: int) -> list[dict[str, object]]:
     return result
 
 
+# The operator's SOVA_* overrides (the runbook's OpenAI-only block and the SOVA_LIVE_PILOT_* settings), read at
+# import: conftest's autouse _isolate_sova_env strips every SOVA_* variable before each test, which left the guard
+# and the `sova run` subprocess on the project's stored provider, so the guard refused every run.
+_OPERATOR_SOVA_ENV = {key: value for key, value in os.environ.items() if key.startswith("SOVA_")}
+
+
+def restore_operator_env(monkeypatch: pytest.MonkeyPatch, captured: dict[str, str]) -> None:
+    """Put back the SOVA_* variables the suite's env isolation removed, for this test only."""
+    for key, value in captured.items():
+        monkeypatch.setenv(key, value)
+
+
+class TestOperatorEnv:
+    def test_overrides_stripped_by_the_suite_are_restored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert "SOVA_LLM_PROVIDER" not in os.environ  # conftest's _isolate_sova_env ran first
+        restore_operator_env(monkeypatch, {"SOVA_LLM_PROVIDER": "openai", "SOVA_AGENT_RUNTIME": "codex"})
+        assert (os.environ["SOVA_LLM_PROVIDER"], os.environ["SOVA_AGENT_RUNTIME"]) == ("openai", "codex")
+
+
 _OPTED_IN = os.environ.get("SOVA_LIVE_PILOT") == "1"
 _REPO = os.environ.get("SOVA_LIVE_PILOT_REPO", "")
 _PROJECT = os.environ.get("SOVA_LIVE_PILOT_PROJECT", "")
@@ -313,8 +332,14 @@ def _write_report(project: Path, issue: str, name: str, payload: dict[str, objec
 
 
 @pytest.mark.evaluation
+# The suite's pytest-timeout default (30s) would kill `sova run` mid-step; the run has its own timeout.
+@pytest.mark.timeout(_RUN_TIMEOUT_SECONDS + 300)
 @_LIVE_SKIP
 class TestLivePilot:
+    @pytest.fixture(autouse=True)
+    def _operator_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        restore_operator_env(monkeypatch, _OPERATOR_SOVA_ENV)
+
     def test_openai_only_run_records_models_tokens_and_cost_source(self, tmp_path: Path) -> None:
         project = _guarded_project()
         db = pilot_db_path(project)

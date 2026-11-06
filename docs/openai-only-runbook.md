@@ -103,7 +103,15 @@ export SOVA_DATABASE_URL="sqlite+aiosqlite:////path/to/pilot-sova.db"
 ```
 
 A SQLite file URL is read for configuration too, so the copy carries the project's
-stored settings.
+stored settings. **Keep the copy outside the project checkout.** The sync step runs
+`git stash --include-untracked` in the primary checkout, so a database there whose `-wal` and `-shm`
+files are not gitignored is moved out from under the run: every later write fails, and the run
+finishes with its record stuck at `sync` (the first developer run of the 2026-11-06 pilot lost its
+record this way). The same applies to `.claude/sova.log`, and the commit step stages an untracked
+`.sova/test-baseline.json` into the PR, so a test repository needs `.claude/` runtime files and
+`.sova/` ignored. The test repository also needs real `test_cmd` and `lint_cmd` (defaults
+`make test` and `make lint`): without them the baseline records exit code 2 and validation has
+nothing to check.
 
 ## Run
 
@@ -155,20 +163,61 @@ own login is untouched either way.
   on every spawn.
 - **No model fallback for Codex**: `agent.fallback_models` is ignored by Codex
   (`codex.fallback_model_not_supported`); only `codex.model` runs.
-- **Unpriced Codex spend**: per-step cost reads `$0.00`. Check OpenAI's usage dashboard for
-  the real figure.
+- **Unpriced Codex spend**: per-step cost reads `$0.00` until #1394. The real figure is in the Codex
+  rollout logs (`~/.codex/sessions/**/*.jsonl`): each session's last `token_count` event carries its
+  cumulative `input_tokens`, `cached_input_tokens` and `output_tokens`, and `session_meta.cwd` names the
+  worktree, so a pilot's sessions can be priced at the model's rates (input includes cached input, and
+  output includes reasoning).
 - **Develop's no-change check** reports `cost $0.00 < $0.50 threshold` for every Codex
   turn; the check itself (a diff must exist) is still the right one.
 - **Stopped runs stay `pending` without a sweep**: a run stopped by SIGTERM leaves its
   status to the dashboard's liveness sweep. With an isolated pilot database no server
   watches it, so mark it `interrupted` in that copy before `sova run <issue> --resume <id>`.
 
+## Pilot Log (2026-11-06, disposable repository)
+
+The reference pilot, run against the private disposable repository `dsova06/sova-pilot-sandbox` (a
+small `stats` package with pytest and a pytest CI workflow) with the environment above, a pilot
+database outside the checkout, and `tests/test_live_pilot.py` (`SOVA_LIVE_PILOT=1`), one role per
+`sova run`. The runs used the #1396 fix (cost records labelled with the model that served them)
+through `PYTHONPATH`, before it merged. Codex spend comes from the rollout logs in `~/.codex/sessions`
+(token usage per session, at $2/M input, $0.10/M cached input, $10/M output), since SOVA records Codex
+as `$0` `unknown` until #1394; text-call spend is what LiteLLM priced.
+
+| Run | Role, issue | Outcome | Models (recorded) | Tokens in / out | Spend | `cost_source` |
+|---|---|---|---|---|---|---|
+| 3 | researcher, #2 | `## Research` written; paused at the spec gate (`awaiting_approval`) | research `gpt-6.1-sol` (Codex, read-only); spec `gpt-6.1-sol` | 100,684 / 2,024; 849 / 887 | $0.0748 Codex; $0.0106 | `unknown`; `priced` |
+| 5 | developer, #1 | `done`: all 17 steps, PR #4 opened, sandbox CI green, handed to the reviewer | develop, simplify, self-review `gpt-6.1-sol` (Codex); routed develop call and PR body `gpt-6-luna`; commit subject `gpt-6.1-sol` | 280,229 / 3,353 develop, 92,474 / 558 simplify, 83,626 / 772 self-review; 386 / 126, 1,894 / 967, 347 / 12 | $0.2614 Codex; $0.0016 | `unknown` for Codex; `priced` for text |
+| (C) | reviewer, #1 | APPROVE posted on the PR head, `sova:approved` label, no findings | `openai/gpt-6.1-sol` (from `sova.log`: role and `review` route) | not recorded | not recorded | none: a terminal reviewer run writes no `TaskRun` or `CostRecord` |
+| 6 | developer, #2, `codex.model = not-a-real-model-1130` | `failed` at `develop`, naming the model: "does not exist or you do not have access to it" | `not-a-real-model-1130` | 0 / 0 (two Codex attempts) | $0 | `unknown` |
+
+No run launched Claude: the `claude` shim on `PATH` recorded nothing, Anthropic and Vertex credentials
+were unset, and every recorded model is an OpenAI one. Total spend was about $0.70: $0.668 Codex across
+every attempt below (including a killed research turn and the lost developer run), plus about $0.02 of
+priced text calls.
+
+Quality: PR #4 implements `median()` correctly with the issue's cases and more (odd, even, tuple,
+duplicates, negatives, empty input, input order, package export). It also added a `make check` target
+to the `Makefile`, outside the issue's file list, and the reviewer approved without flagging it.
+
+What the pilot found:
+
+| Finding | Effect | Status |
+|---|---|---|
+| conftest's `_isolate_sova_env` strips every `SOVA_*` variable, including the runbook's overrides | the pilot's guard refused every run (failed closed, $0) | fixed in `tests/test_live_pilot.py`: the overrides are read at import and restored for the live class |
+| the suite's 30s pytest-timeout default applied to the live class | `sova run` killed 30s into research ($0.06) | fixed: the live class gets the run timeout plus a margin |
+| provider cost records labelled `resolved_model or "claude"` | an OpenAI spec call stored as `claude`, failing the no-Claude check | #1396, fixed before the reference runs |
+| `SyncStep` runs `git stash --include-untracked` in the primary checkout | a pilot database there with un-ignored `-wal`/`-shm` lost every write after `sync`, and `sova.log` lost the rest of the run; the run still pushed and opened a PR ($0.20, discarded) | #1402; until then keep the database outside the checkout (see Isolate): `sova install` writes no ignore rules for SOVA's own runtime files |
+| the commit step stages an untracked `.sova/test-baseline.json` | SOVA's baseline file landed in the PR | #1402; until then ignore `.sova/` in the project |
+| `test_cmd`/`lint_cmd` default to `make test`/`make lint` | in a repository without a Makefile the baseline recorded exit code 2 and validation had nothing to run | operator setup: give the test repository real commands |
+| a terminal `sova run` of the reviewer role records no `TaskRun` and no `CostRecord` | the review's model, tokens and cost are only in `sova.log` and the posted review | #1403 |
+
 ## Pilot Log (2026-11-04)
 
 **This was not the reference pilot.** The first live run was made against the production SOVA
 repository, which the issue rules out: it did real pushes and PRs there. It is kept as a record
-of what the run found, and the pilot is still to be re-run against a disposable test repository
-(see Open Work). What it found, and where each fix landed:
+of what the run found; the reference pilot is the 2026-11-06 log above. What it found, and where
+each fix landed:
 
 | Finding | Effect | Fix |
 |---|---|---|
@@ -218,5 +267,5 @@ test-weakening guard reverted, so the fix was moved into this change by hand.
   refuses the SOVA and GWYM repositories. A second issue named by `SOVA_LIVE_PILOT_FAILURE_ISSUE`
   enables the unavailable-model failure case: it sets a bogus `SOVA_CODEX_MODEL` (Codex ignores
   `agent.model`), drops `SOVA_LLM_ROUTING`, and asserts the run fails and names that model.
-- Still open on #1130: re-run the live pilot on a disposable test repository and record its
-  observed model IDs, tokens, outcome and per-step `CostRecord.cost_source` here.
+- Still open on #1130: a terminal reviewer run records no `TaskRun` or `CostRecord` (#1403), so the
+  live pilot's reviewer run cannot pass its own record checks (2026-11-06 log above).
