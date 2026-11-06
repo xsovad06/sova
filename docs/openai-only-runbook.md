@@ -188,11 +188,18 @@ test-weakening guard reverted, so the fix was moved into this change by hand.
 
 ## Automated Coverage and Open Work
 
-- `tests/test_openai_only_scenario.py` (no network, no subprocess): `llm.provider = "openai"` with
-  `agent.runtime = "codex"` drives the researcher step and a developer dispatch through the real
-  `CodexStreamParser`, with a tripwire on `ClaudeCodeProvider` and `ClaudeCodeRuntime`; it also
-  covers a budget cap Codex cannot enforce, an unavailable runtime, and a config that names no
-  Claude model.
+- `tests/test_openai_only_scenario.py` (no network, and any process launch fails the test, so no git,
+  gh, codex or claude runs): `llm.provider = "openai"` with `agent.runtime = "codex"` drives the
+  researcher step, a developer dispatch, `create_pr`, `handoff_to_reviewer` and the reviewer role,
+  with a tripwire on `ClaudeCodeProvider`, `AnthropicAPIProvider` and `ClaudeCodeRuntime`. Tool-using
+  steps replay Codex output through the real `CodexStreamParser`; the PR body and the review go
+  through the real OpenAI provider and `llm.routing` with only `litellm` faked, so the test checks
+  that each call reached the routed `openai/` model and that the cost was recorded as `priced`. The
+  forge and tracker are mocks. Recovery cases: a blocking review finding hands back to the developer,
+  whose address-review fix runs on Codex and hands back for re-review; a red CI check is fixed on
+  Codex, pushed (mocked) and re-polled green; a cancelled agent turn stops the Codex process and
+  propagates the cancellation instead of retrying elsewhere. It also covers a budget cap Codex cannot
+  enforce, an unavailable runtime, and a config that names no Claude model.
 - `tests/test_live_pilot.py` (`@pytest.mark.evaluation`, skipped unless `SOVA_LIVE_PILOT=1` and a
   test repository, project and issue are named): runs `sova run` once, which dispatches ONE role,
   chosen by the issue's state (a triaged issue gets the researcher), and does not follow the handoff;
@@ -212,6 +219,4 @@ test-weakening guard reverted, so the fix was moved into this change by hand.
   enables the unavailable-model failure case: it sets a bogus `SOVA_CODEX_MODEL` (Codex ignores
   `agent.model`), drops `SOVA_LLM_ROUTING`, and asserts the run fails and names that model.
 - Still open on #1130: re-run the live pilot on a disposable test repository and record its
-  observed model IDs, tokens, outcome and per-step `CostRecord.cost_source` here; extend the mocked
-  scenario to the reviewer and PR-handoff steps; exercise cancellation, a review change request
-  and a CI failure as recovery cases.
+  observed model IDs, tokens, outcome and per-step `CostRecord.cost_source` here.
