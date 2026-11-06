@@ -2266,7 +2266,7 @@ class TestGetModelCapabilities:
         fake_provider.check_available = AsyncMock(return_value=(False, "not configured"))
 
         with (
-            patch.object(provider_mod, "_CAPABILITY_PROBE_TIMEOUT", 0.01),
+            patch.object(provider_mod, "CAPABILITY_PROBE_TIMEOUT", 0.01),
             patch("sova.ipc.runtime.get_runtime", return_value=fake_runtime),
             patch("sova.llm.client.get_provider", return_value=fake_provider),
         ):

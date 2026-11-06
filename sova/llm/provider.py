@@ -313,7 +313,7 @@ async def get_model_capabilities() -> dict[str, list[str] | str]:
 # sova/dashboard/services/models_service.py (duplicated rather than imported:
 # sova.llm must not depend on sova.dashboard). Both layers' probes are the
 # same subprocess/HTTP candidate passes that constant was sized for.
-_CAPABILITY_PROBE_TIMEOUT = 45.0
+CAPABILITY_PROBE_TIMEOUT = 45.0
 
 
 async def _layer_or_unavailable(
@@ -322,7 +322,7 @@ async def _layer_or_unavailable(
 ) -> list[str] | str:
     """Run one layer's enumeration, degrading any failure to ``"unavailable"``."""
     try:
-        models = await asyncio.wait_for(enumerate_models(), timeout=_CAPABILITY_PROBE_TIMEOUT)
+        models = await asyncio.wait_for(enumerate_models(), timeout=CAPABILITY_PROBE_TIMEOUT)
     # TimeoutError is itself an Exception subclass, so one clause covers the
     # wait_for timeout and any provider/runtime error alike (and avoids the
     # parent/child catch tuple SonarCloud S5713 flags).
