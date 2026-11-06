@@ -29,10 +29,11 @@ Conventions and patterns for writing and running tests in the SOVA codebase.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 timeout = 30
 ```
 
-`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. `timeout = 30` caps every test; a test whose runtime scales with the repository rather than with one unit of work (for example `tests/test_no_double_dash.py`'s whole-tree scan) needs an explicit `@pytest.mark.timeout(N)`, which overrides both this value and any `--timeout` passed on the command line. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` (the `timeout` setting and `--timeout`), `pytest-xdist` (`-n auto`), `httpx` (ASGI testing), `aiosqlite`.
+`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. `asyncio_default_fixture_loop_scope` must stay set: left unset, pytest-asyncio warns while pytest configures, and from pytest 9.2 on the `filterwarnings = ["error"]` entry turns that warning into a session abort before any test runs (`tests/test_pytest_config.py` guards it). `timeout = 30` caps every test; a test whose runtime scales with the repository rather than with one unit of work (for example `tests/test_no_double_dash.py`'s whole-tree scan) needs an explicit `@pytest.mark.timeout(N)`, which overrides both this value and any `--timeout` passed on the command line. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` (the `timeout` setting and `--timeout`), `pytest-xdist` (`-n auto`), `httpx` (ASGI testing), `aiosqlite`.
 
 ## Test File Layout
 
