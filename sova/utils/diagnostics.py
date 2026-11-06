@@ -14,6 +14,7 @@ import asyncio
 import inspect
 import json
 import platform
+import re
 import shutil
 import sys
 from collections.abc import Callable
@@ -22,10 +23,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sova.utils.files import read_text_or_none
+from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, check_git_identity, run
 
 if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
+    from sova.config.models import LLMConfig, ProjectConfig
+    from sova.llm.models import ModelInfo
+
+log = get_logger(component="diagnostics")
 
 _EMPTY = "(empty)"
 _CLAUDE_DIR = ".claude"
@@ -39,6 +44,7 @@ _LABEL_GH_CLI = "gh CLI"
 _LABEL_CLAUDE_CLI = "claude CLI"
 _LABEL_GIT_HOOKS = "git hooks"
 _LABEL_LLM_PROVIDER = "llm provider"
+_LABEL_CONFIGURED_MODELS = "configured models"
 _LABEL_AGENT_RUNTIME = "agent runtime"
 _LABEL_DATABASE_SCHEMA = "database schema"
 _LABEL_AWARENESS_PROVIDERS = "awareness providers"
@@ -373,6 +379,233 @@ async def _check_ollama(project_dir: Path) -> list[DiagnosticCheck]:
     return checks
 
 
+def _configured_model_fields_by_layer(cfg: ProjectConfig) -> tuple[dict[str, str], dict[str, str]]:
+    """Split ``configured_model_fields()`` into fields llm.provider serves and the runtime's own pins.
+
+    ``agent.model`` and ``agent.fallback_models`` stay on the provider side: every text-only step
+    (create_pr, commit, refresh_pr_body) sends them through ``select_model()`` to llm.provider.
+    ``conflict_resolution.models`` is left out: rebase consensus builds its own LiteLLM provider per
+    entry, so llm.provider's catalog says nothing about whether those IDs exist.
+    """
+    llm: dict[str, str] = {}
+    runtime: dict[str, str] = {}
+    for key, value in configured_model_fields(cfg):
+        if key.startswith("conflict_resolution."):
+            continue
+        # roles.*_runtime_model pins reach only the runtime, which receives them verbatim.
+        (runtime if key.endswith("_runtime_model") else llm)[key] = value
+    if cfg.agent.runtime == "codex" and cfg.codex.model:
+        runtime["codex.model"] = cfg.codex.model
+    return llm, runtime
+
+
+async def _configured_llm_catalog(cfg: ProjectConfig, project_dir: Path) -> list[ModelInfo] | None:
+    from sova.llm.provider import CAPABILITY_PROBE_TIMEOUT, create_provider
+
+    try:
+        provider = create_provider(cfg.llm, project_dir)
+        # Only the Claude CLI enumerates by running billable model turns.
+        # Other providers use free listing endpoints and their shared TTL cache.
+        return await asyncio.wait_for(
+            provider.list_available_models(allow_probe=cfg.llm.provider != "claude-code"),
+            timeout=CAPABILITY_PROBE_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 (discovery is advisory; errors must not expose credentials)
+        log.debug("models.catalog_unavailable", layer="llm", error_type=type(exc).__name__)
+        return None
+
+
+async def _configured_runtime_catalog(cfg: ProjectConfig, project_dir: Path) -> set[str] | None:
+    from sova.dashboard.services.models_service import get_available_models
+
+    # Claude Code declares a curated dialect, and Codex echoes codex.model.
+    # Neither is an independent catalog capable of identifying stale IDs.
+    if cfg.agent.runtime in ("claude-code", "codex"):
+        return None
+    try:
+        # Reuse the project-scoped cache and per-call timeout: constructing a
+        # new runtime here would discard its per-instance enumeration cache.
+        result = await get_available_models(project_dir, layer="runtime")
+        if result["source"] != "runtime":
+            return None
+        return {m["id"] for m in result["models"]} or None
+    except Exception as exc:  # noqa: BLE001 (one unavailable layer must not hide the other's diagnostics)
+        log.debug("models.catalog_unavailable", layer="runtime", error_type=type(exc).__name__)
+        return None
+
+
+def _catalog_ids_for_model(model: str, catalog: list[ModelInfo] | None, cfg: LLMConfig) -> set[str] | None:
+    """Use only discovered entries from the backend that will receive this ID."""
+    if not catalog or any(entry.id == model and entry.source == "curated" for entry in catalog):
+        return None
+    discovered = [entry for entry in catalog if entry.source != "curated"]
+    if cfg.provider in ("litellm", "hybrid", "openai", "ollama", "vertex"):
+        from sova.llm.models import classify_model_family
+
+        if model.startswith("ollama/"):
+            discovered = [entry for entry in discovered if entry.source == "ollama"]
+        elif model.startswith("vertex_ai/") or cfg.provider == "vertex":
+            # A failed Vertex publisher must not be answered by another
+            # publisher's successful catalog in the same enumeration pass.
+            family = classify_model_family(model.removeprefix("vertex_ai/"))
+            discovered = [entry for entry in discovered if entry.source == "vertex" and entry.family == family]
+        else:
+            discovered = [entry for entry in discovered if entry.source == "openai_compatible"]
+    return {entry.id for entry in discovered} if discovered else None
+
+
+def _catalog_lookups(model: str) -> list[str]:
+    """Return the spellings under which a catalog may list *model*, exact ID first."""
+    lookups = [model]
+    if model.startswith("ollama/") and ":" not in model.rsplit("/", 1)[-1]:
+        # Ollama's own default: a name with no explicit tag means ":latest".
+        lookups.append(f"{model}:latest")
+    elif model.startswith(("vertex_ai/", "openai/")):
+        lookups.append(model.split("/", 1)[1])
+    # A Vertex publisher catalog lists the model, not its @-pinned snapshot
+    # (claude-sonnet-4-5@20250929 is listed as claude-sonnet-4-5).
+    lookups.extend(lookup.split("@", 1)[0] for lookup in list(lookups) if "@" in lookup)
+    return lookups
+
+
+def _provider_model(value: str, llm: LLMConfig, *, follow_aliases: bool = True) -> str:
+    """Return the ID llm.provider receives for *value*: client-side alias resolution, then the provider's own.
+
+    ``follow_aliases=False`` skips the ``llm.model_aliases`` lookup and keeps only the tier correction
+    and provider normalization: an alias target is the value a field is *mapped to*, and the real resolver
+    never takes a second alias hop from it.
+
+    ``AnthropicAPIProvider.invoke()`` runs ``normalize_model_name()`` (``resolve_model_alias``) after
+    ``resolve_alias()``, so a bare tier such as ``sonnet`` works there even when ``resolve_alias()``
+    left it unexpanded (a mapped alias, or ``llm.resolve_tier_aliases = false``).
+    """
+    from sova.llm.client import resolve_alias
+    from sova.llm.models import resolve_model_alias
+
+    model = resolve_alias(value, llm if follow_aliases else llm.model_copy(update={"model_aliases": {}}))
+    return resolve_model_alias(model) if llm.provider == "anthropic" else model
+
+
+def _alias_is_active(key: str, llm: LLMConfig) -> bool:
+    """True when ``llm.model_aliases[key]`` is the entry resolve_alias() looks up on this backend.
+
+    resolve_alias() prefers ``"{backend}:{name}"`` over the bare ``name``; a key it never consults
+    (another backend's scope, or a bare key shadowed by a scoped one) is never used.
+    """
+    from sova.llm.backends import Backend, detect_backend
+
+    scope, sep, alias = key.partition(":")
+    if not sep or scope not in {backend.value for backend in Backend}:
+        # An unscoped key may itself contain a colon (an Ollama tag such as qwen3:8b).
+        alias = key
+    scoped_key = f"{detect_backend(llm).value}:{alias}"
+    return key == scoped_key or (key == alias and scoped_key not in llm.model_aliases)
+
+
+_DATED_SUFFIX = re.compile(r"-\d{8}")
+_FLOATING_ALIAS_SUFFIXES = ("-latest", "-0")
+
+
+def _dated_bases(lookup: str) -> list[str]:
+    """Return the prefixes a dated catalog ID may extend to be the same model as *lookup*.
+
+    The Anthropic API serves ``claude-sonnet-4-0`` and ``claude-3-5-haiku-latest`` as floating aliases of a
+    dated ID (``claude-sonnet-4-20250514``), so those drop their suffix before the date is matched.
+    """
+    bases = [lookup]
+    bases.extend(lookup.removesuffix(suffix) for suffix in _FLOATING_ALIAS_SUFFIXES if lookup.endswith(suffix))
+    return bases
+
+
+def _configured_model_row(
+    field: str, model: str, ids: set[str] | None, lookups: list[str], identity: str, *, allow_dated: bool = False
+) -> DiagnosticCheck | None:
+    """Return *field*'s row, or None when no discovered catalog can settle *model* either way.
+
+    ``allow_dated`` also accepts a catalog ID that is a lookup plus an 8-digit date suffix: the
+    Anthropic API lists ``claude-sonnet-4-5-20250929`` yet serves the undated ``claude-sonnet-4-5``, and
+    the ``-0`` and ``-latest`` aliases (``claude-sonnet-4-0``) resolve the same way.
+    """
+    if ids is None:
+        return None
+    found = any(
+        lookup in ids
+        or (
+            allow_dated
+            and any(
+                i.startswith(base) and _DATED_SUFFIX.fullmatch(i[len(base) :])
+                for base in _dated_bases(lookup)
+                for i in ids
+            )
+        )
+        for lookup in lookups
+    )
+    detail = f"{identity}: {model} " + ("available" if found else "not found in discovered catalog")
+    return DiagnosticCheck(f"model: {field}", found, detail, False)
+
+
+async def _check_configured_models(project_dir: Path) -> list[DiagnosticCheck]:
+    """Warn about configured model IDs absent from a discovered catalog, never about unverifiable ones.
+
+    One row per field a real catalog settles, warn-level when the ID is missing. Fields no catalog can
+    settle (curated or unreachable layer, transient failure, another backend's ID) share one
+    informational row, so a deployment whose provider cannot enumerate sees one note rather than a
+    warning per field. A backend-scoped alias inactive on this backend is never used, so it gets no row.
+    """
+    from sova.config.loader import load_config
+    from sova.llm.client import resolve_bare_tier_for_provider
+
+    try:
+        cfg = await asyncio.to_thread(load_config, project_dir)
+    except Exception:  # noqa: BLE001 (the config check already reports an unloadable config; stay silent here)
+        return []
+    llm_fields, runtime_fields = _configured_model_fields_by_layer(cfg)
+    llm_catalog, runtime_ids = await asyncio.gather(
+        _configured_llm_catalog(cfg, project_dir),
+        _configured_runtime_catalog(cfg, project_dir) if runtime_fields else asyncio.sleep(0, result=None),
+    )
+    candidates: list[tuple[str, str, DiagnosticCheck | None]] = []
+    provider_identity = f"provider {cfg.llm.provider}"
+    for field, value in llm_fields.items():
+        alias_key = field.removeprefix("llm.model_aliases.")
+        is_alias_row = alias_key != field
+        if is_alias_row and not _alias_is_active(alias_key, cfg.llm):
+            continue
+        model = _provider_model(value, cfg.llm, follow_aliases=not is_alias_row)
+        if field == "roles.reviewer_model":
+            # ReviewerRole substitutes a bare tier the same way; check what it actually sends.
+            tier_model = resolve_bare_tier_for_provider(value, cfg.llm)
+            if tier_model is not None:
+                target, kind = tier_model
+                model = target if kind == "alias" else _provider_model(target, cfg.llm)
+        ids = _catalog_ids_for_model(model, llm_catalog, cfg.llm)
+        candidates.append(
+            (
+                provider_identity,
+                field,
+                _configured_model_row(field, model, ids, _catalog_lookups(model), provider_identity, allow_dated=True),
+            )
+        )
+    runtime_identity = f"runtime {cfg.agent.runtime}"
+    for field, value in runtime_fields.items():
+        # resolve_runtime_model_pin() hands the runtime its pin verbatim, with no alias resolution.
+        candidates.append(
+            (runtime_identity, field, _configured_model_row(field, value, runtime_ids, [value], runtime_identity))
+        )
+
+    rows = [row for _, _, row in candidates if row is not None]
+    unchecked: dict[str, list[str]] = {}
+    for identity, field, row in candidates:
+        if row is None:
+            unchecked.setdefault(identity, []).append(field)
+    if unchecked:
+        layers = "; ".join(f"{identity}: {', '.join(fields)}" for identity, fields in unchecked.items())
+        rows.append(
+            DiagnosticCheck(_LABEL_CONFIGURED_MODELS, True, f"not checked (catalog unknown) for {layers}", False)
+        )
+    return rows
+
+
 async def _check_agent_runtime(project_dir: Path) -> list[DiagnosticCheck]:
     """Check configured agent runtime availability."""
     checks: list[DiagnosticCheck] = []
@@ -634,13 +867,12 @@ def names_non_openai_model(value: str) -> bool:
 _RUNTIME_MODEL_KEYS = frozenset({"agent.model", "roles.developer_runtime_model"})
 
 
-def claude_model_references(cfg: ProjectConfig, *, include_runtime_fields: bool = True) -> list[tuple[str, str]]:
-    """List every resolved model field of *cfg* whose value is a Claude, Vertex or Gemini ID, as (key, value).
+def configured_model_fields(cfg: ProjectConfig) -> list[tuple[str, str]]:
+    """List every non-empty model field of *cfg* as (key, value), in a stable order.
 
     Covers the llm (routing and tier aliases included), agent, roles, oversight, confidence, review-panel and
-    conflict-resolution model fields, so an OpenAI-only run can prove no step is still routed away from
-    OpenAI. ``include_runtime_fields=False`` leaves out the fields only the agent runtime consumes
-    (``agent.model``, ``agent.fallback_models``, ``roles.developer_runtime_model``).
+    conflict-resolution model fields. The one enumeration of SOVA's model settings: the openai-only and
+    configured-models doctor checks both filter it rather than keeping their own field list.
     """
     scalar_fields = {
         "llm.model": cfg.llm.model,
@@ -655,28 +887,30 @@ def claude_model_references(cfg: ProjectConfig, *, include_runtime_fields: bool 
         "oversight.analysis_model": cfg.oversight.analysis_model,
         "confidence.model": cfg.confidence.model,
     }
-    found = [
-        (key, value)
-        for key, value in scalar_fields.items()
-        if value and names_non_openai_model(value) and (include_runtime_fields or key not in _RUNTIME_MODEL_KEYS)
+    fields = list(scalar_fields.items())
+    fields += [(f"agent.fallback_models[{i}]", value) for i, value in enumerate(cfg.agent.fallback_models)]
+    fields += [(f"llm.routing.{task_type}", value) for task_type, value in cfg.llm.routing.items()]
+    fields += [(f"llm.model_aliases.{alias}", value) for alias, value in cfg.llm.model_aliases.items()]
+    fields += [(f"conflict_resolution.models[{i}]", value) for i, value in enumerate(cfg.conflict_resolution.models)]
+    fields += [
+        (f"review.panel.dimension_models.{dim}", value) for dim, value in cfg.review.panel.dimension_models.items()
     ]
-    if include_runtime_fields:
-        for index, value in enumerate(cfg.agent.fallback_models):
-            if names_non_openai_model(value):
-                found.append((f"agent.fallback_models[{index}]", value))
-    for task_type, value in cfg.llm.routing.items():
-        if names_non_openai_model(value):
-            found.append((f"llm.routing.{task_type}", value))
-    for alias, value in cfg.llm.model_aliases.items():
-        if names_non_openai_model(value):
-            found.append((f"llm.model_aliases.{alias}", value))
-    for index, value in enumerate(cfg.conflict_resolution.models):
-        if names_non_openai_model(value):
-            found.append((f"conflict_resolution.models[{index}]", value))
-    for dimension, value in cfg.review.panel.dimension_models.items():
-        if names_non_openai_model(value):
-            found.append((f"review.panel.dimension_models.{dimension}", value))
-    return found
+    return [(key, value) for key, value in fields if value]
+
+
+def claude_model_references(cfg: ProjectConfig, *, include_runtime_fields: bool = True) -> list[tuple[str, str]]:
+    """List every resolved model field of *cfg* whose value is a Claude, Vertex or Gemini ID, as (key, value).
+
+    Filters ``configured_model_fields()``, so an OpenAI-only run can prove no step is still routed away from
+    OpenAI. ``include_runtime_fields=False`` leaves out the fields only the agent runtime consumes
+    (``agent.model``, ``agent.fallback_models``, ``roles.developer_runtime_model``).
+    """
+    return [
+        (key, value)
+        for key, value in configured_model_fields(cfg)
+        if names_non_openai_model(value)
+        and (include_runtime_fields or not (key in _RUNTIME_MODEL_KEYS or key.startswith("agent.fallback_models[")))
+    ]
 
 
 async def _check_openai_models(project_dir: Path) -> list[DiagnosticCheck]:
@@ -732,6 +966,7 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     checks.extend(await _guarded(_LABEL_DATABASE_SCHEMA, _check_database_schema, project_dir))
     checks.extend(await _guarded(_LABEL_LLM_PROVIDER, _check_llm_provider, project_dir))
     checks.extend(await _guarded(_LABEL_OPENAI_MODELS, _check_openai_models, project_dir))
+    checks.extend(await _guarded(_LABEL_CONFIGURED_MODELS, _check_configured_models, project_dir))
     checks.extend(await _guarded("keyring secrets", _check_keyring_secrets, project_dir))
     checks.extend(await _guarded("ollama", _check_ollama, project_dir))
     checks.extend(await _guarded(_LABEL_AGENT_RUNTIME, _check_agent_runtime, project_dir))
