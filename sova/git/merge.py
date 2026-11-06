@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
-from sova.utils.gh import IssueLinks, parse_issue_links, resolve_gh_env
+from sova.utils.gh import NOT_DONE_LABEL, IssueLinks, parse_issue_links, parse_not_done_items, resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section, mask_fenced_blocks
 from sova.utils.shell import run
@@ -522,15 +522,21 @@ class MergedIssues:
         )
 
 
-def _render_part_of_comment(pr_number: int, issue_body: str) -> str:
-    section = mask_fenced_blocks(extract_section(issue_body, "Acceptance Criteria", ignore_case=True))
-    unchecked = [m.group(1).strip() for line in section.splitlines() if (m := _UNCHECKED_ITEM_RE.match(line))]
+def _render_part_of_comment(pr_number: int, issue_body: str, not_done: tuple[str, ...] | None = None) -> str:
+    """Render the "Part of" comment, listing *not_done* (the PR's own list) or else the issue's unchecked boxes."""
     lines = [
         _PART_OF_MARKER.format(pr=pr_number),
         f"PR #{pr_number} was merged as part of this issue, so the issue stays open. "
         "The PR description says what it left undone.",
         "",
     ]
+    if not_done:
+        lines.append(NOT_DONE_LABEL)
+        lines.extend(f"- {item}" for item in not_done)
+        return "\n".join(lines)
+    log.info("git.merge.part_of_falls_back_to_issue_boxes", pr=pr_number, reason="no Not done list in PR body")
+    section = mask_fenced_blocks(extract_section(issue_body, "Acceptance Criteria", ignore_case=True))
+    unchecked = [m.group(1).strip() for line in section.splitlines() if (m := _UNCHECKED_ITEM_RE.match(line))]
     if unchecked:
         lines.append("Acceptance criteria still unchecked in this issue:")
         lines.extend(f"- {item}" for item in unchecked)
@@ -618,9 +624,17 @@ async def _strip_workflow_labels(
 
 
 async def _update_part_of_issue(
-    issue: str, pr_number: int, *, repo: str, env: dict[str, str] | None, open_prs: _OpenPrLinks
+    issue: str,
+    pr_number: int,
+    *,
+    repo: str,
+    env: dict[str, str] | None,
+    open_prs: _OpenPrLinks,
+    not_done: tuple[str, ...] | None = None,
 ) -> _PartOfResult:
     """Leave the "Part of" comment on *issue* unless it carries one, and strip its workflow labels.
+
+    *not_done* is the list parsed from the PR body; without one the comment lists the issue's unchecked boxes.
 
     FAILED when either step failed, so a comment that posted next to a failed label edit still reads as a failure.
     """
@@ -638,7 +652,7 @@ async def _update_part_of_issue(
         log.warning("git.merge.part_of_issue_unparseable", issue=issue, pr=pr_number)
         return _PartOfResult.FAILED
     if not already_posted:
-        comment = _render_part_of_comment(pr_number, issue_body)
+        comment = _render_part_of_comment(pr_number, issue_body, not_done)
         posted = await run("gh", "issue", "comment", issue, "--repo", repo, "--body", comment, env=env)
         if not posted.success:
             log.warning("git.merge.part_of_comment_failed", issue=issue, pr=pr_number, stderr=posted.stderr[:200])
@@ -646,18 +660,23 @@ async def _update_part_of_issue(
     return await _strip_workflow_labels(issue, labels, pr_number, repo=repo, env=env, open_prs=open_prs)
 
 
-async def read_issue_links(pr_number: int, *, repo: str, env: dict[str, str] | None) -> IssueLinks | None:
-    """Read PR *pr_number*'s body and parse its issue links. None when the body cannot be read."""
+async def read_pr_body(pr_number: int, *, repo: str, env: dict[str, str] | None) -> str | None:
+    """Read PR *pr_number*'s body. None when it cannot be read, so "could not tell" is not an empty body."""
     result = await run("gh", "pr", "view", str(pr_number), "--repo", repo, "--json", "body", env=env)
     if not result.success:
         log.warning("git.merge.pr_body_unreadable", pr=pr_number, stderr=result.stderr[:200])
         return None
     try:
-        body = json.loads(result.stdout).get("body") or ""
+        return json.loads(result.stdout).get("body") or ""
     except (json.JSONDecodeError, AttributeError):
         log.warning("git.merge.pr_body_unparseable", pr=pr_number)
         return None
-    return parse_issue_links(body)
+
+
+async def read_issue_links(pr_number: int, *, repo: str, env: dict[str, str] | None) -> IssueLinks | None:
+    """Read PR *pr_number*'s body and parse its issue links. None when the body cannot be read."""
+    body = await read_pr_body(pr_number, repo=repo, env=env)
+    return None if body is None else parse_issue_links(body)
 
 
 async def handle_merged_pr_issues(
@@ -672,16 +691,19 @@ async def handle_merged_pr_issues(
 
     The merged PR's body decides, through :func:`parse_issue_links`: an issue a closing keyword
     names moves to *post_merge_state*; a ``Part of #N`` issue stays open with one comment naming
-    the PR and listing the acceptance criteria still unchecked in its body, and loses the
-    workflow labels of ``_PART_OF_STRIP_LABELS`` it carries unless another open PR still links it; a
-    bare ``#N`` is left alone. Which issue the caller associates with the PR plays no part, since a PR
-    only "part of" that issue must not close it (#1340). Returns None when the PR body cannot be read, so
+    the PR and listing what the PR body says it left undone (the issue's unchecked acceptance criteria when
+    the body lists none), and loses the workflow labels of ``_PART_OF_STRIP_LABELS`` it carries unless
+    another open PR still links it; a bare ``#N`` is left alone. Which issue the caller associates with the
+    PR plays no part, since a PR only "part of" that issue must not close it (#1340). Returns None when the
+    PR body cannot be read, so
     "could not tell" never reads as "nothing linked".
     """
     env = await resolve_gh_env(github_user)
-    links = await read_issue_links(pr_number, repo=repo, env=env)
-    if links is None:
+    body = await read_pr_body(pr_number, repo=repo, env=env)
+    if body is None:
         return None
+    links = parse_issue_links(body)
+    not_done = parse_not_done_items(body)
     outcome = MergedIssues()
     for issue in links.closes:
         try:
@@ -695,7 +717,9 @@ async def handle_merged_pr_issues(
     open_prs = _OpenPrLinks(repo=repo, env=env)
     for issue in links.part_of:
         try:
-            result = await _update_part_of_issue(issue, pr_number, repo=repo, env=env, open_prs=open_prs)
+            result = await _update_part_of_issue(
+                issue, pr_number, repo=repo, env=env, open_prs=open_prs, not_done=not_done
+            )
         except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
             log.warning("git.merge.part_of_update_raised", issue=issue, pr=pr_number, exc_info=True)
             result = _PartOfResult.FAILED
