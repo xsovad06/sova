@@ -292,6 +292,37 @@ class TestZombieProcessIdentity:
             with patch("sova.dashboard.services.agent_recovery._is_process_alive", return_value=True):
                 assert _is_zombie_process(12345, datetime.now(timezone.utc)) is True
 
+    def test_is_zombie_process_detects_a_process_far_older_than_the_run(self) -> None:
+        """A process created long before the run cannot be its agent: the PID was reused the other way round."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _is_zombie_process
+
+        run_start = datetime.now(timezone.utc)
+        mock_proc = MagicMock()
+        mock_proc.create_time.return_value = (run_start - timedelta(hours=3)).timestamp()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            assert _is_zombie_process(12345, run_start) is False
+
+    def test_is_in_process_host_only_for_a_process_far_older_than_the_run(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _is_in_process_host
+
+        run_start = datetime.now(timezone.utc)
+        older, matching, newer = MagicMock(), MagicMock(), MagicMock()
+        older.create_time.return_value = (run_start - timedelta(hours=3)).timestamp()
+        matching.create_time.return_value = (run_start - timedelta(seconds=10)).timestamp()
+        newer.create_time.return_value = (run_start + timedelta(hours=1)).timestamp()
+
+        for proc, expected in ((older, True), (matching, False), (newer, False)):
+            with patch("psutil.Process", return_value=proc):
+                assert _is_in_process_host(12345, run_start) is expected
+        assert _is_in_process_host(12345, None) is False
+        with patch("psutil.Process", side_effect=Exception("gone")):
+            assert _is_in_process_host(12345, run_start) is False
+
     def test_is_zombie_process_with_none_started_at(self) -> None:
         """When started_at is None, skip time comparison and return True for alive PIDs."""
         from unittest.mock import MagicMock, patch
@@ -418,6 +449,7 @@ class TestTerminalZombieRecovery:
         with (
             patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
             patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=True),
             patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
         ):
             interrupted = await recover_stale_runs()
@@ -449,6 +481,289 @@ class TestTerminalZombieRecovery:
         assert all(r["run_id"] != run_id for r in interrupted)
         async with await get_session() as check:
             assert (await check.get(TaskRun, run_id)).status == "running"
+
+
+class TestOrphanAdoption:
+    """A live, identity-matched orphan is adopted, never signalled, unless recovery.kill_orphans is on."""
+
+    async def _make_run(self, pid: int = 999997) -> int:
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="905", role="developer", status="running", pid=pid)
+            session.add(run)
+            await session.flush()
+            return run.id
+
+    async def test_a_live_orphan_is_adopted_and_left_running(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_kill.assert_not_called()
+        mock_adopt.assert_awaited_once()
+        assert mock_adopt.await_args.args[0].id == run_id
+        assert all(r["run_id"] != run_id for r in interrupted)
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "running"
+
+    async def test_a_real_orphan_process_is_adopted_end_to_end(self, tmp_path: Path) -> None:
+        """No identity or orphan check is patched: psutil create_time, the marker and the parent are all real."""
+        import subprocess
+        import sys
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_adopt
+        from sova.dashboard.services.agent_pool import ProjectAgents
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        pa = ProjectAgents(project_dir=tmp_path)
+        proc = subprocess.Popen(  # noqa: S603 (fixed argv: the current interpreter running a sleep)
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            env={**os.environ, "SOVA_AGENT_RUN": "1"},
+            start_new_session=True,
+        )
+        try:
+            session = await get_session()
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="906",
+                    role="developer",
+                    status="running",
+                    pid=proc.pid,
+                    started_at=datetime.now(timezone.utc),
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+            with (
+                patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=False),
+                patch.object(agent_adopt, "_pool_for", return_value=pa),
+                patch("sova.dashboard.services.agent_output._read_output", new=AsyncMock()),
+                patch("sova.dashboard.services.agent_output._read_stderr", new=AsyncMock()),
+                patch("sova.dashboard.services.agent_finalize._wait_and_finalize", new=AsyncMock()),
+                patch("sova.dashboard.services.agent_resource._start_resource_monitoring"),
+            ):
+                interrupted = await recover_stale_runs()
+
+            assert proc.poll() is None
+            assert all(r["run_id"] != run_id for r in interrupted)
+            assert run_id in pa.agents
+            assert pa.agents[run_id].process.pid == proc.pid
+            async with await get_session() as check:
+                assert (await check.get(TaskRun, run_id)).status == "running"
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    async def test_kill_orphans_opt_in_kills_instead_of_adopting(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_adopt.assert_not_called()
+        mock_kill.assert_awaited_once_with(999997)
+        assert any(r["run_id"] == run_id for r in interrupted)
+
+    async def test_a_recycled_pid_is_marked_interrupted_without_any_signal(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            patch("os.kill") as os_kill,
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_kill.assert_not_called()
+        os_kill.assert_not_called()
+        mock_adopt.assert_not_called()
+        assert any(r["run_id"] == run_id for r in interrupted)
+
+    async def test_a_live_in_process_host_run_is_left_running(self) -> None:
+        """A `sova watch` or `sova server` older than the run, holding its own PID on it, is live: never interrupted."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._is_in_process_host", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_kill.assert_not_called()
+        mock_adopt.assert_not_called()
+        assert all(r["run_id"] != run_id for r in interrupted)
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "running"
+
+    async def test_unknown_pool_state_neither_adopts_nor_kills(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._recovery_kill_orphans", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._get_managed_run_ids", return_value=(set(), False)),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            interrupted = await recover_stale_runs()
+
+        mock_kill.assert_not_called()
+        mock_adopt.assert_not_called()
+        assert all(r["run_id"] != run_id for r in interrupted)
+
+    async def test_a_run_the_pool_already_manages_is_not_adopted_again(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._is_orphaned_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._get_managed_run_ids", return_value=({run_id}, True)),
+            patch("sova.dashboard.services.agent_recovery.adopt_orphaned_run", new_callable=AsyncMock) as mock_adopt,
+        ):
+            await recover_stale_runs()
+
+        mock_adopt.assert_not_called()
+
+    def test_kill_orphans_defaults_off_and_an_unreadable_config_answers_off(self, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.agent_recovery import _recovery_kill_orphans
+
+        assert ProjectConfig().recovery.kill_orphans is False
+        with patch("sova.config.loader.load_config", side_effect=ValueError("bad")):
+            assert _recovery_kill_orphans(None) is False
+
+
+class TestFinishedWhileNoServerRan:
+    """A run whose process is gone is recorded from what it left behind, not blindly as interrupted."""
+
+    async def _make_command_run(self, pid: int = 999996) -> int:
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number=None, role="command:/review-pr", status="running", pid=pid, pr_number=9)
+            session.add(run)
+            await session.flush()
+            return run.id
+
+    async def _recover(self, result_is_error: bool | None):
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._is_in_process_host", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._read_result_is_error", return_value=result_is_error),
+            patch("sova.dashboard.services.agent_recovery._find_pr_completion_handoff", return_value=False),
+        ):
+            return await recover_stale_runs()
+
+    async def test_a_dead_command_run_with_a_success_result_is_done(self) -> None:
+        run_id = await self._make_command_run()
+        interrupted = await self._recover(result_is_error=False)
+
+        assert all(r["run_id"] != run_id for r in interrupted)
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "done"
+
+    async def test_a_dead_command_run_with_an_error_result_is_failed(self) -> None:
+        run_id = await self._make_command_run()
+        await self._recover(result_is_error=True)
+
+        async with await get_session() as check:
+            row = await check.get(TaskRun, run_id)
+        assert row.status == "failed"
+        assert row.error_message
+
+    async def test_an_unknown_outcome_stays_interrupted(self) -> None:
+        run_id = await self._make_command_run()
+        interrupted = await self._recover(result_is_error=None)
+
+        assert any(r["run_id"] == run_id for r in interrupted)
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "interrupted"
+
+    async def test_a_pr_handoff_finishes_an_issue_less_run(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        run_id = await self._make_command_run()
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._is_in_process_host", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._find_pr_completion_handoff", return_value=True),
+        ):
+            await recover_stale_runs()
+
+        async with await get_session() as check:
+            assert (await check.get(TaskRun, run_id)).status == "done"
+
+    async def test_the_real_stdout_tail_of_a_successful_command_run_is_read(self, tmp_path: Path) -> None:
+        """No parser or reader is patched: a stream-json success `result` line in the .stdout file says done."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _derive_finished_outcome
+
+        out = tmp_path / ".claude" / "agent-output"
+        out.mkdir(parents=True)
+        (out / "5.stdout").write_text(
+            '{"type":"assistant"}\n{"type":"result","is_error":false,"result":"ok"}\n', encoding="utf-8"
+        )
+        run = SimpleNamespace(id=5, issue_number=None, pr_number=None, role="command:/review-pr", started_at=None)
+        with patch("sova.dashboard.services.agent_adopt._fresh_stream_parser", return_value=None):
+            assert await _derive_finished_outcome(run, tmp_path) is True
+
+    async def test_a_pipeline_runs_stdout_is_not_trusted(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+
+        from sova.dashboard.services.agent_recovery import _derive_finished_outcome
+
+        out = tmp_path / ".claude" / "agent-output"
+        out.mkdir(parents=True)
+        (out / "5.stdout").write_text('{"type":"result","is_error":false}\n', encoding="utf-8")
+        run = SimpleNamespace(id=5, issue_number="7", pr_number=None, role="developer", started_at=None)
+        assert await _derive_finished_outcome(run, tmp_path) is None
 
 
 class TestIsOrphanedProcess:

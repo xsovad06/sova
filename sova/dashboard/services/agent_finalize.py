@@ -33,6 +33,7 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.git.merge import delete_remote_branch, handle_merged_pr_issues, handle_post_merge_state
 from sova.git.pr import get_pr_branch
+from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, FileAgentProcess
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -480,7 +481,15 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     try:
         exit_code = await _wait_with_terminal_check(agent)
     except asyncio.CancelledError:
-        if agent.process is not None and agent.process.is_running:
+        # Only lifespan shutdown cancels this task. Under a service manager (systemd, launchd) the server is
+        # restarted and a file-backed agent, which runs in its own session with its output in files, outlives
+        # it: leave it for the next server to adopt (recover_stale_runs). An interactive server has no
+        # successor, so it stops its agents like a pipe-backed one, whose pipes die with it anyway.
+        from sova.scheduler.service import agents_outlive_server
+
+        if isinstance(agent.process, FileAgentProcess) and agents_outlive_server():
+            log.info("finalize.cancelled_agent_left_running", run_id=agent.run_id, pid=agent.process.pid)
+        elif agent.process is not None and agent.process.is_running:
             try:
                 agent.process._proc.terminate()
             except OSError:
@@ -514,7 +523,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         )
         exit_code = 1
 
-    status = "done" if exit_code == 0 else "failed"
+    outcome_unknown = exit_code == EXIT_OUTCOME_UNKNOWN
+    status = "done" if exit_code == 0 else ("interrupted" if outcome_unknown else "failed")
 
     if exit_code != 0 and agent.pr_number is not None:
         cmd_name = agent.role.removeprefix("command:").removeprefix("/").split()[0]
@@ -625,7 +635,12 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         project_name = agent.project_dir.name
         issue_label = f"#{agent.issue}" if agent.issue else role_label
         group_key = f"sova-{agent.issue or agent.role or 'run'}"
-        if exit_code != 0:
+        # Recomputed: the merge-role branch above can turn an unknown outcome into a confirmed merge (exit 0).
+        outcome_unknown = exit_code == EXIT_OUTCOME_UNKNOWN
+        if outcome_unknown:
+            # Not a confirmed failure: the run is recorded "interrupted", and blaming it would be a guess.
+            log.info("notify.skipped_outcome_unknown", run_id=run_id)
+        elif exit_code != 0:
             notify(
                 cfg.notification,
                 "SOVA",
