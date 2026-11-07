@@ -10,11 +10,14 @@ from pathlib import Path
 from sova.git.artifact_exclusions import (
     STAGE_ALL_PATHSPECS,
     STASH_EXCLUDED_PATHS,
-    STASH_PATHSPECS,
     unstage_command,
 )
 from sova.git.safety import unstage_suspicious_files
-from sova.git.untracked_collisions import clear_conflicting_runtime_files, set_aside_conflicting_specs
+from sova.git.untracked_collisions import (
+    clear_conflicting_runtime_files,
+    runtime_stash_pathspecs,
+    set_aside_conflicting_specs,
+)
 from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
@@ -94,7 +97,7 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     await clear_conflicting_runtime_files(f"origin/{branch}", cwd)
     await set_aside_conflicting_specs(f"origin/{branch}", cwd)
 
-    stash_cmd = ("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS)
+    stash_cmd = ("git", "stash", "--include-untracked", "--", *await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, cwd))
     stash_result = await run(*stash_cmd, cwd=cwd)
     if not stash_result.success:
         raise subprocess_error(stash_cmd, stash_result)

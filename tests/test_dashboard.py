@@ -19,7 +19,7 @@ from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
-from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, STASH_PATHSPECS, unstage_command
+from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, stash_pathspecs, unstage_command
 from tests.conftest import agents_page_source, drain_feed_persist
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -3159,10 +3159,22 @@ class TestStartCommandWorktreeResolution:
             ),
             call("git", "status", "--porcelain", cwd=tmp_path, timeout=10),
             call(*unstage_command(STASH_EXCLUDED_PATHS), cwd=tmp_path, timeout=10),
-            call("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS, cwd=tmp_path, timeout=10),
+            call(
+                "git",
+                "stash",
+                "--include-untracked",
+                "--",
+                *stash_pathspecs(STASH_EXCLUDED_PATHS),
+                cwd=tmp_path,
+                timeout=10,
+            ),
             call("git", "checkout", "main", cwd=tmp_path, timeout=10),
             call("git", "stash", "pop", cwd=tmp_path, timeout=10),
         ]
+        # The stash-pathspec probe runs on this request path too, so it gets the same 10 s budget.
+        from sova.dashboard.services import agent_context
+
+        agent_context.runtime_stash_pathspecs.assert_awaited_once_with(STASH_EXCLUDED_PATHS, tmp_path, timeout=10)
 
     async def test_resolve_issue_worktree_skips_pop_when_only_runtime_files_are_dirty(self, tmp_path: Path) -> None:
         """Runtime files make the checkout dirty but stay out of the stash, so nothing is popped (#1402)."""
@@ -19904,6 +19916,7 @@ class TestStartAgentMemoryGate:
         assert result == block_error
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestSyncBranchWorktreeConflict:
     async def test_already_used_by_worktree_updates_ref(self, tmp_path: Path) -> None:
         """When branch is in active use by another worktree, fetch refspec should be used."""

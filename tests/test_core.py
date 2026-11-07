@@ -9447,6 +9447,7 @@ class TestRebaseStep:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseWithConflictResolution:
     async def test_clean_rebase_no_conflicts(self, tmp_path: Path) -> None:
         from sova.git.operations import rebase_with_conflict_resolution

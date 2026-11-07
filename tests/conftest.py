@@ -825,12 +825,22 @@ def invariant_repo(tmp_path: Path) -> InvariantRepo:
     return InvariantRepo(tmp_path)
 
 
+def full_stash_pathspecs(
+    excluded: tuple[str, ...], cwd: Path | None = None, *, timeout: float = 300
+) -> tuple[str, ...]:
+    """`runtime_stash_pathspecs()` when git ignores none of the runtime paths: every one is excluded."""
+    from sova.git.artifact_exclusions import stash_pathspecs
+
+    return stash_pathspecs(excluded)
+
+
 @pytest.fixture
 def stub_collision_cleanup() -> Iterator[None]:
     """Stub the untracked-file collision cleanup around mocked git calls.
 
     Tests of `sync_branch`, the address-review rebase and the dashboard's branch-freeing stash script `run` call by
-    call; the cleanup (`sova/git/untracked_collisions.py`) has its own tests and would consume scripted results.
+    call; the cleanup and the stash-pathspec probe (`sova/git/untracked_collisions.py`) have their own tests and would
+    consume scripted results. The probe stub excludes every runtime path, as when none of them is ignored.
     Apply it with `pytest.mark.usefixtures("stub_collision_cleanup")` to those mocked-`run` classes only: tests that
     use a real repository must run the real cleanup, so it is deliberately not autouse.
     """
@@ -840,5 +850,11 @@ def stub_collision_cleanup() -> Iterator[None]:
         patch("sova.git.rebase.clear_conflicting_runtime_files", new_callable=AsyncMock),
         patch("sova.dashboard.services.agent_context.clear_conflicting_runtime_files", new_callable=AsyncMock),
         patch("sova.dashboard.services.agent_context.set_aside_conflicting_specs", new_callable=AsyncMock),
+        patch("sova.git.branch.runtime_stash_pathspecs", AsyncMock(side_effect=full_stash_pathspecs)),
+        patch("sova.git.rebase.runtime_stash_pathspecs", AsyncMock(side_effect=full_stash_pathspecs)),
+        patch(
+            "sova.dashboard.services.agent_context.runtime_stash_pathspecs",
+            AsyncMock(side_effect=full_stash_pathspecs),
+        ),
     ):
         yield

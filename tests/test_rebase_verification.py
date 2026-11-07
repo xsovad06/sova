@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from sova.git.rebase import (
     _get_conflicted_files,
     _has_unresolved_conflict,
@@ -252,6 +254,7 @@ class TestAgainstRealGit:
         assert not _has_unresolved_conflict(head.stdout)
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseVerificationIntegration:
     """End-to-end behaviour of rebase_with_conflict_resolution() with verification."""
 

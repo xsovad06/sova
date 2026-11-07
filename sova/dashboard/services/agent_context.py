@@ -10,8 +10,12 @@ import subprocess
 from pathlib import Path
 
 from sova.commands.catalog import get_canonical_dir
-from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, STASH_PATHSPECS, unstage_command
-from sova.git.untracked_collisions import clear_conflicting_runtime_files, set_aside_conflicting_specs
+from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, unstage_command
+from sova.git.untracked_collisions import (
+    clear_conflicting_runtime_files,
+    runtime_stash_pathspecs,
+    set_aside_conflicting_specs,
+)
 from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
@@ -181,7 +185,7 @@ async def _resolve_issue_worktree(
                         "stash",
                         "--include-untracked",
                         "--",
-                        *STASH_PATHSPECS,
+                        *await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, project_dir, timeout=10),
                         cwd=project_dir,
                         timeout=10,
                     )
