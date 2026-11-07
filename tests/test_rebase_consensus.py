@@ -639,6 +639,7 @@ class TestConflictResolutionLoaderIntegration:
         assert "conflict_resolution" in _NESTED_SECTIONS
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseWithConsensusIntegration:
     """Tests for consensus paths inside rebase_with_conflict_resolution()."""
 

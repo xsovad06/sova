@@ -17,8 +17,10 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import structlog
@@ -802,3 +804,22 @@ class InvariantRepo:
 @pytest.fixture
 def invariant_repo(tmp_path: Path) -> InvariantRepo:
     return InvariantRepo(tmp_path)
+
+
+@pytest.fixture
+def stub_collision_cleanup() -> Iterator[None]:
+    """Stub the untracked-file collision cleanup around mocked git calls.
+
+    Tests of `sync_branch`, the address-review rebase and the dashboard's branch-freeing stash script `run` call by
+    call; the cleanup (`sova/git/untracked_collisions.py`) has its own tests and would consume scripted results.
+    Apply it with `pytest.mark.usefixtures("stub_collision_cleanup")` to those mocked-`run` classes only: tests that
+    use a real repository must run the real cleanup, so it is deliberately not autouse.
+    """
+    with (
+        patch("sova.git.branch.clear_conflicting_runtime_files", new_callable=AsyncMock),
+        patch("sova.git.branch.set_aside_conflicting_specs", new_callable=AsyncMock),
+        patch("sova.git.rebase.clear_conflicting_runtime_files", new_callable=AsyncMock),
+        patch("sova.dashboard.services.agent_context.clear_conflicting_runtime_files", new_callable=AsyncMock),
+        patch("sova.dashboard.services.agent_context.set_aside_conflicting_specs", new_callable=AsyncMock),
+    ):
+        yield
