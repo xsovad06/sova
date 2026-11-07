@@ -17,7 +17,7 @@ from rich.console import Console
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters import create_adapter
-from sova.config.loader import load_config
+from sova.config.loader import invalidate_config_cache, load_config
 from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
 from sova.utils.logging import get_logger
 from sova.utils.shell import check_git_identity, run
@@ -48,6 +48,8 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     # Stage 1: Config (write defaults to DB; skip if DB rows already exist)
     from sova.config.db_loader import _try_load_from_db, save_config_to_db
 
+    _exit_if_config_db_unreadable(project_dir)
+
     if _try_load_from_db(project_dir) is None and not update:
         try:
             from sova.db.session import get_session, init_db
@@ -56,6 +58,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             async with await get_session(project_dir=project_dir) as session:
                 async with session.begin():
                     await save_config_to_db(session, _default_config())
+            invalidate_config_cache(project_dir)
             console.print("[green]Default configuration saved to database.[/green]")
         except Exception:  # noqa: BLE001 (best-effort early save; the setup wizard retries this in stage 3)
             log.debug("setup.early_config_save_failed", project_dir=str(project_dir), exc_info=True)
@@ -94,6 +97,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
                 async with await get_session(project_dir=project_dir) as session:
                     async with session.begin():
                         await save_config_to_db(session, _default_config())
+                invalidate_config_cache(project_dir)
                 console.print("[green]Default configuration saved to database.[/green]")
             except (OSError, RuntimeError, SQLAlchemyError):
                 log.warning("Failed to backfill default config after init_db", exc_info=True)
@@ -793,6 +797,8 @@ async def _setup(*, path: Path | None) -> None:
 
     test_cmd = _detect_test_command(project_dir)
 
+    _exit_if_config_db_unreadable(project_dir)
+
     # Initialize DB and save config
     try:
         from sova.db.session import get_session, init_db
@@ -809,6 +815,7 @@ async def _setup(*, path: Path | None) -> None:
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
                 await save_config_to_db(session, config)
+        invalidate_config_cache(project_dir)
         console.print("\n[green]Configuration saved to database.[/green]")
     except Exception as exc:  # noqa: BLE001 (any save failure aborts the wizard with a clear message)
         console.print(f"[red]Failed to save configuration: {exc}[/red]")
@@ -819,6 +826,16 @@ async def _setup(*, path: Path | None) -> None:
 
     # Offer to create starter phase milestones
     await _offer_starter_milestones(project_dir)
+
+
+def _exit_if_config_db_unreadable(project_dir: Path) -> None:
+    """Exit 1 when settings written to this project's database could not be read back by load_config()."""
+    from sova.config.db_loader import config_db_unreadable_reason
+
+    reason = config_db_unreadable_reason(project_dir)
+    if reason is not None:
+        console.print(f"[red]Configuration not saved: {reason}[/red]")
+        raise typer.Exit(code=1)
 
 
 async def _offer_starter_milestones(project_dir: Path) -> None:
