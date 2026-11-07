@@ -617,6 +617,7 @@ class TestProjectCommands:
         _scaffold_install_artifacts(tmp_path)
 
         with (
+            patch("sova.cli.commands.project._exclude_runtime_files", new_callable=AsyncMock),
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
@@ -643,6 +644,7 @@ class TestProjectCommands:
         _scaffold_install_artifacts(tmp_path)
 
         with (
+            patch("sova.cli.commands.project._exclude_runtime_files", new_callable=AsyncMock),
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
@@ -980,6 +982,149 @@ class TestProjectCommands:
 # ---------------------------------------------------------------------------
 # Install git identity warning
 # ---------------------------------------------------------------------------
+
+
+class TestExcludeRuntimeFiles:
+    """sova install writes SOVA's runtime paths into .git/info/exclude (issue #1402)."""
+
+    @staticmethod
+    def _init_repo(path: Path) -> Path:
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        return path / ".git" / "info" / "exclude"
+
+    async def test_appends_runtime_entries(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        exclude = self._init_repo(tmp_path)
+        await _exclude_runtime_files(tmp_path)
+
+        lines = exclude.read_text(encoding="utf-8").splitlines()
+        assert "/.sova/" in lines
+        assert "/.claude/sova.db*" in lines
+        assert "/.claude/sova.log*" in lines
+        assert "/.claude/agent-control/" in lines
+        assert "/.claude/specs/" not in lines
+
+    async def test_rerun_does_not_duplicate_and_keeps_user_entries(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        exclude = self._init_repo(tmp_path)
+        exclude.write_text("my-scratch/\n.sova/", encoding="utf-8")  # hand-added, no trailing newline
+
+        await _exclude_runtime_files(tmp_path)
+        first = exclude.read_text(encoding="utf-8")
+        await _exclude_runtime_files(tmp_path)
+
+        assert exclude.read_text(encoding="utf-8") == first
+        lines = first.splitlines()
+        assert lines[0] == "my-scratch/"
+        assert lines.count(".sova/") == 1
+        assert "/.sova/" not in lines  # the hand-added unanchored line already covers it
+        assert "/.claude/sova.db*" in lines
+
+    async def test_runtime_files_become_untracked_invisible(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        self._init_repo(tmp_path)
+        await _exclude_runtime_files(tmp_path)
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".sova").mkdir()
+        (tmp_path / ".claude" / "sova.db-wal").write_text("x", encoding="utf-8")
+        (tmp_path / ".sova" / "baseline.json").write_text("x", encoding="utf-8")
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], cwd=tmp_path, check=True, capture_output=True, text=True
+        )
+        assert status.stdout.strip() == ""
+
+    async def test_nested_project_gets_entries_relative_to_repo_root(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        exclude = self._init_repo(tmp_path)
+        project = tmp_path / "services" / "api"
+        project.mkdir(parents=True)
+
+        await _exclude_runtime_files(project)
+
+        lines = exclude.read_text(encoding="utf-8").splitlines()
+        assert "/services/api/.claude/sova.db*" in lines
+        assert "/services/api/.sova/" in lines
+        (project / ".claude").mkdir()
+        (project / ".claude" / "sova.db").write_text("x", encoding="utf-8")
+        (project / ".claude" / "mcp_secret").write_text("x", encoding="utf-8")
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], cwd=tmp_path, check=True, capture_output=True, text=True
+        )
+        assert status.stdout.strip() == ""
+
+    async def test_entries_are_anchored_to_the_project(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        self._init_repo(tmp_path)
+        await _exclude_runtime_files(tmp_path)
+        (tmp_path / "vendor" / "x" / ".sova").mkdir(parents=True)
+        (tmp_path / "vendor" / "x" / ".sova" / "keep.txt").write_text("x", encoding="utf-8")
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], cwd=tmp_path, check=True, capture_output=True, text=True
+        )
+        assert "vendor/x/.sova/keep.txt" in status.stdout
+
+    async def test_glob_metacharacters_in_project_path_are_escaped(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        exclude = self._init_repo(tmp_path)
+        project = tmp_path / "a[1]*proj"
+        project.mkdir()
+
+        await _exclude_runtime_files(project)
+
+        lines = exclude.read_text(encoding="utf-8").splitlines()
+        assert "/a\\[1\\]\\*proj/.sova/" in lines
+        (project / ".sova").mkdir()
+        (project / ".sova" / "baseline.json").write_text("x", encoding="utf-8")
+        (tmp_path / "a1proj").mkdir()
+        (tmp_path / "a1proj" / ".sova").mkdir()
+        (tmp_path / "a1proj" / ".sova" / "other.json").write_text("x", encoding="utf-8")
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], cwd=tmp_path, check=True, capture_output=True, text=True
+        )
+        assert "baseline.json" not in status.stdout
+        assert "a1proj/.sova/other.json" in status.stdout
+
+    async def test_unreadable_exclude_file_is_left_alone(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        exclude = self._init_repo(tmp_path)
+        original = b"\xff\xfe not utf-8\n"
+        exclude.write_bytes(original)
+
+        await _exclude_runtime_files(tmp_path)
+        await _exclude_runtime_files(tmp_path)
+
+        assert exclude.read_bytes() == original
+
+    async def test_not_a_git_repo_warns_without_raising(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _exclude_runtime_files
+
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="", stderr="fatal: not a git repository")
+            with patch("sova.cli.commands.project.console") as mock_console:
+                await _exclude_runtime_files(tmp_path)
+
+        printed = " ".join(str(c.args[0]) for c in mock_console.print.call_args_list)
+        assert "not a git repository" in printed
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestInstallGitIdentityWarning:
