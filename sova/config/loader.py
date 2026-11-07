@@ -10,6 +10,9 @@ Supports:
 from __future__ import annotations
 
 import os
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +32,138 @@ except ImportError:
 logger = get_logger(component="config.loader")
 
 
+@dataclass(frozen=True)
+class _CacheEntry:
+    fingerprint: tuple[Any, ...]
+    config: ProjectConfig
+    built_at: float
+    # Set on a degraded entry (the last good config, or the non-DB layers, served while the
+    # database is unreadable): valid for this many seconds whatever the fingerprint says,
+    # so an outage costs one failed read per window instead of one per call.
+    backoff_ttl: float | None = None
+    # True when the config holds DB settings from an earlier successful read; False for a
+    # degraded entry built from the non-DB layers only.
+    has_db_layer: bool = True
+    # Consecutive failed reads behind a degraded entry; the next window doubles per failure.
+    failures: int = 0
+
+    def is_fresh(self, fingerprint: tuple[Any, ...], ttl: float | None) -> bool:
+        age = time.monotonic() - self.built_at
+        if self.backoff_ttl is not None:
+            # Ignore the DB part of the stamp (it is what is failing), but an env or TOML change
+            # made during the window, including a corrected SOVA_DATABASE_URL, ends it.
+            return age < self.backoff_ttl and self.fingerprint[:2] == fingerprint[:2]
+        return self.fingerprint == fingerprint and (ttl is None or age < ttl)
+
+
+# Process-wide, keyed by resolved project_dir. Invalidation bumps a generation so a rebuild
+# that started before it cannot store its stale result: `_generation` (every project) for a
+# no-argument invalidation, `_project_generation` for one project, so invalidating project A
+# does not discard a concurrent rebuild of project B.
+_cache: dict[Path, _CacheEntry] = {}
+_cache_lock = threading.Lock()
+_generation = 0
+_project_generation: dict[Path, int] = {}
+
+
+def _generation_of(project_dir: Path) -> tuple[int, int]:
+    """The (global, per-project) generation pair. Call with ``_cache_lock`` held."""
+    return (_generation, _project_generation.get(project_dir, 0))
+
+
+def invalidate_config_cache(project_dir: Path | None = None) -> None:
+    """Drop the cached config for *project_dir* (every project when None).
+
+    Call after committing a settings write. For a SQLite database it also touches the
+    settings stamp file, which is how another process's cache learns of the write
+    (``db_loader.config_fingerprint``); a remote database relies on its short TTL.
+    """
+    global _generation
+    from sova.config.db_loader import touch_settings_stamp
+
+    if project_dir is not None:
+        touch_settings_stamp(project_dir.resolve())
+    with _cache_lock:
+        if project_dir is None:
+            _generation += 1
+            _cache.clear()
+        else:
+            key = project_dir.resolve()
+            _project_generation[key] = _project_generation.get(key, 0) + 1
+            _cache.pop(key, None)
+
+
 def load_config(project_dir: Path | None = None) -> ProjectConfig:
-    """Load project configuration with priority: env > DB > TOML > defaults."""
+    """Load project configuration with priority: env > DB > TOML > defaults.
+
+    Cached per project and validated against a cheap staleness fingerprint, so a
+    request path pays for the TOML parse and the sync DB read only after a write.
+    Every call returns its own copy: mutating it never changes what the next
+    caller sees.
+    """
     if project_dir is None:
         project_dir = Path.cwd()
 
     project_dir = project_dir.resolve()
 
+    from sova.config.db_loader import (
+        config_fingerprint,
+        db_failure_backoff,
+        db_read_failed,
+        reset_db_read_failure,
+    )
+
+    fingerprint, ttl = config_fingerprint(project_dir)
+    with _cache_lock:
+        entry = _cache.get(project_dir)
+        generation = _generation_of(project_dir)
+    if entry is not None and entry.is_fresh(fingerprint, ttl):
+        return entry.config.model_copy(deep=True)
+
+    reset_db_read_failure()
+    config = _build_config(project_dir)
+    if db_read_failed():
+        # Back off: keep serving the last good config (or, with none, the non-DB layers) for one
+        # window before the next read attempt, so an outage does not block every caller on a
+        # connect timeout and log a warning per call.
+        # The fingerprint leads with (env, toml). When either moved, the last good config
+        # predates that change, so serve the fresh build (it lacks the DB layer) instead:
+        # a TOML edit or SOVA_* override must not be frozen out for the backoff window.
+        # A previous degraded entry with no DB layer is not a last good config: serving it would
+        # log that stored settings are applied when they are not.
+        has_db_layer = False
+        if entry is not None and entry.has_db_layer and entry.fingerprint[:2] == fingerprint[:2]:
+            logger.warning("loader.db_unreachable_serving_last_good_config", project_dir=str(project_dir))
+            served = entry.config
+            has_db_layer = True
+        else:
+            logger.warning("loader.db_unreachable_settings_not_applied", project_dir=str(project_dir))
+            served = config
+        failures = (entry.failures if entry is not None else 0) + 1
+        degraded = _CacheEntry(
+            fingerprint,
+            served.model_copy(deep=True),
+            time.monotonic(),
+            db_failure_backoff(failures),
+            has_db_layer,
+            failures,
+        )
+        _store(project_dir, generation, degraded)
+        return served.model_copy(deep=True)
+
+    _store(project_dir, generation, _CacheEntry(fingerprint, config.model_copy(deep=True), time.monotonic()))
+    return config
+
+
+def _store(project_dir: Path, generation: tuple[int, int], entry: _CacheEntry) -> None:
+    """Cache *entry* unless an invalidation ran since *generation* was read."""
+    with _cache_lock:
+        if _generation_of(project_dir) == generation:
+            _cache[project_dir] = entry
+
+
+def _build_config(project_dir: Path) -> ProjectConfig:
+    """Read every layer from disk, DB and environment (the uncached load)."""
     toml_path = project_dir / "sova.toml"
     toml_flat: dict[str, Any] = {}
     if toml_path.exists():

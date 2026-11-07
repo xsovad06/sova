@@ -9,22 +9,25 @@ Priority chain: env vars > DB > TOML > defaults.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import ProjectSetting
-from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
+from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY, _get_database_url
 from sova.utils.logging import get_logger
 
 logger = get_logger(component="config.db_loader")
-
-_DB_FILENAME = "sova.db"
 
 # Internal bookkeeping rows stored in project_settings that are not user-facing
 # configuration and must never surface in the config dict returned to callers.
@@ -113,6 +116,10 @@ async def save_task_queue(project_dir: Path | None, queue: list[int]) -> None:
     async with await get_session(project_dir=project_dir) as session:
         async with session.begin():
             await save_setting(session, "supervisor.task_queue", queue)
+
+    from sova.config.loader import invalidate_config_cache
+
+    invalidate_config_cache(project_dir or Path.cwd())
 
 
 async def load_task_queue(project_dir: Path | None) -> list[int]:
@@ -244,9 +251,20 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
         config: Nested config dict to flatten and save.
         only_if_empty: When True, migration is skipped if any rows exist (atomic check).
     """
-    db_path = project_dir / ".claude" / _DB_FILENAME
-    if not db_path.exists():
-        logger.debug("db_loader.db_file_missing", path=str(db_path))
+    try:
+        url = _sync_url_for(project_dir)
+    except UnsupportedDatabaseError as exc:
+        _warn_once(f"Configuration was not saved: {exc}")
+        return
+    db_file = _sqlite_file(url)
+    is_sqlite = url.get_backend_name() == "sqlite"
+    if is_sqlite and (db_file is None or not db_file.exists()):
+        logger.debug("db_loader.db_file_missing", project_dir=str(project_dir))
+        return
+    if only_if_empty and not is_sqlite:
+        # The atomic emptiness check is BEGIN IMMEDIATE, a SQLite statement. Say so rather than
+        # return as if the migration ran.
+        _warn_once("Automatic migration of sova.toml into the database is only supported for SQLite; run it manually")
         return
 
     flat = _flatten_config_dict(config)
@@ -256,9 +274,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
     try:
         from sqlalchemy import create_engine
 
-        sync_url = f"sqlite:///{db_path}"
-        connect_args: dict = {"check_same_thread": False, "timeout": 5}
-        engine = create_engine(sync_url, connect_args=connect_args)
+        engine = create_engine(url, **_engine_kwargs(url))
         try:
             if only_if_empty:
                 _save_with_immediate_lock(engine, config, flat)
@@ -266,6 +282,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
                 _save_within_transaction(engine, config, flat)
         finally:
             engine.dispose()
+        touch_settings_stamp(project_dir)
     except Exception:  # noqa: BLE001 (config save is best-effort; the file-based config remains authoritative)
         logger.warning("db_loader.save_sync_failed", exc_info=True)
 
@@ -286,40 +303,254 @@ def _flatten_config_dict(config: dict[str, Any], prefix: str = "") -> dict[str, 
     return flat
 
 
-def _sqlite_file_from_url(url: str) -> Path | None:
-    """Return the existing file a ``sqlite[+driver]:///path`` URL names, else None."""
-    from sqlalchemy.engine import make_url
-    from sqlalchemy.exc import ArgumentError
+class UnsupportedDatabaseError(RuntimeError):
+    """The configured database cannot be read by the synchronous config bridge.
 
+    The message names the dialect or the missing package, never the URL, so it
+    is safe to log and to return to a caller (the URL may carry a password).
+    """
+
+
+# Async driver name (as `sova.db.session._get_database_url` returns it) to the
+# sync driver the config bridge opens. PostgreSQL names `psycopg` explicitly
+# rather than relying on SQLAlchemy's default driver for a bare `postgresql://`.
+_PG_SYNC_DRIVERNAME = "postgresql+psycopg"
+_SYNC_DRIVERNAMES = {
+    "sqlite": "sqlite",
+    "sqlite+aiosqlite": "sqlite",
+    "postgresql": _PG_SYNC_DRIVERNAME,
+    "postgresql+asyncpg": _PG_SYNC_DRIVERNAME,
+    _PG_SYNC_DRIVERNAME: _PG_SYNC_DRIVERNAME,
+}
+
+# PostgreSQL has no cheap file stamp, so a cached config is trusted for this long.
+# In-process writers invalidate explicitly; a write from another process shows up
+# within this window (docs/database-guidelines.md, "Config Cache").
+PG_CONFIG_CACHE_TTL_S = 5.0
+
+# A SQLite database is stamped by a small settings stamp file (see ``touch_settings_stamp``), which
+# only a settings writer touches, so run output, TaskRun and cost writes to the same WAL database do
+# not invalidate the cache. A writer that never touches it (the ``sqlite3`` shell) is picked up
+# by this TTL instead.
+SQLITE_CONFIG_CACHE_TTL_S = 60.0
+
+# Suffix of the stamp file kept beside a SQLite database (``sova.db.settings-stamp``).
+SETTINGS_STAMP_SUFFIX = ".settings-stamp"
+
+# After a failed database read, the config served in its place is reused for a window before
+# the next read attempt (one failed read per window, not one per call, during an outage). The
+# window starts at the base, doubles with each consecutive failure up to the maximum, and
+# resets on the first successful read. The base is longer than the sync connect timeout, so
+# the event loop is blocked for a small fraction of the outage rather than about half of it.
+DB_FAILURE_BACKOFF_S = 15.0
+DB_FAILURE_BACKOFF_MAX_S = 120.0
+PG_CONNECT_TIMEOUT_S = 2
+
+
+def db_failure_backoff(consecutive_failures: int) -> float:
+    """The backoff window after *consecutive_failures* failed reads in a row (1 for the first)."""
+    exponent = max(consecutive_failures - 1, 0)
+    return min(DB_FAILURE_BACKOFF_S * (2**exponent), DB_FAILURE_BACKOFF_MAX_S)
+
+
+_warned_once: set[str] = set()
+_warned_lock = threading.Lock()
+_read_state = threading.local()
+
+
+def _warn_once(message: str) -> None:
+    """Log *message* at error level once per process (the same problem recurs on every load)."""
+    with _warned_lock:
+        if message in _warned_once:
+            return
+        _warned_once.add(message)
+    logger.error(message)
+
+
+@functools.lru_cache(maxsize=1)
+def _psycopg_available() -> bool:
+    """Whether the PostgreSQL sync driver is installed (cached: ``config_fingerprint`` asks on every load)."""
+    return importlib.util.find_spec("psycopg") is not None
+
+
+def _async_to_sync_url(url: str) -> URL:
+    """Map a database URL from ``_get_database_url`` to the URL the sync bridge opens.
+
+    Returns a ``URL`` object rather than a string so a password never has to be
+    rendered into text. Raises ``UnsupportedDatabaseError`` for a dialect with
+    no mapping, or for PostgreSQL when the sync driver is not installed.
+    """
     try:
         parsed = make_url(url)
-    except ArgumentError:
-        return None
-    if parsed.get_backend_name() != "sqlite" or parsed.database in (None, "", ":memory:"):
-        return None
-    db_path = Path(parsed.database)
-    return db_path if db_path.exists() else None
+    except ArgumentError as exc:
+        raise UnsupportedDatabaseError("SOVA_DATABASE_URL is not a valid database URL") from exc
+    drivername = _SYNC_DRIVERNAMES.get(parsed.drivername)
+    if drivername is None:
+        raise UnsupportedDatabaseError(
+            f"Database dialect {parsed.drivername!r} is not supported for configuration; "
+            "settings stored there cannot be read back"
+        )
+    if drivername == _PG_SYNC_DRIVERNAME and not _psycopg_available():
+        raise UnsupportedDatabaseError(
+            "The PostgreSQL sync driver 'psycopg' is not installed, so settings stored in "
+            "PostgreSQL cannot be read back. Install it with: pip install 'sova[postgres]'"
+        )
+    if drivername == _PG_SYNC_DRIVERNAME:
+        parsed = _asyncpg_query_to_libpq(parsed)
+    return parsed.set(drivername=drivername)
 
 
-def _resolve_db_path(project_dir: Path | None) -> Path | None:
-    """Resolve the SQLite DB path without side effects (no mkdir).
+# asyncpg-only URL query keys: libpq (behind psycopg) rejects them, and they tune the async
+# driver (statement cache, timeouts), not which database is read, so the sync URL drops them.
+_ASYNCPG_ONLY_QUERY_KEYS = (
+    "prepared_statement_cache_size",
+    "prepared_statement_name_func",
+    "statement_cache_size",
+    "max_cached_statement_lifetime",
+    "max_cacheable_statement_size",
+    "command_timeout",
+)
 
-    A ``SOVA_DATABASE_URL`` wins over *project_dir*, exactly as it does for the
-    async engine (``sova.db.session._get_database_url``): a SQLite file URL
-    resolves to that file, so config loads the same rows the run writes.
-    Returns None for an in-memory or non-SQLite URL (the sync bridge has no
-    PostgreSQL driver) and when the DB file does not exist yet.
+# asyncpg's ``ssl=<value>`` spelled as libpq's ``sslmode``.
+_ASYNCPG_SSL_TO_SSLMODE = {
+    "true": "require",
+    "false": "disable",
+    "disable": "disable",
+    "allow": "allow",
+    "prefer": "prefer",
+    "require": "require",
+    "verify-ca": "verify-ca",
+    "verify-full": "verify-full",
+}
+
+
+def _asyncpg_query_to_libpq(url: URL) -> URL:
+    """Rewrite an asyncpg URL's query string into one libpq accepts.
+
+    Translates ``ssl=<mode>`` to ``sslmode`` and drops asyncpg-only keys. A value that
+    cannot be translated raises ``UnsupportedDatabaseError`` naming the parameter only
+    (never the URL, which may carry a password).
     """
-    env_url = os.environ.get("SOVA_DATABASE_URL")
-    if env_url:
-        return _sqlite_file_from_url(env_url)
+    query = dict(url.query)
+    ssl = query.get("ssl")
+    if ssl is not None:
+        mode = _ASYNCPG_SSL_TO_SSLMODE.get(ssl.lower()) if isinstance(ssl, str) else None
+        if mode is None:
+            raise UnsupportedDatabaseError(
+                "The 'ssl' parameter of SOVA_DATABASE_URL has a value that cannot be translated "
+                "for the sync PostgreSQL driver; use sslmode=<mode> instead"
+            )
+        url = url.difference_update_query(["ssl"])
+        if "sslmode" not in query:
+            url = url.update_query_dict({"sslmode": mode})
+    dropped = [key for key in _ASYNCPG_ONLY_QUERY_KEYS if key in query]
+    return url.difference_update_query(dropped) if dropped else url
 
-    if project_dir is not None:
-        db_path = project_dir / ".claude" / _DB_FILENAME
-    else:
-        db_path = Path.home() / ".config" / "sova" / _DB_FILENAME
 
-    return db_path if db_path.exists() else None
+def _sync_url_for(project_dir: Path | None) -> URL:
+    """The sync URL for the database ``get_session()`` writes to (same resolution, no mkdir)."""
+    return _async_to_sync_url(_get_database_url(project_dir, create_dirs=False))
+
+
+def _sqlite_file(url: URL) -> Path | None:
+    """The file a sync SQLite URL names, or None for an in-memory database."""
+    if url.get_backend_name() != "sqlite" or url.database in (None, "", ":memory:"):
+        return None
+    return Path(url.database)
+
+
+def config_db_unreadable_reason(project_dir: Path | None) -> str | None:
+    """Why settings written to this project's database could not be read back, else None.
+
+    A write path calls this first: persisting a value that ``load_config()`` will
+    never see must fail loudly rather than report success.
+    """
+    try:
+        _sync_url_for(project_dir)
+    except UnsupportedDatabaseError as exc:
+        return str(exc)
+    return None
+
+
+def _file_stamp(path: Path) -> tuple[int, int, int] | None:
+    """(mtime_ns, size, inode) of *path*, or None when it is absent (not an error)."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def settings_stamp_file(project_dir: Path | None) -> Path | None:
+    """The settings stamp file beside the project's SQLite database, or None (remote or in-memory database)."""
+    try:
+        url = _sync_url_for(project_dir)
+    except UnsupportedDatabaseError:
+        return None
+    db_file = _sqlite_file(url)
+    if db_file is None:
+        return None
+    return db_file.with_name(db_file.name + SETTINGS_STAMP_SUFFIX)
+
+
+def touch_settings_stamp(project_dir: Path | None) -> None:
+    """Mark the settings in a SQLite database as changed, so other processes rebuild their cached config.
+
+    Call after the settings write has committed (``invalidate_config_cache`` does). The stamp is
+    replaced rather than rewritten, so its inode changes even on a filesystem with coarse
+    timestamps. A failure is logged and left to ``SQLITE_CONFIG_CACHE_TTL_S`` to heal.
+    """
+    stamp = settings_stamp_file(project_dir)
+    if stamp is None or not stamp.parent.is_dir():
+        return
+    tmp = stamp.with_name(f"{stamp.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(str(time.time_ns()), encoding="utf-8")
+        os.replace(tmp, stamp)
+    except OSError:
+        logger.warning("db_loader.settings_stamp_failed", exc_info=True)
+        tmp.unlink(missing_ok=True)
+
+
+def config_fingerprint(project_dir: Path) -> tuple[tuple[Any, ...], float | None]:
+    """A cheap staleness stamp for ``load_config(project_dir)``, plus a cache TTL (None for no limit).
+
+    Covers every input of the load that can change without this process knowing:
+    ``sova.toml``, the ``SOVA_*`` environment, and the settings. A SQLite database is
+    stamped by its inode (a replaced file) and its settings stamp file, never by the
+    database or its ``-wal`` sidecar: in WAL mode every run-output, TaskRun or cost write
+    changes those, which would make nearly every call on a busy server a cache miss.
+    A remote database has no file to stamp, so it returns a short TTL instead; a SQLite
+    database gets a long one as a backstop for a writer that does not touch the stamp.
+    """
+    env = hash(tuple(sorted((key, val) for key, val in os.environ.items() if key.upper().startswith("SOVA_"))))
+    toml = _file_stamp(project_dir / "sova.toml")
+    try:
+        url = _sync_url_for(project_dir)
+    except UnsupportedDatabaseError:
+        return (env, toml, "unsupported"), None
+    if url.get_backend_name() != "sqlite":
+        return (env, toml, "remote", url.render_as_string(hide_password=True)), PG_CONFIG_CACHE_TTL_S
+    db_file = _sqlite_file(url)
+    if db_file is None:
+        return (env, toml, "memory"), None
+    db_stamp = _file_stamp(db_file)
+    stamp = _file_stamp(db_file.with_name(db_file.name + SETTINGS_STAMP_SUFFIX))
+    return (env, toml, str(db_file), db_stamp[2] if db_stamp else None, stamp), SQLITE_CONFIG_CACHE_TTL_S
+
+
+def reset_db_read_failure() -> None:
+    """Forget a previous failed DB read on this thread (call before a fresh config build)."""
+    _read_state.failed = False
+
+
+def db_read_failed() -> bool:
+    """True when a DB read on this thread since the last reset hit an unexpected error.
+
+    Missing database, missing table and an empty table are not failures: they
+    mean "no stored settings". A locked or unreachable database is.
+    """
+    return bool(getattr(_read_state, "failed", False))
 
 
 def _is_db_confirmed_empty(project_dir: Path | str | None) -> bool:
@@ -327,20 +558,25 @@ def _is_db_confirmed_empty(project_dir: Path | str | None) -> bool:
 
     Returns False on any error or when the DB/table is unreachable (fail-closed).
     """
-    db_path = _resolve_db_path(Path(project_dir) if project_dir is not None else None)
-    if db_path is None:
+    try:
+        url = _sync_url_for(Path(project_dir) if project_dir is not None else None)
+    except UnsupportedDatabaseError:
+        return False
+    # Auto-migration is SQLite-only (`_save_config_to_db_sync(only_if_empty=True)` refuses
+    # anything else), so a remote database is never probed: that connection would do nothing.
+    if url.get_backend_name() != "sqlite":
+        return False
+    db_file = _sqlite_file(url)
+    if db_file is None or not db_file.exists():
         return False
 
     try:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine, inspect, text
 
-        sync_url = f"sqlite:///{db_path}"
-        engine = create_engine(sync_url, connect_args={"check_same_thread": False, "timeout": 5})
+        engine = create_engine(url, **_engine_kwargs(url))
         try:
             with engine.connect() as conn:
-                try:
-                    conn.execute(text("SELECT 1 FROM project_settings LIMIT 0"))
-                except (OperationalError, ProgrammingError):
+                if not inspect(conn).has_table(ProjectSetting.__tablename__):
                     return False
                 row = conn.execute(text("SELECT COUNT(*) FROM project_settings")).fetchone()
                 return row is not None and row[0] == 0
@@ -354,29 +590,33 @@ def _is_db_confirmed_empty(project_dir: Path | str | None) -> bool:
 def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
     """Sync bridge: load config from DB if possible.
 
-    Returns None (silent fallback) when:
+    Reads the database ``get_session()`` writes to (``SOVA_DATABASE_URL`` first).
+    Returns None (fallback to the non-DB layers) when:
     - The DB file does not exist on disk
     - The table does not exist (pre-migration DB)
-    - The DB is unreachable
+    - The DB dialect or sync driver is unsupported (logged once as an error)
+    - The DB is unreachable (flagged via ``db_read_failed()``)
     - Any other error
     """
-    db_path = _resolve_db_path(Path(project_dir) if project_dir is not None else None)
-    if db_path is None:
+    try:
+        url = _sync_url_for(Path(project_dir) if project_dir is not None else None)
+    except UnsupportedDatabaseError as exc:
+        _warn_once(str(exc))
+        return None
+    db_file = _sqlite_file(url)
+    if url.get_backend_name() == "sqlite" and (db_file is None or not db_file.exists()):
         return None
 
     try:
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine, inspect
         from sqlalchemy import select as sa_select
 
-        sync_url = f"sqlite:///{db_path}"
-        connect_args: dict = {"check_same_thread": False, "timeout": 5}
-
-        engine = create_engine(sync_url, connect_args=connect_args)
+        engine = create_engine(url, **_engine_kwargs(url))
         try:
             with engine.connect() as conn:
-                try:
-                    conn.execute(text("SELECT 1 FROM project_settings LIMIT 0"))
-                except (OperationalError, ProgrammingError):
+                # has_table, not a probe SELECT caught as OperationalError: a locked or dropped
+                # connection must reach the handler below and be flagged, not read as "no table".
+                if not inspect(conn).has_table(ProjectSetting.__tablename__):
                     return None
 
                 rows = conn.execute(
@@ -389,6 +629,16 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
             return _rows_to_nested(rows)
         finally:
             engine.dispose()
-    except Exception:  # noqa: BLE001 (silent fallback to file-based config on any DB failure)
+    except Exception:  # noqa: BLE001 (fallback to file-based config on any DB failure; flagged for the cache)
+        _read_state.failed = True
         logger.debug("db_loader.load_skipped", exc_info=True)
         return None
+
+
+def _engine_kwargs(url: URL) -> dict[str, Any]:
+    """Keyword arguments for the sync bridge's engine (SQLite needs a thread and lock timeout)."""
+    if url.get_backend_name() == "sqlite":
+        return {"connect_args": {"check_same_thread": False, "timeout": 5}}
+    if "connect_timeout" in url.query:
+        return {}  # an explicit operator value is not clamped to the default
+    return {"connect_args": {"connect_timeout": PG_CONNECT_TIMEOUT_S}}

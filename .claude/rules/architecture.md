@@ -79,6 +79,7 @@ Deep-dive per-module notes (what each `sova/` subpackage does, and the non-obvio
 ## Config System
 - **SOVA config**: `sova.toml` per project (Pydantic Settings, env var overrides via `SOVA_` prefix)
 - **DB URL**: `SOVA_DATABASE_URL` for PostgreSQL, default `.claude/sova.db`; one database per project, never shared (full entry: docs/architecture-deep-dive.md).
+- **`load_config()` is cached**: process-wide per project, validated by a file-stamp fingerprint (SQLite) or a short TTL (PostgreSQL), and reads the same database as `get_session()`; call `invalidate_config_cache()` after a committed settings write (full entry: docs/database-guidelines.md, "Config Cache").
 - **Budget limits**: per-run and per-issue caps prevent runaway costs. See `docs/performance-guidelines.md` for defaults and config keys.
 - **Settings metadata registry**: every field in a config model (`models.py`) must also have a `SettingMeta` entry in `sova/dashboard/settings_meta.py` with key, label, description, group, and value_type. Without it, the field won't appear in the dashboard settings UI. When adding a new config group (e.g., `external_reviews`), also add it to `GROUPS` dict and `GROUP_ORDER` list.
 - **Enumerable settings** (`SettingMeta.options_source`): a model setting whose values are discovered at runtime sets `options_source="llm"` or `"runtime"` instead of a static `options` tuple, and renders as a grouped dropdown with a "Custom..." free-text escape that fails open to the plain text editor; `codex.model` stays free text (full entry: docs/architecture-deep-dive.md).
