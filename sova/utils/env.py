@@ -83,6 +83,21 @@ PARENT_SESSION_VARS: frozenset[str] = frozenset(
     }
 )
 
+# The server's own service-manager environment (systemd notify/watchdog, the log paths a launchd plist
+# exports). An agent that inherits them and starts a nested ``sova server`` or ``sova dashboard`` would
+# believe it runs under the service: it would leave its own agents running at shutdown, take over SIGHUP,
+# reopen the outer server's log files, and send READY=1 to the outer unit's notify socket.
+# Keep in sync with the names read in ``sova/scheduler/service.py``.
+SERVICE_MANAGER_VARS: frozenset[str] = frozenset(
+    {
+        "NOTIFY_SOCKET",
+        "WATCHDOG_USEC",
+        "WATCHDOG_PID",
+        "SOVA_SERVER_LOG",
+        "SOVA_SERVER_ERR_LOG",
+    }
+)
+
 # Codex credential. Folded into SCRUBBED_VARS so a CODEX_API_KEY set in
 # the SOVA server's own environment (e.g. for someone else's automation
 # script) is stripped from every spawned child by default, not just Codex's.
@@ -113,14 +128,14 @@ CODEX_CREDENTIAL_VARS: frozenset[str] = frozenset({"CODEX_API_KEY"})
 OPENAI_CREDENTIAL_VARS: frozenset[str] = frozenset({"OPENAI_API_KEY"})
 
 SCRUBBED_VARS: frozenset[str] = (
-    PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
+    PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | SERVICE_MANAGER_VARS | CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
 )
 
 # Credential vars can never be re-admitted via agent.env_passthrough, even if
 # a deployment's passthrough list names them explicitly: that escape hatch
 # exists for provider-routing vars (Vertex/Bedrock), not for leaking a
 # runtime-specific credential into every spawned child.
-_PASSTHROUGH_INELIGIBLE: frozenset[str] = CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
+_PASSTHROUGH_INELIGIBLE: frozenset[str] = CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS | SERVICE_MANAGER_VARS
 
 # Credential variables are deliberately NOT scrubbed by default: the anthropic
 # provider reads ANTHROPIC_API_KEY from the environment, and removing it here

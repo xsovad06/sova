@@ -19,8 +19,10 @@ from enum import Enum
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from sova.config.models import ProjectConfig
+from sova.scheduler import service
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 from sova.utils.version import get_git_sha, get_version
@@ -45,6 +47,24 @@ _PORT_PROBE_TIMEOUT_SECONDS = 1.0
 # the loop is expected to ever sleep between scans). Three, not one, so a
 # single slow or retried cycle is not reported as a stall.
 _STALE_SCAN_MULTIPLIER = 3
+
+
+def _build_ready_notifying_server(config: object) -> object:
+    """A ``uvicorn.Server`` that tells systemd it is ready once the port is bound, not before.
+
+    uvicorn runs the lifespan startup (which includes startup recovery) before it binds the listening
+    socket, so ``READY=1`` from the lifespan would precede the first accepted connection, and a failed
+    bind would follow a "ready" report. ``startup()`` returning with ``started`` set is the real signal.
+    """
+    import uvicorn
+
+    class _ReadyNotifyingServer(uvicorn.Server):
+        async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+            await super().startup(sockets=sockets)
+            if self.started:
+                service.sd_notify("READY=1")
+
+    return _ReadyNotifyingServer(config)
 
 
 async def query_digest_stats(
@@ -157,9 +177,18 @@ class SOVAServer:
             async with original_lifespan(app):
                 if server._config.server.scheduler_enabled and not server._multi_project:
                     server._start_scheduler()
+                # After the dashboard lifespan's startup recovery, so READY=1 and the first health
+                # response both describe a fully started server.
+                watchdog_task = server._announce_ready()
                 try:
                     yield
                 finally:
+                    service.sd_notify("STOPPING=1")
+                    if service.is_service_managed():
+                        service.remove_sighup_handler(asyncio.get_running_loop())
+                    if watchdog_task is not None:
+                        watchdog_task.cancel()
+                        await asyncio.gather(watchdog_task, return_exceptions=True)
                     await server._stop_scheduler()
 
         return combined_lifespan
@@ -188,8 +217,11 @@ class SOVAServer:
         """Add general health check route to the dashboard app."""
 
         @dashboard_app.get("/api/health")
-        async def health_check() -> dict:
-            return self._get_health_check()
+        async def health_check() -> JSONResponse:
+            body = await self._get_health_check()
+            # 503 on "degraded" so a probe that only reads the status code (a load balancer, a
+            # Kubernetes-style check, curl --fail) sees it; the JSON body is the same either way.
+            return JSONResponse(body, status_code=503 if body["status"] == "degraded" else 200)
 
     def _get_scheduler_status(self) -> dict:
         """Get basic scheduler status."""
@@ -301,12 +333,24 @@ class SOVAServer:
         """Query task and cost statistics for digest."""
         return await query_digest_stats(session, cutoff)
 
-    def _get_health_check(self) -> dict:
-        """Get general health check status."""
+    async def _probe_database(self) -> bool:
+        """The dashboard's bounded ``SELECT 1`` probe (``_check_db_health``); False on failure or timeout."""
+        from sova.dashboard.app import _check_db_health
+
+        return await _check_db_health(self._project_dir) == "ok"
+
+    async def _get_health_check(self) -> dict:
+        """Get general health check status.
+
+        ``status`` is "degraded" when the watch loop has stalled or the database probe fails.
+        """
         uptime = time.monotonic() - self._start_time
         agents_active = self._count_active_agents()
+        database_ok = await self._probe_database()
+        status = self._compute_health_status() if database_ok else "degraded"
         return {
-            "status": self._compute_health_status(),
+            "status": status,
+            "database": "ok" if database_ok else "unreachable",
             "uptime_s": round(uptime, 1),
             "scheduler_running": self._running,
             "agents_active": agents_active,
@@ -355,6 +399,32 @@ class SOVAServer:
             return "ok"
 
         return "degraded" if age_seconds > staleness_threshold else "ok"
+
+    def _announce_ready(self) -> asyncio.Task[None] | None:
+        """Hook the process into its service manager once the lifespan startup is complete.
+
+        Installs the SIGHUP log-reopen handler and, only when systemd configured a watchdog, starts the
+        task that pings it while the process is live (see ``_is_live``). Returns that task. ``READY=1`` is not sent
+        here: uvicorn binds its listening socket after the lifespan startup, so ``run()`` sends it from
+        ``_ReadyNotifyingServer`` once the port is actually accepting connections.
+        """
+        if service.is_service_managed():
+            service.install_sighup_handler(asyncio.get_running_loop())
+        interval = service.watchdog_ping_interval()
+        if interval is None:
+            return None
+        return asyncio.create_task(service.watchdog_loop(interval, self._is_live))
+
+    async def _is_live(self) -> bool:
+        """Process liveness for the watchdog: True whenever the event loop gets to run this coroutine.
+
+        Deliberately neither the ``/api/health`` predicate nor the database probe. The watch loop goes "degraded"
+        when a tracker outage or an expired token stalls its scans, and an unreachable database (a PostgreSQL
+        outage, a locked SQLite file) is just as external. A restart fixes none of them, so gating pings on
+        them would restart the server in a loop. Those states surface through ``/api/health``'s 503; the
+        watchdog exists to catch a wedged process, which stops answering here at all.
+        """
+        return True
 
     def _start_scheduler(self) -> None:
         """Start the watch loop as a background asyncio task."""
@@ -414,14 +484,27 @@ class SOVAServer:
         # liveness probe) would be the one that pays for it.
         get_git_sha()
 
+        # Under a service manager only (it set a log env var): SIGHUP terminates a process by default, and
+        # the loop handler only exists between the lifespan's startup and shutdown, so a rotation landing
+        # outside it is dropped, not fatal. An interactive server keeps the default, so closing its
+        # terminal still stops it.
+        managed = service.is_service_managed()
+        if managed:
+            service.ignore_sighup()
         try:
             # access_log=False: this process runs indefinitely as a service, and the
             # dashboard's own JS polling plus /api/scheduler/* and /api/health probes
             # would otherwise write an access-log line per poll forever, growing
             # journald/log files unbounded. Application logs (setup_logging's rotating
             # file handler) are unaffected.
-            uvicorn.run(app, host=self.host, port=self.port, log_level="info", access_log=False)
+            config = uvicorn.Config(app, host=self.host, port=self.port, log_level="info", access_log=False)
+            try:
+                _build_ready_notifying_server(config).run()
+            except KeyboardInterrupt:
+                pass  # uvicorn.run swallows this too: Ctrl+C after a graceful shutdown is a clean exit
         finally:
+            if managed:
+                service.ignore_sighup()  # closing the loop restored SIGHUP's terminating default
             self._remove_pid_file()
 
     def _pid_file_path(self) -> Path:

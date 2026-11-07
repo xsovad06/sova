@@ -166,6 +166,12 @@ await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
 
 Active interval: 300s (`watch.interval_active`), idle interval: 1800s (`watch.interval_idle`). Allows immediate shutdown via `_stop_event.set()`.
 
+## Health and Metrics
+
+`GET /api/health` is the liveness and readiness signal: HTTP 503 when `degraded` (stalled watch loop, or a database probe that fails or exceeds its 2s bound), 200 otherwise, with the same JSON body either way. The systemd watchdog ping (`sova/scheduler/service.py`) is gated on process liveness only (the event loop answers), from its own task that pings every `WatchdogSec / 4` on a fixed monotonic schedule (a probe's duration is never added to the gap, and the probe is constant-true today, so only a wedged event loop stops the pings), so ping cadence does not depend on `watch.interval_*` and a tracker outage, expired token or unreachable database, which turn `/api/health` `degraded` (503) but that a restart cannot fix, never restarts the server. The unit sets `WatchdogSignal=SIGTERM` so a hung server is stopped cleanly rather than aborted with a core dump.
+
+Non-goal: a Prometheus or OpenTelemetry metrics endpoint. Health, `/api/scheduler/health` and the digest cover what operators of this single-process service need; add a metrics endpoint only if an external collector is actually deployed.
+
 ## Budget Limits
 
 | Limit | Default | Config Key |
