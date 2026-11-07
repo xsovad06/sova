@@ -10,8 +10,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import enum
+import os
 import signal
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,10 +68,64 @@ def normalize_signal_exit(returncode: int) -> int | None:
     return None
 
 
+# Exit code an adopted process reports when its outcome could not be determined (its kernel exit status is
+# unavailable and it left no status, handoff or result line). Finalize records such a run as "interrupted"
+# rather than "failed" and sends no failure notification: an unknown outcome is not a confirmed failure.
+EXIT_OUTCOME_UNKNOWN = -1000
+
+_ADOPTED_POLL_INTERVAL = 1.0
+
+
+class AdoptedProcess:
+    """Stand-in for ``asyncio.subprocess.Process`` for a live process this server did not spawn.
+
+    A restarted server adopts an agent the previous server launched. That process is not our child, so
+    its exit code cannot be waited on: ``wait()`` polls *is_alive* and, once the process is gone, takes
+    the code from *resolve_exit_code* (derived from signals the agent left behind, not from the kernel).
+    *is_alive* must be identity-aware, so a recycled PID reads as an exit and is never signalled.
+    """
+
+    def __init__(
+        self,
+        pid: int,
+        *,
+        is_alive: Callable[[], bool],
+        resolve_exit_code: Callable[[], Awaitable[int]],
+    ) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+        self._is_alive = is_alive
+        self._resolve_exit_code = resolve_exit_code
+
+    def terminate(self) -> None:
+        self._signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self._signal(signal.SIGKILL)
+
+    def _signal(self, sig: signal.Signals) -> None:
+        if self.returncode is None and self._is_alive():
+            try:
+                os.kill(self.pid, sig)
+            except ProcessLookupError:
+                pass  # exited between the liveness check and the signal: same as Popen.send_signal
+            except PermissionError:
+                # The PID now belongs to another user's process: never ours to signal, so it counts as not signalled.
+                log.warning("ipc.adopted_signal_denied", pid=self.pid, signal=int(sig), exc_info=True)
+
+    async def wait(self) -> int:
+        while self.returncode is None:
+            if not self._is_alive():
+                self.returncode = await self._resolve_exit_code()
+                break
+            await asyncio.sleep(_ADOPTED_POLL_INTERVAL)
+        return self.returncode
+
+
 class _BaseAgentProcess:
     """Shared process-delegation logic for AgentProcess and FileAgentProcess."""
 
-    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+    def __init__(self, proc: asyncio.subprocess.Process | AdoptedProcess) -> None:
         self._proc = proc
         self.termination_record: TerminationRecord | None = None
 
@@ -159,6 +214,16 @@ class AgentProcess(_BaseAgentProcess):
 _TAIL_POLL_INTERVAL = 0.1
 
 
+def _ends_with_newline(path: Path, size: int) -> bool:
+    """True when the byte at offset ``size - 1`` of *path* is a newline (a line boundary). Fails open to True."""
+    try:
+        with open(path, "rb") as fh:  # NOSONAR
+            fh.seek(size - 1)
+            return fh.read(1) == b"\n"
+    except OSError:
+        return True
+
+
 class FileAgentProcess(_BaseAgentProcess):
     """AgentProcess variant that reads output from files instead of pipes.
 
@@ -169,14 +234,18 @@ class FileAgentProcess(_BaseAgentProcess):
 
     def __init__(
         self,
-        proc: asyncio.subprocess.Process,
+        proc: asyncio.subprocess.Process | AdoptedProcess,
         *,
         stdout_path: Path,
         stderr_path: Path,
+        tail_from_end: bool = False,
     ) -> None:
         super().__init__(proc)
         self._stdout_path = stdout_path
         self._stderr_path = stderr_path
+        # An adopted process has already written output that an earlier server captured: start at the
+        # end of each file, so only what it writes from now on is read.
+        self._tail_from_end = tail_from_end
 
     @property
     def stdout_path(self) -> Path:
@@ -209,6 +278,12 @@ class FileAgentProcess(_BaseAgentProcess):
             return
 
         try:
+            # True while the first line read is the tail of one the agent was mid-way through writing
+            # when tailing began: its head was never read, so what follows up to the newline is garbage.
+            skip_partial_line = False
+            if self._tail_from_end:
+                end = fh.seek(0, os.SEEK_END)
+                skip_partial_line = end > 0 and not _ends_with_newline(path, end)
             remainder = ""
             while True:
                 chunk = fh.read(8192)
@@ -216,10 +291,13 @@ class FileAgentProcess(_BaseAgentProcess):
                     remainder += chunk
                     while "\n" in remainder:
                         line, remainder = remainder.split("\n", 1)
+                        if skip_partial_line:
+                            skip_partial_line = False
+                            continue
                         yield line
                 else:
                     if self._proc.returncode is not None:
-                        if remainder:
+                        if remainder and not skip_partial_line:
                             yield remainder
                         return
                     await asyncio.sleep(_TAIL_POLL_INTERVAL)
