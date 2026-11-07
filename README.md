@@ -335,20 +335,60 @@ launchctl list | grep sova
 
 The systemd unit is a user unit (`systemctl --user`) and lists the resolved project
 directory in `ReadWritePaths`, since agents write `{project}/.git` as well as
-`{project}/.claude`. A project path containing whitespace is refused: systemd splits
-those directives on whitespace, so adapt `deploy/sova-server.service` by hand instead.
+`{project}/.claude`; `~/.claude.json` and `~/.codex` are listed with a leading `-`
+(the CLIs' own state, optional on a host without one). A project path containing
+whitespace is refused: systemd splits those directives on whitespace, so adapt
+`deploy/sova-server.service` by hand instead. The unit is `Type=notify` with
+`WatchdogSec=60`: the server sends `READY=1` once startup recovery has finished and uvicorn has bound the port, then pings
+the watchdog every 15s on a fixed schedule while the event loop answers (stdlib `sd_notify`, a no-op off
+systemd), so a wedged server is restarted by systemd (`WatchdogSignal=SIGTERM`, no core dump). The ping is
+deliberately not gated on `/api/health` staying 200 or on the database probe: a tracker outage, an expired
+token or an unreachable database turns that `degraded` (HTTP 503), and a restart cannot fix any of them.
+
+**Restarts keep agents running.** Agents run in their own session with output
+redirected to `.claude/agent-output/<run_id>.stdout`, and the unit sets
+`KillMode=process`, so `systemctl --user restart sova-server` stops only the server.
+On startup the new server adopts each live agent it launched (PID alive and process
+creation time matching the run's `started_at`) and keeps managing it; output capture
+resumes from the end of the agent's `.stdout` file, so what the agent wrote while no
+server was running stays in that file rather than in the dashboard log. Adoption is a
+claim held with a lock file (`.claude/agent-output/<run_id>.adopt.lock`), so two servers on
+one project database cannot both manage, finalize and hand off the same run. It only reads
+the agent's worktree and never repairs or recreates it. A dead PID is recorded from what the
+run left behind (a PR handoff, or for a command run the final `result` line in its `.stdout`:
+`done` or `failed`, else `interrupted`); a live PID that is not the run's process (PID reuse)
+is marked `interrupted`. Neither is ever signalled. An adopted agent's exit code is not available, so it is derived from the run's
+status, its handoff or the final `result` line in its `.stdout`; when none of them says
+how it ended, the run is recorded `interrupted` rather than `failed`. The previous server's pre-run baseline is gone, so an adopted
+`address-pr`, `rearrange-commits` or `integrate-pr` run is not diff-guarded (no silent-revert or pin-downgrade
+check; `adopt.diff_guard_baseline_unavailable` is logged) and falls back to the weaker push checks. Set `recovery.kill_orphans = true` to kill identity-matched orphans at
+startup instead. Agents are left running only when a service manager runs the server
+(systemd, or the launchd plist): because of `KillMode=process`, `systemctl --user stop` also
+leaves agents running until the next start adopts them, so stop them from the dashboard first,
+or kill them by hand. An interactive `sova server start` or `sova dashboard` (Ctrl+C) still
+stops its agents on shutdown.
+
+*Unverified on Linux (tracked in #1241):* the Claude CLI rewrites `~/.claude.json` by
+writing a temp file and renaming it over the original. A single-file read-write bind
+mount may not allow that rename, and sibling files at the home root (backups, locks)
+stay read-only under `ProtectHome=read-only`. If agents cannot save state under the
+unit, relax `ProtectHome` for it.
 
 On macOS, `install-service --type launchd` also writes
 `~/.config/sova/sova-server.newsyslog.conf` and prints a `sudo cp` command for it:
 launchd never rotates its own `StandardOutPath`/`StandardErrorPath`, and newsyslog is
 what does. It holds those descriptors open for the life of the process, so each entry
-sends SIGUSR2 to the server's PID after rotation and launchd's `KeepAlive` restarts it,
-reopening both paths fresh (`launchctl kickstart -k "gui/$(id -u)/com.sova.server"`
-remains the manual fallback). SOVA's own `.claude/sova.log` is rotated in-process and
-needs none of this.
+sends SIGHUP to the server's PID after rotation. The server reopens the files named by
+`SOVA_SERVER_LOG` and `SOVA_SERVER_ERR_LOG` (set in the generated plist) in place: no
+restart, so running agents are undisturbed. The server takes over SIGHUP only when
+one of those variables is set (a service manager owns the log files); an interactive
+`sova server start` keeps the default, so closing its terminal still stops it. When
+stdout is a terminal, the reopen is skipped with a log line. SIGHUP is ignored while the
+server is starting or stopping, so a rotation in that window is skipped, never fatal. SOVA's own
+`.claude/sova.log` is rotated in-process and needs none of this.
 
 **Health monitoring**: The server exposes health and digest endpoints for external monitoring:
-- `GET /api/health`: `status` (`ok` or `degraded`), uptime, scheduler state, active agent count, package version and git SHA. `degraded` means the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight.
+- `GET /api/health`: `status` (`ok` or `degraded`), `database` (`ok` or `unreachable`, a probe bounded to 2s), uptime, scheduler state, active agent count, package version and git SHA. Answers HTTP 503 (same JSON body) when `degraded`: the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight, or the database probe failed.
 - `GET /api/scheduler/health`: uptime, scan count, error count, agent slots, DB status
 - `GET /api/scheduler/digest?hours=24`: tasks completed/failed, cost summary
 

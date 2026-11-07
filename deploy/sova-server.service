@@ -9,7 +9,22 @@ Documentation=https://github.com/xsovad06/sova
 After=network.target
 
 [Service]
-Type=simple
+# The server sends READY=1 once startup recovery has finished and the port is bound, and pings the
+# watchdog (WatchdogSec) while the process is live (event loop answering), every WatchdogSec/4,
+# using a stdlib sd_notify (no dependency). It is not gated on /api/health or the database probe:
+# a tracker outage, expired token or unreachable database degrades those, and a restart cannot fix them. A hung server stops pinging and systemd
+# restarts it, with SIGTERM (WatchdogSignal) so there is no SIGABRT core dump. TimeoutStartSec bounds startup recovery, which
+# runs before READY=1.
+Type=notify
+WatchdogSec=60
+WatchdogSignal=SIGTERM
+TimeoutStartSec=300
+# Stop and restart signal only the server, not the agents it launched (start_new_session puts them
+# in the unit's cgroup). The default, control-group, would kill every one of them and leave nothing
+# for the restarted server to adopt. Trade-off: 'systemctl stop' also leaves agents running, to be
+# adopted at the next start. To stop them, stop the runs from the dashboard first, or kill them by
+# hand ('systemctl --user status sova-server' lists their PIDs in the cgroup).
+KillMode=process
 # Set the home directory for ~/.config/sova and ~/.claude resolution
 Environment=HOME=%h
 # Set the project directory as an environment variable
@@ -45,10 +60,16 @@ ProtectHome=read-only
 # as ${SOVA_PROJECT_DIR}/.claude, and ProtectSystem=strict makes everything
 # else on the filesystem read-only. %h/.claude stays listed too, since the
 # spawned coding-agent CLI keeps its own state there and
-# knowledge.shared_knowledge_dir defaults under it. ReadWritePaths does not
-# expand ${SOVA_PROJECT_DIR}, so substitute the real path when adapting this
-# reference template by hand; 'sova server install-service' does it for you.
-ReadWritePaths=%h/.config/sova %h/.claude /path/to/your/project
+# knowledge.shared_knowledge_dir defaults under it. %h/.claude.json (the Claude
+# CLI's settings and session state) and %h/.codex (the Codex CLI's) are listed
+# with a leading '-' so a host without one still starts the unit. ReadWritePaths
+# does not expand ${SOVA_PROJECT_DIR}, so substitute the real path when adapting
+# this reference template by hand; 'sova server install-service' does it for you.
+# UNVERIFIED on Linux (tracked in #1241): the CLI rewrites ~/.claude.json via a
+# temp file plus rename, which a single-file bind mount may not allow, and its
+# siblings (backups, locks) at the home root stay read-only. If agents cannot
+# save state, fall back to ProtectHome=false (or tmpfs) for this unit.
+ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex /path/to/your/project
 
 [Install]
 WantedBy=default.target

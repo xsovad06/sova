@@ -1079,6 +1079,136 @@ class TestSOVAServerEdgeCases:
             assert "version" in data
             assert "git_sha" in data
 
+    async def test_health_check_returns_503_when_degraded(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        app = server.create_app()
+
+        with patch.object(SOVAServer, "_compute_health_status", return_value="degraded"):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert "version" in resp.json()
+
+    async def test_health_check_reports_an_unreachable_database_as_503(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        app = server.create_app()
+
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="fail")):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+
+        assert resp.status_code == 503
+        assert resp.json()["database"] == "unreachable"
+        assert resp.json()["status"] == "degraded"
+
+    async def test_health_check_reports_a_reachable_database(self) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")):
+            body = await server._get_health_check()
+
+        assert body["database"] == "ok"
+        assert body["status"] == "ok"
+
+    async def test_database_probe_reuses_the_dashboard_bounded_probe(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config(), project_dir=tmp_path)
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")) as probe:
+            assert await server._probe_database() is True
+        probe.assert_awaited_once_with(tmp_path)
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="fail")):
+            assert await server._probe_database() is False
+
+    async def test_watchdog_is_not_started_without_watchdog_usec(self, monkeypatch) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.delenv("WATCHDOG_USEC", raising=False)
+        monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
+        server = SOVAServer(config=_make_config())
+        with patch("sova.scheduler.server.service.install_sighup_handler"):
+            assert server._announce_ready() is None
+
+    async def test_announce_ready_starts_the_watchdog_but_leaves_ready_to_uvicorn(self, monkeypatch) -> None:
+        import asyncio
+
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.setenv("WATCHDOG_USEC", "60000000")
+        monkeypatch.delenv("WATCHDOG_PID", raising=False)
+        server = SOVAServer(config=_make_config())
+        with (
+            patch("sova.scheduler.server.service.install_sighup_handler"),
+            patch("sova.scheduler.server.service.sd_notify") as notify,
+            patch("sova.scheduler.server.service.watchdog_loop", new=AsyncMock()),
+        ):
+            task = server._announce_ready()
+            assert task is not None
+            await asyncio.gather(task)
+
+        notify.assert_not_called()
+
+    async def test_liveness_predicate_ignores_a_stale_watch_loop(self) -> None:
+        """A tracker outage stalls the watch loop (health 'degraded') but is not a hung process."""
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        with (
+            patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")),
+            patch.object(SOVAServer, "_compute_health_status", return_value="degraded"),
+        ):
+            assert await server._is_live() is True
+            assert (await server._get_health_check())["status"] == "degraded"
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="fail")):
+            # An unreachable database is /api/health's 503, not a reason for systemd to restart the process.
+            assert await server._is_live() is True
+            assert (await server._get_health_check())["status"] == "degraded"
+
+    async def test_watchdog_keeps_pinging_while_scan_raises_adapter_errors(self, monkeypatch) -> None:
+        """A persistent AdapterError leaves last_scan_at stale; the server is degraded but alive."""
+        import asyncio
+
+        from sova.adapters.base import AdapterError
+        from sova.scheduler.server import SOVAServer
+        from sova.scheduler.watch import WatchLoop
+
+        monkeypatch.setenv("WATCHDOG_USEC", "100000")
+        monkeypatch.delenv("WATCHDOG_PID", raising=False)
+        server = SOVAServer(config=_make_config())
+        server._start_time = time.monotonic() - 6000  # past the staleness window
+        adapter = MagicMock()
+        adapter.list_tasks = AsyncMock(side_effect=AdapterError("tracker down"))
+        server._watch_loop = WatchLoop(config=_make_config(), adapter=adapter, project_dir=None)
+        for _ in range(3):
+            assert await server._watch_loop.scan() == []
+        assert server._compute_health_status() == "degraded"
+
+        with (
+            patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")),
+            patch("sova.scheduler.server.service.sd_notify") as notify,
+            patch("sova.scheduler.server.service.install_sighup_handler"),
+        ):
+            task = server._announce_ready()
+            assert task is not None
+            await asyncio.sleep(0.15)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert any(c.args == ("WATCHDOG=1",) for c in notify.call_args_list)
+
     def test_health_status_ok_when_scheduler_never_started(self) -> None:
         """No watch loop at all (never started, or disabled) is "ok", not "degraded"."""
         from sova.scheduler.server import SOVAServer
@@ -1125,11 +1255,12 @@ class TestSOVAServerEdgeCases:
 
         with (
             patch.object(SOVAServer, "create_app", return_value=MagicMock()),
-            patch("uvicorn.run") as mock_run,
+            patch("uvicorn.Config") as mock_config,
+            patch("uvicorn.Server.run"),
         ):
             server.run()
 
-        assert mock_run.call_args.kwargs["access_log"] is False
+        assert mock_config.call_args.kwargs["access_log"] is False
 
     def test_run_warms_git_sha_before_serving(self, tmp_path: Path) -> None:
         """/api/health reads get_git_sha() from an async handler; its subprocess must not run there."""
@@ -1141,11 +1272,115 @@ class TestSOVAServerEdgeCases:
 
         with (
             patch.object(SOVAServer, "create_app", return_value=MagicMock()),
-            patch("uvicorn.run"),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server.run"),
         ):
             server.run()
 
         assert get_git_sha.cache_info().currsize == 1
+
+    def test_run_ignores_sighup_so_no_window_has_the_terminating_default(self, tmp_path: Path, monkeypatch) -> None:
+        """SIGHUP's default action kills the process; the loop handler only exists during the lifespan."""
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.setenv("SOVA_SERVER_LOG", str(tmp_path / "server.log"))
+        server = SOVAServer(config=_make_config(), project_dir=tmp_path)
+        events: list[str] = []
+
+        with (
+            patch.object(SOVAServer, "create_app", return_value=MagicMock()),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server.run", side_effect=lambda *_a, **_k: events.append("serve")),
+            patch("sova.scheduler.server.service.ignore_sighup", side_effect=lambda: events.append("ignore")),
+        ):
+            server.run()
+
+        assert events == ["ignore", "serve", "ignore"]
+
+    @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on this platform")
+    def test_interactive_run_leaves_sighup_at_its_default(self, tmp_path: Path, monkeypatch) -> None:
+        """With no log env var no service manager owns the logs: closing the terminal must still stop it."""
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.delenv("SOVA_SERVER_LOG", raising=False)
+        monkeypatch.delenv("SOVA_SERVER_ERR_LOG", raising=False)
+        server = SOVAServer(config=_make_config(), project_dir=tmp_path)
+        before = signal.getsignal(signal.SIGHUP)
+
+        with (
+            patch.object(SOVAServer, "create_app", return_value=MagicMock()),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server.run"),
+            patch("sova.scheduler.server.service.ignore_sighup") as ignore,
+        ):
+            server.run()
+
+        ignore.assert_not_called()
+        assert signal.getsignal(signal.SIGHUP) == before
+
+    async def test_announce_ready_installs_no_sighup_handler_when_interactive(self, monkeypatch) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.delenv("SOVA_SERVER_LOG", raising=False)
+        monkeypatch.delenv("SOVA_SERVER_ERR_LOG", raising=False)
+        monkeypatch.delenv("WATCHDOG_USEC", raising=False)
+        server = SOVAServer(config=_make_config())
+        with patch("sova.scheduler.server.service.install_sighup_handler") as install:
+            server._announce_ready()
+        install.assert_not_called()
+
+    async def test_announce_ready_installs_the_sighup_handler_when_service_managed(self, monkeypatch) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.setenv("SOVA_SERVER_ERR_LOG", "/tmp/sova-server.err")
+        monkeypatch.delenv("WATCHDOG_USEC", raising=False)
+        server = SOVAServer(config=_make_config())
+        with patch("sova.scheduler.server.service.install_sighup_handler") as install:
+            server._announce_ready()
+        install.assert_called_once()
+
+    def test_ctrl_c_after_a_graceful_shutdown_is_a_clean_exit_that_removes_the_pid_file(self, tmp_path: Path) -> None:
+        """uvicorn re-raises the captured SIGINT after shutdown; run() must swallow it as uvicorn.run does."""
+        import uvicorn
+
+        from sova.scheduler.server import SOVAServer
+
+        pid_file = tmp_path / "server.pid"
+        server = SOVAServer(config=_make_config(server={"pid_file": str(pid_file)}), project_dir=tmp_path)
+        with (
+            patch.object(SOVAServer, "create_app", return_value=MagicMock()),
+            patch("sova.scheduler.server.get_git_sha"),
+            patch.object(uvicorn.Server, "run", side_effect=KeyboardInterrupt),
+        ):
+            server.run()  # does not raise
+
+        assert not pid_file.exists()
+
+    async def test_ready_is_sent_only_after_the_port_is_bound(self) -> None:
+        """READY=1 follows uvicorn's startup() with `started` set, never the lifespan alone."""
+        import uvicorn
+
+        from sova.scheduler.server import _build_ready_notifying_server
+
+        async def fake_startup(self, sockets=None) -> None:
+            self.started = True
+
+        async def failed_startup(self, sockets=None) -> None:
+            self.started = False
+
+        server = _build_ready_notifying_server(uvicorn.Config(MagicMock()))
+        with (
+            patch("sova.scheduler.server.service.sd_notify") as notify,
+            patch.object(uvicorn.Server, "startup", new=failed_startup),
+        ):
+            await server.startup()
+            notify.assert_not_called()
+        with (
+            patch("sova.scheduler.server.service.sd_notify") as notify,
+            patch.object(uvicorn.Server, "startup", new=fake_startup),
+        ):
+            await server.startup()
+            notify.assert_called_once_with("READY=1")
 
     async def test_scheduler_status_reports_config(self) -> None:
         import httpx
@@ -1545,6 +1780,11 @@ class TestServerCLICommands:
         assert f"SOVA_PROJECT_DIR={tmp_path}" in content
         assert "StandardOutput=journal" in content
         assert "Environment=HOME=%h" in content
+        assert "Type=notify" in content
+        assert "WatchdogSec=60" in content
+        assert "WatchdogSignal=SIGTERM" in content
+        assert "KillMode=process" in content
+        assert "1241" in _cli_output(result)  # the unverified ~/.claude.json write path is called out to the operator
 
     def test_install_service_launchd(self, tmp_path: Path) -> None:
         """install-service --type launchd renders and installs the plist."""
@@ -1583,7 +1823,7 @@ class TestServerCLICommands:
 
         assert result.exit_code == 0
         content = (home_dir / ".config" / "systemd" / "user" / "sova-server.service").read_text()
-        assert f"ReadWritePaths=%h/.config/sova %h/.claude {project_dir}" in content
+        assert f"ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex {project_dir}" in content
         assert "PrivateTmp=true" in content
         assert "User=%i" not in content
 
@@ -1636,8 +1876,8 @@ class TestServerCLICommands:
         assert f"{tmp_path}/Library/Logs/sova/sova-server.log" in content
         assert f"{tmp_path}/Library/Logs/sova/sova-server.err" in content
         # [pid_file] [sig_num] makes newsyslog signal the server after rotation
-        # instead of doing nothing, so launchd's KeepAlive can restart it and
-        # reopen the log paths (newsyslog.conf(5)).
+        # instead of doing nothing; SIGHUP makes the server reopen the log paths
+        # in place (newsyslog.conf(5)).
         pid_path = tmp_path / ".claude" / "sova-server.pid"
         log_lines = [line for line in content.splitlines() if line.startswith(f"{tmp_path}/Library")]
         assert len(log_lines) == 2
@@ -1645,7 +1885,7 @@ class TestServerCLICommands:
             fields = line.split()
             assert fields[-3] == "J"
             assert fields[-2] == str(pid_path)
-            assert fields[-1] == str(signal.SIGUSR2.value)
+            assert fields[-1] == str(signal.SIGHUP.value)
 
         output = _cli_output(result)
         assert "sudo cp" in output

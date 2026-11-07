@@ -11,6 +11,7 @@ from sova.utils.env import (
     PARENT_SESSION_VARS,
     PROVIDER_ROUTING_VARS,
     SCRUBBED_VARS,
+    SERVICE_MANAGER_VARS,
     scrub_agent_env,
 )
 
@@ -152,7 +153,11 @@ class TestScrubbedVarSets:
     def test_scrubbed_is_the_union(self) -> None:
         assert (
             SCRUBBED_VARS
-            == PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS | CODEX_CREDENTIAL_VARS | OPENAI_CREDENTIAL_VARS
+            == PROVIDER_ROUTING_VARS
+            | PARENT_SESSION_VARS
+            | SERVICE_MANAGER_VARS
+            | CODEX_CREDENTIAL_VARS
+            | OPENAI_CREDENTIAL_VARS
         )
 
     def test_var_sets_are_disjoint(self) -> None:
@@ -162,6 +167,13 @@ class TestScrubbedVarSets:
         assert not (PROVIDER_ROUTING_VARS & OPENAI_CREDENTIAL_VARS)
         assert not (PARENT_SESSION_VARS & OPENAI_CREDENTIAL_VARS)
         assert not (CODEX_CREDENTIAL_VARS & OPENAI_CREDENTIAL_VARS)
+
+    def test_service_manager_vars_never_reach_a_child(self) -> None:
+        """A nested ``sova server`` in an agent must not believe it runs under the outer service."""
+        env = {name: "x" for name in SERVICE_MANAGER_VARS} | {"PATH": "/usr/bin"}
+        assert scrub_agent_env(env) == {"PATH": "/usr/bin"}
+        assert scrub_agent_env(env, passthrough=list(SERVICE_MANAGER_VARS)) == {"PATH": "/usr/bin"}
+        assert {"NOTIFY_SOCKET", "SOVA_SERVER_LOG", "SOVA_SERVER_ERR_LOG"} <= SERVICE_MANAGER_VARS
 
     def test_credential_vars_are_not_scrubbed(self) -> None:
         """Guards the deliberate carve-out documented in sova/utils/env.py."""
