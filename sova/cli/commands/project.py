@@ -19,6 +19,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters import create_adapter
 from sova.config.loader import load_config
 from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
+from sova.git.artifact_exclusions import INFO_EXCLUDE_ENTRIES
+from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 from sova.utils.shell import check_git_identity, run
 
@@ -66,6 +68,13 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     except Exception as exc:  # noqa: BLE001 (setup stage is non-fatal; any failure is reported and setup continues)
         log.warning("setup.git_hooks_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[yellow]Warning: git hooks configuration failed: {exc}[/yellow]")
+
+    # Keep SOVA's runtime files out of `git add -A` and `git status` (non-fatal)
+    try:
+        await _exclude_runtime_files(project_dir)
+    except OSError as exc:
+        log.warning("install.info_exclude_failed", project_dir=str(project_dir), exc_info=True)
+        console.print(f"[yellow]Warning: could not update .git/info/exclude: {exc}[/yellow]")
 
     # Git identity check (non-fatal warning)
     try:
@@ -249,6 +258,50 @@ async def _configure_git_hooks(project_dir: Path) -> None:
             console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
         else:
             console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
+
+
+def _escape_gitignore(text: str) -> str:
+    """Backslash-escape the gitignore glob metacharacters in a literal path."""
+    return re.sub(r"([\\*?\[\]])", r"\\\1", text)
+
+
+async def _exclude_runtime_files(project_dir: Path) -> None:
+    """Append SOVA's runtime paths to the repository's ``.git/info/exclude``, skipping entries already there.
+
+    The exclude file is local and untracked, so it never dirties the working tree or touches the project's
+    ``.gitignore``. ``--git-path`` resolves to the common git dir, so a worktree writes the shared file.
+    Its patterns are relative to the repository root, so a project nested below that root gets entries
+    carrying its own path (``/sub/.claude/sova.db*``). An exclude file that exists but cannot be read is
+    left alone with a warning rather than treated as empty, which would append the entries on every install.
+    """
+    result = await run("git", "rev-parse", "--git-path", "info/exclude", "--show-prefix", cwd=str(project_dir))
+    lines = result.stdout.splitlines() if result.success else []
+    git_path = lines[0].strip() if lines else ""
+    if not git_path:
+        console.print("[yellow]Warning: not a git repository; skipped .git/info/exclude update[/yellow]")
+        return
+    project_prefix = _escape_gitignore(lines[1]) if len(lines) > 1 else ""
+
+    exclude_path = project_dir / git_path
+    existing = read_text_or_none(exclude_path)
+    if existing is None:
+        if exclude_path.exists():
+            log.warning("install.info_exclude_unreadable", path=str(exclude_path))
+            console.print(f"[yellow]Warning: could not read {exclude_path}; skipped .git/info/exclude update[/yellow]")
+            return
+        existing = ""
+    present = {line.strip() for line in existing.splitlines()}
+    # Entries are anchored (`/.sova/`); an unanchored line an earlier install or the operator wrote counts too.
+    wanted = [f"/{project_prefix}{entry.removeprefix('/')}" for entry in INFO_EXCLUDE_ENTRIES]
+    missing = [entry for entry in wanted if entry not in present and entry.removeprefix("/") not in present]
+    if not missing:
+        return
+
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    with exclude_path.open("a", encoding="utf-8") as fh:
+        fh.write(prefix + "\n".join(missing) + "\n")
+    log.info("install.info_exclude_updated", path=str(exclude_path), added=len(missing))
 
 
 def _configure_agent_permissions(claude_dir: Path, *, update: bool) -> None:
