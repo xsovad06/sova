@@ -10,8 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.git.artifact_exclusions import WORKTREE_STASH_EXCLUDED_PATHS, WORKTREE_STASH_PATHSPECS, unstage_command
-from sova.git.untracked_collisions import clear_conflicting_runtime_files
+from sova.git.artifact_exclusions import WORKTREE_STASH_EXCLUDED_PATHS, unstage_command
+from sova.git.untracked_collisions import clear_conflicting_runtime_files, runtime_stash_pathspecs
 from sova.llm.client import invoke_command
 from sova.llm.models import LLMResult
 from sova.utils.env import scrub_check_env
@@ -428,7 +428,11 @@ async def rebase_with_conflict_resolution(
         await clear_conflicting_runtime_files(f"origin/{base}", cwd)
     except RuntimeError as exc:
         return RebaseResult(success=False, error=str(exc)[:300]), cost
-    stash_result = await run("git", "stash", "--include-untracked", "--", *WORKTREE_STASH_PATHSPECS, cwd=cwd)
+    try:
+        stash_pathspec_args = await runtime_stash_pathspecs(WORKTREE_STASH_EXCLUDED_PATHS, cwd)
+    except RuntimeError as exc:
+        return RebaseResult(success=False, error=str(exc)[:300]), cost
+    stash_result = await run("git", "stash", "--include-untracked", "--", *stash_pathspec_args, cwd=cwd)
     stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
     if not stash_result.success:
         log.warning("git.rebase.stash_failed", stderr=(stash_result.stderr or "")[:200])
