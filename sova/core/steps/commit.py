@@ -26,7 +26,7 @@ from sova.utils.shell import run
 
 log = get_logger(component="step.commit")
 
-_AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".agents/", ".sova-")
+_AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".agents/", ".sova-", ".sova/")
 _SPEC_PREFIX = ".claude/specs/"
 
 

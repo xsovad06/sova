@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from sova.git.artifact_exclusions import (
+    STAGE_ALL_PATHSPECS,
+    STASH_EXCLUDED_PATHS,
+    STASH_PATHSPECS,
+    unstage_command,
+)
 from sova.git.safety import unstage_suspicious_files
 from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
@@ -56,18 +62,56 @@ async def _restore_stash(stashed: bool, cwd: Path | None = None) -> None:
         log.warning("git.sync_branch.stash_pop_failed", stderr=(pop_result.stderr or "")[:200])
 
 
+async def _drop_untracked_specs_origin_tracks(branch: str, cwd: Path | None = None) -> None:
+    """Delete untracked ``.claude/specs/`` files that ``origin/<branch>`` already tracks byte for byte.
+
+    SpecStep writes a spec into the primary checkout and the PR commits it from a worktree, so once that PR
+    merges the same file is untracked locally and tracked upstream. Stashing it would only make ``git stash
+    pop`` abort ("already exists, no checkout") and strand an entry in the stash. A copy whose content differs
+    is left for the stash, which preserves it. Best effort: any git failure leaves the file to the stash.
+    """
+    listing = await run("git", "ls-files", "-z", "--others", "--exclude-standard", "--", ".claude/specs/", cwd=cwd)
+    if not listing.success:
+        log.warning("git.sync_branch.spec_scan_failed", stderr=(listing.stderr or "")[:200])
+        return
+    base = Path(cwd) if cwd is not None else Path.cwd()
+    for rel in filter(None, listing.stdout.split("\0")):
+        local = await run("git", "hash-object", "--", rel, cwd=cwd)
+        upstream = await run("git", "rev-parse", "--verify", "-q", f"origin/{branch}:./{rel}", cwd=cwd)
+        if local.success and upstream.success and local.stdout.strip() == upstream.stdout.strip():
+            (base / rel).unlink(missing_ok=True)
+            log.info("git.sync_branch.spec_already_upstream", path=rel)
+
+
 async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     """Fetch from origin and reset the local base branch to match origin.
 
-    Stashes uncommitted changes before checkout and restores them after.
-    Uses ``git reset --hard`` instead of pull because this only targets the
-    base branch (e.g. main) which should always match origin.
+    Stashes the operator's uncommitted changes before checkout and restores them
+    after, leaving SOVA's own runtime files (database, log, agent state) in
+    place: stashing the live database out from under the running process is
+    destructive. A failed stash raises before checkout, since the reset below
+    would otherwise run over unstashed work.
+
+    Resets with ``git reset --keep`` instead of pull because this only targets
+    the base branch (e.g. main) which should always match origin. ``--keep``
+    rather than ``--hard``: it aborts instead of discarding a local change to a
+    tracked file that origin also changed.
     """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
 
-    stash_result = await run("git", "stash", "--include-untracked", cwd=cwd)
-    stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
+    await _drop_untracked_specs_origin_tracks(branch, cwd)
+
+    # Unstage the excluded paths first (contents stay on disk): see unstage_command().
+    unstage = await run(*unstage_command(STASH_EXCLUDED_PATHS), cwd=cwd)
+    if not unstage.success:
+        log.warning("git.sync_branch.unstage_failed", stderr=(unstage.stderr or "")[:200])
+
+    stash_cmd = ("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS)
+    stash_result = await run(*stash_cmd, cwd=cwd)
+    if not stash_result.success:
+        raise subprocess_error(stash_cmd, stash_result)
+    stashed = "No local changes to save" not in stash_result.stdout
 
     checkout_result = await run("git", "checkout", branch, cwd=cwd)
     if not checkout_result.success:
@@ -109,7 +153,11 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
                 checkout_result,
             )
 
-    await run_checked("git", "reset", "--hard", f"origin/{branch}", cwd=cwd)
+    try:
+        await run_checked("git", "reset", "--keep", f"origin/{branch}", cwd=cwd)
+    except RuntimeError:
+        await _restore_stash(stashed, cwd)
+        raise
 
     await _restore_stash(stashed, cwd)
 
@@ -132,7 +180,7 @@ async def commit(
     if files:
         await run_checked("git", "add", *files, cwd=cwd)
     else:
-        await run_checked("git", "add", "-A", cwd=cwd)
+        await run_checked("git", "add", "-A", "--", *STAGE_ALL_PATHSPECS, cwd=cwd)
 
     scan = await unstage_suspicious_files(cwd)
     if not scan.checked:

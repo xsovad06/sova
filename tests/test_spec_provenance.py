@@ -1482,3 +1482,10 @@ def _make_ctx(
 
     ctx.add_cost = add_cost
     return ctx
+
+
+def test_sova_baseline_dir_is_agent_artifact() -> None:
+    """The commit step never stages `.sova/`, so it must not count as the agent's work (#1402)."""
+    from sova.core.steps.commit import is_agent_artifact
+
+    assert is_agent_artifact(".sova/test-baseline.json") is True
