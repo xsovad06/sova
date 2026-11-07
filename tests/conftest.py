@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import os
 import subprocess
@@ -675,6 +676,13 @@ def seed_config():
         _seed_project_settings(Path(project_dir), merged)
 
     return _seed
+
+
+@pytest.fixture
+def setup_root_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Allow the setup wizard endpoints to use `tmp_path` (they only accept configured roots)."""
+    monkeypatch.setenv("SOVA_DASHBOARD_SETUP_ROOTS", json.dumps([str(tmp_path)]))
+    return tmp_path
 
 
 def csrf_request_headers(client: Any) -> dict[str, str]:

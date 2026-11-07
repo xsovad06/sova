@@ -863,6 +863,9 @@ class DashboardConfig(BaseSettings):
     llm_suggestions: bool = True
     rate_limit_per_minute: int = 60
     csrf_secret: str = Field("", repr=False)
+    # Directories the setup wizard may browse, scan, install into and configure. `~` is expanded.
+    # The project the dashboard was started with is always allowed in addition to these.
+    setup_roots: list[str] = Field(default_factory=lambda: ["~"])
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 

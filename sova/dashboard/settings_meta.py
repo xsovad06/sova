@@ -1392,6 +1392,16 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "secret",
     ),
+    SettingMeta(
+        "dashboard.setup_roots",
+        "Setup roots",
+        "Directories the setup wizard may browse and install into (default: your home directory). "
+        "The project the dashboard was started with is always allowed. On the global multi-project hub "
+        "no project is in scope, so set SOVA_DASHBOARD_SETUP_ROOTS in the server environment instead, "
+        'as a JSON array such as ["~/code"] (a comma-separated value is not accepted there)',
+        "dashboard",
+        "list",
+    ),
     # MCP
     SettingMeta(
         "mcp.enabled",
