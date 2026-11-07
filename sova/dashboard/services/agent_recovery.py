@@ -11,11 +11,18 @@ from typing import TYPE_CHECKING
 from cachetools import TTLCache
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.dashboard.services.agent_adopt import (
+    _find_pr_completion_handoff,
+    _read_result_is_error,
+    adopt_orphaned_run,
+)
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from sova.db.models import TaskRun
 
 log = get_logger(component="dashboard.control.recovery")
 
@@ -110,12 +117,19 @@ _RECOVERY_TOTAL_TIMEOUT = 20.0  # hard cap on the entire recover_stale_runs() ca
 
 _ZOMBIE_RECENCY_HOURS = 24
 
+# An agent process is spawned moments after its TaskRun row is created, so a process whose creation time is
+# further than this from started_at is not the run's own agent: created later, it inherited a recycled PID;
+# created earlier, it is a long-lived host (``sova watch``, ``sova server``) that ran the run in-process and
+# recorded its own PID (``_is_in_process_host``).
+_PID_IDENTITY_TOLERANCE = timedelta(minutes=5)
+
 
 def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
-    """Verify a PID belongs to the expected agent process, not a recycled PID.
+    """Verify a PID is alive and belongs to the expected agent process, not a recycled PID.
 
-    Compares the process creation time against the TaskRun's started_at to guard
-    against killing unrelated processes that inherited a recycled PID.
+    Compares the process creation time against the TaskRun's started_at, within
+    ``_PID_IDENTITY_TOLERANCE``, to guard against adopting or killing an unrelated
+    process that inherited a recycled PID.
     """
     try:
         import psutil
@@ -124,7 +138,7 @@ def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
         create_time = datetime.fromtimestamp(proc.create_time(), tz=timezone.utc)
         if started_at is not None:
             started_utc = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-            if create_time > started_utc + timedelta(minutes=5):
+            if abs(create_time - started_utc) > _PID_IDENTITY_TOLERANCE:
                 log.info(
                     "recovery.pid_recycled",
                     pid=pid,
@@ -136,6 +150,26 @@ def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
     except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; fall back to a plain PID check)
         log.debug("recovery.pid_probe_failed", pid=pid, exc_info=True)
         return _is_process_alive(pid)
+
+
+def _is_in_process_host(pid: int, started_at: datetime | None) -> bool:
+    """True when *pid* is alive and was created well before *started_at*.
+
+    Such a process cannot be a recycled PID (reuse only ever happens after the run's process exited), so
+    it is the long-lived host that ran the pipeline in-process and wrote its own PID to the run
+    (``WorkflowEngine._create_task_run``, the role dispatcher). Its run is live: never adopted, killed, or
+    marked interrupted. Any probe failure answers False.
+    """
+    if started_at is None:
+        return False
+    try:
+        import psutil
+
+        create_time = datetime.fromtimestamp(psutil.Process(pid).create_time(), tz=timezone.utc)
+    except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; answer not-a-host)
+        return False
+    started_utc = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    return create_time < started_utc - _PID_IDENTITY_TOLERANCE
 
 
 def _is_sova_cmdline(cmdline: list[str]) -> bool:
@@ -179,6 +213,72 @@ def _is_orphaned_process(pid: int) -> bool:
         return not _is_sova_cmdline(psutil.Process(ppid).cmdline())
     except Exception:  # noqa: BLE001 (psutil import or process lookup can fail many ways; leave the process alone)
         log.debug("recovery.parent_probe_failed", pid=pid, exc_info=True)
+        return False
+
+
+def _find_completion_handoff(project_dir: Path | None, issue: str | None, started_at: datetime | None) -> dict | None:
+    """Return the handoff an agent left awaiting action after *started_at*, else None.
+
+    Proof that a run finished its work even though its process is gone and its exit code is unknown.
+    Issue-less runs get None: get_handoff(issue=None) returns the project-wide latest handoff, which
+    belongs to a different run. Fail-open: the check spans file I/O, JSON parsing and date math.
+    """
+    if not issue:
+        return None
+    try:
+        from sova.dashboard.services import handoff_service
+
+        hf = handoff_service.get_handoff(project_dir, issue=issue)
+        if not hf or hf.get("status") != "awaiting_action":
+            return None
+        run_start = started_at or datetime.min.replace(tzinfo=timezone.utc)
+        if run_start.tzinfo is None:
+            run_start = run_start.replace(tzinfo=timezone.utc)
+        hf_time_str = hf.get("created_at")
+        if not hf_time_str:
+            return None
+        hf_dt = datetime.fromisoformat(hf_time_str.replace("Z", "+00:00"))
+        if hf_dt.tzinfo is None:
+            hf_dt = hf_dt.replace(tzinfo=timezone.utc)
+        return hf if hf_dt >= run_start else None
+    except Exception:  # noqa: BLE001 (fail-open: handoff check spans file I/O, JSON parsing and date math)
+        log.debug("recovery.handoff_check_failed", issue=issue, exc_info=True)
+        return None
+
+
+async def _derive_finished_outcome(run: TaskRun, project_dir: Path | None) -> bool | None:
+    """How a run whose process is gone ended, from what it left behind: True ok, False error, None unknown.
+
+    Agents outlive a stopped server, so one that finished while no server ran is the common case at the next
+    start. Its exit code is gone, but a PR-scoped handoff (for a run with no issue) or, for a command run,
+    the final ``result`` event in ``.claude/agent-output/<run_id>.stdout`` still say how it ended. Only a
+    command run's stdout is stream-json; a pipeline run's holds CLI output, which proves nothing here.
+    """
+    import asyncio
+
+    from sova.dashboard.services.agent_db import _COMMAND_ROLE_PREFIX
+
+    root = project_dir or Path.cwd()
+    if not run.issue_number and run.pr_number:
+        if await asyncio.to_thread(_find_pr_completion_handoff, root, run.pr_number, run.started_at):
+            return True
+    role = run.role or ""
+    if role.startswith(_COMMAND_ROLE_PREFIX):
+        stdout_path = root / ".claude" / "agent-output" / f"{run.id}.stdout"
+        is_error = await asyncio.to_thread(_read_result_is_error, stdout_path, role)
+        if is_error is not None:
+            return not is_error
+    return None
+
+
+def _recovery_kill_orphans(project_dir: Path | None) -> bool:
+    """Whether ``recovery.kill_orphans`` is on. An unreadable config answers False: nothing is killed."""
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(project_dir).recovery.kill_orphans
+    except Exception:  # noqa: BLE001 (config may fail many ways; the safe answer is to signal nothing)
+        log.warning("recovery.kill_orphans_config_failed", project_dir=str(project_dir), exc_info=True)
         return False
 
 
@@ -296,11 +396,16 @@ async def _get_pr_branch_for_recovery(pr_number: int, repo: str, project_dir: Pa
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
     """Detect and mark stale non-terminal TaskRuns, on dashboard startup and in the periodic sweep.
 
-    A live run this dashboard instance does not manage is killed and marked interrupted
-    only when ``_is_orphaned_process`` confirms it is an orphaned agent this dashboard launched
-    (it carries the agent marker and has lost its launcher). Any other live unmanaged run belongs
+    A live run this dashboard instance does not manage is adopted (``adopt_orphaned_run``) and left
+    running when ``_is_orphaned_process`` confirms it is an orphaned agent this dashboard launched
+    (it carries the agent marker and has lost its launcher). With ``recovery.kill_orphans`` on it is
+    killed and marked interrupted instead. A live PID created after the run started (PID reuse) is
+    marked interrupted without any signal. A dead PID is recorded from what the run left behind (a completion
+    handoff, a PR handoff, or a command run's final ``result`` line: done or failed) and is interrupted only
+    when the outcome is unknown; nothing is signalled. Any other live unmanaged run belongs
     to another process sharing the database (a terminal or service ``sova run``, ``sova watch``,
-    ``sova parallel`` or ``sova server``) and is left running, at startup and in the sweep alike.
+    ``sova parallel`` or ``sova server``, including one created before the run that recorded its own
+    PID for an in-process run) and is left running, at startup and in the sweep alike.
 
     Three-phase approach to keep startup fast regardless of stale-run count:
       1. Read-only query + handoff checks (synchronous, fast).
@@ -336,9 +441,12 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
         # can distinguish "alive and managed" from "alive but orphaned".
         managed_run_ids, _managed_loaded = _get_managed_run_ids()
 
+        kill_orphans = _recovery_kill_orphans(project_dir)
         orphan_kill_tasks: list[asyncio.Task[None]] = []
         dead_runs: list[dict] = []
         for run in all_stale:
+            # A dead or recycled PID falls through to "interrupted" below, and a live in-process host is left
+            # running. Neither is signalled: only an identity-matched live orphan ever is.
             if run.pid and _is_zombie_process(run.pid, run.started_at):
                 if run.id in managed_run_ids:
                     log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
@@ -349,8 +457,15 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                 if not _is_orphaned_process(run.pid):
                     log.info("recovery.still_alive_unmanaged", run_id=run.id, pid=run.pid)
                     continue
+                if not kill_orphans:
+                    # A failed adoption leaves the run unmanaged and running; the next sweep retries it.
+                    await adopt_orphaned_run(run, project_dir)
+                    continue
                 log.warning("recovery.killing_orphan", run_id=run.id, pid=run.pid)
                 orphan_kill_tasks.append(asyncio.ensure_future(_kill_process(run.pid)))
+            elif run.pid and _is_in_process_host(run.pid, run.started_at):
+                log.info("recovery.still_alive_in_process", run_id=run.id, pid=run.pid)
+                continue
 
             was_status = run.status
             final_status = "interrupted"
@@ -358,30 +473,22 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
             error_msg = None
 
             # Handoff check: if agent wrote a handoff after the run started, mark done.
-            # Skip issue-less runs: get_handoff(issue=None) returns the project-wide
-            # latest handoff, which belongs to a different run.
-            try:
-                from sova.dashboard.services import handoff_service
-
-                hf = handoff_service.get_handoff(project_dir, issue=run.issue_number) if run.issue_number else None
-                if hf and hf.get("status") == "awaiting_action":
-                    hf_time_str = hf.get("created_at")
-                    run_start = run.started_at or datetime.min.replace(tzinfo=timezone.utc)
-                    if run_start.tzinfo is None:
-                        run_start = run_start.replace(tzinfo=timezone.utc)
-                    hf_dt = None
-                    if hf_time_str:
-                        hf_dt = datetime.fromisoformat(hf_time_str.replace("Z", "+00:00"))
-                        if hf_dt.tzinfo is None:
-                            hf_dt = hf_dt.replace(tzinfo=timezone.utc)
-                    if hf_dt is not None and hf_dt >= run_start:
-                        final_status = "done"
-                        cost = hf.get("details", {}).get("cost_usd")
-                        if cost is not None:
-                            cost_override = Decimal(str(cost))
-                        log.info("recovery.completed_with_handoff", run_id=run.id, issue=run.issue_number)
-            except Exception:  # noqa: BLE001 (fail-open: handoff check spans file I/O, JSON parsing and date math)
-                log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
+            hf = _find_completion_handoff(project_dir, run.issue_number, run.started_at)
+            if hf is not None:
+                final_status = "done"
+                cost = hf.get("details", {}).get("cost_usd")
+                if cost is not None:
+                    cost_override = Decimal(str(cost))
+                log.info("recovery.completed_with_handoff", run_id=run.id, issue=run.issue_number)
+            else:
+                outcome = await _derive_finished_outcome(run, project_dir)
+                if outcome is True:
+                    final_status = "done"
+                    log.info("recovery.completed_with_result", run_id=run.id, role=run.role)
+                elif outcome is False:
+                    final_status = "failed"
+                    error_msg = "Agent process finished with an error result while no server was running"
+                    log.info("recovery.failed_with_result", run_id=run.id, role=run.role)
 
             _role_parts = (run.role or "").removeprefix("command:").removeprefix("/").split()
             needs_merge_check = (

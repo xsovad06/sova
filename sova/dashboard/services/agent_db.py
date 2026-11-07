@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
-from sova.ipc.control import normalize_signal_exit
+from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, normalize_signal_exit
 from sova.llm.phase_usage import PhaseTally
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
@@ -55,6 +55,8 @@ def _classify_exit_status(exit_code: int, agent: AgentState) -> tuple[str, str |
     record = agent.process.termination_record if agent.process is not None else None
     if record is not None:
         return "stopped", record.cause
+    if exit_code == EXIT_OUTCOME_UNKNOWN:
+        return "interrupted", "outcome_unknown"
     if normalize_signal_exit(exit_code) is not None:
         return "interrupted", "external_signal"
     return "failed", None
@@ -104,7 +106,10 @@ def _build_exit_failure_message(exit_code: int, output_lines: Sequence[str], cur
     if tail:
         tail_text = scan_and_redact("\n".join(tail)).redacted_text[-_OUTPUT_TAIL_MAX_CHARS:]
 
-    message = f"Process exited with code {exit_code}"
+    if exit_code == EXIT_OUTCOME_UNKNOWN:
+        message = "Outcome unknown: the adopted agent exited and left no status, handoff or result to read"
+    else:
+        message = f"Process exited with code {exit_code}"
     if current_step and current_step != "agent":
         message += f" (step={current_step})"
     if tail_text:
@@ -270,10 +275,14 @@ def _emit_finalize_event(run_id: int, *, status: str, exit_code: int, agent: Age
         sev = FeedEventSeverity.warning
     else:
         sev = FeedEventSeverity.success
+    if exit_code == EXIT_OUTCOME_UNKNOWN:
+        detail = "Outcome unknown (adopted run)"
+    else:
+        detail = f"Exit code: {exit_code}" if exit_code != 0 else None
     emit_safe(
         f"{label} {role_label} {status}",
         severity=sev,
-        detail=f"Exit code: {exit_code}" if exit_code != 0 else None,
+        detail=detail,
         category="agent",
         metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": str(cost)},
     )

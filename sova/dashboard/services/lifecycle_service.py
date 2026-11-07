@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from sova.core.state import PHASE_ORDER, PHASE_TRANSITIONS, LifecyclePhase, PhaseStatus
 from sova.db.models import IssueLifecycle, LifecyclePhaseRecord, TaskRun
 from sova.git.pr import get_pr_status
+from sova.ipc.control import EXIT_OUTCOME_UNKNOWN
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
@@ -711,10 +712,12 @@ async def finalize_phase_from_run(
             lifecycle.branch_name = run.branch_name
 
     try:
-        if run.status == "stopped":
+        if run.status == "stopped" or exit_code == EXIT_OUTCOME_UNKNOWN:
             # Checked ahead of exit_code: a deliberate stop is not a
             # completion or an application failure, even though the process
-            # itself may have exited with a nonzero (signal-shaped) code.
+            # itself may have exited with a nonzero (signal-shaped) code. An
+            # adopted run whose outcome could not be determined is neither a
+            # success nor a confirmed failure either.
             await stop_phase(session, run.lifecycle_id, phase, run.error_message)
         elif exit_code == 0:
             await complete_phase(session, run.lifecycle_id, phase, cost)
