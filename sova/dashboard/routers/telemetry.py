@@ -10,9 +10,10 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
@@ -42,8 +43,12 @@ class TelemetryIngestRequest(BaseModel):
     run_at: datetime
 
 
-def _check_auth(authorization: str | None) -> None:
-    """Validate bearer token against SOVA_TELEMETRY_TOKEN env var."""
+def _check_auth(authorization: Annotated[str | None, Header()] = None) -> None:
+    """FastAPI dependency: validate the bearer token against the SOVA_TELEMETRY_TOKEN env var.
+
+    Declared as a route dependency, so it runs before `_parse_ingest_body`: an unauthenticated
+    caller gets 401/403/503, never a 422 that describes the schema or the JSON it sent.
+    """
     expected = os.environ.get("SOVA_TELEMETRY_TOKEN")
     if not expected:
         raise HTTPException(status_code=503, detail="Telemetry ingestion not configured")
@@ -54,6 +59,35 @@ def _check_auth(authorization: str | None) -> None:
     token = authorization.removeprefix("Bearer ").strip()
     if not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=403, detail="Invalid telemetry token")
+
+
+async def _parse_ingest_body(request: Request) -> TelemetryIngestRequest:
+    """Parse the body only after `_check_auth` has passed.
+
+    A body parameter would be decoded by FastAPI before any dependency runs, so malformed
+    JSON from an unauthenticated caller would still get a 422. Validating here keeps the
+    same 422 shape (locations under `body`) for an authenticated caller.
+    """
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json" and not content_type.endswith("+json"):
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    try:
+        return TelemetryIngestRequest.model_validate_json(await request.body())
+    except ValidationError as e:
+        # pydantic reports the raw bytes as `input` for a body that is not valid UTF-8, and
+        # FastAPI's 422 encoder cannot decode them (500). Normalize bytes to text first.
+        raise RequestValidationError(
+            [
+                {
+                    **err,
+                    "loc": ("body", *err["loc"]),
+                    "input": err["input"].decode("utf-8", errors="replace")
+                    if isinstance(err.get("input"), (bytes, bytearray))
+                    else err.get("input"),
+                }
+                for err in e.errors(include_url=False, include_context=False)
+            ]
+        ) from e
 
 
 def _check_rate_limit(machine_id: str) -> None:
@@ -86,6 +120,13 @@ def _check_rate_limit(machine_id: str) -> None:
 @router.post(
     "/ingest",
     status_code=201,
+    dependencies=[Depends(_check_auth)],
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": TelemetryIngestRequest.model_json_schema()}},
+        }
+    },
     responses={
         200: {"description": "Duplicate event (already ingested)"},
         401: {"description": "Missing or invalid authorization header"},
@@ -95,11 +136,9 @@ def _check_rate_limit(machine_id: str) -> None:
     },
 )
 async def ingest_telemetry(
-    body: TelemetryIngestRequest,
-    authorization: Annotated[str | None, Header()] = None,
+    body: Annotated[TelemetryIngestRequest, Depends(_parse_ingest_body)],
 ) -> JSONResponse:
     """Ingest a single telemetry event from a remote SOVA instance."""
-    _check_auth(authorization)
     _check_rate_limit(body.machine_id)
 
     from sqlalchemy.exc import IntegrityError

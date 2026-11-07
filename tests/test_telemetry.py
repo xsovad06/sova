@@ -105,6 +105,85 @@ class TestTelemetryAuth:
         assert resp.status_code == 201
         assert resp.json()["status"] == "ok"
 
+    @pytest.mark.parametrize("body", [{}, {"machine_id": 5}, {"run_at": "not-a-date"}])
+    async def test_invalid_body_without_token_returns_401_not_422(self, telemetry_token: str, body: dict) -> None:
+        """Auth runs before body validation: an unauthenticated caller never sees the schema."""
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/telemetry/ingest", json=body)
+        assert resp.status_code == 401
+        body_json = resp.json()
+        assert "detail" in body_json
+        assert isinstance(body_json["detail"], str)
+
+    async def test_malformed_json_without_token_returns_401_not_422(self, telemetry_token: str) -> None:
+        """FastAPI decodes a body parameter before dependencies; this route parses after auth."""
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/telemetry/ingest", content=b"{not json", headers={"Content-Type": "application/json"}
+            )
+        assert resp.status_code == 401
+
+    async def test_malformed_json_with_valid_token_returns_422(self, telemetry_token: str) -> None:
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/telemetry/ingest",
+                content=b"{not json",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {telemetry_token}"},
+            )
+        assert resp.status_code == 422
+        assert resp.json()["detail"][0]["loc"][0] == "body"
+
+    async def test_non_utf8_body_with_valid_token_returns_422_not_500(self, telemetry_token: str) -> None:
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/telemetry/ingest",
+                content=b"\xff\xfe{",
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {telemetry_token}"},
+            )
+        assert resp.status_code == 422
+        assert resp.json()["detail"][0]["loc"][0] == "body"
+
+    @pytest.mark.parametrize("content_type", ["text/plain", None])
+    async def test_non_json_content_type_with_valid_token_returns_415(
+        self, telemetry_token: str, content_type: str | None
+    ) -> None:
+        app = _make_app()
+        headers = {"Authorization": f"Bearer {telemetry_token}"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/telemetry/ingest", content=b"{}", headers=headers)
+        assert resp.status_code == 415
+
+    async def test_openapi_still_documents_the_request_body(self) -> None:
+        schema = _make_app().openapi()["paths"]["/api/telemetry/ingest"]["post"]["requestBody"]
+        assert "machine_id" in schema["content"]["application/json"]["schema"]["properties"]
+
+    async def test_invalid_body_with_wrong_token_returns_403(self, telemetry_token: str) -> None:
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/telemetry/ingest", json={}, headers={"Authorization": "Bearer wrong-token"})
+        assert resp.status_code == 403
+
+    async def test_invalid_body_when_unconfigured_returns_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SOVA_TELEMETRY_TOKEN", raising=False)
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/telemetry/ingest", json={})
+        assert resp.status_code == 503
+
+    async def test_invalid_body_with_valid_token_returns_422(self, telemetry_token: str) -> None:
+        app = _make_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/telemetry/ingest", json={}, headers={"Authorization": f"Bearer {telemetry_token}"}
+            )
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Ingestion tests
