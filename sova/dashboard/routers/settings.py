@@ -432,36 +432,55 @@ async def _reload_oversight_config_with_cfg(cfg: ProjectConfig) -> None:
                 agent.start()
 
 
+def _config_value_to_str(raw: object) -> str:
+    """Normalize a JSON boolean or number to the string form the settings service expects."""
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    return str(raw)
+
+
+def _key_requires_restart(key: str) -> bool:
+    """Return True when changing *key* only takes effect after a server restart."""
+    meta = get_meta(key)
+    if meta is not None and meta.requires_restart:
+        return True
+    return any(key == prefix or key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES)
+
+
+async def _apply_config_update(project_dir: Path, key: str, result: dict) -> None:
+    """Propagate a saved setting to running components and annotate *result*."""
+    if key == "max_parallel_agents":
+        from sova.dashboard.services.agent_pool import sync_max_concurrent
+
+        sync_max_concurrent(project_dir)
+    lifecycle_error = await _reload_all_configs(project_dir, key)
+    if lifecycle_error:
+        result["lifecycle_error"] = lifecycle_error
+    if _key_requires_restart(key):
+        result["restart_required"] = True
+
+
 @router.post(
     "/settings/config",
-    responses={500: {"description": "Failed to update configuration"}},
+    responses={
+        422: {"description": "The configured database cannot be read back, so the setting was not saved"},
+        500: {"description": "Failed to update configuration"},
+    },
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def update_config(req: ConfigUpdateRequest) -> dict:
     """Update a single configuration key."""
     try:
         project_dir = get_project_dir()
-        # Normalize JSON booleans/numbers to strings; the service expects str.
-        raw = req.value
-        if isinstance(raw, bool):
-            value_str = "true" if raw else "false"
-        else:
-            value_str = str(raw)
+        value_str = _config_value_to_str(req.value)
         result = await settings_service.update_config(project_dir, key=req.key, value=value_str, provider=req.provider)
+        if result.get("unreadable_database"):
+            raise HTTPException(status_code=422, detail=result["error"])
         if result.get("status") == "ok":
-            if req.key == "max_parallel_agents":
-                from sova.dashboard.services.agent_pool import sync_max_concurrent
-
-                sync_max_concurrent(project_dir)
-            lifecycle_error = await _reload_all_configs(project_dir, req.key)
-            if lifecycle_error:
-                result["lifecycle_error"] = lifecycle_error
-            meta = get_meta(req.key)
-            if (meta is not None and meta.requires_restart) or any(
-                req.key == prefix or req.key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES
-            ):
-                result["restart_required"] = True
+            await _apply_config_update(project_dir, req.key, result)
         return result
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.config.update.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
