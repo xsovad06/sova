@@ -249,6 +249,7 @@ _NESTED_SECTIONS = (
     "runaway",
     "memory_guard",
     "network_guard",
+    "recovery",
     "watchdog",
     "telemetry",
     "fleet",

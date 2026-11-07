@@ -1071,6 +1071,17 @@ class NetworkGuardConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_NETWORK_GUARD_")
 
 
+class RecoveryConfig(BaseSettings):
+    """Restart recovery of agent runs that outlived the previous server process."""
+
+    # Off by default: a live agent whose server restarted is adopted and left running. On, startup
+    # recovery SIGTERMs (then SIGKILLs) a live orphan whose identity matches its run, and marks the
+    # run interrupted. A dead or mismatched PID is never signalled whatever this is set to.
+    kill_orphans: bool = False
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_RECOVERY_")
+
+
 class WatchdogConfig(BaseSettings):
     """Agent watchdog: detects stuck, zombie, and bypassed agent processes."""
 
@@ -1333,6 +1344,7 @@ class ProjectConfig(BaseSettings):
     runaway: RunawayConfig = Field(default_factory=RunawayConfig)
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     network_guard: NetworkGuardConfig = Field(default_factory=NetworkGuardConfig)
+    recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)
