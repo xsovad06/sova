@@ -278,8 +278,11 @@ async function browseTo(path) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: path || '' }),
   });
-  const data = await res.json();
-  renderBrowser(data);
+  if (!res.ok) {
+    showToast(await getErrorDetail(res, 'Cannot browse that path'), 'warning');
+    return;
+  }
+  renderBrowser(await res.json());
 }
 
 function renderBrowser(data) {
@@ -287,13 +290,18 @@ function renderBrowser(data) {
 
   const bc = document.getElementById('breadcrumb');
   const parts = data.current.split('/').filter(Boolean);
+  const rootParts = (data.root || '/').split('/').filter(Boolean);
+  // Ancestors above the allowed root would only produce a 403, so they render as plain text.
+  const crumbBtn = (path, label) => `<button type="button" class="hover:text-gray-200" data-path="${esc(path)}">${esc(label)}</button>`;
+  const crumbText = (label) => `<span class="text-gray-600">${esc(label)}</span>`;
   let crumbPath = '';
-  bc.innerHTML = '<span class="cursor-pointer hover:text-gray-200" onclick="browseTo(\'/\')">/</span>';
-  parts.forEach(part => {
+  const crumbs = [rootParts.length === 0 ? crumbBtn('/', '/') : crumbText('/')];
+  parts.forEach((part, i) => {
     crumbPath += '/' + part;
-    const p = crumbPath;
-    bc.innerHTML += `<span class="text-gray-600">/</span><span class="cursor-pointer hover:text-gray-200" onclick="browseTo('${p}')">${part}</span>`;
+    const reachable = i + 1 >= rootParts.length;
+    crumbs.push(`<span class="text-gray-600">/</span>${reachable ? crumbBtn(crumbPath, part) : crumbText(part)}`);
   });
+  bc.innerHTML = crumbs.join('');
 
   const listing = document.getElementById('dir-listing');
   if (data.entries.length === 0) {
@@ -309,14 +317,32 @@ function renderBrowser(data) {
 
     return `
       <div class="flex items-center px-4 py-2 hover:bg-surface-hover cursor-pointer border-b border-gray-700/20 group"
-           ondblclick="browseTo('${e.path}')"
-           onclick="${e.is_project ? `selectProject('${e.path}', '${e.name}')` : `browseTo('${e.path}')`}">
+           data-path="${esc(e.path)}" data-name="${esc(e.name)}" data-project="${e.is_project ? '1' : ''}">
         <span class="text-gray-500 w-5 text-center mr-2 text-xs">${isParent ? '&larr;' : (e.is_project ? '&bull;' : '&rsaquo;')}</span>
-        <span class="flex-1 text-sm ${e.is_project ? 'text-gray-200 font-medium' : 'text-gray-400'}">${e.name}</span>
+        <span class="flex-1 text-sm ${e.is_project ? 'text-gray-200 font-medium' : 'text-gray-400'}">${esc(e.name)}</span>
         <span class="flex items-center gap-1.5">${badges.join('')}</span>
       </div>`;
   }).join('');
 }
+
+// Delegated handlers: paths and names travel in data attributes (never in inline JS), so a
+// directory name containing quotes, angle brackets or backticks cannot break out of the markup.
+document.getElementById('breadcrumb').addEventListener('click', (ev) => {
+  const crumb = ev.target.closest('[data-path]');
+  if (crumb) browseTo(crumb.dataset.path);
+});
+
+const dirListing = document.getElementById('dir-listing');
+dirListing.addEventListener('click', (ev) => {
+  const row = ev.target.closest('[data-path]');
+  if (!row) return;
+  if (row.dataset.project) selectProject(row.dataset.path, row.dataset.name);
+  else browseTo(row.dataset.path);
+});
+dirListing.addEventListener('dblclick', (ev) => {
+  const row = ev.target.closest('[data-path]');
+  if (row) browseTo(row.dataset.path);
+});
 
 function selectProject(path, name) {
   currentProjectPath = path;
@@ -432,10 +458,10 @@ function showSuccessBanner(container, slug, action) {
   banner.innerHTML = `
     <div class="flex items-center gap-2 mb-3">
       <span class="w-2 h-2 rounded-full bg-accent-green"></span>
-      <span class="text-sm font-medium text-accent-green">${action} successfully</span>
+      <span class="text-sm font-medium text-accent-green">${esc(action)} successfully</span>
     </div>
     <div class="flex items-center gap-3">
-      <a href="/p/${slug}/agents"
+      <a href="/p/${esc(slug)}/agents"
         class="px-4 py-2 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
         Go to Project
       </a>
@@ -558,12 +584,12 @@ async function onJiraProjectSelected(projectKey) {
     const row = document.createElement('div');
     row.className = 'grid grid-cols-3 gap-2 items-center mb-1';
     row.innerHTML = `
-      <span class="text-sm text-gray-200">${s.name}</span>
-      <span class="text-xs text-gray-400">${s.category}</span>
-      <select data-jira-status="${s.name}" class="bg-surface border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
+      <span class="text-sm text-gray-200">${esc(s.name)}</span>
+      <span class="text-xs text-gray-400">${esc(s.category)}</span>
+      <select data-jira-status="${esc(s.name)}" class="bg-surface border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
               onchange="jiraStatusMapping[this.dataset.jiraStatus] = this.value || undefined; if(!this.value) delete jiraStatusMapping[this.dataset.jiraStatus]">
         <option value="">-- skip --</option>
-        ${sovaStates.map(st => `<option value="${st}" ${suggested === st ? 'selected' : ''}>${st}</option>`).join('')}
+        ${sovaStates.map(st => `<option value="${esc(st)}" ${suggested === st ? 'selected' : ''}>${esc(st)}</option>`).join('')}
       </select>`;
     table.appendChild(row);
   });
@@ -630,7 +656,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   }
 });
 
-browseTo('~');
+browseTo('');
 </script>
 </body>
 </html>

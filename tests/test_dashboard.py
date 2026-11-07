@@ -6886,6 +6886,7 @@ class TestAgentRuntimeSettingsAPI:
         assert "cli not found" in data["detail"]
 
 
+@pytest.mark.usefixtures("setup_root_tmp")
 class TestSetupAPI:
     async def test_browse_home(self, client: AsyncClient) -> None:
         resp = await client.post("/api/setup/browse", json={"path": ""})
@@ -7257,10 +7258,10 @@ class TestSetupAPI:
         data = resp.json()
         assert data["guidelines"]["updated"] == 2
 
-    async def test_create_milestones_returns_404_for_missing_dir(self, client: AsyncClient) -> None:
+    async def test_create_milestones_returns_404_for_missing_dir(self, client: AsyncClient, tmp_path: Path) -> None:
         resp = await client.post(
             "/api/setup/milestones/create",
-            json={"project_path": "/nonexistent/path/that/does/not/exist"},
+            json={"project_path": str(tmp_path / "does" / "not" / "exist")},
         )
         assert resp.status_code == 404
         assert "Directory not found" in resp.json()["detail"]
@@ -16153,6 +16154,7 @@ class TestCreateStarterMilestonesAdapterError:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("setup_root_tmp")
 class TestMilestonesEndpoint:
     async def test_create_milestones_success(self, client, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch

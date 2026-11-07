@@ -10,14 +10,90 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from sova.config.context import get_project_dir
+from sova.config.context import get_project_dir, resolve_project_dir_or_none
+from sova.config.loader import load_config
+from sova.config.models import DashboardConfig
 from sova.config.registry import register_project
 from sova.dashboard.services import setup_service
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.setup")
 
 router = APIRouter(tags=["setup"])
+
+
+_OUTSIDE_ROOTS_DETAIL = "Path is outside the directories the setup wizard may use"
+
+
+def _allowed_roots() -> list[Path]:
+    """Resolve the directories the setup wizard may touch: `dashboard.setup_roots` plus the project dir.
+
+    The project directory the dashboard serves is always allowed, otherwise a project outside the
+    configured roots could never be set up from its own dashboard. A config that fails to load
+    leaves only that project directory (fail closed). Blank entries are skipped, since an empty path
+    would resolve to the current working directory.
+
+    With no project in scope (the global multi-project hub), `load_config(None)` would read the
+    process's working directory, which under a service manager is unrelated to where the operator
+    ran `sova config set`. The roots then come from the environment alone
+    (`SOVA_DASHBOARD_SETUP_ROOTS`) or the default, never from the cwd.
+    """
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    try:
+        if project_dir is None:
+            configured = DashboardConfig().setup_roots
+        else:
+            configured = load_config(project_dir).dashboard.setup_roots
+    except Exception:  # noqa: BLE001 (any config failure must fail closed to the project dir instead of a 500)
+        log.warning("setup.roots_config_failed", exc_info=True)
+        configured = []
+    candidates = [r for r in configured if r.strip()]
+    roots: list[Path] = []
+    # Each entry is expanded and resolved on its own, so one bad entry (`~nosuchuser/x`, a NUL byte)
+    # is logged and dropped instead of failing every setup endpoint.
+    for candidate in candidates:
+        try:
+            resolved = Path(candidate).expanduser().resolve()
+        except (RuntimeError, ValueError, OSError):
+            log.warning("setup.root_entry_invalid", exc_info=True)
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    if project_dir is not None:
+        resolved_project = project_dir.resolve()
+        if resolved_project not in roots:
+            roots.append(resolved_project)
+    return roots
+
+
+def _is_within_roots(path: Path, roots: list[Path]) -> bool:
+    return any(path.is_relative_to(root) for root in roots)
+
+
+def _resolve_allowed_path(raw: str, roots: list[Path] | None = None) -> Path:
+    """Resolve a client-supplied project path and require it to sit inside an allowed root.
+
+    The root check runs before any existence check, so a 403 versus 404 never reveals whether a
+    path outside the roots exists. Both the candidate and the roots are resolved, so symlinks and
+    `..` cannot escape. The error text does not name the configured roots. `roots` defaults to
+    `_allowed_roots()`; a caller that already resolved them passes them in.
+    """
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (RuntimeError, ValueError, OSError) as exc:
+        # `~nosuchuser/x` (RuntimeError) and an embedded NUL byte (ValueError) are client input errors.
+        log.warning("setup.path_unresolvable", exc_info=True)
+        raise HTTPException(status_code=403, detail=_OUTSIDE_ROOTS_DETAIL) from exc
+    if not _is_within_roots(resolved, roots if roots is not None else _allowed_roots()):
+        log.warning("setup.path_outside_roots", path=str(resolved))
+        raise HTTPException(status_code=403, detail=_OUTSIDE_ROOTS_DETAIL)
+    return resolved
+
+
+def _first_existing_dir(roots: list[Path]) -> Path:
+    """Return the first root that is a directory, or `roots[0]` when none is (the caller then 404s)."""
+    return next((r for r in roots if r.is_dir()), roots[0])
 
 
 class BrowseRequest(BaseModel):
@@ -80,21 +156,54 @@ class JiraStatusesRequest(BaseModel):
     project_key: str
 
 
-@router.post("/setup/browse")
+@router.post(
+    "/setup/browse",
+    responses={
+        403: {"description": "Path is outside the allowed setup roots"},
+        404: {"description": "Directory not found"},
+    },
+)
 async def browse_directory(req: BrowseRequest) -> dict:
     """List directories for the project browser."""
-    return await asyncio.to_thread(setup_service.browse_directory, req.path)
+    roots = await asyncio.to_thread(_allowed_roots)
+    # An empty path starts at the first allowed root that is a directory (the home directory by default).
+    # A root that does not exist yet is skipped: `browse_directory` would otherwise list its parent,
+    # which sits outside the roots.
+    if req.path:
+        start = await asyncio.to_thread(_resolve_allowed_path, req.path, roots)
+    elif roots:
+        start = await asyncio.to_thread(_first_existing_dir, roots)
+    else:
+        raise HTTPException(status_code=403, detail=_OUTSIDE_ROOTS_DETAIL)
+    if not await asyncio.to_thread(start.is_dir):
+        raise HTTPException(status_code=404, detail="Directory not found")
+    result = await asyncio.to_thread(setup_service.browse_directory, str(start))
+    # Defense in depth: never return a listing of a directory outside the roots.
+    if not _is_within_roots(Path(result["current"]).resolve(), roots):
+        log.warning("setup.browse_result_outside_roots", path=result["current"])
+        raise HTTPException(status_code=403, detail=_OUTSIDE_ROOTS_DETAIL)
+    # The root that contains the listing: the page renders ancestors above it as plain text.
+    current = Path(result["current"]).resolve()
+    result["root"] = str(max((r for r in roots if current.is_relative_to(r)), key=lambda r: len(r.parts)))
+    # Do not offer a ".." entry that leads out of the roots.
+    result["entries"] = [
+        e for e in result["entries"] if e["name"] != ".." or _is_within_roots(Path(e["path"]).resolve(), roots)
+    ]
+    return result
 
 
-@router.post("/setup/scan")
+@router.post("/setup/scan", responses={403: {"description": "Path is outside the allowed setup roots"}})
 async def scan_project(req: ScanRequest) -> dict:
     """Scan a project to detect tech stack and suggest configuration."""
-    return await setup_service.scan_project(req.project_path)
+    roots = await asyncio.to_thread(_allowed_roots)
+    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
+    return await setup_service.scan_project(str(project))
 
 
 @router.post(
     "/setup/install",
     responses={
+        403: {"description": "Path is outside the allowed setup roots"},
         404: {"description": "Directory not found"},
         409: {"description": "Installed, but the project registry is unreadable"},
         500: {"description": "Installation failed"},
@@ -104,7 +213,8 @@ async def install_project(req: InstallRequest) -> dict:
     """Run sova install on a project."""
     from sova.cli.commands.project import _install
 
-    project = Path(req.project_path).expanduser().resolve()
+    roots = await asyncio.to_thread(_allowed_roots)
+    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
@@ -119,10 +229,17 @@ async def install_project(req: InstallRequest) -> dict:
     return {"status": "ok", "slug": slug}
 
 
-@router.post("/setup/configure", responses={404: {"description": "Directory not found"}})
+@router.post(
+    "/setup/configure",
+    responses={
+        403: {"description": "Path is outside the allowed setup roots"},
+        404: {"description": "Directory not found"},
+    },
+)
 async def configure_project(req: ConfigureRequest) -> dict:
     """Save project config to the database and register the project."""
-    project = Path(req.project_path).expanduser().resolve()
+    roots = await asyncio.to_thread(_allowed_roots)
+    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
@@ -312,10 +429,17 @@ class CreateMilestonesRequest(BaseModel):
     titles: list[str] | None = None
 
 
-@router.post("/setup/milestones/create", responses={404: {"description": "Project directory not found"}})
+@router.post(
+    "/setup/milestones/create",
+    responses={
+        403: {"description": "Path is outside the allowed setup roots"},
+        404: {"description": "Project directory not found"},
+    },
+)
 async def create_milestones(req: CreateMilestonesRequest) -> dict:
     """Create default phase milestones on the tracker."""
-    project = Path(req.project_path).expanduser().resolve()
+    roots = await asyncio.to_thread(_allowed_roots)
+    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 

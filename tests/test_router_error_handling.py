@@ -42,6 +42,7 @@ class TestTasksRouterErrors:
         assert "Task source unavailable" in resp.json()["detail"]
 
 
+@pytest.mark.usefixtures("setup_root_tmp")
 class TestSetupRouterErrors:
     async def test_install_hides_exception_detail(self, client: AsyncClient, tmp_path: Path) -> None:
         with patch(
