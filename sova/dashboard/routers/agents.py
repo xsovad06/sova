@@ -19,6 +19,7 @@ from sova.adapters.label_catalog import AREA_CHOICES
 from sova.adapters.priority import Priority
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
+from sova.dashboard.security import validate_websocket_origin
 from sova.dashboard.services import control_service
 from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
 from sova.dashboard.services.agent_validation import (
@@ -37,7 +38,8 @@ router = APIRouter(tags=["agents"])
 # require_same_origin_csrf (applied to `router` at include_router() time in app.py)
 # expects an HTTP Request, not a WebSocket connection: FastAPI cannot satisfy that
 # dependency for a websocket route, so the one here lives on its own router that
-# app.py registers without the CSRF dependency.
+# app.py registers without the CSRF dependency. ws_agent_status checks the handshake
+# Origin itself with validate_websocket_origin before accepting.
 ws_router = APIRouter(tags=["agents"])
 log = get_logger(component="dashboard.agents")
 
@@ -845,6 +847,17 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     """
     from sova.config.context import resolve_project_dir_or_none
     from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    if not validate_websocket_origin(websocket):
+        # Any page a dashboard user visits can open sockets in a loop, so a refused handshake never
+        # logs above debug and the attacker-supplied Origin is truncated.
+        if getattr(websocket.app.state, "csrf_fail_closed", False):
+            # Startup already warned about this bind, and open tabs retry forever: keep the log quiet.
+            log.debug("dashboard.ws_refused_fail_closed")
+        else:
+            log.debug("dashboard.ws_origin_rejected", origin=(websocket.headers.get("origin") or "")[:100])
+        await websocket.close(code=1008)
+        return
 
     await websocket.accept()
     # Capture project_dir at connection time so the producer loop uses the

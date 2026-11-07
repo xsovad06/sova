@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17384,6 +17385,11 @@ class TestDetectVariantCommandRoles:
 # ---------------------------------------------------------------------------
 
 
+def _ws_headers(app: FastAPI) -> dict[str, str]:
+    """Origin header a browser on the dashboard's own address would send."""
+    return {"origin": sorted(app.state.allowed_origins)[0]}
+
+
 class TestWebSocketAgentStatus:
     def test_websocket_connect_and_receive_status_update(self) -> None:
         """WebSocket endpoint accepts connection and sends status_update with runs."""
@@ -17391,7 +17397,7 @@ class TestWebSocketAgentStatus:
 
         app = create_app(multi_project=False)
         client = TestClient(app)
-        with client.websocket_connect("/api/ws/agents/status") as ws:
+        with client.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)) as ws:
             data = ws.receive_json()
             assert data["type"] == "status_update"
             assert isinstance(data["runs"], list)
@@ -17405,7 +17411,7 @@ class TestWebSocketAgentStatus:
         app = create_app(multi_project=False)
         client = TestClient(app)
         before = len(_ws_manager.active_connections)
-        with client.websocket_connect("/api/ws/agents/status") as ws:
+        with client.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)) as ws:
             ws.receive_json()
         # After disconnect, connection count should be back to baseline
         assert len(_ws_manager.active_connections) == before
@@ -17419,10 +17425,10 @@ class TestWebSocketAgentStatus:
         # when nesting websocket_connect context managers on the same client.
         client1 = TestClient(app)
         client2 = TestClient(app)
-        with client1.websocket_connect("/api/ws/agents/status") as ws1:
+        with client1.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)) as ws1:
             d1 = ws1.receive_json()
             assert d1["type"] == "status_update"
-        with client2.websocket_connect("/api/ws/agents/status") as ws2:
+        with client2.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)) as ws2:
             d2 = ws2.receive_json()
             assert d2["type"] == "status_update"
 
@@ -17440,11 +17446,96 @@ class TestWebSocketAgentStatus:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("DB failure"),
             ),
-            client.websocket_connect("/api/ws/agents/status") as ws,
+            client.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)) as ws,
         ):
             data = ws.receive_json()
             assert data["type"] == "status_unavailable"
             assert "runs" not in data
+
+    def test_websocket_rejects_cross_origin(self) -> None:
+        """A handshake from a foreign Origin is closed with 1008 before accept."""
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers={"origin": "https://evil.example"}),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    @pytest.mark.parametrize("origin", [None, "null", "http://localhost:1"])
+    def test_websocket_rejects_missing_null_or_wrong_port_origin(self, origin: str | None) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        headers = {} if origin is None else {"origin": origin}
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers=headers),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_websocket_fails_closed_when_allowed_origins_unset(self) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        app = create_app(multi_project=False)
+        origin = sorted(app.state.allowed_origins)[0]
+        del app.state.allowed_origins
+        client = TestClient(app)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers={"origin": origin}),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_websocket_fails_closed_on_non_loopback_bind_without_secret(self) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        app = create_app(multi_project=False, host="0.0.0.0")
+        client = TestClient(app)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers=_ws_headers(app)),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_websocket_non_loopback_bind_with_secret_allows_only_configured_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "x" * 32)
+        app = create_app(multi_project=False, host="192.168.1.10", port=8111)
+        assert app.state.csrf_fail_closed is False
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws/agents/status", headers={"origin": "http://192.168.1.10:8111"}) as ws:
+            assert ws.receive_json()["type"] == "status_update"
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers={"origin": "http://127.0.0.1:8111"}),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_websocket_accepts_ipv6_loopback_origin(self) -> None:
+        from starlette.testclient import TestClient
+
+        app = create_app(multi_project=False, host="::1", port=8111)
+        assert "http://[::1]:8111" in app.state.allowed_origins
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws/agents/status", headers={"origin": "http://[::1]:8111"}) as ws:
+            assert ws.receive_json()["type"] == "status_update"
 
     def test_websocket_multi_project_isolation(self) -> None:
         """ConnectionManager groups connections by project_dir for isolation."""

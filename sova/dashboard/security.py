@@ -40,7 +40,7 @@ import hmac
 import ipaddress
 import secrets
 
-from fastapi import HTTPException, Request, Response
+from fastapi import HTTPException, Request, Response, WebSocket
 
 CSRF_COOKIE_NAME = "sova_csrf"
 CSRF_HEADER_NAME = "x-csrf-token"
@@ -147,6 +147,27 @@ def validate_origin(request: Request, allowed_origins: frozenset[str]) -> bool:
         return any(referer == o or referer.startswith(f"{o}/") for o in allowed_origins)
 
     return False
+
+
+def validate_websocket_origin(websocket: WebSocket) -> bool:
+    """Check a websocket handshake's Origin against the dashboard's allowlist.
+
+    Reads the same `app.state` the HTTP guard uses (`allowed_origins`, `csrf_fail_closed`),
+    so both accept exactly the same origins. Browsers do not apply the same-origin policy
+    to websockets, so any page the user visits could otherwise open this socket.
+
+    A missing Origin is refused (browsers always send it on a handshake; a non-browser
+    client must set it explicitly), and `Referer` is deliberately not a fallback because
+    it is unreliable on handshakes. An unset `allowed_origins` fails closed.
+    """
+    state = websocket.app.state
+    if getattr(state, "csrf_fail_closed", False):
+        return False
+    origin = websocket.headers.get("origin")
+    if origin is None:
+        return False
+    allowed_origins: frozenset[str] = getattr(state, "allowed_origins", frozenset())
+    return origin in allowed_origins
 
 
 def issue_csrf_cookie(response: Response, request: Request) -> str:
