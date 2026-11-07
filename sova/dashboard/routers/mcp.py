@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 from starlette.requests import Request
 
 from sova.config.context import get_project_dir
@@ -22,6 +23,53 @@ router = APIRouter(tags=["mcp"])
 # never from the client's JSON-RPC arguments. A caller passing its own project_dir
 # here would let a token scoped to one run query an unrelated project's DB.
 _CONTEXT_ONLY_PARAMS = frozenset({"project_dir"})
+
+
+class JsonRpcParams(BaseModel):
+    """`params` of a JSON-RPC request: only `tools/call` reads `name` and `arguments`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: StrictStr | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class JsonRpcRequest(BaseModel):
+    """JSON-RPC 2.0 request envelope: the one place that defines what a body may contain.
+
+    `jsonrpc` defaults to "2.0" when absent but any other value is rejected. `id` defaults
+    to 1 when absent (a notification still gets a reply, as before) and must be a string,
+    an integer or null. A bool, float, list or object `id` is rejected.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    jsonrpc: Literal["2.0"] = "2.0"
+    id: StrictInt | StrictStr | None = 1
+    method: StrictStr
+    # The envelope stays permissive about `params`: positional (array) and null params are valid
+    # JSON-RPC, and only the tools/call branch validates the object form (-32602), so an unknown
+    # method keeps its -32601 whatever `params` holds.
+    params: dict[str, Any] | list[Any] | None = Field(default_factory=dict)
+
+
+def _jsonrpc_error(code: int, message: str, req_id: int | str | None) -> dict:
+    return {"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id}
+
+
+def _detectable_id(body: object) -> int | str | None:
+    """Return the request `id` for an error reply when it is a usable JSON-RPC id, else None.
+
+    JSON-RPC 2.0 says the error `id` is null only when the id could not be detected, so a
+    well-formed id on an otherwise malformed body is echoed back. A bool, float, list or
+    object id is not a valid id and yields None.
+    """
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("id")
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    return raw
 
 
 def _filter_tool_arguments(tool_func: Callable[..., Any], arguments: dict) -> dict:
@@ -81,26 +129,30 @@ async def mcp_endpoint(
         body = await request.json()
     except Exception as e:  # noqa: BLE001 (JSON-RPC boundary: any body-read/parse failure becomes a -32700 error)
         log.warning("mcp.request_parse_failed", exc_info=True)
-        return {
-            "jsonrpc": "2.0",
-            "error": {
-                "code": -32700,
-                "message": f"Parse error: {e}",
-            },
-            "id": None,
-        }
+        return _jsonrpc_error(-32700, f"Parse error: {e}", None)
 
-    req_id = body.get("id", 1)
-    method = body.get("method")
-    params = body.get("params", {})
+    try:
+        rpc = JsonRpcRequest.model_validate(body)
+    except ValidationError:
+        log.warning("mcp.invalid_request")
+        return _jsonrpc_error(-32600, "Invalid Request", _detectable_id(body))
+
+    req_id = rpc.id
+    method = rpc.method
 
     # Handle tools/call method
     if method == "tools/call":
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-
-        # Inject authenticated run_id into arguments
-        arguments["token_run_id"] = token_run_id
+        if not isinstance(rpc.params, dict):
+            return _jsonrpc_error(-32602, "Invalid params: tools/call expects an object", req_id)
+        try:
+            params = JsonRpcParams.model_validate(rpc.params)
+        except ValidationError:
+            log.warning("mcp.invalid_params")
+            return _jsonrpc_error(-32602, "Invalid params: name must be a string and arguments an object", req_id)
+        tool_name = params.name
+        # The authenticated run_id is the only identity: a client-supplied token_run_id
+        # is dropped here and never forwarded.
+        arguments = {k: v for k, v in params.arguments.items() if k != "token_run_id"}
 
         # Dispatch to the appropriate tool
         tool_map = {
@@ -113,52 +165,25 @@ async def mcp_endpoint(
         }
 
         if tool_name not in tool_map:
-            return {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32601,
-                    "message": f"Method not found: {tool_name}",
-                },
-                "id": req_id,
-            }
+            return _jsonrpc_error(-32601, f"Method not found: {tool_name}", req_id)
 
         try:
             raw_run_id = arguments.get("run_id")
             if raw_run_id is None:
-                return {
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32602,
-                        "message": "Missing required parameter: run_id",
-                    },
-                    "id": req_id,
-                }
+                return _jsonrpc_error(-32602, "Missing required parameter: run_id", req_id)
             try:
                 run_id = int(raw_run_id)
             except (TypeError, ValueError):
-                return {
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32602,
-                        "message": f"Invalid run_id: expected integer, got {type(raw_run_id).__name__}",
-                    },
-                    "id": req_id,
-                }
+                return _jsonrpc_error(
+                    -32602, f"Invalid run_id: expected integer, got {type(raw_run_id).__name__}", req_id
+                )
             if run_id != token_run_id:
-                return {
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32000,
-                        "message": f"Access denied: cannot query run_id {run_id} (token allows {token_run_id})",
-                    },
-                    "id": req_id,
-                }
-
-            # Remove token_run_id from arguments before passing to service function
-            service_args = {k: v for k, v in arguments.items() if k != "token_run_id"}
+                return _jsonrpc_error(
+                    -32000, f"Access denied: cannot query run_id {run_id} (token allows {token_run_id})", req_id
+                )
 
             tool_func = tool_map[tool_name]
-            service_args = _filter_tool_arguments(tool_func, service_args)
+            service_args = _filter_tool_arguments(tool_func, arguments)
             result = await tool_func(**service_args)
 
             return {
@@ -167,31 +192,10 @@ async def mcp_endpoint(
                 "id": req_id,
             }
         except ValueError as e:
-            return {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32000,
-                    "message": str(e),
-                },
-                "id": req_id,
-            }
+            return _jsonrpc_error(-32000, str(e), req_id)
         except Exception:  # noqa: BLE001 (JSON-RPC boundary: any tool failure becomes an error response)
             log.exception("mcp.tool_error", tool=tool_name)
-            return {
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32603,
-                    "message": "Internal error",
-                },
-                "id": req_id,
-            }
+            return _jsonrpc_error(-32603, "Internal error", req_id)
 
     # Unsupported method
-    return {
-        "jsonrpc": "2.0",
-        "error": {
-            "code": -32601,
-            "message": f"Method not found: {method}",
-        },
-        "id": req_id,
-    }
+    return _jsonrpc_error(-32601, f"Method not found: {method}", req_id)
