@@ -275,6 +275,75 @@ class TestRestartRequiredFlag:
         key = "database_url"
         assert any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
 
+    def test_key_requires_restart_from_prefix(self) -> None:
+        from sova.dashboard.routers.settings import _key_requires_restart
+
+        assert _key_requires_restart("server.port") is True
+        assert _key_requires_restart("database_url") is True
+
+    def test_key_requires_restart_from_setting_meta(self) -> None:
+        from sova.dashboard.routers.settings import _key_requires_restart
+
+        assert _key_requires_restart("watch.interval_active") is True
+
+    def test_key_requires_restart_meta_flag_outside_prefixes(self) -> None:
+        from sova.dashboard.routers import settings as settings_router
+
+        meta = MagicMock(requires_restart=True)
+        with patch.object(settings_router, "get_meta", return_value=meta):
+            assert settings_router._key_requires_restart("llm.provider") is True
+
+    def test_key_requires_restart_false_for_hot_reloadable_key(self) -> None:
+        from sova.dashboard.routers.settings import _key_requires_restart
+
+        assert _key_requires_restart("llm.provider") is False
+        assert _key_requires_restart("unknown.key") is False
+
+
+class TestConfigValueToStr:
+    """JSON values from the settings form normalize to the service's string form."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [(True, "true"), (False, "false"), (3, "3"), (2.5, "2.5"), ("main", "main")],
+    )
+    def test_config_value_to_str(self, raw: object, expected: str) -> None:
+        from sova.dashboard.routers.settings import _config_value_to_str
+
+        assert _config_value_to_str(raw) == expected
+
+
+class TestApplyConfigUpdate:
+    """A saved setting propagates to running components and annotates the result."""
+
+    async def test_apply_config_update_syncs_pool_and_flags_restart(self, tmp_path: Path) -> None:
+        from sova.dashboard.routers import settings as settings_router
+
+        result: dict = {"status": "ok"}
+        with (
+            patch("sova.dashboard.services.agent_pool.sync_max_concurrent") as sync,
+            patch.object(settings_router, "_reload_all_configs", AsyncMock(return_value=None)) as reload,
+            patch.object(settings_router, "_key_requires_restart", return_value=True),
+        ):
+            await settings_router._apply_config_update(tmp_path, "max_parallel_agents", result)
+
+        sync.assert_called_once_with(tmp_path)
+        reload.assert_awaited_once_with(tmp_path, "max_parallel_agents")
+        assert result == {"status": "ok", "restart_required": True}
+
+    async def test_apply_config_update_records_lifecycle_error(self, tmp_path: Path) -> None:
+        from sova.dashboard.routers import settings as settings_router
+
+        result: dict = {"status": "ok"}
+        with (
+            patch("sova.dashboard.services.agent_pool.sync_max_concurrent") as sync,
+            patch.object(settings_router, "_reload_all_configs", AsyncMock(return_value="boom")),
+        ):
+            await settings_router._apply_config_update(tmp_path, "llm.provider", result)
+
+        sync.assert_not_called()
+        assert result == {"status": "ok", "lifecycle_error": "boom"}
+
 
 class TestLifecycleErrorPropagation:
     """Lifecycle failures propagate to the caller instead of being swallowed."""

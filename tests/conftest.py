@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -590,6 +591,25 @@ def _reset_log_dedup() -> None:
     from sova.utils.log_dedup import reset
 
     reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_config_cache() -> Iterator[None]:
+    """Start and end every test with an empty ``load_config()`` cache and no remembered DB warnings.
+
+    The cache is process-wide and its staleness fingerprint cannot see a test that
+    patches ``_try_load_from_db`` or a model default, so a result cached by one
+    test would otherwise answer the next.
+    """
+    from sova.config import db_loader
+    from sova.config.loader import invalidate_config_cache
+
+    invalidate_config_cache()
+    db_loader._warned_once.clear()
+    db_loader._psycopg_available.cache_clear()
+    yield
+    invalidate_config_cache()
+    db_loader._psycopg_available.cache_clear()
 
 
 @pytest.fixture(autouse=True)

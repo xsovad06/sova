@@ -629,6 +629,54 @@ class TestFleetManagerServiceCoverage:
         mock_commit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_write_max_concurrent_to_db_refuses_unreadable_database(self, tmp_path: Path, monkeypatch) -> None:
+        """An unsupported dialect would store a value load_config() never reads: refuse, do not write."""
+        monkeypatch.setenv("SOVA_DATABASE_URL", "mysql+aiomysql://user:pw@host/db")
+        mock_save = AsyncMock()
+        mock_get_session = AsyncMock()
+
+        service = FleetManagerService()
+        with (
+            patch("sova.config.db_loader.save_setting", mock_save),
+            patch("sova.db.session.get_session", mock_get_session),
+        ):
+            result = await service._write_max_concurrent_to_db(tmp_path, 8)
+
+        assert result is False
+        mock_save.assert_not_awaited()
+        mock_get_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_write_max_concurrent_to_db_invalidates_only_a_successful_write(self, tmp_path: Path) -> None:
+        """On PostgreSQL the invalidation is the only way an in-process write shows before the TTL."""
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        service = FleetManagerService()
+        with (
+            patch("sova.config.db_loader.save_setting", AsyncMock()),
+            patch("sova.db.session.get_session", AsyncMock(return_value=mock_session)),
+            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+        ):
+            assert await service._write_max_concurrent_to_db(tmp_path, 8) is True
+        invalidate.assert_called_once_with(tmp_path)
+
+        with (
+            patch("sova.config.db_loader.save_setting", AsyncMock(side_effect=RuntimeError("DB gone"))),
+            patch("sova.db.session.get_session", AsyncMock(return_value=mock_session)),
+            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+        ):
+            assert await service._write_max_concurrent_to_db(tmp_path, 8) is False
+        invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_write_max_concurrent_to_db_refusal_does_not_invalidate(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setenv("SOVA_DATABASE_URL", "mysql+aiomysql://user:pw@host/db")
+        with patch("sova.config.loader.invalidate_config_cache") as invalidate:
+            assert await FleetManagerService()._write_max_concurrent_to_db(tmp_path, 8) is False
+        invalidate.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_write_max_concurrent_to_db_error_returns_false(self) -> None:
         """_write_max_concurrent_to_db returns False on DB errors."""
         mock_save = AsyncMock(side_effect=RuntimeError("DB gone"))
