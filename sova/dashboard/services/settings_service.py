@@ -172,6 +172,10 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
 
     cast = _cast_value(value, meta.value_type)
 
+    unreadable = _unreadable_database_error(project_dir)
+    if unreadable:
+        return unreadable
+
     async with _get_update_lock(project_dir):
         consistency_error = _validate_config_consistency(project_dir, key, cast)
         if consistency_error:
@@ -242,6 +246,10 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
             return {"error": validation_error}
         casted[key] = _cast_value(value, meta.value_type)
 
+    unreadable = _unreadable_database_error(project_dir)
+    if unreadable:
+        return unreadable
+
     async with _get_update_lock(project_dir):
         consistency_error = _validate_config_consistency_many(project_dir, casted)
         if consistency_error:
@@ -254,6 +262,7 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
             async with await get_session(project_dir=project_dir) as session, session.begin():
                 for key, value in casted.items():
                     await save_setting(session, key, value)
+            _invalidate_config_cache(project_dir)
         except Exception:  # noqa: BLE001 (any persist failure must return the error contract, never escape uncaught)
             log.warning("settings.atomic_db_write_failed", keys=sorted(casted), exc_info=True)
             return {"error": "Failed to persist settings (DB unavailable); no keys were changed"}
@@ -458,6 +467,26 @@ async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
     return {"status": "ok", "key": key}
 
 
+def _unreadable_database_error(project_dir: Path | None) -> dict | None:
+    """An error result when a write would land in a database ``load_config()`` cannot read back.
+
+    The flag lets the HTTP layer answer with a client error instead of a 200 body.
+    """
+    from sova.config.db_loader import config_db_unreadable_reason
+
+    reason = config_db_unreadable_reason(project_dir)
+    if reason is None:
+        return None
+    return {"error": f"Setting not saved: {reason}", "unreadable_database": True}
+
+
+def _invalidate_config_cache(project_dir: Path | None) -> None:
+    """Drop the cached config after a committed write, so the next load reads the new value."""
+    from sova.config.loader import invalidate_config_cache
+
+    invalidate_config_cache(project_dir or Path.cwd())
+
+
 async def _save_setting_to_db(project_dir: Path | None, key: str, value: object) -> bool:
     """Persist a setting to the database. Returns True on success."""
     try:
@@ -466,6 +495,7 @@ async def _save_setting_to_db(project_dir: Path | None, key: str, value: object)
 
         async with await get_session(project_dir=project_dir) as session, session.begin():
             await save_setting(session, key, value)
+        _invalidate_config_cache(project_dir)
         return True
     except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("settings.db_save_failed", key=key, exc_info=True)

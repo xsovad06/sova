@@ -257,12 +257,19 @@ class FleetManagerService:
         success, False on any DB error.
         """
         try:
-            from sova.config.db_loader import save_setting
+            from sova.config.db_loader import config_db_unreadable_reason, save_setting
             from sova.db.session import get_session
 
+            reason = config_db_unreadable_reason(project_dir)
+            if reason is not None:
+                log.warning("fleet_manager.db_write_refused", project_dir=str(project_dir), reason=reason)
+                return False
             async with await get_session(project_dir=project_dir) as session:
                 await save_setting(session, "max_parallel_agents", value)
                 await session.commit()
+            from sova.config.loader import invalidate_config_cache
+
+            invalidate_config_cache(project_dir)
             return True
         except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("fleet_manager.db_write_failed", exc_info=True)

@@ -234,6 +234,7 @@ async def install_project(req: InstallRequest) -> dict:
     responses={
         403: {"description": "Path is outside the allowed setup roots"},
         404: {"description": "Directory not found"},
+        422: {"description": "The configured database cannot be read back by load_config()"},
     },
 )
 async def configure_project(req: ConfigureRequest) -> dict:
@@ -242,6 +243,13 @@ async def configure_project(req: ConfigureRequest) -> dict:
     project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
+
+    from sova.config.db_loader import config_db_unreadable_reason
+
+    # Refuse before writing: rows load_config() can never read back must not report success.
+    reason = config_db_unreadable_reason(project)
+    if reason is not None:
+        raise HTTPException(status_code=422, detail=f"Configuration not saved: {reason}")
 
     toml_cfg = setup_service.TomlConfig(
         github_repo=req.github_repo,
@@ -274,6 +282,10 @@ async def configure_project(req: ConfigureRequest) -> dict:
     async with await get_session(project_dir=project) as session:
         async with session.begin():
             await save_config_to_db(session, config_dict)
+
+    from sova.config.loader import invalidate_config_cache
+
+    invalidate_config_cache(project)
 
     slug = register_project(project)
     return {"status": "ok", "config_source": "database", "slug": slug}

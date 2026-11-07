@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -24,32 +23,13 @@ log = get_logger(component="dashboard.api.a2a")
 
 router = APIRouter(tags=["a2a"])
 
-_CONFIG_CACHE_TTL = 60.0
-_cached_config = None
-_cached_config_dir = None
-_cached_config_ts = 0.0
-
 
 def _get_a2a_config() -> ProjectConfig | None:
-    """Load A2A config with a TTL cache to avoid disk reads on every request."""
-    global _cached_config, _cached_config_dir, _cached_config_ts
-
+    """Load the project config for the default project (``load_config`` caches it process-wide)."""
     project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     if project_dir is None:
         return None
-
-    now = time.monotonic()
-    if (
-        _cached_config is not None
-        and _cached_config_dir == project_dir
-        and (now - _cached_config_ts) < _CONFIG_CACHE_TTL
-    ):
-        return _cached_config
-
-    _cached_config = load_config(project_dir)
-    _cached_config_dir = project_dir
-    _cached_config_ts = now
-    return _cached_config
+    return load_config(project_dir)
 
 
 def _require_a2a_enabled() -> None:
