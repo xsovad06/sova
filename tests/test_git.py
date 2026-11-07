@@ -127,6 +127,7 @@ class TestCreateBranch:
             assert mock_run.called
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestSyncBranch:
     async def test_fetches_and_resets(self) -> None:
         with (
@@ -135,7 +136,6 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_ok(),  # checkout
@@ -154,7 +154,6 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_ok(),  # checkout
@@ -173,7 +172,6 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (clean)
                 _shell_ok(),  # checkout
@@ -191,7 +189,6 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_ok(),  # checkout
@@ -204,22 +201,23 @@ class TestSyncBranch:
 class TestSyncBranchRuntimeFiles:
     """sync_branch() stashes the operator's work but leaves SOVA's runtime files in place (issue #1402)."""
 
+    @pytest.mark.usefixtures("stub_collision_cleanup")
     async def test_stash_excludes_runtime_paths_by_pathspec(self) -> None:
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_checked.return_value = _shell_ok()
-            mock_run.side_effect = [_shell_ok(), _shell_ok(), _shell_ok(stdout="No local changes to save"), _shell_ok()]
+            mock_run.side_effect = [_shell_ok(), _shell_ok(stdout="No local changes to save"), _shell_ok()]
 
             await sync_branch("main", cwd=Path("/repo"))
 
-            unstage_args = mock_run.call_args_list[1][0]
+            unstage_args = mock_run.call_args_list[0][0]
             assert unstage_args[:4] == ("git", "reset", "-q", "--")
             assert ".sova/" in unstage_args
             assert ".claude/sova.db*" in unstage_args
             assert ".claude/specs/" not in unstage_args
-            stash_args = mock_run.call_args_list[2][0]
+            stash_args = mock_run.call_args_list[1][0]
             assert stash_args[:3] == ("git", "stash", "--include-untracked")
             pathspecs = stash_args[stash_args.index("--") + 1 :]
             assert pathspecs[0] == ":/"
@@ -228,21 +226,23 @@ class TestSyncBranchRuntimeFiles:
             assert ":(exclude).claude/sova.log*" in pathspecs
             assert ":(exclude).claude/specs/" not in pathspecs
 
+    @pytest.mark.usefixtures("stub_collision_cleanup")
     async def test_stash_failure_raises_before_checkout_or_reset(self) -> None:
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_checked.return_value = _shell_ok()
-            mock_run.side_effect = [_shell_ok(), _shell_ok(), _shell_fail(stderr="unknown option"), _shell_ok()]
+            mock_run.side_effect = [_shell_ok(), _shell_fail(stderr="unknown option"), _shell_ok()]
 
             with pytest.raises(RuntimeError, match="git stash"):
                 await sync_branch("main", cwd=Path("/repo"))
 
-            assert mock_run.call_count == 3
+            assert mock_run.call_count == 2
             checked_calls = [c[0] for c in mock_checked.call_args_list]
             assert not any("reset" in args for args in checked_calls)
 
+    @pytest.mark.usefixtures("stub_collision_cleanup")
     async def test_reset_failure_restores_stash_and_raises(self) -> None:
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
@@ -250,7 +250,6 @@ class TestSyncBranchRuntimeFiles:
         ):
             mock_checked.side_effect = [_shell_ok(), RuntimeError("reset --keep refused")]
             mock_run.side_effect = [
-                _shell_ok(),
                 _shell_ok(),
                 _shell_ok(stdout="Saved working directory"),
                 _shell_ok(),
@@ -444,6 +443,7 @@ class TestRebaseStashRealRepo:
         assert invariant_repo.git("stash", "list") == ""
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseWithConflictResolution:
     async def test_clean_rebase_succeeds(self) -> None:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
@@ -3353,6 +3353,7 @@ class TestResolveWorktreeConflictPruneFailed:
         mock_run.assert_awaited_once()
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestSyncBranchWorktreeConflict:
     async def test_returns_early_when_branch_active_in_another_worktree(self) -> None:
         """When git checkout reports 'already used by worktree', sync_branch returns
@@ -3363,7 +3364,6 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()  # fetch
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'main' is already used by worktree '/repo'"),
@@ -3382,7 +3382,6 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()  # fetch + reset
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/login' is already checked out at '/worktree'"),
@@ -3393,7 +3392,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("feat/login", cwd=Path("/repo"))
 
             mock_resolve.assert_awaited_once_with("feat/login", cwd=Path("/repo"))
-            assert mock_run.call_count == 5
+            assert mock_run.call_count == 4
 
     async def test_raises_if_retry_still_fails(self) -> None:
         with (
@@ -3402,7 +3401,6 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock),
         ):
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'"),
@@ -3426,7 +3424,6 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),
                 _shell_fail(stderr="fatal: already checked out at /repo"),
@@ -3452,7 +3449,6 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_fail(stderr="fatal: already checked out at /repo"),
@@ -3462,7 +3458,7 @@ class TestSyncBranchWorktreeConflict:
 
             await sync_branch("main", cwd=Path("/repo"))
 
-            assert mock_run.await_count == 6
+            assert mock_run.await_count == 5
             pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
             assert len(pop_calls) == 1
 
@@ -3476,7 +3472,6 @@ class TestSyncBranchWorktreeConflict:
         ):
             # stash, checkout fails with 'already used by worktree', fetch refspec succeeds
             mock_run.side_effect = [
-                _shell_ok(),  # scan for untracked specs origin already tracks
                 _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'"),
@@ -3487,7 +3482,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("main", cwd=Path("/worktree"))
 
         mock_checked.assert_awaited_once()
-        assert mock_run.await_count == 5
+        assert mock_run.await_count == 4
 
 
 # ---------------------------------------------------------------------------

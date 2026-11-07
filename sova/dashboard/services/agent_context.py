@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sova.commands.catalog import get_canonical_dir
 from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, STASH_PATHSPECS, unstage_command
+from sova.git.untracked_collisions import clear_conflicting_runtime_files, set_aside_conflicting_specs
 from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
@@ -149,6 +150,12 @@ async def _resolve_issue_worktree(
             # that branch. Stash uncommitted changes first (mirrors sync_branch
             # pattern in sova/git/branch.py).
             if branch_on_main:
+                default_branch = await _get_default_branch(project_dir)
+                # Unconditional: `git status` ignores ignored files, and `sova install` ignores the runtime files,
+                # so a clean-looking tree can still hold the live database that the default branch tracks. Git
+                # would overwrite an ignored untracked file on checkout without a word.
+                if not await _runtime_files_clear(default_branch, project_dir):
+                    return project_dir
                 dirty_check = await run_shell(
                     "git",
                     "status",
@@ -163,6 +170,12 @@ async def _resolve_issue_worktree(
                     unstage = await run_shell(*unstage_command(STASH_EXCLUDED_PATHS), cwd=project_dir, timeout=10)
                     if not unstage.success:
                         log.warning("command.unstage_failed", stderr=(unstage.stderr or "")[:200])
+                    # Untracked files the default branch also tracks would abort the checkout (runtime files) or
+                    # the stash pop (specs): clear them first, as sync_branch does. Raises before anything is stashed.
+                    # Unstaging can turn a staged runtime file into an untracked one, so check again.
+                    if not await _runtime_files_clear(default_branch, project_dir):
+                        return project_dir
+                    await set_aside_conflicting_specs(default_branch, project_dir)
                     stash_result = await run_shell(
                         "git",
                         "stash",
@@ -174,7 +187,6 @@ async def _resolve_issue_worktree(
                     )
                     stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
 
-                default_branch = await _get_default_branch(project_dir)
                 switch = await run_shell("git", "checkout", default_branch, cwd=project_dir, timeout=10)
                 if switch.success:
                     log.info("command.freed_branch_for_worktree", branch=branch_name, target=default_branch)
@@ -197,6 +209,20 @@ async def _resolve_issue_worktree(
             await _pop_stash(stashed, project_dir)
 
     return project_dir
+
+
+async def _runtime_files_clear(default_branch: str, project_dir: Path) -> bool:
+    """Run the runtime-file collision guard; False (after logging the guard's message) when it refuses.
+
+    The guard raises RuntimeError naming the protected file so the operator can decide; log that under its own
+    event rather than letting the broad create-worktree handler bury it. Nothing is stashed yet at either call.
+    """
+    try:
+        await clear_conflicting_runtime_files(default_branch, project_dir)
+    except RuntimeError as exc:
+        log.error("command.runtime_file_collision", branch=default_branch, error=str(exc))
+        return False
+    return True
 
 
 async def _pop_stash(stashed: bool, project_dir: Path) -> None:

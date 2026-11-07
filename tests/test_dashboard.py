@@ -2788,6 +2788,7 @@ class TestDuplicateAgentPrevention:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("stub_collision_cleanup")
 class TestStartCommandWorktreeResolution:
     """start_command() should use an existing worktree as cwd when available."""
 
@@ -3120,11 +3121,11 @@ class TestStartCommandWorktreeResolution:
         pop_result.stdout = ""
 
         mock_shell.side_effect = [
+            success_result,  # default branch lookup
             dirty_result,
-            success_result,
+            success_result,  # unstage runtime paths
             stash_result,
-            success_result,
-            success_result,
+            success_result,  # checkout
             pop_result,
         ]
 
@@ -3148,9 +3149,6 @@ class TestStartCommandWorktreeResolution:
 
         assert result == wt_path
         assert mock_shell.await_args_list == [
-            call("git", "status", "--porcelain", cwd=tmp_path, timeout=10),
-            call(*unstage_command(STASH_EXCLUDED_PATHS), cwd=tmp_path, timeout=10),
-            call("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS, cwd=tmp_path, timeout=10),
             call(
                 "git",
                 "symbolic-ref",
@@ -3159,6 +3157,9 @@ class TestStartCommandWorktreeResolution:
                 cwd=tmp_path,
                 timeout=5,
             ),
+            call("git", "status", "--porcelain", cwd=tmp_path, timeout=10),
+            call(*unstage_command(STASH_EXCLUDED_PATHS), cwd=tmp_path, timeout=10),
+            call("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS, cwd=tmp_path, timeout=10),
             call("git", "checkout", "main", cwd=tmp_path, timeout=10),
             call("git", "stash", "pop", cwd=tmp_path, timeout=10),
         ]
@@ -3173,10 +3174,10 @@ class TestStartCommandWorktreeResolution:
         wt_path = tmp_path / ".claude" / "worktrees" / "pr-99"
         mock_shell = AsyncMock(
             side_effect=[
+                SimpleNamespace(success=True, stdout="origin/main\n", stderr=""),
                 SimpleNamespace(success=True, stdout="?? .claude/sova.db-wal\n", stderr=""),
                 SimpleNamespace(success=True, stdout="", stderr=""),
                 SimpleNamespace(success=True, stdout="No local changes to save\n", stderr=""),
-                SimpleNamespace(success=True, stdout="origin/main\n", stderr=""),
                 SimpleNamespace(success=True, stdout="", stderr=""),
             ]
         )
@@ -3230,10 +3231,10 @@ class TestStartCommandWorktreeResolution:
         unstage_result.stdout = ""
 
         mock_shell.side_effect = [
+            symbolic_ref_result,
             dirty_result,
             unstage_result,  # unstage runtime paths
             stash_result,
-            symbolic_ref_result,
             checkout_result,
             pop_result,  # stash pop after the failed checkout
         ]
@@ -3279,7 +3280,7 @@ class TestStartCommandWorktreeResolution:
         success_result.success = True
         success_result.stdout = "origin/main\n"
 
-        mock_shell.side_effect = [clean_status, success_result, success_result]
+        mock_shell.side_effect = [success_result, clean_status, success_result]
 
         with (
             patch(
@@ -19888,7 +19889,6 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),
                 MagicMock(success=True),
                 stash_ok,
                 checkout_fail,
@@ -19898,7 +19898,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("main", cwd=tmp_path)
 
         mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=tmp_path)
-        assert mock_run.await_count == 5
+        assert mock_run.await_count == 4
         mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=tmp_path)
         stash_pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
         assert len(stash_pop_calls) == 0, "No stash pop when nothing was stashed"
@@ -19928,7 +19928,6 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),
                 MagicMock(success=True),
                 stash_dirty,
                 checkout_fail,
@@ -19938,7 +19937,7 @@ class TestSyncBranchWorktreeConflict:
 
             await sync_branch("main", cwd=tmp_path)
 
-        assert mock_run.await_count == 6
+        assert mock_run.await_count == 5
         mock_run.assert_any_await("git", "stash", "pop", cwd=tmp_path)
 
     async def test_already_used_by_worktree_ref_update_fails(self, tmp_path: Path) -> None:
@@ -19964,7 +19963,6 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),
                 MagicMock(success=True),
                 stash_ok,
                 checkout_fail,

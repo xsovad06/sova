@@ -89,6 +89,13 @@ def unstage_command(paths: tuple[str, ...]) -> tuple[str, ...]:
 # is staged as before.
 STAGE_ALL_PATHSPECS = (":/", *(pathspec_exclude(prefix) for prefix in RUNTIME_STATE_PATHS))
 
+# The address-review rebase stash runs in a worktree and leaves only the runtime state in place; `.claude/specs/` is
+# stashed with the rest, since a tracked spec with uncommitted edits left behind would make `git rebase` refuse to
+# run. Defined from RUNTIME_STATE_PATHS directly (not aliased to STAGE_ALL_PATHSPECS), so a later change to what
+# `git add -A` skips does not silently change what the rebase stash moves.
+WORKTREE_STASH_EXCLUDED_PATHS = RUNTIME_STATE_PATHS
+WORKTREE_STASH_PATHSPECS = (":/", *(pathspec_exclude(prefix) for prefix in WORKTREE_STASH_EXCLUDED_PATHS))
+
 # Lines `sova install` appends to `.git/info/exclude` (gitignore syntax, so the name prefixes become globs).
 # Anchored with a leading `/` so they match only the project's own paths, like the pathspecs above, and not a
 # same-named directory deeper in the tree (`vendor/x/.sova/`).

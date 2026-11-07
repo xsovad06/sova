@@ -14,6 +14,7 @@ from sova.git.artifact_exclusions import (
     unstage_command,
 )
 from sova.git.safety import unstage_suspicious_files
+from sova.git.untracked_collisions import clear_conflicting_runtime_files, set_aside_conflicting_specs
 from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
@@ -62,27 +63,6 @@ async def _restore_stash(stashed: bool, cwd: Path | None = None) -> None:
         log.warning("git.sync_branch.stash_pop_failed", stderr=(pop_result.stderr or "")[:200])
 
 
-async def _drop_untracked_specs_origin_tracks(branch: str, cwd: Path | None = None) -> None:
-    """Delete untracked ``.claude/specs/`` files that ``origin/<branch>`` already tracks byte for byte.
-
-    SpecStep writes a spec into the primary checkout and the PR commits it from a worktree, so once that PR
-    merges the same file is untracked locally and tracked upstream. Stashing it would only make ``git stash
-    pop`` abort ("already exists, no checkout") and strand an entry in the stash. A copy whose content differs
-    is left for the stash, which preserves it. Best effort: any git failure leaves the file to the stash.
-    """
-    listing = await run("git", "ls-files", "-z", "--others", "--exclude-standard", "--", ".claude/specs/", cwd=cwd)
-    if not listing.success:
-        log.warning("git.sync_branch.spec_scan_failed", stderr=(listing.stderr or "")[:200])
-        return
-    base = Path(cwd) if cwd is not None else Path.cwd()
-    for rel in filter(None, listing.stdout.split("\0")):
-        local = await run("git", "hash-object", "--", rel, cwd=cwd)
-        upstream = await run("git", "rev-parse", "--verify", "-q", f"origin/{branch}:./{rel}", cwd=cwd)
-        if local.success and upstream.success and local.stdout.strip() == upstream.stdout.strip():
-            (base / rel).unlink(missing_ok=True)
-            log.info("git.sync_branch.spec_already_upstream", path=rel)
-
-
 async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     """Fetch from origin and reset the local base branch to match origin.
 
@@ -96,16 +76,23 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     the base branch (e.g. main) which should always match origin. ``--keep``
     rather than ``--hard``: it aborts instead of discarding a local change to a
     tracked file that origin also changed.
+
+    An untracked runtime file that origin tracks is cleared first (``.sova/``) or reported by name (anything
+    else), and an untracked spec that origin tracks is deleted when identical or moved to
+    ``.sova/displaced-specs/`` when it differs, so neither the reset nor the stash pop can collide with it.
     """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
-
-    await _drop_untracked_specs_origin_tracks(branch, cwd)
 
     # Unstage the excluded paths first (contents stay on disk): see unstage_command().
     unstage = await run(*unstage_command(STASH_EXCLUDED_PATHS), cwd=cwd)
     if not unstage.success:
         log.warning("git.sync_branch.unstage_failed", stderr=(unstage.stderr or "")[:200])
+
+    # Untracked files the target ref also tracks would abort the checkout or reset (runtime files, which stay out of
+    # the stash) or the stash pop (specs, which go into it). Clear them now; nothing is stashed yet if this raises.
+    await clear_conflicting_runtime_files(f"origin/{branch}", cwd)
+    await set_aside_conflicting_specs(f"origin/{branch}", cwd)
 
     stash_cmd = ("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS)
     stash_result = await run(*stash_cmd, cwd=cwd)

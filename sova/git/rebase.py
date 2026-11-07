@@ -10,7 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.git.artifact_exclusions import RUNTIME_STATE_PATHS, STAGE_ALL_PATHSPECS, unstage_command
+from sova.git.artifact_exclusions import WORKTREE_STASH_EXCLUDED_PATHS, WORKTREE_STASH_PATHSPECS, unstage_command
+from sova.git.untracked_collisions import clear_conflicting_runtime_files
 from sova.llm.client import invoke_command
 from sova.llm.models import LLMResult
 from sova.utils.env import scrub_check_env
@@ -418,10 +419,16 @@ async def rebase_with_conflict_resolution(
     # Only SOVA's runtime state stays out of this stash. `.claude/specs/` is stashed with the rest: a tracked spec
     # with uncommitted edits left in place would make `git rebase` refuse to run. Staged runtime files are
     # unstaged first (contents stay on disk), or the stash pop would collide with them.
-    unstage = await run(*unstage_command(RUNTIME_STATE_PATHS), cwd=cwd)
+    unstage = await run(*unstage_command(WORKTREE_STASH_EXCLUDED_PATHS), cwd=cwd)
     if not unstage.success:
         log.warning("git.rebase.unstage_failed", stderr=(unstage.stderr or "")[:200])
-    stash_result = await run("git", "stash", "--include-untracked", "--", *STAGE_ALL_PATHSPECS, cwd=cwd)
+    # An untracked runtime file that origin/<base> tracks (a leaked `.sova/test-baseline.json`) stays in place through
+    # the stash and would make `git rebase` abort with a bare git error: clear it, or fail naming the path.
+    try:
+        await clear_conflicting_runtime_files(f"origin/{base}", cwd)
+    except RuntimeError as exc:
+        return RebaseResult(success=False, error=str(exc)[:300]), cost
+    stash_result = await run("git", "stash", "--include-untracked", "--", *WORKTREE_STASH_PATHSPECS, cwd=cwd)
     stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
     if not stash_result.success:
         log.warning("git.rebase.stash_failed", stderr=(stash_result.stderr or "")[:200])
