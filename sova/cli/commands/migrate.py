@@ -31,7 +31,14 @@ def migrate_config(
     ] = False,
 ) -> None:
     """Migrate project configuration from sova.toml to the database."""
-    from sova.config.db_loader import _flatten_config_dict, _save_config_to_db_sync, _try_load_from_db
+    from sova.config.db_loader import (
+        _flatten_config_dict,
+        _save_config_to_db_sync,
+        _sqlite_file,
+        _sync_url_for,
+        _try_load_from_db,
+        config_db_unreadable_reason,
+    )
     from sova.config.loader import _deep_merge, _flatten_toml, _migrate_deprecated_keys
 
     project_dir = Path(project).resolve() if project else Path.cwd().resolve()
@@ -51,9 +58,16 @@ def migrate_config(
         typer.echo("sova.toml is empty, nothing to migrate.")
         raise typer.Exit(0)
 
-    db_path = project_dir / ".claude" / "sova.db"
-    if not db_path.exists():
-        typer.echo(f"Error: database not found at {db_path}", err=True)
+    reason = config_db_unreadable_reason(project_dir)
+    if reason is not None:
+        typer.echo(f"Error: {reason}", err=True)
+        raise typer.Exit(1)
+
+    # Only a SQLite database is a file that can be missing; a remote one is checked by the write itself.
+    db_url = _sync_url_for(project_dir)
+    db_file = _sqlite_file(db_url)
+    if db_url.get_backend_name() == "sqlite" and db_file is not None and not db_file.exists():
+        typer.echo(f"Error: database not found at {db_file}", err=True)
         typer.echo("Run 'sova init-db' first to create the database.", err=True)
         raise typer.Exit(1)
 
