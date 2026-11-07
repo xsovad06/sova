@@ -89,9 +89,10 @@ sova doctor   # llm provider: openai; agent runtime: codex (API key configured);
 
 A `sova server` sharing the project database used to kill any live run it had not
 spawned on its recovery sweep; a run started from a terminal was gone within five minutes.
-Recovery now kills an unmanaged live run only when it is an orphaned agent the server launched
+Recovery now acts on an unmanaged live run only when it is an orphaned agent the server launched
 (it carries the `SOVA_AGENT_RUN=1` marker and its parent is init, the server itself, or a
-non-SOVA process such as a subreaper). It never signals itself, and leaves every other live run
+non-SOVA process such as a subreaper), and adopts it rather than killing it unless
+`recovery.kill_orphans` is on. It never signals itself, and leaves every other live run
 (a terminal or `nohup`'d `sova run`, a service `sova watch`, an in-process `sova server` run) alone,
 at server start and in the periodic sweep alike. A server started before that fix still kills them. Either
 restart the server first, or give the run its own copy of the database, which also keeps pilot

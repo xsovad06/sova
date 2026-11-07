@@ -220,14 +220,10 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
     the operator must opt into.
 
     Each entry's [/pid_file sig_num] fields point newsyslog at the server's own
-    PID file and SIGUSR2 (uncaught by uvicorn, so the default disposition
-    terminates the process). KeepAlive's SuccessfulExit=false then has launchd
-    restart the job, which is what actually reopens the log paths. SIGUSR2
-    rather than SIGTERM keeps this distinct from `sova server stop`, which
-    still relies on a clean SIGTERM exit(0) to NOT be restarted. Signal
-    numbers are read from Python's signal module rather than hardcoded,
-    since the launchd branch only ever runs on the macOS host it generates
-    the config for, and Darwin's SIGUSR2 (31) differs from Linux's (12).
+    PID file and SIGHUP, which the server handles by reopening the files named by
+    SOVA_SERVER_LOG and SOVA_SERVER_ERR_LOG (set in the plist), so a rotation no
+    longer restarts the server or takes the agents it launched with it. The
+    signal number is read from Python's signal module rather than hardcoded.
 
     newsyslog.conf is whitespace-delimited with no quoting or escaping mechanism
     at all, so a home directory containing a space (/Users/Jane Doe) can only
@@ -248,13 +244,13 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
         console.print("[yellow]Move the log directory or rotate these files another way.[/yellow]")
         return
 
-    sig_usr2 = signal.SIGUSR2.value
+    sig_hup = signal.SIGHUP.value
     try:
         newsyslog_dir.mkdir(parents=True, exist_ok=True)
         newsyslog_file.write_text(
             "# logfilename                [owner:group]  mode  count  size(KB)  when  flags  [pid_file]  [sig_num]\n"
-            f"{log_dir}/sova-server.log   644   5   10240   *   J   {pid_path}   {sig_usr2}\n"
-            f"{log_dir}/sova-server.err   644   5   10240   *   J   {pid_path}   {sig_usr2}\n",
+            f"{log_dir}/sova-server.log   644   5   10240   *   J   {pid_path}   {sig_hup}\n"
+            f"{log_dir}/sova-server.err   644   5   10240   *   J   {pid_path}   {sig_hup}\n",
             encoding="utf-8",
         )
     except OSError as exc:
@@ -268,8 +264,8 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
     console.print(f"  Generated: {newsyslog_file}")
     console.print(f"  sudo cp {newsyslog_file} /etc/newsyslog.d/sova-server.conf")
     console.print(
-        "  [dim]Rotation sends SIGUSR2 to the PID in "
-        f"{pid_path}; launchd's KeepAlive restarts the service and reopens the log files.[/dim]"
+        "  [dim]Rotation sends SIGHUP to the PID in "
+        f"{pid_path}; the server reopens its log files in place, without a restart.[/dim]"
     )
 
 
@@ -351,14 +347,20 @@ def install_service(
         # agents commit from linked worktrees, so git writes {project}/.git as
         # well as {project}/.claude. %h/.claude stays listed too, since the
         # spawned coding-agent CLI keeps its own state there and
-        # knowledge.shared_knowledge_dir defaults under it.
+        # knowledge.shared_knowledge_dir defaults under it. The "-" prefix on %h/.claude.json and
+        # %h/.codex lets a host without one still start the unit. KillMode=process, Type=notify,
+        # WatchdogSec and WatchdogSignal are explained in deploy/sova-server.service.
         template = f"""[Unit]
 Description=SOVA Server (Dashboard + Scheduler)
 Documentation=https://github.com/xsovad06/sova
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+WatchdogSec=60
+WatchdogSignal=SIGTERM
+TimeoutStartSec=300
+KillMode=process
 Environment=HOME=%h
 Environment=SOVA_PROJECT_DIR={resolved_dir}
 ExecStart={sova_bin} server start --host 127.0.0.1 --port 8111 --project {resolved_dir}
@@ -372,7 +374,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/sova %h/.claude {resolved_dir}
+ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex {resolved_dir}
 
 [Install]
 WantedBy=default.target
@@ -412,6 +414,10 @@ WantedBy=default.target
     <dict>
         <key>SOVA_PROJECT_DIR</key>
         <string>{resolved_dir_escaped}</string>
+        <key>SOVA_SERVER_LOG</key>
+        <string>{log_dir_escaped}/sova-server.log</string>
+        <key>SOVA_SERVER_ERR_LOG</key>
+        <string>{log_dir_escaped}/sova-server.err</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -462,6 +468,12 @@ WantedBy=default.target
         console.print("  systemctl --user enable sova-server")
         console.print("  systemctl --user start sova-server")
         console.print("  systemctl --user status sova-server")
+        console.print(
+            "\n[yellow]Unverified (tracked in #1241): the Claude CLI rewrites ~/.claude.json through a temp file "
+            "and a rename, which the single-file ReadWritePaths entry under ProtectHome=read-only may not "
+            "allow. If agents cannot save state, set ProtectHome=false in the unit (see the README, "
+            "Server Management).[/yellow]"
+        )
     elif service_type == "launchd":
         console.print("\n[cyan]Next steps:[/cyan]")
         console.print(f"  launchctl load {target_file}")

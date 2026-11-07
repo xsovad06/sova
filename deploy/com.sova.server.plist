@@ -29,6 +29,13 @@
     <dict>
         <key>SOVA_PROJECT_DIR</key>
         <string>/path/to/your/project</string>
+        <!-- The same two paths as StandardOutPath/StandardErrorPath below, written out
+             (no ~ expansion in an environment value). On SIGHUP after a newsyslog
+             rotation the server reopens them in place. Unset, the server leaves SIGHUP at its default. -->
+        <key>SOVA_SERVER_LOG</key>
+        <string>/Users/you/Library/Logs/sova/sova-server.log</string>
+        <key>SOVA_SERVER_ERR_LOG</key>
+        <string>/Users/you/Library/Logs/sova/sova-server.err</string>
     </dict>
 
     <key>RunAtLoad</key>

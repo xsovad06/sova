@@ -463,3 +463,110 @@ class TestRuntimeFileOutput:
 
         assert (output_dir / "100.stdout").exists()
         assert (output_dir / "100.stderr").exists()
+
+
+class TestAdoptedProcess:
+    """AdoptedProcess: a live process this server did not spawn, polled instead of waited on."""
+
+    async def test_wait_returns_the_derived_code_once_the_process_is_gone(self) -> None:
+        from sova.ipc.control import AdoptedProcess
+
+        alive = iter([True, True, False])
+        proc = AdoptedProcess(4242, is_alive=lambda: next(alive), resolve_exit_code=AsyncMock(return_value=7))
+
+        with patch("sova.ipc.control._ADOPTED_POLL_INTERVAL", 0.0):
+            assert await proc.wait() == 7
+        assert proc.returncode == 7
+
+    async def test_signals_are_sent_only_while_the_identity_still_matches(self) -> None:
+        from sova.ipc.control import AdoptedProcess
+
+        state = {"alive": True}
+        proc = AdoptedProcess(4242, is_alive=lambda: state["alive"], resolve_exit_code=AsyncMock(return_value=0))
+
+        with patch("sova.ipc.control.os.kill") as kill:
+            proc.terminate()
+            kill.assert_called_once()
+            kill.reset_mock()
+            state["alive"] = False
+            proc.terminate()
+            proc.kill()
+            kill.assert_not_called()
+
+    async def test_a_pid_owned_by_another_user_is_not_signalled_and_does_not_raise(self) -> None:
+        from sova.ipc.control import AdoptedProcess
+
+        proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
+        with patch("sova.ipc.control.os.kill", side_effect=PermissionError("not permitted")) as kill:
+            proc.terminate()
+            proc.kill()
+        assert kill.call_count == 2
+
+    async def test_file_process_over_an_adopted_proc_tails_from_the_end(self, tmp_path: Path) -> None:
+        from sova.ipc.control import AdoptedProcess, FileAgentProcess
+
+        stdout_path = tmp_path / "7.stdout"
+        stdout_path.write_text("already captured\n", encoding="utf-8")
+        stderr_path = tmp_path / "7.stderr"
+        proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
+        fp = FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=stderr_path, tail_from_end=True)
+
+        lines: list[str] = []
+
+        async def collect() -> None:
+            async for line in fp.stdout_lines():
+                lines.append(line)
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0.3)
+        with open(stdout_path, "a", encoding="utf-8") as fh:
+            fh.write("written after adoption\n")
+        await asyncio.sleep(0.3)
+        proc.returncode = 0
+        await asyncio.wait_for(task, timeout=5)
+
+        assert lines == ["written after adoption"]
+
+    async def test_a_process_that_exits_before_the_signal_lands_is_not_an_error(self) -> None:
+        from sova.ipc.control import AdoptedProcess
+
+        proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
+
+        with patch("sova.ipc.control.os.kill", side_effect=ProcessLookupError):
+            proc.terminate()
+            proc.kill()
+
+    async def test_tailing_skips_the_line_the_agent_was_mid_way_through_writing(self, tmp_path: Path) -> None:
+        from sova.ipc.control import AdoptedProcess, FileAgentProcess
+
+        stdout_path = tmp_path / "8.stdout"
+        stdout_path.write_text('{"type":"assistant"}\n{"type":"res', encoding="utf-8")
+        proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
+        fp = FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=tmp_path / "8.stderr", tail_from_end=True)
+
+        lines: list[str] = []
+
+        async def collect() -> None:
+            async for line in fp.stdout_lines():
+                lines.append(line)
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0.3)
+        with open(stdout_path, "a", encoding="utf-8") as fh:
+            fh.write('ult"}\n{"type":"next"}\n')
+        await asyncio.sleep(0.3)
+        proc.returncode = 0
+        await asyncio.wait_for(task, timeout=5)
+
+        assert lines == ['{"type":"next"}']
+
+    async def test_a_partial_line_still_open_at_exit_is_dropped(self, tmp_path: Path) -> None:
+        from sova.ipc.control import AdoptedProcess, FileAgentProcess
+
+        stdout_path = tmp_path / "9.stdout"
+        stdout_path.write_text('{"type":"par', encoding="utf-8")
+        proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
+        proc.returncode = 0
+        fp = FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=tmp_path / "9.stderr", tail_from_end=True)
+
+        assert [line async for line in fp.stdout_lines()] == []

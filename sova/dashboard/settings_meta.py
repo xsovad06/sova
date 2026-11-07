@@ -2022,6 +2022,14 @@ _REGISTRY: list[SettingMeta] = [
         "integer",
     ),
     SettingMeta(
+        "recovery.kill_orphans",
+        "Kill orphaned agents on restart",
+        "When the server restarts and finds an agent it launched still running, stop it and mark the run "
+        "interrupted instead of adopting it (off by default: the agent is adopted and left running)",
+        "agent_health",
+        "boolean",
+    ),
+    SettingMeta(
         "network_guard.resume_window_minutes",
         "Resume window (minutes)",
         "Only runs that failed this recently are resumed; older failures are left alone",

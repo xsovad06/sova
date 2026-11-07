@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.output import OutputWriter
+from sova.dashboard.services.agent_adopt import hold_spawn_claim
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
 )
@@ -879,6 +880,7 @@ async def start_agent(
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
+    hold_spawn_claim(project_dir, run_id, wait_task)
     if issue and (role or "developer") == "developer" and not pr_number:
         transition_task = asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
         _background_tasks.add(transition_task)
@@ -1107,6 +1109,7 @@ async def start_command(
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
+    hold_spawn_claim(project_dir, run_id, wait_task)
 
     log.info("command.started", command=command, pid=process.pid, run_id=run_id, cwd=str(cwd))
     return {"status": "started", "pid": process.pid, "run_id": run_id}
