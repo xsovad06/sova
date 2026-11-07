@@ -223,7 +223,7 @@ each fix landed:
 | Finding | Effect | Fix |
 |---|---|---|
 | `SOVA_<SECTION>_<FIELD>` ignored when the DB stored that field | routing and `agent.model` stayed on Claude | generic env precedence in `_apply_env_overrides()` |
-| `SOVA_DATABASE_URL` file URL ignored by `load_config()` | run started with no `github_repo` | `_resolve_db_path()` resolves SQLite file URLs |
+| `SOVA_DATABASE_URL` file URL ignored by `load_config()` | run started with no `github_repo` | `_sync_url_for()` resolves SQLite file URLs |
 | Server recovery killed a live terminal run | run killed 16s into its Codex turn | recovery kills an unmanaged live run only when it is an orphaned, marked agent of the server |
 | `/research` sent as plain text to the OpenAI provider | research gate failed | read-only runtime research; SOVA writes the section |
 | `/develop` fetched the issue with `gh` inside the sandbox | Codex found no task and changed nothing | issue context passed inline |
