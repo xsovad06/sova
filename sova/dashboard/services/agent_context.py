@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from sova.commands.catalog import get_canonical_dir
+from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, STASH_PATHSPECS, unstage_command
 from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
@@ -157,14 +158,21 @@ async def _resolve_issue_worktree(
                 )
                 is_dirty = dirty_check.success and dirty_check.stdout.strip()
                 if is_dirty:
+                    # SOVA's runtime files (the live database the dashboard holds open) stay in place. Staged
+                    # ones are unstaged first (contents stay on disk), or the stash pop would collide with them.
+                    unstage = await run_shell(*unstage_command(STASH_EXCLUDED_PATHS), cwd=project_dir, timeout=10)
+                    if not unstage.success:
+                        log.warning("command.unstage_failed", stderr=(unstage.stderr or "")[:200])
                     stash_result = await run_shell(
                         "git",
                         "stash",
                         "--include-untracked",
+                        "--",
+                        *STASH_PATHSPECS,
                         cwd=project_dir,
                         timeout=10,
                     )
-                    stashed = stash_result.success
+                    stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
 
                 default_branch = await _get_default_branch(project_dir)
                 switch = await run_shell("git", "checkout", default_branch, cwd=project_dir, timeout=10)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -61,6 +62,7 @@ from sova.git.worktree import (
 )
 from sova.utils.env import scrub_check_env
 from sova.utils.shell import ShellResult
+from tests.conftest import InvariantRepo
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -133,6 +135,8 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_ok(),  # checkout
             ]
@@ -141,7 +145,7 @@ class TestSyncBranch:
 
             checked_calls = [c[0] for c in mock_checked.call_args_list]
             assert any("fetch" in args for args in checked_calls)
-            assert any("reset" in args and "--hard" in args for args in checked_calls)
+            assert any("reset" in args and "--keep" in args for args in checked_calls)
 
     async def test_stashes_and_restores_dirty_worktree(self) -> None:
         with (
@@ -150,6 +154,8 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_ok(),  # checkout
                 _shell_ok(),  # stash pop
@@ -167,6 +173,8 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (clean)
                 _shell_ok(),  # checkout
             ]
@@ -183,12 +191,205 @@ class TestSyncBranch:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_ok(),  # checkout
                 _shell_fail(stderr="CONFLICT in file.py"),  # stash pop conflict
             ]
 
             await sync_branch("main", cwd=Path("/repo"))  # must not raise
+
+
+class TestSyncBranchRuntimeFiles:
+    """sync_branch() stashes the operator's work but leaves SOVA's runtime files in place (issue #1402)."""
+
+    async def test_stash_excludes_runtime_paths_by_pathspec(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [_shell_ok(), _shell_ok(), _shell_ok(stdout="No local changes to save"), _shell_ok()]
+
+            await sync_branch("main", cwd=Path("/repo"))
+
+            unstage_args = mock_run.call_args_list[1][0]
+            assert unstage_args[:4] == ("git", "reset", "-q", "--")
+            assert ".sova/" in unstage_args
+            assert ".claude/sova.db*" in unstage_args
+            assert ".claude/specs/" not in unstage_args
+            stash_args = mock_run.call_args_list[2][0]
+            assert stash_args[:3] == ("git", "stash", "--include-untracked")
+            pathspecs = stash_args[stash_args.index("--") + 1 :]
+            assert pathspecs[0] == ":/"
+            assert ":(exclude).sova/" in pathspecs
+            assert ":(exclude).claude/sova.db*" in pathspecs
+            assert ":(exclude).claude/sova.log*" in pathspecs
+            assert ":(exclude).claude/specs/" not in pathspecs
+
+    async def test_stash_failure_raises_before_checkout_or_reset(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [_shell_ok(), _shell_ok(), _shell_fail(stderr="unknown option"), _shell_ok()]
+
+            with pytest.raises(RuntimeError, match="git stash"):
+                await sync_branch("main", cwd=Path("/repo"))
+
+            assert mock_run.call_count == 3
+            checked_calls = [c[0] for c in mock_checked.call_args_list]
+            assert not any("reset" in args for args in checked_calls)
+
+    async def test_reset_failure_restores_stash_and_raises(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.side_effect = [_shell_ok(), RuntimeError("reset --keep refused")]
+            mock_run.side_effect = [
+                _shell_ok(),
+                _shell_ok(),
+                _shell_ok(stdout="Saved working directory"),
+                _shell_ok(),
+                _shell_ok(),
+            ]
+
+            with pytest.raises(RuntimeError, match="reset --keep refused"):
+                await sync_branch("main", cwd=Path("/repo"))
+
+            assert mock_run.call_args_list[-1][0] == ("git", "stash", "pop")
+
+    async def test_real_repo_keeps_runtime_files_and_restores_operator_work(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sova.git.branch as branch_module
+
+        # sync_branch's own git calls read os.environ: give them the fixture's isolated config and identity.
+        for key, value in invariant_repo.env.items():
+            if key.startswith("GIT_"):
+                monkeypatch.setenv(key, value)
+        work = invariant_repo.dir
+        invariant_repo.write("tracked.txt", "v1\n")
+        invariant_repo.land_on_main("chore(docs): add tracked file")
+
+        (work / ".claude").mkdir()
+        (work / ".sova").mkdir()
+        db = work / ".claude" / "sova.db"
+        wal = work / ".claude" / "sova.db-wal"
+        baseline = work / ".sova" / "baseline.json"
+        for runtime_file in (db, wal, baseline):
+            runtime_file.write_text("live", encoding="utf-8")
+        (work / "tracked.txt").write_text("operator edit\n", encoding="utf-8")
+        (work / "notes.txt").write_text("operator untracked\n", encoding="utf-8")
+
+        seen_during_stash: dict[str, bool] = {}
+        real_run = branch_module.run
+
+        async def spy_run(*args: str, **kwargs: Any) -> Any:
+            if args[:2] == ("git", "checkout"):
+                seen_during_stash["db"] = db.exists()
+                seen_during_stash["wal"] = wal.exists()
+                seen_during_stash["baseline"] = baseline.exists()
+                seen_during_stash["notes_stashed"] = not (work / "notes.txt").exists()
+            return await real_run(*args, **kwargs)
+
+        with patch("sova.git.branch.run", side_effect=spy_run):
+            await sync_branch("main", cwd=work)
+
+        assert seen_during_stash == {"db": True, "wal": True, "baseline": True, "notes_stashed": True}
+        assert (work / "tracked.txt").read_text(encoding="utf-8") == "operator edit\n"
+        assert (work / "notes.txt").read_text(encoding="utf-8") == "operator untracked\n"
+        assert db.read_text(encoding="utf-8") == "live"
+
+    @staticmethod
+    def _use_repo_git_env(invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key, value in invariant_repo.env.items():
+            if key.startswith("GIT_"):
+                monkeypatch.setenv(key, value)
+
+    async def test_real_repo_stashes_and_restores_uncommitted_edit_to_tracked_spec(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`.claude/specs/` is stashed like any operator work, so a tracked spec's edits survive the reset."""
+        self._use_repo_git_env(invariant_repo, monkeypatch)
+        work = invariant_repo.dir
+        invariant_repo.write(".claude/specs/7-thing.md", "v1\n")
+        invariant_repo.land_on_main("chore(docs): add spec")
+        invariant_repo.write("other.txt", "upstream\n")
+        invariant_repo.commit("chore(docs): upstream change")
+        invariant_repo.git("push", "-q", "origin", "main")
+        invariant_repo.git("reset", "-q", "--hard", "HEAD~1")
+
+        spec = work / ".claude" / "specs" / "7-thing.md"
+        spec.write_text("rewritten by research\n", encoding="utf-8")
+
+        await sync_branch("main", cwd=work)
+
+        assert spec.read_text(encoding="utf-8") == "rewritten by research\n"
+        assert (work / "other.txt").read_text(encoding="utf-8") == "upstream\n"
+        assert invariant_repo.git("stash", "list") == ""
+
+    async def test_real_repo_untracked_spec_that_origin_now_tracks_does_not_block_sync(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SpecStep leaves the spec untracked in the primary checkout; once the PR merges, origin tracks it.
+
+        The stash must move the untracked copy out of the way, or the checkout and reset abort with
+        "untracked working tree file would be overwritten" on every later sync (review of #1402).
+        """
+        self._use_repo_git_env(invariant_repo, monkeypatch)
+        work = invariant_repo.dir
+        invariant_repo.write("base.txt", "base\n")
+        invariant_repo.land_on_main("chore(docs): base")
+        invariant_repo.write(".claude/specs/7-thing.md", "spec\n")
+        invariant_repo.commit("chore(docs): merge spec")
+        invariant_repo.git("push", "-q", "origin", "main")
+        invariant_repo.git("reset", "-q", "--hard", "HEAD~1")
+
+        spec = work / ".claude" / "specs" / "7-thing.md"
+        assert not spec.exists()
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text("spec\n", encoding="utf-8")
+
+        await sync_branch("main", cwd=work)
+
+        assert spec.read_text(encoding="utf-8") == "spec\n"
+        assert invariant_repo.git("stash", "list") == ""
+        assert invariant_repo.git("status", "--porcelain") == ""
+
+    async def test_real_repo_staged_runtime_and_spec_files_do_not_strand_operator_work(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A staged file under an excluded path must not make the stash pop fail (review of #1402).
+
+        The pathspec stash still records the whole index, so without unstaging first, `reset --keep`
+        turns the staged file into an untracked one and `git stash pop` aborts, leaving the operator's
+        edit in the stash.
+        """
+        self._use_repo_git_env(invariant_repo, monkeypatch)
+        work = invariant_repo.dir
+        invariant_repo.write("t.txt", "v1\n")
+        invariant_repo.write(".claude/specs/a.md", "spec\n")
+        invariant_repo.land_on_main("chore(docs): add files")
+
+        (work / "t.txt").write_text("operator edit\n", encoding="utf-8")
+        invariant_repo.write(".claude/specs/b.md", "new spec\n")
+        invariant_repo.write(".sova/test-baseline.json", "{}\n")
+        invariant_repo.write(".claude/sova.db", "live")
+        invariant_repo.git("add", ".claude/specs/b.md", ".sova/test-baseline.json", "-f", ".claude/sova.db")
+
+        await sync_branch("main", cwd=work)
+
+        assert (work / "t.txt").read_text(encoding="utf-8") == "operator edit\n"
+        assert invariant_repo.git("stash", "list") == ""
+        assert (work / ".claude" / "specs" / "b.md").read_text(encoding="utf-8") == "new spec\n"
+        assert (work / ".sova" / "test-baseline.json").exists()
+        assert (work / ".claude" / "sova.db").read_text(encoding="utf-8") == "live"
+        # The runtime files were unstaged; the operator's staged spec comes back as it was (stashed like any work).
+        assert invariant_repo.git("diff", "--cached", "--name-only") == ".claude/specs/b.md"
 
 
 class TestRebase:
@@ -203,11 +404,52 @@ class TestRebase:
             assert "main" in call_args
 
 
+class TestRebaseStashRealRepo:
+    """The address-review rebase stash against a real repository (review of #1402)."""
+
+    @staticmethod
+    def _env(invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key, value in invariant_repo.env.items():
+            if key.startswith("GIT_"):
+                monkeypatch.setenv(key, value)
+
+    async def test_dirty_tracked_spec_is_stashed_and_restored(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`.claude/specs/` is not excluded here: an unstashed tracked edit would make `git rebase` refuse."""
+        self._env(invariant_repo, monkeypatch)
+        work = invariant_repo.dir
+        invariant_repo.write(".claude/specs/7-thing.md", "v1\n")
+        invariant_repo.land_on_main("chore(docs): add spec")
+        invariant_repo.start_branch("feat/work")
+        invariant_repo.write("feature.txt", "feature\n")
+        invariant_repo.commit("feat(core): feature")
+        invariant_repo.git("checkout", "-q", "main")
+        invariant_repo.write("upstream.txt", "upstream\n")
+        invariant_repo.land_on_main("chore(docs): upstream")
+        invariant_repo.git("checkout", "-q", "feat/work")
+
+        spec = work / ".claude" / "specs" / "7-thing.md"
+        spec.write_text("edited\n", encoding="utf-8")
+        invariant_repo.write(".claude/sova.db", "live")
+        invariant_repo.write(".sova/test-baseline.json", "{}\n")
+        invariant_repo.git("add", "-f", ".sova/test-baseline.json", ".claude/sova.db")
+
+        result, _cost = await rebase_with_conflict_resolution("main", cwd=work)
+
+        assert result.success, result.error
+        assert spec.read_text(encoding="utf-8") == "edited\n"
+        assert (work / "upstream.txt").exists()
+        assert (work / ".claude" / "sova.db").read_text(encoding="utf-8") == "live"
+        assert invariant_repo.git("stash", "list") == ""
+
+
 class TestRebaseWithConflictResolution:
     async def test_clean_rebase_succeeds(self) -> None:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_ok(),  # rebase (no conflicts)
             ]
@@ -225,6 +467,7 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file1.py"),  # initial conflicted check (before loop)
@@ -261,6 +504,7 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
@@ -290,6 +534,7 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="tried", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
@@ -315,6 +560,7 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file.py"),  # commit 1 conflicted
@@ -335,6 +581,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_fail(stderr="cannot stash: index unmerged"),  # stash fails
                 _shell_ok(),  # rebase succeeds (no pop since stash was never created)
             ]
@@ -348,6 +595,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (changes stashed)
                 _shell_ok(),  # rebase succeeds
                 _shell_fail(stderr="CONFLICT (modify/delete): foo.py"),  # stash pop fails
@@ -368,6 +616,7 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
@@ -384,6 +633,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout=""),  # _get_conflicted_files returns empty
@@ -400,6 +650,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout=""),  # _get_conflicted_files returns empty
@@ -462,6 +713,40 @@ class TestCommit:
             assert len(add_call) >= 1
             # Should use -A when no specific files
             assert "-A" in add_call[0]
+
+    async def test_commit_all_excludes_sova_baseline_dir(self) -> None:
+        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="")
+
+                await commit("chore: update", cwd=Path("/repo"))
+
+            add_call = next(c[0] for c in mock_run.call_args_list if "add" in c[0])
+            pathspecs = add_call[add_call.index("--") + 1 :]
+            assert pathspecs[0] == ":/"
+            assert ":(exclude).sova/" in pathspecs
+            assert ":(exclude).claude/sova.db*" in pathspecs
+            assert ":(exclude).claude/mcp_secret*" in pathspecs
+            assert ":(exclude).claude/specs/" not in pathspecs
+
+    async def test_commit_all_never_stages_runtime_state_in_real_repo(
+        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without any ignore rule, `git add -A` still leaves the database and secret unstaged (#1402)."""
+        for key, value in invariant_repo.env.items():
+            if key.startswith("GIT_"):
+                monkeypatch.setenv(key, value)
+        work = invariant_repo.dir
+        for runtime_file in (".claude/sova.db", ".claude/sova.db-wal", ".claude/mcp_secret", ".sova/baseline.json"):
+            invariant_repo.write(runtime_file, "secret\n")
+        invariant_repo.write(".claude/specs/7-thing.md", "spec\n")
+        invariant_repo.write("feature.py", "x = 1\n")
+
+        await commit("feat(core): work", cwd=work)
+
+        committed = set(invariant_repo.git("show", "--name-only", "--format=", "HEAD").splitlines())
+        assert committed == {"feature.py", ".claude/specs/7-thing.md"}
 
     async def test_commits_with_no_verify(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
@@ -3078,6 +3363,8 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()  # fetch
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'main' is already used by worktree '/repo'"),
                 _shell_ok(),  # fetch refspec
@@ -3095,6 +3382,8 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()  # fetch + reset
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/login' is already checked out at '/worktree'"),
                 _shell_ok(),  # retry checkout
@@ -3104,7 +3393,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("feat/login", cwd=Path("/repo"))
 
             mock_resolve.assert_awaited_once_with("feat/login", cwd=Path("/repo"))
-            assert mock_run.call_count == 3
+            assert mock_run.call_count == 5
 
     async def test_raises_if_retry_still_fails(self) -> None:
         with (
@@ -3113,6 +3402,8 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock),
         ):
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'"),
                 _shell_fail(stderr="fatal: still checked out"),
@@ -3135,6 +3426,8 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),
                 _shell_fail(stderr="fatal: already checked out at /repo"),
                 _shell_ok(),
@@ -3159,6 +3452,8 @@ class TestSyncBranchWorktreeConflict:
         ):
             mock_checked.return_value = _shell_ok()
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="Saved working directory"),  # stash (dirty)
                 _shell_fail(stderr="fatal: already checked out at /repo"),
                 _shell_ok(),  # fetch refspec
@@ -3167,7 +3462,7 @@ class TestSyncBranchWorktreeConflict:
 
             await sync_branch("main", cwd=Path("/repo"))
 
-            assert mock_run.await_count == 4
+            assert mock_run.await_count == 6
             pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
             assert len(pop_calls) == 1
 
@@ -3181,6 +3476,8 @@ class TestSyncBranchWorktreeConflict:
         ):
             # stash, checkout fails with 'already used by worktree', fetch refspec succeeds
             mock_run.side_effect = [
+                _shell_ok(),  # scan for untracked specs origin already tracks
+                _shell_ok(),  # unstage runtime paths
                 _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'"),
                 _shell_ok(),  # fetch refspec
@@ -3190,7 +3487,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("main", cwd=Path("/worktree"))
 
         mock_checked.assert_awaited_once()
-        assert mock_run.await_count == 3
+        assert mock_run.await_count == 5
 
 
 # ---------------------------------------------------------------------------

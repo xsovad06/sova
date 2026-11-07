@@ -19,6 +19,7 @@ from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
+from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, STASH_PATHSPECS, unstage_command
 from tests.conftest import agents_page_source, drain_feed_persist
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -3118,7 +3119,14 @@ class TestStartCommandWorktreeResolution:
         pop_result.success = True
         pop_result.stdout = ""
 
-        mock_shell.side_effect = [dirty_result, stash_result, success_result, success_result, pop_result]
+        mock_shell.side_effect = [
+            dirty_result,
+            success_result,
+            stash_result,
+            success_result,
+            success_result,
+            pop_result,
+        ]
 
         with (
             patch(
@@ -3141,7 +3149,8 @@ class TestStartCommandWorktreeResolution:
         assert result == wt_path
         assert mock_shell.await_args_list == [
             call("git", "status", "--porcelain", cwd=tmp_path, timeout=10),
-            call("git", "stash", "--include-untracked", cwd=tmp_path, timeout=10),
+            call(*unstage_command(STASH_EXCLUDED_PATHS), cwd=tmp_path, timeout=10),
+            call("git", "stash", "--include-untracked", "--", *STASH_PATHSPECS, cwd=tmp_path, timeout=10),
             call(
                 "git",
                 "symbolic-ref",
@@ -3153,6 +3162,41 @@ class TestStartCommandWorktreeResolution:
             call("git", "checkout", "main", cwd=tmp_path, timeout=10),
             call("git", "stash", "pop", cwd=tmp_path, timeout=10),
         ]
+
+    async def test_resolve_issue_worktree_skips_pop_when_only_runtime_files_are_dirty(self, tmp_path: Path) -> None:
+        """Runtime files make the checkout dirty but stay out of the stash, so nothing is popped (#1402)."""
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        wt_path = tmp_path / ".claude" / "worktrees" / "pr-99"
+        mock_shell = AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, stdout="?? .claude/sova.db-wal\n", stderr=""),
+                SimpleNamespace(success=True, stdout="", stderr=""),
+                SimpleNamespace(success=True, stdout="No local changes to save\n", stderr=""),
+                SimpleNamespace(success=True, stdout="origin/main\n", stderr=""),
+                SimpleNamespace(success=True, stdout="", stderr=""),
+            ]
+        )
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=tmp_path,
+            ),
+            patch("sova.dashboard.services.agent_context.run_shell", mock_shell),
+            patch(
+                "sova.git.worktree.create_worktree",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(path=wt_path, branch="fix/stuff", issue_id="pr-99"),
+            ),
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="fix/stuff", pr_number=99)
+
+        assert result == wt_path
+        assert not any("pop" in c.args for c in mock_shell.await_args_list)
 
     async def test_resolve_issue_worktree_returns_project_dir_on_switch_failure(self, tmp_path: Path) -> None:
         """When git checkout fails, stash is popped and project_dir returned without attempting create_worktree."""
@@ -3181,7 +3225,18 @@ class TestStartCommandWorktreeResolution:
         pop_result.success = True
         pop_result.stdout = ""
 
-        mock_shell.side_effect = [dirty_result, stash_result, symbolic_ref_result, checkout_result, pop_result]
+        unstage_result = AsyncMock()
+        unstage_result.success = True
+        unstage_result.stdout = ""
+
+        mock_shell.side_effect = [
+            dirty_result,
+            unstage_result,  # unstage runtime paths
+            stash_result,
+            symbolic_ref_result,
+            checkout_result,
+            pop_result,  # stash pop after the failed checkout
+        ]
 
         mock_create = AsyncMock()
         with (
@@ -3197,7 +3252,7 @@ class TestStartCommandWorktreeResolution:
 
         assert result == tmp_path
         mock_create.assert_not_awaited()
-        assert mock_shell.await_count == 5
+        assert mock_shell.await_count == 6
 
     async def test_resolve_issue_worktree_clean_tree_skips_stash(self, tmp_path: Path) -> None:
         """Clean working tree: git status --porcelain returns empty, so stash is skipped entirely."""
@@ -19832,12 +19887,18 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_fetch,
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_ok]
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True),
+                stash_ok,
+                checkout_fail,
+                fetch_ref_ok,
+            ]
 
             await sync_branch("main", cwd=tmp_path)
 
         mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=tmp_path)
-        assert mock_run.await_count == 3
+        assert mock_run.await_count == 5
         mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=tmp_path)
         stash_pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
         assert len(stash_pop_calls) == 0, "No stash pop when nothing was stashed"
@@ -19866,11 +19927,18 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock),
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_run.side_effect = [stash_dirty, checkout_fail, fetch_ref_ok, pop_ok]
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True),
+                stash_dirty,
+                checkout_fail,
+                fetch_ref_ok,
+                pop_ok,
+            ]
 
             await sync_branch("main", cwd=tmp_path)
 
-        assert mock_run.await_count == 4
+        assert mock_run.await_count == 6
         mock_run.assert_any_await("git", "stash", "pop", cwd=tmp_path)
 
     async def test_already_used_by_worktree_ref_update_fails(self, tmp_path: Path) -> None:
@@ -19895,7 +19963,13 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock),
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_fail]
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True),
+                stash_ok,
+                checkout_fail,
+                fetch_ref_fail,
+            ]
             # Should not raise
             await sync_branch("main", cwd=tmp_path)
 

@@ -9454,6 +9454,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True),  # unstage runtime paths
                 MagicMock(success=True, stdout="No local changes to save"),  # stash (nothing to stash)
                 MagicMock(success=True, stdout=""),  # rebase (clean)
             ]
@@ -9469,6 +9470,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True),  # unstage runtime paths
                 MagicMock(success=True, stdout="Saved working directory"),  # stash (changes stashed)
                 MagicMock(success=True, stdout=""),  # rebase (clean)
                 MagicMock(success=True),  # stash pop
@@ -9477,8 +9479,9 @@ class TestRebaseWithConflictResolution:
 
         assert result.success
         assert cost == Decimal("0")
-        assert mock_run.call_args_list[1][0][:3] == ("git", "stash", "--include-untracked")
-        assert mock_run.call_args_list[3][0][:3] == ("git", "stash", "pop")
+        assert mock_run.call_args_list[1][0][:4] == ("git", "reset", "-q", "--")
+        assert mock_run.call_args_list[2][0][:3] == ("git", "stash", "--include-untracked")
+        assert mock_run.call_args_list[4][0][:3] == ("git", "stash", "pop")
 
     async def test_unstaged_changes_no_conflict_surfaces_real_error(self, tmp_path: Path) -> None:
         """When rebase fails for a non-conflict reason, the real error is reported."""
@@ -9487,6 +9490,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True),  # unstage runtime paths
                 MagicMock(success=True, stdout="No local changes to save"),  # stash
                 MagicMock(success=False, stderr="fatal: cannot rebase: index mismatch"),  # rebase fails
                 MagicMock(success=True, stdout=""),  # conflicted files (none)
@@ -9508,6 +9512,7 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True),  # unstage runtime paths
                 MagicMock(success=True, stdout="No local changes to save"),  # stash
                 MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
                 MagicMock(success=True, stdout="file.py\n"),  # conflicted files (initial check)
@@ -9531,6 +9536,7 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True),  # unstage runtime paths
                 MagicMock(success=True, stdout="No local changes to save"),  # stash
                 MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
                 MagicMock(success=True, stdout="file.py\n"),  # conflicted files (initial check)
