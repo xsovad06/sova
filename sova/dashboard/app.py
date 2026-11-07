@@ -1602,7 +1602,8 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(agents.router, prefix=prefix, dependencies=csrf_dep)
     # agents.ws_router carries only the /ws/agents/status websocket route: the CSRF
     # dependency expects an HTTP Request, which FastAPI cannot supply to a websocket
-    # handler, so that one route is split onto its own un-guarded router.
+    # handler, so that one route is split onto its own router and checks the handshake
+    # Origin itself (validate_websocket_origin in sova/dashboard/security.py).
     app.include_router(agents.ws_router, prefix=prefix)
     app.include_router(work.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(lifecycle.router, prefix=prefix, dependencies=csrf_dep)
