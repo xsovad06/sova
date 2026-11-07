@@ -7036,6 +7036,44 @@ class TestSetupAPI:
         data = resp.json()
         assert "Directory not found" in data["detail"]
 
+    async def test_configure_invalidates_config_cache_only_after_a_write(
+        self, client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        from unittest.mock import patch
+
+        import sova.config.registry as reg_mod
+
+        monkeypatch.setattr(reg_mod, "_REGISTRY_FILE", tmp_path / "reg" / "projects.json")
+        monkeypatch.setattr(reg_mod, "_REGISTRY_DIR", tmp_path / "reg")
+        project = tmp_path / "proj"
+        project.mkdir()
+        with patch("sova.config.loader.invalidate_config_cache") as invalidate:
+            resp = await client.post(
+                "/api/setup/configure", json={"project_path": str(project), "github_repo": "user/test"}
+            )
+        assert resp.status_code == 200
+        invalidate.assert_called_once_with(project.resolve())
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "mysql+aiomysql://user:pw@host/db")
+        with patch("sova.config.loader.invalidate_config_cache") as invalidate:
+            resp = await client.post(
+                "/api/setup/configure", json={"project_path": str(project), "github_repo": "user/test"}
+            )
+        assert resp.status_code == 422
+        invalidate.assert_not_called()
+
+    async def test_configure_refuses_unreadable_database(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("SOVA_DATABASE_URL", "mysql+aiomysql://user:hunter2-secret@host/db")
+        project = tmp_path / "proj"
+        project.mkdir()
+        resp = await client.post(
+            "/api/setup/configure",
+            json={"project_path": str(project), "github_repo": "user/test"},
+        )
+        assert resp.status_code == 422
+        assert "not saved" in resp.json()["detail"]
+        assert "hunter2-secret" not in resp.text
+
     async def test_sync_commands_success(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
         from unittest.mock import patch
 
@@ -20281,6 +20319,22 @@ class TestSettingsMaxParallelSync:
         )
         assert resp.status_code == 200
         assert len(sync_called) == 0
+
+    async def test_update_config_unreadable_database_is_a_422(self, client: AsyncClient, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        error = {"error": "Setting not saved: unsupported dialect", "unreadable_database": True}
+        monkeypatch.setattr(
+            "sova.dashboard.routers.settings.settings_service",
+            MagicMock(update_config=AsyncMock(return_value=error)),
+        )
+        resp = await client.post(
+            "/api/settings/config",
+            json={"key": "github_repo", "value": "org/repo"},
+            headers=_csrf_request_headers(client),
+        )
+        assert resp.status_code == 422
+        assert "Setting not saved" in resp.json()["detail"]
 
     async def test_update_config_accepts_json_boolean(self, client: AsyncClient, monkeypatch):
         from unittest.mock import AsyncMock, MagicMock

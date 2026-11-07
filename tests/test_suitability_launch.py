@@ -720,7 +720,8 @@ class TestComplexityEndpointSuitability:
             elapsed = loop.time() - started
         assert resp.status_code == 200
         assert resp.json()["suitability"] is None
-        assert elapsed < 1
+        # The stall is 10s; 3s absorbs first-request setup on a slow runner yet still catches a real stall.
+        assert elapsed < 3
 
 
 @asynccontextmanager

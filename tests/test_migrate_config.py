@@ -244,6 +244,64 @@ class TestMigrateConfigCLI:
         assert result.exit_code == 1
         assert "init-db" in result.output.lower()
 
+    def test_env_sqlite_url_outside_project_receives_the_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The command follows SOVA_DATABASE_URL: no local .claude/sova.db is required or written."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        _write_toml(project, '[project]\ngithub_repo = "user/repo"\n')
+        env_db = tmp_path / "elsewhere" / "env.db"
+        env_db.parent.mkdir()
+        engine = create_engine(f"sqlite:///{env_db}")
+        Base.metadata.create_all(engine)
+        engine.dispose()
+        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite+aiosqlite:///{env_db}")
+
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        result = CliRunner().invoke(app, ["migrate-config", str(project)])
+
+        assert result.exit_code == 0, result.output
+        assert _read_db_settings(env_db)["github_repo"] == "user/repo"
+        assert not (project / ".claude" / "sova.db").exists()
+
+    def test_missing_env_sqlite_file_tells_user_to_init_db(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        _write_toml(project, '[project]\ngithub_repo = "user/repo"\n')
+        _create_db(project)  # a stale local file must not satisfy the check
+        missing = tmp_path / "missing.db"
+        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite+aiosqlite:///{missing}")
+
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        result = CliRunner().invoke(app, ["migrate-config", str(project)])
+
+        assert result.exit_code == 1
+        assert "init-db" in result.output.lower()
+        assert str(missing) in result.output.replace("\n", "")
+
+    def test_unreadable_database_exits_1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_toml(tmp_path, '[project]\ngithub_repo = "user/repo"\n')
+        monkeypatch.setenv("SOVA_DATABASE_URL", "mysql+aiomysql://user:hunter2-secret@host/db")
+
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        result = CliRunner().invoke(app, ["migrate-config", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "not supported" in result.output
+        assert "hunter2-secret" not in result.output
+
     def test_force_preserves_absent_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--force merges: existing DB keys absent from TOML are preserved."""
         monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)

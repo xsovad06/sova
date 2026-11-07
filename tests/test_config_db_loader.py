@@ -20,6 +20,7 @@ from sova.config.db_loader import (
     get_setting,
     load_task_queue,
     save_setting,
+    save_task_queue,
 )
 from sova.config.loader import _deep_merge
 from sova.db.models import Base, ProjectSetting
@@ -260,57 +261,41 @@ auto_address_review = true
         assert cfg.base_branch == "main"
 
 
-class TestResolveDbPath:
-    def test_returns_none_for_non_sqlite_env_url(self, monkeypatch) -> None:
-        """The sync bridge has no PostgreSQL driver, so a server URL yields no file path."""
-        from sova.config.db_loader import _resolve_db_path
+class TestSyncUrlResolution:
+    """``_sync_url_for`` + ``_sqlite_file``: the one resolution shared by reads and writes."""
 
+    @staticmethod
+    def _file(project_dir):
+        from sova.config.db_loader import _sqlite_file, _sync_url_for
+
+        return _sqlite_file(_sync_url_for(project_dir))
+
+    def test_non_sqlite_env_url_names_no_file(self, monkeypatch) -> None:
+        monkeypatch.setattr("importlib.util.find_spec", lambda name: object())
         monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://localhost/sova")
-        result = _resolve_db_path(Path("/some/dir"))
-        assert result is None
+        assert self._file(Path("/some/dir")) is None
 
-    def test_returns_none_for_in_memory_env_url(self, monkeypatch) -> None:
-        from sova.config.db_loader import _resolve_db_path
-
+    def test_in_memory_env_url_names_no_file(self, monkeypatch) -> None:
         monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        assert _resolve_db_path(Path("/some/dir")) is None
+        assert self._file(Path("/some/dir")) is None
 
     def test_sqlite_file_env_url_wins_over_project_dir(self, monkeypatch, tmp_path) -> None:
         """Regression: a file URL was ignored, so load_config() lost every stored setting."""
-        from sova.config.db_loader import _resolve_db_path
-
         db_file = tmp_path / "elsewhere.db"
-        db_file.touch()
         monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
-        assert _resolve_db_path(tmp_path / "project") == db_file
-
-    def test_missing_sqlite_file_env_url_is_none(self, monkeypatch, tmp_path) -> None:
-        from sova.config.db_loader import _resolve_db_path
-
-        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite:///{tmp_path / 'absent.db'}")
-        assert _resolve_db_path(tmp_path) is None
+        assert self._file(tmp_path / "project") == db_file
 
     def test_uses_home_config_when_no_project_dir(self, monkeypatch, tmp_path) -> None:
         """project_dir=None falls back to ~/.config/sova/sova.db."""
-        from sova.config.db_loader import _resolve_db_path
-
-        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
-        config_dir = tmp_path / ".config" / "sova"
-        config_dir.mkdir(parents=True)
-        db_file = config_dir / "sova.db"
-        db_file.touch()
-
-        monkeypatch.setattr("sova.config.db_loader.Path.home", staticmethod(lambda: tmp_path))
-        result = _resolve_db_path(None)
-        assert result == db_file
-
-    def test_returns_none_when_home_db_missing(self, monkeypatch, tmp_path) -> None:
-        from sova.config.db_loader import _resolve_db_path
-
         monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
         monkeypatch.setattr("sova.config.db_loader.Path.home", staticmethod(lambda: tmp_path))
-        result = _resolve_db_path(None)
-        assert result is None
+        monkeypatch.setattr("sova.db.session.Path.home", staticmethod(lambda: tmp_path))
+        assert self._file(None) == tmp_path / ".config" / "sova" / "sova.db"
+
+    def test_resolution_creates_nothing(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite:///{tmp_path / 'absent' / 'x.db'}")
+        self._file(tmp_path)
+        assert not (tmp_path / "absent").exists()
 
 
 class TestTryLoadFromDBSyncBridge:
@@ -654,6 +639,35 @@ class TestMigrateDeprecatedKeys:
         flat: dict[str, Any] = {"github_repo": "user/repo"}
         _migrate_deprecated_keys(flat)
         assert flat == {"github_repo": "user/repo"}
+
+
+class TestSaveTaskQueueInvalidation:
+    @staticmethod
+    def _session() -> MagicMock:
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.begin = MagicMock(return_value=session)
+        return session
+
+    async def test_successful_write_invalidates_the_project(self, tmp_path: Path) -> None:
+        with (
+            patch("sova.db.session.get_session", AsyncMock(return_value=self._session())),
+            patch("sova.config.db_loader.save_setting", AsyncMock()),
+            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+        ):
+            await save_task_queue(tmp_path, [1, 2])
+        invalidate.assert_called_once_with(tmp_path)
+
+    async def test_failed_write_does_not_invalidate(self, tmp_path: Path) -> None:
+        with (
+            patch("sova.db.session.get_session", AsyncMock(return_value=self._session())),
+            patch("sova.config.db_loader.save_setting", AsyncMock(side_effect=RuntimeError("DB gone"))),
+            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+            pytest.raises(RuntimeError),
+        ):
+            await save_task_queue(tmp_path, [1, 2])
+        invalidate.assert_not_called()
 
 
 class TestLoadTaskQueue:
