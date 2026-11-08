@@ -97,6 +97,34 @@ def _read_packed_ref(git_dir: Path, ref: str) -> str | None:
     return None
 
 
+def _locate_git_dir(source_dir: Path) -> Path | None:
+    """Return the git directory for ``source_dir``, following a worktree's ``gitdir:`` pointer file."""
+    git_path = source_dir / ".git"
+    if not git_path.exists():
+        return None
+    if not git_path.is_file():
+        return git_path
+    pointer = read_text_or_none(git_path)
+    if pointer is None or not pointer.startswith("gitdir:"):
+        return None
+    return source_dir / pointer[len("gitdir:") :].strip()
+
+
+def _resolve_ref_sha(git_dir: Path, ref: str) -> str | None:
+    """Resolve a ref to a full SHA from loose ref files, falling back to ``packed-refs``.
+
+    A linked worktree keeps its refs in the ``commondir``, so both directories are tried.
+    """
+    common = read_text_or_none(git_dir / "commondir")
+    common_dir = git_dir / common.strip() if common and common.strip() else git_dir
+    for ref_dir in dict.fromkeys((git_dir, common_dir)):
+        loose = read_text_or_none(ref_dir / ref)
+        if loose is not None:
+            sha = loose.strip()
+            return sha if _FULL_SHA.fullmatch(sha) else None
+    return _read_packed_ref(common_dir, ref)
+
+
 def _resolve_head_sha(source_dir: Path) -> str | None:
     """Return the full HEAD SHA by reading ``.git`` files directly, or None when it cannot be read.
 
@@ -105,16 +133,9 @@ def _resolve_head_sha(source_dir: Path) -> str | None:
     detached HEAD, and a branch that exists only in ``packed-refs``. Any unreadable or malformed file
     (a ref being rewritten by ``git pull``, non-UTF-8 bytes) yields None rather than raising.
     """
-    git_path = source_dir / ".git"
-    if not git_path.exists():
+    git_dir = _locate_git_dir(source_dir)
+    if git_dir is None:
         return None
-
-    git_dir = git_path
-    if git_path.is_file():
-        pointer = read_text_or_none(git_path)
-        if pointer is None or not pointer.startswith("gitdir:"):
-            return None
-        git_dir = source_dir / pointer[len("gitdir:") :].strip()
 
     head = read_text_or_none(git_dir / "HEAD")
     if head is None:
@@ -124,16 +145,7 @@ def _resolve_head_sha(source_dir: Path) -> str | None:
         return head
     if not head.startswith("ref:"):
         return None
-    ref = head[len("ref:") :].strip()
-
-    common = read_text_or_none(git_dir / "commondir")
-    common_dir = git_dir / common.strip() if common and common.strip() else git_dir
-    for ref_dir in dict.fromkeys((git_dir, common_dir)):
-        loose = read_text_or_none(ref_dir / ref)
-        if loose is not None:
-            sha = loose.strip()
-            return sha if _FULL_SHA.fullmatch(sha) else None
-    return _read_packed_ref(common_dir, ref)
+    return _resolve_ref_sha(git_dir, head[len("ref:") :].strip())
 
 
 _startup_code_sha: str | None = None
