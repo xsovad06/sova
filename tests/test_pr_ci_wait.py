@@ -11,22 +11,48 @@ workflow run (path filters that skip a docs-only change) ends early with its
 own verdict instead of waiting out the 30 minute budget. These tests extract
 the shipped bash block and execute it, so they exercise the snippet an agent
 actually runs rather than the prose around it.
+
+Issue #1321: `gh pr checks --required` lists only the required checks that have registered, so a
+partial list that is all green read as a pass while a required check (SonarCloud registers minutes
+after CI) had not appeared. The block now reads the base branch's required names from the rulesets
+and reports a pass only when none is missing; `TestRequiredNamesMissing` covers that.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import shutil
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from sova.commands.catalog import get_canonical_dir
+from tests.ci_wait_fakes import (
+    FIVE,
+    GH_ERROR,
+    HEAD_SHA,
+    NO_CHECKS,
+    NO_REQUIRED,
+    NO_RULESETS_PLAN,
+    SONAR,
+    five,
+    install_fakes,
+    read_calls,
+)
+from tests.ci_wait_fakes import (
+    checks as _checks,
+)
+from tests.ci_wait_fakes import (
+    paged_rules as _paged_rules,
+)
+from tests.ci_wait_fakes import (
+    rules as _rules,
+)
+from tests.ci_wait_fakes import (
+    runs as _runs,
+)
 
 REPO_ROOT = Path(__file__).parent.parent
 CANONICAL_PR = get_canonical_dir() / "pr.md"
@@ -35,75 +61,7 @@ RENDERED_PR_COPIES = [
     REPO_ROOT / "plugins" / "sova" / "commands" / "pr.md",
     REPO_ROOT / ".agents" / "skills" / "sova-pr" / "SKILL.md",
 ]
-HEAD_SHA = "abc123"
-
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="the CI wait block parses gh output with jq")
-
-# What `gh pr checks` prints to stderr, with an empty stdout and exit 1, in the two "nothing to report" cases.
-NO_REQUIRED = {"stdout": "", "stderr": "no required checks reported on the 'feat/x' branch\n", "rc": 1}
-NO_CHECKS = {"stdout": "", "stderr": "no checks reported on the 'feat/x' branch\n", "rc": 1}
-GH_ERROR = {"stdout": "", "stderr": "HTTP 502: Bad Gateway\n", "rc": 1}
-
-_FAKE_GH = """\
-#!{python}
-import json, os, sys
-
-args = sys.argv[1:]
-state = os.environ["FAKE_GH_STATE"]
-with open(os.path.join(state, "scenario.json"), encoding="utf-8") as fh:
-    scenario = json.load(fh)
-if args[:2] == ["pr", "view"]:
-    if "headRefOid" not in args:
-        print("42")
-        sys.exit(0)
-    if scenario.get("head_fails"):
-        sys.stderr.write("HTTP 502: Bad Gateway\\n")
-        sys.exit(1)
-    print("{head}")
-    sys.exit(0)
-if args[:2] == ["run", "list"]:
-    if args[args.index("--commit") + 1] != "{head}":
-        sys.stderr.write(f"run list not scoped to the PR head: {{args}}\\n")
-        sys.exit(2)
-    mode = "runs"
-elif args[:2] == ["pr", "checks"]:
-    mode = "required" if "--required" in args else "all"
-else:
-    sys.stderr.write(f"unexpected gh call: {{args}}\\n")
-    sys.exit(2)
-responses = scenario.get(mode)
-if not responses:
-    sys.stderr.write(f"unexpected gh call in {{mode}} mode\\n")
-    sys.exit(2)
-calls_path = os.path.join(state, mode + ".calls")
-calls = int(open(calls_path, encoding="utf-8").read()) if os.path.exists(calls_path) else 0
-with open(calls_path, "w", encoding="utf-8") as fh:
-    fh.write(str(calls + 1))
-response = responses[min(calls, len(responses) - 1)]
-sys.stdout.write(response["stdout"])
-sys.stderr.write(response["stderr"])
-sys.exit(response["rc"])
-"""
-
-
-def _checks(*buckets: str) -> dict[str, object]:
-    """A `gh pr checks --json name,bucket,link` response with gh's exit code for those buckets."""
-    rows = [{"name": f"check-{i}", "bucket": b, "link": f"https://example.invalid/{i}"} for i, b in enumerate(buckets)]
-    if "pending" in buckets:
-        rc = 8
-    elif any(b != "pass" and b != "skipping" for b in buckets):
-        rc = 1
-    else:
-        rc = 0
-    return {"stdout": json.dumps(rows) + "\n", "stderr": "", "rc": rc}
-
-
-def _runs(*conclusions: str) -> dict[str, object]:
-    """A `gh run list --commit <sha> --json status,conclusion,workflowName` response."""
-    rows = [
-        {"status": "completed", "conclusion": c, "workflowName": f"workflow-{i}"} for i, c in enumerate(conclusions)
-    ]
-    return {"stdout": json.dumps(rows) + "\n", "stderr": "", "rc": 0}
 
 
 def _wait_block(path: Path) -> str:
@@ -117,17 +75,7 @@ def _wait_block(path: Path) -> str:
 
 def _run_wait(scenario: dict[str, object], tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, int]]:
     """Run the canonical wait block against a fake `gh` and a no-op `sleep`; return the result and calls per mode."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_gh = bin_dir / "gh"
-    fake_gh.write_text(_FAKE_GH.format(python=sys.executable, head=HEAD_SHA), encoding="utf-8")
-    fake_gh.chmod(0o755)
-    fake_sleep = bin_dir / "sleep"
-    fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    fake_sleep.chmod(0o755)
-    (tmp_path / "scenario.json").write_text(json.dumps(scenario), encoding="utf-8")
-
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_STATE": str(tmp_path)}
+    env = install_fakes(tmp_path, scenario)
     result = subprocess.run(
         ["bash", "-c", _wait_block(CANONICAL_PR)],
         cwd=tmp_path,
@@ -136,11 +84,7 @@ def _run_wait(scenario: dict[str, object], tmp_path: Path) -> tuple[subprocess.C
         text=True,
         timeout=60,
     )
-    calls = {}
-    for mode in ("required", "all", "runs"):
-        calls_path = tmp_path / f"{mode}.calls"
-        calls[mode] = int(calls_path.read_text(encoding="utf-8")) if calls_path.exists() else 0
-    return result, calls
+    return result, read_calls(tmp_path)
 
 
 def _verdict(result: subprocess.CompletedProcess[str]) -> str:
@@ -251,3 +195,218 @@ class TestUnreadableOutput:
         assert "Unable to read the PR's checks: HTTP 502: Bad Gateway" in result.stderr
         assert "CI PASSED" not in result.stdout
         assert calls == {"required": 1, "all": 0, "runs": 0}
+
+
+class TestRequiredNamesMissing:
+    """Issue #1321: a partial, all-green list of required checks must never read as a pass."""
+
+    def test_missing_checks_are_never_a_pass_and_are_named_in_the_verdict(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules(*FIVE)], "required": [five("pass", "pass", "pass")]}
+        result, calls = _run_wait(scenario, tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "CI PASSED" not in result.stdout
+        assert (
+            _verdict(result)
+            == f"CI PENDING (required checks): 0 of 3 still pending; 2 required not registered: {SONAR}, docs"
+        )
+        assert f"missing\t{SONAR}" in result.stdout
+        assert calls == {"required": 16, "all": 0, "runs": 0}
+
+    def test_missing_checks_that_register_later_and_pass(self, tmp_path: Path) -> None:
+        scenario = {
+            "rules": [_rules(*FIVE)],
+            "required": [
+                five("pass", "pass", "pass"),
+                five("pass", "pass", "pass", "pass", "pass"),
+            ],
+        }
+        result, calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 5 passed or were skipped"
+        assert calls["required"] == 2
+
+    def test_missing_check_that_registers_as_skipping_counts_as_satisfied(self, tmp_path: Path) -> None:
+        scenario = {
+            "rules": [_rules(*FIVE)],
+            "required": [
+                five("pass", "pass", "pass", "pass"),
+                five("pass", "pass", "pass", "pass", "skipping"),
+            ],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 5 passed or were skipped"
+
+    def test_a_failure_wins_immediately_while_others_are_missing(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules(*FIVE)], "required": [five("pass", "fail", "pass")]}
+        result, calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI FAILED (required checks): 1 of 3 did not pass"
+        assert calls["required"] == 1
+
+    def test_a_cancel_wins_immediately_while_others_are_missing(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules(*FIVE)], "required": [five("pass", "cancel", "pass")]}
+        result, calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI CANCELED (required checks): 1 of 3 canceled"
+        assert calls["required"] == 1
+
+    def test_names_with_spaces_are_matched_whole(self, tmp_path: Path) -> None:
+        """ "SonarCloud" alone must not satisfy "SonarCloud Analysis"."""
+        scenario = {
+            "rules": [_rules("SonarCloud Analysis", "unit tests")],
+            "required": [_checks("pass", "pass", names=["SonarCloud", "unit tests"])],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert "CI PASSED" not in result.stdout
+        assert _verdict(result).endswith("1 required not registered: SonarCloud Analysis")
+
+    def test_names_from_several_rulesets_are_deduplicated(self, tmp_path: Path) -> None:
+        scenario = {
+            "rules": [_rules("lint", "lint", "test")],
+            "required": [_checks("pass", "pass", names=["lint", "test"])],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 2 passed or were skipped"
+
+    def test_all_required_registered_and_green_passes_on_the_first_poll(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules(*FIVE)], "required": [five("pass", "pass", "pass", "pass", "pass")]}
+        result, calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 5 passed or were skipped"
+        assert calls["required"] == 1
+
+    def test_only_non_required_checks_registered_is_never_a_pass(self, tmp_path: Path) -> None:
+        """`--required` reports none yet and the registered check is not a required name, so it is not counted."""
+        scenario = {
+            "rules": [_rules("lint", "test")],
+            "required": [NO_REQUIRED],
+            "all": [_checks("pass", names=["CodeRabbit"])],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert "CI PASSED" not in result.stdout
+        assert _verdict(result).endswith("0 of 0 still pending; 2 required not registered: lint, test")
+        assert _verdict(result).startswith("CI PENDING (required checks): ")
+
+    def test_zero_checks_with_required_names_keeps_the_no_ci_triggered_path(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules(*FIVE)], "required": [NO_CHECKS], "runs": [_runs()]}
+        result, calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result).startswith("NO CI TRIGGERED: ")
+        assert calls == {"required": 5, "all": 0, "runs": 5}
+
+
+class TestRulesLookup:
+    def test_an_empty_rule_list_keeps_todays_behavior(self, tmp_path: Path) -> None:
+        scenario = {"rules": [{"stdout": "[]\n", "stderr": "", "rc": 0}], "required": [_checks("pass")]}
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 1 passed or were skipped"
+        assert "missing" not in result.stdout
+
+    def test_a_plan_without_rulesets_counts_as_no_required_names(self, tmp_path: Path) -> None:
+        scenario = {"rules": [NO_RULESETS_PLAN], "required": [NO_REQUIRED], "all": [_checks("pass")]}
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED (all checks): all 1 passed or were skipped"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            pytest.param(GH_ERROR, id="http-error"),
+            pytest.param({"stdout": "not json\n", "stderr": "", "rc": 0}, id="non-json"),
+            pytest.param({"stdout": '{"message": "Not Found"}\n', "stderr": "", "rc": 0}, id="non-array"),
+        ],
+    )
+    def test_a_failed_or_unparseable_lookup_stops_without_a_pass(
+        self, tmp_path: Path, response: dict[str, object]
+    ) -> None:
+        result, calls = _run_wait({"rules": [response], "required": [_checks("pass")]}, tmp_path)
+        assert result.returncode == 1
+        assert "Unable to " in result.stderr
+        assert "CI PASSED" not in result.stdout
+        assert calls == {"required": 0, "all": 0, "runs": 0}
+
+
+class TestPaginatedRules:
+    def test_a_required_name_on_a_later_page_is_never_missed(self, tmp_path: Path) -> None:
+        scenario = {
+            "rules": [_paged_rules(["lint", "test"], ["build", "docs", SONAR])],
+            "required": [five("pass", "pass", "pass")],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert "CI PASSED" not in result.stdout
+        assert _verdict(result).endswith(f"2 required not registered: {SONAR}, docs")
+
+    def test_every_page_is_combined_and_deduplicated(self, tmp_path: Path) -> None:
+        scenario = {
+            "rules": [_paged_rules(["lint"], ["lint", "test"])],
+            "required": [_checks("pass", "pass", names=["lint", "test"])],
+        }
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert "CI PASSED (required checks)" in _verdict(result)
+        assert "missing" not in result.stdout
+
+
+class TestClassicProtectionIsNotConsulted:
+    """The classic endpoint needs the admin right (a push-only account gets a 404), so the block never calls it."""
+
+    @pytest.mark.parametrize("path", [CANONICAL_PR, *RENDERED_PR_COPIES], ids=lambda p: p.parent.name)
+    def test_no_copy_reads_branch_protection(self, path: Path) -> None:
+        assert "protection/required_status_checks" not in _wait_block(path)
+
+    def test_the_wait_completes_when_only_the_rulesets_endpoint_answers(self, tmp_path: Path) -> None:
+        scenario = {"rules": [_rules("lint", "test")], "required": [_checks("pass", "pass", names=["lint", "test"])]}
+        result, _calls = _run_wait(scenario, tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert _verdict(result) == "CI PASSED (required checks): all 2 passed or were skipped"
+
+
+class TestNonRequiredChecksAreIgnored:
+    """With required names known, a check that does not gate the merge neither fails nor blocks the wait."""
+
+    def test_a_failing_non_required_check_before_the_required_ones_register_is_not_a_failure(
+        self, tmp_path: Path
+    ) -> None:
+        scenario = {
+            "rules": [_rules("lint", "test")],
+            "required": [NO_REQUIRED, _checks("pass", "pass", names=["lint", "test"])],
+            "all": [_checks("fail", names=["CodeRabbit"])],
+        }
+        result, calls = _run_wait(scenario, tmp_path)
+        assert "CI FAILED" not in result.stdout
+        assert _verdict(result) == "CI PASSED (required checks): all 2 passed or were skipped"
+        assert calls["runs"] == 0
+
+    def test_only_non_required_checks_ever_registering_ends_as_pending_with_the_missing_names(
+        self, tmp_path: Path
+    ) -> None:
+        scenario = {
+            "rules": [_rules("lint", "test")],
+            "required": [NO_REQUIRED],
+            "all": [_checks("fail", names=["CodeRabbit"])],
+        }
+        result, calls = _run_wait(scenario, tmp_path)
+        assert (
+            _verdict(result)
+            == "CI PENDING (required checks): 0 of 0 still pending; 2 required not registered: lint, test"
+        )
+        assert calls["runs"] == 0
+
+    def test_a_failing_non_required_check_next_to_passing_required_ones_is_ignored(self, tmp_path: Path) -> None:
+        # GitHub reports no required check, so the block falls back to every check and narrows it to the rules.
+        rows = _checks("pass", "fail", names=["lint", "flaky-extra"])
+        result, _calls = _run_wait({"rules": [_rules("lint")], "required": [NO_REQUIRED], "all": [rows]}, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 1 passed or were skipped"
+
+
+class TestClassicAndRulesetProtection:
+    """A check `--required` reports but the rulesets do not list (classic protection) still decides."""
+
+    def test_a_failing_classic_required_check_is_a_failure(self, tmp_path: Path) -> None:
+        rows = _checks("pass", "fail", names=["lint", "classic-required-test"])
+        result, _calls = _run_wait({"rules": [_rules("lint")], "required": [rows]}, tmp_path)
+        assert "CI PASSED" not in result.stdout
+        assert _verdict(result) == "CI FAILED (required checks): 1 of 2 did not pass"
+
+    def test_a_pending_classic_required_check_blocks_the_pass(self, tmp_path: Path) -> None:
+        rows = _checks("pass", "pending", names=["lint", "classic-required-test"])
+        result, _calls = _run_wait({"rules": [_rules("lint")], "required": [rows]}, tmp_path)
+        assert _verdict(result) == "CI PENDING (required checks): 1 of 2 still pending"
+
+    def test_passing_classic_and_ruleset_checks_pass(self, tmp_path: Path) -> None:
+        rows = _checks("pass", "pass", names=["lint", "classic-required-test"])
+        result, _calls = _run_wait({"rules": [_rules("lint")], "required": [rows]}, tmp_path)
+        assert _verdict(result) == "CI PASSED (required checks): all 2 passed or were skipped"
