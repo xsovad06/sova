@@ -702,7 +702,7 @@ async def _registry_unreadable_handler(request: Request, exc: Exception) -> Resp
     return JSONResponse({"detail": detail}, status_code=409)
 
 
-async def _import_error_handler(request: Request, exc: Exception) -> Response:
+def _import_error_handler(request: Request, exc: Exception) -> Response:
     """Turn an ImportError that escapes a route into a 503 that says to restart.
 
     Python imports modules lazily, so a server started before a ``git pull`` fails here once a request
