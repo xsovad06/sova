@@ -308,20 +308,31 @@ def format_coverage_findings_for_prompt(
     return "".join(lines)
 
 
-_CODERABBIT_THREADS_QUERY = """
-query($owner: String!, $name: String!, $pr: Int!) {
+_REVIEW_THREADS_QUERY = """
+query($owner: String!, $name: String!, $pr: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $pr) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           comments(first: 1) {
             nodes {
+              databaseId
               body
               author { login }
+            }
+          }
+          lastComment: comments(last: 1) {
+            nodes {
+              body
             }
           }
         }
@@ -330,6 +341,83 @@ query($owner: String!, $name: String!, $pr: Int!) {
   }
 }
 """
+
+# A guard against a cursor that never advances; 100 threads per page makes this 10,000 threads.
+_MAX_THREAD_PAGES = 100
+
+
+def _review_threads_page_args(owner: str, name: str, pr_number: int, cursor: str | None) -> list[str]:
+    """Build the ``gh api graphql`` argv for one page of review threads."""
+    args = [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_REVIEW_THREADS_QUERY}",
+        "-F",
+        f"owner={owner}",
+        "-F",
+        f"name={name}",
+        "-F",
+        f"pr={pr_number}",
+    ]
+    if cursor:
+        # -f, not -F: -F type-converts its value (numbers, booleans, a leading "@" reads a file),
+        # and an opaque cursor must reach GitHub byte for byte.
+        args.extend(["-f", f"cursor={cursor}"])
+    return args
+
+
+def _parse_review_threads_page(stdout: str) -> dict | None:
+    """Return the ``reviewThreads`` object of one GraphQL page, or None when the page is not a JSON object."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        log.warning("external_reviews.threads_parse_failed", exc_info=True)
+        return None
+    if not isinstance(data, dict):
+        log.warning("external_reviews.threads_parse_failed", reason="not a JSON object")
+        return None
+    pull_request = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
+    review_threads = pull_request.get("reviewThreads") if isinstance(pull_request, dict) else None
+    if not isinstance(review_threads, dict):
+        # A null repository or pullRequest (a deleted PR, a permission error on a later page) is not an
+        # empty page: reading it as one would end pagination and report a partial list as complete.
+        log.warning("external_reviews.threads_parse_failed", reason="no pullRequest.reviewThreads object")
+        return None
+    return review_threads
+
+
+async def fetch_review_threads(repo: str, pr_number: int, *, github_user: str | None = None) -> list[dict] | None:
+    """Fetch every review thread on a PR (resolved, unresolved and outdated), following pagination.
+
+    Returns the raw GraphQL thread nodes, or None when a page could not be fetched or parsed: a partial list
+    would let a caller conclude that a thread past the failed page does not exist, so a failure is never
+    reported as a shorter list.
+    """
+    from sova.utils.gh import resolve_gh_env
+
+    owner, name = repo.split("/", 1) if "/" in repo else ("", repo)
+    env = await resolve_gh_env(github_user)
+
+    threads: list[dict] = []
+    cursor: str | None = None
+    for _ in range(_MAX_THREAD_PAGES):
+        result = await run(*_review_threads_page_args(owner, name, pr_number, cursor), env=env, timeout=30)
+        if not result.success:
+            log.warning("external_reviews.threads_fetch_failed", stderr=result.stderr[:200])
+            return None
+        review_threads = _parse_review_threads_page(result.stdout)
+        if review_threads is None:
+            return None
+        threads.extend(review_threads.get("nodes") or [])
+        page_info = review_threads.get("pageInfo") or {}
+        cursor = page_info.get("endCursor")
+        if not page_info.get("hasNextPage") or not cursor:
+            return threads
+
+    log.warning("external_reviews.threads_page_limit", pr=pr_number, pages=_MAX_THREAD_PAGES)
+    return None
 
 
 @dataclass
@@ -472,43 +560,13 @@ async def _fetch_coderabbit_threads(
     authors: set[str] | None = None,
     github_user: str | None = None,
 ) -> _ThreadsResult:
-    """Fetch unresolved review threads from a PR via GraphQL.
+    """Fetch unresolved review threads from a PR via GraphQL (every page).
 
     When ``authors`` is None, defaults to CodeRabbit bot accounts.
     """
-    from sova.utils.gh import resolve_gh_env
-
-    owner, name = repo.split("/", 1) if "/" in repo else ("", repo)
-    env = await resolve_gh_env(github_user)
-
-    result = await run(
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={_CODERABBIT_THREADS_QUERY}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={name}",
-        "-F",
-        f"pr={pr_number}",
-        env=env,
-        timeout=30,
-    )
-    if not result.success:
-        log.warning("external_reviews.coderabbit_fetch_failed", stderr=result.stderr[:200])
+    threads = await fetch_review_threads(repo, pr_number, github_user=github_user)
+    if threads is None:
         return _ThreadsResult()
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        log.warning("external_reviews.coderabbit_parse_failed", exc_info=True)
-        return _ThreadsResult()
-
-    threads = (
-        data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("reviewThreads", {}).get("nodes", [])
-    )
 
     from sova.llm.guard import sanitize_external_input
 
@@ -517,10 +575,11 @@ async def _fetch_coderabbit_threads(
     for thread in threads:
         if thread.get("isResolved"):
             continue
-        comments = thread.get("comments", {}).get("nodes", [])
+        comments = (thread.get("comments") or {}).get("nodes") or []
         if not comments:
             continue
-        author = comments[0].get("author", {}).get("login", "")
+        # A deleted account comes back as ``author: null``, which a .get() default does not cover.
+        author = (comments[0].get("author") or {}).get("login", "")
         if author not in allowed:
             continue
 
@@ -543,6 +602,42 @@ async def _fetch_coderabbit_threads(
     return out
 
 
+async def _thread_mutation(query: str, thread_id: str, env: dict[str, str] | None, *fields: str) -> bool:
+    """Run one thread GraphQL mutation; True when ``gh`` reports success."""
+    args = ["gh", "api", "graphql", "-f", f"query={query}", "-F", f"id={thread_id}"]
+    for field_arg in fields:
+        args.extend(["-f", field_arg])
+    result = await run(*args, env=env, timeout=15)
+    if not result.success:
+        log.warning("external_reviews.thread_mutation_failed", thread_id=thread_id, stderr=result.stderr[:200])
+    return result.success
+
+
+_RESOLVE_THREAD_MUTATION = (
+    "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+)
+_REPLY_THREAD_MUTATION = (
+    "mutation($id: ID!, $body: String!) "
+    "{ addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $id, body: $body}) { comment { id } } }"
+)
+
+
+async def reply_to_review_thread(thread_id: str, body: str, *, github_user: str | None = None) -> bool:
+    """Reply on a review thread by ID via GraphQL. Returns True when the reply was posted."""
+    from sova.utils.gh import resolve_gh_env
+
+    env = await resolve_gh_env(github_user)
+    return await _thread_mutation(_REPLY_THREAD_MUTATION, thread_id, env, f"body={body}")
+
+
+async def resolve_review_thread(thread_id: str, *, github_user: str | None = None) -> bool:
+    """Resolve one review thread by ID via GraphQL. Returns True when it was resolved."""
+    from sova.utils.gh import resolve_gh_env
+
+    env = await resolve_gh_env(github_user)
+    return await _thread_mutation(_RESOLVE_THREAD_MUTATION, thread_id, env)
+
+
 async def resolve_coderabbit_threads(
     thread_ids: list[str],
     *,
@@ -553,29 +648,10 @@ async def resolve_coderabbit_threads(
 
     env = await resolve_gh_env(github_user)
 
-    mutation = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
-
     resolved = 0
     for thread_id in thread_ids:
-        result = await run(
-            "gh",
-            "api",
-            "graphql",
-            "-f",
-            f"query={mutation}",
-            "-F",
-            f"id={thread_id}",
-            env=env,
-            timeout=15,
-        )
-        if result.success:
+        if await _thread_mutation(_RESOLVE_THREAD_MUTATION, thread_id, env):
             resolved += 1
-        else:
-            log.warning(
-                "external_reviews.resolve_thread_failed",
-                thread_id=thread_id,
-                stderr=result.stderr[:200],
-            )
     return resolved
 
 
