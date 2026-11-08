@@ -1113,6 +1113,40 @@ class TestSOVAServerEdgeCases:
         assert resp.json()["database"] == "unreachable"
         assert resp.json()["status"] == "degraded"
 
+    async def test_health_check_reports_the_code_sha_pair_and_restart_flag(self) -> None:
+        from sova.scheduler.server import SOVAServer
+        from sova.utils.version import CodeStaleness
+
+        server = SOVAServer(config=_make_config())
+        stale = CodeStaleness("a" * 40, "b" * 40, True)
+        with (
+            patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")),
+            patch("sova.scheduler.server.get_code_staleness", return_value=stale),
+        ):
+            body = await server._get_health_check()
+
+        assert body["code_sha"] == "a" * 40
+        assert body["checkout_sha"] == "b" * 40
+        assert body["restart_required"] is True
+        assert body["status"] == "ok"
+
+    async def test_stale_code_does_not_degrade_health_or_change_the_status_code(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+        from sova.utils.version import CodeStaleness
+
+        server = SOVAServer(config=_make_config())
+        app = server.create_app()
+        stale = CodeStaleness("a" * 40, "b" * 40, True)
+        with patch("sova.scheduler.server.get_code_staleness", return_value=stale):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+
+        assert resp.status_code == 200
+        assert resp.json()["restart_required"] is True
+
     async def test_health_check_reports_a_reachable_database(self) -> None:
         from sova.scheduler.server import SOVAServer
 

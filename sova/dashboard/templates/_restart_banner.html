@@ -1,0 +1,11 @@
+{#- Restart banner, shared by base.html and the standalone pages (home.html, setup.html) so every
+    dashboard page shows it. Driven by app.js's /api/health poll; no Dismiss control: it clears
+    itself once the server restarts (or the checkout returns to the commit it started on). -#}
+{% from "_icons.html" import icon %}
+<div id="restart-banner" class="hidden bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-4 py-3 mb-6 flex items-center gap-2">
+  <div class="flex items-center gap-2 text-sm text-accent-yellow">
+    {{ icon("warning", "w-4 h-4 shrink-0") }}
+    <span class="font-medium">Server restart required</span>
+  </div>
+  <span id="restart-banner-detail" class="text-xs text-gray-500"></span>
+</div>
