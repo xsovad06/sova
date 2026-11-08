@@ -38,8 +38,13 @@ _COMMAND_CAPS: dict[str, int] = {
     "find-task.md": 15_500,
     # Issue #1363's target: cut to 24,000 characters or less.
     "health-audit.md": 24_000,
-    "integrate-pr.md": 58_500,
-    "pr.md": 32_000,
+    # Issue #1321 raised this by 6,000 for the required-check name lookup in Phase 4 (fast path and poll):
+    # the rulesets (every page), the matching against the registered checks, the required-only verdict, and
+    # the union with the names `gh pr checks --required` reports (classic protection).
+    "integrate-pr.md": 64_500,
+    # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
+    # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
+    "pr.md": 36_000,
     "review-pr.md": 22_000,
 }
 # Skill directory name -> cap for its SKILL.md. Empty: every skill is under the default.
