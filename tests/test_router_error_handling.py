@@ -830,3 +830,74 @@ class TestHandoffRouterErrors:
             resp = await client.post("/api/handoff/execute", json={"action_id": "integrate"})
         assert resp.status_code == 409
         assert "No agent slots available" in resp.json()["detail"]
+
+
+class TestImportErrorHandler:
+    """A stale-code ImportError escaping a route becomes a 503 that says to restart (issue #1409)."""
+
+    async def _get_with_raise(self, exc: Exception) -> tuple[int, dict]:
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+
+        @app.get("/api/_boom")
+        async def boom() -> None:
+            raise exc
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+        ) as ac:
+            resp = await ac.get("/api/_boom")
+        return resp.status_code, resp.json()
+
+    async def test_import_error_returns_503_with_restart_detail(self) -> None:
+        status, body = await self._get_with_raise(ImportError("cannot import name 'x' from 'sova.y'"))
+        assert status == 503
+        assert "restart" in body["detail"].lower()
+
+    async def test_stale_import_of_a_name_missing_from_a_loaded_module_returns_503(self) -> None:
+        """The incident shape: a route's lazy import asks a cached module for a name it lacks."""
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+
+        @app.get("/api/_stale")
+        async def stale() -> None:
+            from sova.utils.version import name_added_after_startup  # noqa: F401
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+        ) as ac:
+            resp = await ac.get("/api/_stale")
+        assert resp.status_code == 503
+        assert "restart the server" in resp.json()["detail"]
+
+    async def test_module_not_found_error_is_covered_too(self) -> None:
+        status, body = await self._get_with_raise(ModuleNotFoundError("No module named 'sova.new'"))
+        assert status == 503
+        assert "restart" in body["detail"].lower()
+
+    async def test_body_does_not_leak_the_shas_or_the_exception_text(self) -> None:
+        from sova.utils.version import CodeStaleness
+
+        stale = CodeStaleness("a" * 40, "b" * 40, True)
+        with patch("sova.dashboard.app.get_code_staleness", return_value=stale):
+            _, body = await self._get_with_raise(ImportError("secret-module-name"))
+        assert "a" * 40 not in body["detail"]
+        assert "b" * 40 not in body["detail"]
+        assert "secret-module-name" not in body["detail"]
+
+    async def test_other_exceptions_keep_the_generic_500(self) -> None:
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+
+        @app.get("/api/_boom")
+        async def boom() -> None:
+            raise RuntimeError("x")
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+        ) as ac:
+            resp = await ac.get("/api/_boom")
+        assert resp.status_code == 500

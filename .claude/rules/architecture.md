@@ -48,7 +48,7 @@ SOVA has four main components:
 
 ### 4. Scheduler (`sova/scheduler/`)
 - `watch.py` (WatchLoop): async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown. Dispatches one task at a time (`max_parallel_agents` has no effect here; `sova parallel` is the concurrent path)
-- `server.py` (SOVAServer): combined dashboard + scheduler in one process; the scheduler endpoints and `/api/health` (which reports `degraded` when the watch loop stops scanning) live here, not in dashboard routers (full entry: docs/architecture-deep-dive.md, "SOVAServer (`server.py`)").
+- `server.py` (SOVAServer): combined dashboard + scheduler in one process; the scheduler endpoints and `/api/health` (which reports `degraded` when the watch loop stops scanning, and `restart_required` when the checkout HEAD has moved since startup) live here, not in dashboard routers (full entry: docs/architecture-deep-dive.md, "SOVAServer (`server.py`)").
 - Deploy: systemd unit, launchd plist and a newsyslog reference under `deploy/`; `ReadWritePaths` must list the whole project dir, the unit is `Type=notify` with `KillMode=process` so a restart leaves agents for the next server to adopt (`recovery.kill_orphans` opts into killing), and `uvicorn.run(access_log=False)` keeps the plist's log files bounded (full entry: docs/architecture-deep-dive.md, "Deploy").
 - CLI: `sova server start/stop/status/restart/digest/install-service`
 

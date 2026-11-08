@@ -388,7 +388,7 @@ server is starting or stopping, so a rotation in that window is skipped, never f
 `.claude/sova.log` is rotated in-process and needs none of this.
 
 **Health monitoring**: The server exposes health and digest endpoints for external monitoring:
-- `GET /api/health`: `status` (`ok` or `degraded`), `database` (`ok` or `unreachable`, a probe bounded to 2s), uptime, scheduler state, active agent count, package version and git SHA. Answers HTTP 503 (same JSON body) when `degraded`: the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight, or the database probe failed.
+- `GET /api/health`: `status` (`ok` or `degraded`), `database` (`ok` or `unreachable`, a probe bounded to 2s), uptime, scheduler state, active agent count, package version and git SHA. Answers HTTP 503 (same JSON body) when `degraded`: the watch loop's last completed scan is older than three times `watch.interval_idle` while no task is in flight, or the database probe failed. `code_sha` (full HEAD when the server started), `checkout_sha` (full HEAD now, read from `.git` and cached for 5s) and `restart_required` (both known and different) report a server running older code than its checkout; informational only, it never changes `status` or the HTTP code, and every dashboard page shows a restart banner while it is true. An `ImportError` escaping any route answers 503 with a detail telling the operator to restart.
 - `GET /api/scheduler/health`: uptime, scan count, error count, agent slots, DB status
 - `GET /api/scheduler/digest?hours=24`: tasks completed/failed, cost summary
 

@@ -25,7 +25,7 @@ from sova.config.models import ProjectConfig
 from sova.scheduler import service
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
-from sova.utils.version import get_git_sha, get_version
+from sova.utils.version import get_code_staleness, get_git_sha, get_version
 
 log = get_logger(component="scheduler.server")
 
@@ -348,6 +348,9 @@ class SOVAServer:
         agents_active = self._count_active_agents()
         database_ok = await self._probe_database()
         status = self._compute_health_status() if database_ok else "degraded"
+        # Informational only: a stale-but-working server must not trip an external probe, so this never
+        # feeds ``status``.
+        staleness = get_code_staleness()
         return {
             "status": status,
             "database": "ok" if database_ok else "unreachable",
@@ -356,6 +359,9 @@ class SOVAServer:
             "agents_active": agents_active,
             "version": get_version(),
             "git_sha": get_git_sha(),
+            "code_sha": staleness.startup_sha,
+            "checkout_sha": staleness.current_sha,
+            "restart_required": staleness.restart_required,
         }
 
     def _compute_health_status(self) -> str:

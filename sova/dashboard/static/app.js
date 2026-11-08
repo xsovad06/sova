@@ -43,19 +43,22 @@ async function fetchAPI(url, options) {
 }
 
 async function getErrorDetail(res, fallback) {
+  // A bodiless or detail-less error would otherwise show only the caller's generic text; the status
+  // tells the operator whether the server is erroring (5xx) or rejecting the request (4xx).
+  var withStatus = fallback + ' (HTTP ' + res.status + ')';
   try {
     var body = await res.json();
-    if (!body.detail) return fallback;
+    if (!body.detail) return withStatus;
     if (Array.isArray(body.detail)) {
       return body.detail.map(function (item) {
         return (item && typeof item === 'object' && item.msg) ? item.msg : JSON.stringify(item);
-      }).join('; ') || fallback;
+      }).join('; ') || withStatus;
     }
     // A structured detail (budget_exceeded, suitability_blocked) carries its readable text as `message`.
     if (typeof body.detail === 'object' && body.detail.message) return body.detail.message;
     return body.detail;
   }
-  catch (_e) { return fallback; }
+  catch (_e) { return withStatus; }
 }
 
 /* Double-submit CSRF header for a state-changing fetch(): reads the
@@ -686,15 +689,49 @@ function _dotClass(color, animate) {
 var _activityPollInterval = null;
 var _handoffPollInterval = null;
 var _connectivityPollInterval = null;
+var _restartPollInterval = null;
 
 function startSidebarPolling() {
   _pollActivity();
   _pollHandoff();
   _pollConnectivity();
+  _pollRestartRequired();
   _activityPollInterval = setInterval(_pollActivity, 3000);
   _handoffPollInterval = setInterval(_pollHandoff, 5000);
   _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
+  _restartPollInterval = setInterval(_pollRestartRequired, 15000);
   _initFeedSSE();
+}
+
+// Restart banner
+//
+// /api/health reports restart_required when the checkout's git HEAD has moved since the server
+// started, i.e. the running code is older than the files on disk. Not fetchAPI(): health answers
+// 503 when degraded, and the body is still the JSON this banner needs. Not project-prefixed:
+// /api/health is process-wide.
+async function _pollRestartRequired() {
+  var data;
+  try {
+    var res = await fetch('/api/health');
+    data = await res.json();
+  } catch (_e) {
+    // No reachable server or a non-JSON body (a plain `sova dashboard` has no /api/health): leave
+    // the last known state alone rather than claim anything.
+    return;
+  }
+
+  var banner = document.getElementById('restart-banner');
+  if (!banner) return;
+  var required = !!(data && data.restart_required);
+  banner.classList.toggle('hidden', !required);
+  if (!required) return;
+
+  var detail = document.getElementById('restart-banner-detail');
+  if (detail) {
+    var from = (data.code_sha || '').slice(0, 7);
+    var to = (data.checkout_sha || '').slice(0, 7);
+    detail.textContent = 'Running ' + from + ', checkout is at ' + to + '. Restart to load the new code.';
+  }
 }
 
 // Connectivity banner
@@ -748,14 +785,17 @@ document.addEventListener('visibilitychange', function() {
     if (_activityPollInterval) { clearInterval(_activityPollInterval); _activityPollInterval = null; }
     if (_handoffPollInterval) { clearInterval(_handoffPollInterval); _handoffPollInterval = null; }
     if (_connectivityPollInterval) { clearInterval(_connectivityPollInterval); _connectivityPollInterval = null; }
+    if (_restartPollInterval) { clearInterval(_restartPollInterval); _restartPollInterval = null; }
     if (_globalBatchPollInterval) { clearInterval(_globalBatchPollInterval); _globalBatchPollInterval = null; }
   } else {
     _pollActivity();
     _pollHandoff();
     _pollConnectivity();
+    _pollRestartRequired();
     if (!_activityPollInterval) _activityPollInterval = setInterval(_pollActivity, 3000);
     if (!_handoffPollInterval) _handoffPollInterval = setInterval(_pollHandoff, 5000);
     if (!_connectivityPollInterval) _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
+    if (!_restartPollInterval) _restartPollInterval = setInterval(_pollRestartRequired, 15000);
     if (_globalBatchId && !_globalBatchPollInterval) {
       _pollGlobalBatch();
       _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
@@ -1460,6 +1500,10 @@ initSidebarTooltips();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();
+} else if (document.getElementById('restart-banner')) {
+  // Pages without the sidebar (Fleet home, Setup) still carry the restart banner.
+  _pollRestartRequired();
+  _restartPollInterval = setInterval(_pollRestartRequired, 15000);
 }
 initGlobalBatch();
 

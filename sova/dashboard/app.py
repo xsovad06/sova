@@ -90,6 +90,7 @@ from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
+from sova.utils.version import get_code_staleness, record_startup_code_sha
 
 log = get_logger(component="dashboard.app")
 
@@ -701,6 +702,30 @@ async def _registry_unreadable_handler(request: Request, exc: Exception) -> Resp
     return JSONResponse({"detail": detail}, status_code=409)
 
 
+async def _import_error_handler(request: Request, exc: Exception) -> Response:
+    """Turn an ImportError that escapes a route into a 503 that says to restart.
+
+    Python imports modules lazily, so a server started before a ``git pull`` fails here once a request
+    first touches a module the new checkout changed. Any ImportError gets the same wording, since it
+    cannot be told apart from a genuine missing dependency; the SHA pair is logged, never returned,
+    so the logs still distinguish the two.
+    """
+    staleness = get_code_staleness()
+    log.error(
+        "dashboard.import_error",
+        route=request.url.path,
+        startup_sha=staleness.startup_sha,
+        checkout_sha=staleness.current_sha,
+        restart_required=staleness.restart_required,
+        exc_info=exc,
+    )
+    detail = (
+        "A module failed to load. This usually means the server is running older code than its checkout; "
+        "restart the server and retry."
+    )
+    return JSONResponse({"detail": detail}, status_code=503)
+
+
 def create_app(
     *,
     project_dir: Path | None = None,
@@ -1009,6 +1034,9 @@ def create_app(
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.add_exception_handler(RegistryUnreadableError, _registry_unreadable_handler)
+    app.add_exception_handler(ImportError, _import_error_handler)
+    # First call wins, so this is the checkout the process loaded its code from, for SOVAServer too.
+    record_startup_code_sha()
 
     @app.get("/healthz")
     async def healthz() -> Response:
