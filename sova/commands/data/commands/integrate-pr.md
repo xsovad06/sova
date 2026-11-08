@@ -556,39 +556,91 @@ if [ "$PUSHED" -eq 0 ]; then
   # `gh pr checks` exits non-zero (exit 8) while checks are pending but still
   # writes valid JSON, so never append a fallback document with `||`: keep the
   # real output and treat empty or invalid JSON as non-green.
-  CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
-  TOTAL=$(echo "$CHECKS_JSON" | jq 'length' 2>/dev/null || echo 0)
-  PENDING=$(echo "$CHECKS_JSON" | jq '[.[] | select(.bucket == "pending")] | length' 2>/dev/null || echo 1)
-  FAILED=$(echo "$CHECKS_JSON" | jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length' 2>/dev/null || echo 1)
-  # Require at least one check: zero checks is not a green fast path, poll instead.
-  if [ "${TOTAL:-0}" -gt 0 ] && [ "${PENDING:-1}" -eq 0 ] && [ "${FAILED:-1}" -eq 0 ]; then
-    echo "No re-push: existing CI is complete and green. Skipping the poll."
+  # Any failed lookup below leaves the fast path unmet; the poll then decides.
+  BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName 2>/dev/null) || BASE=
+  FP_ERR=$(mktemp) || BASE=
+  # Required names: rulesets (every page); a plan without rulesets counts as none. Classic branch protection
+  # is not read (admin-only endpoint). gh prints the error on stderr and the body on stdout: match both.
+  if [ -n "$BASE" ] \
+    && { RULES_JSON=$(gh api --paginate "repos/{owner}/{repo}/rules/branches/$BASE?per_page=100" 2>"$FP_ERR") \
+      || { [[ $RULES_JSON$(cat "$FP_ERR") == *"Upgrade to GitHub Pro"* ]] && RULES_JSON="[]"; }; } \
+    && REQUIRED_JSON=$(jq -sce '
+      if length == 0 or any(.[]; type != "array") then error("not a rule list") else
+      [.[][] | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[].context] | unique end' \
+      <<<"$RULES_JSON" 2>/dev/null); then
+    CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
+    # Names GitHub reports as required join the ruleset names (a check only classic protection requires still
+    # decides). An unreadable lookup leaves DECIDE_JSON and STATS empty, so the fast path stays unmet.
+    GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$FP_ERR")
+    if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
+    elif grep -q "no required checks reported\|no checks reported" "$FP_ERR"; then GH_REQ_JSON="[]"
+    else GH_REQ_JSON=; fi
+    DECIDE_JSON=
+    [ -z "$GH_REQ_JSON" ] || DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique' 2>/dev/null) || DECIDE_JSON=
+    # TOTAL: every check. PENDING, FAILED: deciding names only (all when none). MISSING: deciding names not registered.
+    STATS=$(jq -r --argjson req "${DECIDE_JSON:-null}" '
+      (if ($req | length) == 0 then . else map(select(.name as $n | any($req[]; . == $n))) end) as $c
+      | [length, ($c | map(select(.bucket == "pending")) | length),
+         ($c | map(select(.bucket == "fail" or .bucket == "cancel")) | length),
+         ($req - map(.name) | length)] | @tsv' <<<"$CHECKS_JSON" 2>/dev/null) || STATS=
+    IFS=$'\t' read -r TOTAL PENDING FAILED MISSING <<<"$STATS"
+    # Require at least one check: zero checks is not a green fast path, poll instead.
+    if [ "${TOTAL:-0}" -gt 0 ] && [ "${PENDING:-1}" -eq 0 ] && [ "${FAILED:-1}" -eq 0 ] && [ "${MISSING:-1}" -eq 0 ]; then
+      echo "No re-push: existing CI is complete and green. Skipping the poll."
+    fi
   fi
+  [ -z "${FP_ERR:-}" ] || rm -f "$FP_ERR"
 fi
 ```
 
 If it printed "Skipping the poll", go to Phase 5. Otherwise (a push happened,
 or checks are still pending, failed or absent), fall through to the poll below.
-The poll includes external review bots (e.g., CodeRabbit) that appear as
-pending StatusContext checks. Requires gh CLI v2.32+ (for the `bucket` field).
+When the base branch has required checks (rulesets, every page of `gh api --paginate repos/{owner}/{repo}/rules/branches/<base>`,
+plus every name `gh pr checks <PR_NUMBER> --required` reports, which covers classic protection),
+the poll decides on the union of those names: one not yet registered blocks a pass, and non-required checks such as
+review bots (e.g., CodeRabbit) neither block nor fail it, and zero checks is never `NO_CHECKS`. Classic branch
+protection is not read for names directly (its endpoint needs the admin right, which a push-only account lacks),
+so a classic-only required check is known only once it has registered. With none required (a repository relying on
+classic protection alone with nothing registered, or a private repository whose plan has no rulesets)
+it covers every check. Requires gh CLI v2.32+ (for the `bucket` field).
 
 **Run the poll as a synchronous foreground command and wait for it to finish.** Do NOT launch it as a background task and then stop to "wait" for a notification: headless mode has no mechanism to resume you when a background task completes, and ending your turn without a tool call terminates the run, leaving the PR unmerged. One call polls at most 16 x 30s (8 minutes), which exceeds the Bash tool's 2 minute default timeout, so pass an explicit `timeout` of at least 540000 ms (never above the tool's 600000 ms cap). If more waiting is needed, repeat the same block as a new, separate call rather than lengthening one loop past the cap.
 
 ```bash
 # bucket (not state) normalizes raw states into: pass, fail, pending, skipping, cancel.
 # Grace period: the first 5 iterations tolerate TOTAL=0 while checks register after a push.
+BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq .baseRefName) || { echo "Unable to resolve the PR base branch" >&2; exit 1; }
+# Required names: rulesets (every page: --paginate prints one JSON array per page); a plan without rulesets is no names.
+# Classic branch protection is not read (admin-only endpoint).
+ERR_FILE=$(mktemp) || { echo "Unable to create a temp file" >&2; exit 1; }
+trap 'rm -f "$ERR_FILE"' EXIT
+RULES_JSON=$(gh api --paginate "repos/{owner}/{repo}/rules/branches/$BASE?per_page=100" 2>"$ERR_FILE") \
+  || { [[ $RULES_JSON$(cat "$ERR_FILE") == *"Upgrade to GitHub Pro"* ]] && RULES_JSON="[]"; } \
+  || { echo "Unable to read the required checks of $BASE: $(cat "$ERR_FILE")" >&2; exit 1; }
+REQUIRED_JSON=$(jq -sce '
+  if length == 0 or any(.[]; type != "array") then error("not a rule list") else
+  [.[][] | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[].context] | unique end' \
+  <<<"$RULES_JSON" 2>/dev/null) || { echo "Unable to parse the required checks of $BASE" >&2; exit 1; }
 for i in $(seq 1 16); do
   echo "CI poll attempt $i/16"
   CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
   [ -n "$CHECKS_JSON" ] || CHECKS_JSON="[]"
   echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
-  STATS=$(echo "$CHECKS_JSON" | jq -r '
-    (length | tostring) + "\t" +
-    ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
-    ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
-  ' 2>/dev/null) || { echo "Failed to parse CI check status"; break; }
-  IFS=$'\t' read -r TOTAL PENDING FAILED <<< "$STATS"
-  if [ "$TOTAL" -eq 0 ]; then
+  # Names GitHub itself reports as required (a ruleset or classic protection) join the ruleset names: a check
+  # only classic protection requires still decides. "no required checks reported" means none.
+  GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$ERR_FILE")
+  if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
+  elif grep -q "no required checks reported\|no checks reported" "$ERR_FILE"; then GH_REQ_JSON="[]"
+  else echo "Unable to read the required checks of PR <PR_NUMBER>: $(cat "$ERR_FILE")" >&2; exit 1; fi
+  DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique')
+  # TOTAL: every check. PENDING, FAILED, DECIDING: the deciding names only (all when none). MISSING: deciding names not registered.
+  STATS=$(jq -r --argjson req "$DECIDE_JSON" '
+    (if ($req | length) == 0 then . else map(select(.name as $n | any($req[]; . == $n))) end) as $c
+    | [length, ($c | map(select(.bucket == "pending")) | length),
+       ($c | map(select(.bucket == "fail" or .bucket == "cancel")) | length),
+       ($req - map(.name) | length), ($c | length)] | @tsv' <<<"$CHECKS_JSON" 2>/dev/null) || { echo "Failed to parse CI check status"; break; }
+  IFS=$'\t' read -r TOTAL PENDING FAILED MISSING DECIDING <<< "$STATS"
+  if [ "$TOTAL" -eq 0 ] && [ "$MISSING" -eq 0 ]; then
     if [ "$i" -lt 5 ]; then
       echo "No checks registered yet (grace period $i/5)"
       sleep 30
@@ -598,11 +650,17 @@ for i in $(seq 1 16); do
     break
   fi
   if [ "$PENDING" -eq 0 ]; then
-    if [ "$FAILED" -gt 0 ]; then echo "CI FAILED: $FAILED check(s) failed"; else echo "CI PASSED: all $TOTAL checks passed"; fi
-    break
+    if [ "$FAILED" -gt 0 ]; then echo "CI FAILED: $FAILED check(s) failed"; break; fi
+    if [ "$MISSING" -eq 0 ]; then
+      if [ "$DECIDE_JSON" = "[]" ]; then echo "CI PASSED: all $TOTAL checks passed"
+      else echo "CI PASSED: all $DECIDING required checks passed or were skipped ($TOTAL checks total)"; fi
+      break
+    fi
   fi
   if [ "$i" -eq 16 ]; then
-    echo "CI TIMEOUT: checks still pending after 8 minutes"
+    MSG="CI TIMEOUT: checks still pending after 8 minutes"
+    [ "$MISSING" -eq 0 ] || MSG="$MSG; $MISSING required not registered: $(jq -r --argjson req "$DECIDE_JSON" '$req - map(.name) | join(", ")' <<<"$CHECKS_JSON")"
+    echo "$MSG"
     break
   fi
   sleep 30
@@ -643,7 +701,8 @@ Act on the result:
   - Retry only after reading actual failure text from (1) or (2) and confirming an infrastructure or flaky issue (network timeouts, resource limits, unrelated tests): post a retry comment and re-run the polling block once more. On second failure, stop and report the diagnosis.
   - If neither (1) nor (2) produced any text (only a check name and link from `$FAILED`), stop. Report the failed check and its link. Do not retry or re-run the polling block.
   - For real code issues, stop and report the diagnosis with failing check details.
-- **CI TIMEOUT**: re-run the polling block once more as a separate call. If it times out again, stop and report. The user can re-run `/integrate-pr` after CI completes.
+- **The poll stops with `Unable to` (resolve the base branch, read or parse its required checks, read the PR's required checks)**: a `gh` failure, never a pass. Stop and report it; do not proceed to Phase 5.
+- **CI TIMEOUT**: re-run the polling block once more as a separate call. If it times out again, stop and report, naming any required check the verdict lists as not registered. The user can re-run `/integrate-pr` after CI completes.
 
 ### Phase 5: Merge
 
