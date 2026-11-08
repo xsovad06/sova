@@ -15,7 +15,7 @@ Two markers exist:
   (with a server timestamp) that the verdict scan already reads: a review body
   newer than the verdict carrying this marker means the verdict has been
   addressed. Both the autonomous address-review pipeline
-  (``ResolveExternalReviewsStep``) and the ``/address-pr`` command emit it, so
+  (``ResolveReviewThreadsStep``) and the ``/address-pr`` command emit it, so
   the two address paths are tracked the same way.
 """
 
@@ -88,16 +88,24 @@ def _finding_cell(finding: dict) -> str:
     return f"{prefix}{description}"
 
 
-def format_address_summary(findings: list[dict], *, head_sha: str | None, round_no: int = 1) -> str:
+def format_address_summary(
+    findings: list[dict], *, head_sha: str | None, round_no: int = 1, pushed: bool = True
+) -> str:
     """Format the summary body an address cycle posts after pushing its fixes.
 
     Mirrors the ``## Address Review: Round N`` table the ``/address-pr``
     command writes by hand, with the marker on the first line so the dashboard
     can find it in the PR's review list.
+
+    ``pushed=False`` renders a cycle whose fixes did not reach the branch: the marker still opens the body
+    (it is what counts the cycle against the address budget) but no finding is listed as addressed.
     """
     short = head_sha[:7] if head_sha else None
     action = f"Addressed in {short}." if short else "Addressed."
     lines = [addressed_marker(head_sha), "", f"## Address Review: Round {round_no}", ""]
+    if not pushed:
+        lines.append("No changes were pushed in this cycle; no finding was addressed and no thread was resolved.")
+        return "\n".join(lines)
     if not findings:
         lines.append("No review findings were pending; the push carried deferred documentation only.")
         return "\n".join(lines)

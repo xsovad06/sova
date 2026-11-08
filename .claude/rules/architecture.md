@@ -14,9 +14,9 @@ SOVA has four main components:
 - `core/state.py`: 19-state TaskStatus StrEnum (no transition validation: `TaskRun.status` writes come from several pipeline variants and recovery paths that don't fit one table)
 - `core/context.py`: ExecutionContext dataclass threading state through steps
 - `core/output.py`: OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
-- `core/steps/`: 30 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
+- `core/steps/`: 31 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (17 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> confidence_score -> extract_memory -> handoff_to_reviewer
-  - **Address-review pipeline** (11 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> refresh_pr_body -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_reviewer (re-review of the new head; `handoff_to_user` remains in `STEP_REGISTRY` for projects that configure a manual stop via `[pipelines] address_review`)
+  - **Address-review pipeline** (12 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> resolve_review_threads -> refresh_pr_body -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_reviewer (re-review of the new head; `handoff_to_user` remains in `STEP_REGISTRY` for projects that configure a manual stop via `[pipelines] address_review`)
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
   - **Planner pipeline** (4 steps): scan_project -> generate_tasks -> validate_tasks -> extract_memory
 - `core/dag.py` (DAGExecutor): runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection

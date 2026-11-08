@@ -22,7 +22,7 @@ from decimal import Decimal
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sova.core.context import ExecutionContext, TokenUsage
+from sova.core.context import ADDRESS_CYCLE_KEY, ExecutionContext, TokenUsage
 from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -1028,13 +1028,16 @@ class WorkflowEngine:
                     task_run.worktree_path = str(self._ctx.worktree_dir)
                 if self._ctx.pr_number:
                     task_run.pr_number = self._ctx.pr_number
+                # Merged: the launch records its suitability check in the same column.
+                assessment = dict(task_run.assessment_json or {})
                 if self._ctx.confidence_score is not None:
-                    # Merged: the launch records its suitability check in the same column.
-                    task_run.assessment_json = {
-                        **(task_run.assessment_json or {}),
-                        "confidence_score": self._ctx.confidence_score,
-                        "confidence_details": self._ctx.confidence_details,
-                    }
+                    assessment["confidence_score"] = self._ctx.confidence_score
+                    assessment["confidence_details"] = self._ctx.confidence_details
+                address_cycle = self._ctx.address_cycle_state()
+                if address_cycle is not None:
+                    assessment[ADDRESS_CYCLE_KEY] = address_cycle
+                if assessment != (task_run.assessment_json or {}):
+                    task_run.assessment_json = assessment
 
     async def _finalize_task_run(self) -> None:
         """Write final state to the TaskRun after successful completion."""

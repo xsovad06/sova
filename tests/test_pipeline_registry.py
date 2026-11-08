@@ -63,6 +63,17 @@ def test_validate_pipeline_no_warnings_for_default_address_review_pipeline() -> 
     assert validate_pipeline(get_address_review_step_names()) == []
 
 
+def test_validate_pipeline_warns_on_resolve_review_threads_before_push() -> None:
+    warnings = validate_pipeline(["address_review", "resolve_review_threads", "push"])
+    assert any("push" in w and "resolve_review_threads" in w for w in warnings)
+
+
+def test_validate_pipeline_warns_on_address_review_without_resolve_review_threads() -> None:
+    """A pre-#1265 override only gets the late fallback from resolve_external_reviews, so it is warned about."""
+    warnings = validate_pipeline(["address_review", "push", "monitor_ci", "resolve_external_reviews"])
+    assert any("resolve_review_threads" in w and "after CI" in w for w in warnings)
+
+
 def test_validate_pipeline_warns_on_commit_after_push() -> None:
     warnings = validate_pipeline(["push", "commit"])
     assert any("commit" in w and "push" in w for w in warnings)

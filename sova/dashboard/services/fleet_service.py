@@ -610,6 +610,7 @@ STEP_AREA_MAP: dict[str, str] = {
     "wait_for_external_reviews": "adapters",
     "address_external_findings": "adapters",
     "resolve_external_reviews": "adapters",
+    "resolve_review_threads": "adapters",
     "research": "adapters",
     "spec": "adapters",
     "create_worktree": "agent",

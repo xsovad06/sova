@@ -5129,6 +5129,7 @@ class TestStepRegistry:
             "rearrange_commits",
             "validate",
             "push",
+            "resolve_review_threads",
             "refresh_pr_body",
             "monitor_ci",
             "resolve_external_reviews",
@@ -11330,21 +11331,6 @@ class TestAddressReviewHelpers:
 
 
 class TestResolveExternalReviewsStep:
-    @pytest.fixture(autouse=True)
-    def _stub_git_head(self):
-        """Stub the address-summary HEAD lookup.
-
-        ``_post_address_summary()`` resolves HEAD in ``ctx.working_dir``, which
-        for ``_make_ctx(tmp_path)`` is a placeholder path that need not exist. Without
-        the stub the subprocess spawn itself fails on the missing cwd, so these
-        tests would assert the step's degraded path rather than its real one.
-        """
-        with patch(
-            "sova.core.steps.resolve_external_reviews.run",
-            new=AsyncMock(return_value=MagicMock(success=True, stdout="deadbee\n")),
-        ):
-            yield
-
     async def test_skips_when_no_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
@@ -11356,166 +11342,8 @@ class TestResolveExternalReviewsStep:
         assert result.success
         assert "No PR" in result.summary
 
-    async def test_resolves_threads_and_dismisses_reviews(self, tmp_path: Path) -> None:
-        from sova.adapters.external_reviews import _ThreadsResult
-        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
-
-        ctx = _make_ctx(tmp_path, pr_number=42)
-        step = ResolveExternalReviewsStep()
-
-        cr_result = _ThreadsResult(thread_ids=["thread-1", "thread-2"])
-        with (
-            patch(
-                "sova.adapters.external_reviews._fetch_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=cr_result,
-            ),
-            patch(
-                "sova.adapters.external_reviews.resolve_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=2,
-            ) as mock_resolve,
-            patch(
-                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await step.execute(ctx)
-
-        assert result.success
-        assert "2 threads resolved" in result.summary
-        assert "1 bot reviews dismissed" in result.summary
-        mock_resolve.assert_awaited_once_with(["thread-1", "thread-2"], github_user="")
-
-    async def test_includes_github_user_in_authors(self, tmp_path: Path) -> None:
-        """SOVA reviewer threads (posted under github_user) should also be resolved."""
-        from sova.adapters.external_reviews import _ThreadsResult
-        from sova.config.models import ProjectConfig
-        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
-
-        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
-        step = ResolveExternalReviewsStep()
-
-        cr_result = _ThreadsResult(thread_ids=["thread-sova"])
-        with (
-            patch(
-                "sova.adapters.external_reviews._fetch_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=cr_result,
-            ) as mock_fetch,
-            patch(
-                "sova.adapters.external_reviews.resolve_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await step.execute(ctx)
-
-        assert result.success
-        assert "1 threads resolved" in result.summary
-        call_kwargs = mock_fetch.call_args[1]
-        assert "xsovad06" in call_kwargs["authors"]
-        assert "coderabbitai" in call_kwargs["authors"]
-
-    async def test_includes_active_gh_user_in_authors(self, tmp_path: Path) -> None:
-        """When active gh user differs from config, both should be in the authors filter."""
-        from sova.adapters.external_reviews import _ThreadsResult
-        from sova.config.models import ProjectConfig
-        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
-
-        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
-        step = ResolveExternalReviewsStep()
-
-        cr_result = _ThreadsResult(thread_ids=["thread-sova"])
-        with (
-            patch(
-                "sova.adapters.external_reviews._fetch_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=cr_result,
-            ) as mock_fetch,
-            patch(
-                "sova.adapters.external_reviews.resolve_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
-                new_callable=AsyncMock,
-                return_value="dsova06",
-            ),
-        ):
-            result = await step.execute(ctx)
-
-        assert result.success
-        call_kwargs = mock_fetch.call_args[1]
-        assert "xsovad06" in call_kwargs["authors"], "configured github_user must be included"
-        assert "dsova06" in call_kwargs["authors"], "active gh auth user must be included"
-        assert "coderabbitai" in call_kwargs["authors"], "default bot authors must be included"
-
-    async def test_active_gh_user_failure_does_not_break_resolution(self, tmp_path: Path) -> None:
-        """If get_active_gh_user fails, resolution should still work with configured user."""
-        from sova.adapters.external_reviews import _ThreadsResult
-        from sova.config.models import ProjectConfig
-        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
-
-        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
-        ctx = _make_ctx(tmp_path, pr_number=42, config=config)
-        step = ResolveExternalReviewsStep()
-
-        cr_result = _ThreadsResult(thread_ids=["thread-1"])
-        with (
-            patch(
-                "sova.adapters.external_reviews._fetch_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=cr_result,
-            ) as mock_fetch,
-            patch(
-                "sova.adapters.external_reviews.resolve_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            result = await step.execute(ctx)
-
-        assert result.success
-        call_kwargs = mock_fetch.call_args[1]
-        assert "xsovad06" in call_kwargs["authors"]
-
-    async def test_no_threads_to_resolve(self, tmp_path: Path) -> None:
-        from sova.adapters.external_reviews import _ThreadsResult
+    async def test_dismisses_bot_reviews_only(self, tmp_path: Path) -> None:
+        """Thread resolution and the address summary moved to resolve_review_threads."""
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         ctx = _make_ctx(tmp_path, pr_number=42)
@@ -11523,29 +11351,35 @@ class TestResolveExternalReviewsStep:
         step = ResolveExternalReviewsStep()
 
         with (
-            patch(
-                "sova.adapters.external_reviews._fetch_coderabbit_threads",
-                new_callable=AsyncMock,
-                return_value=_ThreadsResult(),
-            ),
+            patch("sova.adapters.external_reviews.fetch_review_threads", new_callable=AsyncMock) as mock_threads,
             patch(
                 "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
                 new_callable=AsyncMock,
-                return_value=0,
-            ),
-            patch(
-                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
-                new_callable=AsyncMock,
-                return_value=None,
+                return_value=1,
             ),
         ):
             result = await step.execute(ctx)
 
         assert result.success
-        # Nothing to resolve or dismiss, but the cycle still records its
-        # sova-addressed marker: that marker is the only thing the
-        # address-review budget counts.
-        assert result.summary == "address summary posted"
+        assert result.summary == "1 bot reviews dismissed"
+        mock_threads.assert_not_awaited()
+        ctx.adapter.post_pr_review.assert_not_awaited()
+
+    async def test_nothing_to_dismiss(self, tmp_path: Path) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx(tmp_path, pr_number=42)
+        step = ResolveExternalReviewsStep()
+
+        with patch(
+            "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+            new_callable=AsyncMock,
+            return_value=0,
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert result.summary == "No bot reviews to dismiss"
 
     async def test_can_skip_without_pr(self, tmp_path: Path) -> None:
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep

@@ -152,6 +152,10 @@ class RoutedSpend:
     cost_source: CostSource | None = None
 
 
+# Key in TaskRun.assessment_json holding ExecutionContext.address_cycle_state(), so a resumed run can finish the cycle.
+ADDRESS_CYCLE_KEY = "address_cycle"
+
+
 @dataclass
 class ExecutionContext:
     """Mutable context passed through every workflow step."""
@@ -218,9 +222,20 @@ class ExecutionContext:
     commits: list[str] = field(default_factory=list)
     addressed_external_findings: list[dict] = field(default_factory=list)
     # Set by AddressReviewStep once the LLM has addressed the reviewer's findings,
-    # read by ResolveExternalReviewsStep to post the address summary on the PR
+    # read by ResolveReviewThreadsStep to post the address summary on the PR
     # after the push, and by the handoff step to record what was addressed.
     addressed_review_findings: list[dict] = field(default_factory=list)
+    # The rest of an address cycle's record, set by AddressReviewStep alongside the findings:
+    # the GraphQL ids of the review threads whose findings the LLM was given, the HEAD the
+    # cycle started from, and whether a cycle ran at all (a findings-free pending-docs drain
+    # still counts). WorkflowEngine persists all of it so a resumed run, which skips
+    # address_review, still knows what to reply to and resolve after the push.
+    addressed_review_thread_ids: list[str] = field(default_factory=list)
+    address_cycle_base_head: str = ""
+    address_cycle_recorded: bool = False
+    # Set by ResolveReviewThreadsStep once it has posted the cycle's ``sova-addressed`` summary, so a
+    # resumed run that re-executes the step never posts a second marker (each marker counts as a cycle).
+    address_summary_posted: bool = False
 
     # Set by ConfidenceScoreStep, read by HandoffToReviewerStep for score-based routing.
     confidence_score: int | None = None
@@ -541,6 +556,45 @@ class ExecutionContext:
 
         elapsed = time.monotonic() - self.step_started_at
         return self.step_deadline_seconds - elapsed
+
+    def address_cycle_state(self) -> dict | None:
+        """The address cycle's record in the shape persisted to ``TaskRun.assessment_json``, or None.
+
+        Findings are cut down to what ``format_address_summary()`` renders, and a description to
+        a little more than its table cell shows, so the column stays small.
+        """
+        if not self.address_cycle_recorded:
+            return None
+        return {
+            "base_head": self.address_cycle_base_head,
+            "summary_posted": self.address_summary_posted,
+            "thread_ids": list(self.addressed_review_thread_ids),
+            "findings": [
+                {
+                    "file": f.get("file"),
+                    "line": f.get("line"),
+                    "severity": f.get("severity"),
+                    "description": str(f.get("description") or "")[:200],
+                }
+                for f in self.addressed_review_findings
+            ],
+        }
+
+    def restore_address_cycle(self, state: dict | None) -> None:
+        """Load a record written by ``address_cycle_state()``; a missing or malformed one leaves the context unset."""
+        if not isinstance(state, dict):
+            return
+        thread_ids = state.get("thread_ids")
+        findings = state.get("findings")
+        self.address_cycle_base_head = str(state.get("base_head") or "")
+        self.address_summary_posted = state.get("summary_posted") is True
+        self.addressed_review_thread_ids = (
+            [t for t in thread_ids if isinstance(t, str)] if isinstance(thread_ids, list) else []
+        )
+        self.addressed_review_findings = (
+            [f for f in findings if isinstance(f, dict)] if isinstance(findings, list) else []
+        )
+        self.address_cycle_recorded = True
 
     @property
     def working_dir(self) -> Path:
