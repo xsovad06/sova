@@ -19,7 +19,7 @@ from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
-from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, stash_pathspecs, unstage_command
+from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, exclude_pathspecs, unstage_command
 from tests.conftest import agents_page_source, drain_feed_persist
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -3164,7 +3164,7 @@ class TestStartCommandWorktreeResolution:
                 "stash",
                 "--include-untracked",
                 "--",
-                *stash_pathspecs(STASH_EXCLUDED_PATHS),
+                *exclude_pathspecs(STASH_EXCLUDED_PATHS),
                 cwd=tmp_path,
                 timeout=10,
             ),

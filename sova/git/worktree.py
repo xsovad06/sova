@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES, pathspec_exclude
+from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
+from sova.git.untracked_collisions import stage_all_except
 from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
@@ -38,12 +39,25 @@ def _exclude_anywhere(name: str) -> str:
 # arbitrarily large `.venv`/`node_modules` trees in a project that doesn't
 # gitignore them) and cleaning up one path at a time afterward. None of
 # RUNTIME_ARTIFACT_PREFIXES's entries is the agent's own work, so a
-# timeout/SIGTERM must not stage it as "partial work" (issue #1260).
-_PRESERVE_ADD_EXCLUDE_PATHSPECS: tuple[str, ...] = tuple(
+# timeout/SIGTERM must not stage it as "partial work" (issue #1260). The prefixes go
+# through stage_all_except(), which drops the excludes git refuses for an ignored path.
+_PRESERVE_EXCLUDED_PREFIXES: tuple[str, ...] = tuple(sorted(RUNTIME_ARTIFACT_PREFIXES))
+_PRESERVE_SUSPICIOUS_PATHSPECS: tuple[str, ...] = tuple(
     pattern
     for name in sorted(SUSPICIOUS_PATHS)
     for pattern in (_exclude_anywhere(name), _exclude_anywhere(f"{name}/**"))
-) + tuple(pathspec_exclude(prefix) for prefix in sorted(RUNTIME_ARTIFACT_PREFIXES))
+)
+
+
+async def _reset_index(work_dir: Path, reason: str) -> None:
+    """Unstage everything after a failed staging step, logging when even that fails (the index may stay unsafe)."""
+    try:
+        result = await run("git", "reset", "HEAD", cwd=work_dir)
+    except OSError:
+        log.error("worktree.partial_work.reset_failed", reason=reason, exc_info=True)
+        return
+    if not result.success:
+        log.error("worktree.partial_work.reset_failed", reason=reason, error=(result.stderr or "")[:300])
 
 
 async def preserve_partial_work(
@@ -86,9 +100,11 @@ async def preserve_partial_work(
         return False
 
     try:
-        add_result = await run("git", "add", "-A", "--", ".", *_PRESERVE_ADD_EXCLUDE_PATHSPECS, cwd=work_dir)
-        if not add_result.success:
-            log.debug("worktree.partial_work.add_failed", reason=reason, error=add_result.stderr)
+        try:
+            await stage_all_except(_PRESERVE_EXCLUDED_PREFIXES, work_dir, extra=_PRESERVE_SUSPICIOUS_PATHSPECS)
+        except RuntimeError as exc:
+            log.warning("worktree.partial_work.add_failed", reason=reason, error=str(exc)[:500])
+            await _reset_index(work_dir, reason)
             return False
 
         # Defense in depth: the excludes above keep known suspicious paths out
@@ -98,7 +114,7 @@ async def preserve_partial_work(
         scan = await unstage_suspicious_files(work_dir)
         if not scan.checked:
             log.warning("worktree.partial_work.suspicious_scan_failed", reason=reason)
-            await run("git", "reset", "HEAD", cwd=work_dir)
+            await _reset_index(work_dir, reason)
             return False
         if scan.still_staged:
             log.error(
@@ -109,7 +125,7 @@ async def preserve_partial_work(
             # Can't verify the index is clean: fail closed by unstaging
             # everything rather than reporting preserved work that may still
             # carry a secret.
-            await run("git", "reset", "HEAD", cwd=work_dir)
+            await _reset_index(work_dir, reason)
             return False
         if scan.unstaged:
             log.warning("worktree.partial_work.suspicious_files_unstaged", reason=reason, files=list(scan.unstaged))

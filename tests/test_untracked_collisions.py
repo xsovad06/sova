@@ -7,6 +7,7 @@ stash itself fail.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,15 +16,18 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.git import untracked_collisions
-from sova.git.artifact_exclusions import INFO_EXCLUDE_ENTRIES, STASH_EXCLUDED_PATHS, stash_pathspecs
-from sova.git.branch import sync_branch
+from sova.git.artifact_exclusions import INFO_EXCLUDE_ENTRIES, STASH_EXCLUDED_PATHS, exclude_pathspecs
+from sova.git.branch import commit, sync_branch
 from sova.git.rebase import rebase_with_conflict_resolution
 from sova.git.untracked_collisions import (
     DISPLACED_SPECS_DIR,
     clear_conflicting_runtime_files,
     runtime_stash_pathspecs,
     set_aside_conflicting_specs,
+    stage_all_except,
 )
+from sova.git.worktree import preserve_partial_work
+from sova.utils.shell import subprocess_error
 from tests.conftest import InvariantRepo
 
 SPEC = ".claude/specs/7-thing.md"
@@ -290,7 +294,7 @@ class TestIgnoredRuntimePaths:
         (repo.dir / ".claude").mkdir()
         (repo.dir / ".claude" / "sova.db").write_text("live", encoding="utf-8")
 
-        assert await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, repo.dir) == stash_pathspecs(STASH_EXCLUDED_PATHS)
+        assert await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, repo.dir) == exclude_pathspecs(STASH_EXCLUDED_PATHS)
 
     async def test_probe_failure_raises_instead_of_guessing(self, tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="probe failed"):
@@ -482,3 +486,207 @@ class TestIgnoredRuntimePaths:
         assert repo.git("stash", "list") == ""
         assert (work / "base.txt").read_text(encoding="utf-8") == "operator edit\n"
         _assert_runtime_files_untouched(work)
+
+
+def _committed(repo: InvariantRepo) -> set[str]:
+    return set(repo.git("show", "--name-only", "--format=", "HEAD").splitlines())
+
+
+def _failing_probe() -> Any:
+    """Patch the `git add --dry-run` probe to fail without naming an ignored path; other git calls run for real."""
+    real_run = untracked_collisions.run
+
+    async def failing_probe(*args: str, **kwargs: Any) -> Any:
+        if args[:3] == ("git", "add", "--dry-run"):
+            return SimpleNamespace(success=False, stdout="", stderr="fatal: index.lock exists")
+        return await real_run(*args, **kwargs)
+
+    return patch("sova.git.untracked_collisions.run", side_effect=failing_probe)
+
+
+def _failing_unstage(*, targeted: int, full: bool = False) -> Any:
+    """Patch `git reset -q`: fail the first *targeted* `-- <paths>` resets and, with *full*, the plain one too."""
+    real_run = untracked_collisions.run
+    remaining = targeted
+
+    async def failing_run(*args: str, **kwargs: Any) -> Any:
+        nonlocal remaining
+        if args[:3] == ("git", "reset", "-q"):
+            is_targeted = "--" in args
+            if (is_targeted and remaining > 0) or (not is_targeted and full):
+                if is_targeted:
+                    remaining -= 1
+                return SimpleNamespace(success=False, returncode=1, stdout="", stderr="fatal: unable to write index")
+        return await real_run(*args, **kwargs)
+
+    async def failing_run_checked(*args: str, **kwargs: Any) -> Any:
+        result = await failing_run(*args, **kwargs)
+        if not result.success:
+            raise subprocess_error(args, result)
+        return result
+
+    stack = ExitStack()
+    stack.enter_context(patch("sova.git.untracked_collisions.run", side_effect=failing_run))
+    stack.enter_context(patch("sova.git.untracked_collisions.run_checked", side_effect=failing_run_checked))
+    return stack
+
+
+class TestStageAllExceptFailsClosed:
+    """A failure after `git add -A` ran must not leave a tracked runtime change staged (review of #1427)."""
+
+    async def test_failed_unstage_is_rolled_back_before_raising(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        repo.write(BASELINE, "{}\n")
+        repo.land_on_main("chore(docs): a leaked baseline")
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+
+        with _failing_unstage(targeted=1), pytest.raises(RuntimeError, match="unable to write index"):
+            await stage_all_except(STASH_EXCLUDED_PATHS, work)
+
+        assert BASELINE not in repo.git("diff", "--cached", "--name-only").splitlines()
+
+    async def test_falls_back_to_a_full_reset_when_the_targeted_one_keeps_failing(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        repo.write(BASELINE, "{}\n")
+        repo.land_on_main("chore(docs): a leaked baseline")
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+
+        with _failing_unstage(targeted=2), pytest.raises(RuntimeError):
+            await stage_all_except(STASH_EXCLUDED_PATHS, work)
+
+        assert repo.git("diff", "--cached", "--name-only") == ""
+
+    async def test_a_cleanup_that_also_fails_is_logged_and_the_original_error_raised(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+
+        with (
+            _failing_unstage(targeted=2, full=True),
+            patch.object(untracked_collisions.log, "error") as logged,
+            pytest.raises(RuntimeError, match="unable to write index"),
+        ):
+            await stage_all_except(STASH_EXCLUDED_PATHS, work)
+
+        logged.assert_called_once()
+        assert logged.call_args.args[0] == "git.untracked_collisions.index_unsafe"
+
+
+class TestStagingWithIgnoredRuntimePaths:
+    """`git add -A` with an exclude naming an ignored path that exists stages the rest and then exits 1 (#1427).
+
+    Every agent worktree holds `.claude/agent-control/`, which `sova install` ignores, so the commit step failed on
+    every developer run after its work was done, and preserving a failed run's partial work failed the same way.
+    """
+
+    async def test_commit_never_stages_runtime_state_without_ignore_rules(self, repo: InvariantRepo) -> None:
+        """Without any ignore rule, `git add -A` still leaves the database and secret unstaged (#1402)."""
+        for runtime_file in (".claude/sova.db", ".claude/sova.db-wal", ".claude/mcp_secret", ".sova/baseline.json"):
+            repo.write(runtime_file, "secret\n")
+        repo.write(SPEC, "spec\n")
+        repo.write("feature.py", "x = 1\n")
+
+        await commit("feat(core): work", cwd=repo.dir)
+
+        assert _committed(repo) == {"feature.py", SPEC}
+
+    async def test_commit_stages_the_work_and_leaves_ignored_runtime_paths_out(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+        repo.write(SPEC, "spec\n")
+
+        await commit("feat(core): work", cwd=work)
+
+        assert _committed(repo) == {"feature.py", SPEC}
+        _assert_runtime_files_untouched(work)
+
+    async def test_commit_leaves_out_runtime_files_that_are_not_ignored(self, repo: InvariantRepo) -> None:
+        """A `.gitignore` naming only some runtime paths drops those excludes, but the rest must stay out too."""
+        work = repo.dir
+        repo.write(".gitignore", ".claude/agent-control/\n.claude/sova.db\n")
+        repo.land_on_main("chore(docs): ignore some runtime paths")
+        for rel in (
+            ".claude/agent-control/handoff.json",
+            ".claude/sova.db",
+            ".claude/sova.db-wal",
+            ".claude/mcp_secret",
+        ):
+            repo.write(rel, "live")
+        repo.write("feature.py", "x = 1\n")
+
+        await commit("feat(core): work", cwd=work)
+
+        assert _committed(repo) == {"feature.py"}
+        assert repo.git("status", "--porcelain", "--untracked-files=all", "--", ".claude/").splitlines() == [
+            "?? .claude/mcp_secret",
+            "?? .claude/sova.db-wal",
+        ]
+
+    async def test_commit_leaves_out_a_tracked_runtime_file_under_an_ignored_dir(self, repo: InvariantRepo) -> None:
+        """No exclude can keep a leaked, tracked baseline out of `git add -A` once `.sova/` is ignored."""
+        work = repo.dir
+        repo.write(BASELINE, "{}\n")
+        repo.land_on_main("chore(docs): a leaked baseline")
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+
+        await commit("feat(core): work", cwd=work)
+
+        assert _committed(repo) == {"feature.py"}
+        assert (work / BASELINE).read_text(encoding="utf-8") == "live"
+        assert repo.git("status", "--porcelain", "--", BASELINE) == "M .sova/test-baseline.json"
+
+    async def test_commit_fails_when_the_probe_fails_without_naming_an_ignored_path(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+        head = repo.git("rev-parse", "HEAD")
+
+        with _failing_probe(), pytest.raises(RuntimeError, match="probe failed"):
+            await commit("feat(core): work", cwd=work)
+
+        assert repo.git("rev-parse", "HEAD") == head
+        assert repo.git("diff", "--cached", "--name-only") == ""
+
+    async def test_preserve_partial_work_reports_a_failed_probe_without_committing(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+        head = repo.git("rev-parse", "HEAD")
+
+        with _failing_probe():
+            assert await preserve_partial_work(work, "sigterm") is False
+
+        assert repo.git("rev-parse", "HEAD") == head
+        assert repo.git("diff", "--cached", "--name-only") == ""
+
+    async def test_preserve_partial_work_with_ignored_runtime_paths(self, repo: InvariantRepo) -> None:
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write("feature.py", "x = 1\n")
+
+        assert await preserve_partial_work(work, "sigterm") is True
+
+        assert _committed(repo) == {"feature.py"}
+        _assert_runtime_files_untouched(work)
+
+    async def test_preserve_partial_work_leaves_out_tracked_artifacts_under_an_ignored_dir(
+        self, repo: InvariantRepo
+    ) -> None:
+        """A project that ignores all of `.claude/` but tracks a command: mirror churn is not partial work."""
+        work = repo.dir
+        repo.write(".claude/commands/develop.md", "v1\n")
+        repo.git("add", "-f", ".claude/commands/develop.md")
+        repo.write(".gitignore", ".claude/\n")
+        repo.land_on_main("chore(docs): ignore .claude")
+        repo.write(".claude/commands/develop.md", "mirrored\n")
+        repo.write(".claude/agent-control/handoff.json", "{}")
+        repo.write("feature.py", "x = 1\n")
+
+        assert await preserve_partial_work(work, "sigterm") is True
+
+        assert _committed(repo) == {"feature.py"}
+        assert repo.git("status", "--porcelain", "--", ".claude/") == "M .claude/commands/develop.md"
