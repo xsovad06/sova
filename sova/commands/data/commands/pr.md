@@ -320,39 +320,81 @@ These phases run after the PR is created/updated. They enable autonomous operati
     filters exclude every changed file (e.g. a docs-only change), so the block
     stops there instead of waiting out the budget. A workflow file error or an
     exhausted Actions budget still creates a (failed) run, so it never ends
-    that way. The block polls every 30 seconds, at most 16 times, and ends by
-    printing one verdict line:
+    that way.
+
+    `gh pr checks --required` lists only the required checks registered so
+    far, so a partial green list could pass while a required one (e.g.
+    SonarCloud) has not appeared. The block reads the base branch's required
+    names once from the rulesets (`gh api --paginate repos/{owner}/{repo}/rules/branches/<base>`,
+    every page) and passes only when none is missing. Every row `--required`
+    returns decides, even one the rulesets do not list (classic protection
+    requires it too), so a failing classic-required check is never ignored.
+    Only when `--required` reports none and the block falls back to every check
+    does it narrow them to the ruleset names, so a non-required check such as a
+    review bot neither fails nor blocks the pass. Unregistered names are listed
+    in the final `CI PENDING` verdict and a failed lookup stops the block.
+    Classic branch protection is not consulted for names: the rulesets endpoint
+    reports ruleset rules only, and the classic endpoint needs the admin right,
+    which a push-only account lacks. A repository that relies on classic
+    protection alone (or has no rulesets, also a private repository whose plan
+    offers none) therefore reads as no required names and keeps the behavior
+    above. The
+    block polls every 30 seconds, at most 16 times, and ends by printing one
+    verdict line:
     ```bash
     PR_NUM=$(gh pr view --json number --jq .number) || { echo "Unable to resolve the PR number" >&2; exit 1; }
     ERR_FILE=$(mktemp) || { echo "Unable to create a temp file: STOP" >&2; exit 1; }
     trap 'rm -f "$ERR_FILE"' EXIT
+    BASE=$(gh pr view "$PR_NUM" --json baseRefName --jq .baseRefName) || { echo "Unable to resolve the PR base branch" >&2; exit 1; }
+    # Rulesets, every page (--paginate prints one JSON array per page); a plan without rulesets is no rules.
+    RULES_JSON=$(gh api --paginate "repos/{owner}/{repo}/rules/branches/$BASE?per_page=100" 2>"$ERR_FILE") \
+      || { [[ $RULES_JSON$(cat "$ERR_FILE") == *"Upgrade to GitHub Pro"* ]] && RULES_JSON="[]"; } \
+      || { echo "Unable to read the required checks of $BASE: $(cat "$ERR_FILE")" >&2; exit 1; }
+    REQUIRED_JSON=$(jq -sce '
+      if length == 0 or any(.[]; type != "array") then error("not a rule list") else
+      [.[][] | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[].context] | unique end' \
+      <<<"$RULES_JSON" 2>/dev/null) || { echo "Unable to parse the required checks of $BASE" >&2; exit 1; }
     NO_CI_POLLS=0
     for i in $(seq 1 16); do
       SCOPE=required
+      FALLBACK=0
       CHECKS_JSON=$(gh pr checks "$PR_NUM" --required --json name,bucket,link 2>"$ERR_FILE")
       if grep -q "no required checks reported" "$ERR_FILE"; then
         SCOPE=all
+        FALLBACK=1
         CHECKS_JSON=$(gh pr checks "$PR_NUM" --json name,bucket,link 2>"$ERR_FILE")
       fi
       grep -q "no checks reported" "$ERR_FILE" && CHECKS_JSON="[]"
-      # TOTAL, PENDING, then NOT_PASSED: every bucket that is neither pass, skipping, pending nor cancel.
-      STATS=$(jq -r 'if type != "array" then error("not a check list") else
-        [length, ([.[] | select(.bucket == "pending")] | length),
-         ([.[] | select(.bucket != "pass" and .bucket != "skipping" and .bucket != "pending" and .bucket != "cancel")] | length),
-         ([.[] | select(.bucket == "cancel")] | length)] | @tsv end' <<<"$CHECKS_JSON" 2>/dev/null) && [ -n "$STATS" ] \
+      # With required names, only those decide when the rows are every check of the head (the fallback): a
+      # non-required check never fails or blocks the pass. Rows from --required are all required (a ruleset or
+      # classic protection), so every one of them decides, listed in the rulesets or not.
+      [ "$REQUIRED_JSON" = "[]" ] || SCOPE=required
+      # TOTAL, PENDING, NOT_PASSED (every bucket that is neither pass, skipping, pending nor cancel), CANCELED,
+      # then ALL_TOTAL: every check on the head, required or not.
+      STATS=$(jq -r --argjson req "$REQUIRED_JSON" --argjson fb "$FALLBACK" 'if type != "array" then error("not a check list") else
+        (if $fb == 0 or ($req | length) == 0 then . else map(select(.name as $n | any($req[]; . == $n))) end) as $c
+        | [($c | length), ($c | map(select(.bucket == "pending")) | length),
+           ($c | map(select(.bucket != "pass" and .bucket != "skipping" and .bucket != "pending" and .bucket != "cancel")) | length),
+           ($c | map(select(.bucket == "cancel")) | length), length] | @tsv end' <<<"$CHECKS_JSON" 2>/dev/null) && [ -n "$STATS" ] \
         || { echo "Unable to read the PR's checks: $(cat "$ERR_FILE")" >&2; exit 1; }
-      IFS=$'\t' read -r TOTAL PENDING NOT_PASSED CANCELED <<<"$STATS"
+      IFS=$'\t' read -r TOTAL PENDING NOT_PASSED CANCELED ALL_TOTAL <<<"$STATS"
       jq -r '.[] | "\(.bucket)\t\(.name)\t\(.link)"' <<<"$CHECKS_JSON"
+      # Required names absent from the PR's checks (compared inside jq).
+      MISSING_JSON=$(jq -c --argjson req "$REQUIRED_JSON" '$req - map(.name)' <<<"$CHECKS_JSON") \
+        || { echo "Unable to compare the required checks with the PR's checks" >&2; exit 1; }
+      MISSING=$(jq 'length' <<<"$MISSING_JSON")
+      jq -r '.[] | "missing\t\(.)"' <<<"$MISSING_JSON"
       if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
-        if [ "$NOT_PASSED" -gt 0 ]; then echo "CI FAILED ($SCOPE checks): $NOT_PASSED of $TOTAL did not pass"
-        elif [ "$CANCELED" -gt 0 ]; then echo "CI CANCELED ($SCOPE checks): $CANCELED of $TOTAL canceled"
-        else echo "CI PASSED ($SCOPE checks): all $TOTAL passed or were skipped"; fi
-        exit 0
+        VERDICT=
+        if [ "$NOT_PASSED" -gt 0 ]; then VERDICT="CI FAILED ($SCOPE checks): $NOT_PASSED of $TOTAL did not pass"
+        elif [ "$CANCELED" -gt 0 ]; then VERDICT="CI CANCELED ($SCOPE checks): $CANCELED of $TOTAL canceled"
+        elif [ "$MISSING" -eq 0 ]; then VERDICT="CI PASSED ($SCOPE checks): all $TOTAL passed or were skipped"; fi
+        [ -z "$VERDICT" ] || { echo "$VERDICT"; exit 0; }
       fi
       NO_CI_POLLS_BEFORE=$NO_CI_POLLS
       NO_CI_POLLS=0
-      if [ "$TOTAL" -eq 0 ]; then
-        # Count only polls that confirmed zero runs; a failed lookup proves nothing and restarts the grace.
+      if [ "$ALL_TOTAL" -eq 0 ]; then
+        # No check of any kind. Count only polls that confirmed zero runs; a failed lookup proves nothing and restarts the grace.
         RUNS=unknown
         HEAD_SHA=$(gh pr view "$PR_NUM" --json headRefOid --jq .headRefOid 2>/dev/null) \
           && RUNS_JSON=$(gh run list --commit "$HEAD_SHA" --json status,conclusion,workflowName 2>/dev/null) \
@@ -367,21 +409,25 @@ These phases run after the PR is created/updated. They enable autonomous operati
       fi
       [ "$i" -lt 16 ] && sleep 30
     done
-    if [ "$TOTAL" -eq 0 ]; then echo "NO CHECKS: none reported on the PR head, though a workflow run exists for it or could not be listed"
-    else echo "CI PENDING ($SCOPE checks): $PENDING of $TOTAL still pending"; fi
+    if [ "$ALL_TOTAL" -eq 0 ]; then echo "NO CHECKS: none reported on the PR head, though a workflow run exists for it or could not be listed"
+    else
+      MSG="CI PENDING ($SCOPE checks): $PENDING of $TOTAL still pending"
+      [ "$MISSING" -eq 0 ] || MSG="$MSG; $MISSING required not registered: $(jq -r 'join(", ")' <<<"$MISSING_JSON")"
+      echo "$MSG"
+    fi
     ```
     Max wait: 30 minutes in total (a full test suite routinely runs longer than 15).
 
     **Run each wait as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every call of the block above; its 16 polls of 30 seconds keep one call to about 8 minutes. When a call ends with `CI PENDING` or `NO CHECKS`, run the same block again as a new call, until it prints another verdict or the 30 minute total is used up. The block re-resolves `PR_NUM` itself, since each call is a fresh shell.
 
 16. **Handle CI result** (the verdict line of the last step 15 call; "checks" below means the scope it names: the required checks, or every check when the repository requires none):
-    - **`CI PASSED`**: every check has bucket `pass` or `skipping`; continue to step 17 (a `skipping` check, e.g. a path-filtered workflow, is treated as satisfied).
+    - **`CI PASSED`**: every check has bucket `pass` or `skipping` and no required check is missing; continue to step 17 (a `skipping` check, e.g. a path-filtered workflow, is treated as satisfied).
     - **`CI FAILED`**: fetch logs for each check listed with a bucket other than `pass`, `skipping` or `cancel` (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
     - **`CI CANCELED`**: treat as a non-success state, not a pass. Report it and re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled check.
-    - **`CI PENDING` once the 30 minute total is used up**: report the current statuses and the PR URL. Suggest the user check back later.
+    - **`CI PENDING` once the 30 minute total is used up**: report the current statuses and the PR URL, naming any required check the verdict lists as not registered. Suggest the user check back later.
     - **`NO CI TRIGGERED`**: no CI ran for this head commit, most likely because the workflows' path filters exclude every changed file. The step 9 local checks are the only verification this change gets. Say exactly that in the report (and in the PR when you comment on CI), never "CI passed", then continue to step 17.
     - **`NO CHECKS` once the 30 minute total is used up**: a workflow run exists for the head (or could not be listed) but no check ever registered on it. Report the runs the block listed and the PR URL. Do not continue to step 17: an empty check list is never a pass.
-    - **The block stops with `Unable to read the PR's checks`**: a `gh` or network failure, not a CI result. Run the block again; if it fails the same way twice, stop and report the error.
+    - **The block stops with `Unable to` (read the PR's checks, resolve the base branch, read or parse its required checks)**: a `gh` or network failure, not a CI result. Run the block again; if it fails the same way twice, stop and report the error.
 
 17. **Self-review the PR diff**:
     Run the `review-pr` workflow against this PR to review the actual diff that will be merged:
