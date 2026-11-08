@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import stat
+import tempfile
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from sova.llm.cli_args import build_claude_cli_args, write_system_prompt_file
 
@@ -20,6 +25,13 @@ class TestBuildClaudeCliArgs:
         assert "--permission-mode" in args
         pm_idx = args.index("--permission-mode")
         assert args[pm_idx + 1] == "bypassPermissions"
+
+    def test_attribution_override_settings_passed_once(self) -> None:
+        for kwargs in ({}, {"isolated": True}, {"output_format": "stream-json"}):
+            args = build_claude_cli_args(**kwargs)
+            assert args.count("--settings") == 1
+            settings = json.loads(args[args.index("--settings") + 1])
+            assert settings == {"attribution": {"commit": "", "pr": ""}}
 
     def test_prompt_never_appears_on_argv(self) -> None:
         """The prompt is sent over stdin, never as a positional value after -p."""
@@ -96,3 +108,26 @@ class TestWriteSystemPromptFile:
         finally:
             path_a.unlink(missing_ok=True)
             path_b.unlink(missing_ok=True)
+
+
+class TestWriteSystemPromptFileFailure:
+    def test_write_failure_removes_temp_file_and_reraises(self, tmp_path: Path) -> None:
+        """A failed write unlinks the mkstemp file instead of leaking it, then re-raises."""
+        created: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracking_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+            kwargs["dir"] = str(tmp_path)
+            fd, path = real_mkstemp(*args, **kwargs)
+            created.append(path)
+            return fd, path
+
+        with (
+            patch("sova.llm.cli_args.tempfile.mkstemp", side_effect=tracking_mkstemp),
+            patch("sova.llm.cli_args.os.fdopen", side_effect=OSError("no space")),
+            pytest.raises(OSError, match="no space"),
+        ):
+            write_system_prompt_file("persona")
+
+        assert len(created) == 1
+        assert not Path(created[0]).exists()
