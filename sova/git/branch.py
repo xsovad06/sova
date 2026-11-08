@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from sova.git.artifact_exclusions import (
-    STAGE_ALL_PATHSPECS,
+    RUNTIME_STATE_PATHS,
     STASH_EXCLUDED_PATHS,
     unstage_command,
 )
@@ -17,6 +17,7 @@ from sova.git.untracked_collisions import (
     clear_conflicting_runtime_files,
     runtime_stash_pathspecs,
     set_aside_conflicting_specs,
+    stage_all_except,
 )
 from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
@@ -170,7 +171,9 @@ async def commit(
     if files:
         await run_checked("git", "add", *files, cwd=cwd)
     else:
-        await run_checked("git", "add", "-A", "--", *STAGE_ALL_PATHSPECS, cwd=cwd)
+        # Never SOVA's runtime state (the live database can hold credentials, and `mcp_secret` is one), whether or
+        # not `sova install` wrote ignore rules for it. The rest of `.claude/` (specs) is staged.
+        await stage_all_except(RUNTIME_STATE_PATHS, cwd)
 
     scan = await unstage_suspicious_files(cwd)
     if not scan.checked:

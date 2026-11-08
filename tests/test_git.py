@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from sova.git.artifact_exclusions import RUNTIME_STATE_PATHS
 from sova.git.diff import parse_diff_lines
 from sova.git.operations import (
     CheckConclusion,
@@ -668,6 +670,14 @@ class TestRebaseWithConflictResolution:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def stub_stage_all() -> Iterator[AsyncMock]:
+    """Stub commit()'s whole-tree add, whose probe runs real git (it has its own real-repo tests)."""
+    with patch("sova.git.branch.stage_all_except", new_callable=AsyncMock) as stub:
+        yield stub
+
+
+@pytest.mark.usefixtures("stub_stage_all")
 class TestCommit:
     """commit()'s suspicious-file scan now runs through
     sova.git.safety.unstage_suspicious_files(), so its own `run()` calls
@@ -700,7 +710,7 @@ class TestCommit:
             assert len(add_call) >= 1
             assert "src/app.py" in add_call[0]
 
-    async def test_commits_all_when_no_files(self) -> None:
+    async def test_commits_all_when_no_files(self, stub_stage_all: AsyncMock) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
@@ -708,45 +718,9 @@ class TestCommit:
 
                 await commit("chore: update", cwd=Path("/repo"))
 
-            calls = [c[0] for c in mock_run.call_args_list]
-            add_call = [args for args in calls if "add" in args]
-            assert len(add_call) >= 1
-            # Should use -A when no specific files
-            assert "-A" in add_call[0]
-
-    async def test_commit_all_excludes_sova_baseline_dir(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = _shell_ok()
-            with patch("sova.git.safety.run", new_callable=AsyncMock) as mock_run_soft:
-                mock_run_soft.return_value = _shell_ok(stdout="")
-
-                await commit("chore: update", cwd=Path("/repo"))
-
-            add_call = next(c[0] for c in mock_run.call_args_list if "add" in c[0])
-            pathspecs = add_call[add_call.index("--") + 1 :]
-            assert pathspecs[0] == ":/"
-            assert ":(exclude).sova/" in pathspecs
-            assert ":(exclude).claude/sova.db*" in pathspecs
-            assert ":(exclude).claude/mcp_secret*" in pathspecs
-            assert ":(exclude).claude/specs/" not in pathspecs
-
-    async def test_commit_all_never_stages_runtime_state_in_real_repo(
-        self, invariant_repo: InvariantRepo, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without any ignore rule, `git add -A` still leaves the database and secret unstaged (#1402)."""
-        for key, value in invariant_repo.env.items():
-            if key.startswith("GIT_"):
-                monkeypatch.setenv(key, value)
-        work = invariant_repo.dir
-        for runtime_file in (".claude/sova.db", ".claude/sova.db-wal", ".claude/mcp_secret", ".sova/baseline.json"):
-            invariant_repo.write(runtime_file, "secret\n")
-        invariant_repo.write(".claude/specs/7-thing.md", "spec\n")
-        invariant_repo.write("feature.py", "x = 1\n")
-
-        await commit("feat(core): work", cwd=work)
-
-        committed = set(invariant_repo.git("show", "--name-only", "--format=", "HEAD").splitlines())
-        assert committed == {"feature.py", ".claude/specs/7-thing.md"}
+            # The runtime-path excludes are probed against the repo (tests/test_untracked_collisions.py).
+            stub_stage_all.assert_awaited_once_with(RUNTIME_STATE_PATHS, Path("/repo"))
+            assert not [c for c in mock_run.call_args_list if "add" in c[0]]
 
     async def test_commits_with_no_verify(self) -> None:
         with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
@@ -899,6 +873,7 @@ class TestPush:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run,
             patch("sova.git.branch.resolve_gh_env", new_callable=AsyncMock) as mock_resolve,
             patch("sova.git.safety.run", new_callable=AsyncMock) as mock_safety,
+            patch("sova.git.branch.stage_all_except", new_callable=AsyncMock),
         ):
             mock_run.return_value = _shell_ok()
             mock_safety.return_value = _shell_ok(stdout="")

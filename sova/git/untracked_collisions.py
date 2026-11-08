@@ -10,11 +10,14 @@ Two cases reach that state:
   ("already exists, no checkout") and strands a stash entry, so the copy is cleared before stashing instead.
 * A runtime file that a PR leaked into history (``.sova/test-baseline.json``).
 
-``runtime_stash_pathspecs()`` builds those stashes' pathspecs, dropping the excludes git would refuse.
+``runtime_stash_pathspecs()`` builds those stashes' pathspecs, and ``stage_all_except()`` runs the ``git add -A``
+of ``branch.commit()`` and ``worktree.preserve_partial_work()``, both dropping the runtime-path excludes git would
+refuse.
 
 The collision helpers are best effort on git failures (the caller's own git command then reports the real error), and
-raise only where an operator has to decide something. ``runtime_stash_pathspecs()`` is the exception: it raises when
-its probe fails, since a stash run on guessed pathspecs can write an entry and then fail.
+raise only where an operator has to decide something. ``runtime_stash_pathspecs()`` and ``stage_all_except()`` are the
+exception: they raise when the probe fails, since a stash run on guessed pathspecs can write an entry and then fail,
+and an add run on them can stage a runtime file or fail after staging the rest.
 """
 
 from __future__ import annotations
@@ -26,12 +29,13 @@ from pathlib import Path
 from sova.git.artifact_exclusions import (
     RUNTIME_STATE_PATHS,
     SOVA_STATE_DIR,
+    exclude_pathspecs,
     is_under_any,
     pathspec_include,
-    stash_pathspecs,
+    unstage_command,
 )
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import run, run_checked
 
 log = get_logger(component="git.untracked_collisions")
 
@@ -168,46 +172,113 @@ def _reported_ignored_paths(stderr: str) -> frozenset[str]:
     return frozenset(paths)
 
 
-async def runtime_stash_pathspecs(
-    excluded: tuple[str, ...], cwd: Path | None = None, *, timeout: float = 300
-) -> tuple[str, ...]:
-    """Pathspecs for a ``git stash --include-untracked`` that leaves the runtime path prefixes *excluded* in place.
+async def _probe_exclude_pathspecs(
+    excluded: tuple[str, ...], cwd: Path | None, timeout: float, extra: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], frozenset[str], tuple[str, ...]]:
+    """Pathspecs for a whole-tree ``git add`` or stash that skips the runtime path prefixes *excluded*.
 
-    A pathspec stash re-adds its paths with ``git add``, which exits 1 with "The following paths are ignored" when
-    an exclude's literal part, or a directory above it, is an ignored path, after the stash entry is already
-    written. ``sova install`` ignores every runtime path, so the full excludes fail whenever there is work to stash.
-    ``git add --dry-run`` with the same pathspecs fails the same way without side effects, and its list decides
-    which excludes to drop: the stash skips ignored files on its own. A dropped name-prefix exclude can still cover
-    files that are not ignored (``.claude/sova.db-wal`` when only ``.claude/sova.db`` is), and those are excluded
-    one by one. A tracked file under an ignored directory cannot be excluded at all: the ``.sova/`` baseline is stashed
-    and restored with the operator's work, and any other modified one is refused (see below).
+    Such a command exits 1 with "The following paths are ignored" when an exclude's literal part, or a directory
+    above it, is an ignored path that exists: ``git add -A`` after staging everything else, a pathspec stash after
+    writing its entry. ``sova install`` ignores every runtime path, and every agent worktree holds
+    ``.claude/agent-control/``, so the full excludes fail whenever there is work. ``git add --dry-run`` with the same
+    pathspecs fails the same way without side effects, and its list decides which excludes to drop: ``git add -A``
+    and ``--include-untracked`` skip ignored files on their own. A dropped name-prefix exclude can still cover files
+    that are not ignored (``.claude/sova.db-wal`` when only ``.claude/sova.db`` is), and those are excluded one by
+    one. A tracked file under an ignored directory cannot be excluded at all; the callers handle it.
 
-    Raises ``RuntimeError`` before anything is stashed when the stash cannot be built safely: the probe or the file
-    scan failed (a timeout included), or a modified tracked runtime file (the live database, the log) lies under an
-    ignored path, where no exclude can keep it out of the stash. A probe that fails without naming an ignored path
-    is not "nothing ignored": running the stash on the full excludes could write a stash entry and then fail.
-    *timeout* bounds each git call, so a caller on a request path can hold the probe to its own budget.
+    Returns the pathspecs, the ignored paths git listed, and the include pathspecs of the dropped excludes. Raises
+    ``RuntimeError`` when the probe or the file scan failed (a timeout included): a probe that fails without naming an
+    ignored path is not "nothing ignored", and running the command on the full excludes could fail halfway.
     """
-    pathspecs = stash_pathspecs(excluded)
+    pathspecs = exclude_pathspecs(excluded, extra=extra)
     probe = await run(
         "git", "add", "--dry-run", "--", *pathspecs, cwd=cwd, timeout=timeout, env={**os.environ, "LC_ALL": "C"}
     )
     if probe.success:
-        return pathspecs
+        return pathspecs, frozenset(), ()
     ignored = _reported_ignored_paths(probe.stderr or "")
     if not ignored:
-        raise RuntimeError(f"Cannot build the stash pathspecs: the git add probe failed: {(probe.stderr or '')[:300]}")
+        raise RuntimeError(
+            f"Cannot build the runtime-path excludes: the git add probe failed: {(probe.stderr or '')[:300]}"
+        )
     includes = tuple(pathspec_include(prefix) for prefix in excluded if is_under_any(prefix.rstrip("/"), ignored))
     listed = await run(
         "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *includes, cwd=cwd, timeout=timeout
     )
     if not listed.success:
         raise RuntimeError(
-            f"Cannot build the stash pathspecs: the git ls-files scan failed: {(listed.stderr or '')[:300]}"
+            f"Cannot build the runtime-path excludes: the git ls-files scan failed: {(listed.stderr or '')[:300]}"
         )
     keep = tuple(rel for rel in listed.stdout.split("\0") if rel and not is_under_any(rel, ignored))
-    await _refuse_modified_tracked_runtime_files(includes, ignored, cwd, timeout)
-    return stash_pathspecs(excluded, ignored, keep)
+    return exclude_pathspecs(excluded, ignored, keep, extra), ignored, includes
+
+
+async def runtime_stash_pathspecs(
+    excluded: tuple[str, ...], cwd: Path | None = None, *, timeout: float = 300
+) -> tuple[str, ...]:
+    """Pathspecs for a ``git stash --include-untracked`` that leaves the runtime path prefixes *excluded* in place.
+
+    The excludes git would refuse are dropped (``_probe_exclude_pathspecs()``). A tracked file under an ignored
+    directory cannot be excluded: the ``.sova/`` baseline is stashed and restored with the operator's work, and any
+    other modified one is refused (see below).
+
+    Raises ``RuntimeError`` before anything is stashed when the stash cannot be built safely: the probe or the file
+    scan failed (a timeout included), or a modified tracked runtime file (the live database, the log) lies under an
+    ignored path, where no exclude can keep it out of the stash. *timeout* bounds each git call, so a caller on a
+    request path can hold the probe to its own budget.
+    """
+    pathspecs, ignored, includes = await _probe_exclude_pathspecs(excluded, cwd, timeout)
+    if ignored:
+        await _refuse_modified_tracked_runtime_files(includes, ignored, cwd, timeout)
+    return pathspecs
+
+
+async def stage_all_except(
+    excluded: tuple[str, ...], cwd: Path | None = None, *, extra: tuple[str, ...] = (), timeout: float = 300
+) -> None:
+    """``git add -A`` over the whole tree, leaving the path prefixes *excluded* (and the *extra* pathspecs) unstaged.
+
+    The excludes git would refuse are dropped (``_probe_exclude_pathspecs()``), then *excluded* is unstaged: that
+    drops a tracked file under an ignored directory (a leaked ``.sova/test-baseline.json``), which no exclude can keep
+    out, and anything an earlier command staged there (a deletion included). Contents stay on disk. Raises
+    ``RuntimeError`` when the probe, the add or the unstage fails, so a caller never commits on a guess. The helper
+    fails closed: once the add has started, a failure (an ``OSError`` becomes a ``RuntimeError``) first drops the
+    excluded paths from the index (``_unstage_after_failure()``), so a tracked runtime change is never left staged for
+    a later explicit-files commit to pick up. *timeout* bounds each git call.
+    """
+    pathspecs, _ignored, _includes = await _probe_exclude_pathspecs(excluded, cwd, timeout, extra)
+    try:
+        await run_checked("git", "add", "-A", "--", *pathspecs, cwd=cwd, timeout=timeout)
+        await run_checked(*unstage_command(excluded), cwd=cwd, timeout=timeout)
+    except (RuntimeError, OSError) as exc:
+        await _unstage_after_failure(excluded, cwd, timeout)
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"Cannot stage the work: git could not run: {exc}") from exc
+
+
+async def _unstage_after_failure(excluded: tuple[str, ...], cwd: Path | None, timeout: float) -> None:
+    """Best-effort rollback of a failed ``stage_all_except()``: leave no excluded path in the index.
+
+    Tries the targeted reset of *excluded* first, then a plain ``git reset -q`` (which unstages the work too, but
+    contents stay on disk), and logs an error when neither succeeds. Never raises: the caller re-raises the original
+    failure.
+    """
+    attempts = (unstage_command(excluded), ("git", "reset", "-q"))
+    for command in attempts:
+        try:
+            result = await run(*command, cwd=cwd, timeout=timeout)
+        except OSError:
+            log.warning("git.untracked_collisions.unstage_after_failure_error", command=command[:3], exc_info=True)
+            continue
+        if result.success:
+            return
+        log.warning(
+            "git.untracked_collisions.unstage_after_failure_failed",
+            command=command[:3],
+            error=(result.stderr or "")[:300],
+        )
+    log.error("git.untracked_collisions.index_unsafe", excluded=list(excluded))
 
 
 async def _refuse_modified_tracked_runtime_files(

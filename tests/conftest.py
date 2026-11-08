@@ -829,9 +829,9 @@ def full_stash_pathspecs(
     excluded: tuple[str, ...], cwd: Path | None = None, *, timeout: float = 300
 ) -> tuple[str, ...]:
     """`runtime_stash_pathspecs()` when git ignores none of the runtime paths: every one is excluded."""
-    from sova.git.artifact_exclusions import stash_pathspecs
+    from sova.git.artifact_exclusions import exclude_pathspecs
 
-    return stash_pathspecs(excluded)
+    return exclude_pathspecs(excluded)
 
 
 @pytest.fixture

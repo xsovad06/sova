@@ -71,25 +71,30 @@ RUNTIME_STATE_PATHS = (
 STASH_EXCLUDED_PATHS = RUNTIME_STATE_PATHS
 
 
-def stash_pathspecs(
-    excluded: tuple[str, ...], ignored: frozenset[str] = frozenset(), keep: tuple[str, ...] = ()
+def exclude_pathspecs(
+    excluded: tuple[str, ...],
+    ignored: frozenset[str] = frozenset(),
+    keep: tuple[str, ...] = (),
+    extra: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
-    """The pathspecs for a ``git stash --include-untracked`` that leaves *excluded* in place.
+    """The pathspecs for a whole-tree ``git add -A`` or ``git stash --include-untracked`` that skips *excluded*.
 
-    *ignored* holds the paths git reported as ignored for these pathspecs (``runtime_stash_pathspecs()``): an
-    exclude whose literal part is one of them, or lies under one, is dropped, since git refuses the stash for it.
-    *keep* names files a dropped exclude still has to leave in place; each is excluded by its literal path.
+    *ignored* holds the paths git reported as ignored for these pathspecs (``untracked_collisions``' probe): an
+    exclude whose literal part is one of them, or lies under one, is dropped, since git refuses the command for it.
+    *keep* names files a dropped exclude still has to leave out; each is excluded by its literal path.
     A dropped name-prefix exclude whose directory is not itself ignored (``.claude/sova.db`` ignored, ``.claude/``
     not) also gets a ``<prefix>-*`` glob exclude, which git accepts and which covers a sidecar (``sova.db-wal``)
-    created after *keep* was listed.
+    created after *keep* was listed. *extra* is appended as is (pathspecs with no literal part, which git never
+    refuses, such as ``:(exclude,glob)**/.env``).
 
-    ``:/`` (repo root) rather than ``.``: a bare ``.`` would narrow the stash to the cwd subtree.
+    ``:/`` (repo root) rather than ``.``: a bare ``.`` would narrow the command to the cwd subtree.
     """
     return (
         ":/",
         *(pathspec_exclude(prefix) for prefix in excluded if not is_under_any(prefix.rstrip("/"), ignored)),
         *(f":(exclude,glob){prefix}-*" for prefix in excluded if _needs_sidecar_exclude(prefix, ignored)),
         *(f":(exclude,literal){path}" for path in keep),
+        *extra,
     )
 
 
@@ -111,19 +116,16 @@ def unstage_command(paths: tuple[str, ...]) -> tuple[str, ...]:
 
     Run before a pathspec stash that excludes *paths*: the stash still records the whole index, so a
     staged excluded file lands in the stash's index tree, and the later ``reset --keep`` turns it into an
-    untracked file that makes ``git stash pop`` abort, stranding the operator's work in the stash.
+    untracked file that makes ``git stash pop`` abort, stranding the operator's work in the stash. Run after
+    a ``git add -A`` that excludes *paths* (``stage_all_except()``), to drop a tracked file under an ignored
+    directory, which no exclude can keep out.
     """
     return ("git", "reset", "-q", "--", *(pathspec_include(prefix) for prefix in paths))
 
 
-# `git add -A` must never stage SOVA's runtime state (the live database can hold credentials, and
-# `mcp_secret` is one), whether or not `sova install` wrote ignore rules for it. The rest of `.claude/`
-# is staged as before.
-STAGE_ALL_PATHSPECS = (":/", *(pathspec_exclude(prefix) for prefix in RUNTIME_STATE_PATHS))
-
 # The address-review rebase stash runs in a worktree and leaves only the runtime state in place; `.claude/specs/` is
 # stashed with the rest, since a tracked spec with uncommitted edits left behind would make `git rebase` refuse to
-# run. Defined from RUNTIME_STATE_PATHS directly (not aliased to STAGE_ALL_PATHSPECS), so a later change to what
+# run. A name of its own (not branch.commit()'s RUNTIME_STATE_PATHS argument), so a later change to what
 # `git add -A` skips does not silently change what the rebase stash moves.
 WORKTREE_STASH_EXCLUDED_PATHS = RUNTIME_STATE_PATHS
 
