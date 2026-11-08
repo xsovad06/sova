@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -13,6 +14,7 @@ from sova.config.models import ProjectConfig, RolesConfig, SpecConfig
 from sova.core.context import ExecutionContext
 from sova.core.spec_utils import compute_issue_revision_hash
 from sova.core.steps.spec import (
+    _SPEC_PROMPT_TEMPLATE,
     SpecStep,
     _build_spec_prompt,
     _complexity_rank,
@@ -277,6 +279,58 @@ class TestExtractSpecContent:
         start = time.monotonic()
         _extract_spec_content(text)
         assert time.monotonic() - start < 2.0
+
+    ROBOT = "\U0001f916"
+    FOOTER = "Generated with [Claude Code](https://claude.com/claude-code)"
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "\n\n" + FOOTER,
+            "\n\n" + ROBOT + " " + FOOTER + "\n",
+            "\n\n---\n\n" + FOOTER,
+            "\n\n---\n" + ROBOT + " **" + FOOTER.upper() + "**  \n\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
+            "\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+        ],
+    )
+    def test_strips_trailing_attribution_footer(self, tail: str) -> None:
+        body = "# Spec: Test\n\n## Solution\n\nDo it."
+        assert _extract_spec_content(body + tail) == body
+        assert _extract_spec_content("```markdown\n" + body + tail + "\n```\n") == body
+
+    def test_keeps_footer_phrase_mid_document(self) -> None:
+        text = f"# Spec: Test\n\nThe old output said {self.FOOTER} here.\n\n{self.FOOTER} in prose\n\n## Rules\n\nDone."
+        assert _extract_spec_content(text) == text
+
+    @pytest.mark.parametrize(
+        "last_line",
+        [
+            "- Generated with Claude Code footers are stripped by the backstop",
+            "> Generated with Claude Code",
+            "* Generated with [Claude Code](https://claude.com/claude-code)",
+            "Generated with Claude Code is the footer the backstop strips.",
+        ],
+    )
+    def test_keeps_trailing_line_that_only_mentions_footer(self, last_line: str) -> None:
+        text = f"# Spec: T\n\n## Notes\n\n{last_line}"
+        assert _extract_spec_content(text) == text
+
+    def test_keeps_human_co_author_trailer(self) -> None:
+        text = "# Spec: Test\n\n## Solution\n\nDo it.\n\nCo-Authored-By: Jane Doe <jane@example.com>"
+        assert _extract_spec_content(text) == text
+
+    def test_keeps_legitimate_trailing_separator(self) -> None:
+        text = "# Spec: Test\n\nBody.\n\n---"
+        assert _extract_spec_content(text) == text
+
+    def test_footer_strip_adversarial(self) -> None:
+        for filler in ("generated with " + "x" * 50000, "-" * 50000, "\n".join([" -"] * 20000)):
+            start = time.monotonic()
+            _extract_spec_content("# Spec: T\n\n" + filler)
+            assert time.monotonic() - start < 2.0
+
+    def test_prompt_forbids_attribution_footer(self) -> None:
+        assert "attribution footer" in _SPEC_PROMPT_TEMPLATE
 
 
 class TestStampIssueRevision:
@@ -658,6 +712,53 @@ class TestSpecStep:
 
         assert not result.success
         assert "status line not found" in result.summary.lower()
+
+    async def test_execute_auto_approve_status_write_fails(self, tmp_path: Path) -> None:
+        """Auto-approve reports failure when rewriting the Status line raises OSError."""
+        from sova.core.steps import spec as spec_module
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        real_write_spec_file = spec_module._write_spec_file
+        written: list[Path] = []
+
+        def write_then_track(*args: object, **kwargs: object) -> Path:
+            path = real_write_spec_file(*args, **kwargs)  # type: ignore[arg-type]
+            written.append(path)
+            return path
+
+        real_write_text = Path.write_text
+
+        def failing_write_text(self: Path, *args: object, **kwargs: object) -> int:
+            if self in written:
+                raise OSError("disk full")
+            return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.core.steps.spec._write_spec_file", side_effect=write_then_track),
+            patch.object(Path, "write_text", failing_write_text),
+        ):
+            result = await step.execute(ctx)
+
+        assert written
+        assert not result.success
+        assert result.summary == "Failed to update spec file"
+        assert "disk full" in (result.error or "")
 
     async def test_execute_handoff_on_open_questions(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult

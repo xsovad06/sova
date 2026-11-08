@@ -98,6 +98,38 @@ def _make_slug(title: str, max_len: int = 40) -> str:
     return slug or "spec"
 
 
+# The line must be the footer and nothing else: only decoration (an emoji, bold or italic markers, a link target)
+# may surround it, so a list item, blockquote or sentence that merely mentions the phrase is kept.
+_FOOTER_LINE_RE = re.compile(
+    r"^[^\w\-*>]{0,8}(?:\*\*|_)?generated with\s+\[?claude code\]?(?:\([^)\s]{0,200}\))?(?:\*\*|_)?\s*$",
+    re.IGNORECASE,
+)
+_CO_AUTHOR_LINE_RE = re.compile(r"^\s*co-authored-by:.{0,200}(?:claude|anthropic)", re.IGNORECASE)
+_SEPARATOR_LINE_RE = re.compile(r"^\s*-{3,}\s*$")
+
+
+def _strip_attribution_footer(text: str) -> str:
+    """Drop a trailing Claude attribution footer (and its ``---`` separator) from *text*.
+
+    Matches only at the end of the document, line by line, so a body paragraph
+    that mentions the phrase mid-document is kept. A trailing ``---`` is removed
+    only when a footer was found, so a legitimate closing rule survives.
+    """
+    lines = text.rstrip().split("\n")
+    removed = False
+    while lines:
+        last = lines[-1].strip()
+        if not last or _FOOTER_LINE_RE.match(last) or _CO_AUTHOR_LINE_RE.match(last):
+            removed = removed or bool(last)
+            lines.pop()
+        else:
+            break
+    if removed:
+        while lines and (not lines[-1].strip() or _SEPARATOR_LINE_RE.match(lines[-1])):
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
 def _extract_spec_content(text: str) -> str:
     """Extract spec markdown from an LLM response.
 
@@ -105,19 +137,21 @@ def _extract_spec_content(text: str) -> str:
     1. Wrapped in a ```markdown or ```md fenced block
     2. Starting directly with ``# Spec:`` heading
     3. As plain text (fallback)
+
+    Whatever the format, a trailing Claude attribution footer is stripped.
     """
     if not text:
         return ""
 
     fence_match = re.search(r"```(?:markdown|md)[^\S\n]*\n(.*?)```", text, re.DOTALL)
     if fence_match:
-        return fence_match.group(1).strip()
+        return _strip_attribution_footer(fence_match.group(1))
 
     heading_match = re.search(r"^(# Spec:.+)", text, re.MULTILINE | re.DOTALL)
     if heading_match:
-        return heading_match.group(1).strip()
+        return _strip_attribution_footer(heading_match.group(1))
 
-    return text.strip()
+    return _strip_attribution_footer(text)
 
 
 _COMPLEXITY_LINE_RE = re.compile(r"^\*\*Complexity\*\*:.*$", re.MULTILINE)
@@ -242,6 +276,8 @@ instead with a rationale.
 - Complexity: simple (1-2 files, <50 lines), moderate (3-6 files, 50-200 lines), complex (7+ files or >200 lines)
 - Do NOT include code blocks in the spec itself (it is a planning document)
 - Return ONLY the spec document, no surrounding text
+- Do NOT end the spec with a signature or attribution footer (no "Generated with ..." line, no \
+  Co-Authored-By line)
 - NEVER include an Open Question that could be answered by reading the project's conventions, \
   architecture, or existing implementations. Move such items to Design Decisions with a rationale.
 - When a convention exists (config flags, caching patterns, feed events, adapter patterns), follow it. \
