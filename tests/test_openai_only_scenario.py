@@ -479,6 +479,7 @@ class TestOpenAIOnlyHandoffAndRecovery:
         with (
             patch("sova.core.steps.address_review.run", AsyncMock(return_value=_ok("abc1234\n"))),
             patch("sova.core.steps.address_review._load_coderabbit_findings", AsyncMock(return_value=([], []))),
+            patch("sova.adapters.external_reviews.fetch_review_threads", AsyncMock(return_value=[])),
             patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
         ):
             addressed = await AddressReviewStep().execute(dev)

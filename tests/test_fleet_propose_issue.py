@@ -105,6 +105,7 @@ class TestStepAreaMap:
             "refresh_pr_body",
             "research",
             "resolve_external_reviews",
+            "resolve_review_threads",
             "scan_project",
             "self_review",
             "simplify",

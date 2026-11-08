@@ -480,6 +480,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review._load_inline_review_comments", new=AsyncMock(return_value={})),
             patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)
@@ -530,6 +531,7 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
             ),
             patch("sova.core.steps.address_review._load_review_findings", return_value=findings),
             patch("sova.core.steps.address_review._load_coderabbit_findings", new=AsyncMock(return_value=([], []))),
+            patch("sova.core.steps.address_review._load_inline_review_comments", new=AsyncMock(return_value={})),
             patch("sova.core.steps.address_review.dispatch_prompt", new=AsyncMock(return_value=fake_result)),
         ):
             result = await step.execute(execution_context)

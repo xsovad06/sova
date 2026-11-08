@@ -737,6 +737,7 @@ class PipelineDefinitions(BaseSettings):
             "rearrange_commits",
             "validate",
             "push",
+            "resolve_review_threads",
             "refresh_pr_body",
             "monitor_ci",
             "resolve_external_reviews",

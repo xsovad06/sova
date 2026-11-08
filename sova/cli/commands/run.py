@@ -79,7 +79,7 @@ async def _run_workflow(
 ) -> None:
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
-    from sova.core.context import ExecutionContext
+    from sova.core.context import ADDRESS_CYCLE_KEY, ExecutionContext
     from sova.db.session import init_db
     from sova.git.worktree import get_primary_worktree_root
     from sova.roles.dispatcher import dispatch
@@ -148,6 +148,8 @@ async def _run_workflow(
         confidence_score=checkpoint.get("confidence_score"),
         confidence_details=checkpoint.get("confidence_details"),
     )
+
+    ctx.restore_address_cycle(checkpoint.get(ADDRESS_CYCLE_KEY))
 
     if resume_run_id:
         console.print(f"[bold]Resuming workflow for {ctx.display_label} from run #{resume_run_id}[/bold]")
@@ -329,6 +331,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
     """Load checkpoint data from a previous TaskRun for resume."""
     from sqlalchemy import select
 
+    from sova.core.context import ADDRESS_CYCLE_KEY
     from sova.db.models import StepExecution, TaskRun
     from sova.db.session import get_session
 
@@ -372,6 +375,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
                 "role": task_run.role,
                 "confidence_score": assessment.get("confidence_score"),
                 "confidence_details": assessment.get("confidence_details"),
+                ADDRESS_CYCLE_KEY: assessment.get(ADDRESS_CYCLE_KEY),
             }
 
 

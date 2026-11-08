@@ -30,6 +30,7 @@ from sova.core.steps.rebase import RebaseStep
 from sova.core.steps.refresh_pr_body import RefreshPrBodyStep
 from sova.core.steps.research import ResearchStep
 from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+from sova.core.steps.resolve_review_threads import ResolveReviewThreadsStep
 from sova.core.steps.scan_project import ScanProjectStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
@@ -87,6 +88,7 @@ def get_address_review_steps() -> list[BaseStep]:
         RearrangeCommitsStep(),
         ValidateStep(),
         PushStep(),
+        ResolveReviewThreadsStep(),
         RefreshPrBodyStep(),
         MonitorCIStep(),
         ResolveExternalReviewsStep(),
@@ -164,6 +166,7 @@ STEP_REGISTRY: dict[str, type[BaseStep]] = {
         RefreshPrBodyStep,
         ResearchStep,
         ResolveExternalReviewsStep,
+        ResolveReviewThreadsStep,
         ScanProjectStep,
         SelfReviewStep,
         SimplifyStep,
@@ -183,6 +186,7 @@ _ORDERING_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("commit", "push"),
     ("push", "create_pr"),
     ("push", "refresh_pr_body"),
+    ("push", "resolve_review_threads"),
 )
 
 
@@ -203,7 +207,7 @@ def build_pipeline(step_names: list[str]) -> list[BaseStep]:
 
 
 def validate_pipeline(step_names: list[str]) -> list[str]:
-    """Check ordering constraints and return a list of warning messages.
+    """Check ordering constraints (and the address cycle's record step) and return warning messages.
 
     Unknown step names are not checked here; build_pipeline() raises for
     those. Ordering violations are non-fatal (logged, not raised).
@@ -214,6 +218,15 @@ def validate_pipeline(step_names: list[str]) -> list[str]:
             continue
         if step_names.index(earlier) > step_names.index(later):
             warnings.append(f"step '{earlier}' should come before '{later}'")
+    if "address_review" in step_names and "resolve_review_threads" not in step_names:
+        # An override persisted before the step existed: resolve_external_reviews falls back to posting the
+        # sova-addressed marker (so the budget still counts the cycle), but only after CI, so a CI timeout
+        # strands the threads and the marker.
+        warnings.append(
+            "step 'address_review' without 'resolve_review_threads': threads are resolved and the "
+            "sova-addressed marker is posted only by 'resolve_external_reviews' after CI (or never, without "
+            "it); add 'resolve_review_threads' after 'push'"
+        )
     return warnings
 
 

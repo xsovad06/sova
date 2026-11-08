@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TypeGuard
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -360,7 +361,41 @@ def _parse_paginated_gh_json(stdout: str) -> list:
     return flat
 
 
-async def _load_inline_review_comments(ctx: ExecutionContext) -> dict[tuple[str, int], list[tuple[str, str, bool]]]:
+def _is_plain_int(value: object) -> TypeGuard[int]:
+    """True for an int that is not a bool (``isinstance(True, int)`` holds)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _inline_comment_entry(
+    c: object,
+) -> tuple[tuple[str, int], tuple[str, str, bool, int | None]] | None:
+    """Parse one raw PR review comment into ``((path, line), (description, suggestion, is_sova_shaped, id))``.
+
+    Returns None for anything that is not a top-level human comment anchored to a file line: a non-dict
+    entry, a bot comment, a reply, or a comment missing its path, line or body.
+    """
+    if not isinstance(c, dict):
+        return None
+    if (c.get("user") or {}).get("type", "") == "Bot" or c.get("in_reply_to_id") is not None:
+        return None
+    path = c.get("path") or ""
+    # "line" is null once the comment's line falls out of the current
+    # diff; "original_line" still pins it to the commit it was made on.
+    line = c.get("line")
+    if line is None:
+        line = c.get("original_line")
+    body = (c.get("body") or "").strip()
+    if not path or not _is_plain_int(line) or not body:
+        return None
+    is_sova_shaped = bool(_INLINE_COMMENT_HEAD_RE.match(body))
+    description, suggestion = _parse_inline_comment_body(body)
+    comment_id = c.get("id")
+    return (path, line), (description, suggestion, is_sova_shaped, comment_id if _is_plain_int(comment_id) else None)
+
+
+async def _load_inline_review_comments(
+    ctx: ExecutionContext,
+) -> dict[tuple[str, int], list[tuple[str, str, bool, int | None]]]:
     """Fetch non-bot inline PR review comments, keyed by ``(path, line)``.
 
     A review body collapses any finding that already has its own inline
@@ -374,7 +409,8 @@ async def _load_inline_review_comments(ctx: ExecutionContext) -> dict[tuple[str,
     silently would risk attributing the wrong text to a finding. The third
     tuple element flags whether the raw body matches SOVA's own inline-comment
     shape (``_INLINE_COMMENT_HEAD_RE``), so a same-location human note never
-    outranks SOVA's own comment when both exist.
+    outranks SOVA's own comment when both exist. The fourth is the comment's
+    database id, which ``_thread_ids_for_comments()`` maps to a review thread.
     """
     try:
         from sova.utils.gh import resolve_gh_env
@@ -393,24 +429,12 @@ async def _load_inline_review_comments(ctx: ExecutionContext) -> dict[tuple[str,
 
         raw = _parse_paginated_gh_json(result.stdout)
 
-        by_location: dict[tuple[str, int], list[tuple[str, str, bool]]] = {}
+        by_location: dict[tuple[str, int], list[tuple[str, str, bool, int | None]]] = {}
         for c in raw:
-            if not isinstance(c, dict):
-                continue
-            if (c.get("user") or {}).get("type", "") == "Bot" or c.get("in_reply_to_id") is not None:
-                continue
-            path = c.get("path") or ""
-            # "line" is null once the comment's line falls out of the current
-            # diff; "original_line" still pins it to the commit it was made on.
-            line = c.get("line")
-            if line is None:
-                line = c.get("original_line")
-            body = (c.get("body") or "").strip()
-            if not path or not isinstance(line, int) or isinstance(line, bool) or not body:
-                continue
-            is_sova_shaped = bool(_INLINE_COMMENT_HEAD_RE.match(body))
-            description, suggestion = _parse_inline_comment_body(body)
-            by_location.setdefault((path, line), []).append((description, suggestion, is_sova_shaped))
+            entry = _inline_comment_entry(c)
+            if entry is not None:
+                location, match = entry
+                by_location.setdefault(location, []).append(match)
         return by_location
     except Exception:  # noqa: BLE001 (best-effort enrichment; the body text still stands in)
         log.warning("address_review.inline_comment_fetch_failed", exc_info=True)
@@ -420,7 +444,9 @@ async def _load_inline_review_comments(ctx: ExecutionContext) -> dict[tuple[str,
 async def _hydrate_collapsed_findings(ctx: ExecutionContext, findings: list[dict]) -> None:
     """Replace every ``INLINE_COMMENT_STUB`` description with its inline comment text.
 
-    Mutates *findings* in place. A stub with no matching inline comment (the
+    Mutates *findings* in place, also recording the source comment's id as
+    ``comment_id`` so the finding's review thread can be resolved once it is
+    fixed. A stub with no matching inline comment (the
     comment was deleted, or its line no longer resolves) keeps the stub: it at
     least tells the addressing agent where to look, which is strictly better
     than an empty description.
@@ -454,10 +480,12 @@ async def _hydrate_collapsed_findings(ctx: ExecutionContext, findings: list[dict
                 candidates=len(candidates),
             )
             continue
-        description, suggestion, _ = candidates[0]
+        description, suggestion, _, comment_id = candidates[0]
         if not description:
             continue
         f["description"] = description
+        if comment_id is not None:
+            f["comment_id"] = comment_id
         if suggestion:
             f["suggestion"] = suggestion
         hydrated += 1
@@ -540,6 +568,7 @@ async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], 
                 "description": f.message,
                 "suggestion": "",
                 "source": "coderabbit",
+                "thread_id": f.tool_id,
             }
             for f in cr_result.findings
         ]
@@ -549,6 +578,77 @@ async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], 
     except Exception:  # noqa: BLE001 (one of four finding sources; failure falls through to the others)
         log.warning("address_review.coderabbit_fetch_failed", exc_info=True)
         return [], []
+
+
+async def _fetch_threads_best_effort(ctx: ExecutionContext) -> list[dict] | None:
+    """Every review thread on the PR, or None when the fetch failed or ``gh`` could not spawn.
+
+    A failure is logged and reported as None, never as an empty list: the callers then leave the threads
+    open, which is the safe direction, and neither the paid address step nor the address summary is lost.
+    """
+    from sova.adapters.external_reviews import fetch_review_threads
+
+    try:
+        threads = await fetch_review_threads(ctx.repo, ctx.pr_number, github_user=ctx.config.github_user)
+    except Exception:  # noqa: BLE001 (thread lookup is best effort; the LLM already made the fixes)
+        log.warning("address_review.thread_lookup_failed", pr=ctx.pr_number, exc_info=True)
+        return None
+    if threads is None:
+        log.warning("address_review.thread_lookup_failed", pr=ctx.pr_number)
+    return threads
+
+
+def _root_comment(thread: dict) -> dict:
+    """The first comment of a GraphQL review thread node, or an empty dict."""
+    comments = (thread.get("comments") or {}).get("nodes") or []
+    return comments[0] if comments and isinstance(comments[0], dict) else {}
+
+
+def _open_root_comment_ids(threads: list[dict]) -> set[int]:
+    """Database ids of the root comments of the threads that are still unresolved."""
+    ids: set[int] = set()
+    for thread in threads:
+        root_id = _root_comment(thread).get("databaseId")
+        if not thread.get("isResolved") and _is_plain_int(root_id):
+            ids.add(root_id)
+    return ids
+
+
+async def _own_logins(ctx: ExecutionContext) -> set[str]:
+    """Lowercased logins whose threads this pipeline may reply to and resolve: the configured and active gh user."""
+    from sova.utils.gh import get_active_gh_user
+
+    logins = {ctx.config.github_user}
+    try:
+        logins.add(await get_active_gh_user())
+    except Exception:  # noqa: BLE001 (the active user is a second guard; the configured user still applies)
+        log.debug("address_review.active_gh_user_failed", exc_info=True)
+    return {login.lower() for login in logins if login}
+
+
+async def _thread_ids_for_comments(
+    ctx: ExecutionContext, comment_ids: set[int], threads: list[dict] | None = None
+) -> list[str]:
+    """Map inline review comment database ids to the GraphQL ids of the threads they open.
+
+    The REST comment endpoint returns comment ids, but a thread can only be replied to and
+    resolved by its GraphQL id. Only a thread whose first comment was written by this pipeline's own
+    GitHub user is returned: a comment id can land on a human reviewer's thread through a same-location
+    fallback in hydration, and replying to or resolving someone else's thread is not this step's call.
+    A failed thread fetch returns an empty list, so the threads stay open.
+    """
+    if threads is None:
+        threads = await _fetch_threads_best_effort(ctx)
+    if threads is None:
+        return []
+    own = await _own_logins(ctx)
+    thread_ids: list[str] = []
+    for thread in threads:
+        root = _root_comment(thread)
+        author = ((root.get("author") or {}).get("login") or "").lower()
+        if root.get("databaseId") in comment_ids and thread.get("id") and author in own:
+            thread_ids.append(thread["id"])
+    return thread_ids
 
 
 def _load_spec_for_context(ctx: ExecutionContext) -> str:
@@ -590,6 +690,26 @@ def _fence_if_high_risk(text: str, *, source: str, loc: str, threshold: float) -
         f"(risk={result.risk_score:.2f}) and was not included; see the original "
         f"review comment on GitHub for {loc}]"
     )
+
+
+def _withheld_findings(findings: list[dict], *, threshold: float) -> list[dict]:
+    """The findings ``_format_findings_prompt()`` replaces with a withheld placeholder.
+
+    A withheld finding's text never reaches the LLM, so nothing was done about it and its review thread
+    must stay open. Applies the same trim and per-text scan as the prompt formatter, to the description
+    and the suggestion alike.
+    """
+    withheld: list[dict] = []
+    for f in findings:
+        texts = [(f.get("description", ""), "review_finding")]
+        if f.get("suggestion"):
+            texts.append((f["suggestion"], "review_suggestion"))
+        for text, label in texts:
+            trimmed = trim_payload(text, _FINDING_TEXT_LIMIT, label=label, keep="head")
+            if scan_prompt(trimmed).risk_score >= threshold:
+                withheld.append(f)
+                break
+    return withheld
 
 
 def _format_findings_prompt(
@@ -701,6 +821,84 @@ def _format_findings_prompt(
     return "\n".join(lines)
 
 
+async def _load_all_findings(ctx: ExecutionContext) -> tuple[list[dict], list[str]]:
+    """Load the findings to address, plus the review thread ids of the CodeRabbit findings among them.
+
+    The first non-empty source wins: the findings file, the resumed run, the most recent reviewer for
+    this issue, then the PR's review bodies on GitHub (covering reviews not posted through SOVA's own
+    handoff). CodeRabbit findings are always appended on top.
+    """
+    findings = _load_review_findings(ctx.project_dir, issue=ctx.issue_number)
+    if not findings:
+        findings = await _load_review_findings_from_db(ctx.resume_run_id)
+    if not findings:
+        findings = await _load_review_findings_by_issue(ctx.issue_number)
+    if not findings:
+        findings = await _load_findings_from_github_reviews(ctx)
+
+    cr_findings, cr_thread_ids = await _load_coderabbit_findings(ctx)
+    if cr_findings:
+        findings.extend(cr_findings)
+    return findings, cr_thread_ids
+
+
+def _has_pending_docs(pending_docs: Path) -> bool:
+    """True when the pending-docs queue file exists and holds non-blank text."""
+    try:
+        return pending_docs.exists() and pending_docs.read_text(encoding="utf-8").strip() != ""
+    except (OSError, UnicodeDecodeError):
+        # An unreadable queue file must not crash the step; fall back to
+        # the pre-existing safe behavior of treating it as absent.
+        log.warning("step.address_review.pending_docs_read_failed", exc_info=True)
+        return False
+
+
+def _match_inline_comment_id(
+    finding: dict,
+    inline: dict[tuple[str, int], list[tuple[str, str, bool, int | None]]],
+    open_ids: set[int],
+) -> int | None:
+    """The id of the inline comment behind *finding*, matched by ``(file, line)``, or None.
+
+    Only a SOVA-shaped comment whose thread is still unresolved is a candidate: a human note at the same
+    location is never matched (resolving it would close someone else's thread), and a comment from an
+    earlier address cycle whose thread is already resolved must not make the location ambiguous. When several
+    open SOVA comments remain, the newest (highest id) is the current cycle's.
+    """
+    matches = inline.get((finding.get("file") or "", finding.get("line")))
+    if not matches:
+        return None
+    candidates = [m[3] for m in matches if m[2] and m[3] in open_ids]
+    return max(candidates) if candidates else None
+
+
+async def _addressed_thread_ids(ctx: ExecutionContext, findings: list[dict], cr_thread_ids: list[str]) -> list[str]:
+    """Collect the review thread ids behind *findings*, deduplicated in first-seen order.
+
+    CodeRabbit findings arrive with their thread ids. A finding hydrated from an inline comment carries the
+    comment's id. Every other finding (the reviewer's ``pending_findings`` from the handoff file or the
+    database, which is the normal Reviewer -> Developer path) has none, so it is matched to the inline
+    comment ReviewerRole posted for it by ``(file, line)``, among the comments whose thread is still open.
+    The comment ids are then mapped to threads.
+    """
+    thread_ids = [t for t in cr_thread_ids if t]
+    comment_ids = {f["comment_id"] for f in findings if f.get("comment_id") is not None}
+    unmatched = [f for f in findings if f.get("comment_id") is None and f.get("source") != "coderabbit"]
+    threads: list[dict] | None = None
+    if unmatched and ctx.pr_number:
+        threads = await _fetch_threads_best_effort(ctx)
+        if threads is not None:
+            inline = await _load_inline_review_comments(ctx)
+            open_ids = _open_root_comment_ids(threads)
+            for f in unmatched:
+                comment_id = _match_inline_comment_id(f, inline, open_ids)
+                if comment_id is not None:
+                    comment_ids.add(comment_id)
+    if comment_ids:
+        thread_ids.extend(await _thread_ids_for_comments(ctx, comment_ids, threads))
+    return list(dict.fromkeys(thread_ids))
+
+
 class AddressReviewStep(BaseStep):
     name = "address_review"
     TASK_TYPE = "address_review"
@@ -718,35 +916,35 @@ class AddressReviewStep(BaseStep):
         head_result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
         if head_result.success:
             self._head_before_llm = head_result.stdout.strip()
+        # Recorded before the early returns below: a cycle that finds nothing to address
+        # still counts against pipeline.max_address_review_cycles once its summary is posted.
+        # A base already recorded (a retry, or a resume of a run whose address_review failed
+        # after its LLM committed fixes) is kept: those commits belong to this cycle, and
+        # re-basing on them would make the push look like it moved nothing.
+        if not (ctx.address_cycle_recorded and ctx.address_cycle_base_head):
+            ctx.address_cycle_base_head = self._head_before_llm or ""
+        ctx.address_cycle_recorded = True
 
-        # Load findings: file -> resumed run -> most recent reviewer for this issue
-        findings = _load_review_findings(ctx.project_dir, issue=ctx.issue_number)
-        if not findings:
-            findings = await _load_review_findings_from_db(ctx.resume_run_id)
-        if not findings:
-            findings = await _load_review_findings_by_issue(ctx.issue_number)
-
-        # Fetch findings from GitHub PR review bodies (covers reviews not
-        # posted via Sova's own handoff mechanism).
-        if not findings:
-            findings = await _load_findings_from_github_reviews(ctx)
-
-        # Also fetch CodeRabbit findings from the PR
-        cr_findings, _thread_ids = await _load_coderabbit_findings(ctx)
-        if cr_findings:
-            findings.extend(cr_findings)
+        findings, cr_thread_ids = await _load_all_findings(ctx)
+        # Recorded before the LLM runs: if the dispatch then fails or times out after committing fixes,
+        # the persisted record still carries what this cycle was given, so a resume (which may skip this
+        # step once it is marked done) does not post an empty "no findings pending" summary over them.
+        # A finding the prompt formatter withholds (its text tripped the prompt guard) is never seen by the
+        # LLM, so it is neither reported as addressed nor has its thread replied to or resolved.
+        withheld = _withheld_findings(findings, threshold=ctx.config.security.prompt_guard_threshold)
+        withheld_ids = {id(f) for f in withheld}
+        addressable = [f for f in findings if id(f) not in withheld_ids]
+        withheld_threads = {f["thread_id"] for f in withheld if f.get("thread_id")}
+        ctx.addressed_review_findings = addressable
+        ctx.addressed_review_thread_ids = await _addressed_thread_ids(
+            ctx, addressable, [t for t in cr_thread_ids if t not in withheld_threads]
+        )
 
         # A pending-docs queue is checked even with zero findings: /integrate-pr
         # defers documentation here specifically so it rides the next push, and
         # a clean review (no findings) must not leave it stranded indefinitely.
         pending_docs = ctx.project_dir / ".claude" / "agent-control" / "pending-docs.md"
-        try:
-            has_pending_docs = pending_docs.exists() and pending_docs.read_text(encoding="utf-8").strip() != ""
-        except (OSError, UnicodeDecodeError):
-            # An unreadable queue file must not crash the step; fall back to
-            # the pre-existing safe behavior of treating it as absent.
-            log.warning("step.address_review.pending_docs_read_failed", exc_info=True)
-            has_pending_docs = False
+        has_pending_docs = _has_pending_docs(pending_docs)
 
         if not findings and not has_pending_docs:
             log.info("step.address_review.no_findings")
@@ -785,9 +983,8 @@ class AddressReviewStep(BaseStep):
             )
             ctx.add_usage(result)
             self._had_findings = bool(findings)
-            # Carried to ResolveExternalReviewsStep, which posts the address
-            # summary on the PR once the fixes are pushed and CI is green.
-            ctx.addressed_review_findings = list(findings)
+            # The findings and thread ids recorded above are carried to ResolveReviewThreadsStep, which
+            # replies to and resolves those threads and posts the address summary once the fixes are pushed.
             if findings:
                 summary = f"Addressed {len(findings)} review findings"
             else:
