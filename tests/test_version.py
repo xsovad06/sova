@@ -144,6 +144,10 @@ class TestResolveHeadSha:
         _make_repo(tmp_path, head="ref: refs/heads/gone\n", packed=f"{SHA_A} refs/heads/main\n")
         assert version_module._resolve_head_sha(tmp_path) is None
 
+    def test_ref_missing_loose_and_no_packed_refs_file_is_none(self, tmp_path: Path) -> None:
+        _make_repo(tmp_path, head="ref: refs/heads/main\n")
+        assert version_module._resolve_head_sha(tmp_path) is None
+
     def test_truncated_head_is_none(self, tmp_path: Path) -> None:
         _make_repo(tmp_path, head="")
         assert version_module._resolve_head_sha(tmp_path) is None
