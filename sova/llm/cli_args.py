@@ -15,6 +15,10 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 
+# Fixed constant, no user text: blanks the commit and PR attribution so the CLI's built-in git
+# instructions stop telling the model to end PR bodies with "Generated with Claude Code".
+_ATTRIBUTION_OVERRIDE_SETTINGS = '{"attribution":{"commit":"","pr":""}}'
+
 
 def build_claude_cli_args(
     *,
@@ -55,6 +59,12 @@ def build_claude_cli_args(
     without both, ``bypassPermissions`` mode would let that turn execute
     commands with the authenticated user's privileges merely by running
     against an untrusted or unexpected cwd.
+
+    Every variant, ``isolated=True`` included, carries exactly one
+    ``--settings`` holding a fixed attribution override. It contains no user
+    text, so it does not reopen the argv-visibility gap above. Whether
+    ``--safe-mode`` honours ``--settings`` is unverified (``claude --help``
+    does not say), so isolated turns are not guaranteed to be covered.
     """
     args = [
         "claude",
@@ -63,6 +73,8 @@ def build_claude_cli_args(
         output_format,
         "--permission-mode",
         "bypassPermissions",
+        "--settings",
+        _ATTRIBUTION_OVERRIDE_SETTINGS,
     ]
 
     if output_format == "stream-json":
