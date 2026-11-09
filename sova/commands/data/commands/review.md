@@ -115,7 +115,7 @@ git diff --stat --diff-filter=RD HEAD
 ### Scout Rule (Medium)
 - Are there pre-existing issues in the touched files? Failing tests, lint warnings, dead imports, obvious bugs adjacent to the changed lines?
 - Fix them as part of this review: leave every file better than you found it
-- Keep scout fixes small and low-risk. If a fix is non-trivial, note it for a separate task.
+- Keep scout fixes small and low-risk. Add a non-trivial one to the open issue that already covers its file for the same concern (search the tracker first; one that only mentions the file does not count); file a new issue only when none does. Headless runs make no tracker writes: search read-only, note the match in the PR body.
 
 ## 4. Score Each Finding
 

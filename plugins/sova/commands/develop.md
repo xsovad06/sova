@@ -82,7 +82,10 @@ For every file you touched, scan for pre-existing issues and fix them:
 
 Keep scout fixes small and low-risk. Do not refactor entire files; just clean
 up what you see while you are already there. If a scout fix is non-trivial,
-note it for a separate task instead of doing it inline.
+add it to the open issue that already covers its file for the same concern (search
+the tracker first) instead of doing it inline; an issue that only mentions the file does
+not count; file a new issue only when none does.
+Headless runs make no tracker writes: search read-only, note the match in the PR body.
 
 ### Step 5: Project-Specific Build Steps
 
