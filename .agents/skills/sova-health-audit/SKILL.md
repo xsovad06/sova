@@ -15,8 +15,8 @@ deferred TODO. Produce an honest, thorough health report for (a) onboarding a ne
 senior engineer, (b) a due-diligence review, and (c) your own improvement backlog.
 
 Be brutally honest: flag what is genuinely good (so it is preserved) and what is weak
-(so it can be fixed). Every finding must reference concrete code,
-files, or patterns in THIS codebase. No generic advice.
+(so it can be fixed). Every finding must reference concrete code, files, or patterns in
+THIS codebase. No generic advice.
 
 ## Procedure
 
@@ -28,8 +28,8 @@ files, or patterns in THIS codebase. No generic advice.
 sova audit report-path
 ```
 
-Record the verdict for Phase C. It blocks only a "withhold" or "file neutrally"
-disclosure choice, never the audit itself:
+Record the verdict for Phase C. It blocks only a "withhold" or "file neutrally" choice,
+never the audit itself:
 
 - `safe`: the path is gitignored. No action.
 - `unsafe-untracked`: warn now that withheld or neutrally filed exploit detail
@@ -44,25 +44,33 @@ The verdict is the last line printed; a failed call or any other last line count
 `unsafe-untracked`.
 
 Next, check whether `docs/HEALTH-AUDIT.md` already exists. If it does, read its
-`audit-tracker` comment and fetch every open issue number (the default page is 30, and
-a tracked issue past it would be misread as closed):
+`audit-tracker` comment. List the open issues once, then look up only the tracked
+numbers (`issues=` and the `folded=` targets) that call did not return:
 
 ```bash
 gh issue list --state open --limit 1000 --json number --jq '.[].number'
+gh issue view <n> --json state --jq .state
 ```
+
+A number whose lookup fails (deleted, transferred, or an API error) is reported as
+`could not verify #N`, counted as neither open nor closed, and the user is asked once
+whether to treat it as closed.
 
 A withheld group (the `withheld=` field, see Phase A) has no issue number, so it never
 appears in that comparison. It is still open work: record it as a **carry-over group**,
-which Phase C's pre-flight re-asks instead of resolving silently. Before anything
+which Phase C's pre-flight re-asks instead of resolving silently. So is a `deferred=`
+group, and a `folded=` group whose target is closed: a closed fold target proves
+nothing about the folded findings. An open fold target is informational: list it, never
+count it as "still open". Before anything
 overwrites the report, capture each carry-over group's verbatim finding blocks (the
 `#### [P{n}] {title}` blocks under "Findings by Level") into this run's working state,
 keyed by slugified group name. Phase C renders a carry-over group from that capture,
 because by the time Phase C executes, Phase A has already overwritten the file.
 
-Compare against the tracked issue numbers:
-- **All closed, no `withheld=`**: delete the file, tell the user the previous cycle is
+Compare against the tracked `issues=` numbers (created issues only):
+- **All closed, no carry-over groups**: delete the file, tell the user the previous cycle is
   complete, and run a **full audit**.
-- **All closed, `withheld=` present**: do not delete. List the withheld groups, capture
+- **All closed, carry-over groups present**: do not delete. List them, capture
   their findings, record them as carry-over groups, and run a **full audit** (the
   withheld carry-over does not make this an incremental run); record mode = `full`.
   Phase A rewrites the file, so each carry-over group's name and findings must reach
@@ -71,7 +79,7 @@ Compare against the tracked issue numbers:
   them, and ask the user to choose **Full audit** (overwrite with a fresh analysis),
   **Incremental audit** (re-analyze only areas changed since the last audit, preserving
   still-open findings elsewhere), or **Abort**. If `withheld=` is present, also list
-  and capture its groups as carry-over groups, whichever mode is picked. Record the
+  and capture every carry-over group, whichever mode is picked. Record the
   mode (`full` or `incremental`): Step 4 depends on it.
 
 ### Step 2: Discover the project
@@ -97,10 +105,10 @@ scripts, or CI config.
 ### Step 4: Incremental mode check
 
 Use the mode recorded in Step 1; an existing report alone does not select incremental
-mode, since the user may have chosen a full audit to overwrite it.
+mode.
 
-For **incremental** audits, find what changed since the last audit date (from the file
-header) with `git log --after="<last-audit-date>" --oneline --stat | head -100`,
+For **incremental** audits, find what changed since the last audit date in the file
+header with `git log --after="<last-audit-date>" --oneline --stat | head -100`,
 re-analyze only those modules, and preserve findings for unchanged areas that are still
 open issues. Still produce the full scorecard and executive summary.
 
@@ -108,12 +116,11 @@ For **full** audits, ignore any prior report and run Step 5 as a full analysis.
 
 ### Step 5: Parallel codebase walk
 
-This is the most expensive step. **If a focus area was given** in `the arguments provided when this skill is invoked`, skip the
+**If a focus area was given** in `the arguments provided when this skill is invoked`, skip the
 fan-out: analyze that area deeply in the main context, still produce all 10 scorecard
 dimensions, and score non-focus dimensions from Step 2 only, marked "(surface-level)".
 
-**For full audits**, call the Agent tool 3 times in a single message (so they run
-concurrently). Run each as a parallel helper agent. Include the Step 2
+**For full audits**, call the Agent tool 3 times in a single message. Run each as a parallel helper agent. Include the Step 2
 project context in each prompt. Each agent reads concrete files and runs
 concrete commands (`wc -l`, `grep`, `find`) for evidence, and returns at most 20
 findings as severity (P0-P4), title, location, issue, evidence, recommendation, plus
@@ -139,12 +146,10 @@ partial, and score the missing dimensions "(not analyzed)".
    each concrete claim (a line count, path, function or variable name, query count, an
    index assertion) before it enters the report.
    - **Order by priority first**: rank findings by (severity * blast radius), reusing
-     the agents' P0-P4 labels, and verify in that order, so a budget shortfall only
-     ever drops the least severe findings.
+     the agents' P0-P4 labels, and verify in that order.
    - **Batch per file**: one targeted `grep`, `wc -l` or `Read` per file answers every
      claim about it, not one command per claim.
-   - **Or delegate**: spawn a verification subagent with the findings and have it
-     return a corrected-claims table.
+   - **Or delegate**: have a verification subagent return a corrected-claims table.
    - Same value: keep. Different value: correct it to the measured value.
    - A claim inherently about reading code, not running it: keep it, marked "traced in
      code, not executed".
@@ -153,7 +158,7 @@ partial, and score the missing dimensions "(not analyzed)".
      evidence is dropped too and counted in the dropped tally below.
    - **Budget rule**: if verification cannot finish before the context runs out, drop
      every finding whose claims were not reached, from the report and the issue
-     bodies, and state how many were dropped, that it was a context-budget limit and not
+     bodies, and state how many were dropped, that it was a context-budget limit, not
      a quality judgment, and their severities (e.g. "dropped 4 findings: 3 P3, 1 P4").
 4. **Score** the 10 dimensions from verified findings and strengths.
 5. **Rank** findings by (severity * blast radius).
@@ -174,7 +179,7 @@ Confirm it appears in the list before passing it to `--milestone`.
 
 ## Analysis Levels
 
-Produce findings at four levels, top to bottom, each surfacing what the levels above miss.
+Produce findings at four levels:
 
 1. **Architecture and system design**: dependency graph, data model, security
    architecture, infrastructure readiness, scalability (N+1 queries, missing
@@ -226,7 +231,7 @@ today).
 
 - **Strengths**: 5-10 things done well to preserve.
 - **Prioritized Action Plan**: top 10 findings ranked by (severity * effort-to-fix),
-  with effort estimates. The "if you only have two weeks" list.
+  with effort estimates.
 - **Onboarding Gap Analysis**: for a senior developer joining tomorrow with only the
   repo and its docs: what is clear, what confuses, what is undocumented but critical,
   and what they would break on their first PR.
@@ -241,29 +246,32 @@ no emojis.
 
 ### Tracking header
 
-Put this at the very top of the file, before the title, so the `sova-status` skill and the `sova-standup` skill can
-detect audit progress:
+Put this at the very top of the file, before the title:
 
 ```markdown
-<!-- audit-tracker: issues=68,69,70 withheld=auth-token-storage -->
+<!-- audit-tracker: issues=68,69,70 folded=db-indexes:41 withheld=auth-token-storage deferred=cache-layer -->
 ```
 
-- `issues=` lists every issue number created in Phase C.
+- `issues=` lists the issue numbers created in Phase C, never a fold target.
+- `folded=` lists `<group-slug>:<issue number>` for each group commented on an
+  existing issue.
 - `withheld=` lists **slugified** group names (lowercase, each run of non-alphanumeric
-  characters collapsed to one hyphen, no commas). Slugify before writing, and compare
-  carry-over names against Phase B group names case- and hyphen-insensitively.
-- **Phase A**: write `withheld=` verbatim as the carry-over set Step 1 surfaced,
-  unchanged. Omit it only when Step 1 surfaced no carry-over groups.
+  characters collapsed to one hyphen, no commas) the user chose to hold back for
+  disclosure. Slugify before writing, and compare carry-over names against Phase B group
+  names case- and hyphen-insensitively.
+- `deferred=` lists slugified groups deferred by the 5-issue cap or an inconclusive search.
+- **Phase A**: write `withheld=`, `deferred=` and the open-target `folded=` entries
+  verbatim as the carry-over set Step 1 surfaced; a closed fold target moves its group
+  to `deferred=`. Omit a field with nothing to carry.
 - **Phase C**: rewrite `withheld=` as the union of every group whose pre-flight choice
-  was "withhold" and any carry-over group still unresolved (not filed, not dropped).
-  Omit the field when that union is empty.
+  was "withhold" and any withheld carry-over still unresolved, and `deferred=` as every
+  deferred group and any deferred carry-over still unresolved. Omit an empty field.
 
-An abort between the two writes therefore cannot drop a carry-over name. Step 1 of the
-next run re-surfaces the field's groups.
+An abort between the two writes therefore cannot drop a carry-over name.
 
-A withheld group's findings still count in every total the report states (executive
-summary, scorecard, action plan). State the split, e.g. "14 findings (12 filed, 2
-withheld)".
+Withheld and deferred findings still count in every total the report states (executive
+summary, scorecard, action plan). State the split, e.g. "14 findings (10 filed or
+folded, 2 withheld, 2 deferred)".
 
 ## Phase B: Group Findings into Task Batches
 
@@ -279,9 +287,8 @@ unless it truly stands alone. Write the grouping, with a dependency diagram, int
 
 ### Disclosure pre-flight
 
-Run this before the general confirmation below; it changes what that confirmation
-confirms. It does not change the scoring, only how a security-sensitive group is
-published.
+Run this before the general confirmation below. It changes only how a
+security-sensitive group is published, never the scoring.
 
 ```bash
 sova audit disclosure
@@ -293,10 +300,9 @@ the gate fails toward asking. A failed call or any other last line counts as
 `public-no-policy`.
 
 - **`private`** (the repo is private or internal): there is no public disclosure
-  exposure, but still resolve every carry-over group regardless of visibility, since a
-  private repo never becomes public enough later to re-trigger the pre-flight. Tell the
-  user the repo has no public exposure, then ask once per carry-over group whether to
-  file it now (from its Step 1 capture) or drop it from `withheld=`. Only once every
+  exposure, but still resolve every carry-over group regardless of visibility. Say so,
+  then ask once per carry-over group whether to
+  file it now (from its Step 1 capture), drop it, or for a deferred one defer it again. Only once every
   carry-over group is resolved (or there were none), skip to "Choose an issue body
   template".
 - **`public-policy <path>`**: read the policy and quote its private reporting
@@ -304,42 +310,39 @@ the gate fails toward asking. A failed call or any other last line counts as
   below, so withholding is not the only path to disclosure.
 - **`public-no-policy`**: ask the same question without a policy quote.
 
-For both public verdicts, the verdict changes the wording of the question, never
-whether it is asked. A group needs the three-way question when it is
+Either public verdict changes the question's wording, never whether it is asked. A group needs the three-way question when it is
 **security-sensitive** (any finding came from Agent A's security architecture
 analysis or scored against the Security dimension, or any Issue/Evidence text names a
 concrete exploit path such as a specific request, payload or call sequence), plus every
-carry-over group Step 1 surfaced that is still unresolved. A carry-over group with no
-Phase B group (its area was not re-analyzed) is asked anyway, from its Step 1 capture.
+withheld carry-over group still unresolved. A carry-over group with no Phase B group is
+asked anyway, from its Step 1 capture. A deferred carry-over group that is not
+security-sensitive is asked only: file now, defer again, or drop. It gets no disclosure
+question and never triggers the report-path check.
 
 For each such group, show its findings and ask the user to choose exactly one:
 1. **File as-is**: publish with full technical detail.
 2. **File neutrally**: publish, but drop the exploit path and evidence (keep the "what"
-   and "why it matters", not the "how to trigger it").
+   and "why it matters").
 3. **Withhold**: file no issue this run. Record the group in `withheld=`; its findings
    stay in the report body and in every stated total.
-4. **Drop** (carry-over groups only; this run's own security-sensitive groups keep the
-   three-way choice, since a group just found cannot be waved off as resolved): the
-   group is no longer relevant or was handled out of band. Remove it from `withheld=`
-   without filing, and name it in the run summary. It is not re-surfaced on a future
-   run.
+4. **Drop** (carry-over groups only): the group is no longer relevant or was handled
+   out of band. Remove it from `withheld=` or `deferred=` without filing, and name it in the run
+   summary. It is not re-surfaced on a future run.
 
 If the choice is "Withhold" or "File neutrally", check the Step 1 report path verdict
 before accepting it. These choices leave the exploit detail only in
 `docs/HEALTH-AUDIT.md`, so any `unsafe-*` verdict means it is one commit from public
-exposure. Phase A has already written the full report to that path, so the remedy is
-remediation, not prevention. Stop, have the user resolve the path, and clean up the
-written copy before continuing:
+exposure. Phase A has already written the full report to that path. Stop, have the
+user resolve the path, and clean up the written copy before continuing:
 - `unsafe-tracked`: `git rm --cached docs/HEALTH-AUDIT.md` and add it to `.gitignore`.
   The working copy stays on disk for Phase C.
 - `unsafe-untracked`: add `docs/HEALTH-AUDIT.md` to `.gitignore`.
 - `unsafe-not-a-git-repo`: relocate the report outside the project's distribution
   surface and delete the copy at the old path once the move is confirmed.
 
-"File as-is" needs no remediation. Re-ask the group's question only once the path is
-safe or "File as-is" was picked. Record each group's choice for "Create the issues".
+Re-ask the group's question only once the path is safe or "File as-is" was picked. Record each group's choice for "Create the issues".
 
-With **no security-sensitive or carry-over group on a public repo**, still ask one
+With **no security-sensitive or withheld carry-over group on a public repo**, still ask one
 confirmation to file all groups normally. A public repo never skips this gate.
 
 ### Choose an issue body template
@@ -387,17 +390,28 @@ Description" and "Acceptance Criteria": describe the class of weakness and the f
 
 ### Pre-flight checks before creating issues
 
-1. Run `gh issue list --state open --limit 1000` to check for duplicates.
+1. Find fold targets, posting nothing yet. For each group, search the open issues for
+   every file it touches (else its module or concern), quoting the path as a phrase:
+   `gh issue list --state open --limit 1000 --search '"<path>" in:title,body' --json number,title`.
+   A failed or 1000-result search defers the group.
+   When an open issue already covers a group's files for the same concern, the group is
+   **folded** (never a withheld group): record it as `folded into #N`. File at most 5
+   new issues per run, highest severity first. Defer
+   any further group: keep it in `deferred=` for the next audit to re-ask. A carry-over
+   group the user chose to file is exempt from the cap and from deferral: it is always
+   folded or filed (an inconclusive search files it).
 2. Present the proposed issues (titles, labels, milestone, and the disclosure choice for
-   any security-sensitive group) and wait for explicit user confirmation.
-3. After creation, report all issue numbers and which groups were filed neutrally or
-   withheld.
+   any security-sensitive group) and the folded groups with their target issue, and wait
+   for explicit user confirmation. Nothing is published before it.
+3. After creation, report all issue numbers and which groups were folded, left
+   deferred, filed neutrally or withheld.
 
 ### Create the issues
 
 For each Phase B group, plus every carry-over group the user chose to file (by either
 the public three-way question or the private two-way one), whose choice is not
-"withhold" or "drop", create an issue from the chosen template. A carry-over group
+"withhold" or "drop" and that was neither folded nor deferred, create an issue
+from the chosen template. A carry-over group
 with no Phase B group is rendered from its Step 1 capture.
 
 ```bash
@@ -410,13 +424,27 @@ EOF
 )"
 ```
 
-Then update the Action Plan table with issue numbers and links, update `issues=`, and
-rewrite `withheld=` per its Phase C stage. A carry-over group the user chose to file
-must gain an issue and drop out of `withheld=` in the same write, never one without the
-other. A dropped group gets neither. Give each withheld group's Action Plan row a
-`withheld` status with no issue link.
+Only now, after the confirmation, post each folded group's findings on its target (a
+"file neutrally" group without the exploit path):
+
+```bash
+gh issue comment <N> --body "$(cat <<'EOF'
+<the group's findings: files, concrete issue, why it matters, severity inline>
+EOF
+)"
+```
+
+Then update the Action Plan table with issue numbers and links, update `issues=`
+(created issues only), add `folded=<slug>:<N>` per fold, and rewrite `withheld=` and
+`deferred=` per their Phase C stage. A carry-over group the user chose to file
+(never deferred; a fold target counts) must gain an issue or fold and drop out of
+`withheld=` or `deferred=` in the same write, never one without the other. A dropped
+group gets neither. Give each withheld group's Action Plan row a `withheld` status and
+each deferred group's a `deferred` status, with no issue link.
 
 ### Add issues to the project board
+
+Only issues created in this run: a fold target is someone else's issue, never added.
 
 ```bash
 sova board add <issue-url> [<issue-url> ...]
@@ -441,8 +469,8 @@ configured board it uses the owner's only board. Act on what it prints:
 ## Phase D: Verify
 
 After creating issues, verify:
-- Each issue is on the **resolved** board, not merely some board. `projectItems` holds
-  each item's project title but no number, so check membership by the board's title:
+- Each issue created this run (never a fold target) is on the **resolved** board, not merely some board. Check membership by the
+  board's title:
   ```bash
   gh issue view <n> --json projectItems --jq '[.projectItems[].title]'
   ```
@@ -453,19 +481,18 @@ After creating issues, verify:
   list, or one without that title, means not a member. A command failure is reported as
   "could not verify board membership", never read as "not on the board".
 - Labels, milestones and dependencies are correct.
-- Every "withhold" group has no issue and is listed in `withheld=`.
+- Every "withhold" group has no issue and is in `withheld=`; every deferred group has none and is in `deferred=`.
 - Every "file neutrally" issue body has no exploit-path specifics.
-- Every carry-over group ended in exactly one of three states: filed (has an issue, no
-  longer in `withheld=`), still withheld (no issue, still in `withheld=`), or explicitly
+- Every folded group's findings are commented on its target issue.
+- Every carry-over group ended in exactly one of three states: filed (has an issue or
+  fold target, in neither field), still withheld or deferred (no issue, still in `withheld=` or `deferred=`), or explicitly
   dropped (chose "Drop"; no issue, absent from `withheld=`, named in the run summary).
   A group in none of them is a bug: report it rather than resolving it either way.
 
 ## Constraints
-- Do NOT fabricate findings. If unsure an issue exists, say so and name what you would
-  check.
-- Do NOT pad the report with generic advice. Ground every finding in code you can see,
-  with file paths and line references where possible.
+- Do NOT fabricate findings. If unsure an issue exists, say what you would check.
+- Do NOT pad the report with generic advice. Ground every finding in code you can see.
 - Do NOT soften critical findings. DO acknowledge genuinely good patterns.
 - Keep the report actionable: 30 well-prioritized findings beat a 200-finding dump.
-- Maximum 10 task groups. Before creating issues, show the grouping and **ask for
-  confirmation**.
+- Maximum 10 task groups and 5 new issues per run (filed carry-over groups exempt).
+  Before creating issues, show the grouping and **ask for confirmation**.

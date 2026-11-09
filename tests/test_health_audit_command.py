@@ -126,14 +126,14 @@ class TestDisclosurePreflight:
         carry-over clause and restore that exact bug with no test noticing."""
         text = request.getfixturevalue(fixture)
         assert "plus every carry-over group the user chose to file" in text
-        assert "must gain an issue and drop out of `withheld=` in the same write" in text
+        assert "must gain an issue or fold and drop out of `withheld=` or `deferred=` in the same write" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_carry_over_groups_feed_the_preflight(self, fixture: str, request: pytest.FixtureRequest) -> None:
         """A withheld group carried in from Step 1 must reach this run's three-way question."""
         text = request.getfixturevalue(fixture)
         assert "carry-over group" in text
-        assert "plus every carry-over group Step 1 surfaced that is still unresolved" in text
+        assert "plus every withheld carry-over group still unresolved" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_private_or_internal_repo_still_resolves_carry_overs(
@@ -175,7 +175,7 @@ class TestWithheldTracking:
         must be written as a fail-safe placeholder in Phase A and only unioned with this run's
         decisions afterward in Phase C, never overwritten blind in between."""
         text = request.getfixturevalue(fixture)
-        assert "write `withheld=` verbatim as the carry-over set" in text
+        assert "write `withheld=`, `deferred=` and the open-target `folded=` entries" in text
         assert "rewrite `withheld=` as the union of" in text
         assert "cannot drop a carry-over name" in text
 
@@ -183,6 +183,7 @@ class TestWithheldTracking:
     def test_action_plan_row_marks_withheld_status(self, fixture: str, request: pytest.FixtureRequest) -> None:
         text = request.getfixturevalue(fixture)
         assert "`withheld` status" in text
+        assert "`deferred` status" in text
 
     @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
     def test_carry_over_content_captured_before_overwrite(self, fixture: str, request: pytest.FixtureRequest) -> None:
@@ -389,6 +390,96 @@ class TestIncrementalMode:
         text = request.getfixturevalue(fixture)
         assert "### Step 4: Incremental mode check" in text
         assert "Use the mode recorded in Step 1; an existing report alone does not select incremental mode" in text
+
+
+class TestFoldBeforeFiling:
+    """A group whose files an open issue already covers is commented there, not filed again."""
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_preflight_searches_open_issues_per_file(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert """gh issue list --state open --limit 1000 --search '"<path>" in:title,body'""" in text
+        assert "Find fold targets, posting nothing yet." in text
+        assert "(else its module or concern)" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_inconclusive_search_defers_the_group(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "A failed or 1000-result search defers the group." in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_staleness_check_reads_each_tracked_issue(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "gh issue view <n> --json state --jq .state" in text
+        assert "`could not verify #N`, counted as neither open nor closed" in text
+        assert "gh issue list --state open --limit 1000 --json number --jq '.[].number'" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_fold_targets_are_tracked_apart_from_created_issues(
+        self, fixture: str, request: pytest.FixtureRequest
+    ) -> None:
+        """A fold target is someone else's issue: it must not decide staleness or join the board."""
+        text = request.getfixturevalue(fixture)
+        assert "`issues=` lists the issue numbers created in Phase C, never a fold target." in text
+        assert "`folded=` lists `<group-slug>:<issue number>`" in text
+        assert "Compare against the tracked `issues=` numbers (created issues only)" in text
+        assert "a closed fold target proves nothing about the folded findings" in text
+        assert "Only issues created in this run: a fold target is someone else's issue, never added." in text
+        assert "Each issue created this run (never a fold target) is on the **resolved** board" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_fold_comment_is_posted_only_after_confirmation(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        confirmation = text.index("Nothing is published before it.")
+        assert confirmation < text.index("gh issue comment <N> --body")
+        assert "Only now, after the confirmation, post each folded group's findings" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_new_issues_are_capped_at_five(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert "File at most 5 new issues per run" in text
+        assert "Maximum 10 task groups and 5 new issues per run" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_folding_follows_the_disclosure_choice(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A fold publishes findings on a public issue, so withheld and neutral groups must not leak detail."""
+        text = request.getfixturevalue(fixture)
+        assert "**folded** (never a withheld group)" in text
+        assert '"file neutrally" group without the exploit path' in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_cap_defers_into_its_own_field(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A group past the cap goes to `deferred=`, not `withheld=`, which means only a disclosure hold."""
+        text = request.getfixturevalue(fixture)
+        assert "Defer any further group: keep it in `deferred=`" in text
+        assert "`deferred=` as every deferred group and any deferred carry-over still unresolved" in text
+        assert "A deferred carry-over group that is not security-sensitive is asked only: file now" in text
+        assert "never triggers the report-path check" in text
+        assert "2 withheld, 2 deferred" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_cap_never_strands_a_carry_over_group(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        """A carry-over group the user chose to file must gain an issue, so the cap cannot defer it.
+
+        Deferring it would leave it unfiled, a state outside Phase D's three carry-over end states.
+        """
+        text = request.getfixturevalue(fixture)
+        assert "carry-over groups included" not in text
+        assert (
+            "A carry-over group the user chose to file is exempt from the cap and from deferral: "
+            "it is always folded or filed (an inconclusive search files it)"
+        ) in text
+        assert (
+            "A carry-over group the user chose to file (never deferred; a fold target counts) "
+            "must gain an issue or fold and drop out of `withheld=` or `deferred=` in the same write"
+        ) in text
+        assert "filed (has an issue or fold target, in neither field)" in text
+        assert "5 new issues per run (filed carry-over groups exempt)" in text
+
+    @pytest.mark.parametrize("fixture", HEALTH_NORM_FIXTURES)
+    def test_folded_and_unfiled_groups_are_not_created(self, fixture: str, request: pytest.FixtureRequest) -> None:
+        text = request.getfixturevalue(fixture)
+        assert '"withhold" or "drop" and that was neither folded nor deferred, create an issue' in text
 
 
 class TestLabelValidation:
