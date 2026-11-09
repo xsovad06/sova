@@ -368,7 +368,7 @@ leaves agents running until the next start adopts them, so stop them from the da
 or kill them by hand. An interactive `sova server start` or `sova dashboard` (Ctrl+C) still
 stops its agents on shutdown.
 
-*Unverified on Linux (tracked in #1241):* the Claude CLI rewrites `~/.claude.json` by
+*Unverified on Linux:* the Claude CLI rewrites `~/.claude.json` by
 writing a temp file and renaming it over the original. A single-file read-write bind
 mount may not allow that rename, and sibling files at the home root (backups, locks)
 stay read-only under `ProtectHome=read-only`. If agents cannot save state under the

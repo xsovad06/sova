@@ -129,7 +129,7 @@ removes the primary runaway-loop stop for exactly the providers the migration ad
   `sova/llm/cost.py:record_cost()`, the latter used by `TriageRole`), so a Codex run's `$0.00` in
   the dashboard cost views is distinguishable from a genuine priced zero; NULL still means legacy
   (pre-#1128) data. By-source/by-model aggregation that consumes the column in the dashboard UI
-  remains #922. A step that both dispatches to Codex and separately makes a priced provider call
+  is not built (#922 was closed as not planned). A step that both dispatches to Codex and separately makes a priced provider call
   in the same attempt (`DevelopStep`: its `/develop` dispatch, the post-hoc implementation-notes
   extraction, then any fix-loop dispatch) writes two `CostRecord`s, not one. `_dispatch_to_runtime`
   tags every Codex result with `LLMResult.runtime_name`, and `ExecutionContext.add_usage()` routes
