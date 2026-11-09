@@ -47,8 +47,12 @@ _COMMAND_CAPS: dict[str, int] = {
     "pr.md": 36_000,
     "review-pr.md": 22_000,
 }
-# Skill directory name -> cap for its SKILL.md. Empty: every skill is under the default.
-_SKILL_CAPS: dict[str, int] = {}
+# Skill directory name -> cap for its SKILL.md. Only skills over _DEFAULT_SKILL_CAP belong here.
+_SKILL_CAPS: dict[str, int] = {
+    # Raised by 1,000 for "Before Filing a New Issue": search the open issues for the files a new
+    # issue would touch and fold into a match instead of filing, the main source of issue inflow.
+    "issue-template": 9_000,
+}
 
 
 def _size(path: Path) -> int:

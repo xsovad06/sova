@@ -16,6 +16,26 @@ and goes straight to the pipeline. The structure matches
 `.github/ISSUE_TEMPLATE/task.md`, so the tracker template and this skill cannot
 drift apart.
 
+## Before Filing a New Issue
+
+Search the open issues first: most new findings belong to work already filed. For
+every file the new issue would list under `## Files / Modules to Change`, run:
+
+```bash
+gh issue list --state open --limit 1000 --search '"<file path>" in:title,body' --json number,title
+```
+
+- **An open issue already covers that file for the same concern**: add the new
+  scope there (a comment, or new criteria and files in its body) instead of
+  filing, and name the issue that absorbed it.
+- **The work is small and in a file the current branch already changes**: fix it
+  on this branch. It needs no issue.
+- **Neither**: file it, and name the closest open issue under `## References`
+  (or a code reference when no open issue is close).
+
+Never put "file a follow-up" in acceptance criteria. List deferred work under
+`## Out of Scope / Constraints`, so whoever picks it up runs this search.
+
 ## Canonical Body
 
 ```markdown

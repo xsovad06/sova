@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from sova.adapters.jira import JiraAdapter, _build_adf_doc
-from sova.commands.catalog import get_skills_dir
+from sova.commands.catalog import get_canonical_dir, get_skills_dir
 from sova.commands.distribution import _collect_skills
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
@@ -290,3 +290,34 @@ class TestJiraRoundTrip:
         assert "- [ ] a criterion" in restored
         assert "- - [ ]" not in restored
         assert compute_quality_score(restored).has_acceptance_criteria
+
+
+class TestSearchBeforeFiling:
+    """Every manual filing path searches the open issues first and folds into a match."""
+
+    @pytest.mark.parametrize("path", _BOTH_COPIES)
+    def test_skill_searches_open_issues_before_the_canonical_body(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        assert text.index("## Before Filing a New Issue") < text.index("## Canonical Body")
+        assert """gh issue list --state open --limit 1000 --search '"<file path>" in:title,body'""" in text
+        assert "**An open issue already covers that file for the same concern**" in text
+        before_body = text[: text.index("## Canonical Body")]
+        assert "(or a code reference when no open issue is close)" in before_body
+
+    def test_distributable_skill_gives_jira_search_guidance(self) -> None:
+        text = _DISTRIBUTABLE.read_text(encoding="utf-8")
+        before_body = text[: text.index("## Canonical Body")]
+        assert 'statusCategory != Done AND text ~ "<file path>"' in before_body
+
+    @pytest.mark.parametrize("path", _BOTH_COPIES)
+    def test_skill_forbids_follow_up_criteria(self, path: Path) -> None:
+        text = path.read_text(encoding="utf-8")
+        assert 'Never put "file a follow-up" in acceptance criteria.' in text
+
+    @pytest.mark.parametrize("name", ["review.md", "develop.md"])
+    def test_scout_rule_folds_instead_of_noting_a_separate_task(self, name: str) -> None:
+        text = " ".join((get_canonical_dir() / name).read_text(encoding="utf-8").split())
+        assert "note it for a separate task" not in text
+        assert "to the open issue that already covers its file for the same concern" in text
+        assert "file a new issue only when none does" in text
+        assert "Headless runs make no tracker writes: search read-only" in text
