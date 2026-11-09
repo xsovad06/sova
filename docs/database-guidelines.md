@@ -129,7 +129,7 @@ Note that the guard deliberately checks names, not types: a full `compare_metada
 reports 65 further entries of pre-existing cosmetic drift (51 nullability mismatches, 5
 foreign keys SQLite reflects differently, 4 index names, 3 VARCHAR lengths) whose repair
 would require batch-mode rebuilds of roughly 16 tables holding live run history. That
-cleanup is deliberately deferred to issue #1008, and the guard is scoped to stay green
+cleanup is deliberately not planned (issue #1008), and the guard is scoped to stay green
 without it.
 
 ### SQLite WAL mode, synchronous, and busy timeout

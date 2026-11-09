@@ -284,7 +284,7 @@ Target: October 2026.
 | #18 | Deploy to 2+ external projects | Done |
 | #20 | Tag v0.1.0 release | Open |
 | #22 | Make repository public | Done |
-| #21 | Write launch blog post | Open |
+| ~~#21~~ | ~~Write launch blog post~~ | Not planned |
 
 ## Model Selection & Provider Abstraction (Q4 2026)
 
@@ -297,7 +297,7 @@ Fix model selection crash (unavailable version warning), consolidate fallback lo
 | #33 | VM deployment + always-on mode | systemd service hardening, notification abstraction, hybrid laptop+VM |
 | ~~#32~~ | ~~Team knowledge sharing~~ | ~~sync generalizable learnings across SOVA installations~~ (done) |
 | ~~#51~~ | ~~Visual role builder~~ | ~~dashboard page for composing custom agent roles as workflow DAGs~~ (done) |
-| #24 | Evaluate monetization | Q1 2027 decision: open-core vs hosted vs consulting |
+| ~~#24~~ | ~~Evaluate monetization~~ | ~~Q1 2027 decision: open-core vs hosted vs consulting~~ (not planned: kept as an internal tool) |
 | ~~--~~ | ~~JIRA adapter~~ | ~~JIRA Cloud task source with lifecycle enrichment~~ (done: #220) |
 | n/a | Additional adapters | Linear, Odoo task source adapters |
 | n/a | Additional personas | Go, React, Rust framework guidance |
