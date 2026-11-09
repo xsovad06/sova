@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
-import click
 import typer
 from rich.console import Console
 
@@ -17,20 +17,29 @@ app = typer.Typer(
 
 console = Console(stderr=True)
 
-_VALID_TRANSPORTS = ["stdio", "sse"]
+
+class Transport(StrEnum):
+    """MCP transport protocols accepted by ``sova mcp serve``.
+
+    An Enum rather than ``click_type=click.Choice(...)``: Typer 0.29 removed the
+    ``click_type`` parameter, and an Enum choice works across the supported range.
+    """
+
+    STDIO = "stdio"
+    SSE = "sse"
 
 
 @app.command()
 def serve(
     transport: Annotated[
-        str,
+        Transport,
         typer.Option(
             "--transport",
             "-t",
             help="Transport protocol: stdio or sse.",
-            click_type=click.Choice(_VALID_TRANSPORTS, case_sensitive=False),
+            case_sensitive=False,
         ),
-    ] = "stdio",
+    ] = Transport.STDIO,
     project: Annotated[
         str,
         typer.Option("--project", "-p", help="Path to the project directory to bind the server to."),
@@ -56,10 +65,10 @@ def serve(
 
     server = create_server(project_dir=project_dir)
 
-    console.print(f"[cyan]Starting SOVA MCP server (transport={transport})[/cyan]")
+    console.print(f"[cyan]Starting SOVA MCP server (transport={transport.value})[/cyan]")
 
     try:
-        if transport == "stdio":
+        if transport is Transport.STDIO:
             asyncio.run(server.run_stdio_async())
         else:
             asyncio.run(server.run_sse_async())

@@ -578,6 +578,27 @@ class TestMCPCLI:
         assert result.exit_code == 0
         mock_run.assert_called_once()
 
+    def test_transport_is_case_insensitive(self, tmp_path: Path) -> None:
+        """``--transport SSE`` selects the SSE server, not stdio."""
+        from unittest.mock import MagicMock
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.mcp import app
+
+        mock_server = MagicMock()
+        runner = CliRunner()
+
+        with (
+            patch("sova.mcp.server.create_server", return_value=mock_server),
+            patch("asyncio.run"),
+        ):
+            result = runner.invoke(app, ["--transport", "SSE", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        mock_server.run_sse_async.assert_called_once()
+        mock_server.run_stdio_async.assert_not_called()
+
     def test_serve_keyboard_interrupt(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
 
