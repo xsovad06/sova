@@ -72,6 +72,15 @@ it a public repo can only re-ask forever, since "Withhold" re-adds the name. A g
 run's own analysis just found cannot be waved off as resolved, so it keeps the three-way
 choice.
 
+The pre-flight folds a group into an open issue that already covers its files instead of
+filing a duplicate, and caps new issues at 5 per run, deferring the rest into
+`deferred=`. A fold publishes on a public issue, so it follows the group's disclosure
+choice: a withheld group is never folded, and a "file neutrally" group's comment omits
+the exploit path. A carry-over group the user chose to file is exempt from both the cap
+and deferral (an inconclusive search files it): deferring it would leave it unfiled, a
+state outside Phase D's three carry-over end states (filed, still withheld or deferred,
+dropped), and the user has already answered for it once.
+
 Group names are slugified before they go into the comma-delimited field, since a name
 with spaces or commas would be unparseable, or merge with its neighbour, on the next
 run's Step 1, the one consumer that has to round-trip it.
@@ -178,6 +187,56 @@ structure is the default for a portable project, not a last resort: it is exactl
 `compute_quality_score()` scores, so a filed issue needs no triage rewrite. A separate,
 lower-scoring fallback template is deliberately absent, because an earlier revision left
 the scorer-matching structure attached to no branch at all.
+
+## Folding into open issues
+
+An audit run used to file every group as a new issue after a bare duplicate check with
+no matching rule. The 2026-11-04 run overlapped issues that were already open in 7 of
+its 10 groups, and audit issues were the slowest to close of any source (median 4.1
+days, half still open after a month). Phase C therefore matches each group's files
+against the open issues and comments the findings on a match instead of filing. The
+comment is posted only in "Create the issues", after the user confirms the plan, because
+a pre-flight comment would publish findings before the confirmation gate.
+
+A fold target is an issue the audit does not own, so it is tracked apart from created
+issues: `folded=<slug>:<N>` records it and `issues=` never holds it. Step 1's staleness
+decision reads created issues only, so a long-lived umbrella issue cannot hold the cycle
+open. A closed fold target proves nothing about the folded findings (it may have closed
+for its own scope), so its group becomes a carry-over group instead of counting as
+resolved. Fold targets are also exempt from the board add and the board check.
+
+The 5-issue cap keeps one run from outpacing what the project closes. A group past the
+cap (or one whose search was inconclusive) goes into its own `deferred=` field, which
+makes it a carry-over group the next audit re-asks: a report-only `unfiled` state lost
+the group whenever Step 1 deleted the report after the tracked issues closed. It is not
+`withheld=`, which means only a disclosure hold: a deferred group with no exploit detail
+is asked file now, defer again or drop, never the disclosure question, and never
+triggers the report-path remediation. The same search-and-fold rule applies to every issue
+filed by hand through the `issue-template` skill.
+
+The search is a duplicate guard, so any answer it cannot trust defers the group rather
+than filing: a failed call looks like "no match", and a result of exactly 1000 may have
+dropped the matching issue. It searches titles as well as bodies (an issue can name the
+file only in its title), and a group that names no file is searched by its module or
+concern. The path is quoted as a phrase, since unquoted `a/b/c.py` splits into terms and
+matches any issue naming `a`, `b` and `c`. Step 1's staleness check lists open issues
+once and looks up only the tracked numbers the list omits, for the same reason: a
+1000-issue list can omit a tracked open issue, which would delete the report while work
+remains. A lookup that fails is reported as `could not verify #N`, never counted as open,
+so a deleted or transferred issue cannot keep the cycle open forever.
+
+A fold is a publication like filing: the comment lands on a public issue, so it follows
+the group's disclosure choice. A withheld group is never folded, and a "file neutrally"
+group's comment drops the exploit path exactly as its issue body would. A deferred carry-over group
+stays in `deferred=`, one of Phase D's three carry-over end states, so the cap cannot
+drop it.
+
+## Tracking header and mode selection
+
+The `audit-tracker` comment sits above the title because `/status` and `/standup` read
+it to report audit progress. An existing report does not select incremental mode on its
+own: the user may have chosen a full audit precisely to overwrite it, so Step 4 uses the
+mode Step 1 recorded.
 
 ## Pagination limits
 

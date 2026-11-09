@@ -36,8 +36,10 @@ _SLACK_CHARS = 1_000
 _COMMAND_CAPS: dict[str, int] = {
     "address-pr.md": 40_000,
     "find-task.md": 15_500,
-    # Issue #1363's target: cut to 24,000 characters or less.
-    "health-audit.md": 24_000,
+    # Raised from the #1363 target of 24,000 by 2,500 for folding open issues before filing: the fold search,
+    # the fold comment posted only after confirmation, and the separate `folded=` and `deferred=` tracker
+    # fields that keep fold targets and cap deferrals out of the created-issue and disclosure paths.
+    "health-audit.md": 26_500,
     # Issue #1321 raised this by 6,000 for the required-check name lookup in Phase 4 (fast path and poll):
     # the rulesets (every page), the matching against the registered checks, the required-only verdict, and
     # the union with the names `gh pr checks --required` reports (classic protection).
