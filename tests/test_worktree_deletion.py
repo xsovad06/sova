@@ -189,42 +189,10 @@ class TestGateCheckExceptionHandling:
 
 
 class TestShellProcessKillTimeout:
-    """Test that proc.wait() after kill has a bounded timeout."""
+    """Test that proc.wait() after kill has a bounded timeout.
 
-    async def test_kill_timeout_prevents_hang(self) -> None:
-        """When killed process doesn't exit (uninterruptible I/O), wait times out after 5s."""
-        from sova.utils.shell import run
-
-        # Create a process that we'll kill
-        with (
-            patch("asyncio.create_subprocess_exec") as mock_create,
-            patch("sova.utils.shell.log") as mock_log,
-        ):
-            mock_proc = AsyncMock()
-            mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-            mock_proc.kill = MagicMock()
-            mock_proc.pid = 12345
-
-            # Simulate a process that never exits after kill by hanging forever
-            async def never_exits():
-                await asyncio.sleep(1000)
-
-            mock_proc.wait = AsyncMock(side_effect=never_exits)
-            mock_proc.returncode = None
-            mock_create.return_value = mock_proc
-
-            # Run with a short timeout to trigger the kill path
-            result = await run("sleep", "1000", timeout=0.1)
-
-            # Should have called kill
-            mock_proc.kill.assert_called_once()
-
-            # Should return a timeout result without hanging
-            assert result.returncode == -1
-            assert "timed out" in result.stderr.lower()
-
-            # Should log warning about kill timeout
-            mock_log.warning.assert_called_once_with("shell.kill_timeout", cmd="sleep", pid=12345)
+    The hang case (wait() never returns) is tested once, in tests/test_shell_timeout.py.
+    """
 
     async def test_normal_kill_completes_quickly(self) -> None:
         """When process exits normally after kill, wait completes immediately."""

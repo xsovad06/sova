@@ -276,8 +276,16 @@ jobs:
       # which worker contention on a slower runner breaches. `make test-ci` is
       # the single source of truth for this invocation (see AGENTS.md's "CI
       # test invocation"), so both matrix legs stay identical by construction.
+      # SOVA_TEST_DURATION_BUDGET fails any test whose setup, call and (when the
+      # next test shares its module or class) teardown time exceeds it unless it
+      # is marked `slow`; a breach shows as a teardown ERROR (tests/duration_budget.py,
+      # docs/testing-guidelines.md "Duration Budget"). It is
+      # set here only: local timings swing with whatever else the machine runs.
+      # 8s sits well above the slowest unmarked test on a runner (about 3s).
       - name: Run tests with coverage
         if: needs.changes.outputs.code != 'false'
+        env:
+          SOVA_TEST_DURATION_BUDGET: "8"
         run: make test-ci
 
       # On a documentation-only change no tests ran, so there is no
