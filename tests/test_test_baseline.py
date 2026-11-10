@@ -271,6 +271,17 @@ class TestRunTestSuite:
         assert len(result.tests) == 2
         assert result.exit_code == 1
 
+    async def test_worker_cap_comes_from_the_passed_config(self, tmp_path: Path) -> None:
+        config = ProjectConfig()
+        config.testing.check_workers = 7
+        with patch("sova.core.test_baseline.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, success=True, stdout="", stderr="")
+            with patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("PYTEST_XDIST_AUTO_NUM_WORKERS", None)
+                await run_test_suite("npm test", tmp_path, cmd_timeout=60, config=config)
+
+        assert mock_run.call_args.kwargs["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "7"
+
     async def test_pytest_fallback_when_report_corrupt(self, tmp_path: Path) -> None:
         sova_dir = tmp_path / ".sova"
         sova_dir.mkdir()

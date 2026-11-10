@@ -14,7 +14,7 @@ from sova.git.artifact_exclusions import WORKTREE_STASH_EXCLUDED_PATHS, unstage_
 from sova.git.untracked_collisions import clear_conflicting_runtime_files, runtime_stash_pathspecs
 from sova.llm.client import invoke_command
 from sova.llm.models import LLMResult
-from sova.utils.env import scrub_check_env
+from sova.utils.env import scrub_orchestrator_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -480,7 +480,7 @@ async def rebase_with_conflict_resolution(
     hit_commit_cap = False
     for commit_idx in range(max_commits):
         if not conflicted:
-            env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
+            env = scrub_orchestrator_env({**os.environ, "GIT_EDITOR": "true"})
             cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
             if cont.success:
                 if not await _pop_stash():
@@ -521,7 +521,7 @@ async def rebase_with_conflict_resolution(
                     return await _abort_unverifiable(conflicts_resolved)
                 if not remaining:
                     conflicts_resolved += len(conflicted)
-                    env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
+                    env = scrub_orchestrator_env({**os.environ, "GIT_EDITOR": "true"})
                     cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
                     if cont.success:
                         if not await _pop_stash():
@@ -583,7 +583,7 @@ async def rebase_with_conflict_resolution(
                 ), cost
 
         conflicts_resolved += len(conflicted)
-        env = scrub_check_env({**os.environ, "GIT_EDITOR": "true"})
+        env = scrub_orchestrator_env({**os.environ, "GIT_EDITOR": "true"})
         cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
             if not await _pop_stash():

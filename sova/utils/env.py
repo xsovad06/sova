@@ -16,8 +16,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="utils.env")
 
@@ -36,13 +41,81 @@ log = get_logger(component="utils.env")
 ORCHESTRATOR_ONLY_VARS: frozenset[str] = frozenset({"SOVA_DATABASE_URL"})
 
 
-def scrub_check_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return a copy of the environment for a project check command, minus ORCHESTRATOR_ONLY_VARS.
+def scrub_orchestrator_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a copy of the environment minus ORCHESTRATOR_ONLY_VARS, and nothing else.
 
-    A copy, so the pipeline keeps its connection and every other variable reaches the check.
+    A pure scrub: it never reads a config, so a git-only call (a rebase continue) that runs no
+    project suite does not resolve settings from the ambient working directory.
     """
     source = os.environ if env is None else env
     return {key: value for key, value in source.items() if key not in ORCHESTRATOR_ONLY_VARS}
+
+
+def scrub_check_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    config: ProjectConfig | None = None,
+    project_dir: Path | None = None,
+) -> dict[str, str]:
+    """Return scrub_orchestrator_env() plus the pytest worker cap, for a call that may run the project's suite.
+
+    A copy, so the pipeline keeps its connection and every other variable reaches the check. The cap
+    (with_pytest_worker_cap()) is read from *config* when given, else from the config loaded for
+    *project_dir*, else from the one for the current working directory, which belongs to whoever runs
+    the call (a server process may sit in another project). Pass *config* or *project_dir* wherever
+    either is in hand; a call that runs no suite should use scrub_orchestrator_env().
+    """
+    return with_pytest_worker_cap(scrub_orchestrator_env(env), config, project_dir)
+
+
+# pytest-xdist reads this for `-n auto`. `make check` runs `-n auto` so it stays the exact CI
+# invocation (issue #1209), which on its own starts one worker per core for every concurrent
+# check: four agents on a 14-core machine started about 56. Setting it in the environment of
+# every check SOVA runs and every agent it dispatches caps the workers without touching the
+# command, and CI, which never sets it, keeps every core.
+PYTEST_WORKERS_ENV_KEY = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+
+
+# Mirrors ProjectConfig.max_parallel_agents' default, for a config that cannot be loaded.
+DEFAULT_MAX_PARALLEL_AGENTS = 2
+
+
+def pytest_worker_count(check_workers: int, max_parallel_agents: int, *, cpu_count: int | None = None) -> int:
+    """Workers for one check: ``check_workers`` when set, else the cores split between the agents, at least 2."""
+    if check_workers > 0:
+        return check_workers
+    cpus = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    return max(2, cpus // max(1, max_parallel_agents))
+
+
+def configured_pytest_workers(config: ProjectConfig | None = None, project_dir: Path | None = None) -> int:
+    """pytest_worker_count() for *config*, or for the config loaded for *project_dir* (cwd when None).
+
+    A config that cannot be loaded degrades to the defaults (``testing.check_workers = 0``,
+    ``max_parallel_agents = 2``) rather than failing the spawn, as configured_passthrough() does.
+    """
+    if config is None:
+        try:
+            from sova.config.loader import load_config
+
+            config = load_config(project_dir)
+        except Exception:  # noqa: BLE001 (config may fail for many reasons; the cap falls back to its defaults)
+            log.debug("env.worker_cap_config_unavailable", exc_info=True)
+            # Not ProjectConfig(): a bad SOVA_* override makes that constructor raise again.
+            return pytest_worker_count(0, DEFAULT_MAX_PARALLEL_AGENTS)
+    return pytest_worker_count(config.testing.check_workers, config.max_parallel_agents)
+
+
+def with_pytest_worker_cap(
+    env: dict[str, str], config: ProjectConfig | None = None, project_dir: Path | None = None
+) -> dict[str, str]:
+    """Set PYTEST_WORKERS_ENV_KEY in *env* (in place, and returned) unless the operator already set it.
+
+    An empty or whitespace-only value counts as unset, as it does for pytest-xdist itself.
+    """
+    if not env.get(PYTEST_WORKERS_ENV_KEY, "").strip():
+        env[PYTEST_WORKERS_ENV_KEY] = str(configured_pytest_workers(config, project_dir))
+    return env
 
 
 # Third-party provider routing and model pinning. When present, these make the

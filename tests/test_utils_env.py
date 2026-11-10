@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
+from sova.config import models as config_models
+from sova.config.models import ProjectConfig
 from sova.utils.env import (
     ANTHROPIC_CREDENTIAL_VARS,
     CODEX_CREDENTIAL_VARS,
     OPENAI_CREDENTIAL_VARS,
     PARENT_SESSION_VARS,
     PROVIDER_ROUTING_VARS,
+    PYTEST_WORKERS_ENV_KEY,
     SCRUBBED_VARS,
     SERVICE_MANAGER_VARS,
+    pytest_worker_count,
     scrub_agent_env,
+    scrub_check_env,
 )
 
 
@@ -196,8 +204,13 @@ class TestScrubCheckEnv:
     def test_drops_only_the_database_url(self) -> None:
         from sova.utils.env import scrub_check_env
 
-        source = {"SOVA_DATABASE_URL": "sqlite+aiosqlite:////tmp/orchestrator.db", "PATH": "/bin", "SOVA_X": "1"}
-        assert scrub_check_env(source) == {"PATH": "/bin", "SOVA_X": "1"}
+        source = {
+            "SOVA_DATABASE_URL": "sqlite+aiosqlite:////tmp/orchestrator.db",
+            "PATH": "/bin",
+            "SOVA_X": "1",
+            "PYTEST_XDIST_AUTO_NUM_WORKERS": "3",
+        }
+        assert scrub_check_env(source) == {"PATH": "/bin", "SOVA_X": "1", "PYTEST_XDIST_AUTO_NUM_WORKERS": "3"}
         assert "SOVA_DATABASE_URL" in source
 
     def test_reads_os_environ_by_default(self) -> None:
@@ -205,3 +218,97 @@ class TestScrubCheckEnv:
 
         with patch.dict("os.environ", {"SOVA_DATABASE_URL": "postgresql://team/sova"}):
             assert "SOVA_DATABASE_URL" not in scrub_check_env()
+
+
+class TestScrubOrchestratorEnv:
+    """A git-only call gets a pure scrub: no worker cap, and no config read."""
+
+    def test_drops_the_database_url_and_adds_no_cap(self) -> None:
+        from sova.utils.env import scrub_orchestrator_env
+
+        source = {"SOVA_DATABASE_URL": "sqlite+aiosqlite:////tmp/o.db", "PATH": "/bin"}
+        assert scrub_orchestrator_env(source) == {"PATH": "/bin"}
+
+    def test_never_loads_a_config(self) -> None:
+        from sova.utils.env import scrub_orchestrator_env
+
+        with patch("sova.config.loader.load_config", side_effect=AssertionError("config read")):
+            assert PYTEST_WORKERS_ENV_KEY not in scrub_orchestrator_env({"PATH": "/bin"})
+
+
+class TestPytestWorkerCap:
+    """Concurrent full checks each ran `-n auto` across every core; SOVA splits the cores between agents."""
+
+    @pytest.mark.parametrize(
+        ("check_workers", "max_parallel_agents", "cpus", "expected"),
+        [
+            pytest.param(0, 4, 14, 3, id="cores split between the agents"),
+            pytest.param(0, 2, 14, 7, id="default two agents"),
+            pytest.param(0, 8, 14, 2, id="never below two workers"),
+            pytest.param(0, 0, 14, 14, id="zero agents reads as one"),
+            pytest.param(5, 4, 14, 5, id="a fixed count wins"),
+        ],
+    )
+    def test_worker_count(self, check_workers: int, max_parallel_agents: int, cpus: int, expected: int) -> None:
+        assert pytest_worker_count(check_workers, max_parallel_agents, cpu_count=cpus) == expected
+
+    def test_check_env_carries_the_split_from_the_passed_config(self) -> None:
+        config = ProjectConfig(max_parallel_agents=4)
+        with patch("sova.utils.env.os.cpu_count", return_value=12):
+            env = scrub_check_env({"PATH": "/bin"}, config=config)
+        assert env[PYTEST_WORKERS_ENV_KEY] == "3"
+
+    def test_check_env_carries_the_fixed_setting(self) -> None:
+        config = ProjectConfig(max_parallel_agents=4, testing=config_models.TestingConfig(check_workers=5))
+        assert scrub_check_env({"PATH": "/bin"}, config=config)[PYTEST_WORKERS_ENV_KEY] == "5"
+
+    def test_operator_value_is_kept(self) -> None:
+        config = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
+        env = scrub_check_env({PYTEST_WORKERS_ENV_KEY: "11"}, config=config)
+        assert env[PYTEST_WORKERS_ENV_KEY] == "11"
+
+    def test_an_empty_operator_value_is_unset(self) -> None:
+        """pytest-xdist ignores an empty value, so it does not count as the operator's choice."""
+        config = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
+        assert scrub_check_env({PYTEST_WORKERS_ENV_KEY: ""}, config=config)[PYTEST_WORKERS_ENV_KEY] == "5"
+
+    def test_a_whitespace_only_operator_value_is_unset(self) -> None:
+        config = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
+        assert scrub_check_env({PYTEST_WORKERS_ENV_KEY: "  "}, config=config)[PYTEST_WORKERS_ENV_KEY] == "5"
+
+    def test_without_a_config_the_project_config_is_loaded(self) -> None:
+        loaded = ProjectConfig(testing=config_models.TestingConfig(check_workers=6))
+        with patch("sova.config.loader.load_config", return_value=loaded):
+            assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
+
+    def test_an_unloadable_config_falls_back_to_the_default_split(self) -> None:
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
+            patch("sova.utils.env.os.cpu_count", return_value=12),
+        ):
+            assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
+
+    @pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("bad override")], ids=["os", "value"])
+    def test_other_load_failures_fall_back_to_the_default_split(self, error: Exception) -> None:
+        with (
+            patch("sova.config.loader.load_config", side_effect=error),
+            patch("sova.utils.env.os.cpu_count", return_value=12),
+        ):
+            assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
+
+    def test_the_fallback_does_not_rebuild_a_project_config(self) -> None:
+        """A bad SOVA_* override makes ProjectConfig() raise, so the fallback must not construct one."""
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
+            patch("sova.config.models.ProjectConfig", side_effect=ValueError("bad SOVA_MAX_PARALLEL_AGENTS")),
+            patch("sova.utils.env.os.cpu_count", return_value=12),
+        ):
+            assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
+
+    def test_reads_the_operator_value_from_os_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(PYTEST_WORKERS_ENV_KEY, "9")
+        assert scrub_check_env(config=ProjectConfig())[PYTEST_WORKERS_ENV_KEY] == "9"
+
+    def test_check_workers_rejects_a_negative_count(self) -> None:
+        with pytest.raises(ValidationError):
+            config_models.TestingConfig(check_workers=-1)

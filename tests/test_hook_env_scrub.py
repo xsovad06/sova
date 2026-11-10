@@ -42,4 +42,4 @@ def test_hook_firing_git_calls_pass_an_env() -> None:
 @pytest.mark.parametrize("module", ["sova/supervisor/rebase.py", "sova/git/worktree.py", "sova/git/rebase.py"])
 def test_the_env_is_scrubbed_not_just_present(module: str) -> None:
     source = (_SOVA.parent / module).read_text(encoding="utf-8")
-    assert "scrub_check_env" in source
+    assert "scrub_check_env" in source or "scrub_orchestrator_env" in source

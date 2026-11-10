@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from sova.config.models import ProjectConfig
 from sova.git.artifact_exclusions import RUNTIME_STATE_PATHS
 from sova.git.diff import parse_diff_lines
 from sova.git.operations import (
@@ -62,7 +63,7 @@ from sova.git.worktree import (
     list_worktrees,
     resolve_worktree_conflict,
 )
-from sova.utils.env import scrub_check_env
+from sova.utils.env import PYTEST_WORKERS_ENV_KEY, scrub_check_env
 from sova.utils.shell import ShellResult
 from tests.conftest import InvariantRepo
 
@@ -879,7 +880,7 @@ class TestPush:
             mock_safety.return_value = _shell_ok(stdout="")
 
             mock_resolve.return_value = {"GH_TOKEN": "t", "SOVA_DATABASE_URL": "sqlite+aiosqlite:///pilot.db"}
-            await push("feat/login", cwd=Path("/repo"), github_user="alice")
+            await push("feat/login", cwd=Path("/repo"), github_user="alice", config=ProjectConfig())
             push_env = mock_run.call_args.kwargs["env"]
             assert "SOVA_DATABASE_URL" not in push_env
             assert push_env["GH_TOKEN"] == "t"
@@ -911,7 +912,10 @@ class TestPush:
             await push("feat/login", cwd=Path("/repo"), github_user="alice")
 
             mock_resolve.assert_awaited_once_with("alice")
-            assert mock_run.call_args.kwargs["env"] == resolved_env
+            push_env = dict(mock_run.call_args.kwargs["env"])
+            assert PYTEST_WORKERS_ENV_KEY in push_env
+            push_env.pop(PYTEST_WORKERS_ENV_KEY)  # the worker cap scrub_check_env() adds
+            assert push_env == resolved_env
 
     async def test_pushes_falls_back_to_ambient_env_when_token_unresolved(self) -> None:
         """resolve_gh_env() returns None when token resolution fails (e.g.

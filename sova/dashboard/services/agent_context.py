@@ -470,6 +470,19 @@ def merge_mcp_env(gh_env: dict[str, str] | None, run_id: int, project_dir: Path)
     return base
 
 
+def with_check_worker_cap(env: dict[str, str] | None, project_dir: Path) -> dict[str, str]:
+    """Return *env* (or a copy of the parent environment when None) with the pytest worker cap applied.
+
+    For a command agent (address-pr, pr, review-full, integrate-pr) that runs the project's own
+    ``make check``: without the cap it starts one xdist worker per core on top of every other agent.
+    An operator-set PYTEST_XDIST_AUTO_NUM_WORKERS is left alone, and the cap is read from the config
+    of *project_dir*, never the server's working directory.
+    """
+    from sova.utils.env import with_pytest_worker_cap
+
+    return with_pytest_worker_cap(dict(env) if env is not None else dict(os.environ), project_dir=project_dir)
+
+
 async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
     """Resolve GH_TOKEN env for the project's configured github_user."""
     try:

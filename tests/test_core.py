@@ -10554,6 +10554,7 @@ class TestPushStepExecute:
             cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
 
     async def test_execute_plain_push_on_first_push(self, tmp_path: Path) -> None:
@@ -10583,6 +10584,7 @@ class TestPushStepExecute:
             cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
 
     async def test_execute_plain_push_when_divergence_check_errors(self, tmp_path: Path) -> None:
@@ -10613,6 +10615,7 @@ class TestPushStepExecute:
             cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
 
     async def test_execute_force_with_lease_when_diverged(self, tmp_path: Path) -> None:
@@ -10648,6 +10651,7 @@ class TestPushStepExecute:
             cwd=tmp_path / "worktree",
             no_verify=False,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
         mock_emit.assert_called_once()
         _, emit_kwargs = mock_emit.call_args
@@ -10714,6 +10718,7 @@ class TestPushStepExecute:
             cwd=tmp_path / "worktree",
             no_verify=True,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
 
     async def test_execute_rejects_empty_branch_name(self, tmp_path: Path) -> None:
@@ -12182,7 +12187,9 @@ class TestHandleSigtermShutdown:
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, run_id)
 
-        mock_preserve.assert_awaited_once_with(ctx.worktree_dir, "sigterm", commit_type="chore", scope="core")
+        mock_preserve.assert_awaited_once_with(
+            ctx.worktree_dir, "sigterm", commit_type="chore", scope="core", config=ctx.config
+        )
 
         async with await get_session() as session:
             async with session.begin():
@@ -12389,6 +12396,25 @@ class TestDevelopStepInnerCheckLoop:
             await DevelopStep()._run_inner_check_loop(ctx)
 
         assert "SOVA_DATABASE_URL" not in mock_run.call_args.kwargs["env"]
+
+    async def test_check_run_carries_the_configured_pytest_worker_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.config import models as config_models
+        from sova.core.steps.develop import DevelopStep
+
+        monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+        cfg = ProjectConfig(check_cmd="make check", testing=config_models.TestingConfig(check_workers=3))
+        ctx = _make_ctx(tmp_path, config=cfg, worktree_dir=tmp_path / "worktree")
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="", stderr=""),  # command -v probe
+                MagicMock(success=True, stdout="All tests passed", stderr=""),  # check run
+            ]
+            await DevelopStep()._run_inner_check_loop(ctx)
+
+        assert mock_run.call_args.kwargs["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
 
     async def test_fix_cycle_succeeds(self, tmp_path: Path) -> None:
         from sova.core.steps.develop import DevelopStep

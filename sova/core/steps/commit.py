@@ -187,7 +187,7 @@ class CommitStep(BaseStep):
             log.warning("step.commit.budget_skip_hooks", fraction=ctx.resource_remaining_fraction)
 
         try:
-            await git_ops.commit(message, cwd=ctx.working_dir, no_verify=no_verify)
+            await git_ops.commit(message, cwd=ctx.working_dir, no_verify=no_verify, config=ctx.config)
             return StepResult(success=True, summary=f"Committed: {message}")
         except RuntimeError as exc:
             return StepResult(success=False, summary="Commit failed", error=str(exc))
