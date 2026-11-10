@@ -253,12 +253,22 @@ class TestDashboardHealth:
         pid_file.write_text(str(os.getpid()))
         assert _check_scheduler_health(tmp_path) == "ok"
 
-    async def test_healthz_scheduler_dead_pid_reports_fail(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "pid_content",
+        [
+            pytest.param("999999", id="dead-pid"),
+            pytest.param("not-a-pid", id="invalid-pid-content"),
+            # int("0") parses fine, but os.kill(0, 0) probes the caller's own
+            # process group, not a real scheduler process: reject it explicitly.
+            pytest.param("0", id="non-positive-pid"),
+        ],
+    )
+    async def test_check_scheduler_health_bad_pid_reports_fail(self, tmp_path: Path, pid_content: str) -> None:
         from sova.dashboard.app import _check_scheduler_health
 
         pid_file = tmp_path / ".claude" / "sova-server.pid"
         pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text("999999")
+        pid_file.write_text(pid_content)
         assert _check_scheduler_health(tmp_path) == "fail"
 
     async def test_healthz_scheduler_check_is_idempotent(self, tmp_path: Path) -> None:
@@ -296,24 +306,6 @@ class TestDashboardHealth:
         with patch("shutil.disk_usage", side_effect=OSError("no such device")):
             assert _check_disk_health(tmp_path) == "fail"
 
-    async def test_check_scheduler_health_invalid_pid_content(self, tmp_path: Path) -> None:
-        from sova.dashboard.app import _check_scheduler_health
-
-        pid_file = tmp_path / ".claude" / "sova-server.pid"
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text("not-a-pid")
-        assert _check_scheduler_health(tmp_path) == "fail"
-
-    async def test_check_scheduler_health_rejects_non_positive_pid(self, tmp_path: Path) -> None:
-        # int("0") parses fine, but os.kill(0, 0) probes the caller's own
-        # process group, not a real scheduler process: reject it explicitly.
-        from sova.dashboard.app import _check_scheduler_health
-
-        pid_file = tmp_path / ".claude" / "sova-server.pid"
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text("0")
-        assert _check_scheduler_health(tmp_path) == "fail"
-
     async def test_check_scheduler_health_permission_error_reports_ok(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
@@ -334,40 +326,41 @@ class TestDashboardHealth:
         assert resp.status_code == 200
         assert resp.json()["checks"]["scheduler"] == "ok"
 
-    async def test_root_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/", follow_redirects=False)
-        assert resp.status_code == 307
+    @pytest.mark.parametrize(
+        ("path", "status"),
+        [
+            pytest.param("/", 307, id="root"),
+            pytest.param("/dashboard", 301, id="dashboard"),
+            pytest.param("/work", 301, id="work"),
+            pytest.param("/overview", 301, id="overview"),
+            pytest.param("/control", 301, id="control"),
+            pytest.param("/runs", 301, id="runs"),
+            pytest.param("/tasks", 301, id="tasks"),
+        ],
+    )
+    async def test_redirects_to_agents(self, client: AsyncClient, path: str, status: int) -> None:
+        resp = await client.get(path, follow_redirects=False)
+        assert resp.status_code == status
         assert resp.headers["location"] == "/agents"
 
-    async def test_dashboard_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/dashboard", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_agents_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            pytest.param("/agents", "Agents", id="agents"),
+            pytest.param("/work/1", "Run #1", id="work-detail-with-agents-sidebar"),
+            pytest.param("/costs", "Cost", id="costs"),
+            pytest.param("/memory", "Memory", id="memory"),
+        ],
+    )
+    async def test_page_loads(self, client: AsyncClient, path: str, expected: str) -> None:
+        resp = await client.get(path)
         assert resp.status_code == 200
-        assert "Agents" in resp.text
-
-    async def test_work_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/work", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_work_detail_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
-        resp = await client.get("/work/1")
-        assert resp.status_code == 200
-        assert "Run #1" in resp.text
+        assert expected in resp.text
 
     async def test_lifecycle_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
         resp = await client.get("/lifecycle/42")
         assert resp.status_code == 200
         assert "Issue " in resp.text and "#42" in resp.text
-
-    async def test_costs_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/costs")
-        assert resp.status_code == 200
-        assert "Cost" in resp.text
 
     async def test_costs_page_has_per_section_error_handling(self, client: AsyncClient) -> None:
         resp = await client.get("/costs")
@@ -391,37 +384,15 @@ class TestDashboardHealth:
         assert "cost-energy-detail" in body
         assert "cost-co2-detail" in body
 
-    async def test_overview_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/overview", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_control_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/control", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_runs_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/runs", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/tasks", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_memory_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/memory")
-        assert resp.status_code == 200
-        assert "Memory" in resp.text
-
-    async def test_static_css_returns_200(self, client: AsyncClient) -> None:
-        resp = await client.get("/static/style.css")
-        assert resp.status_code == 200
-
-    async def test_static_js_returns_200(self, client: AsyncClient) -> None:
-        resp = await client.get("/static/app.js")
+    @pytest.mark.parametrize(
+        "asset",
+        [
+            pytest.param("/static/style.css", id="css"),
+            pytest.param("/static/app.js", id="js"),
+        ],
+    )
+    async def test_static_asset_returns_200(self, client: AsyncClient, asset: str) -> None:
+        resp = await client.get(asset)
         assert resp.status_code == 200
 
     @pytest.mark.parametrize(
@@ -911,53 +882,26 @@ class TestCostsAPI:
 class TestCostsAPIErrorHandling:
     """Cover the except branches in sova/dashboard/routers/costs.py."""
 
-    async def test_cost_summary_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_summary", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/summary")
+    @pytest.mark.parametrize(
+        ("service_method", "url", "detail"),
+        [
+            pytest.param("get_summary", "/api/costs/summary", "Failed to fetch cost summary", id="summary"),
+            pytest.param("get_daily", "/api/costs/daily", "Failed to fetch daily costs", id="daily"),
+            pytest.param("get_by_issue", "/api/costs/by-issue", "Failed to fetch costs by issue", id="by-issue"),
+            pytest.param("get_by_phase", "/api/costs/by-phase", "Failed to fetch costs by phase", id="by-phase"),
+            pytest.param("get_by_model", "/api/costs/by-model", "Failed to fetch costs by model", id="by-model"),
+            pytest.param(
+                "get_by_routing", "/api/costs/by-routing", "Failed to fetch costs by routing", id="by-routing"
+            ),
+        ],
+    )
+    async def test_service_error_returns_500(
+        self, client: AsyncClient, service_method: str, url: str, detail: str
+    ) -> None:
+        with patch(f"sova.dashboard.routers.costs.cost_service.{service_method}", side_effect=RuntimeError("db down")):
+            resp = await client.get(url)
         assert resp.status_code == 500
-        assert "Failed to fetch cost summary" in resp.json()["detail"]
-
-    async def test_daily_costs_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_daily", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/daily")
-        assert resp.status_code == 500
-        assert "Failed to fetch daily costs" in resp.json()["detail"]
-
-    async def test_costs_by_issue_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_by_issue", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/by-issue")
-        assert resp.status_code == 500
-        assert "Failed to fetch costs by issue" in resp.json()["detail"]
-
-    async def test_costs_by_phase_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_by_phase", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/by-phase")
-        assert resp.status_code == 500
-        assert "Failed to fetch costs by phase" in resp.json()["detail"]
-
-    async def test_costs_by_model_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_by_model", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/by-model")
-        assert resp.status_code == 500
-        assert "Failed to fetch costs by model" in resp.json()["detail"]
-
-    async def test_costs_by_routing_error(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
-        with patch("sova.dashboard.routers.costs.cost_service.get_by_routing", side_effect=RuntimeError("db down")):
-            resp = await client.get("/api/costs/by-routing")
-        assert resp.status_code == 500
-        assert "Failed to fetch costs by routing" in resp.json()["detail"]
+        assert detail in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -2915,8 +2859,14 @@ class TestStartCommandWorktreeResolution:
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == tmp_path, f"Expected project dir {tmp_path}, got {spawn_cwd}"
 
-    async def test_resolve_issue_worktree_returns_worktree_path(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree returns worktree path when directory exists."""
+    @pytest.mark.parametrize(
+        "issue",
+        [
+            pytest.param("42", id="returns-worktree-path"),
+            pytest.param("#42", id="strips-hash"),
+        ],
+    )
+    async def test_resolve_issue_worktree_returns_existing_worktree(self, tmp_path: Path, issue: str) -> None:
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
@@ -2928,34 +2878,19 @@ class TestStartCommandWorktreeResolution:
             new_callable=AsyncMock,
             return_value=worktree,
         ):
-            assert await _resolve_issue_worktree("42", tmp_path) == worktree
+            assert await _resolve_issue_worktree(issue, tmp_path) == worktree
 
-    async def test_resolve_issue_worktree_returns_project_dir_when_missing(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree returns project_dir when no worktree exists."""
+    @pytest.mark.parametrize(
+        "issue",
+        [
+            pytest.param("42", id="no-worktree-exists"),
+            pytest.param("standup", id="non-numeric-issue"),
+        ],
+    )
+    async def test_resolve_issue_worktree_falls_back_to_project_dir(self, tmp_path: Path, issue: str) -> None:
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
-        assert await _resolve_issue_worktree("42", tmp_path) == tmp_path
-
-    async def test_resolve_issue_worktree_handles_non_numeric_issue(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree returns project_dir for non-numeric issue IDs."""
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        assert await _resolve_issue_worktree("standup", tmp_path) == tmp_path
-
-    async def test_resolve_issue_worktree_strips_hash(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree strips leading # from issue number."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        worktree = tmp_path / ".claude" / "worktrees" / "42"
-        worktree.mkdir(parents=True)
-        with patch(
-            "sova.dashboard.services.agent_context.ensure_worktree_usable",
-            new_callable=AsyncMock,
-            return_value=worktree,
-        ):
-            assert await _resolve_issue_worktree("#42", tmp_path) == worktree
+        assert await _resolve_issue_worktree(issue, tmp_path) == tmp_path
 
     async def test_resolve_issue_worktree_repopulates_missing_artifacts(self, tmp_path: Path) -> None:
         """A reused issue-based worktree missing .claude artifacts gets them repopulated in place."""
@@ -3448,17 +3383,18 @@ class TestMemoryAPI:
         assert data["total"] == 1
         assert data["memories"][0]["title"] == "Test pattern"
 
-    async def test_search_memories(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/memory?q=fixture")
+    @pytest.mark.parametrize(
+        ("query", "total"),
+        [
+            pytest.param("fixture", 1, id="match"),
+            pytest.param("nonexistent", 0, id="no-results"),
+        ],
+    )
+    async def test_search_memories(self, client: AsyncClient, seed_data, query: str, total: int) -> None:
+        resp = await client.get(f"/api/memory?q={query}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total"] == 1
-
-    async def test_search_no_results(self, client: AsyncClient, seed_data) -> None:
-        resp = await client.get("/api/memory?q=nonexistent")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 0
+        assert data["total"] == total
 
 
 # ---------------------------------------------------------------------------
@@ -4101,19 +4037,20 @@ class TestMultiProject:
         assert "alpha" in resp.text
         assert "beta" in resp.text
 
-    async def test_project_redirect(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha", follow_redirects=False)
-        assert resp.status_code == 307
-        assert resp.headers["location"] == "/p/alpha/agents"
-
-    async def test_project_dashboard_redirects_to_agents(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/dashboard", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/p/alpha/agents"
-
-    async def test_project_overview_redirects_to_agents(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/overview", follow_redirects=False)
-        assert resp.status_code == 301
+    @pytest.mark.parametrize(
+        ("path", "status"),
+        [
+            pytest.param("/p/alpha", 307, id="project-root"),
+            pytest.param("/p/alpha/dashboard", 301, id="dashboard"),
+            pytest.param("/p/alpha/overview", 301, id="overview"),
+            pytest.param("/p/alpha/work", 301, id="work"),
+            pytest.param("/p/alpha/tasks", 301, id="tasks"),
+            pytest.param("/p/alpha/runs", 301, id="runs"),
+        ],
+    )
+    async def test_project_redirects_to_agents(self, multi_client: AsyncClient, path: str, status: int) -> None:
+        resp = await multi_client.get(path, follow_redirects=False)
+        assert resp.status_code == status
         assert resp.headers["location"] == "/p/alpha/agents"
 
     async def test_project_api(self, multi_client: AsyncClient) -> None:
@@ -4240,30 +4177,19 @@ class TestMultiProject:
             reg_mod._REGISTRY_FILE = orig_file
             reg_mod._REGISTRY_DIR = orig_dir
 
-    async def test_setup_page_loads(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/setup")
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            pytest.param("/setup", "Project Setup", id="setup"),
+            pytest.param("/p/alpha/work/1", "Run #1", id="project-work-detail"),
+            # Supervisor page must not 500 in multi-project mode (github_repo context var).
+            pytest.param("/p/alpha/supervisor", "Supervisor", id="project-supervisor"),
+        ],
+    )
+    async def test_page_loads(self, multi_client: AsyncClient, path: str, expected: str) -> None:
+        resp = await multi_client.get(path)
         assert resp.status_code == 200
-        assert "Project Setup" in resp.text
-
-    async def test_project_work_redirects_to_agents(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/work", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/p/alpha/agents"
-
-    async def test_project_work_detail_renders(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/work/1")
-        assert resp.status_code == 200
-        assert "Run #1" in resp.text
-
-    async def test_project_tasks_redirects_to_agents(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/tasks", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/p/alpha/agents"
-
-    async def test_project_runs_redirects_to_agents(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/runs", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/p/alpha/agents"
+        assert expected in resp.text
 
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")
@@ -4369,12 +4295,6 @@ class TestMultiProject:
         assert result[0][0] == p
         assert result[0][1].supervisor.enabled is True
 
-    async def test_project_supervisor_page_loads(self, multi_client: AsyncClient) -> None:
-        """Supervisor page must not 500 in multi-project mode (github_repo context var)."""
-        resp = await multi_client.get("/p/alpha/supervisor")
-        assert resp.status_code == 200
-        assert "Supervisor" in resp.text
-
 
 # ---------------------------------------------------------------------------
 # Setup API
@@ -4384,26 +4304,23 @@ class TestMultiProject:
 class TestTasksAPI:
     """Tests for the tasks API endpoints."""
 
-    async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
-        resp = await client.get("/tasks", follow_redirects=False)
-        assert resp.status_code == 301
-        assert resp.headers["location"] == "/agents"
-
-    async def test_queue_page_renders(self, client: AsyncClient) -> None:
-        resp = await client.get("/queue")
+    @pytest.mark.parametrize(
+        ("path", "marker"),
+        [
+            pytest.param("/queue", b"Priority Queue", id="queue"),
+            pytest.param("/specs", b"Specs", id="specs"),
+        ],
+    )
+    async def test_page_renders(self, client: AsyncClient, path: str, marker: bytes) -> None:
+        resp = await client.get(path)
         assert resp.status_code == 200
-        assert b"Priority Queue" in resp.content
+        assert marker in resp.content
 
     async def test_queue_page_has_bulk_bar(self, client: AsyncClient) -> None:
         resp = await client.get("/queue")
         assert resp.status_code == 200
         assert b"bulk-bar" in resp.content
         assert b"select-all" in resp.content
-
-    async def test_specs_page_renders(self, client: AsyncClient) -> None:
-        resp = await client.get("/specs")
-        assert resp.status_code == 200
-        assert b"Specs" in resp.content
 
     async def test_specs_page_has_search_and_filter(self, client: AsyncClient) -> None:
         resp = await client.get("/specs")
@@ -4415,31 +4332,25 @@ class TestTasksAPI:
 class TestMilestoneBadge:
     """Tests for _milestone_badge helper in queue_service."""
 
-    def test_empty_string_returns_dash(self) -> None:
+    @pytest.mark.parametrize(
+        ("milestone", "expected"),
+        [
+            pytest.param("", "--", id="empty-string-returns-dash"),
+            pytest.param("P3: v0.1 Public Release", "P3", id="standard-milestone"),
+            pytest.param("Beta", "Beta", id="no-colon"),
+            pytest.param("  P4  : future work", "P4", id="whitespace-around-prefix"),
+        ],
+    )
+    def test_badge(self, milestone: str, expected: str) -> None:
         from sova.dashboard.services.queue_service import _milestone_badge
 
-        assert _milestone_badge("") == "--"
-
-    def test_standard_milestone(self) -> None:
-        from sova.dashboard.services.queue_service import _milestone_badge
-
-        assert _milestone_badge("P3: v0.1 Public Release") == "P3"
-
-    def test_milestone_no_colon(self) -> None:
-        from sova.dashboard.services.queue_service import _milestone_badge
-
-        assert _milestone_badge("Beta") == "Beta"
+        assert _milestone_badge(milestone) == expected
 
     def test_long_prefix_truncated(self) -> None:
         from sova.dashboard.services.queue_service import _milestone_badge
 
         assert _milestone_badge("VeryLongPrefix: something") == "VeryLong"
         assert len(_milestone_badge("VeryLongPrefix: something")) <= 8
-
-    def test_whitespace_around_prefix(self) -> None:
-        from sova.dashboard.services.queue_service import _milestone_badge
-
-        assert _milestone_badge("  P4  : future work") == "P4"
 
 
 class TestQueueServiceEnrichment:
@@ -4489,58 +4400,26 @@ class TestEnrichSpecStatus:
         assert queue[0]["action"] == "triage"
         assert queue[1]["action"] == "research"
 
-    async def test_researched_missing_spec_gets_develop(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
+    @pytest.mark.parametrize(
+        ("spec", "expected_status", "expected_action"),
+        [
+            pytest.param(None, "missing", "develop", id="missing-spec-gets-develop"),
+            pytest.param({"status": "approved"}, "approved", "develop", id="approved-spec-gets-develop"),
+            pytest.param({"status": "draft"}, "draft", "review_spec", id="draft-spec-gets-review-spec"),
+            pytest.param({"status": "rejected"}, "rejected", "review_spec", id="rejected-spec-gets-review-spec"),
+            pytest.param({"complexity": "medium"}, "draft", "review_spec", id="no-status-field-defaults-to-draft"),
+        ],
+    )
+    async def test_researched_spec_action(
+        self, tmp_path: Path, spec: dict[str, str] | None, expected_status: str, expected_action: str
+    ) -> None:
         from sova.dashboard.services.queue_service import _enrich_spec_status
 
         queue = [{"state": "researched", "issue": "10", "action": "review_spec"}]
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
             await _enrich_spec_status(queue, tmp_path)
-        assert queue[0]["spec_status"] == "missing"
-        assert queue[0]["action"] == "develop"
-
-    async def test_researched_approved_spec_gets_develop(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
-        from sova.dashboard.services.queue_service import _enrich_spec_status
-
-        queue = [{"state": "researched", "issue": "11", "action": "review_spec"}]
-        with patch(
-            "sova.dashboard.services.spec_service.read_spec",
-            return_value={"status": "approved"},
-        ):
-            await _enrich_spec_status(queue, tmp_path)
-        assert queue[0]["spec_status"] == "approved"
-        assert queue[0]["action"] == "develop"
-
-    async def test_researched_draft_spec_gets_review_spec(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
-        from sova.dashboard.services.queue_service import _enrich_spec_status
-
-        queue = [{"state": "researched", "issue": "12", "action": "review_spec"}]
-        with patch(
-            "sova.dashboard.services.spec_service.read_spec",
-            return_value={"status": "draft"},
-        ):
-            await _enrich_spec_status(queue, tmp_path)
-        assert queue[0]["spec_status"] == "draft"
-        assert queue[0]["action"] == "review_spec"
-
-    async def test_researched_rejected_spec_gets_review_spec(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
-        from sova.dashboard.services.queue_service import _enrich_spec_status
-
-        queue = [{"state": "researched", "issue": "13", "action": "review_spec"}]
-        with patch(
-            "sova.dashboard.services.spec_service.read_spec",
-            return_value={"status": "rejected"},
-        ):
-            await _enrich_spec_status(queue, tmp_path)
-        assert queue[0]["spec_status"] == "rejected"
-        assert queue[0]["action"] == "review_spec"
+        assert queue[0]["spec_status"] == expected_status
+        assert queue[0]["action"] == expected_action
 
     async def test_read_spec_exception_falls_back_to_missing(self, tmp_path: Path) -> None:
         from unittest.mock import patch
@@ -4555,20 +4434,6 @@ class TestEnrichSpecStatus:
             await _enrich_spec_status(queue, tmp_path)
         assert queue[0]["spec_status"] == "missing"
         assert queue[0]["action"] == "develop"
-
-    async def test_spec_without_status_field_defaults_to_draft(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
-        from sova.dashboard.services.queue_service import _enrich_spec_status
-
-        queue = [{"state": "researched", "issue": "15", "action": "review_spec"}]
-        with patch(
-            "sova.dashboard.services.spec_service.read_spec",
-            return_value={"complexity": "medium"},
-        ):
-            await _enrich_spec_status(queue, tmp_path)
-        assert queue[0]["spec_status"] == "draft"
-        assert queue[0]["action"] == "review_spec"
 
     async def test_mixed_states_enriched_correctly(self, tmp_path: Path) -> None:
         from unittest.mock import patch
@@ -5976,14 +5841,15 @@ class TestWorkAPI:
         assert "tasks" in data
         assert isinstance(data["tasks"], list)
 
-    async def test_work_history_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/work/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "tasks" in data
-
-    async def test_work_history_with_filters(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/work/history?status=done&role=developer&limit=10")
+    @pytest.mark.parametrize(
+        "url",
+        [
+            pytest.param("/api/work/history", id="empty"),
+            pytest.param("/api/work/history?status=done&role=developer&limit=10", id="with-filters"),
+        ],
+    )
+    async def test_work_history(self, client: AsyncClient, url: str) -> None:
+        resp = await client.get(url)
         assert resp.status_code == 200
         data = resp.json()
         assert "tasks" in data
@@ -7256,23 +7122,21 @@ class TestSetupAPI:
         assert resp.json()["commands"]["updated"] == 0
         assert captured["filenames"] == []
 
-    async def test_sync_commands_rejects_path_traversal_filename(
-        self, client: AsyncClient, tmp_path, monkeypatch
+    @pytest.mark.parametrize(
+        ("field", "filename"),
+        [
+            pytest.param("filenames", "../../etc/passwd", id="path-traversal-filename"),
+            pytest.param("guideline_filenames", "/etc/passwd", id="absolute-path-guideline-filename"),
+        ],
+    )
+    async def test_sync_commands_rejects_unsafe_filename(
+        self, client: AsyncClient, tmp_path, monkeypatch, field: str, filename: str
     ) -> None:
         monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
 
-        resp = await client.post("/api/setup/commands/sync", json={"filenames": ["../../etc/passwd"]})
+        resp = await client.post("/api/setup/commands/sync", json={field: [filename]})
         assert resp.status_code == 400
-        assert "Invalid filenames" in resp.json()["detail"]
-
-    async def test_sync_commands_rejects_absolute_path_filename(
-        self, client: AsyncClient, tmp_path, monkeypatch
-    ) -> None:
-        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
-
-        resp = await client.post("/api/setup/commands/sync", json={"guideline_filenames": ["/etc/passwd"]})
-        assert resp.status_code == 400
-        assert "Invalid guideline_filenames" in resp.json()["detail"]
+        assert f"Invalid {field}" in resp.json()["detail"]
 
     async def test_sync_commands_omitted_guideline_filenames_skips_guidelines(
         self, client: AsyncClient, tmp_path, monkeypatch
@@ -7408,56 +7272,27 @@ class TestSetupAPI:
 class TestSyncFilenameValidation:
     """Direct unit coverage for the path-traversal guard, independent of the endpoint."""
 
-    def test_accepts_legitimate_filename(self) -> None:
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            pytest.param("develop.md", True, id="legitimate-filename"),
+            pytest.param("../../etc/passwd", False, id="relative-traversal"),
+            pytest.param("..", False, id="bare-dotdot"),
+            pytest.param("/etc/passwd", False, id="leading-forward-slash"),
+            pytest.param("\\windows\\system32", False, id="leading-backslash"),
+            # Known limitation: ``".." in name`` matches any substring, so ``v1..2.md`` is rejected although it has
+            # no separator. Fails closed; pinned so a future regex change is deliberate, not an accident.
+            pytest.param("v1..2.md", False, id="merely-containing-dotdot-substring"),
+            # The ``{skill}/SKILL.md`` exception is accepted by the validator even though this endpoint never syncs
+            # skills (update_commands/update_guidelines only pass command and guideline filenames through).
+            pytest.param("my-skill/SKILL.md", True, id="skill-md-pattern"),
+            pytest.param("a/b/SKILL.md", False, id="skill-pattern-with-extra-path-segment"),
+        ],
+    )
+    def test_is_safe_sync_filename(self, filename: str, expected: bool) -> None:
         from sova.dashboard.routers.setup import _is_safe_sync_filename
 
-        assert _is_safe_sync_filename("develop.md") is True
-
-    def test_rejects_relative_traversal(self) -> None:
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("../../etc/passwd") is False
-
-    def test_rejects_bare_dotdot(self) -> None:
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("..") is False
-
-    def test_rejects_leading_forward_slash(self) -> None:
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("/etc/passwd") is False
-
-    def test_rejects_leading_backslash(self) -> None:
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("\\windows\\system32") is False
-
-    def test_rejects_filename_merely_containing_dotdot_substring(self) -> None:
-        """Documents a known limitation: ``".." in name`` matches any substring, not
-        just a path traversal component, so a legitimate filename like ``v1..2.md``
-        is rejected even though it contains no path separator. Not a security bug
-        (fails closed), but this pins the current, possibly-overly-strict behavior
-        so a future regex change is a deliberate decision, not an accident.
-        """
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("v1..2.md") is False
-
-    def test_accepts_skill_md_pattern(self) -> None:
-        """The ``{skill}/SKILL.md`` exception is accepted by the validator even though
-        this endpoint never syncs skills: ``update_commands``/``update_guidelines``
-        only ever pass command/guideline filenames through, so this shape can never
-        actually be matched against real candidates in practice.
-        """
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("my-skill/SKILL.md") is True
-
-    def test_rejects_skill_pattern_with_extra_path_segment(self) -> None:
-        from sova.dashboard.routers.setup import _is_safe_sync_filename
-
-        assert _is_safe_sync_filename("a/b/SKILL.md") is False
+        assert _is_safe_sync_filename(filename) is expected
 
     def test_validate_sync_filenames_none_is_noop(self) -> None:
         from sova.dashboard.routers.setup import _validate_sync_filenames
@@ -8033,31 +7868,25 @@ class TestFinalizeTaskRunGuard:
 class TestMergeAwareFinalization:
     """_check_pr_merged_on_failure should detect merged PRs for integration commands."""
 
-    async def test_detects_merged_pr(self) -> None:
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            pytest.param("MERGED", True, id="detects-merged-pr"),
+            pytest.param("OPEN", False, id="false-for-open-pr"),
+        ],
+    )
+    async def test_pr_state(self, state: str, expected: bool) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
 
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
-        mock_status = MagicMock(state="MERGED")
+        mock_status = MagicMock(state=state)
         with (
             patch("sova.config.loader.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
-            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is True
-
-    async def test_returns_false_for_open_pr(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
-
-        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
-        mock_status = MagicMock(state="OPEN")
-        with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
-        ):
-            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is False
+            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is expected
 
     async def test_returns_false_on_gh_failure(self) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -9962,31 +9791,25 @@ class TestMemoryPressureGate:
 class TestWaitWithTerminalCheck:
     """Tests for _wait_with_terminal_check and _is_run_terminal_in_db."""
 
-    async def test_is_run_terminal_in_db_true(self) -> None:
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            pytest.param("done", True, id="true"),
+            pytest.param("running", False, id="false"),
+        ],
+    )
+    async def test_is_run_terminal_in_db(self, status: str, expected: bool) -> None:
         from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
 
         session = await get_session()
         async with session.begin():
-            run = TaskRun(issue_number="910", role="dev", status="done")
+            run = TaskRun(issue_number="910", role="dev", status=status)
             session.add(run)
             await session.flush()
             run_id = run.id
 
         result = await _is_run_terminal_in_db(run_id, None)
-        assert result is True
-
-    async def test_is_run_terminal_in_db_false(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
-
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(issue_number="911", role="dev", status="running")
-            session.add(run)
-            await session.flush()
-            run_id = run.id
-
-        result = await _is_run_terminal_in_db(run_id, None)
-        assert result is False
+        assert result is expected
 
     async def test_is_run_terminal_in_db_missing(self) -> None:
         from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
@@ -10004,8 +9827,20 @@ class TestWaitWithTerminalCheck:
             result = await _is_run_terminal_in_db(1, None)
         assert result is False
 
-    async def test_wait_with_terminal_check_kills_on_terminal_db(self) -> None:
-        """When DB shows terminal, the hanging process should be stopped."""
+    @pytest.mark.parametrize(
+        ("issue_number", "db_status", "should_hang", "exit_code", "pid"),
+        [
+            # When DB shows terminal, the hanging process should be stopped.
+            pytest.param("920", "done", True, 0, 88888, id="kills-on-terminal-db"),
+            # When process exits normally, return its exit code.
+            pytest.param("921", "running", False, 0, 88889, id="returns-on-normal-exit"),
+            # Non-zero exit codes should be preserved, not converted to -1.
+            pytest.param("922", "done", True, 1, 88890, id="preserves-nonzero-exit"),
+        ],
+    )
+    async def test_wait_with_terminal_check_exit_code(
+        self, issue_number: str, db_status: str, should_hang: bool, exit_code: int, pid: int
+    ) -> None:
         import asyncio
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -10015,66 +9850,18 @@ class TestWaitWithTerminalCheck:
 
         session = await get_session()
         async with session.begin():
-            run = TaskRun(issue_number="920", role="dev", status="done")
+            run = TaskRun(issue_number=issue_number, role="dev", status=db_status)
             session.add(run)
             await session.flush()
             run_id = run.id
 
-        process = MockAgentProcess(should_hang=True, exit_code=0, pid=88888)
+        process = MockAgentProcess(should_hang=should_hang, exit_code=exit_code, pid=pid)
         agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
 
         with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
             rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
 
-        assert rc == 0
-
-    async def test_wait_with_terminal_check_returns_on_normal_exit(self) -> None:
-        """When process exits normally, return its exit code."""
-        import asyncio
-        from types import SimpleNamespace
-        from unittest.mock import patch
-
-        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
-        from sova.ipc.testing import MockAgentProcess
-
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(issue_number="921", role="dev", status="running")
-            session.add(run)
-            await session.flush()
-            run_id = run.id
-
-        process = MockAgentProcess(should_hang=False, exit_code=0, pid=88889)
-        agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
-
-        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
-            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
-
-        assert rc == 0
-
-    async def test_wait_with_terminal_check_preserves_nonzero_exit(self) -> None:
-        """Non-zero exit codes should be preserved, not converted to -1."""
-        import asyncio
-        from types import SimpleNamespace
-        from unittest.mock import patch
-
-        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
-        from sova.ipc.testing import MockAgentProcess
-
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(issue_number="922", role="dev", status="done")
-            session.add(run)
-            await session.flush()
-            run_id = run.id
-
-        process = MockAgentProcess(should_hang=True, exit_code=1, pid=88890)
-        agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
-
-        with patch("sova.dashboard.services.agent_finalize._DB_TERMINAL_POLL_INTERVAL", 0.1):
-            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
-
-        assert rc == 1
+        assert rc == exit_code
 
     async def test_wait_with_terminal_check_stop_failure_escalates_to_kill(self) -> None:
         """When stop() raises, the process should be killed via _proc.kill()."""
@@ -10255,25 +10042,21 @@ class TestWaitWithTerminalCheck:
 class TestCommandOutcomeValidation:
     """_validate_command_outcome checks whether command runs produced expected outcomes."""
 
-    async def test_non_command_role_skipped(self) -> None:
+    @pytest.mark.parametrize(
+        "role",
+        [
+            pytest.param("developer", id="non-command-role"),
+            pytest.param("command:some-other-command", id="unknown-command"),
+        ],
+    )
+    async def test_role_skipped(self, role: str) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_command_outcome
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        result = await _validate_command_outcome(1, agent)
-        assert result.failure_reason is None
-
-    async def test_unknown_command_skipped(self) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _validate_command_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "command:some-other-command"
+        agent.role = role
         result = await _validate_command_outcome(1, agent)
         assert result.failure_reason is None
 
@@ -10508,59 +10291,37 @@ class TestCommandOutcomeValidation:
 class TestReviewPrVerdictPersistence:
     """_validate_review_pr extracts verdict marker and persists handoff_json."""
 
-    async def test_extract_marker_approve(self) -> None:
+    @pytest.mark.parametrize(
+        ("lines", "expected"),
+        [
+            pytest.param(
+                ["some output", "<!-- sova-review: approve -->", "more output"], ("approve", None), id="approve"
+            ),
+            pytest.param(["<!-- sova-review: revise -->"], ("revise", None), id="revise"),
+            pytest.param(["<!-- sova-review: block -->"], ("block", None), id="block"),
+            pytest.param(["<!-- sova-review: APPROVE -->"], ("approve", None), id="case-insensitive"),
+            pytest.param(
+                ["<!-- sova-review: approve -->", "<!-- sova-review: revise -->"], ("revise", None), id="last-wins"
+            ),
+            pytest.param(
+                ["<!-- sova-review: approve --> <!-- sova-review: revise -->"],
+                ("revise", None),
+                id="same-line-last-wins",
+            ),
+            pytest.param(["<!--  sova-review:  approve  -->"], ("approve", None), id="extra-whitespace"),
+            pytest.param(["<!-- sova-review: revise sha=abc1234 -->"], ("revise", "abc1234"), id="captures-sha"),
+        ],
+    )
+    async def test_extract_marker(self, lines: list[str], expected: tuple[str, str | None]) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
-        lines = ["some output", "<!-- sova-review: approve -->", "more output"]
-        assert _extract_review_verdict_marker(lines) == ("approve", None)
-
-    async def test_extract_marker_revise(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == ("revise", None)
-
-    async def test_extract_marker_block(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: block -->"]
-        assert _extract_review_verdict_marker(lines) == ("block", None)
-
-    async def test_extract_marker_case_insensitive(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: APPROVE -->"]
-        assert _extract_review_verdict_marker(lines) == ("approve", None)
-
-    async def test_extract_marker_last_wins(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: approve -->", "<!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == ("revise", None)
-
-    async def test_extract_marker_same_line_last_wins(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: approve --> <!-- sova-review: revise -->"]
-        assert _extract_review_verdict_marker(lines) == ("revise", None)
+        assert _extract_review_verdict_marker(lines) == expected
 
     async def test_extract_marker_none_when_absent(self) -> None:
         from sova.dashboard.services.agent_db import _extract_review_verdict_marker
 
         lines = ["no marker here", "just regular output"]
         assert _extract_review_verdict_marker(lines) is None
-
-    async def test_extract_marker_with_extra_whitespace(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!--  sova-review:  approve  -->"]
-        assert _extract_review_verdict_marker(lines) == ("approve", None)
-
-    async def test_extract_marker_captures_sha(self) -> None:
-        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
-
-        lines = ["<!-- sova-review: revise sha=abc1234 -->"]
-        assert _extract_review_verdict_marker(lines) == ("revise", "abc1234")
 
     async def test_persist_writes_handoff_json_approve(self) -> None:
         from sova.dashboard.services.agent_db import _persist_review_verdict
@@ -10826,7 +10587,15 @@ class TestValidateMergeCommand:
 
         assert (await _validate_merge_command(1, agent)).failure_reason is None
 
-    async def test_passes_when_pr_merged(self) -> None:
+    @pytest.mark.parametrize(
+        "state",
+        [
+            pytest.param("MERGED", id="pr-merged"),
+            # A CLOSED (not merged) PR is the command's own documented early-stop, not a failure.
+            pytest.param("CLOSED", id="pr-closed"),
+        ],
+    )
+    async def test_passes_when_pr_finished(self, state: str) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_db import _validate_merge_command
@@ -10838,27 +10607,7 @@ class TestValidateMergeCommand:
         agent.project_dir = None
 
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
-        mock_status = MagicMock(state="MERGED")
-        with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
-        ):
-            assert (await _validate_merge_command(1, agent)).failure_reason is None
-
-    async def test_passes_when_pr_closed(self) -> None:
-        """A CLOSED (not merged) PR is the command's own documented early-stop, not a failure."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_db import _validate_merge_command
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "command:integrate-pr"
-        agent.pr_number = 955
-        agent.project_dir = None
-
-        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
-        mock_status = MagicMock(state="CLOSED")
+        mock_status = MagicMock(state=state)
         with (
             patch("sova.config.loader.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
@@ -11038,36 +10787,22 @@ class TestDowngradeToFailed:
 class TestPipelineOutcomeValidation:
     """_validate_pipeline_outcome checks whether pipeline roles executed their workflows."""
 
-    async def test_command_role_skipped(self) -> None:
+    @pytest.mark.parametrize(
+        "role",
+        [
+            pytest.param("command:address-pr", id="command-role"),
+            pytest.param("triage", id="non-pipeline-role"),
+            pytest.param(None, id="none-role"),
+        ],
+    )
+    async def test_role_skipped(self, role: str | None) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_pipeline_outcome
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
-        agent.role = "command:address-pr"
-        result = await _validate_pipeline_outcome(1, agent)
-        assert result is None
-
-    async def test_non_pipeline_role_skipped(self) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "triage"
-        result = await _validate_pipeline_outcome(1, agent)
-        assert result is None
-
-    async def test_none_role_skipped(self) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = None
+        agent.role = role
         result = await _validate_pipeline_outcome(1, agent)
         assert result is None
 
@@ -11149,7 +10884,21 @@ class TestPipelineOutcomeValidation:
         assert result is not None
         assert "Pipeline bypassed" in result
 
-    async def test_developer_pipeline_ran_successfully(self) -> None:
+    @pytest.mark.parametrize(
+        ("current_step", "pr_number", "steps"),
+        [
+            pytest.param(
+                "create_pr", 42, [("develop", "done"), ("create_pr", "done")], id="developer-pipeline-ran-successfully"
+            ),
+            # Only early steps (before commit) ran: legitimate early stop, not a failure.
+            pytest.param("assess", None, [("sync", "done"), ("assess", "done")], id="no-commit-step-no-pr-ok"),
+            # Commit step with non-done status should not trigger the check.
+            pytest.param("commit", None, [("develop", "done"), ("commit", "failed")], id="commit-failed-no-downgrade"),
+        ],
+    )
+    async def test_developer_outcome_valid(
+        self, current_step: str, pr_number: int | None, steps: list[tuple[str, str]]
+    ) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_pipeline_outcome
@@ -11162,14 +10911,14 @@ class TestPipelineOutcomeValidation:
                     issue_number="403",
                     role="developer",
                     status="done",
-                    current_step="create_pr",
-                    pr_number=42,
+                    current_step=current_step,
+                    pr_number=pr_number,
                 )
                 session.add(run)
                 await session.flush()
                 run_id = run.id
-                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
-                session.add(StepExecution(task_run_id=run_id, step_name="create_pr", status="done"))
+                for step_name, step_status in steps:
+                    session.add(StepExecution(task_run_id=run_id, step_name=step_name, status=step_status))
 
         agent = MagicMock(spec=AgentState)
         agent.role = "developer"
@@ -11378,35 +11127,6 @@ class TestPipelineOutcomeValidation:
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is None
 
-    async def test_developer_no_commit_step_no_pr_ok(self) -> None:
-        """Only early steps (before commit) ran: legitimate early stop, not a failure."""
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-        from sova.db.models import StepExecution
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="452",
-                    role="developer",
-                    status="done",
-                    current_step="assess",
-                    pr_number=None,
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
-                session.add(StepExecution(task_run_id=run_id, step_name="assess", status="done"))
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.project_dir = None
-        result = await _validate_pipeline_outcome(run_id, agent)
-        assert result is None
-
     async def test_researcher_commit_check_not_applied(self) -> None:
         """Researcher role should not trigger the commit-without-push check."""
         from unittest.mock import MagicMock
@@ -11431,35 +11151,6 @@ class TestPipelineOutcomeValidation:
 
         agent = MagicMock(spec=AgentState)
         agent.role = "researcher"
-        agent.project_dir = None
-        result = await _validate_pipeline_outcome(run_id, agent)
-        assert result is None
-
-    async def test_developer_commit_failed_no_downgrade(self) -> None:
-        """Commit step with non-done status should not trigger the check."""
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
-        from sova.dashboard.services.agent_pool import AgentState
-        from sova.db.models import StepExecution
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="454",
-                    role="developer",
-                    status="done",
-                    current_step="commit",
-                    pr_number=None,
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
-                session.add(StepExecution(task_run_id=run_id, step_name="commit", status="failed"))
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
         agent.project_dir = None
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is None
@@ -11791,19 +11482,17 @@ class TestReadFileHandoff:
 class TestAgentContextHelpers:
     """Tests for agent_context helper functions."""
 
-    def test_strip_frontmatter_removes_yaml(self) -> None:
-        """_strip_frontmatter removes YAML frontmatter block."""
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            pytest.param("---\nname: test\n---\nBody content", "Body content", id="removes-yaml"),
+            pytest.param("Just regular content", "Just regular content", id="no-frontmatter-unchanged"),
+        ],
+    )
+    def test_strip_frontmatter(self, content: str, expected: str) -> None:
         from sova.dashboard.services.agent_context import _strip_frontmatter
 
-        content = "---\nname: test\n---\nBody content"
-        assert _strip_frontmatter(content) == "Body content"
-
-    def test_strip_frontmatter_no_frontmatter(self) -> None:
-        """_strip_frontmatter returns content unchanged when no frontmatter."""
-        from sova.dashboard.services.agent_context import _strip_frontmatter
-
-        content = "Just regular content"
-        assert _strip_frontmatter(content) == "Just regular content"
+        assert _strip_frontmatter(content) == expected
 
     def test_resolve_command_prompt_local_command(self, tmp_path: Path) -> None:
         """_resolve_command_prompt returns slash command for local project commands."""
@@ -12096,31 +11785,30 @@ class TestAgentContextHelpers:
 class TestIsIssue:
     """Unit tests for the _is_issue helper."""
 
-    async def test_returns_true_for_real_issue(self, tmp_path: Path, monkeypatch) -> None:
-        """Returns True when the Issues API returns no pull_request field (empty output)."""
+    @pytest.mark.parametrize(
+        ("issue_number", "success", "stdout", "expected"),
+        [
+            # The Issues API returns no pull_request field (empty output): a real issue.
+            pytest.param("42", True, "", True, id="true-for-real-issue"),
+            # The Issues API returns a pull_request field: it is a PR.
+            pytest.param("339", True, '{"url": "https://..."}', False, id="false-for-pr"),
+            # The gh command fails (success=False).
+            pytest.param("99", False, "", False, id="false-on-failed-command"),
+        ],
+    )
+    async def test_classifies_number(
+        self, tmp_path: Path, monkeypatch, issue_number: str, success: bool, stdout: str, expected: bool
+    ) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services.agent_context import _is_issue
 
         mock_result = AsyncMock()
-        mock_result.return_value.success = True
-        mock_result.return_value.stdout = ""
+        mock_result.return_value.success = success
+        mock_result.return_value.stdout = stdout
         monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
-        assert await _is_issue("42", tmp_path) is True
-
-    async def test_returns_false_for_pr(self, tmp_path: Path, monkeypatch) -> None:
-        """Returns False when the Issues API returns a pull_request field (it is a PR)."""
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.agent_context import _is_issue
-
-        mock_result = AsyncMock()
-        mock_result.return_value.success = True
-        mock_result.return_value.stdout = '{"url": "https://..."}'
-        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-
-        assert await _is_issue("339", tmp_path) is False
+        assert await _is_issue(issue_number, tmp_path) is expected
 
     async def test_returns_true_on_exception(self, tmp_path: Path, monkeypatch) -> None:
         """Returns True (safe default) when run_shell raises."""
@@ -12134,19 +11822,6 @@ class TestIsIssue:
         )
 
         assert await _is_issue("99", tmp_path) is True
-
-    async def test_returns_true_on_failed_command(self, tmp_path: Path, monkeypatch) -> None:
-        """Returns False when the gh command fails (success=False)."""
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.agent_context import _is_issue
-
-        mock_result = AsyncMock()
-        mock_result.return_value.success = False
-        mock_result.return_value.stdout = ""
-        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-
-        assert await _is_issue("99", tmp_path) is False
 
 
 class TestCheckPrBranchPushed:
@@ -12289,15 +11964,24 @@ class TestCapturePrHeadSha:
         sha = await _capture_pr_head_sha(42, tmp_path)
         assert sha == "abc123def456"
 
-    async def test_returns_none_on_failure(self, tmp_path: Path, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("success", "stdout"),
+        [
+            pytest.param(False, "", id="failure"),
+            pytest.param(True, "   \n", id="empty-stdout"),
+        ],
+    )
+    async def test_returns_none_on_unusable_output(
+        self, tmp_path: Path, monkeypatch, success: bool, stdout: str
+    ) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _capture_pr_head_sha
 
         async def mock_run(*args, **kwargs):
             result = MagicMock()
-            result.success = False
-            result.stdout = ""
+            result.success = success
+            result.stdout = stdout
             return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
@@ -12309,21 +11993,6 @@ class TestCapturePrHeadSha:
 
         async def mock_run(*args, **kwargs):
             raise TimeoutError("timed out")
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        sha = await _capture_pr_head_sha(42, tmp_path)
-        assert sha is None
-
-    async def test_returns_none_on_empty_stdout(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _capture_pr_head_sha
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.success = True
-            result.stdout = "   \n"
-            return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
         sha = await _capture_pr_head_sha(42, tmp_path)
@@ -12348,15 +12017,24 @@ class TestCaptureWorktreeHeadSha:
         sha = await _capture_worktree_head_sha(tmp_path)
         assert sha == "abc123def456"
 
-    async def test_returns_none_on_failure(self, tmp_path: Path, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("success", "stdout"),
+        [
+            pytest.param(False, "", id="failure"),
+            pytest.param(True, "   \n", id="empty-stdout"),
+        ],
+    )
+    async def test_returns_none_on_unusable_output(
+        self, tmp_path: Path, monkeypatch, success: bool, stdout: str
+    ) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _capture_worktree_head_sha
 
         async def mock_run(*args, **kwargs):
             result = MagicMock()
-            result.success = False
-            result.stdout = ""
+            result.success = success
+            result.stdout = stdout
             return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
@@ -12368,21 +12046,6 @@ class TestCaptureWorktreeHeadSha:
 
         async def mock_run(*args, **kwargs):
             raise TimeoutError("timed out")
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        sha = await _capture_worktree_head_sha(tmp_path)
-        assert sha is None
-
-    async def test_returns_none_on_empty_stdout(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _capture_worktree_head_sha
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.success = True
-            result.stdout = "   \n"
-            return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
         sha = await _capture_worktree_head_sha(tmp_path)
@@ -12392,111 +12055,63 @@ class TestCaptureWorktreeHeadSha:
 class TestCheckPrPushedViaSha:
     """Unit tests for _check_pr_pushed_via_sha."""
 
-    async def test_returns_none_when_no_pre_run_sha(self) -> None:
+    @pytest.mark.parametrize(
+        ("pre_run_sha", "pr_number"),
+        [
+            pytest.param(None, 42, id="no-pre-run-sha"),
+            pytest.param("abc123", None, id="no-pr-number"),
+        ],
+    )
+    async def test_returns_none_without_inputs(self, pre_run_sha: str | None, pr_number: int | None) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = None
-        agent.pr_number = 42
+        agent.pre_run_sha = pre_run_sha
+        agent.pr_number = pr_number
         assert await _check_pr_pushed_via_sha(agent) == (None, False)
 
-    async def test_returns_none_when_no_pr_number(self) -> None:
+    @pytest.mark.parametrize(
+        ("pre_run_sha", "success", "stdout", "expected"),
+        [
+            pytest.param("aaa111", True, "bbb222\tOPEN\n", (True, False), id="true-when-sha-changed"),
+            pytest.param("aaa111", True, "aaa111\tMERGED\n", (True, False), id="true-when-pr-merged"),
+            pytest.param("aaa111", True, "aaa111\tOPEN\n", (None, False), id="none-when-sha-unchanged"),
+            pytest.param("aaa111", False, "", (None, False), id="none-on-api-failure"),
+            pytest.param("abc123", True, "\tOPEN\n", (None, False), id="none-when-sha-empty"),
+            pytest.param("abc123", True, "deadbeef\t\n", (None, False), id="none-when-state-empty"),
+        ],
+    )
+    async def test_head_sha_check(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        pre_run_sha: str,
+        success: bool,
+        stdout: str,
+        expected: tuple[bool | None, bool],
+    ) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
         from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "abc123"
-        agent.pr_number = None
-        assert await _check_pr_pushed_via_sha(agent) == (None, False)
-
-    async def test_returns_true_when_sha_changed(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "aaa111"
+        agent.pre_run_sha = pre_run_sha
         agent.pr_number = 42
         agent.project_dir = tmp_path
 
         async def mock_run(*args, **kwargs):
             result = MagicMock()
             result.is_network_unreachable = False
-            result.success = True
-            result.stdout = "bbb222\tOPEN\n"
+            result.success = success
+            result.stdout = stdout
             return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (True, False)
-
-    async def test_returns_true_when_pr_merged(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "aaa111"
-        agent.pr_number = 42
-        agent.project_dir = tmp_path
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.is_network_unreachable = False
-            result.success = True
-            result.stdout = "aaa111\tMERGED\n"
-            return result
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (True, False)
-
-    async def test_returns_none_when_sha_unchanged(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "aaa111"
-        agent.pr_number = 42
-        agent.project_dir = tmp_path
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.is_network_unreachable = False
-            result.success = True
-            result.stdout = "aaa111\tOPEN\n"
-            return result
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (None, False)
-
-    async def test_returns_none_on_api_failure(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "aaa111"
-        agent.pr_number = 42
-        agent.project_dir = tmp_path
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.is_network_unreachable = False
-            result.success = False
-            result.stdout = ""
-            return result
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (None, False)
+        assert await _check_pr_pushed_via_sha(agent) == expected
 
     async def test_returns_none_on_exception(self, tmp_path: Path, monkeypatch) -> None:
         from unittest.mock import MagicMock
@@ -12511,48 +12126,6 @@ class TestCheckPrPushedViaSha:
 
         async def mock_run(*args, **kwargs):
             raise TimeoutError("timed out")
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (None, False)
-
-    async def test_returns_none_when_sha_empty(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "abc123"
-        agent.pr_number = 42
-        agent.project_dir = tmp_path
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.is_network_unreachable = False
-            result.success = True
-            result.stdout = "\tOPEN\n"
-            return result
-
-        monkeypatch.setattr("sova.utils.shell.run", mock_run)
-        assert await _check_pr_pushed_via_sha(agent) == (None, False)
-
-    async def test_returns_none_when_state_empty(self, tmp_path: Path, monkeypatch) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.pre_run_sha = "abc123"
-        agent.pr_number = 42
-        agent.project_dir = tmp_path
-
-        async def mock_run(*args, **kwargs):
-            result = MagicMock()
-            result.is_network_unreachable = False
-            result.success = True
-            result.stdout = "deadbeef\t\n"
-            return result
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
         assert await _check_pr_pushed_via_sha(agent) == (None, False)
@@ -13608,42 +13181,67 @@ class TestCheckIncompletePr:
 class TestStepProgress:
     """Tests for get_step_progress pipeline variant detection."""
 
-    async def test_developer_pipeline_default(self) -> None:
+    @pytest.mark.parametrize(
+        ("step", "kwargs", "variant", "step_index"),
+        [
+            pytest.param("develop", {}, "developer", 4, id="developer-pipeline-default"),
+            pytest.param("rebase", {}, "address_review", 1, id="address-review-from-step"),
+            pytest.param(None, {}, "developer", 0, id="none-step-defaults-to-developer"),
+            # Dashboard outer TaskRun (current_step='agent') with pr_number: address_review.
+            pytest.param(
+                "agent",
+                {"role": "developer", "pr_number": 147},
+                "address_review",
+                0,
+                id="agent-step-with-pr-number-is-address-review",
+            ),
+            # WorkflowEngine TaskRun on shared step with pr_number acquired mid-pipeline.
+            pytest.param(
+                "commit",
+                {"role": "developer", "pr_number": 147},
+                "developer",
+                7,
+                id="shared-step-with-pr-number-is-developer",
+            ),
+            pytest.param("commit", {}, "developer", 7, id="shared-step-without-pr-number-is-developer"),
+            pytest.param("agent", {"role": "command:review-pr"}, "command", 0, id="command-role-with-agent-step"),
+        ],
+    )
+    async def test_variant_and_index(
+        self, step: str | None, kwargs: dict[str, object], variant: str, step_index: int
+    ) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = await get_step_progress("develop")
-        assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 4
+        result = await get_step_progress(step, **kwargs)
+        assert result["pipeline_variant"] == variant
+        assert result["step_index"] == step_index
 
-    async def test_address_review_from_step(self) -> None:
+    @pytest.mark.parametrize(
+        ("step", "kwargs", "variant", "step_index", "total_steps"),
+        [
+            pytest.param(
+                None,
+                {"role": "developer", "pr_number": 147},
+                "address_review",
+                0,
+                12,
+                id="none-step-with-pr-number-is-address-review",
+            ),
+            pytest.param(None, {"role": "command:integrate-pr"}, "command", 0, 1, id="command-role-is-command"),
+            pytest.param(None, {"role": "reviewer"}, "command", 0, 1, id="reviewer-role-is-command"),
+            pytest.param("capture_baseline", {}, "developer", 3, 17, id="capture-baseline-in-developer-pipeline"),
+            pytest.param("ensure_worktree", {}, "address_review", 0, 12, id="ensure-worktree-in-address-review"),
+        ],
+    )
+    async def test_variant_index_and_total(
+        self, step: str | None, kwargs: dict[str, object], variant: str, step_index: int, total_steps: int
+    ) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = await get_step_progress("rebase")
-        assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 1
-
-    async def test_none_step_defaults_to_developer(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress(None)
-        assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 0
-
-    async def test_none_step_with_pr_number_is_address_review(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress(None, role="developer", pr_number=147)
-        assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 0
-        assert result["total_steps"] == 12
-
-    async def test_agent_step_with_pr_number_is_address_review(self) -> None:
-        """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("agent", role="developer", pr_number=147)
-        assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 0
+        result = await get_step_progress(step, **kwargs)
+        assert result["pipeline_variant"] == variant
+        assert result["step_index"] == step_index
+        assert result["total_steps"] == total_steps
 
     async def test_configured_pipeline_overrides_builtin(self, tmp_path: Path) -> None:
         """A [pipelines] override in sova.toml drives the progress bar, not the built-in list."""
@@ -13671,21 +13269,6 @@ class TestStepProgress:
         finally:
             agent_progress._pipeline_cache.clear()
 
-    async def test_shared_step_with_pr_number_is_developer(self) -> None:
-        """WorkflowEngine TaskRun on shared step with pr_number acquired mid-pipeline."""
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("commit", role="developer", pr_number=147)
-        assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 7
-
-    async def test_shared_step_without_pr_number_is_developer(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("commit")
-        assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 7
-
     async def test_workflow_engine_post_create_pr_is_developer(self) -> None:
         """WorkflowEngine TaskRun after CreatePRStep must not be mislabeled."""
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -13700,50 +13283,11 @@ class TestStepProgress:
         result = await get_step_progress("commit", role="reviewer", pr_number=147)
         assert result["pipeline_variant"] == "command"
 
-    async def test_command_role_returns_command_variant(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress(None, role="command:integrate-pr")
-        assert result["pipeline_variant"] == "command"
-        assert result["step_index"] == 0
-        assert result["total_steps"] == 1
-
-    async def test_command_role_with_agent_step(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("agent", role="command:review-pr")
-        assert result["pipeline_variant"] == "command"
-        assert result["step_index"] == 0
-
     async def test_researcher_role_unaffected_by_command_check(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         result = await get_step_progress(None, role="researcher")
         assert result["pipeline_variant"] == "researcher"
-
-    async def test_reviewer_role_returns_command_variant(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress(None, role="reviewer")
-        assert result["pipeline_variant"] == "command"
-        assert result["step_index"] == 0
-        assert result["total_steps"] == 1
-
-    async def test_capture_baseline_step_in_developer_pipeline(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("capture_baseline")
-        assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 3
-        assert result["total_steps"] == 17
-
-    async def test_ensure_worktree_step_in_address_review_pipeline(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import get_step_progress
-
-        result = await get_step_progress("ensure_worktree")
-        assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 0
-        assert result["total_steps"] == 12
 
     async def test_planner_role_returns_planner_variant(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -14730,18 +14274,22 @@ class TestConnectionsAPI:
         assert set(_RUNTIME_LABELS) == set(get_args(AgentConfig.model_fields["runtime"].annotation))
         assert _LLM_MODEL_REQUIRED == frozenset(_VENDOR_MODEL_EXAMPLES)
 
-    async def test_validate_llm_requires_csrf(self, client: AsyncClient) -> None:
-        """The probe reaches a caller-supplied api_base and spawns provider
-        CLIs, so it is guarded even though it persists nothing."""
-        resp = await client.post(
-            "/api/connections/llm/validate",
-            json={"provider": "claude-code"},
-            headers=NO_CSRF,
-        )
-        assert resp.status_code == 403
-
-    async def test_validate_runtime_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/runtime/validate", json={"runtime": "aider"}, headers=NO_CSRF)
+    @pytest.mark.parametrize(
+        ("url", "body"),
+        [
+            # The probe reaches a caller-supplied api_base and spawns provider CLIs, so it is guarded even though it
+            # persists nothing.
+            pytest.param("/api/connections/llm/validate", {"provider": "claude-code"}, id="validate-llm"),
+            pytest.param("/api/connections/runtime/validate", {"runtime": "aider"}, id="validate-runtime"),
+            pytest.param("/api/connections/llm/activate", {"provider": "claude-code"}, id="activate-llm"),
+            pytest.param("/api/connections/llm/test", {"provider": "claude-code"}, id="test-llm"),
+            pytest.param("/api/connections/runtime/activate", {"runtime": "aider"}, id="activate-runtime"),
+            pytest.param("/api/connections/reconnect/start", None, id="reconnect-start"),
+            pytest.param("/api/connections/reconnect/cancel", None, id="reconnect-cancel"),
+        ],
+    )
+    async def test_requires_csrf(self, client: AsyncClient, url: str, body: dict[str, str] | None) -> None:
+        resp = await client.post(url, json=body, headers=NO_CSRF)
         assert resp.status_code == 403
 
     async def test_catalog_reports_active_api_base_for_prefill(self, client: AsyncClient) -> None:
@@ -14883,10 +14431,6 @@ class TestConnectionsAPI:
         )
         assert data == {"ok": True, "detail": "ok"}
 
-    async def test_activate_llm_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/llm/activate", json={"provider": "claude-code"}, headers=NO_CSRF)
-        assert resp.status_code == 403
-
     async def test_activate_llm_persists_after_validation_passes(self, client: AsyncClient) -> None:
         """All three keys are written in a single atomic call, including the
         clear of the previous vendor's llm.model/llm.api_base (issue #1148:
@@ -15019,10 +14563,6 @@ class TestConnectionsAPI:
         assert data["status"] == "error"
         assert data["reason"] == "persist_failed"
 
-    async def test_test_llm_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/llm/test", json={"provider": "claude-code"}, headers=NO_CSRF)
-        assert resp.status_code == 403
-
     async def test_test_llm_runs_real_invoke(self, client: AsyncClient) -> None:
         from decimal import Decimal
         from unittest.mock import AsyncMock, patch
@@ -15120,10 +14660,6 @@ class TestConnectionsAPI:
         assert data["ok"] is False
         assert data["reason"] == "unknown_runtime"
 
-    async def test_activate_runtime_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/runtime/activate", json={"runtime": "aider"}, headers=NO_CSRF)
-        assert resp.status_code == 403
-
     async def test_activate_runtime_persists_after_validation_passes(self, client: AsyncClient) -> None:
         from unittest.mock import ANY, AsyncMock, patch
 
@@ -15164,10 +14700,6 @@ class TestConnectionsAPI:
             )
         assert resp.json()["status"] == "ok"
         mock_reload.assert_called_once()
-
-    async def test_reconnect_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/reconnect/start", headers=NO_CSRF)
-        assert resp.status_code == 403
 
     async def test_reconnect_status_idle_by_default(self, client: AsyncClient) -> None:
         resp = await client.get("/api/connections/reconnect/status")
@@ -15253,10 +14785,6 @@ class TestConnectionsAPI:
             status = await client.get("/api/connections/reconnect/status")
         assert status.json()["status"] == "timeout"
         assert process.killed is True
-
-    async def test_cancel_reconnect_requires_csrf(self, client: AsyncClient) -> None:
-        resp = await client.post("/api/connections/reconnect/cancel", headers=NO_CSRF)
-        assert resp.status_code == 403
 
     async def test_cancel_reconnect_with_no_session_is_an_error(self, client: AsyncClient) -> None:
         resp = await client.post("/api/connections/reconnect/cancel", headers=_csrf_request_headers(client))
@@ -16064,53 +15592,24 @@ class TestJiraSetupAPI:
 class TestJiraSSRFPrevention:
     """Verify _validate_jira_base_url rejects internal/private addresses."""
 
-    def test_rejects_localhost(self) -> None:
+    @pytest.mark.parametrize(
+        ("url", "match"),
+        [
+            pytest.param("https://localhost/jira", "local address", id="localhost"),
+            pytest.param("https://127.0.0.1/jira", "local address", id="loopback-ip"),
+            pytest.param("https://10.0.0.1/jira", "private/reserved", id="private-10-range"),
+            pytest.param("https://172.16.0.1/jira", "private/reserved", id="private-172-range"),
+            pytest.param("https://192.168.1.1/jira", "private/reserved", id="private-192-range"),
+            pytest.param("https://169.254.1.1/jira", "private/reserved", id="link-local"),
+            pytest.param("http://example.atlassian.net", "only https", id="http-scheme"),
+            pytest.param("https://[::1]/jira", "local address", id="ipv6-loopback"),
+        ],
+    )
+    def test_rejects_unsafe_url(self, url: str, match: str) -> None:
         from sova.dashboard.services.setup_service import _validate_jira_base_url
 
-        with pytest.raises(ValueError, match="local address"):
-            _validate_jira_base_url("https://localhost/jira")
-
-    def test_rejects_loopback_ip(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="local address"):
-            _validate_jira_base_url("https://127.0.0.1/jira")
-
-    def test_rejects_private_10_range(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="private/reserved"):
-            _validate_jira_base_url("https://10.0.0.1/jira")
-
-    def test_rejects_private_172_range(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="private/reserved"):
-            _validate_jira_base_url("https://172.16.0.1/jira")
-
-    def test_rejects_private_192_range(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="private/reserved"):
-            _validate_jira_base_url("https://192.168.1.1/jira")
-
-    def test_rejects_link_local(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="private/reserved"):
-            _validate_jira_base_url("https://169.254.1.1/jira")
-
-    def test_rejects_http_scheme(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="only https"):
-            _validate_jira_base_url("http://example.atlassian.net")
-
-    def test_rejects_ipv6_loopback(self) -> None:
-        from sova.dashboard.services.setup_service import _validate_jira_base_url
-
-        with pytest.raises(ValueError, match="local address"):
-            _validate_jira_base_url("https://[::1]/jira")
+        with pytest.raises(ValueError, match=match):
+            _validate_jira_base_url(url)
 
     def test_accepts_valid_atlassian_url(self) -> None:
         from unittest.mock import patch
@@ -16765,14 +16264,15 @@ class TestRolesAPI:
         assert data["valid"] is False
         assert len(data["errors"]) > 0
 
-    async def test_roles_page_renders(self, client):
-        """GET /roles renders the roles list page."""
-        resp = await client.get("/roles")
-        assert resp.status_code == 200
-
-    async def test_role_editor_page_renders(self, client):
-        """GET /roles/{name} renders the role editor page."""
-        resp = await client.get("/roles/developer")
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("/roles", id="roles-list"),
+            pytest.param("/roles/developer", id="role-editor"),
+        ],
+    )
+    async def test_page_renders(self, client: AsyncClient, path: str) -> None:
+        resp = await client.get(path)
         assert resp.status_code == 200
 
 
@@ -17240,84 +16740,66 @@ class TestPrsAPI:
 class TestSummarizeCi:
     """Tests for _summarize_ci: CI rollup aggregation."""
 
-    def test_none_rollup_returns_none(self) -> None:
+    @pytest.mark.parametrize(
+        ("rollup", "expected"),
+        [
+            pytest.param(None, "none", id="none-rollup"),
+            pytest.param([], "none", id="empty-rollup"),
+            pytest.param(
+                [
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                ],
+                "passed",
+                id="all-success",
+            ),
+            # CANCELLED runs from a superseded push must not poison a later successful run.
+            pytest.param(
+                [
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                ],
+                "passed",
+                id="cancelled-plus-success",
+            ),
+            # CANCELLED without SUCCESS returns passed (via skipped-only path), not failed.
+            pytest.param(
+                [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"}],
+                "passed",
+                id="cancelled-alone",
+            ),
+            pytest.param(
+                [
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                ],
+                "failed",
+                id="failure-plus-success",
+            ),
+            # A real failure dominates over cancelled runs.
+            pytest.param(
+                [
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+                    {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+                ],
+                "failed",
+                id="cancelled-plus-failure",
+            ),
+            pytest.param(
+                [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None}],
+                "pending",
+                id="pending-check",
+            ),
+            pytest.param([{"__typename": "StatusContext", "state": "SUCCESS"}], "passed", id="status-context-success"),
+            pytest.param([{"__typename": "StatusContext", "state": "FAILURE"}], "failed", id="status-context-failure"),
+        ],
+    )
+    def test_summarizes_rollup(self, rollup: list[dict[str, object]] | None, expected: str) -> None:
         from sova.dashboard.services.pr_service import _summarize_ci
 
-        assert _summarize_ci(None) == "none"
-
-    def test_empty_rollup_returns_none(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        assert _summarize_ci([]) == "none"
-
-    def test_all_success_returns_passed(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_cancelled_plus_success_returns_passed(self) -> None:
-        """CANCELLED runs from a superseded push must not poison a later successful run."""
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_cancelled_alone_returns_passed(self) -> None:
-        """CANCELLED without SUCCESS returns passed (via skipped-only path), not failed."""
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
-        ]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_failure_plus_success_returns_failed(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_cancelled_plus_failure_returns_failed(self) -> None:
-        """A real failure dominates over cancelled runs."""
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
-            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
-        ]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_pending_check_returns_pending(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [
-            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
-        ]
-        assert _summarize_ci(rollup) == "pending"
-
-    def test_status_context_success(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [{"__typename": "StatusContext", "state": "SUCCESS"}]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_status_context_failure(self) -> None:
-        from sova.dashboard.services.pr_service import _summarize_ci
-
-        rollup = [{"__typename": "StatusContext", "state": "FAILURE"}]
-        assert _summarize_ci(rollup) == "failed"
+        assert _summarize_ci(rollup) == expected
 
 
 class TestExtractLinkedIssue:
@@ -17356,65 +16838,31 @@ class TestResolveIssueFromPr:
     """Tests for _resolve_issue_from_pr in agent_lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_extracts_closes_issue(self, tmp_path, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("pr_number", "pr_body", "is_issue", "expected"),
+        [
+            pytest.param(99, "## Summary\n\nCloses #42\n", True, "42", id="closes-issue"),
+            pytest.param(99, "Fixes #123", True, "123", id="fixes-issue"),
+            pytest.param(99, "resolves #77", True, "77", id="resolves-case-insensitive"),
+            # When 'Closes #N' references a PR (not an issue), return empty.
+            pytest.param(341, "Closes #339", False, "", id="skips-pr-reference"),
+        ],
+    )
+    async def test_extracts_linked_issue(
+        self, tmp_path, monkeypatch, pr_number: int, pr_body: str, is_issue: bool, expected: str
+    ) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
 
         mock_result = AsyncMock()
         mock_result.return_value.success = True
-        mock_result.return_value.stdout = "## Summary\n\nCloses #42\n"
+        mock_result.return_value.stdout = pr_body
         monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=is_issue))
 
-        result = await _resolve_issue_from_pr(99, tmp_path)
-        assert result == "42"
-
-    @pytest.mark.asyncio
-    async def test_extracts_fixes_issue(self, tmp_path, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
-
-        mock_result = AsyncMock()
-        mock_result.return_value.success = True
-        mock_result.return_value.stdout = "Fixes #123"
-        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
-
-        result = await _resolve_issue_from_pr(99, tmp_path)
-        assert result == "123"
-
-    @pytest.mark.asyncio
-    async def test_extracts_resolves_case_insensitive(self, tmp_path, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
-
-        mock_result = AsyncMock()
-        mock_result.return_value.success = True
-        mock_result.return_value.stdout = "resolves #77"
-        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
-
-        result = await _resolve_issue_from_pr(99, tmp_path)
-        assert result == "77"
-
-    @pytest.mark.asyncio
-    async def test_skips_pr_reference(self, tmp_path, monkeypatch) -> None:
-        """When 'Closes #N' references a PR (not an issue), return empty."""
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
-
-        mock_result = AsyncMock()
-        mock_result.return_value.success = True
-        mock_result.return_value.stdout = "Closes #339"
-        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
-        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=False))
-
-        result = await _resolve_issue_from_pr(341, tmp_path)
-        assert result == ""
+        result = await _resolve_issue_from_pr(pr_number, tmp_path)
+        assert result == expected
 
     @pytest.mark.asyncio
     async def test_skips_pr_ref_returns_second_valid_issue(self, tmp_path, monkeypatch) -> None:
@@ -17484,35 +16932,31 @@ class TestResolveIssueFromPr:
 class TestDetectVariantCommandRoles:
     """Tests for command/standalone role detection in work_service."""
 
-    def test_detect_variant_command_integrate(self) -> None:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"role": "command:integrate-pr"}, id="command-integrate"),
+            pytest.param({"role": "command:review-pr"}, id="command-review-pr"),
+            pytest.param({"role": "reviewer"}, id="reviewer-standalone"),
+            pytest.param({"role": "reviewer", "pr_number": 42}, id="reviewer-with-pr"),
+        ],
+    )
+    def test_detect_variant_is_command(self, kwargs: dict[str, object]) -> None:
         from sova.dashboard.services.work_service import _detect_variant
 
-        assert _detect_variant(None, role="command:integrate-pr") == "command"
+        assert _detect_variant(None, **kwargs) == "command"
 
-    def test_detect_variant_command_review_pr(self) -> None:
-        from sova.dashboard.services.work_service import _detect_variant
-
-        assert _detect_variant(None, role="command:review-pr") == "command"
-
-    def test_detect_variant_reviewer_standalone(self) -> None:
-        from sova.dashboard.services.work_service import _detect_variant
-
-        assert _detect_variant(None, role="reviewer") == "command"
-
-    def test_detect_variant_reviewer_with_pr(self) -> None:
-        from sova.dashboard.services.work_service import _detect_variant
-
-        assert _detect_variant(None, role="reviewer", pr_number=42) == "command"
-
-    def test_detect_variant_from_steps_command_role(self) -> None:
+    @pytest.mark.parametrize(
+        "role",
+        [
+            pytest.param("command:integrate-pr", id="command-role"),
+            pytest.param("reviewer", id="reviewer"),
+        ],
+    )
+    def test_detect_variant_from_steps_is_command(self, role: str) -> None:
         from sova.dashboard.services.work_service import _detect_variant_from_steps
 
-        assert _detect_variant_from_steps([], None, role="command:integrate-pr") == "command"
-
-    def test_detect_variant_from_steps_reviewer(self) -> None:
-        from sova.dashboard.services.work_service import _detect_variant_from_steps
-
-        assert _detect_variant_from_steps([], None, role="reviewer") == "command"
+        assert _detect_variant_from_steps([], None, role=role) == "command"
 
     def test_detect_variant_from_steps_developer_not_command(self) -> None:
         from sova.dashboard.services.work_service import _detect_variant_from_steps
@@ -18230,14 +17674,24 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "running", "managed run should not be touched by sweep"
 
-    async def test_sweep_skips_alive_processes(self) -> None:
-        """Runs whose PID is still alive should be left untouched."""
+    @pytest.mark.parametrize(
+        ("role", "status", "alive"),
+        [
+            # Runs whose PID is still alive should be left untouched.
+            pytest.param("developer", "running", True, id="alive-process"),
+            # Paused runs (gate failures) must not be reclassified by the sweep.
+            pytest.param("researcher", "paused", False, id="paused-run"),
+            # A live-PID awaiting_approval run (spec genuinely pending human review) is the normal case.
+            pytest.param("researcher", "awaiting_approval", True, id="live-pid-awaiting-approval"),
+        ],
+    )
+    async def test_sweep_leaves_run_untouched(self, role: str, status: str, alive: bool) -> None:
         async with await get_session() as session:
             async with session.begin():
                 run = TaskRun(
                     issue_number="45",
-                    role="developer",
-                    status="running",
+                    role=role,
+                    status=status,
                     pid=999996,
                     project_slug="test",
                 )
@@ -18248,7 +17702,7 @@ class TestLivenessSweepMergeCheck:
         with self._patch_sweep_deps(
             **{
                 "sova.dashboard.services.control_service._is_process_alive": {
-                    "return_value": True,
+                    "return_value": alive,
                 },
             }
         ):
@@ -18258,37 +17712,7 @@ class TestLivenessSweepMergeCheck:
 
         async with await get_session() as session:
             refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "running", "alive process should not be marked interrupted"
-
-    async def test_sweep_skips_paused_runs(self) -> None:
-        """Paused runs (gate failures) must not be reclassified by the sweep."""
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="88",
-                    role="researcher",
-                    status="paused",
-                    pid=999993,
-                    project_slug="test",
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        with self._patch_sweep_deps(
-            **{
-                "sova.dashboard.services.control_service._is_process_alive": {
-                    "return_value": False,
-                },
-            }
-        ):
-            from sova.dashboard.app import _liveness_sweep_once
-
-            await _liveness_sweep_once(None, is_multi=False)
-
-        async with await get_session() as session:
-            refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
+            assert refreshed.status == status, f"{status} run should not be touched by the sweep"
 
     async def test_sweep_does_not_touch_dead_pid_awaiting_approval(self) -> None:
         """A dead-PID awaiting_approval run must NOT be reclassified by the sweep.
@@ -18322,37 +17746,6 @@ class TestLivenessSweepMergeCheck:
         async with await get_session() as session:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "awaiting_approval", "dead-PID awaiting_approval run should not be touched"
-
-    async def test_sweep_skips_live_pid_awaiting_approval(self) -> None:
-        """A live-PID awaiting_approval run (spec genuinely pending human review) is
-        the normal case and must not be touched by the sweep."""
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="127",
-                    role="researcher",
-                    status="awaiting_approval",
-                    pid=999991,
-                    project_slug="test",
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        with self._patch_sweep_deps(
-            **{
-                "sova.dashboard.services.control_service._is_process_alive": {
-                    "return_value": True,
-                },
-            }
-        ):
-            from sova.dashboard.app import _liveness_sweep_once
-
-            await _liveness_sweep_once(None, is_multi=False)
-
-        async with await get_session() as session:
-            refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "awaiting_approval", "live-PID awaiting_approval run should not be touched"
 
     async def test_sweep_write_retry_exhaustion_does_not_raise(self) -> None:
         """Phase 3 write retries exhausting on a locked DB must log and move on.
@@ -19540,22 +18933,20 @@ class TestPlannerTaskLabels:
         task = PlannedTaskRequest(title="t", component="dashboard", priority="high")
         assert _planner_task_labels(task, is_github=True) == ["area: dashboard", "priority: high"]
 
-    def test_github_unknown_component_dropped(self) -> None:
-        """A component outside the catalog's area vocabulary (e.g. the planner
-        LLM echoing a prompt example that isn't a real area) is dropped and
-        logged rather than becoming a label gh will reject the whole issue
-        creation over.
-        """
+    @pytest.mark.parametrize(
+        ("component", "priority", "expected"),
+        [
+            # A component outside the catalog's area vocabulary (e.g. the planner LLM echoing a prompt example that
+            # isn't a real area) is dropped and logged rather than becoming a label gh rejects the whole issue over.
+            pytest.param("orchestrator", "high", ["priority: high"], id="unknown-component-dropped"),
+            pytest.param("dashboard", "urgent", ["area: dashboard"], id="unknown-priority-dropped"),
+        ],
+    )
+    def test_github_unknown_value_dropped(self, component: str, priority: str, expected: list[str]) -> None:
         from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
 
-        task = PlannedTaskRequest(title="t", component="orchestrator", priority="high")
-        assert _planner_task_labels(task, is_github=True) == ["priority: high"]
-
-    def test_github_unknown_priority_dropped(self) -> None:
-        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
-
-        task = PlannedTaskRequest(title="t", component="dashboard", priority="urgent")
-        assert _planner_task_labels(task, is_github=True) == ["area: dashboard"]
+        task = PlannedTaskRequest(title="t", component=component, priority=priority)
+        assert _planner_task_labels(task, is_github=True) == expected
 
     def test_github_no_fields_returns_none(self) -> None:
         from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
@@ -20061,31 +19452,28 @@ class TestSyncBranchWorktreeConflict:
 
 
 class TestGetPrimaryWorktreeRoot:
-    async def test_returns_parent_of_absolute_common_dir(self) -> None:
+    @pytest.mark.parametrize(
+        ("stdout", "cwd"),
+        [
+            pytest.param(
+                "/home/user/project/.git\n",
+                "/home/user/project/.claude/worktrees/42",
+                id="parent-of-absolute-common-dir",
+            ),
+            pytest.param(".git\n", "/home/user/project", id="cwd-for-relative-common-dir"),
+        ],
+    )
+    async def test_resolves_root(self, stdout: str, cwd: str) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.git.worktree import get_primary_worktree_root
 
         result_mock = MagicMock()
         result_mock.success = True
-        result_mock.stdout = "/home/user/project/.git\n"
+        result_mock.stdout = stdout
 
         with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
-            root = await get_primary_worktree_root(cwd=Path("/home/user/project/.claude/worktrees/42"))
-
-        assert root == Path("/home/user/project")
-
-    async def test_returns_cwd_for_relative_common_dir(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.git.worktree import get_primary_worktree_root
-
-        result_mock = MagicMock()
-        result_mock.success = True
-        result_mock.stdout = ".git\n"
-
-        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
-            root = await get_primary_worktree_root(cwd=Path("/home/user/project"))
+            root = await get_primary_worktree_root(cwd=Path(cwd))
 
         assert root == Path("/home/user/project")
 
@@ -20231,39 +19619,60 @@ class TestPrFeedbackEndpoint:
         assert "id" in data
         assert isinstance(data["id"], int)
 
-    async def test_stores_llm_choice(self, client: AsyncClient) -> None:
-        body = {
-            "pr_number": 100,
-            "deterministic_state": "pr_awaiting_review",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": "address_pr",
-            "user_choice": "llm",
-        }
+    @pytest.mark.parametrize(
+        ("body", "status"),
+        [
+            pytest.param(
+                {
+                    "pr_number": 100,
+                    "deterministic_state": "pr_awaiting_review",
+                    "deterministic_action_id": "review_pr",
+                    "llm_action_id": "address_pr",
+                    "user_choice": "llm",
+                },
+                201,
+                id="stores-llm-choice",
+            ),
+            pytest.param(
+                {
+                    "pr_number": 1,
+                    "deterministic_state": "pr_sova_pending",
+                    "deterministic_action_id": "review_pr",
+                    "llm_action_id": "integrate",
+                    "user_choice": "not_valid_at_all",
+                },
+                400,
+                id="rejects-invalid-user-choice",
+            ),
+            # user_choice can be any valid action_id, not just 'deterministic'/'llm'.
+            pytest.param(
+                {
+                    "pr_number": 200,
+                    "deterministic_state": "pr_sova_pending",
+                    "deterministic_action_id": "review_pr",
+                    "llm_action_id": "integrate",
+                    "user_choice": "address_pr",
+                },
+                201,
+                id="accepts-action-id-as-user-choice",
+            ),
+            # llm_reasoning defaults to empty string when omitted.
+            pytest.param(
+                {
+                    "pr_number": 600,
+                    "deterministic_state": "pr_sova_pending",
+                    "deterministic_action_id": "review_pr",
+                    "llm_action_id": "",
+                    "user_choice": "wrong",
+                },
+                201,
+                id="accepts-missing-llm-reasoning",
+            ),
+        ],
+    )
+    async def test_feedback_status(self, client: AsyncClient, body: dict[str, object], status: int) -> None:
         resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
-
-    async def test_rejects_invalid_user_choice(self, client: AsyncClient) -> None:
-        body = {
-            "pr_number": 1,
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": "integrate",
-            "user_choice": "not_valid_at_all",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 400
-
-    async def test_accepts_action_id_as_user_choice(self, client: AsyncClient) -> None:
-        """user_choice can be any valid action_id, not just 'deterministic'/'llm'."""
-        body = {
-            "pr_number": 200,
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": "integrate",
-            "user_choice": "address_pr",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
+        assert resp.status_code == status
 
     async def test_accepts_wrong_as_user_choice(self, client: AsyncClient) -> None:
         """'wrong' is valid for the standalone 'State is wrong' button."""
@@ -20307,18 +19716,6 @@ class TestPrFeedbackEndpoint:
             "llm_action_id": "integrate",
             "llm_reasoning": llm_reasoning,
             "user_choice": "deterministic",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
-
-    async def test_accepts_missing_llm_reasoning(self, client: AsyncClient) -> None:
-        """llm_reasoning defaults to empty string when omitted."""
-        body = {
-            "pr_number": 600,
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": "",
-            "user_choice": "wrong",
         }
         resp = await client.post("/api/prs/feedback", json=body)
         assert resp.status_code == 201
@@ -21079,41 +20476,35 @@ class TestRateLimiting:
 
 
 class TestDashboardCsrfGuard:
-    async def test_loopback_bind_is_not_fail_closed(self, tmp_path: Path) -> None:
-        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
-        assert app.state.is_loopback_bind is True
-        assert app.state.csrf_fail_closed is False
+    @pytest.mark.parametrize(
+        ("host", "is_loopback", "fail_closed"),
+        [
+            pytest.param("127.0.0.1", True, False, id="loopback-bind-is-not-fail-closed"),
+            pytest.param("0.0.0.0", False, True, id="nonloopback-bind-is-fail-closed"),
+        ],
+    )
+    async def test_bind_without_secret(self, tmp_path: Path, host: str, is_loopback: bool, fail_closed: bool) -> None:
+        app = create_app(project_dir=tmp_path, host=host, port=8111)
+        assert app.state.is_loopback_bind is is_loopback
+        assert app.state.csrf_fail_closed is fail_closed
 
-    async def test_nonloopback_bind_without_secret_is_fail_closed(self, tmp_path: Path) -> None:
-        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
-        assert app.state.is_loopback_bind is False
-        assert app.state.csrf_fail_closed is True
-
-    async def test_nonloopback_bind_with_secret_is_not_fail_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("host", "fail_closed"),
+        [
+            pytest.param("192.168.1.5", False, id="nonloopback-bind-is-not-fail-closed"),
+            # A wildcard bind has no origin a real browser could ever send, so a configured secret must not
+            # unlock it (issue #1020 review).
+            pytest.param("0.0.0.0", True, id="wildcard-bind-is-still-fail-closed"),
+            pytest.param("::", True, id="ipv6-wildcard-bind-is-still-fail-closed"),
+        ],
+    )
+    async def test_nonloopback_bind_with_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, fail_closed: bool
     ) -> None:
         monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
-        app = create_app(project_dir=tmp_path, host="192.168.1.5", port=8111)
+        app = create_app(project_dir=tmp_path, host=host, port=8111)
         assert app.state.is_loopback_bind is False
-        assert app.state.csrf_fail_closed is False
-
-    async def test_wildcard_bind_with_secret_is_still_fail_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A wildcard bind has no origin a real browser could ever send, so a
-        configured secret must not unlock it (issue #1020 review)."""
-        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
-        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
-        assert app.state.is_loopback_bind is False
-        assert app.state.csrf_fail_closed is True
-
-    async def test_ipv6_wildcard_bind_with_secret_is_still_fail_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
-        app = create_app(project_dir=tmp_path, host="::", port=8111)
-        assert app.state.is_loopback_bind is False
-        assert app.state.csrf_fail_closed is True
+        assert app.state.csrf_fail_closed is fail_closed
 
     async def test_port_env_beats_toml_port(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "sova.toml").write_text("[dashboard]\nport = 8111\n")

@@ -628,14 +628,6 @@ class TestQuotaAPI:
 
 
 class TestConfigLoader:
-    def test_coderabbit_quota_in_project_config(self) -> None:
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig()
-        assert hasattr(cfg, "coderabbit_quota")
-        assert cfg.coderabbit_quota.enabled is False
-        assert cfg.coderabbit_quota.plan == "free"
-
     def test_toml_loading(self, tmp_path: object) -> None:
         from pathlib import Path
 

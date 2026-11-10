@@ -1145,69 +1145,6 @@ class TestRecoveryHelpers:
         assert repo == ""
         assert user == ""
 
-    @pytest.mark.asyncio
-    async def test_get_pr_branch_returns_branch_name(self, project_dir: Path) -> None:
-        from sova.dashboard.services.agent_recovery import _get_pr_branch_for_recovery
-
-        with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
-            patch(
-                "sova.utils.shell.run",
-                new_callable=AsyncMock,
-                return_value=MagicMock(success=True, stdout="feat/my-branch\n"),
-            ),
-        ):
-            cfg = MagicMock()
-            cfg.github_repo = "owner/repo"
-            cfg.github_user = "testuser"
-            mock_cfg.return_value = cfg
-
-            result = await _get_pr_branch_for_recovery(42, "owner/repo", project_dir)
-
-        assert result == "feat/my-branch"
-
-    @pytest.mark.asyncio
-    async def test_get_pr_branch_returns_empty_when_no_repo(self) -> None:
-        from sova.dashboard.services.agent_recovery import _get_pr_branch_for_recovery
-
-        result = await _get_pr_branch_for_recovery(42, "", None)
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_get_pr_branch_returns_empty_on_error(self, project_dir: Path) -> None:
-        from sova.dashboard.services.agent_recovery import _get_pr_branch_for_recovery
-
-        with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
-            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, side_effect=RuntimeError("err")),
-        ):
-            result = await _get_pr_branch_for_recovery(42, "owner/repo", project_dir)
-
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_get_pr_branch_returns_empty_on_failed_command(self, project_dir: Path) -> None:
-        from sova.dashboard.services.agent_recovery import _get_pr_branch_for_recovery
-
-        with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
-            patch(
-                "sova.utils.shell.run",
-                new_callable=AsyncMock,
-                return_value=MagicMock(success=False, stdout=""),
-            ),
-        ):
-            cfg = MagicMock()
-            cfg.github_repo = "owner/repo"
-            cfg.github_user = "testuser"
-            mock_cfg.return_value = cfg
-
-            result = await _get_pr_branch_for_recovery(42, "owner/repo", project_dir)
-
-        assert result == ""
-
 
 # ---------------------------------------------------------------------------
 # MergeQueueMonitor._check_entry edge cases

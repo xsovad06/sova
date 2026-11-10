@@ -809,14 +809,6 @@ class TestOversightConfigLoader:
 
         assert "oversight" in _NESTED_SECTIONS
 
-    def test_oversight_on_project_config(self) -> None:
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig()
-        assert hasattr(cfg, "oversight")
-        assert cfg.oversight.enabled is False
-        assert cfg.oversight.wake_interval_minutes == 60
-
 
 # ---------------------------------------------------------------------------
 # Migration test

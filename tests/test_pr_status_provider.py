@@ -93,23 +93,28 @@ def _fail(msg: str = "error") -> FakeShellResult:
     return FakeShellResult(returncode=1, stdout="", stderr=msg)
 
 
+def _check(conclusion: str, status: str = "COMPLETED") -> dict[str, str]:
+    return {"conclusion": conclusion, "status": status}
+
+
+def _status_context(state: str) -> dict[str, str]:
+    return {"__typename": "StatusContext", "state": state}
+
+
 # ---------------------------------------------------------------------------
 # is_configured
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_is_configured_true() -> None:
-    cfg = AwarenessConfig(pr_github_user="testuser")
+@pytest.mark.parametrize(
+    ("github_user", "expected"),
+    [pytest.param("testuser", True, id="user-set"), pytest.param("", False, id="false-when-empty")],
+)
+async def test_is_configured(github_user: str, expected: bool) -> None:
+    cfg = AwarenessConfig(pr_github_user=github_user)
     provider = PRStatusProvider(cfg)
-    assert await provider.is_configured() is True
-
-
-@pytest.mark.asyncio
-async def test_is_configured_false_when_empty() -> None:
-    cfg = AwarenessConfig(pr_github_user="")
-    provider = PRStatusProvider(cfg)
-    assert await provider.is_configured() is False
+    assert await provider.is_configured() is expected
 
 
 # ---------------------------------------------------------------------------
@@ -170,43 +175,29 @@ class TestClassifyPr:
         assert item.action_hint == "Review PR"
         assert "Review requested" in item.body
 
-    def test_own_pr_failing_ci(self) -> None:
-        pr = _make_pr(
-            number=10,
-            author="testuser",
-            ci_checks=[{"conclusion": "FAILURE", "status": "COMPLETED"}],
-        )
+    @pytest.mark.parametrize(
+        ("pr_kwargs", "action_hint"),
+        [
+            pytest.param({"number": 10, "ci_checks": [_check("FAILURE")]}, "Fix CI", id="own-pr-failing-ci"),
+            pytest.param(
+                {"number": 11, "review_decision": "CHANGES_REQUESTED", "ci_checks": [_check("SUCCESS")]},
+                "Address review",
+                id="own-pr-changes-requested",
+            ),
+            pytest.param(
+                {"number": 12, "review_decision": "APPROVED", "ci_checks": [_check("SUCCESS")]},
+                "Merge PR",
+                id="own-pr-approved-ci-passing",
+            ),
+        ],
+    )
+    def test_own_pr_needs_attention(self, pr_kwargs: dict[str, object], action_hint: str) -> None:
+        pr = _make_pr(author="testuser", **pr_kwargs)  # type: ignore[arg-type]
         item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
         assert item is not None
         assert item.category == ItemCategory.NEEDS_ATTENTION
         assert item.urgency == 1
-        assert item.action_hint == "Fix CI"
-
-    def test_own_pr_changes_requested(self) -> None:
-        pr = _make_pr(
-            number=11,
-            author="testuser",
-            review_decision="CHANGES_REQUESTED",
-            ci_checks=[{"conclusion": "SUCCESS", "status": "COMPLETED"}],
-        )
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is not None
-        assert item.category == ItemCategory.NEEDS_ATTENTION
-        assert item.urgency == 1
-        assert item.action_hint == "Address review"
-
-    def test_own_pr_approved_ci_passing(self) -> None:
-        pr = _make_pr(
-            number=12,
-            author="testuser",
-            review_decision="APPROVED",
-            ci_checks=[{"conclusion": "SUCCESS", "status": "COMPLETED"}],
-        )
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is not None
-        assert item.category == ItemCategory.NEEDS_ATTENTION
-        assert item.urgency == 1
-        assert item.action_hint == "Merge PR"
+        assert item.action_hint == action_hint
 
     def test_own_pr_ci_passing_informational(self) -> None:
         pr = _make_pr(
@@ -226,16 +217,6 @@ class TestClassifyPr:
         assert item.category == ItemCategory.INFORMATIONAL
         assert "open" in item.body
         assert "CI:" in item.body
-
-    def test_other_pr_not_review_requested_returns_none(self) -> None:
-        pr = _make_pr(number=20, author="someone-else")
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is None
-
-    def test_draft_pr_returns_none(self) -> None:
-        pr = _make_pr(number=30, author="testuser", is_draft=True)
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is None
 
     def test_stale_flag_set(self) -> None:
         pr = _make_pr(number=40, author="testuser", updated_at=_days_ago_iso(10))
@@ -289,18 +270,17 @@ class TestClassifyPr:
         assert item is not None
         assert item.action_hint == "Fix CI"
 
-    def test_missing_number_returns_none(self) -> None:
-        pr = {"title": "No number", "author": {"login": "testuser"}}
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is None
-
-    def test_zero_number_returns_none(self) -> None:
-        pr = _make_pr(number=0, author="testuser")
-        item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
-        assert item is None
-
-    def test_negative_number_returns_none(self) -> None:
-        pr = _make_pr(number=-1, author="testuser")
+    @pytest.mark.parametrize(
+        "pr",
+        [
+            pytest.param(_make_pr(number=20, author="someone-else"), id="other-pr-not-review-requested"),
+            pytest.param(_make_pr(number=30, author="testuser", is_draft=True), id="draft-pr"),
+            pytest.param({"title": "No number", "author": {"login": "testuser"}}, id="missing-number"),
+            pytest.param(_make_pr(number=0, author="testuser"), id="zero-number"),
+            pytest.param(_make_pr(number=-1, author="testuser"), id="negative-number"),
+        ],
+    )
+    def test_returns_none(self, pr: dict) -> None:
         item = _classify_pr("proj", "org/repo", pr, "testuser", set(), self._stale_cutoff())
         assert item is None
 
@@ -374,49 +354,45 @@ class TestBuildMergedItem:
 
 
 class TestSummarizeCi:
-    def test_empty_rollup(self) -> None:
-        assert _summarize_ci([]) == "none"
-
-    def test_all_success(self) -> None:
-        checks = [
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-        ]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_any_failure(self) -> None:
-        checks = [
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-            {"conclusion": "FAILURE", "status": "COMPLETED"},
-        ]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_pending(self) -> None:
-        checks = [
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-            {"conclusion": "", "status": "IN_PROGRESS"},
-        ]
-        assert _summarize_ci(checks) == "pending"
-
-    def test_skipped_treated_as_passed(self) -> None:
-        checks = [{"conclusion": "SKIPPED", "status": "COMPLETED"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_status_context_success(self) -> None:
-        checks = [{"__typename": "StatusContext", "state": "SUCCESS"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_status_context_failure(self) -> None:
-        checks = [{"__typename": "StatusContext", "state": "FAILURE"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_timed_out_is_failure(self) -> None:
-        checks = [{"conclusion": "TIMED_OUT", "status": "COMPLETED"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_completed_no_conclusion_is_passed(self) -> None:
-        checks = [{"conclusion": "", "status": "COMPLETED"}]
-        assert _summarize_ci(checks) == "passed"
+    @pytest.mark.parametrize(
+        ("checks", "expected"),
+        [
+            pytest.param([], "none", id="empty-rollup"),
+            pytest.param([_check("SUCCESS"), _check("SUCCESS")], "passed", id="all-success"),
+            pytest.param([_check("SUCCESS"), _check("FAILURE")], "failed", id="any-failure"),
+            pytest.param([_check("SUCCESS"), _check("", "IN_PROGRESS")], "pending", id="pending"),
+            pytest.param([_check("SKIPPED")], "passed", id="skipped-treated-as-passed"),
+            pytest.param([_status_context("SUCCESS")], "passed", id="status-context-success"),
+            pytest.param([_status_context("FAILURE")], "failed", id="status-context-failure"),
+            pytest.param([_check("TIMED_OUT")], "failed", id="timed-out-is-failure"),
+            pytest.param([_check("")], "passed", id="completed-no-conclusion-is-passed"),
+            pytest.param(
+                [_status_context("SUCCESS"), _check("SUCCESS")], "passed", id="mixed-status-context-and-check-run"
+            ),
+            pytest.param([_status_context("WEIRD")], "pending", id="status-context-unknown-returns-pending"),
+            pytest.param([_check("NEUTRAL")], "passed", id="neutral-conclusion"),
+            pytest.param([_check("CANCELLED")], "passed", id="cancelled-conclusion"),
+            pytest.param([_status_context("ERROR")], "failed", id="status-context-error"),
+            pytest.param([_status_context("PENDING")], "pending", id="status-context-pending"),
+            pytest.param(
+                [_check("FAILURE"), _check("", "IN_PROGRESS")], "failed", id="failure-takes-priority-over-pending"
+            ),
+            pytest.param(
+                [_check("SUCCESS"), _check("", "IN_PROGRESS")], "pending", id="pending-takes-priority-over-passed"
+            ),
+            pytest.param([_check("STARTUP_FAILURE")], "failed", id="startup-failure"),
+            pytest.param([_check("ACTION_REQUIRED")], "failed", id="action-required"),
+            pytest.param([_check("STALE")], "failed", id="stale-conclusion"),
+            pytest.param([_status_context("QUEUED")], "pending", id="status-context-unknown-treated-as-pending"),
+            pytest.param(
+                [_status_context("UNKNOWN"), _status_context("WEIRD")],
+                "pending",
+                id="only-unknown-status-contexts-is-pending",
+            ),
+        ],
+    )
+    def test_summarize_ci(self, checks: list[dict[str, str]], expected: str) -> None:
+        assert _summarize_ci(checks) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -595,26 +571,20 @@ async def test_fetch_items_config_load_failure(monkeypatch: pytest.MonkeyPatch, 
 
 
 class TestClassifyStatusContext:
-    def test_success(self) -> None:
-        assert _classify_status_context({"state": "SUCCESS"}) == "passed"
-
-    def test_failure(self) -> None:
-        assert _classify_status_context({"state": "FAILURE"}) == "failed"
-
-    def test_error(self) -> None:
-        assert _classify_status_context({"state": "ERROR"}) == "failed"
-
-    def test_pending(self) -> None:
-        assert _classify_status_context({"state": "PENDING"}) == "pending"
-
-    def test_unknown_state(self) -> None:
-        assert _classify_status_context({"state": "UNKNOWN"}) == "pending"
-
-    def test_none_state(self) -> None:
-        assert _classify_status_context({}) == "pending"
-
-    def test_case_insensitive(self) -> None:
-        assert _classify_status_context({"state": "success"}) == "passed"
+    @pytest.mark.parametrize(
+        ("context", "expected"),
+        [
+            pytest.param({"state": "SUCCESS"}, "passed", id="success"),
+            pytest.param({"state": "FAILURE"}, "failed", id="failure"),
+            pytest.param({"state": "ERROR"}, "failed", id="error"),
+            pytest.param({"state": "PENDING"}, "pending", id="pending"),
+            pytest.param({"state": "UNKNOWN"}, "pending", id="unknown-state"),
+            pytest.param({}, "pending", id="none-state"),
+            pytest.param({"state": "success"}, "passed", id="case-insensitive"),
+        ],
+    )
+    def test_classify_status_context(self, context: dict[str, str], expected: str) -> None:
+        assert _classify_status_context(context) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -623,47 +593,27 @@ class TestClassifyStatusContext:
 
 
 class TestClassifyCheckRun:
-    def test_failure_conclusion(self) -> None:
-        assert _classify_check_run({"conclusion": "FAILURE", "status": "COMPLETED"}) == "failed"
-
-    def test_error_conclusion(self) -> None:
-        assert _classify_check_run({"conclusion": "ERROR", "status": "COMPLETED"}) == "failed"
-
-    def test_timed_out(self) -> None:
-        assert _classify_check_run({"conclusion": "TIMED_OUT", "status": "COMPLETED"}) == "failed"
-
-    def test_startup_failure(self) -> None:
-        assert _classify_check_run({"conclusion": "STARTUP_FAILURE", "status": "COMPLETED"}) == "failed"
-
-    def test_action_required(self) -> None:
-        assert _classify_check_run({"conclusion": "ACTION_REQUIRED", "status": "COMPLETED"}) == "failed"
-
-    def test_stale_conclusion(self) -> None:
-        assert _classify_check_run({"conclusion": "STALE", "status": "COMPLETED"}) == "failed"
-
-    def test_success_conclusion(self) -> None:
-        assert _classify_check_run({"conclusion": "SUCCESS", "status": "COMPLETED"}) == "passed"
-
-    def test_skipped(self) -> None:
-        assert _classify_check_run({"conclusion": "SKIPPED", "status": "COMPLETED"}) == "skipped"
-
-    def test_neutral(self) -> None:
-        assert _classify_check_run({"conclusion": "NEUTRAL", "status": "COMPLETED"}) == "skipped"
-
-    def test_cancelled(self) -> None:
-        assert _classify_check_run({"conclusion": "CANCELLED", "status": "COMPLETED"}) == "skipped"
-
-    def test_completed_no_conclusion(self) -> None:
-        assert _classify_check_run({"conclusion": "", "status": "COMPLETED"}) == "passed"
-
-    def test_in_progress(self) -> None:
-        assert _classify_check_run({"conclusion": "", "status": "IN_PROGRESS"}) == "pending"
-
-    def test_queued(self) -> None:
-        assert _classify_check_run({"conclusion": "", "status": "QUEUED"}) == "pending"
-
-    def test_none_values(self) -> None:
-        assert _classify_check_run({}) == "pending"
+    @pytest.mark.parametrize(
+        ("check", "expected"),
+        [
+            pytest.param(_check("FAILURE"), "failed", id="failure-conclusion"),
+            pytest.param(_check("ERROR"), "failed", id="error-conclusion"),
+            pytest.param(_check("TIMED_OUT"), "failed", id="timed-out"),
+            pytest.param(_check("STARTUP_FAILURE"), "failed", id="startup-failure"),
+            pytest.param(_check("ACTION_REQUIRED"), "failed", id="action-required"),
+            pytest.param(_check("STALE"), "failed", id="stale-conclusion"),
+            pytest.param(_check("SUCCESS"), "passed", id="success-conclusion"),
+            pytest.param(_check("SKIPPED"), "skipped", id="skipped"),
+            pytest.param(_check("NEUTRAL"), "skipped", id="neutral"),
+            pytest.param(_check("CANCELLED"), "skipped", id="cancelled"),
+            pytest.param(_check(""), "passed", id="completed-no-conclusion"),
+            pytest.param(_check("", "IN_PROGRESS"), "pending", id="in-progress"),
+            pytest.param(_check("", "QUEUED"), "pending", id="queued"),
+            pytest.param({}, "pending", id="none-values"),
+        ],
+    )
+    def test_classify_check_run(self, check: dict[str, str], expected: str) -> None:
+        assert _classify_check_run(check) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -686,15 +636,28 @@ class TestDeterminePrClassification:
         assert result[0] == ItemCategory.NEEDS_ATTENTION
         assert result[2] == "Fix CI"
 
-    def test_own_changes_requested(self) -> None:
-        result = _determine_pr_classification(True, False, "passed", "CHANGES_REQUESTED", 1, "me")
+    @pytest.mark.parametrize(
+        ("is_own", "review_requested", "ci_status", "review_decision", "author", "action_hint"),
+        [
+            pytest.param(
+                True, False, "passed", "CHANGES_REQUESTED", "me", "Address review", id="own-changes-requested"
+            ),
+            pytest.param(True, False, "passed", "APPROVED", "me", "Merge PR", id="own-approved-and-passing"),
+            pytest.param(True, True, "failed", "", "me", "Review PR", id="review-requested-overrides-own"),
+        ],
+    )
+    def test_action_hint(
+        self,
+        is_own: bool,
+        review_requested: bool,
+        ci_status: str,
+        review_decision: str,
+        author: str,
+        action_hint: str,
+    ) -> None:
+        result = _determine_pr_classification(is_own, review_requested, ci_status, review_decision, 1, author)
         assert result is not None
-        assert result[2] == "Address review"
-
-    def test_own_approved_and_passing(self) -> None:
-        result = _determine_pr_classification(True, False, "passed", "APPROVED", 1, "me")
-        assert result is not None
-        assert result[2] == "Merge PR"
+        assert result[2] == action_hint
 
     def test_own_ci_passing_awaiting_review(self) -> None:
         result = _determine_pr_classification(True, False, "passed", "", 1, "me")
@@ -713,11 +676,6 @@ class TestDeterminePrClassification:
         result = _determine_pr_classification(False, False, "passed", "", 1, "other")
         assert result is None
 
-    def test_review_requested_overrides_own(self) -> None:
-        result = _determine_pr_classification(True, True, "failed", "", 1, "me")
-        assert result is not None
-        assert result[2] == "Review PR"
-
 
 # ---------------------------------------------------------------------------
 # _get_author
@@ -725,20 +683,18 @@ class TestDeterminePrClassification:
 
 
 class TestGetAuthor:
-    def test_dict_author(self) -> None:
-        assert _get_author({"author": {"login": "alice"}}) == "alice"
-
-    def test_missing_login(self) -> None:
-        assert _get_author({"author": {}}) == ""
-
-    def test_string_author(self) -> None:
-        assert _get_author({"author": "not-a-dict"}) == ""
-
-    def test_no_author_key(self) -> None:
-        assert _get_author({}) == ""
-
-    def test_none_author(self) -> None:
-        assert _get_author({"author": None}) == ""
+    @pytest.mark.parametrize(
+        ("pr", "expected"),
+        [
+            pytest.param({"author": {"login": "alice"}}, "alice", id="dict-author"),
+            pytest.param({"author": {}}, "", id="missing-login"),
+            pytest.param({"author": "not-a-dict"}, "", id="string-author"),
+            pytest.param({}, "", id="no-author-key"),
+            pytest.param({"author": None}, "", id="none-author"),
+        ],
+    )
+    def test_get_author(self, pr: dict, expected: str) -> None:
+        assert _get_author(pr) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -759,90 +715,16 @@ class TestResolveTargets:
         targets = _resolve_targets({"proj": str(tmp_path / "missing")})
         assert targets == []
 
-    def test_no_github_repo(self, tmp_path) -> None:
+    @pytest.mark.parametrize(
+        "toml_text",
+        [pytest.param("[project]\n", id="no-github-repo"), pytest.param("{{invalid", id="broken-config")],
+    )
+    def test_unusable_config_yields_no_target(self, tmp_path, toml_text: str) -> None:
         d = tmp_path / "proj"
         d.mkdir()
-        (d / "sova.toml").write_text("[project]\n")
+        (d / "sova.toml").write_text(toml_text)
         targets = _resolve_targets({"proj": str(d)})
         assert targets == []
-
-    def test_broken_config(self, tmp_path) -> None:
-        d = tmp_path / "proj"
-        d.mkdir()
-        (d / "sova.toml").write_text("{{invalid")
-        targets = _resolve_targets({"proj": str(d)})
-        assert targets == []
-
-
-# ---------------------------------------------------------------------------
-# _summarize_ci: additional edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestSummarizeCiEdgeCases:
-    def test_mixed_status_context_and_check_run(self) -> None:
-        rollup = [
-            {"__typename": "StatusContext", "state": "SUCCESS"},
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-        ]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_status_context_unknown_returns_pending(self) -> None:
-        rollup = [{"__typename": "StatusContext", "state": "WEIRD"}]
-        assert _summarize_ci(rollup) == "pending"
-
-    def test_neutral_conclusion(self) -> None:
-        rollup = [{"conclusion": "NEUTRAL", "status": "COMPLETED"}]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_cancelled_conclusion(self) -> None:
-        rollup = [{"conclusion": "CANCELLED", "status": "COMPLETED"}]
-        assert _summarize_ci(rollup) == "passed"
-
-    def test_status_context_error(self) -> None:
-        rollup = [{"__typename": "StatusContext", "state": "ERROR"}]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_status_context_pending(self) -> None:
-        rollup = [{"__typename": "StatusContext", "state": "PENDING"}]
-        assert _summarize_ci(rollup) == "pending"
-
-    def test_failure_takes_priority_over_pending(self) -> None:
-        rollup = [
-            {"conclusion": "FAILURE", "status": "COMPLETED"},
-            {"conclusion": "", "status": "IN_PROGRESS"},
-        ]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_pending_takes_priority_over_passed(self) -> None:
-        rollup = [
-            {"conclusion": "SUCCESS", "status": "COMPLETED"},
-            {"conclusion": "", "status": "IN_PROGRESS"},
-        ]
-        assert _summarize_ci(rollup) == "pending"
-
-    def test_startup_failure(self) -> None:
-        rollup = [{"conclusion": "STARTUP_FAILURE", "status": "COMPLETED"}]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_action_required(self) -> None:
-        rollup = [{"conclusion": "ACTION_REQUIRED", "status": "COMPLETED"}]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_stale_conclusion(self) -> None:
-        rollup = [{"conclusion": "STALE", "status": "COMPLETED"}]
-        assert _summarize_ci(rollup) == "failed"
-
-    def test_status_context_unknown_treated_as_pending(self) -> None:
-        rollup = [{"__typename": "StatusContext", "state": "QUEUED"}]
-        assert _summarize_ci(rollup) == "pending"
-
-    def test_only_unknown_status_contexts_is_pending(self) -> None:
-        rollup = [
-            {"__typename": "StatusContext", "state": "UNKNOWN"},
-            {"__typename": "StatusContext", "state": "WEIRD"},
-        ]
-        assert _summarize_ci(rollup) == "pending"
 
 
 # ---------------------------------------------------------------------------

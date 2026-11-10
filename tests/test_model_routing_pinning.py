@@ -36,23 +36,23 @@ from sova.llm.routing import (
 
 
 class TestModelFamilyDetection:
-    def test_bare_alias(self) -> None:
-        assert get_model_family("opus") == "opus"
-        assert get_model_family("sonnet") == "sonnet"
-        assert get_model_family("haiku") == "haiku"
-
-    def test_versioned_model_id(self) -> None:
-        assert get_model_family("claude-opus-4-6") == "opus"
-        assert get_model_family("claude-sonnet-4-6") == "sonnet"
-        assert get_model_family("claude-haiku-4-5") == "haiku"
-
-    def test_unknown_model(self) -> None:
-        assert get_model_family("ollama/llama3") is None
-        assert get_model_family("gpt-4") is None
-
-    def test_case_insensitive(self) -> None:
-        assert get_model_family("Claude-Opus-4-6") == "opus"
-        assert get_model_family("SONNET") == "sonnet"
+    @pytest.mark.parametrize(
+        ("model", "family"),
+        [
+            pytest.param("opus", "opus", id="bare-alias-opus"),
+            pytest.param("sonnet", "sonnet", id="bare-alias-sonnet"),
+            pytest.param("haiku", "haiku", id="bare-alias-haiku"),
+            pytest.param("claude-opus-4-6", "opus", id="versioned-opus"),
+            pytest.param("claude-sonnet-4-6", "sonnet", id="versioned-sonnet"),
+            pytest.param("claude-haiku-4-5", "haiku", id="versioned-haiku"),
+            pytest.param("ollama/llama3", None, id="unknown-ollama"),
+            pytest.param("gpt-4", None, id="unknown-gpt"),
+            pytest.param("Claude-Opus-4-6", "opus", id="case-insensitive-versioned"),
+            pytest.param("SONNET", "sonnet", id="case-insensitive-alias"),
+        ],
+    )
+    def test_get_model_family(self, model: str, family: str | None) -> None:
+        assert get_model_family(model) == family
 
 
 class TestIsPinnedVersion:
@@ -68,64 +68,68 @@ class TestIsPinnedVersion:
 
 
 class TestPinToConfiguredModel:
-    def test_pins_when_same_family(self) -> None:
-        assert _pin_to_configured_model("opus", "claude-opus-4-6") == "claude-opus-4-6"
+    @pytest.mark.parametrize(
+        ("alias", "agent_model", "expected"),
+        [
+            pytest.param("opus", "claude-opus-4-6", "claude-opus-4-6", id="pins-when-same-family"),
+            pytest.param("opus", "claude-sonnet-4-6", "opus", id="no-pin-when-different-family"),
+            pytest.param("opus", "opus", "opus", id="no-pin-when-agent-model-is-bare-alias"),
+            pytest.param("opus", None, "opus", id="no-pin-when-agent-model-none"),
+            pytest.param("opus", "", "opus", id="no-pin-when-agent-model-empty"),
+            pytest.param("sonnet", "claude-sonnet-4-6", "claude-sonnet-4-6", id="pins-sonnet-family"),
+            pytest.param("haiku", "claude-haiku-4-5", "claude-haiku-4-5", id="pins-haiku-family"),
+        ],
+    )
+    def test_pin_to_configured_model(self, alias: str, agent_model: str | None, expected: str) -> None:
+        assert _pin_to_configured_model(alias, agent_model) == expected
 
-    def test_no_pin_when_different_family(self) -> None:
-        assert _pin_to_configured_model("opus", "claude-sonnet-4-6") == "opus"
 
-    def test_no_pin_when_agent_model_is_bare_alias(self) -> None:
-        assert _pin_to_configured_model("opus", "opus") == "opus"
-
-    def test_no_pin_when_agent_model_none(self) -> None:
-        assert _pin_to_configured_model("opus", None) == "opus"
-
-    def test_no_pin_when_agent_model_empty(self) -> None:
-        assert _pin_to_configured_model("opus", "") == "opus"
-
-    def test_pins_sonnet_family(self) -> None:
-        assert _pin_to_configured_model("sonnet", "claude-sonnet-4-6") == "claude-sonnet-4-6"
-
-    def test_pins_haiku_family(self) -> None:
-        assert _pin_to_configured_model("haiku", "claude-haiku-4-5") == "claude-haiku-4-5"
+_FULL_CATALOG = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
 
 
 class TestTaskTypeModelCompatible:
     """Issue #780: the runtime-compatibility check for a configured task-type route."""
 
-    def test_none_model_is_compatible(self) -> None:
-        assert task_type_model_compatible(None, ["claude-opus-5"]) is True
-
-    def test_no_cached_catalog_fails_open(self) -> None:
-        assert task_type_model_compatible("ollama/qwen3", None) is True
-
-    def test_empty_catalog_fails_open(self) -> None:
-        assert task_type_model_compatible("ollama/qwen3", []) is True
-
-    def test_exact_id_in_catalog_is_compatible(self) -> None:
-        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
-        assert task_type_model_compatible("claude-sonnet-5", catalog) is True
-
-    def test_same_family_as_a_catalog_entry_is_compatible(self) -> None:
-        catalog = ["claude-haiku-4-5-20251001"]
-        assert task_type_model_compatible("haiku", catalog) is True
-
-    def test_different_family_is_incompatible(self) -> None:
-        catalog = ["claude-opus-5", "claude-sonnet-5"]
-        assert task_type_model_compatible("haiku", catalog) is False
-
-    def test_unrecognized_vendor_prefix_is_incompatible(self) -> None:
-        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
-        assert task_type_model_compatible("ollama/qwen3:30b", catalog) is False
-
-    def test_foreign_vendor_sharing_a_family_name_is_incompatible(self) -> None:
-        """Issue #780 review: "ollama/sonnet" contains "sonnet" but is not a Claude CLI id."""
-        catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
-        assert task_type_model_compatible("ollama/sonnet", catalog) is False
-
-    def test_same_vendor_prefix_and_family_is_compatible(self) -> None:
-        catalog = ["vertex_ai/claude-sonnet-5"]
-        assert task_type_model_compatible("vertex_ai/claude-sonnet-4-5", catalog) is True
+    @pytest.mark.parametrize(
+        ("model", "catalog", "expected"),
+        [
+            pytest.param(None, ["claude-opus-5"], True, id="none-model-is-compatible"),
+            pytest.param("ollama/qwen3", None, True, id="no-cached-catalog-fails-open"),
+            pytest.param("ollama/qwen3", [], True, id="empty-catalog-fails-open"),
+            pytest.param("claude-sonnet-5", _FULL_CATALOG, True, id="exact-id-in-catalog-is-compatible"),
+            pytest.param(
+                "haiku", ["claude-haiku-4-5-20251001"], True, id="same-family-as-a-catalog-entry-is-compatible"
+            ),
+            pytest.param("haiku", ["claude-opus-5", "claude-sonnet-5"], False, id="different-family-is-incompatible"),
+            pytest.param("ollama/qwen3:30b", _FULL_CATALOG, False, id="unrecognized-vendor-prefix-is-incompatible"),
+            # Issue #780 review: "ollama/sonnet" contains "sonnet" but is not a Claude CLI id.
+            pytest.param(
+                "ollama/sonnet", _FULL_CATALOG, False, id="foreign-vendor-sharing-a-family-name-is-incompatible"
+            ),
+            pytest.param(
+                "vertex_ai/claude-sonnet-4-5",
+                ["vertex_ai/claude-sonnet-5"],
+                True,
+                id="same-vendor-prefix-and-family-is-compatible",
+            ),
+            # A model whose family this module doesn't yet know about (e.g. a new first-party family released
+            # ahead of _MODEL_FAMILIES) must fall open rather than be judged incompatible.
+            pytest.param(
+                "claude-nova-1",
+                ["claude-opus-5", "claude-sonnet-5"],
+                True,
+                id="unrecognized-family-falls-open-on-matching-vendor-prefix",
+            ),
+            pytest.param(
+                "ollama/some-unknown-model",
+                ["claude-opus-5", "claude-sonnet-5"],
+                False,
+                id="unrecognized-family-with-foreign-vendor-prefix-stays-incompatible",
+            ),
+        ],
+    )
+    def test_task_type_model_compatible(self, model: str | None, catalog: list[str] | None, expected: bool) -> None:
+        assert task_type_model_compatible(model, catalog) is expected
 
     def test_dated_fable_id_is_compatible_with_curated_catalog(self) -> None:
         """Issue #780 review: a dated, pinned id in a recognized family (the
@@ -134,17 +138,6 @@ class TestTaskTypeModelCompatible:
 
         catalog = [m.id for m in CURATED_MODELS]
         assert task_type_model_compatible("claude-fable-5-1-20260301", catalog) is True
-
-    def test_unrecognized_family_falls_open_on_matching_vendor_prefix(self) -> None:
-        """A model whose family this module doesn't yet know about (e.g. a new
-        first-party family released ahead of _MODEL_FAMILIES) must fall open
-        rather than be judged incompatible for lack of family recognition."""
-        catalog = ["claude-opus-5", "claude-sonnet-5"]
-        assert task_type_model_compatible("claude-nova-1", catalog) is True
-
-    def test_unrecognized_family_with_foreign_vendor_prefix_stays_incompatible(self) -> None:
-        catalog = ["claude-opus-5", "claude-sonnet-5"]
-        assert task_type_model_compatible("ollama/some-unknown-model", catalog) is False
 
     def test_regression_every_curated_model_id_is_self_compatible(self) -> None:
         """A future CURATED_MODELS addition must stay compatible with itself:
@@ -175,26 +168,21 @@ class TestRouteModelPinning:
         assert model == "claude-opus-4-6"
         assert "pinned" in reason
 
-    def test_default_routing_no_pin_when_different_family(self) -> None:
+    @pytest.mark.parametrize(
+        "agent_model",
+        [
+            pytest.param("claude-sonnet-4-6", id="different-family"),
+            pytest.param("opus", id="agent-model-is-alias"),
+        ],
+    )
+    def test_default_routing_no_pin(self, agent_model: str) -> None:
         llm_config = MagicMock()
         llm_config.routing = {}
 
         model, reason = route_model(
             ComplexityTier.COMPLEX,
             llm_config=llm_config,
-            agent_model="claude-sonnet-4-6",
-        )
-        assert model == "opus"
-        assert "pinned" not in reason
-
-    def test_default_routing_no_pin_when_agent_model_is_alias(self) -> None:
-        llm_config = MagicMock()
-        llm_config.routing = {}
-
-        model, reason = route_model(
-            ComplexityTier.COMPLEX,
-            llm_config=llm_config,
-            agent_model="opus",
+            agent_model=agent_model,
         )
         assert model == "opus"
         assert "pinned" not in reason
@@ -269,23 +257,19 @@ class TestResolveExtractionModel:
     def test_no_config_returns_haiku(self) -> None:
         assert resolve_extraction_model(None) == "haiku"
 
-    def test_no_override_returns_haiku(self) -> None:
+    @pytest.mark.parametrize(
+        ("routing", "expected"),
+        [
+            pytest.param({}, "haiku", id="no-override-returns-haiku"),
+            pytest.param({"extraction": ""}, "haiku", id="empty-string-override-falls-back-to-haiku"),
+            pytest.param({"extraction": "sonnet"}, "sonnet", id="override-returns-configured-model"),
+        ],
+    )
+    def test_routing_override(self, routing: dict[str, str], expected: str) -> None:
         llm_config = MagicMock()
-        llm_config.routing = {}
+        llm_config.routing = routing
 
-        assert resolve_extraction_model(llm_config) == "haiku"
-
-    def test_empty_string_override_falls_back_to_haiku(self) -> None:
-        llm_config = MagicMock()
-        llm_config.routing = {"extraction": ""}
-
-        assert resolve_extraction_model(llm_config) == "haiku"
-
-    def test_override_returns_configured_model(self) -> None:
-        llm_config = MagicMock()
-        llm_config.routing = {"extraction": "sonnet"}
-
-        assert resolve_extraction_model(llm_config) == "sonnet"
+        assert resolve_extraction_model(llm_config) == expected
 
 
 # ---------------------------------------------------------------------------

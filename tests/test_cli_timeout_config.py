@@ -15,7 +15,6 @@ class TestCLITimeoutConfig:
         from sova.config.models import LLMConfig
 
         cfg = LLMConfig()
-        assert hasattr(cfg, "cli_timeout")
         assert cfg.cli_timeout == 900
 
     def test_llm_config_cli_timeout_can_be_overridden(self) -> None:

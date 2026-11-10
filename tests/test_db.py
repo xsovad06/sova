@@ -54,6 +54,22 @@ def _import_migration(migration_number: str) -> types.ModuleType:
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
+async def test_get_session_initializes_the_engine_on_first_use(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no engine yet, ``get_session()`` runs ``init_db()`` for the resolved URL instead of failing."""
+    import sova.db.session as session_module
+
+    monkeypatch.setenv("SOVA_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'first.db'}")
+    monkeypatch.setattr(session_module, "_engine", None)
+    monkeypatch.setattr(session_module, "_session_factory", None)
+
+    async with await get_session() as session:
+        session.add(TaskRun(issue_number="1", role="developer", status="pending"))
+        await session.commit()
+
+    assert session_module._engine is not None
+    assert (tmp_path / "first.db").exists()
+
+
 async def test_create_task_run() -> None:
     """Create and retrieve a task run."""
     async with await get_session() as session:

@@ -165,14 +165,6 @@ class TestCopyClaudeArtifacts:
         with patch("sova.git.worktree.shutil.copy2", side_effect=OSError("denied")):
             _copy_claude_artifacts(project, worktree)
 
-    def test_returns_early_when_no_claude_dir(self, tmp_path: Path) -> None:
-        project = tmp_path / "project"
-        project.mkdir()
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        _copy_claude_artifacts(project, worktree)
-        assert not (worktree / ".claude").exists()
-
     def test_skips_claude_md_when_already_exists(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()

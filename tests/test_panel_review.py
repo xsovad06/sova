@@ -991,7 +991,6 @@ class TestReviewPanelConfig:
 
     def test_nested_in_project_config(self) -> None:
         config = ProjectConfig()
-        assert hasattr(config.review, "panel")
         assert not config.review.panel.enabled
 
     def test_custom_dimensions(self) -> None:

@@ -311,17 +311,34 @@ class TestInvoke:
         assert "--max-budget-usd" in call_args
         assert "5.00" in call_args
 
-    async def test_invoke_cli_failure(self, mock_run: AsyncMock) -> None:
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr", "match"),
+        [
+            pytest.param(1, "", "claude: command not found", "Claude CLI failed", id="cli-failure"),
+            # Exit code 1 with unparseable stdout and empty stderr falls through to the error.
+            pytest.param(1, "not valid json {{{", "", "Claude CLI failed", id="exit-1-invalid-json"),
+            pytest.param(0, "", "", "produced no output", id="success-with-empty-output"),
+            # When stdout carries a structured error, it wins even if stderr is non-empty.
+            pytest.param(
+                1,
+                '{"result": "the real cause"}',
+                "Warning: Opus: Opus 5 not available, using configured fallback",
+                "the real cause",
+                id="structured-stdout-beats-stderr",
+            ),
+            # When stdout has no structured error, stderr is used as the fallback.
+            pytest.param(1, "", "actual error message", "actual error message", id="stderr-without-structured-stdout"),
+        ],
+    )
+    async def test_invoke_failure_raises(
+        self, mock_run: AsyncMock, returncode: int, stdout: str, stderr: str, match: str
+    ) -> None:
         from sova.llm.client import invoke
         from sova.utils.shell import ShellResult
 
-        mock_run.return_value = ShellResult(
-            returncode=1,
-            stdout="",
-            stderr="claude: command not found",
-        )
+        mock_run.return_value = ShellResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
-        with pytest.raises(RuntimeError, match="Claude CLI failed"):
+        with pytest.raises(RuntimeError, match=match):
             await invoke("Hello")
 
     async def test_invoke_error_result(self, mock_run: AsyncMock) -> None:
@@ -373,32 +390,6 @@ class TestInvoke:
         result = await invoke("Hello")
         assert result.text == "Hello"
         assert not result.is_error
-
-    async def test_invoke_cli_exit_1_with_invalid_json_falls_through(self, mock_run: AsyncMock) -> None:
-        """Exit code 1 with unparseable stdout and empty stderr falls through to error."""
-        from sova.llm.client import invoke
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(
-            returncode=1,
-            stdout="not valid json {{{",
-            stderr="",
-        )
-        with pytest.raises(RuntimeError, match="Claude CLI failed"):
-            await invoke("Hello")
-
-    async def test_invoke_success_empty_output_raises(self, mock_run: AsyncMock) -> None:
-        """Successful exit with empty stdout raises RuntimeError."""
-        from sova.llm.client import invoke
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        with pytest.raises(RuntimeError, match="produced no output"):
-            await invoke("Hello")
 
     async def test_invoke_cli_failure_raises_typed_error(self, mock_run: AsyncMock) -> None:
         """A model availability rejection classifies as ModelUnavailableError."""
@@ -464,34 +455,6 @@ class TestInvoke:
         assert result.text == "Hello"
         mock_classify.assert_not_called()
 
-    async def test_invoke_cli_failure_prefers_structured_stdout_over_stderr(self, mock_run: AsyncMock) -> None:
-        """When stdout carries a structured error, it wins even if stderr is non-empty."""
-        from sova.llm.client import invoke
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(
-            returncode=1,
-            stdout='{"result": "the real cause"}',
-            stderr="Warning: Opus: Opus 5 not available, using configured fallback",
-        )
-
-        with pytest.raises(RuntimeError, match="the real cause"):
-            await invoke("Hello")
-
-    async def test_invoke_cli_failure_uses_stderr_when_no_structured_stdout(self, mock_run: AsyncMock) -> None:
-        """When stdout has no structured error, stderr is used as the fallback."""
-        from sova.llm.client import invoke
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(
-            returncode=1,
-            stdout="",
-            stderr="actual error message",
-        )
-
-        with pytest.raises(RuntimeError, match="actual error message"):
-            await invoke("Hello")
-
 
 # ---------------------------------------------------------------------------
 # _extract_failure_detail
@@ -499,12 +462,35 @@ class TestInvoke:
 
 
 class TestExtractFailureDetail:
-    def test_prefers_stderr_when_present(self) -> None:
+    @pytest.mark.parametrize(
+        ("stdout", "stderr", "expected"),
+        [
+            pytest.param("", "real error", "real error", id="prefers-stderr"),
+            pytest.param("", "", "(no error detail captured)", id="empty-stdout-and-stderr"),
+            pytest.param('["a", "b"]', "", '["a", "b"]', id="non-dict-json-stdout"),
+            pytest.param(
+                "",
+                "Warning: Opus: Opus 5 not available, using configured fallback\n",
+                "(no error detail captured beyond warnings)",
+                id="warning-only-stderr",
+            ),
+            pytest.param(
+                "",
+                "Warning: Opus: Opus 5 not available\nreal error line",
+                "real error line",
+                id="leading-warning-stripped",
+            ),
+            pytest.param(
+                "", "  warning: something\nreal error", "real error", id="indented-lowercase-warning-stripped"
+            ),
+        ],
+    )
+    def test_exact_detail(self, stdout: str, stderr: str, expected: str) -> None:
         from sova.llm.providers.claude_code import _extract_failure_detail
         from sova.utils.shell import ShellResult
 
-        result = ShellResult(returncode=1, stdout="", stderr="real error")
-        assert _extract_failure_detail(result) == "real error"
+        result = ShellResult(returncode=1, stdout=stdout, stderr=stderr)
+        assert _extract_failure_detail(result) == expected
 
     def test_extracts_terminal_reason_from_stdout_json(self) -> None:
         from sova.llm.providers.claude_code import _extract_failure_detail
@@ -540,13 +526,6 @@ class TestExtractFailureDetail:
         detail = _extract_failure_detail(result)
         assert "not json" in detail
 
-    def test_handles_empty_stdout_and_stderr(self) -> None:
-        from sova.llm.providers.claude_code import _extract_failure_detail
-        from sova.utils.shell import ShellResult
-
-        result = ShellResult(returncode=1, stdout="", stderr="")
-        assert _extract_failure_detail(result) == "(no error detail captured)"
-
     def test_truncates_long_result(self) -> None:
         from sova.llm.providers.claude_code import _extract_failure_detail
         from sova.utils.shell import ShellResult
@@ -556,14 +535,6 @@ class TestExtractFailureDetail:
         result = ShellResult(returncode=1, stdout=stdout, stderr="")
         detail = _extract_failure_detail(result)
         assert len(detail) <= 310
-
-    def test_handles_non_dict_json_stdout(self) -> None:
-        from sova.llm.providers.claude_code import _extract_failure_detail
-        from sova.utils.shell import ShellResult
-
-        result = ShellResult(returncode=1, stdout='["a", "b"]', stderr="")
-        detail = _extract_failure_detail(result)
-        assert detail == '["a", "b"]'
 
     def test_truncates_long_terminal_reason(self) -> None:
         from sova.llm.providers.claude_code import _extract_failure_detail
@@ -588,42 +559,6 @@ class TestExtractFailureDetail:
         assert "budget_exceeded" in detail
         assert "billing limit reached" in detail
         assert "Warning" not in detail
-
-    def test_warning_only_stderr_with_no_structured_stdout(self) -> None:
-        from sova.llm.providers.claude_code import _extract_failure_detail
-        from sova.utils.shell import ShellResult
-
-        result = ShellResult(
-            returncode=1,
-            stdout="",
-            stderr="Warning: Opus: Opus 5 not available, using configured fallback\n",
-        )
-        detail = _extract_failure_detail(result)
-        assert detail == "(no error detail captured beyond warnings)"
-
-    def test_strips_only_leading_warning_lines_from_stderr(self) -> None:
-        from sova.llm.providers.claude_code import _extract_failure_detail
-        from sova.utils.shell import ShellResult
-
-        result = ShellResult(
-            returncode=1,
-            stdout="",
-            stderr="Warning: Opus: Opus 5 not available\nreal error line",
-        )
-        detail = _extract_failure_detail(result)
-        assert detail == "real error line"
-
-    def test_strips_indented_lowercase_warning_lines(self) -> None:
-        from sova.llm.providers.claude_code import _extract_failure_detail
-        from sova.utils.shell import ShellResult
-
-        result = ShellResult(
-            returncode=1,
-            stdout="",
-            stderr="  warning: something\nreal error",
-        )
-        detail = _extract_failure_detail(result)
-        assert detail == "real error"
 
 
 # ---------------------------------------------------------------------------
@@ -1115,20 +1050,13 @@ class TestRouteModel:
         result = route_model(ComplexityTier.MODERATE, task_type="triage")
         assert result == ("sonnet", "complexity:moderate->sonnet")
 
-    def test_task_type_none_ignored(self) -> None:
+    @pytest.mark.parametrize("task_type", [pytest.param(None, id="none"), pytest.param("", id="empty-string")])
+    def test_missing_task_type_ignored(self, task_type: str | None) -> None:
         from sova.config.models import LLMConfig
         from sova.llm.routing import route_model
 
         llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b"})
-        result = route_model(ComplexityTier.MODERATE, task_type=None, llm_config=llm_cfg)
-        assert result == ("sonnet", "complexity:moderate->sonnet")
-
-    def test_task_type_empty_string_ignored(self) -> None:
-        from sova.config.models import LLMConfig
-        from sova.llm.routing import route_model
-
-        llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b"})
-        result = route_model(ComplexityTier.MODERATE, task_type="", llm_config=llm_cfg)
+        result = route_model(ComplexityTier.MODERATE, task_type=task_type, llm_config=llm_cfg)
         assert result == ("sonnet", "complexity:moderate->sonnet")
 
     def test_mixed_routing_keys(self) -> None:
@@ -1294,46 +1222,34 @@ class TestResolveTaskTypeModel:
             result = _resolve_task_type_model(None, "triage")
             assert result is None
 
-    def test_configured_route_beats_explicit_model(self) -> None:
+    @pytest.mark.parametrize(
+        ("routing", "agent_model", "task_type", "expected"),
+        [
+            pytest.param({"develop": "opus"}, "sonnet", "develop", "opus", id="configured-route-beats-explicit-model"),
+            pytest.param({}, "sonnet", "develop", "sonnet", id="unconfigured-route-keeps-explicit-model"),
+            pytest.param(
+                {"review": "haiku"},
+                "claude-haiku-4-5-20251001",
+                "review",
+                "claude-haiku-4-5-20251001",
+                id="pins-to-same-family-agent-model",
+            ),
+            pytest.param({"review": "haiku"}, "claude-opus-4-6", "review", "haiku", id="no-pin-across-families"),
+            pytest.param(
+                {"develop": "ollama/qwen3:8b"},
+                "claude-haiku-4-5-20251001",
+                "develop",
+                "ollama/qwen3:8b",
+                id="local-model-route-verbatim",
+            ),
+        ],
+    )
+    def test_route_resolution(self, routing: dict[str, str], agent_model: str, task_type: str, expected: str) -> None:
         from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
         from sova.llm.client import _resolve_task_type_model
 
-        cfg = ProjectConfig(llm=LLMConfig(routing={"develop": "opus"}), agent=AgentConfig(model="sonnet"))
-        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "opus"
-
-    def test_unconfigured_route_leaves_explicit_model_untouched(self) -> None:
-        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
-        from sova.llm.client import _resolve_task_type_model
-
-        cfg = ProjectConfig(llm=LLMConfig(routing={}), agent=AgentConfig(model="sonnet"))
-        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "sonnet"
-
-    def test_route_pins_to_same_family_agent_model(self) -> None:
-        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
-        from sova.llm.client import _resolve_task_type_model
-
-        cfg = ProjectConfig(
-            llm=LLMConfig(routing={"review": "haiku"}),
-            agent=AgentConfig(model="claude-haiku-4-5-20251001"),
-        )
-        assert _resolve_task_type_model("sonnet", "review", cfg=cfg) == "claude-haiku-4-5-20251001"
-
-    def test_route_does_not_pin_across_families(self) -> None:
-        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
-        from sova.llm.client import _resolve_task_type_model
-
-        cfg = ProjectConfig(llm=LLMConfig(routing={"review": "haiku"}), agent=AgentConfig(model="claude-opus-4-6"))
-        assert _resolve_task_type_model("sonnet", "review", cfg=cfg) == "haiku"
-
-    def test_local_model_route_returned_verbatim(self) -> None:
-        from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
-        from sova.llm.client import _resolve_task_type_model
-
-        cfg = ProjectConfig(
-            llm=LLMConfig(routing={"develop": "ollama/qwen3:8b"}),
-            agent=AgentConfig(model="claude-haiku-4-5-20251001"),
-        )
-        assert _resolve_task_type_model("sonnet", "develop", cfg=cfg) == "ollama/qwen3:8b"
+        cfg = ProjectConfig(llm=LLMConfig(routing=routing), agent=AgentConfig(model=agent_model))
+        assert _resolve_task_type_model("sonnet", task_type, cfg=cfg) == expected
 
     def test_empty_task_type_falls_through(self) -> None:
         from sova.config.models import LLMConfig, ProjectConfig
@@ -2297,29 +2213,20 @@ class TestAssertCommandExists:
         with pytest.raises(RuntimeError, match="not found"):
             _assert_command_exists("/develop", tmp_path)
 
-    def test_empty_name_rejected(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param("/", id="empty-name"),
+            pytest.param("/../../etc/passwd", id="path-traversal"),
+            pytest.param("/foo/bar", id="slash-in-name"),
+            pytest.param("/foo\\bar", id="backslash-in-name"),
+        ],
+    )
+    def test_invalid_name_rejected(self, tmp_path: Path, command: str) -> None:
         from sova.llm.provider import _assert_command_exists
 
         with pytest.raises(RuntimeError, match="Invalid slash command"):
-            _assert_command_exists("/", tmp_path)
-
-    def test_path_traversal_rejected(self, tmp_path: Path) -> None:
-        from sova.llm.provider import _assert_command_exists
-
-        with pytest.raises(RuntimeError, match="Invalid slash command"):
-            _assert_command_exists("/../../etc/passwd", tmp_path)
-
-    def test_slash_in_name_rejected(self, tmp_path: Path) -> None:
-        from sova.llm.provider import _assert_command_exists
-
-        with pytest.raises(RuntimeError, match="Invalid slash command"):
-            _assert_command_exists("/foo/bar", tmp_path)
-
-    def test_backslash_in_name_rejected(self, tmp_path: Path) -> None:
-        from sova.llm.provider import _assert_command_exists
-
-        with pytest.raises(RuntimeError, match="Invalid slash command"):
-            _assert_command_exists("/foo\\bar", tmp_path)
+            _assert_command_exists(command, tmp_path)
 
     def test_missing_command_restored_from_primary_root(self, tmp_path: Path) -> None:
         from sova.llm.provider import _assert_command_exists
@@ -4124,15 +4031,20 @@ class TestLiteLLMProvider:
 
 
 class TestIsConnectionError:
-    def test_connection_refused(self) -> None:
+    @pytest.mark.parametrize(
+        ("error", "expected"),
+        [
+            pytest.param(ConnectionRefusedError("refused"), True, id="connection-refused"),
+            pytest.param(ConnectionError("failed"), True, id="connection-error"),
+            pytest.param(RuntimeError("Connection refused by server"), True, id="connection-refused-in-message"),
+            pytest.param(ValueError("bad value"), False, id="unrelated-error"),
+            pytest.param(RuntimeError("Model not found"), False, id="api-error"),
+        ],
+    )
+    def test_classifies(self, error: Exception, expected: bool) -> None:
         from sova.llm.litellm_provider import _is_connection_error
 
-        assert _is_connection_error(ConnectionRefusedError("refused")) is True
-
-    def test_connection_error(self) -> None:
-        from sova.llm.litellm_provider import _is_connection_error
-
-        assert _is_connection_error(ConnectionError("failed")) is True
+        assert _is_connection_error(error) is expected
 
     def test_wrapped_connection_error(self) -> None:
         from sova.llm.litellm_provider import _is_connection_error
@@ -4141,21 +4053,6 @@ class TestIsConnectionError:
         outer = RuntimeError("wrapper")
         outer.__cause__ = inner
         assert _is_connection_error(outer) is True
-
-    def test_connection_refused_in_message(self) -> None:
-        from sova.llm.litellm_provider import _is_connection_error
-
-        assert _is_connection_error(RuntimeError("Connection refused by server")) is True
-
-    def test_unrelated_error(self) -> None:
-        from sova.llm.litellm_provider import _is_connection_error
-
-        assert _is_connection_error(ValueError("bad value")) is False
-
-    def test_api_error_not_connection(self) -> None:
-        from sova.llm.litellm_provider import _is_connection_error
-
-        assert _is_connection_error(RuntimeError("Model not found")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -4192,37 +4089,35 @@ class TestHybridConfig:
 class TestComplexityScorer:
     """Tests for sova.llm.complexity module."""
 
-    def test_trivial_keywords(self) -> None:
-        assert assess_complexity("fix typo in README", "") == ComplexityTier.TRIVIAL
-        assert assess_complexity("rename variable foo", "") == ComplexityTier.TRIVIAL
-        assert assess_complexity("bump version to 1.2.3", "") == ComplexityTier.TRIVIAL
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            pytest.param("fix typo in README", ComplexityTier.TRIVIAL, id="trivial-typo"),
+            pytest.param("rename variable foo", ComplexityTier.TRIVIAL, id="trivial-rename"),
+            pytest.param("bump version to 1.2.3", ComplexityTier.TRIVIAL, id="trivial-version-bump"),
+            pytest.param("add test for utils", ComplexityTier.SIMPLE, id="simple-add-test"),
+            pytest.param("minor fix in parser", ComplexityTier.SIMPLE, id="simple-minor-fix"),
+            pytest.param("new endpoint for user search", ComplexityTier.MODERATE, id="moderate-new-endpoint"),
+            pytest.param("refactor auth module", ComplexityTier.COMPLEX, id="complex-refactor"),
+            pytest.param("migrate database schema", ComplexityTier.COMPLEX, id="complex-migrate"),
+            pytest.param("new module for notifications", ComplexityTier.COMPLEX, id="complex-new-module"),
+            pytest.param("cross-cutting concern overhaul", ComplexityTier.EPIC, id="epic-cross-cutting"),
+            pytest.param("full rewrite of the pipeline", ComplexityTier.EPIC, id="epic-full-rewrite"),
+            pytest.param("", ComplexityTier.MODERATE, id="empty-input-defaults-to-moderate"),
+        ],
+    )
+    def test_keywords(self, title: str, expected: ComplexityTier) -> None:
+        assert assess_complexity(title, "") == expected
 
-    def test_simple_keywords(self) -> None:
-        assert assess_complexity("add test for utils", "") == ComplexityTier.SIMPLE
-        assert assess_complexity("minor fix in parser", "") == ComplexityTier.SIMPLE
-
-    def test_moderate_keywords(self) -> None:
-        assert assess_complexity("new endpoint for user search", "") == ComplexityTier.MODERATE
-
-    def test_complex_keywords(self) -> None:
-        assert assess_complexity("refactor auth module", "") == ComplexityTier.COMPLEX
-        assert assess_complexity("migrate database schema", "") == ComplexityTier.COMPLEX
-        assert assess_complexity("new module for notifications", "") == ComplexityTier.COMPLEX
-
-    def test_epic_keywords(self) -> None:
-        assert assess_complexity("cross-cutting concern overhaul", "") == ComplexityTier.EPIC
-        assert assess_complexity("full rewrite of the pipeline", "") == ComplexityTier.EPIC
-
-    def test_empty_input_defaults_to_moderate(self) -> None:
-        assert assess_complexity("", "") == ComplexityTier.MODERATE
-
-    def test_label_based_routing(self) -> None:
-        result = assess_complexity("do something", "", labels=["good first issue"])
-        assert result == ComplexityTier.TRIVIAL
-
-    def test_label_easy(self) -> None:
-        result = assess_complexity("do something", "", labels=["easy"])
-        assert result == ComplexityTier.SIMPLE
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            pytest.param("good first issue", ComplexityTier.TRIVIAL, id="good-first-issue"),
+            pytest.param("easy", ComplexityTier.SIMPLE, id="easy"),
+        ],
+    )
+    def test_label_based_routing(self, label: str, expected: ComplexityTier) -> None:
+        assert assess_complexity("do something", "", labels=[label]) == expected
 
     def test_file_count_influence(self) -> None:
         result = assess_complexity("fix a thing", "short desc", file_count_estimate=1)
@@ -4262,14 +4157,54 @@ class TestComplexityScorer:
         actual = {t.value for t in ComplexityTier}
         assert actual == expected
 
-    def test_multiple_signals_combined(self) -> None:
-        result = assess_complexity(
-            "refactor the auth system",
-            "This is a large refactor affecting many files",
-            labels=["complex"],
-            file_count_estimate=10,
-        )
-        assert result == ComplexityTier.COMPLEX
+    @pytest.mark.parametrize(
+        ("title", "description", "labels", "file_count", "expected"),
+        [
+            pytest.param(
+                "refactor the auth system",
+                "This is a large refactor affecting many files",
+                ["complex"],
+                10,
+                ComplexityTier.COMPLEX,
+                id="multiple-signals-combined",
+            ),
+            # A **Complexity**: line (triage/spec-written) must override every other signal.
+            pytest.param(
+                "fix typo in README",
+                "**Complexity**: epic",
+                ["good first issue"],
+                1,
+                ComplexityTier.EPIC,
+                id="explicit-overrides-heuristic-vote",
+            ),
+            # Issue #1260 review: a coarse explicit line (triage's heuristic never emits EPIC, or one of its
+            # hardcoded "moderate" fallbacks) must not downgrade an issue the vote scores higher.
+            pytest.param(
+                "Refactor entire pipeline",
+                "This requires a full rewrite spanning multiple systems with "
+                "breaking changes across the whole API surface.\n\n"
+                "## Triage Assessment\n**Complexity**: moderate\n",
+                ["type: bug"],
+                40,
+                ComplexityTier.EPIC,
+                id="explicit-is-a-floor-not-a-ceiling",
+            ),
+            # The spec's motivating case: a deeper assessment raising a tier the heuristic vote underestimated.
+            pytest.param(
+                "fix typo in README",
+                "**Complexity**: complex",
+                ["good first issue"],
+                1,
+                ComplexityTier.COMPLEX,
+                id="explicit-raises-underestimated-issue",
+            ),
+        ],
+    )
+    def test_combined_signals(
+        self, title: str, description: str, labels: list[str], file_count: int, expected: ComplexityTier
+    ) -> None:
+        result = assess_complexity(title, description, labels=labels, file_count_estimate=file_count)
+        assert result == expected
 
     def test_none_labels_accepted(self) -> None:
         assess_complexity("title", "desc", labels=None)
@@ -4289,65 +4224,25 @@ class TestComplexityScorer:
         result = assess_complexity("do something", "", labels=["bug", "complex"])
         assert result == ComplexityTier.COMPLEX
 
-    def test_explicit_complexity_overrides_heuristic_vote(self) -> None:
-        """A **Complexity**: line (triage/spec-written) must override every other signal."""
-        result = assess_complexity(
-            "fix typo in README",
-            "**Complexity**: epic",
-            labels=["good first issue"],
-            file_count_estimate=1,
-        )
-        assert result == ComplexityTier.EPIC
-
-    def test_explicit_complexity_invalid_value_falls_back_to_heuristics(self) -> None:
-        result = assess_complexity("fix typo in README", "**Complexity**: very-high")
-        assert result == ComplexityTier.TRIVIAL
-
-    def test_explicit_complexity_absent_falls_back_to_heuristics(self) -> None:
-        result = assess_complexity("fix typo in README", "no complexity line here")
-        assert result == ComplexityTier.TRIVIAL
-
-    def test_inline_marker_in_title_does_not_override(self) -> None:
-        """CodeRabbit finding (PR #1262): title and description are joined with
-        a newline, not a space, so a quoted **Complexity**: mention in the
-        title can't run onto the description's own line and be read as a
-        standalone override."""
-        result = assess_complexity(
-            "someone quoted **Complexity**: epic in the title",
-            "fix typo in README",
-        )
-        assert result == ComplexityTier.TRIVIAL
-
-    def test_explicit_complexity_is_a_floor_not_a_ceiling(self) -> None:
-        """Issue #1260 review: a coarse explicit line (e.g. triage's own
-        heuristic, which can never emit EPIC, or one of its hardcoded
-        "moderate" fallbacks) must not silently downgrade an issue the
-        keyword/label/file-count vote scores higher. A bug-labelled body
-        with EPIC-strength keywords and an explicit "moderate" line must
-        still resolve to EPIC, not MODERATE."""
-        body = (
-            "This requires a full rewrite spanning multiple systems with "
-            "breaking changes across the whole API surface.\n\n"
-            "## Triage Assessment\n**Complexity**: moderate\n"
-        )
-        result = assess_complexity(
-            "Refactor entire pipeline",
-            body,
-            labels=["type: bug"],
-            file_count_estimate=40,
-        )
-        assert result == ComplexityTier.EPIC
-
-    def test_explicit_complexity_can_still_raise_underestimated_issue(self) -> None:
-        """The spec's motivating case: a real, deeper assessment (e.g. from
-        a spec) raising a tier the coarse heuristic vote underestimated."""
-        result = assess_complexity(
-            "fix typo in README",
-            "**Complexity**: complex",
-            labels=["good first issue"],
-            file_count_estimate=1,
-        )
-        assert result == ComplexityTier.COMPLEX
+    @pytest.mark.parametrize(
+        ("title", "description"),
+        [
+            pytest.param("fix typo in README", "**Complexity**: very-high", id="invalid-explicit-value"),
+            pytest.param("fix typo in README", "no complexity line here", id="explicit-line-absent"),
+            # CodeRabbit finding (PR #1262): title and description are joined with a newline, so a quoted
+            # **Complexity**: mention in the title can't run onto the description's line as an override.
+            pytest.param(
+                "someone quoted **Complexity**: epic in the title", "fix typo in README", id="inline-marker-in-title"
+            ),
+            # Issue #1260 review finding #7: an unfilled template placeholder copied verbatim into an issue
+            # body must not be read as a real assessment.
+            pytest.param(
+                "fix typo in README", "**Complexity**: simple | moderate | complex", id="template-placeholder-line"
+            ),
+        ],
+    )
+    def test_unusable_explicit_complexity_falls_back_to_heuristics(self, title: str, description: str) -> None:
+        assert assess_complexity(title, description) == ComplexityTier.TRIVIAL
 
     def test_explicit_complexity_with_bug_label_does_not_downgrade(self) -> None:
         """issue #1260 review finding #17: a `type: bug` label must not
@@ -4361,89 +4256,48 @@ class TestComplexityScorer:
         )
         assert result == ComplexityTier.COMPLEX
 
-    def test_template_placeholder_complexity_line_is_not_an_override(self) -> None:
-        """issue #1260 review finding #7: an unfilled spec/research template
-        placeholder copied verbatim into an issue body must not be read as a
-        real assessment."""
-        result = assess_complexity(
-            "fix typo in README",
-            "**Complexity**: simple | moderate | complex",
-        )
-        assert result == ComplexityTier.TRIVIAL
-
 
 class TestExtractExplicitComplexity:
     """Tests for sova.llm.complexity.extract_explicit_complexity."""
 
-    def test_extracts_valid_tier(self) -> None:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("**Complexity**: moderate", ComplexityTier.MODERATE, id="valid-tier"),
+            pytest.param("**COMPLEXITY**: Complex", ComplexityTier.COMPLEX, id="case-insensitive"),
+            pytest.param("no complexity line here", None, id="no-line"),
+            pytest.param("**Complexity**: very-high", None, id="invalid-value"),
+            pytest.param("", None, id="empty-text"),
+            # Issue #1260: triage appends its line first, then Research/Spec sections append their own,
+            # deeper-informed line below it. The later line must win.
+            pytest.param(
+                "## Triage Assessment\n**Complexity**: moderate\n\n## Research\n**Complexity**: complex\n",
+                ComplexityTier.COMPLEX,
+                id="last-occurrence-wins",
+            ),
+            # A typo'd last line must not silently fall back to an earlier valid one: the most recent
+            # assessment attempt is what the caller should trust or discard.
+            pytest.param(
+                "**Complexity**: complex\n**Complexity**: not-a-real-tier\n", None, id="last-occurrence-invalid"
+            ),
+            # CodeRabbit finding (PR #1262): the marker must be anchored to a standalone line.
+            pytest.param(
+                "The reporter wrote **Complexity**: epic in their original comment, but that was a guess.",
+                None,
+                id="inline-quoted-marker",
+            ),
+            # Leading whitespace on an otherwise standalone line (e.g. inside a list item) still matches.
+            pytest.param("  **Complexity**: complex\n", ComplexityTier.COMPLEX, id="indented-marker"),
+            # Issue #1260 review finding #7: spec.md's and research.md's own templates copied verbatim into
+            # an issue body must not be read as a real assessment.
+            pytest.param("**Complexity**: simple | moderate | complex", None, id="spec-template-placeholder"),
+            pytest.param("**Complexity**: {complexity rating}", None, id="research-template-placeholder"),
+        ],
+    )
+    def test_extracts(self, text: str, expected: ComplexityTier | None) -> None:
         from sova.llm.complexity import extract_explicit_complexity
 
-        assert extract_explicit_complexity("**Complexity**: moderate") == ComplexityTier.MODERATE
-
-    def test_case_insensitive(self) -> None:
-        from sova.llm.complexity import extract_explicit_complexity
-
-        assert extract_explicit_complexity("**COMPLEXITY**: Complex") == ComplexityTier.COMPLEX
-
-    def test_no_line_returns_none(self) -> None:
-        from sova.llm.complexity import extract_explicit_complexity
-
-        assert extract_explicit_complexity("no complexity line here") is None
-
-    def test_invalid_value_returns_none(self) -> None:
-        from sova.llm.complexity import extract_explicit_complexity
-
-        assert extract_explicit_complexity("**Complexity**: very-high") is None
-
-    def test_empty_text_returns_none(self) -> None:
-        from sova.llm.complexity import extract_explicit_complexity
-
-        assert extract_explicit_complexity("") is None
-
-    def test_last_occurrence_wins_over_earlier_one(self) -> None:
-        """Issue #1260: triage appends its **Complexity** line first, then the
-        researcher pipeline appends Research/Spec sections with their own,
-        deeper-informed line below it. The later line must win."""
-        from sova.llm.complexity import extract_explicit_complexity
-
-        text = "## Triage Assessment\n**Complexity**: moderate\n\n## Research\n**Complexity**: complex\n"
-        assert extract_explicit_complexity(text) == ComplexityTier.COMPLEX
-
-    def test_last_occurrence_invalid_falls_back_even_with_earlier_valid_one(self) -> None:
-        """A typo'd last line must not silently fall back to an earlier valid
-        one: the most recent assessment attempt is what the caller should
-        trust or discard, not a stale earlier guess."""
-        from sova.llm.complexity import extract_explicit_complexity
-
-        text = "**Complexity**: complex\n**Complexity**: not-a-real-tier\n"
-        assert extract_explicit_complexity(text) is None
-
-    def test_inline_quoted_marker_is_not_an_override(self) -> None:
-        """CodeRabbit finding (PR #1262): the marker must be anchored to a
-        standalone line, so quoted or inline text mentioning it mid-sentence
-        isn't mistaken for a real triage/spec assessment."""
-        from sova.llm.complexity import extract_explicit_complexity
-
-        text = "The reporter wrote **Complexity**: epic in their original comment, but that was a guess."
-        assert extract_explicit_complexity(text) is None
-
-    def test_indented_marker_still_matches(self) -> None:
-        """Leading whitespace on an otherwise standalone line (e.g. inside a
-        list item) must still be recognized."""
-        from sova.llm.complexity import extract_explicit_complexity
-
-        text = "  **Complexity**: complex\n"
-        assert extract_explicit_complexity(text) == ComplexityTier.COMPLEX
-
-    def test_unfilled_template_placeholder_returns_none(self) -> None:
-        """issue #1260 review finding #7: spec.md's own template
-        (`**Complexity**: simple | moderate | complex`) and research.md's
-        (`**Complexity**: {complexity rating}`) must not be read as a real
-        assessment if copied verbatim into an issue body."""
-        from sova.llm.complexity import extract_explicit_complexity
-
-        assert extract_explicit_complexity("**Complexity**: simple | moderate | complex") is None
-        assert extract_explicit_complexity("**Complexity**: {complexity rating}") is None
+        assert extract_explicit_complexity(text) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -4459,11 +4313,21 @@ class TestAnthropicRateCard:
         expected = Decimal("2") * 1000 / Decimal("1000000") + Decimal("10") * 500 / Decimal("1000000")
         assert cost == expected.quantize(Decimal("0.000001"))
 
-    def test_unknown_model_returns_zero(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "input_tokens", "output_tokens", "expected"),
+        [
+            pytest.param("gpt-4o", 1000, 500, "0", id="unknown-model-is-free"),
+            pytest.param("claude-sonnet-5", 0, 0, "0", id="zero-tokens"),
+            pytest.param("claude-opus-5", 1_000_000, 0, "5.000000", id="opus"),
+            pytest.param("claude-haiku-4-5-20251001", 1_000_000, 1_000_000, "6.000000", id="haiku"),
+            pytest.param("claude-fable-5", 1_000_000, 0, "10.000000", id="fable"),
+        ],
+    )
+    def test_model_rates(self, model: str, input_tokens: int, output_tokens: int, expected: str) -> None:
         from sova.llm.models import compute_anthropic_cost
 
-        cost = compute_anthropic_cost("gpt-4o", input_tokens=1000, output_tokens=500)
-        assert cost == Decimal("0")
+        cost = compute_anthropic_cost(model, input_tokens=input_tokens, output_tokens=output_tokens)
+        assert cost == Decimal(expected)
 
     def test_dated_snapshot_is_priced_as_its_family(self) -> None:
         from sova.llm.models import compute_anthropic_cost
@@ -4472,24 +4336,22 @@ class TestAnthropicRateCard:
         assert cost == compute_anthropic_cost("claude-sonnet-5", input_tokens=1000, output_tokens=500)
         assert cost > Decimal("0")
 
-    def test_input_rate_per_mtok_known_model(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            pytest.param("claude-sonnet-5", "2", id="known-model"),
+            pytest.param("gpt-4o", "0", id="unknown-model"),
+            # Bare family aliases (the config default, e.g. "opus") must resolve to a nonzero rate;
+            # otherwise the compression-savings estimate is always $0.
+            pytest.param("opus", "4", id="bare-alias-opus"),
+            pytest.param("sonnet", "2", id="bare-alias-sonnet"),
+            pytest.param("haiku", "0.10", id="bare-alias-haiku"),
+        ],
+    )
+    def test_input_rate_per_mtok(self, model: str, expected: str) -> None:
         from sova.llm.models import input_rate_per_mtok
 
-        assert input_rate_per_mtok("claude-sonnet-5") == Decimal("2")
-
-    def test_input_rate_per_mtok_unknown_model(self) -> None:
-        from sova.llm.models import input_rate_per_mtok
-
-        assert input_rate_per_mtok("gpt-4o") == Decimal("0")
-
-    def test_input_rate_per_mtok_bare_alias_resolves(self) -> None:
-        """Bare family aliases (the config default, e.g. "opus") must resolve to
-        a nonzero rate; otherwise the compression-savings estimate is always $0."""
-        from sova.llm.models import input_rate_per_mtok
-
-        assert input_rate_per_mtok("opus") == Decimal("4")
-        assert input_rate_per_mtok("sonnet") == Decimal("2")
-        assert input_rate_per_mtok("haiku") == Decimal("0.10")
+        assert input_rate_per_mtok(model) == Decimal(expected)
 
     def test_resolve_model_alias_known(self) -> None:
         from sova.llm.models import resolve_model_alias
@@ -4540,31 +4402,6 @@ class TestAnthropicRateCard:
             cache_creation_tokens=500,
         )
         assert cost_with_creation > cost_no_cache
-
-    def test_zero_tokens(self) -> None:
-        from sova.llm.models import compute_anthropic_cost
-
-        cost = compute_anthropic_cost("claude-sonnet-5", input_tokens=0, output_tokens=0)
-        assert cost == Decimal("0")
-
-    def test_opus_rates(self) -> None:
-        from sova.llm.models import compute_anthropic_cost
-
-        cost = compute_anthropic_cost("claude-opus-5", input_tokens=1_000_000, output_tokens=0)
-        assert cost == Decimal("5.000000")
-
-    def test_haiku_rates(self) -> None:
-        from sova.llm.models import compute_anthropic_cost
-
-        cost = compute_anthropic_cost("claude-haiku-4-5-20251001", input_tokens=1_000_000, output_tokens=1_000_000)
-        expected = Decimal("1") + Decimal("5")
-        assert cost == expected.quantize(Decimal("0.000001"))
-
-    def test_fable_rates(self) -> None:
-        from sova.llm.models import compute_anthropic_cost
-
-        cost = compute_anthropic_cost("claude-fable-5", input_tokens=1_000_000, output_tokens=0)
-        assert cost == Decimal("10.000000")
 
     def test_batch_result_succeeded_with_error(self) -> None:
         from sova.llm.models import BatchRequest, BatchResult
@@ -4641,18 +4478,19 @@ class TestRateCardPerModel:
         expected = input_rate_per_mtok(model) * Decimal("1.25") * 10_000 / 1_000_000
         assert cost == expected.quantize(Decimal("0.000001"))
 
-    def test_haiku_55_prompt_at_threshold_is_the_lower_tier(self) -> None:
-        """The issue says "up to 100K": exactly 100K tokens still bills at $0.10 / $0.50."""
+    @pytest.mark.parametrize(
+        ("input_tokens", "output_tokens", "expected"),
+        [
+            # The issue says "up to 100K": exactly 100K tokens still bills at $0.10 / $0.50.
+            pytest.param(100_000, 1_000, "0.010500", id="at-threshold-is-lower-tier"),
+            pytest.param(200_000, 10_000, "0.125000", id="above-threshold-is-higher-tier"),
+        ],
+    )
+    def test_haiku_55_prompt_length_tier(self, input_tokens: int, output_tokens: int, expected: str) -> None:
         from sova.llm.models import compute_anthropic_cost
 
-        cost = compute_anthropic_cost("claude-haiku-5-5", input_tokens=100_000, output_tokens=1_000)
-        assert cost == Decimal("0.010500")
-
-    def test_haiku_55_prompt_above_threshold_is_the_higher_tier(self) -> None:
-        from sova.llm.models import compute_anthropic_cost
-
-        cost = compute_anthropic_cost("claude-haiku-5-5", input_tokens=200_000, output_tokens=10_000)
-        assert cost == Decimal("0.125000")
+        cost = compute_anthropic_cost("claude-haiku-5-5", input_tokens=input_tokens, output_tokens=output_tokens)
+        assert cost == Decimal(expected)
 
     def test_haiku_55_one_token_over_threshold_flips_the_tier(self) -> None:
         from sova.llm.models import compute_anthropic_cost
@@ -5633,30 +5471,26 @@ class TestLLMConfigAnthropic:
 
 
 class TestClassifyContentType:
-    def test_diff(self) -> None:
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            pytest.param("diff --git a/f b/f\n@@ -1 +1 @@", "diff", id="diff"),
+            pytest.param("@@ -1,2 +1,2 @@ context", "diff", id="diff-hunk-header"),
+            pytest.param('{"key": "value"}', "json", id="json-object"),
+            pytest.param("[1, 2, 3]", "json", id="json-array"),
+            pytest.param("def foo():\n    return 1", "code", id="code"),
+            pytest.param("Just some prose describing a task.", "text", id="text-default"),
+            pytest.param("hi", "text", id="short-payload"),
+            pytest.param("", "text", id="empty-payload"),
+            pytest.param('   {"a": 1}', "json", id="leading-whitespace-stripped"),
+            # A JSON marker beyond the first 100 chars must not flip the result.
+            pytest.param("x" * 200 + "{", "text", id="only-prefix-inspected"),
+        ],
+    )
+    def test_classifies(self, payload: str, expected: str) -> None:
         from sova.llm.client import classify_content_type
 
-        assert classify_content_type("diff --git a/f b/f\n@@ -1 +1 @@") == "diff"
-
-    def test_diff_hunk_header(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("@@ -1,2 +1,2 @@ context") == "diff"
-
-    def test_json_object(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type('{"key": "value"}') == "json"
-
-    def test_json_array(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("[1, 2, 3]") == "json"
-
-    def test_code(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("def foo():\n    return 1") == "code"
+        assert classify_content_type(payload) == expected
 
     @pytest.mark.parametrize(
         "prefix",
@@ -5677,32 +5511,6 @@ class TestClassifyContentType:
         from sova.llm.client import classify_content_type
 
         assert classify_content_type(prefix) == "code"
-
-    def test_text_default(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("Just some prose describing a task.") == "text"
-
-    def test_short_payload_safe(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("hi") == "text"
-
-    def test_empty_payload_safe(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type("") == "text"
-
-    def test_leading_whitespace_stripped(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        assert classify_content_type('   {"a": 1}') == "json"
-
-    def test_only_prefix_inspected(self) -> None:
-        from sova.llm.client import classify_content_type
-
-        # A JSON marker beyond the first 100 chars must not flip the result.
-        assert classify_content_type("x" * 200 + "{") == "text"
 
 
 # ---------------------------------------------------------------------------
@@ -5959,7 +5767,24 @@ class TestClaudeCodeAuthAwareness:
         assert "dev@example.com" in detail
         assert "max" in detail
 
-    async def test_logged_out_is_unavailable(self) -> None:
+    @pytest.mark.parametrize(
+        ("version_out", "auth_out", "auth_rc", "expected_available", "expected_detail"),
+        [
+            pytest.param("2.1.259\n", '{"loggedIn": false}', 0, False, "claude auth login", id="logged-out"),
+            # Older CLI builds have no `auth` subcommand; do not block them.
+            pytest.param("1.0.0\n", "", 1, True, "auth state unknown", id="missing-auth-subcommand"),
+            pytest.param("1.0.0\n", "not json at all", 0, True, "auth state unknown", id="unparseable-output"),
+            pytest.param("1.0.0\n", "[1, 2, 3]", 0, True, "auth state unknown", id="non-dict-payload"),
+            # A dict without `loggedIn` (e.g. unrecognized future CLI output) must not be treated as
+            # logged out: only an explicit `false` means unavailable.
+            pytest.param("1.0.0\n", "{}", 0, True, "auth state unknown", id="missing-logged-in-key"),
+            pytest.param("1.0.0\n", '{"loggedIn": "yes"}', 0, True, "auth state unknown", id="non-boolean-logged-in"),
+            pytest.param("1.0.0\n", '{"loggedIn": true}', 0, True, "authenticated", id="logged-in-without-account"),
+        ],
+    )
+    async def test_auth_status_decides_availability(
+        self, version_out: str, auth_out: str, auth_rc: int, expected_available: bool, expected_detail: str
+    ) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
         with (
@@ -5967,13 +5792,13 @@ class TestClaudeCodeAuthAwareness:
             patch(
                 "sova.llm.providers.claude_code.run",
                 new_callable=AsyncMock,
-                side_effect=self._results("2.1.259\n", '{"loggedIn": false}'),
+                side_effect=self._results(version_out, auth_out, auth_rc=auth_rc),
             ),
         ):
             available, detail = await ClaudeCodeProvider().check_available()
 
-        assert available is False
-        assert "claude auth login" in detail
+        assert available is expected_available
+        assert expected_detail in detail
 
     async def test_version_probe_uses_auth_check_timeout(self) -> None:
         """The `claude --version` probe must not inherit run()'s 300s default:
@@ -5991,105 +5816,6 @@ class TestClaudeCodeAuthAwareness:
 
         version_call = mock_run.await_args_list[0]
         assert version_call.kwargs["timeout"] == _AUTH_CHECK_TIMEOUT
-
-    async def test_missing_auth_subcommand_fails_open(self) -> None:
-        """Older CLI builds have no `auth` subcommand; do not block them."""
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", "", auth_rc=1),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "auth state unknown" in detail
-
-    async def test_unparseable_auth_output_fails_open(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", "not json at all"),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "auth state unknown" in detail
-
-    async def test_non_dict_auth_payload_fails_open(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", "[1, 2, 3]"),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "auth state unknown" in detail
-
-    async def test_missing_logged_in_key_fails_open(self) -> None:
-        """A dict without ``loggedIn`` (e.g. unrecognized future CLI output) must not
-        be treated as logged out: only an explicit `false` means unavailable."""
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", "{}"),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "auth state unknown" in detail
-
-    async def test_non_boolean_logged_in_fails_open(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", '{"loggedIn": "yes"}'),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "auth state unknown" in detail
-
-    async def test_logged_in_without_account_details(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        with (
-            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
-            patch(
-                "sova.llm.providers.claude_code.run",
-                new_callable=AsyncMock,
-                side_effect=self._results("1.0.0\n", '{"loggedIn": true}'),
-            ),
-        ):
-            available, detail = await ClaudeCodeProvider().check_available()
-
-        assert available is True
-        assert "authenticated" in detail
 
     async def test_version_failure_skips_auth_check(self) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -6174,27 +5900,23 @@ class TestClaudeCodeGetAuthDetails:
         assert details["orgName"] == "Example Org"
         assert details["subscriptionType"] == "max"
 
-    async def test_logged_out_returns_none(self) -> None:
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr"),
+        [
+            pytest.param(0, '{"loggedIn": false}', "", id="logged-out"),
+            pytest.param(1, "", "no such subcommand", id="probe-failure"),
+            pytest.param(0, "not json", "", id="unparseable-output"),
+            pytest.param(0, "{}", "", id="missing-logged-in-key"),
+        ],
+    )
+    async def test_unusable_probe_returns_none(self, returncode: int, stdout: str, stderr: str) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
         from sova.utils.shell import ShellResult
 
         with patch(
             "sova.llm.providers.claude_code.run",
             new_callable=AsyncMock,
-            return_value=ShellResult(returncode=0, stdout='{"loggedIn": false}', stderr=""),
-        ):
-            details = await ClaudeCodeProvider().get_auth_details()
-
-        assert details is None
-
-    async def test_probe_failure_returns_none(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-        from sova.utils.shell import ShellResult
-
-        with patch(
-            "sova.llm.providers.claude_code.run",
-            new_callable=AsyncMock,
-            return_value=ShellResult(returncode=1, stdout="", stderr="no such subcommand"),
+            return_value=ShellResult(returncode=returncode, stdout=stdout, stderr=stderr),
         ):
             details = await ClaudeCodeProvider().get_auth_details()
 
@@ -6210,32 +5932,6 @@ class TestClaudeCodeGetAuthDetails:
             "sova.llm.providers.claude_code.run",
             new_callable=AsyncMock,
             side_effect=FileNotFoundError("claude"),
-        ):
-            details = await ClaudeCodeProvider().get_auth_details()
-
-        assert details is None
-
-    async def test_unparseable_output_returns_none(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-        from sova.utils.shell import ShellResult
-
-        with patch(
-            "sova.llm.providers.claude_code.run",
-            new_callable=AsyncMock,
-            return_value=ShellResult(returncode=0, stdout="not json", stderr=""),
-        ):
-            details = await ClaudeCodeProvider().get_auth_details()
-
-        assert details is None
-
-    async def test_missing_logged_in_key_returns_none(self) -> None:
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-        from sova.utils.shell import ShellResult
-
-        with patch(
-            "sova.llm.providers.claude_code.run",
-            new_callable=AsyncMock,
-            return_value=ShellResult(returncode=0, stdout="{}", stderr=""),
         ):
             details = await ClaudeCodeProvider().get_auth_details()
 

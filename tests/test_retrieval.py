@@ -491,15 +491,6 @@ def test_knowledge_config_defaults() -> None:
     assert cfg.max_context_tokens == 2000
 
 
-def test_knowledge_config_in_project_config() -> None:
-    """ProjectConfig includes KnowledgeConfig as a nested section."""
-    from sova.config.models import ProjectConfig
-
-    cfg = ProjectConfig()
-    assert hasattr(cfg, "knowledge")
-    assert cfg.knowledge.max_context_tokens == 2000
-
-
 # ---------------------------------------------------------------------------
 # build_context_query: body truncation
 # ---------------------------------------------------------------------------

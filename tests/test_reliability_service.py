@@ -39,103 +39,120 @@ def _run(role: str, status: str, *, days_ago: int = 1, cost: str = "0", error: s
 
 
 class TestClassifyFailureCause:
-    def test_none_message_is_unclassified(self) -> None:
-        assert reliability_service.classify_failure_cause(None) == "unclassified"
-
-    def test_empty_message_is_unclassified(self) -> None:
-        assert reliability_service.classify_failure_cause("") == "unclassified"
-
-    def test_step_hard_timeout(self) -> None:
-        assert reliability_service.classify_failure_cause("step_hard_timeout") == "step_timeout"
-
-    def test_fix_llm_timeout(self) -> None:
-        msg = "fix_llm_timeout on cycle 2: LLM call exceeded budget"
-        assert reliability_service.classify_failure_cause(msg) == "fix_llm_timeout"
-
-    def test_fix_llm_failed(self) -> None:
-        msg = "fix_llm_failed on cycle 1: bad response"
-        assert reliability_service.classify_failure_cause(msg) == "fix_llm_failed"
-
-    def test_process_exit_shape(self) -> None:
-        msg = "Process exited with code 1 (step=develop); last output: boom"
-        assert reliability_service.classify_failure_cause(msg) == "process_exit"
-
-    def test_process_exit_negative_code_from_signal_termination(self) -> None:
-        # asyncio reports a signal-terminated process as a negative exit code
-        # (e.g. -9 for SIGKILL/OOM, -15 for SIGTERM), per the termination
-        # provenance work documented in .claude/rules/architecture.md.
-        msg = "Process exited with code -9 (step=develop); last output: oom-killed"
-        assert reliability_service.classify_failure_cause(msg) == "process_exit"
-
-    def test_gate_check_reason(self) -> None:
-        msg = "No commits ahead of base branch after commit step"
-        assert reliability_service.classify_failure_cause(msg) == "gate_check"
-
-    def test_network_outage_wins_over_process_exit_shape(self) -> None:
-        # Verbatim from a real outage (Gwym run 1612). _build_exit_failure_message()
-        # wraps the real cause in the "Process exited with code N" shape, so
-        # without the leading network rule _PROCESS_EXIT_RE claims this first and
-        # an outage is reported as a generic nonzero exit.
-        msg = (
-            "Process exited with code 1; last output: "
-            "[stderr] RuntimeError: Failed to fetch issue #659: error connecting to api.github.com | "
-            "[stderr] check your internet connection or https://githubstatus.com"
-        )
-        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
-
-    def test_network_outage_wins_over_fix_llm_prefix(self) -> None:
-        # The fix_llm_* buckets exist to measure how well SOVA's own fix loop
-        # converges (issue #977); an outage-caused timeout left in that bucket
-        # is a false data point for exactly that measurement.
-        msg = "fix_llm_timeout on cycle 1: Can't reach the API server (ENOTFOUND)"
-        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
-
-    def test_claude_cli_dns_failure(self) -> None:
-        msg = (
-            "Claude CLI failed (exit 1): terminal_reason=api_error; is_error=true; "
-            "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
-        )
-        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
-
-    def test_git_push_ssh_transport_failure(self) -> None:
-        msg = (
-            "Command failed: git push -u origin feat/issue-659\nExit code: 128\n"
-            "stderr: ssh: connect to host github.com port 22: Operation timed out\n"
-            "fatal: Could not read from remote repository."
-        )
-        assert reliability_service.classify_failure_cause(msg) == "network_unreachable"
-
-    def test_local_timeout_is_not_reclassified_as_network(self) -> None:
-        # The new leading rule must not swallow unrelated buckets: a bare local
-        # timeout has no remote endpoint to corroborate it.
-        assert reliability_service.classify_failure_cause("step_hard_timeout") == "step_timeout"
-
-    def test_llm_billing_delegates_to_classify_error(self) -> None:
-        # billing/rate-limit/model-unavailable are ambiguous labels too (see
-        # _AMBIGUOUS_LLM_LABELS): an LLM context marker is required, same as
-        # llm_provider_unavailable/llm_timeout below.
-        msg = "anthropic: budget_exhausted, cannot enforce a budget cap natively"
-        assert reliability_service.classify_failure_cause(msg) == "llm_billing"
-
-    def test_llm_rate_limit(self) -> None:
-        msg = "anthropic API error: provider returned 429"
-        assert reliability_service.classify_failure_cause(msg) == "llm_rate_limit"
-
-    def test_llm_configuration_needs_no_context_marker(self) -> None:
-        # Unlike billing/rate-limit/model-unavailable, "llm_configuration" is
-        # not ambiguous: the token is SOVA-generated and namespaced
-        # (CodexRuntime.spawn()), so it classifies without an LLM context
-        # marker, distinct from a billing incident in the reliability view.
-        msg = "sova_configuration_error: Codex CLI cannot enforce a budget cap (requested $5.00)"
-        assert reliability_service.classify_failure_cause(msg) == "llm_configuration"
-
-    def test_unmatched_message_is_other(self) -> None:
-        assert reliability_service.classify_failure_cause("something totally unexpected happened") == "other"
-
-    def test_multi_match_prefers_terminal_first_like_classify_error(self) -> None:
-        # Mirrors classify_error()'s own terminal-first scan: billing wins over rate limit.
-        msg = "claude cli: budget_exhausted while provider returned 429"
-        assert reliability_service.classify_failure_cause(msg) == "llm_billing"
+    @pytest.mark.parametrize(
+        ("msg", "expected"),
+        [
+            pytest.param(None, "unclassified", id="none-message-is-unclassified"),
+            pytest.param("", "unclassified", id="empty-message-is-unclassified"),
+            pytest.param("step_hard_timeout", "step_timeout", id="step-hard-timeout"),
+            pytest.param(
+                "fix_llm_timeout on cycle 2: LLM call exceeded budget", "fix_llm_timeout", id="fix-llm-timeout"
+            ),
+            pytest.param("fix_llm_failed on cycle 1: bad response", "fix_llm_failed", id="fix-llm-failed"),
+            pytest.param(
+                "Process exited with code 1 (step=develop); last output: boom", "process_exit", id="process-exit-shape"
+            ),
+            # asyncio reports a signal-terminated process as a negative exit code (e.g. -9 for SIGKILL/OOM, -15
+            # for SIGTERM), per the termination provenance work documented in .claude/rules/architecture.md.
+            pytest.param(
+                "Process exited with code -9 (step=develop); last output: oom-killed",
+                "process_exit",
+                id="process-exit-negative-code-from-signal-termination",
+            ),
+            pytest.param("No commits ahead of base branch after commit step", "gate_check", id="gate-check-reason"),
+            # Verbatim from a real outage (Gwym run 1612). _build_exit_failure_message() wraps the real cause in
+            # the "Process exited with code N" shape, so without the leading network rule _PROCESS_EXIT_RE claims
+            # this first and an outage is reported as a generic nonzero exit.
+            pytest.param(
+                "Process exited with code 1; last output: "
+                "[stderr] RuntimeError: Failed to fetch issue #659: error connecting to api.github.com | "
+                "[stderr] check your internet connection or https://githubstatus.com",
+                "network_unreachable",
+                id="network-outage-wins-over-process-exit-shape",
+            ),
+            # The fix_llm_* buckets exist to measure how well SOVA's own fix loop converges (issue #977); an
+            # outage-caused timeout left in that bucket is a false data point for exactly that measurement.
+            pytest.param(
+                "fix_llm_timeout on cycle 1: Can't reach the API server (ENOTFOUND)",
+                "network_unreachable",
+                id="network-outage-wins-over-fix-llm-prefix",
+            ),
+            pytest.param(
+                "Claude CLI failed (exit 1): terminal_reason=api_error; is_error=true; "
+                "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+                "network_unreachable",
+                id="claude-cli-dns-failure",
+            ),
+            pytest.param(
+                "Command failed: git push -u origin feat/issue-659\nExit code: 128\n"
+                "stderr: ssh: connect to host github.com port 22: Operation timed out\n"
+                "fatal: Could not read from remote repository.",
+                "network_unreachable",
+                id="git-push-ssh-transport-failure",
+            ),
+            # The leading network rule must not swallow unrelated buckets: a bare local timeout has no remote
+            # endpoint to corroborate it.
+            pytest.param("step_hard_timeout", "step_timeout", id="local-timeout-is-not-reclassified-as-network"),
+            # billing/rate-limit/model-unavailable are ambiguous labels too (see _AMBIGUOUS_LLM_LABELS): an LLM
+            # context marker is required, same as llm_provider_unavailable/llm_timeout.
+            pytest.param(
+                "anthropic: budget_exhausted, cannot enforce a budget cap natively",
+                "llm_billing",
+                id="llm-billing-delegates-to-classify-error",
+            ),
+            pytest.param("anthropic API error: provider returned 429", "llm_rate_limit", id="llm-rate-limit"),
+            # Unlike billing/rate-limit/model-unavailable, "llm_configuration" is not ambiguous: the token is
+            # SOVA-generated and namespaced (CodexRuntime.spawn()), so it classifies without an LLM context
+            # marker, distinct from a billing incident in the reliability view.
+            pytest.param(
+                "sova_configuration_error: Codex CLI cannot enforce a budget cap (requested $5.00)",
+                "llm_configuration",
+                id="llm-configuration-needs-no-context-marker",
+            ),
+            pytest.param("something totally unexpected happened", "other", id="unmatched-message-is-other"),
+            # Mirrors classify_error()'s own terminal-first scan: billing wins over rate limit.
+            pytest.param(
+                "claude cli: budget_exhausted while provider returned 429",
+                "llm_billing",
+                id="multi-match-prefers-terminal-first-like-classify-error",
+            ),
+            # LLM-scoped messages still classify.
+            pytest.param(
+                "[Errno 2] No such file or directory: 'claude'", "llm_provider_unavailable", id="llm-missing-binary"
+            ),
+            pytest.param("claude cli connection refused", "llm_provider_unavailable", id="llm-connection-refused"),
+            pytest.param("LLM invocation timed out after 600s", "llm_timeout", id="llm-invocation-timed-out"),
+            pytest.param("anthropic request timed out", "llm_timeout", id="anthropic-request-timed-out"),
+            pytest.param(
+                "anthropic model is not available on your vertex deployment",
+                "llm_model_unavailable",
+                id="llm-model-unavailable",
+            ),
+            pytest.param("claude code rate_limit exceeded, backing off", "llm_rate_limit", id="llm-rate-limit-backoff"),
+            # "is not available" alone (classify_error()'s ModelUnavailableError pattern) could just as easily
+            # describe an unrelated feature-gating message.
+            pytest.param(
+                "This action is not available while the repository is archived",
+                "other",
+                id="bare-model-unavailable-without-llm-marker-is-other",
+            ),
+            # Every SOVA path contains ".claude/", so it must not act as an LLM signal.
+            pytest.param(
+                "cannot read /home/u/.claude/agent-control/handoff.json: No such file or directory",
+                "other",
+                id="bare-claude-path-segment-does-not-corroborate",
+            ),
+            # A generic adapter/network error naming its own "provider" (e.g. a Jira TaskAdapter) must not be
+            # misclassified as an LLM outage just because the word "provider" appears in the message.
+            pytest.param(
+                "TaskAdapter for provider 'jira' failed: no such file or directory",
+                "other",
+                id="bare-provider-word-does-not-corroborate-llm-outage",
+            ),
+        ],
+    )
+    def test_classify_failure_cause(self, msg: str | None, expected: str) -> None:
+        assert reliability_service.classify_failure_cause(msg) == expected
 
     @pytest.mark.parametrize(
         "msg",
@@ -166,38 +183,6 @@ class TestClassifyFailureCause:
         ],
     )
     def test_shell_and_git_failures_are_not_reported_as_llm_outages(self, msg: str) -> None:
-        assert reliability_service.classify_failure_cause(msg) == "other"
-
-    @pytest.mark.parametrize(
-        ("msg", "expected"),
-        [
-            ("[Errno 2] No such file or directory: 'claude'", "llm_provider_unavailable"),
-            ("claude cli connection refused", "llm_provider_unavailable"),
-            ("LLM invocation timed out after 600s", "llm_timeout"),
-            ("anthropic request timed out", "llm_timeout"),
-            ("anthropic model is not available on your vertex deployment", "llm_model_unavailable"),
-            ("claude code rate_limit exceeded, backing off", "llm_rate_limit"),
-        ],
-    )
-    def test_llm_scoped_messages_still_classify(self, msg: str, expected: str) -> None:
-        assert reliability_service.classify_failure_cause(msg) == expected
-
-    def test_bare_model_unavailable_without_llm_marker_is_other(self) -> None:
-        # "is not available" alone (classify_error()'s ModelUnavailableError pattern)
-        # could just as easily describe an unrelated feature-gating message.
-        msg = "This action is not available while the repository is archived"
-        assert reliability_service.classify_failure_cause(msg) == "other"
-
-    def test_bare_claude_path_segment_does_not_corroborate(self) -> None:
-        # Every SOVA path contains ".claude/", so it must not act as an LLM signal.
-        msg = "cannot read /home/u/.claude/agent-control/handoff.json: No such file or directory"
-        assert reliability_service.classify_failure_cause(msg) == "other"
-
-    def test_bare_provider_word_does_not_corroborate_llm_outage(self) -> None:
-        # A generic adapter/network error naming its own "provider" (e.g. a Jira
-        # TaskAdapter) must not be misclassified as an LLM outage just because
-        # the word "provider" appears somewhere in the message.
-        msg = "TaskAdapter for provider 'jira' failed: no such file or directory"
         assert reliability_service.classify_failure_cause(msg) == "other"
 
 

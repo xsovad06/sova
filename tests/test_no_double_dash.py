@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "invariants" / "no-double-dash.sh"
 
 _DD = " -" + "- "
+_DD_EOL = _DD.rstrip()  # the same marker with no trailing space, for end-of-line cases
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -82,124 +83,60 @@ class TestNoChangedFiles:
         result = _run_invariant(repo)
         assert result.returncode == 0
 
-    def test_non_prose_file_ignored(self, tmp_path: Path) -> None:
+
+class TestChangedLinesVerdict:
+    """One file added on the branch: whether the default mode flags it."""
+
+    @pytest.mark.parametrize(
+        ("relpath", "content"),
+        [
+            pytest.param("data.json", f'{{"key": "a{_DD}b"}}\n', id="non-prose-file"),
+            pytest.param("app.py", "# Fixed: updated logic\n", id="python-clean"),
+            # Double dashes without surrounding spaces are not the marker (e.g. --flag).
+            pytest.param("app.py", "parser.add_argument('--verbose')\n", id="python-flag-without-spaces"),
+            pytest.param("page.html", "<p>Hello, world</p>\n", id="html-clean"),
+            pytest.param("doc.md", '# Title\n\n```bash\necho "a -- b"\n```\n', id="markdown-backtick-fence"),
+            pytest.param("doc.md", f"# Title\n\n~~~\ncommand{_DD}flag\n~~~\n", id="markdown-tilde-fence"),
+            pytest.param("doc.md", "Use `a -- b` for the flag.\n", id="markdown-inline-code"),
+            pytest.param("doc.md", "Use ``a -- b`` for the flag.\n", id="markdown-double-backtick-code"),
+            # A double-backtick span containing single backticks is stripped whole.
+            pytest.param("doc.md", "Use ``git reset --hard`` to reset.\n", id="single-backtick-inside-double"),
+            pytest.param("doc.md", "Run ``a `b -- c` d`` here.\n", id="nested-backtick-with-marker"),
+            # The POSIX end-of-options marker is exempt outside markdown.
+            pytest.param("app.py", "# Run: git checkout -- file.txt\n", id="python-git-end-of-options"),
+            pytest.param("app.py", "# grep -- pattern file\n", id="python-grep-end-of-options"),
+            pytest.param("page.html", "<!-- git diff -- file.txt -->\n", id="html-end-of-options"),
+        ],
+    )
+    def test_passes(self, tmp_path: Path, relpath: str, content: str) -> None:
         repo = _init_repo(tmp_path)
-        (repo / "data.json").write_text(f'{{"key": "a{_DD}b"}}\n')
-        _git(repo, "add", "data.json")
-        _git(repo, "commit", "-m", "add json")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
+        _commit(repo, relpath, content)
+        assert _run_invariant(repo).returncode == 0
 
-
-class TestPythonFileViolations:
-    def test_python_double_dash_fails(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("relpath", "content"),
+        [
+            pytest.param("app.py", f"# Fixed{_DD}updated logic\n", id="python-prose"),
+            pytest.param("page.html", f"<p>Hello{_DD}world</p>\n", id="html-prose"),
+            pytest.param(
+                "doc.md", f"# Title\n\nThis{_DD}is prose\n\n```bash\necho ok\n```\n", id="markdown-prose-outside-fence"
+            ),
+            # Text outside inline code on the same line is still checked.
+            pytest.param("doc.md", f"Check `flag` usage{_DD}see docs\n", id="markdown-prose-around-inline-code"),
+            # An unclosed code fence must not hide violations after it.
+            pytest.param(
+                "doc.md", f"# Title\n\n```bash\necho ok\n\nProse{_DD}violation here\n", id="markdown-unmatched-fence"
+            ),
+            # The end-of-options heuristic applies only outside markdown.
+            pytest.param("doc.md", "Run git checkout -- file to reset.\n", id="markdown-end-of-options-is-prose"),
+        ],
+    )
+    def test_fails(self, tmp_path: Path, relpath: str, content: str) -> None:
         repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text(f"# Fixed{_DD}updated logic\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
-        assert "app.py" in result.stdout
-        assert "FAIL" in result.stdout
-
-    def test_python_no_violation_passes(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text("# Fixed: updated logic\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_python_double_dash_no_spaces_passes(self, tmp_path: Path) -> None:
-        """Double dashes without surrounding spaces are not flagged (e.g. --flag)."""
-        repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text("parser.add_argument('--verbose')\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-
-class TestHtmlFileViolations:
-    def test_html_double_dash_fails(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        (repo / "page.html").write_text(f"<p>Hello{_DD}world</p>\n")
-        _git(repo, "add", "page.html")
-        _git(repo, "commit", "-m", "add html")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
-        assert "page.html" in result.stdout
-
-    def test_html_clean_passes(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        (repo / "page.html").write_text("<p>Hello, world</p>\n")
-        _git(repo, "add", "page.html")
-        _git(repo, "commit", "-m", "add html")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-
-class TestMarkdownCodeBlockExclusion:
-    def test_md_code_block_excluded(self, tmp_path: Path) -> None:
-        """Double dashes inside fenced code blocks are not flagged."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text('# Title\n\n```bash\necho "a -- b"\n```\n')
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_md_tilde_code_block_excluded(self, tmp_path: Path) -> None:
-        """Tilde-fenced code blocks are also excluded."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text(f"# Title\n\n~~~\ncommand{_DD}flag\n~~~\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_md_prose_outside_code_block_fails(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text(f"# Title\n\nThis{_DD}is prose\n\n```bash\necho ok\n```\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
+        _commit(repo, relpath, content)
         result = _run_invariant(repo)
         assert result.returncode == 1
-        assert "doc.md" in result.stdout
-
-
-class TestMarkdownInlineCodeExclusion:
-    def test_inline_code_excluded(self, tmp_path: Path) -> None:
-        """Double dashes inside backtick inline code are not flagged."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text("Use `a -- b` for the flag.\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_double_backtick_inline_code_excluded(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text("Use ``a -- b`` for the flag.\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_prose_around_inline_code_still_checked(self, tmp_path: Path) -> None:
-        """Text outside inline code on the same line is still checked."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text(f"Check `flag` usage{_DD}see docs\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
+        assert relpath in result.stdout
 
 
 class TestFileNotOnDisk:
@@ -269,88 +206,6 @@ class TestDiffOnlyNewLines:
         result = _run_invariant(repo)
         assert result.returncode == 1
         assert "existing.py:2" in result.stdout
-
-
-class TestNestedBacktickSpans:
-    def test_single_backtick_inside_double_backtick_span(self, tmp_path: Path) -> None:
-        """Double-backtick spans containing single backticks are fully stripped."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text("Use ``git reset --hard`` to reset.\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_nested_backtick_with_dash_inside(self, tmp_path: Path) -> None:
-        """A single backtick inside double-backtick span with ` -- ` is excluded."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text("Run ``a `b -- c` d`` here.\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-
-class TestUnmatchedFence:
-    def test_unmatched_fence_does_not_suppress_violations(self, tmp_path: Path) -> None:
-        """An unclosed code fence must not hide violations after it."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text(f"# Title\n\n```bash\necho ok\n\nProse{_DD}violation here\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
-        assert "doc.md" in result.stdout
-
-
-class TestPosixEndOfOpts:
-    def test_git_checkout_double_dash_passes(self, tmp_path: Path) -> None:
-        """POSIX end-of-options marker in Python comments is not flagged."""
-        repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text("# Run: git checkout -- file.txt\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_grep_double_dash_passes(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text("# grep -- pattern file\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
-
-    def test_prose_double_dash_still_fails_in_python(self, tmp_path: Path) -> None:
-        """Non-POSIX prose ` -- ` in Python files is still flagged."""
-        repo = _init_repo(tmp_path)
-        (repo / "app.py").write_text(f"# Fixed{_DD}updated logic\n")
-        _git(repo, "add", "app.py")
-        _git(repo, "commit", "-m", "add py")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
-
-    def test_posix_heuristic_not_applied_to_markdown(self, tmp_path: Path) -> None:
-        """POSIX heuristic only applies to non-markdown files."""
-        repo = _init_repo(tmp_path)
-        md = repo / "doc.md"
-        md.write_text("Run git checkout -- file to reset.\n")
-        _git(repo, "add", "doc.md")
-        _git(repo, "commit", "-m", "add doc")
-        result = _run_invariant(repo)
-        assert result.returncode == 1
-
-    def test_html_posix_passes(self, tmp_path: Path) -> None:
-        """POSIX end-of-options in HTML comments is not flagged."""
-        repo = _init_repo(tmp_path)
-        (repo / "page.html").write_text("<!-- git diff -- file.txt -->\n")
-        _git(repo, "add", "page.html")
-        _git(repo, "commit", "-m", "add html")
-        result = _run_invariant(repo)
-        assert result.returncode == 0
 
 
 class TestHelpFlag:
@@ -458,11 +313,6 @@ class TestWholeTreeMode:
         assert "a.py:2" in result.stdout
         assert "b.md:1" in result.stdout
 
-    def test_clean_tree_passes(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "app.py", "# Fixed: updated logic\nparser.add_argument('--verbose')\n")
-        assert _run_all(repo).returncode == 0
-
     def test_empty_repo_passes(self, tmp_path: Path) -> None:
         repo = tmp_path / "empty"
         repo.mkdir()
@@ -489,13 +339,6 @@ class TestWholeTreeMode:
         (repo / "gone.py").unlink()
         assert _run_all(repo).returncode == 0
 
-    def test_filename_with_spaces(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "my notes.md", f"a{_DD}b\n")
-        result = _run_all(repo)
-        assert result.returncode == 1
-        assert "my notes.md:1" in result.stdout
-
 
 class TestWholeTreeExemptions:
     """Positive controls: the same text that fails as prose passes where it is literal syntax."""
@@ -512,6 +355,13 @@ class TestWholeTreeExemptions:
             pytest.param("run.sh", f'out=$(git -C "$dir" diff main{_DD}"$file")\n', id="shell-cli-command"),
             pytest.param("run.sh", f'git_in_worktree log -n 1{_DD}"$file"\n', id="shell-git-wrapper"),
             pytest.param("ci.yml", f"      - run: git diff --name-only origin/main...HEAD{_DD}docs/\n", id="yaml-cli"),
+            pytest.param("app.py", "# Fixed: updated logic\nparser.add_argument('--verbose')\n", id="clean-tree"),
+            # A real end-of-options marker at end of line stays exempt, not just the interior form.
+            pytest.param(
+                "app.py", f"# Run: git checkout{_DD_EOL}\n#   then stage the usual files\n", id="end-of-options-at-eol"
+            ),
+            # A line ending in a third dash is not the space-dash-dash marker.
+            pytest.param("doc.md", f"Intro\n\nHorizontal rule follows{_DD_EOL}-\n", id="triple-dash-at-eol"),
         ],
     )
     def test_literal_syntax_passes(self, tmp_path: Path, relpath: str, content: str) -> None:
@@ -520,28 +370,42 @@ class TestWholeTreeExemptions:
         result = _run_all(repo)
         assert result.returncode == 0, result.stdout
 
-    def test_same_text_as_prose_fails(self, tmp_path: Path) -> None:
-        """The control for the cases above: only the surroundings differ."""
+    @pytest.mark.parametrize(
+        ("relpath", "content", "location"),
+        [
+            # The control for the passing cases above: only the surroundings differ.
+            pytest.param("doc.md", f"Intro\n\nSee the checkout{_DD}file section.\n", None, id="same-text-as-prose"),
+            pytest.param(
+                "doc.md", f"```bash\necho ok\n```\n\nProse{_DD}after the fence\n", "doc.md:5", id="prose-next-to-fence"
+            ),
+            pytest.param("doc.md", f"```bash\necho ok\n\nProse{_DD}violation\n", None, id="unmatched-fence"),
+            pytest.param(
+                "doc.md", f"Run git checkout{_DD}file to reset.\n", None, id="markdown-end-of-options-is-prose"
+            ),
+            pytest.param("my notes.md", f"a{_DD}b\n", "my notes.md:1", id="filename-with-spaces"),
+            # A soft-wrapped prose dash has no trailing space, so only the end-of-line form of the marker matches it.
+            pytest.param(
+                "doc.md",
+                f"Intro\n\nSee the equivalent{_DD_EOL}\n   dependencies section.\n",
+                "doc.md:3",
+                id="prose-dash-at-eol",
+            ),
+            # Trailing whitespace after the marker must not defeat the end-of-line match.
+            pytest.param(
+                "doc.md",
+                f"Intro\n\nSee the equivalent{_DD_EOL}   \n   dependencies section.\n",
+                None,
+                id="eol-trailing-space",
+            ),
+        ],
+    )
+    def test_prose_fails(self, tmp_path: Path, relpath: str, content: str, location: str | None) -> None:
         repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"Intro\n\nSee the checkout{_DD}file section.\n")
-        assert _run_all(repo).returncode == 1
-
-    def test_markdown_prose_next_to_a_fence_still_fails(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"```bash\necho ok\n```\n\nProse{_DD}after the fence\n")
+        _commit(repo, relpath, content)
         result = _run_all(repo)
         assert result.returncode == 1
-        assert "doc.md:5" in result.stdout
-
-    def test_unmatched_fence_does_not_hide_prose(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"```bash\necho ok\n\nProse{_DD}violation\n")
-        assert _run_all(repo).returncode == 1
-
-    def test_end_of_options_heuristic_is_not_applied_to_markdown(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"Run git checkout{_DD}file to reset.\n")
-        assert _run_all(repo).returncode == 1
+        if location is not None:
+            assert location in result.stdout
 
     def test_script_does_not_flag_itself(self, tmp_path: Path) -> None:
         """The invariant lives under invariants/ and names the marker, so it must stay clean."""
@@ -550,19 +414,9 @@ class TestWholeTreeExemptions:
         assert _run_all(repo).returncode == 0
 
 
-_DD_EOL = _DD.rstrip()  # the same marker with no trailing space, for end-of-line cases
-
-
 class TestEndOfLineMarker:
     """A soft-wrapped prose dash has no trailing space, so the interior form of the marker
     never matches it. It must still be flagged when it is the last thing on the line."""
-
-    def test_whole_tree_flags_prose_dash_at_end_of_line(self, tmp_path: Path) -> None:
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"Intro\n\nSee the equivalent{_DD_EOL}\n   dependencies section.\n")
-        result = _run_all(repo)
-        assert result.returncode == 1
-        assert "doc.md:3" in result.stdout
 
     def test_changed_lines_mode_flags_prose_dash_at_end_of_line(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
@@ -576,21 +430,3 @@ class TestEndOfLineMarker:
         result = _run_invariant(repo)
         assert result.returncode == 1
         assert "app.py:2" in result.stdout
-
-    def test_trailing_whitespace_after_marker_still_flagged(self, tmp_path: Path) -> None:
-        """Trailing whitespace after the marker must not defeat the end-of-line match."""
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"Intro\n\nSee the equivalent{_DD_EOL}   \n   dependencies section.\n")
-        assert _run_all(repo).returncode == 1
-
-    def test_posix_end_of_opts_at_end_of_line_passes(self, tmp_path: Path) -> None:
-        """A real end-of-options marker at end of line is still exempt, not just the interior form."""
-        repo = _init_repo(tmp_path)
-        _commit(repo, "app.py", f"# Run: git checkout{_DD_EOL}\n#   then stage the usual files\n")
-        assert _run_all(repo).returncode == 0
-
-    def test_triple_dash_at_end_of_line_not_flagged(self, tmp_path: Path) -> None:
-        """A line ending in a third dash is not the space-dash-dash marker and must not be flagged."""
-        repo = _init_repo(tmp_path)
-        _commit(repo, "doc.md", f"Intro\n\nHorizontal rule follows{_DD_EOL}-\n")
-        assert _run_all(repo).returncode == 0

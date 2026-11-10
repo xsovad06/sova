@@ -166,15 +166,17 @@ class TestScanProjectStep:
 
 
 class TestScanProjectRoot:
-    def test_python_detected(self, tmp_path: Path) -> None:
-        (tmp_path / "pyproject.toml").write_text("")
+    @pytest.mark.parametrize(
+        ("marker_file", "content", "stack"),
+        [
+            pytest.param("pyproject.toml", "", "python", id="python"),
+            pytest.param("package.json", "{}", "node", id="node"),
+        ],
+    )
+    def test_detects_stack_from_marker_file(self, tmp_path: Path, marker_file: str, content: str, stack: str) -> None:
+        (tmp_path / marker_file).write_text(content)
         tech_stack, _structure = _scan_project_root(tmp_path)
-        assert "python" in tech_stack
-
-    def test_node_detected(self, tmp_path: Path) -> None:
-        (tmp_path / "package.json").write_text("{}")
-        tech_stack, _structure = _scan_project_root(tmp_path)
-        assert "node" in tech_stack
+        assert stack in tech_stack
 
     def test_empty_dir(self, tmp_path: Path) -> None:
         tech_stack, structure = _scan_project_root(tmp_path)
@@ -339,57 +341,51 @@ class TestGenerateTasksStep:
 
 
 class TestExtractJson:
-    def test_plain_json(self) -> None:
-        assert extract_json('[{"a": 1}]') == '[{"a": 1}]'
-
-    def test_fenced_json(self) -> None:
-        text = '```json\n[{"a": 1}]\n```'
-        assert extract_json(text) == '[{"a": 1}]'
-
-    def test_fenced_no_lang(self) -> None:
-        text = '```\n[{"a": 1}]\n```'
-        assert extract_json(text) == '[{"a": 1}]'
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param('[{"a": 1}]', '[{"a": 1}]', id="plain-json"),
+            pytest.param('```json\n[{"a": 1}]\n```', '[{"a": 1}]', id="fenced-json"),
+            pytest.param('```\n[{"a": 1}]\n```', '[{"a": 1}]', id="fenced-no-lang"),
+        ],
+    )
+    def test_extracts(self, text: str, expected: str) -> None:
+        assert extract_json(text) == expected
 
 
 class TestExtractJsonEdgeCases:
-    def test_fenced_no_newlines(self) -> None:
-        text = '```[{"a": 1}]```'
-        assert extract_json(text) == '[{"a": 1}]'
-
-    def test_fenced_no_closing_newline(self) -> None:
-        text = '```json[{"a": 1}]```'
-        assert extract_json(text) == '[{"a": 1}]'
-
-    def test_empty_string(self) -> None:
-        assert extract_json("") == ""
-
-    def test_whitespace_only(self) -> None:
-        assert extract_json("   \n\n  ") == ""
-
-    def test_prose_before_json(self) -> None:
-        text = 'Here are the tasks I propose:\n\n[{"title": "test"}]'
-        result = extract_json(text)
-        assert result == '[{"title": "test"}]'
-
-    def test_prose_before_fenced_json(self) -> None:
-        text = 'Here are my suggestions:\n\n```json\n[{"a": 1}]\n```\n\nLet me know!'
-        result = extract_json(text)
-        assert result == '[{"a": 1}]'
-
-    def test_prose_before_and_after_json(self) -> None:
-        text = 'Based on my analysis:\n[{"title": "test"}]\nHope this helps!'
-        result = extract_json(text)
-        assert result == '[{"title": "test"}]'
-
-    def test_multiple_fences_takes_first(self) -> None:
-        text = '```json\n[{"a": 1}]\n```\n\n```json\n[{"b": 2}]\n```'
-        result = extract_json(text)
-        assert result == '[{"a": 1}]'
-
-    def test_nested_json_object_instead_of_array(self) -> None:
-        text = '{"tasks": [{"title": "test"}]}'
-        result = extract_json(text)
-        assert result == '{"tasks": [{"title": "test"}]}'
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param('```[{"a": 1}]```', '[{"a": 1}]', id="fenced-no-newlines"),
+            pytest.param('```json[{"a": 1}]```', '[{"a": 1}]', id="fenced-no-closing-newline"),
+            pytest.param("", "", id="empty-string"),
+            pytest.param("   \n\n  ", "", id="whitespace-only"),
+            pytest.param(
+                'Here are the tasks I propose:\n\n[{"title": "test"}]', '[{"title": "test"}]', id="prose-before"
+            ),
+            pytest.param(
+                'Here are my suggestions:\n\n```json\n[{"a": 1}]\n```\n\nLet me know!',
+                '[{"a": 1}]',
+                id="prose-before-fenced-json",
+            ),
+            pytest.param(
+                'Based on my analysis:\n[{"title": "test"}]\nHope this helps!',
+                '[{"title": "test"}]',
+                id="prose-before-and-after",
+            ),
+            pytest.param(
+                '```json\n[{"a": 1}]\n```\n\n```json\n[{"b": 2}]\n```', '[{"a": 1}]', id="multiple-fences-takes-first"
+            ),
+            pytest.param(
+                '{"tasks": [{"title": "test"}]}',
+                '{"tasks": [{"title": "test"}]}',
+                id="object-instead-of-array",
+            ),
+        ],
+    )
+    def test_extracts(self, text: str, expected: str) -> None:
+        assert extract_json(text) == expected
 
     def test_brackets_inside_json_strings(self) -> None:
         """raw_decode handles brackets in quoted strings correctly."""
@@ -447,20 +443,17 @@ class TestParseTasks:
         assert result is not None
         assert len(result) == 0
 
-    def test_skips_blank_title(self) -> None:
+    @pytest.mark.parametrize(
+        ("title", "body"),
+        [
+            pytest.param("  ", "has body", id="blank-title"),
+            pytest.param("valid title", "", id="blank-body"),
+        ],
+    )
+    def test_skips_blank_field(self, title: str, body: str) -> None:
         import json
 
-        data = json.dumps([{"title": "  ", "body": "has body", "labels": [], "priority": "low", "complexity": "small"}])
-        result = _parse_tasks(data)
-        assert result is not None
-        assert len(result) == 0
-
-    def test_skips_blank_body(self) -> None:
-        import json
-
-        data = json.dumps(
-            [{"title": "valid title", "body": "", "labels": [], "priority": "low", "complexity": "small"}]
-        )
+        data = json.dumps([{"title": title, "body": body, "labels": [], "priority": "low", "complexity": "small"}])
         result = _parse_tasks(data)
         assert result is not None
         assert len(result) == 0
@@ -488,13 +481,11 @@ class TestParseTasks:
         assert len(result) == 1
         assert result[0].title == "good"
 
-    def test_empty_string_returns_empty_list(self) -> None:
-        result = _parse_tasks("")
-        assert result is not None
-        assert result == []
-
-    def test_whitespace_only_returns_empty_list(self) -> None:
-        result = _parse_tasks("   \n\n  ")
+    @pytest.mark.parametrize(
+        "text", [pytest.param("", id="empty-string"), pytest.param("   \n\n  ", id="whitespace-only")]
+    )
+    def test_blank_input_returns_empty_list(self, text: str) -> None:
+        result = _parse_tasks(text)
         assert result is not None
         assert result == []
 
@@ -741,18 +732,20 @@ class TestValidateTasksStep:
 
 
 class TestWordOverlap:
-    def test_identical_strings(self) -> None:
-        assert _word_overlap("fix login bug", "fix login bug") == 1.0
-
-    def test_no_overlap(self) -> None:
-        assert _word_overlap("alpha beta gamma", "delta epsilon zeta") == 0.0
+    @pytest.mark.parametrize(
+        ("left", "right", "expected"),
+        [
+            pytest.param("fix login bug", "fix login bug", 1.0, id="identical-strings"),
+            pytest.param("alpha beta gamma", "delta epsilon zeta", 0.0, id="no-overlap"),
+            pytest.param("", "", 0.0, id="empty-strings"),
+        ],
+    )
+    def test_exact_overlap(self, left: str, right: str, expected: float) -> None:
+        assert _word_overlap(left, right) == expected
 
     def test_partial_overlap(self) -> None:
         overlap = _word_overlap("fix login bug module", "fix login issue other")
         assert 0.3 < overlap < 0.7
-
-    def test_empty_strings(self) -> None:
-        assert _word_overlap("", "") == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -832,44 +825,20 @@ class TestValidateTaskHelper:
 
 
 class TestDetectPipeline:
-    def test_planner_by_role(self) -> None:
+    @pytest.mark.parametrize(
+        ("step", "role", "pr_number", "expected"),
+        [
+            pytest.param(None, "planner", None, "planner", id="planner-by-role"),
+            pytest.param("scan_project", None, None, "planner", id="planner-by-step"),
+            pytest.param(None, "researcher", None, "researcher", id="researcher-by-role"),
+            pytest.param("research", None, None, "researcher", id="researcher-by-step"),
+            pytest.param(None, "developer", 42, "address_review", id="address-review-by-sentinel-and-pr"),
+            pytest.param("rebase", None, None, "address_review", id="address-review-by-step"),
+            pytest.param("develop", "developer", None, "developer", id="developer-default"),
+        ],
+    )
+    def test_detects_variant(self, step: str | None, role: str | None, pr_number: int | None, expected: str) -> None:
         from sova.dashboard.services.agent_lifecycle import _detect_pipeline
 
-        pipeline, variant = _detect_pipeline(None, "planner", None)
-        assert variant == "planner"
-
-    def test_planner_by_step(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline("scan_project", None, None)
-        assert variant == "planner"
-
-    def test_researcher_by_role(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline(None, "researcher", None)
-        assert variant == "researcher"
-
-    def test_researcher_by_step(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline("research", None, None)
-        assert variant == "researcher"
-
-    def test_address_review_by_sentinel_and_pr(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline(None, "developer", 42)
-        assert variant == "address_review"
-
-    def test_address_review_by_step(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline("rebase", None, None)
-        assert variant == "address_review"
-
-    def test_developer_default(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
-
-        pipeline, variant = _detect_pipeline("develop", "developer", None)
-        assert variant == "developer"
+        _pipeline, variant = _detect_pipeline(step, role, pr_number)
+        assert variant == expected

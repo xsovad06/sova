@@ -49,14 +49,16 @@ class TestPriorityIcons:
         assert b"<svg" in resp.content
 
     @pytest.mark.asyncio
-    async def test_blocker_icon_has_red_color(self, client: AsyncClient) -> None:
-        resp = await client.get("/static/priority/blocker.svg")
-        assert b"ff5630" in resp.content
-
-    @pytest.mark.asyncio
-    async def test_undefined_icon_has_gray_color(self, client: AsyncClient) -> None:
-        resp = await client.get("/static/priority/undefined.svg")
-        assert b"7a8699" in resp.content
+    @pytest.mark.parametrize(
+        ("icon", "color"),
+        [
+            pytest.param("blocker", b"ff5630", id="blocker-red"),
+            pytest.param("undefined", b"7a8699", id="undefined-gray"),
+        ],
+    )
+    async def test_icon_has_color(self, client: AsyncClient, icon: str, color: bytes) -> None:
+        resp = await client.get(f"/static/priority/{icon}.svg")
+        assert color in resp.content
 
 
 class TestPriorityIconFiles:

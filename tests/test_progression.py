@@ -3774,6 +3774,22 @@ class TestOwnershipGateAddressReview:
 
 
 class TestRateLimitGate:
+    def test_gate_blocks_during_cooldown(self) -> None:
+        """The gate itself, which the engine tests below patch out."""
+        from sova.supervisor import github_quota
+        from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
+
+        github_quota._trackers.clear()
+        try:
+            assert check_github_rate_limit_gate("gate-user") is None
+            github_quota.get_github_quota_tracker("gate-user").record_rate_limit_hit()
+            block = check_github_rate_limit_gate("gate-user")
+            assert block is not None
+            assert block.gate == "rate_limit"
+            assert "cooldown" in block.detail
+        finally:
+            github_quota._trackers.clear()
+
     @pytest.mark.asyncio
     async def test_evaluate_all_returns_empty_when_rate_limited(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_research=True))

@@ -271,6 +271,22 @@ class TestFeedPersistence:
         assert events[0]["category"] == "agent"
         assert events[0]["metadata"] == {"run_id": 7}
 
+    async def test_failed_write_is_logged_not_raised(self, feed_service: FeedService) -> None:
+        """The event stays in memory and the emitter never sees the DB error."""
+        from sqlalchemy.exc import OperationalError
+        from structlog.testing import capture_logs
+
+        with (
+            patch("sova.db.session.get_session", side_effect=OperationalError("stmt", {}, Exception("locked"))),
+            capture_logs() as logs,
+        ):
+            event = feed_service.emit("Unpersisted event")
+            await feed_service.drain_persist()
+
+        assert [e["event_id"] for e in logs if e["event"] == "feed.persist_failed"] == [event.id]
+        events, _ = feed_service.history()
+        assert events[-1].title == "Unpersisted event"
+
     @pytest.mark.asyncio
     async def test_history_page_returns_oldest_first(self, feed_service: FeedService) -> None:
         for i in range(5):

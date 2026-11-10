@@ -366,9 +366,6 @@ class TestLabelGateWorkflow:
     def test_comment_is_idempotent(self, label_text: str) -> None:
         assert "Contribution policy notice" in label_text
 
-    def test_states_there_is_no_bounty_program(self, label_text: str) -> None:
-        assert "no bounty" in label_text.lower()
-
     def test_every_gh_api_call_is_paginated(self, label_text: str) -> None:
         calls = _gh_api_calls(label_text)
         assert calls, "no gh api calls found"
@@ -390,19 +387,6 @@ class TestLintCoverage:
 
     def test_coderabbit_reviews_github_infrastructure(self) -> None:
         assert ".github/**" in CODERABBIT.read_text()
-
-
-class TestDocumentationSurfaces:
-    @pytest.mark.parametrize("path", [CONTRIBUTING, README, PR_TEMPLATE], ids=["contributing", "readme", "pr-template"])
-    def test_states_there_is_no_bounty_program(self, path: Path) -> None:
-        assert "bounty" in path.read_text().lower()
-
-    @pytest.mark.parametrize("path", ISSUE_TEMPLATES, ids=lambda p: p.name)
-    def test_issue_templates_state_there_is_no_bounty_program(self, path: Path) -> None:
-        assert "bounty" in path.read_text().lower()
-
-    def test_contributing_has_a_policy_section(self) -> None:
-        assert "## No Bounty Program" in CONTRIBUTING.read_text()
 
 
 # ---------------------------------------------------------------------------

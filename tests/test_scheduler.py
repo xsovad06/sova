@@ -560,10 +560,6 @@ class TestServerConfig:
             os.environ.pop("SOVA_SERVER_HOST", None)
             os.environ.pop("SOVA_SERVER_PORT", None)
 
-    def test_project_config_includes_server(self) -> None:
-        config = _make_config()
-        assert hasattr(config, "server")
-
 
 # ---------------------------------------------------------------------------
 # WatchLoop edge-case tests

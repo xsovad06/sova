@@ -2874,11 +2874,20 @@ class TestCodexRuntime:
         mock_exec.assert_not_called()
         mock_run.assert_not_called()
 
-    async def test_check_available_logged_out(self) -> None:
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "expected_ok", "expected_detail"),
+        [
+            pytest.param(1, "Not logged in. Run codex login.\n", False, "codex login", id="logged-out"),
+            pytest.param(0, "Logged in via ChatGPT session.\n", True, "authenticated", id="authenticated"),
+        ],
+    )
+    async def test_check_available_reports_auth(
+        self, returncode: int, stdout: str, expected_ok: bool, expected_detail: str
+    ) -> None:
         from sova.ipc.runtime import CodexRuntime
 
         rt = CodexRuntime()
-        probe = ShellResult(returncode=1, stdout="Not logged in. Run codex login.\n", stderr="")
+        probe = ShellResult(returncode=returncode, stdout=stdout, stderr="")
 
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
@@ -2887,24 +2896,8 @@ class TestCodexRuntime:
         ):
             ok, detail = await rt.check_available()
 
-        assert ok is False
-        assert "codex login" in detail
-
-    async def test_check_available_authenticated(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
-
-        rt = CodexRuntime()
-        probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
-
-        with (
-            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
-            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
-        ):
-            ok, detail = await rt.check_available()
-
-        assert ok is True
-        assert "authenticated" in detail
+        assert ok is expected_ok
+        assert expected_detail in detail
 
     async def test_list_available_models_authenticated_no_configured_model(self) -> None:
         """An empty codex.model means "the CLI's own default", which SOVA cannot name.
@@ -3324,97 +3317,103 @@ class TestCheckCliAvailable:
 class TestProbeCodexStdinPromptSupport:
     """The capability probe gating Codex stdin prompt delivery."""
 
-    async def test_returns_true_when_help_mentions_stdin(self) -> None:
+    @pytest.mark.parametrize(
+        ("help_text", "expected"),
+        [
+            pytest.param(
+                "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n",
+                True,
+                id="help-mentions-stdin",
+            ),
+            pytest.param("Arguments:\n  <PROMPT>  Prompt to use.\n", False, id="help-omits-stdin"),
+            # A bare substring check for "stdin" would misread this as support, which risks the exact
+            # hang this probe exists to prevent (stdin delivery to a CLI that never reads it).
+            pytest.param(
+                "Arguments:\n  <PROMPT>  Prompt to use. PROMPT is not read from stdin.\n",
+                False,
+                id="negated-stdin-mention",
+            ),
+            # Negation on one line must not suppress a genuine confirmation elsewhere.
+            pytest.param(
+                "Options:\n  --no-color  Output is not colorized via stdin detection.\n"
+                "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n",
+                True,
+                id="unrelated-negation-another-confirms",
+            ),
+            # Only PROMPT's own argument-definition line (marked <PROMPT> or [PROMPT]) counts.
+            pytest.param(
+                "Options:\n  --input  Read additional config from stdin.\nArguments:\n  <PROMPT>  Prompt to use.\n",
+                False,
+                id="unrelated-option-mentions-stdin",
+            ),
+            # `--template <PROMPT>` carries the same marker but is not PROMPT's own definition line; only a
+            # line that leads with the marker counts (CodeRabbit finding, runtime.py:725).
+            pytest.param(
+                "Options:\n"
+                "  --template <PROMPT>  Read a prompt template from stdin.\n"
+                "Arguments:\n"
+                "  <PROMPT>  Prompt to use.\n",
+                False,
+                id="option-contains-prompt-marker",
+            ),
+            # "never" was missing from the negation markers, so this read as confirmed support
+            # (CodeRabbit finding, runtime.py:797).
+            pytest.param(
+                "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is never read\n          from stdin.\n",
+                False,
+                id="stdin-mention-says-never",
+            ),
+            pytest.param(
+                "Arguments:\n  [PROMPT]  If not provided as an argument, read from stdin.\n",
+                True,
+                id="alternate-prompt-wording",
+            ),
+            # clap wraps a long description onto more-indented continuation lines; scanning only PROMPT's
+            # own line failed the probe closed on real multiline --help output (issue #1148).
+            pytest.param(
+                "Arguments:\n"
+                "  [PROMPT]\n"
+                "          Prompt to use. If not specified as an argument, this\n"
+                "          will read the prompt from stdin.\n",
+                True,
+                id="wrapped-continuation-line",
+            ),
+            pytest.param(
+                "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is not read\n          from stdin ever.\n",
+                False,
+                id="wrapped-continuation-negation",
+            ),
+            # A stdin mention under the NEXT argument's block must not bleed into PROMPT's block.
+            pytest.param(
+                "Arguments:\n  [PROMPT]\n          Prompt to use.\n"
+                "  [OTHER]\n          Reads other config from stdin.\n",
+                False,
+                id="block-stops-at-next-argument",
+            ),
+            # A stdin mention in a later section (after a blank line) must not bleed into PROMPT's block.
+            pytest.param(
+                "Arguments:\n  [PROMPT]\n          Prompt to use.\n\nOptions:\n  --foo  Reads from stdin.\n",
+                False,
+                id="block-stops-at-blank-line",
+            ),
+            # clap's synopsis line carries a [PROMPT] marker too but never describes stdin support;
+            # matching it first missed the real Arguments entry on every CLI build (issue #1148 regression).
+            pytest.param(
+                "usage: codex exec [options] [prompt]\n"
+                "\n"
+                "Arguments:\n"
+                "  [PROMPT]  Prompt to use. If omitted, read from stdin.\n",
+                True,
+                id="usage-line-does-not-shadow-arguments",
+            ),
+        ],
+    )
+    async def test_reads_stdin_support_from_help_text(self, help_text: str, expected: bool) -> None:
         from sova.ipc.runtime import _probe_codex_stdin_prompt_support
 
-        help_text = "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
         probe = ShellResult(returncode=0, stdout=help_text, stderr="")
         with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is True
-
-    async def test_returns_false_when_help_omits_stdin(self) -> None:
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        probe = ShellResult(returncode=0, stdout="Arguments:\n  <PROMPT>  Prompt to use.\n", stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_returns_false_when_stdin_mention_is_negated(self) -> None:
-        """A line saying stdin is NOT supported must not be read as confirmation.
-
-        A bare substring check for "stdin" would misread this as support,
-        which risks the exact hang this probe exists to prevent (stdin
-        delivery to a CLI that never reads it).
-        """
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Arguments:\n  <PROMPT>  Prompt to use. PROMPT is not read from stdin.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_returns_true_when_unrelated_line_is_negated_but_another_confirms(self) -> None:
-        """Negation on one line must not suppress a genuine confirmation elsewhere."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = (
-            "Options:\n  --no-color  Output is not colorized via stdin detection.\n"
-            "Arguments:\n  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
-        )
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is True
-
-    async def test_returns_false_when_unrelated_option_mentions_stdin(self) -> None:
-        """An unrelated option's positive stdin mention must not be read as
-        PROMPT's own stdin support: only PROMPT's own argument-definition
-        line (marked <PROMPT> or [PROMPT]) counts."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Options:\n  --input  Read additional config from stdin.\nArguments:\n  <PROMPT>  Prompt to use.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_returns_false_when_option_definition_contains_prompt_marker(self) -> None:
-        """An option like `--template <PROMPT>` carries the same `<PROMPT>`
-        marker as the real positional argument, but it is not PROMPT's own
-        definition line. A plain substring check would misread its stdin
-        mention as PROMPT's own support (CodeRabbit finding, runtime.py:725);
-        only a line that *leads* with the marker counts."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = (
-            "Options:\n"
-            "  --template <PROMPT>  Read a prompt template from stdin.\n"
-            "Arguments:\n"
-            "  <PROMPT>  Prompt to use.\n"
-        )
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_returns_false_when_stdin_mention_says_never(self) -> None:
-        """ "PROMPT is never read from stdin" must be recognized as a
-        negative: "never" was missing from the negation marker list, so a
-        clause containing only that word read as an unnegated "stdin"
-        mention and confirmed support that the CLI explicitly denies
-        (CodeRabbit finding, runtime.py:797)."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is never read\n          from stdin.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_returns_true_for_alternate_prompt_wording(self) -> None:
-        """A differently-worded but still PROMPT-scoped confirmation must match."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Arguments:\n  [PROMPT]  If not provided as an argument, read from stdin.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is True
+            assert await _probe_codex_stdin_prompt_support() is expected
 
     async def test_probe_uses_scrubbed_environment(self) -> None:
         """The --help probe needs no credential at all, so it must see the
@@ -3453,57 +3452,6 @@ class TestProbeCodexStdinPromptSupport:
         with patch("sova.ipc.runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is False
 
-    async def test_recognizes_stdin_mention_on_wrapped_continuation_line(self) -> None:
-        """clap wraps a long description onto further, more-indented lines
-        with no blank line between them and PROMPT's own definition line.
-        Scanning only PROMPT's own line misses a stdin mention that landed on
-        a continuation line, silently failing this probe closed on real
-        multiline --help output even when stdin really is supported
-        (issue #1148)."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = (
-            "Arguments:\n"
-            "  [PROMPT]\n"
-            "          Prompt to use. If not specified as an argument, this\n"
-            "          will read the prompt from stdin.\n"
-        )
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is True
-
-    async def test_wrapped_continuation_negation_still_rejects(self) -> None:
-        """A negated stdin mention on a wrapped continuation line must still
-        not be read as confirmation."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is not read\n          from stdin ever.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_continuation_block_stops_at_next_argument_definition(self) -> None:
-        """A stdin mention under the NEXT argument's own block must not bleed
-        into PROMPT's block and falsely confirm support."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = (
-            "Arguments:\n  [PROMPT]\n          Prompt to use.\n  [OTHER]\n          Reads other config from stdin.\n"
-        )
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
-    async def test_continuation_block_stops_at_blank_line(self) -> None:
-        """A stdin mention in a later, unrelated section (separated by a
-        blank line) must not bleed into PROMPT's block."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = "Arguments:\n  [PROMPT]\n          Prompt to use.\n\nOptions:\n  --foo  Reads from stdin.\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is False
-
     async def test_never_logs_help_text_verbatim_at_info_level(self) -> None:
         """Probe outcomes are debug-only noise; must never surface at info/warning."""
         from sova.ipc.runtime import _probe_codex_stdin_prompt_support
@@ -3517,14 +3465,20 @@ class TestProbeCodexStdinPromptSupport:
         mock_log.info.assert_not_called()
         mock_log.warning.assert_not_called()
 
-    async def test_raises_when_help_output_has_no_prompt_argument_line(self) -> None:
-        """Real --help output came back, but no PROMPT argument line can be
-        found at all: this is neither a confirmed yes nor no, and must fail
-        closed to an explicit error rather than silently defaulting to argv
-        (issue #1148), so a future CLI format change is loud, not invisible."""
+    @pytest.mark.parametrize(
+        "help_text",
+        [
+            # Real --help output with no PROMPT argument line is neither yes nor no: fail closed to an
+            # explicit error instead of silently defaulting to argv (issue #1148), so a format change is loud.
+            pytest.param("Arguments:\n  QUERY  Something unrelated to the prompt entirely.\n", id="no-prompt-line"),
+            # A usage line is always skipped as a candidate block, so when it is the only PROMPT mention
+            # the probe must still raise.
+            pytest.param("usage: codex exec [options] [prompt]\n", id="usage-line-alone"),
+        ],
+    )
+    async def test_raises_when_no_prompt_argument_block_is_found(self, help_text: str) -> None:
         from sova.ipc.runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
 
-        help_text = "Arguments:\n  QUERY  Something unrelated to the prompt entirely.\n"
         probe = ShellResult(returncode=0, stdout=help_text, stderr="")
         with patch("sova.ipc.runtime.run", return_value=probe):
             with pytest.raises(CodexStdinProbeAmbiguousError):
@@ -3542,37 +3496,6 @@ class TestProbeCodexStdinPromptSupport:
         ):
             with pytest.raises(CodexStdinProbeAmbiguousError):
                 await rt.spawn("fix the bug", tmp_path)
-
-    async def test_usage_line_does_not_shadow_arguments_section(self) -> None:
-        """clap's synopsis line (`usage: codex exec [options] [prompt]`)
-        carries a [PROMPT] marker too, but never describes stdin support.
-        Matching it first would return the bare usage line as the only
-        block, missing the real Arguments section entry below it, and
-        wrongly report no stdin support (or wrongly raise ambiguous) on
-        every real CLI build (issue #1148 regression)."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
-
-        help_text = (
-            "usage: codex exec [options] [prompt]\n"
-            "\n"
-            "Arguments:\n"
-            "  [PROMPT]  Prompt to use. If omitted, read from stdin.\n"
-        )
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            assert await _probe_codex_stdin_prompt_support() is True
-
-    async def test_usage_line_alone_is_still_ambiguous(self) -> None:
-        """A usage line is always skipped as a candidate PROMPT block, so if
-        it is the only line mentioning PROMPT at all, the probe must still
-        raise rather than treat the skipped usage line as a confirmed block."""
-        from sova.ipc.runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
-
-        help_text = "usage: codex exec [options] [prompt]\n"
-        probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
-            with pytest.raises(CodexStdinProbeAmbiguousError):
-                await _probe_codex_stdin_prompt_support()
 
     async def test_resolve_stdin_capable_caches_ambiguous_error(self) -> None:
         """An ambiguous outcome must be cached like a definite True/False,
@@ -3592,29 +3515,24 @@ class TestProbeCodexStdinPromptSupport:
 
 
 class TestClaudeCodeParseEdgeCases:
-    def test_parse_output_assistant_string_content(self) -> None:
+    @pytest.mark.parametrize(
+        ("content", "expected_text"),
+        [
+            pytest.param("plain string", "plain string", id="string-content"),
+            pytest.param(42, "42", id="other-content-type"),
+        ],
+    )
+    def test_parse_output_assistant_content(self, content: object, expected_text: str) -> None:
         import json
 
         from sova.ipc.runtime import ClaudeCodeRuntime
 
         rt = ClaudeCodeRuntime()
-        line = json.dumps({"type": "assistant", "content": "plain string"})
+        line = json.dumps({"type": "assistant", "content": content})
         event = rt.parse_output(line)
         assert event is not None
         assert event.type == "content"
-        assert event.text == "plain string"
-
-    def test_parse_output_assistant_other_content_type(self) -> None:
-        import json
-
-        from sova.ipc.runtime import ClaudeCodeRuntime
-
-        rt = ClaudeCodeRuntime()
-        line = json.dumps({"type": "assistant", "content": 42})
-        event = rt.parse_output(line)
-        assert event is not None
-        assert event.type == "content"
-        assert event.text == "42"
+        assert event.text == expected_text
 
     def test_parse_output_unknown_event_type(self) -> None:
         import json
@@ -4009,16 +3927,32 @@ class TestAgentEnvScrubbing:
 class TestInterpretCodexAuthProbe:
     """The pure interpreter for ``codex login status`` output."""
 
-    def test_empty_or_missing_output_is_unknown(self) -> None:
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            pytest.param(None, (None, "auth state unknown"), id="missing-output"),
+            pytest.param("", (None, "auth state unknown"), id="empty-output"),
+            pytest.param('{"loggedIn": true}', (True, "authenticated"), id="json-logged-in"),
+            # A null field is a shape we do not understand, never a definite logout.
+            pytest.param('{"loggedIn": null}', (None, "auth state unknown"), id="json-null-value"),
+            # A key name in the JSON source must not be phrase-matched as a verdict.
+            pytest.param('{"authenticated": "false"}', (None, "auth state unknown"), id="json-unreadable-flag"),
+            pytest.param('{"status": "unknown"}', (None, "auth state unknown"), id="json-status-unknown"),
+            # codex-cli 0.166 output, which no longer says "logged in" for an API-key login.
+            pytest.param(
+                "API key configured - sk-svcac***-abcd\nAuthentication is checked when you send a request.",
+                (True, "API key configured"),
+                id="api-key-configured-wording",
+            ),
+            pytest.param(
+                "error: unrecognized subcommand 'status'", (None, "auth state unknown"), id="unrecognized-output"
+            ),
+        ],
+    )
+    def test_interprets_probe_output(self, output: str | None, expected: tuple[bool | None, str]) -> None:
         from sova.ipc.runtime import _interpret_codex_auth_probe
 
-        assert _interpret_codex_auth_probe(None) == (None, "auth state unknown")
-        assert _interpret_codex_auth_probe("") == (None, "auth state unknown")
-
-    def test_json_object_reports_logged_in(self) -> None:
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        assert _interpret_codex_auth_probe('{"loggedIn": true}') == (True, "authenticated")
+        assert _interpret_codex_auth_probe(output) == expected
 
     def test_json_object_reports_logged_out(self) -> None:
         from sova.ipc.runtime import _interpret_codex_auth_probe
@@ -4027,19 +3961,6 @@ class TestInterpretCodexAuthProbe:
         assert authenticated is False
         assert "codex login" in detail
 
-    def test_json_null_value_falls_through_to_unknown(self) -> None:
-        """A null field is a shape we do not understand, never a definite logout."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        assert _interpret_codex_auth_probe('{"loggedIn": null}') == (None, "auth state unknown")
-
-    def test_json_dict_without_a_readable_flag_is_unknown(self) -> None:
-        """A key name in the JSON source must not be phrase-matched as a verdict."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        assert _interpret_codex_auth_probe('{"authenticated": "false"}') == (None, "auth state unknown")
-        assert _interpret_codex_auth_probe('{"status": "unknown"}') == (None, "auth state unknown")
-
     def test_bare_json_scalar_falls_through_to_text_scan(self) -> None:
         """Valid JSON is not necessarily an object; a quoted scalar has no fields to read."""
         from sova.ipc.runtime import _interpret_codex_auth_probe
@@ -4047,24 +3968,19 @@ class TestInterpretCodexAuthProbe:
         assert _interpret_codex_auth_probe('"not logged in"')[0] is False
         assert _interpret_codex_auth_probe('"42"') == (None, "auth state unknown")
 
-    def test_negative_phrase_wins_over_substring_of_positive(self) -> None:
-        """The phrase "not logged in" contains "logged in", so the negative scan must run first."""
+    @pytest.mark.parametrize(
+        "output",
+        [
+            # The phrase "not logged in" contains "logged in", so the negative scan must run first.
+            pytest.param("Not logged in. Run codex login.", id="negative-phrase-wins-over-positive-substring"),
+            # The negative scan runs first, so "No API key configured" is never read as configured.
+            pytest.param("No API key configured.", id="no-api-key-configured"),
+        ],
+    )
+    def test_negative_wording_is_logged_out(self, output: str) -> None:
         from sova.ipc.runtime import _interpret_codex_auth_probe
 
-        assert _interpret_codex_auth_probe("Not logged in. Run codex login.")[0] is False
-
-    def test_api_key_configured_wording_is_authenticated(self) -> None:
-        """codex-cli 0.166 output, which no longer says "logged in" for an API-key login."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        text = "API key configured - sk-svcac***-abcd\nAuthentication is checked when you send a request."
-        assert _interpret_codex_auth_probe(text) == (True, "API key configured")
-
-    def test_no_api_key_configured_is_logged_out(self) -> None:
-        """The negative scan runs first, so "No API key configured" is never read as configured."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        assert _interpret_codex_auth_probe("No API key configured.")[0] is False
+        assert _interpret_codex_auth_probe(output)[0] is False
 
     def test_a_prefixed_no_api_key_line_is_never_read_as_configured(self) -> None:
         """A mid-line "No API key configured" is not the positive status line, whatever prefix codex adds."""
@@ -4079,11 +3995,3 @@ class TestInterpretCodexAuthProbe:
 
         text = "Logged in using ChatGPT\nNote: no API key is set; proxy not configured."
         assert _interpret_codex_auth_probe(text)[0] is True
-
-    def test_unrecognized_output_is_unknown(self) -> None:
-        from sova.ipc.runtime import _interpret_codex_auth_probe
-
-        assert _interpret_codex_auth_probe("error: unrecognized subcommand 'status'") == (
-            None,
-            "auth state unknown",
-        )

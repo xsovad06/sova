@@ -11,22 +11,22 @@ import pytest
 from sova.utils.formatting import branch_name, decimal_to_json, slugify, truncate
 
 
-def test_slugify_basic() -> None:
-    assert slugify("Add user authentication") == "add-user-authentication"
-
-
-def test_slugify_special_chars() -> None:
-    assert slugify("Fix bug #42: NullPointer!") == "fix-bug-42-nullpointer"
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        pytest.param("Add user authentication", "add-user-authentication", id="basic"),
+        pytest.param("Fix bug #42: NullPointer!", "fix-bug-42-nullpointer", id="special-chars"),
+        pytest.param("Implementar funcionalidad", "implementar-funcionalidad", id="unicode"),
+    ],
+)
+def test_slugify(title: str, expected: str) -> None:
+    assert slugify(title) == expected
 
 
 def test_slugify_max_length() -> None:
     result = slugify("This is a very long title that should be truncated", max_length=20)
     assert len(result) <= 20
     assert not result.endswith("-")
-
-
-def test_slugify_unicode() -> None:
-    assert slugify("Implementar funcionalidad") == "implementar-funcionalidad"
 
 
 def test_branch_name_default() -> None:
@@ -47,16 +47,16 @@ def test_truncate_long() -> None:
     assert result.endswith("...")
 
 
-def test_decimal_to_json_none() -> None:
-    assert decimal_to_json(None) == "0.00"
-
-
-def test_decimal_to_json_value() -> None:
-    assert decimal_to_json(Decimal("1.23")) == "1.23"
-
-
-def test_decimal_to_json_zero() -> None:
-    assert decimal_to_json(Decimal("0")) == "0"
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(None, "0.00", id="none"),
+        pytest.param(Decimal("1.23"), "1.23", id="value"),
+        pytest.param(Decimal("0"), "0", id="zero"),
+    ],
+)
+def test_decimal_to_json(value: Decimal | None, expected: str) -> None:
+    assert decimal_to_json(value) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -65,104 +65,99 @@ def test_decimal_to_json_zero() -> None:
 
 
 class TestExtractSection:
-    def test_basic_extraction(self) -> None:
+    @pytest.mark.parametrize(
+        ("text", "heading", "expected"),
+        [
+            pytest.param(
+                "## Intro\nHello\n\n## Body\nContent here.\n\n## End\nBye.", "Body", "Content here.", id="basic"
+            ),
+            pytest.param("## Intro\nHello\n\n## End\nBye.", "End", "Bye.", id="last-section"),
+            pytest.param("## Intro\nHello.", "Missing", "", id="missing-section"),
+            pytest.param(
+                "## acceptance criteria\nDo the thing.\n", "Acceptance Criteria", "", id="case-sensitive-by-default"
+            ),
+            pytest.param(
+                "##  Acceptance Criteria\nDo the thing.\n",
+                "Acceptance Criteria",
+                "Do the thing.",
+                id="extra-whitespace-after-hashes",
+            ),
+            # A bare "##" line has nothing after it, so it must never start a section whose heading
+            # text actually lives on the next line.
+            pytest.param(
+                "Intro\n##\nAcceptance Criteria\n- [ ] fake\n\n## Real\nx\n",
+                "Acceptance Criteria",
+                "",
+                id="bare-hashes-do-not-borrow-next-line",
+            ),
+            # The boundary search must tolerate the same "##" + tab separator as the heading match, or a
+            # following heading written with a tab is invisible and its content leaks into this section.
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] A\n\n##\tOut of Scope\n- [ ] not a criterion\n",
+                "Acceptance Criteria",
+                "- [ ] A",
+                id="tab-separated-following-heading-ends-section",
+            ),
+            # A body edited in the GitHub web UI uses CRLF, so the heading line ends in "\r" before the
+            # "\n" that re.MULTILINE's "$" anchors to.
+            pytest.param(
+                "## Acceptance Criteria\r\n- [ ] A\r\n\r\n## Out of Scope\r\n- [ ] not a criterion\r\n",
+                "Acceptance Criteria",
+                "- [ ] A",
+                id="heading-with-trailing-carriage-return",
+            ),
+        ],
+    )
+    def test_extracts(self, text: str, heading: str, expected: str) -> None:
         from sova.utils.markdown import extract_section
 
-        text = "## Intro\nHello\n\n## Body\nContent here.\n\n## End\nBye."
-        assert extract_section(text, "Body") == "Content here."
+        assert extract_section(text, heading) == expected
 
-    def test_last_section(self) -> None:
+    @pytest.mark.parametrize(
+        ("text", "heading", "fragments"),
+        [
+            # The fenced "## This is a comment" must NOT split the section.
+            pytest.param(
+                "## Solution\n"
+                "Do this.\n\n"
+                "```python\n"
+                "## This is a comment\n"
+                "x = 1\n"
+                "```\n\n"
+                "More solution text.\n\n"
+                "## Next Section\n"
+                "Other stuff.\n",
+                "Solution",
+                ["More solution text.", "x = 1"],
+                id="python-fence",
+            ),
+            pytest.param(
+                "## Details\n"
+                "Some details.\n\n"
+                "```bash\n"
+                "## heading inside bash\n"
+                "echo hello\n"
+                "```\n\n"
+                "After fence.\n\n"
+                "## Other\nEnd.\n",
+                "Details",
+                ["After fence.", "echo hello"],
+                id="bash-fence-with-language-tag",
+            ),
+        ],
+    )
+    def test_ignores_headings_inside_code_fence(self, text: str, heading: str, fragments: list[str]) -> None:
         from sova.utils.markdown import extract_section
 
-        text = "## Intro\nHello\n\n## End\nBye."
-        assert extract_section(text, "End") == "Bye."
-
-    def test_missing_section(self) -> None:
-        from sova.utils.markdown import extract_section
-
-        text = "## Intro\nHello."
-        assert extract_section(text, "Missing") == ""
-
-    def test_ignores_headings_inside_code_fence(self) -> None:
-        from sova.utils.markdown import extract_section
-
-        text = (
-            "## Solution\n"
-            "Do this.\n\n"
-            "```python\n"
-            "## This is a comment\n"
-            "x = 1\n"
-            "```\n\n"
-            "More solution text.\n\n"
-            "## Next Section\n"
-            "Other stuff.\n"
-        )
-        result = extract_section(text, "Solution")
-        # The fenced "## This is a comment" should NOT split the section
-        assert "More solution text." in result
-        assert "x = 1" in result
-
-    def test_code_fence_with_language_tag(self) -> None:
-        from sova.utils.markdown import extract_section
-
-        text = (
-            "## Details\n"
-            "Some details.\n\n"
-            "```bash\n"
-            "## heading inside bash\n"
-            "echo hello\n"
-            "```\n\n"
-            "After fence.\n\n"
-            "## Other\nEnd.\n"
-        )
-        result = extract_section(text, "Details")
-        assert "After fence." in result
-        assert "echo hello" in result
+        result = extract_section(text, heading)
+        for fragment in fragments:
+            assert fragment in result
 
     def test_ignore_case_matches_differently_cased_heading(self) -> None:
         from sova.utils.markdown import extract_section
 
         text = "## acceptance criteria\nDo the thing.\n"
         assert extract_section(text, "Acceptance Criteria", ignore_case=True) == "Do the thing."
-
-    def test_case_sensitive_by_default(self) -> None:
-        from sova.utils.markdown import extract_section
-
-        text = "## acceptance criteria\nDo the thing.\n"
-        assert extract_section(text, "Acceptance Criteria") == ""
-
-    def test_tolerates_extra_whitespace_after_hashes(self) -> None:
-        from sova.utils.markdown import extract_section
-
-        text = "##  Acceptance Criteria\nDo the thing.\n"
-        assert extract_section(text, "Acceptance Criteria") == "Do the thing."
-
-    def test_bare_hashes_do_not_borrow_the_next_line_as_a_heading(self) -> None:
-        """A bare "##" line has nothing after it, so it must never be read as
-        the start of an "Acceptance Criteria" section whose heading text
-        actually lives on the next line."""
-        from sova.utils.markdown import extract_section
-
-        text = "Intro\n##\nAcceptance Criteria\n- [ ] fake\n\n## Real\nx\n"
-        assert extract_section(text, "Acceptance Criteria") == ""
-
-    def test_tab_separated_following_heading_still_ends_the_section(self) -> None:
-        """The boundary search must tolerate the same "##" + tab separator as
-        the heading-match pattern itself, or a following heading written
-        with a tab is invisible and its content leaks into this section."""
-        from sova.utils.markdown import extract_section
-
-        text = "## Acceptance Criteria\n- [ ] A\n\n##\tOut of Scope\n- [ ] not a criterion\n"
-        assert extract_section(text, "Acceptance Criteria") == "- [ ] A"
-
-    def test_matches_heading_with_trailing_carriage_return(self) -> None:
-        """A body edited in the GitHub web UI uses CRLF line endings, so the
-        heading line ends in "\\r" before the "\\n" that re.MULTILINE's "$"
-        anchors to."""
-        from sova.utils.markdown import extract_section
-
-        text = "## Acceptance Criteria\r\n- [ ] A\r\n\r\n## Out of Scope\r\n- [ ] not a criterion\r\n"
-        assert extract_section(text, "Acceptance Criteria") == "- [ ] A"
 
 
 class TestRemoveSection:
@@ -281,10 +276,21 @@ class TestUpsertSection:
         assert once == twice
         assert twice.count("## Confidence Score") == 1
 
-    def test_ignores_heading_inside_code_fence(self) -> None:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(
+                "## Confidence Score\n\n```markdown\n## Confidence Score\nfake\n```\n\nreal content\n",
+                id="backtick-fence",
+            ),
+            pytest.param(
+                "## Confidence Score\n\n~~~markdown\n## Confidence Score\nfake\n~~~\n\nreal content\n", id="tilde-fence"
+            ),
+        ],
+    )
+    def test_ignores_heading_inside_code_fence(self, text: str) -> None:
         from sova.utils.markdown import upsert_section
 
-        text = "## Confidence Score\n\n```markdown\n## Confidence Score\nfake\n```\n\nreal content\n"
         result = upsert_section(text, "Confidence Score", "updated")
         assert "fake" not in result
         assert "updated" in result
@@ -310,14 +316,6 @@ class TestUpsertSection:
         assert "Old: 40/100" not in result
         assert "updated" in result
         assert result.count("## Confidence Score") == 1
-
-    def test_ignores_heading_inside_tilde_fence(self) -> None:
-        from sova.utils.markdown import upsert_section
-
-        text = "## Confidence Score\n\n~~~markdown\n## Confidence Score\nfake\n~~~\n\nreal content\n"
-        result = upsert_section(text, "Confidence Score", "updated")
-        assert "fake" not in result
-        assert "updated" in result
 
     def test_tab_separated_following_heading_does_not_lose_its_section(self) -> None:
         """The boundary search must tolerate a "##" + tab following heading,
@@ -356,10 +354,16 @@ class TestUpsertSection:
 
 
 class TestStripFencedBlocks:
-    def test_replaces_fence_content(self) -> None:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("before\n```\n## Heading\ncode\n```\nafter", id="backtick-fence"),
+            pytest.param("before\n~~~\n## Heading\ncode\n~~~\nafter", id="tilde-fence"),
+        ],
+    )
+    def test_masks_fence_content(self, text: str) -> None:
         from sova.utils.markdown import _strip_fenced_blocks
 
-        text = "before\n```\n## Heading\ncode\n```\nafter"
         result = _strip_fenced_blocks(text)
         assert "## Heading" not in result
         assert "before" in result
@@ -378,15 +382,6 @@ class TestStripFencedBlocks:
 
         text = "just plain text\nwith lines"
         assert _strip_fenced_blocks(text) == text
-
-    def test_masks_tilde_fences(self) -> None:
-        from sova.utils.markdown import _strip_fenced_blocks
-
-        text = "before\n~~~\n## Heading\ncode\n~~~\nafter"
-        result = _strip_fenced_blocks(text)
-        assert "## Heading" not in result
-        assert "before" in result
-        assert "after" in result
 
     def test_longer_backtick_fence_containing_triple_backticks(self) -> None:
         from sova.utils.markdown import _strip_fenced_blocks
@@ -438,24 +433,23 @@ class TestResolveGhEnv:
         mock_run.assert_called_once_with("gh", "auth", "token", "--user", "xsovad06")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("returncode", "stderr", "user"),
+        [
+            pytest.param(1, "no such user", "nonexistent", id="auth-token-fails"),
+            pytest.param(0, "", "emptyuser", id="empty-token"),
+        ],
+    )
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_none_on_failure(self, mock_run: AsyncMock) -> None:
+    async def test_returns_none_without_a_token(
+        self, mock_run: AsyncMock, returncode: int, stderr: str, user: str
+    ) -> None:
         from sova.utils.gh import resolve_gh_env
         from sova.utils.shell import ShellResult
 
-        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="no such user")
+        mock_run.return_value = ShellResult(returncode=returncode, stdout="", stderr=stderr)
 
-        assert await resolve_gh_env("nonexistent") is None
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_none_on_empty_token(self, mock_run: AsyncMock) -> None:
-        from sova.utils.gh import resolve_gh_env
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(returncode=0, stdout="", stderr="")
-
-        assert await resolve_gh_env("emptyuser") is None
+        assert await resolve_gh_env(user) is None
 
 
 # ---------------------------------------------------------------------------
@@ -496,37 +490,32 @@ class TestCheckPushPermission:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("returncode", "stdout", "stderr", "expected"),
+        [
+            pytest.param(0, "false\n", "", "DENIED", id="push-false-is-denied"),
+            pytest.param(1, "", "HTTP 404: Not Found", "DENIED", id="http-404-is-denied"),
+            pytest.param(1, "", "network error", "UNKNOWN", id="other-api-failure-is-unknown"),
+            # --jq on a permissions object missing "push" emits nothing to stdout but exits 0.
+            pytest.param(0, "\n", "", "UNKNOWN", id="missing-permissions-key-is-unknown"),
+            # A jq/query error mentioning 'not found' in unrelated prose must not be misread as a definitive
+            # denial (the fail-open guarantee's weakest link): only gh's literal 'HTTP 404' shape is a 404.
+            pytest.param(
+                1, "", 'jq: error: "push" key not found in object', "UNKNOWN", id="not-found-prose-is-not-a-404"
+            ),
+        ],
+    )
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_denied_when_push_false(self, mock_run: AsyncMock) -> None:
+    async def test_reads_permission_from_api_result(
+        self, mock_run: AsyncMock, returncode: int, stdout: str, stderr: str, expected: str
+    ) -> None:
         from sova.utils.gh import PushPermission, check_push_permission
         from sova.utils.shell import ShellResult
 
-        mock_run.return_value = ShellResult(returncode=0, stdout="false\n", stderr="")
+        mock_run.return_value = ShellResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
         result = await check_push_permission("owner/repo")
-        assert result.permission is PushPermission.DENIED
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_denied_on_404(self, mock_run: AsyncMock) -> None:
-        from sova.utils.gh import PushPermission, check_push_permission
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="HTTP 404: Not Found")
-
-        result = await check_push_permission("owner/repo")
-        assert result.permission is PushPermission.DENIED
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_unknown_on_other_api_failure(self, mock_run: AsyncMock) -> None:
-        from sova.utils.gh import PushPermission, check_push_permission
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="network error")
-
-        result = await check_push_permission("owner/repo")
-        assert result.permission is PushPermission.UNKNOWN
+        assert result.permission is PushPermission[expected]
 
     @pytest.mark.asyncio
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
@@ -534,18 +523,6 @@ class TestCheckPushPermission:
         from sova.utils.gh import PushPermission, check_push_permission
 
         mock_run.side_effect = FileNotFoundError("gh not found")
-
-        result = await check_push_permission("owner/repo")
-        assert result.permission is PushPermission.UNKNOWN
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_returns_unknown_on_missing_permissions_key(self, mock_run: AsyncMock) -> None:
-        from sova.utils.gh import PushPermission, check_push_permission
-        from sova.utils.shell import ShellResult
-
-        # --jq on a permissions object missing "push" emits nothing to stdout but exits 0
-        mock_run.return_value = ShellResult(returncode=0, stdout="\n", stderr="")
 
         result = await check_push_permission("owner/repo")
         assert result.permission is PushPermission.UNKNOWN
@@ -587,20 +564,6 @@ class TestCheckPushPermission:
         )
         assert result.permission is PushPermission.DENIED
         assert result.checked_as is None
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.gh.run", new_callable=AsyncMock)
-    async def test_denied_only_on_http_404_not_broad_not_found_text(self, mock_run: AsyncMock) -> None:
-        """A jq/query error mentioning 'not found' in unrelated prose must not be
-        misread as a definitive access denial (the fail-open guarantee's weakest
-        link): only gh's literal 'HTTP 404' failure shape is a real 404."""
-        from sova.utils.gh import PushPermission, check_push_permission
-        from sova.utils.shell import ShellResult
-
-        mock_run.return_value = ShellResult(returncode=1, stdout="", stderr='jq: error: "push" key not found in object')
-
-        result = await check_push_permission("owner/repo")
-        assert result.permission is PushPermission.UNKNOWN
 
     @pytest.mark.asyncio
     @patch("sova.utils.gh.run", new_callable=AsyncMock)
@@ -792,43 +755,31 @@ class TestCheckGitIdentity:
         assert result.missing_fields == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("name_result", "email_result", "missing"),
+        [
+            pytest.param((1, ""), (1, ""), ["user.name", "user.email"], id="both-missing"),
+            pytest.param((0, "  \n"), (0, "test@example.com\n"), ["user.name"], id="empty-string-treated-as-missing"),
+            pytest.param((0, "Test User\n"), (1, ""), ["user.email"], id="email-only-missing"),
+        ],
+    )
     @patch("sova.utils.shell.run", new_callable=AsyncMock)
-    async def test_both_missing(self, mock_run: AsyncMock) -> None:
+    async def test_reports_missing_fields(
+        self,
+        mock_run: AsyncMock,
+        name_result: tuple[int, str],
+        email_result: tuple[int, str],
+        missing: list[str],
+    ) -> None:
         from sova.utils.shell import ShellResult, check_git_identity
 
         mock_run.side_effect = [
-            ShellResult(returncode=1, stdout="", stderr=""),
-            ShellResult(returncode=1, stdout="", stderr=""),
+            ShellResult(returncode=name_result[0], stdout=name_result[1], stderr=""),
+            ShellResult(returncode=email_result[0], stdout=email_result[1], stderr=""),
         ]
         result = await check_git_identity()
         assert not result.valid
-        assert result.missing_fields == ["user.name", "user.email"]
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.shell.run", new_callable=AsyncMock)
-    async def test_empty_string_treated_as_missing(self, mock_run: AsyncMock) -> None:
-        from sova.utils.shell import ShellResult, check_git_identity
-
-        mock_run.side_effect = [
-            ShellResult(returncode=0, stdout="  \n", stderr=""),
-            ShellResult(returncode=0, stdout="test@example.com\n", stderr=""),
-        ]
-        result = await check_git_identity()
-        assert not result.valid
-        assert result.missing_fields == ["user.name"]
-
-    @pytest.mark.asyncio
-    @patch("sova.utils.shell.run", new_callable=AsyncMock)
-    async def test_email_only_missing(self, mock_run: AsyncMock) -> None:
-        from sova.utils.shell import ShellResult, check_git_identity
-
-        mock_run.side_effect = [
-            ShellResult(returncode=0, stdout="Test User\n", stderr=""),
-            ShellResult(returncode=1, stdout="", stderr=""),
-        ]
-        result = await check_git_identity()
-        assert not result.valid
-        assert result.missing_fields == ["user.email"]
+        assert result.missing_fields == missing
 
     @pytest.mark.asyncio
     @patch("sova.utils.shell.run", new_callable=AsyncMock)

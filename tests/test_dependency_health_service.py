@@ -15,27 +15,16 @@ from sova.dashboard.services import dependency_health_service as svc
 
 
 class TestParseVersion:
-    def test_parses_semver(self) -> None:
-        assert svc._parse_version("1.2.3") == (1, 2, 3)
-
-    def test_parses_with_prefix(self) -> None:
-        assert svc._parse_version("v1.2.3") == (1, 2, 3)
-
-    def test_parses_with_prerelease_suffix(self) -> None:
-        assert svc._parse_version("1.2.3-beta.1") == (1, 2, 3)
-
-    def test_none_input(self) -> None:
-        assert svc._parse_version(None) is None
-
-    def test_unparseable(self) -> None:
-        assert svc._parse_version("not-a-version") is None
-
-    def test_empty_string(self) -> None:
-        assert svc._parse_version("") is None
-
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
+            pytest.param("1.2.3", (1, 2, 3), id="parses-semver"),
+            pytest.param("v1.2.3", (1, 2, 3), id="parses-with-prefix"),
+            pytest.param("1.2.3-beta.1", (1, 2, 3), id="parses-with-prerelease-suffix"),
+            pytest.param(None, None, id="none-input"),
+            pytest.param("not-a-version", None, id="unparseable"),
+            pytest.param("", None, id="empty-string"),
+            # Takes the first three-part run.
             ("1.2.x3.4.5", (3, 4, 5)),
             ("12.34.567.8", (12, 34, 567)),
             ("1..2.3.4", (2, 3, 4)),
@@ -45,7 +34,7 @@ class TestParseVersion:
             ("1.2.", None),
         ],
     )
-    def test_takes_the_first_three_part_run(self, raw: str, expected: tuple[int, int, int] | None) -> None:
+    def test_parse_version(self, raw: str | None, expected: tuple[int, int, int] | None) -> None:
         assert svc._parse_version(raw) == expected
 
     def test_component_digit_bound(self) -> None:
@@ -71,20 +60,18 @@ class TestParseVersion:
 class TestParseRequirement:
     """python:S8786 regex-DoS avoidance pinning for _parse_requirement (issue #1193)."""
 
-    def test_simple_requirement(self) -> None:
-        assert svc._parse_requirement("requests==2.31.0") == ("requests", "2.31.0")
-
-    def test_requirement_with_extra_bracket(self) -> None:
-        assert svc._parse_requirement("sova[dev]>=1.0.0") == ("sova", None)
-
-    def test_requirement_with_spaces(self) -> None:
-        assert svc._parse_requirement("package  [extra]  ~=  1.2") == ("package", None)
-
-    def test_requirement_no_operator_returns_name_only(self) -> None:
-        assert svc._parse_requirement("just-a-name") == ("just-a-name", None)
-
-    def test_requirement_no_name_returns_none(self) -> None:
-        assert svc._parse_requirement("[extra]==1.0") is None
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param("requests==2.31.0", ("requests", "2.31.0"), id="simple-requirement"),
+            pytest.param("sova[dev]>=1.0.0", ("sova", None), id="requirement-with-extra-bracket"),
+            pytest.param("package  [extra]  ~=  1.2", ("package", None), id="requirement-with-spaces"),
+            pytest.param("just-a-name", ("just-a-name", None), id="requirement-no-operator-returns-name-only"),
+            pytest.param("[extra]==1.0", None, id="requirement-no-name-returns-none"),
+        ],
+    )
+    def test_parse_requirement(self, line: str, expected: tuple[str, str | None] | None) -> None:
+        assert svc._parse_requirement(line) == expected
 
     def test_requirement_adversarial(self) -> None:
         import time
@@ -95,68 +82,56 @@ class TestParseRequirement:
 
 
 class TestLagCategory:
-    def test_up_to_date(self) -> None:
-        assert svc._lag_category("1.2.3", "1.2.3") == "up_to_date"
+    @pytest.mark.parametrize(
+        ("current", "latest", "expected"),
+        [
+            pytest.param("1.2.3", "1.2.3", "up_to_date", id="up-to-date"),
+            pytest.param("2.0.0", "1.2.3", "up_to_date", id="current-ahead-of-latest"),
+            pytest.param("1.0.0", "2.0.0", "major", id="major-behind"),
+            pytest.param("1.1.0", "1.2.0", "minor", id="minor-behind"),
+            pytest.param("1.2.1", "1.2.3", "patch", id="patch-behind"),
+            pytest.param(None, "1.2.3", "unknown", id="unknown-when-current-missing"),
+            pytest.param("1.2.3", None, "unknown", id="unknown-when-latest-missing"),
+        ],
+    )
+    def test_lag_category(self, current: str | None, latest: str | None, expected: str) -> None:
+        assert svc._lag_category(current, latest) == expected
 
-    def test_current_ahead_of_latest(self) -> None:
-        assert svc._lag_category("2.0.0", "1.2.3") == "up_to_date"
 
-    def test_major_behind(self) -> None:
-        assert svc._lag_category("1.0.0", "2.0.0") == "major"
-
-    def test_minor_behind(self) -> None:
-        assert svc._lag_category("1.1.0", "1.2.0") == "minor"
-
-    def test_patch_behind(self) -> None:
-        assert svc._lag_category("1.2.1", "1.2.3") == "patch"
-
-    def test_unknown_when_current_missing(self) -> None:
-        assert svc._lag_category(None, "1.2.3") == "unknown"
-
-    def test_unknown_when_latest_missing(self) -> None:
-        assert svc._lag_category("1.2.3", None) == "unknown"
+def _days_ago_iso(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 class TestIsStale:
-    def test_recent_not_stale(self) -> None:
-        recent = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        assert svc._is_stale(recent) is False
-
-    def test_old_is_stale(self) -> None:
-        old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
-        assert svc._is_stale(old) is True
-
-    def test_none_not_stale(self) -> None:
-        assert svc._is_stale(None) is False
-
-    def test_malformed_not_stale(self) -> None:
-        assert svc._is_stale("not-a-date") is False
+    @pytest.mark.parametrize(
+        ("published_at", "expected"),
+        [
+            pytest.param(_days_ago_iso(10), False, id="recent-not-stale"),
+            pytest.param(_days_ago_iso(400), True, id="old-is-stale"),
+            pytest.param(None, False, id="none-not-stale"),
+            pytest.param("not-a-date", False, id="malformed-not-stale"),
+        ],
+    )
+    def test_is_stale(self, published_at: str | None, expected: bool) -> None:
+        assert svc._is_stale(published_at) is expected
 
 
 class TestComputeUrgency:
-    def test_up_to_date_no_flags(self) -> None:
-        assert svc._compute_urgency("up_to_date", False, False, False) == 0
-
-    def test_major_behind(self) -> None:
-        assert svc._compute_urgency("major", False, False, False) == 40
-
-    def test_minor_behind(self) -> None:
-        assert svc._compute_urgency("minor", False, False, False) == 15
-
-    def test_patch_behind(self) -> None:
-        assert svc._compute_urgency("patch", False, False, False) == 5
-
-    def test_deprecated_adds(self) -> None:
-        assert svc._compute_urgency("up_to_date", True, False, False) == 40
-
-    def test_vulnerable_adds(self) -> None:
-        assert svc._compute_urgency("up_to_date", False, True, False) == 40
-
-    def test_stale_adds(self) -> None:
-        assert svc._compute_urgency("up_to_date", False, False, True) == 15
-
-    def test_clamped_to_100(self) -> None:
-        assert svc._compute_urgency("major", True, True, True) == 100
+    @pytest.mark.parametrize(
+        ("lag", "deprecated", "vulnerable", "stale", "expected"),
+        [
+            pytest.param("up_to_date", False, False, False, 0, id="up-to-date-no-flags"),
+            pytest.param("major", False, False, False, 40, id="major-behind"),
+            pytest.param("minor", False, False, False, 15, id="minor-behind"),
+            pytest.param("patch", False, False, False, 5, id="patch-behind"),
+            pytest.param("up_to_date", True, False, False, 40, id="deprecated-adds"),
+            pytest.param("up_to_date", False, True, False, 40, id="vulnerable-adds"),
+            pytest.param("up_to_date", False, False, True, 15, id="stale-adds"),
+            pytest.param("major", True, True, True, 100, id="clamped-to-100"),
+        ],
+    )
+    def test_compute_urgency(self, lag: str, deprecated: bool, vulnerable: bool, stale: bool, expected: int) -> None:
+        assert svc._compute_urgency(lag, deprecated, vulnerable, stale) == expected
 
 
 class TestScanNpm:
@@ -441,17 +416,17 @@ class TestCappedFanOut:
 
 
 class TestHasInactiveClassifier:
-    def test_inactive_present(self) -> None:
-        assert svc._has_inactive_classifier(["Development Status :: 7 - Inactive"]) is True
-
-    def test_absent(self) -> None:
-        assert svc._has_inactive_classifier(["Programming Language :: Python"]) is False
-
-    def test_non_list_payload(self) -> None:
-        assert svc._has_inactive_classifier("Inactive") is False
-
-    def test_non_string_element_does_not_raise(self) -> None:
-        assert svc._has_inactive_classifier([None, 42, {"a": 1}]) is False
+    @pytest.mark.parametrize(
+        ("classifiers", "expected"),
+        [
+            pytest.param(["Development Status :: 7 - Inactive"], True, id="inactive-present"),
+            pytest.param(["Programming Language :: Python"], False, id="absent"),
+            pytest.param("Inactive", False, id="non-list-payload"),
+            pytest.param([None, 42, {"a": 1}], False, id="non-string-element-does-not-raise"),
+        ],
+    )
+    def test_has_inactive_classifier(self, classifiers: object, expected: bool) -> None:
+        assert svc._has_inactive_classifier(classifiers) is expected
 
 
 class TestAnnotateVulnerabilities:

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sova.config.models import CommitConfig, ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
@@ -43,101 +45,110 @@ def _ctx(tmp_path: Path, issue_number: str = "42") -> ExecutionContext:
 
 
 class TestExtractAcceptanceCriteria:
-    def test_no_heading_returns_empty(self) -> None:
-        assert extract_acceptance_criteria("## Objective\nDo the thing.\n") == []
-
-    def test_empty_body_returns_empty(self) -> None:
-        assert extract_acceptance_criteria("") == []
-
-    def test_heading_with_no_items_returns_empty(self) -> None:
-        body = "## Acceptance Criteria\n\n## Out of Scope\nNothing.\n"
-        assert extract_acceptance_criteria(body) == []
-
-    def test_extracts_checkbox_items(self) -> None:
-        body = "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n"
-        assert extract_acceptance_criteria(body) == ["First thing works", "Second thing works"]
-
-    def test_tolerant_of_checked_boxes_and_bare_dashes(self) -> None:
-        body = "## Acceptance Criteria\n- [x] Done already\n- Bare dash item\n"
-        assert extract_acceptance_criteria(body) == ["Done already", "Bare dash item"]
-
-    def test_stops_at_next_heading(self) -> None:
-        body = "## Acceptance Criteria\n- [ ] Only this one\n\n## Out of Scope\n- [ ] Not a criterion\n"
-        assert extract_acceptance_criteria(body) == ["Only this one"]
-
-    def test_stops_at_end_of_body_when_last_section(self) -> None:
-        body = "## Acceptance Criteria\n- [ ] Only this one\n"
-        assert extract_acceptance_criteria(body) == ["Only this one"]
-
-    def test_heading_is_case_insensitive(self) -> None:
-        body = "## Acceptance criteria\n- [ ] Lowercase c\n"
-        assert extract_acceptance_criteria(body) == ["Lowercase c"]
-
-    def test_heading_tolerates_extra_whitespace(self) -> None:
-        body = "##  Acceptance Criteria\n- [ ] Extra space before heading text\n"
-        assert extract_acceptance_criteria(body) == ["Extra space before heading text"]
-
-    def test_fenced_block_does_not_truncate_section_or_leak_lines(self) -> None:
-        """A ``## `` line and a ``- `` line inside a fenced example must not be
-        mistaken for the section boundary or for a criterion: both would
-        otherwise either truncate the real section early (dropping a later,
-        genuine criterion) or invent a bogus criterion from example code."""
-        body = (
-            "## Acceptance Criteria\n"
-            "- Do X\n"
-            "The config reads like this:\n"
-            "```toml\n"
-            "- not_a_criterion = 1\n"
-            "## fake heading inside fence\n"
-            "```\n"
-            "- Do Z\n"
-            "\n"
-            "## Out of Scope\n"
-            "- Do Y (not in scope)\n"
-        )
-        assert extract_acceptance_criteria(body) == ["Do X", "Do Z"]
-
-    def test_horizontal_rule_is_not_a_criterion(self) -> None:
-        """A "---" horizontal rule has no whitespace after its marker, so it
-        must not be parsed as a criterion with text "--"."""
-        body = "## Acceptance Criteria\n- [ ] real one\n\n---\n"
-        assert extract_acceptance_criteria(body) == ["real one"]
-
-    def test_accepts_asterisk_and_plus_bullets(self) -> None:
-        body = "## Acceptance Criteria\n* [ ] Star bullet\n+ [ ] Plus bullet\n"
-        assert extract_acceptance_criteria(body) == ["Star bullet", "Plus bullet"]
-
-    def test_indented_sub_bullet_is_not_promoted_to_a_criterion(self) -> None:
-        """A nested sub-bullet or continuation line must never be promoted to
-        a top-level criterion, even when it uses checkbox syntax itself."""
-        body = "## Acceptance Criteria\n- [ ] Top level thing\n  - [ ] sub detail one\n  - sub detail two\n"
-        assert extract_acceptance_criteria(body) == ["Top level thing"]
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param("## Objective\nDo the thing.\n", [], id="no-heading-returns-empty"),
+            pytest.param("", [], id="empty-body-returns-empty"),
+            pytest.param(
+                "## Acceptance Criteria\n\n## Out of Scope\nNothing.\n", [], id="heading-with-no-items-returns-empty"
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n",
+                ["First thing works", "Second thing works"],
+                id="extracts-checkbox-items",
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n- [x] Done already\n- Bare dash item\n",
+                ["Done already", "Bare dash item"],
+                id="tolerant-of-checked-boxes-and-bare-dashes",
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] Only this one\n\n## Out of Scope\n- [ ] Not a criterion\n",
+                ["Only this one"],
+                id="stops-at-next-heading",
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] Only this one\n",
+                ["Only this one"],
+                id="stops-at-end-of-body-when-last-section",
+            ),
+            pytest.param(
+                "## Acceptance criteria\n- [ ] Lowercase c\n", ["Lowercase c"], id="heading-is-case-insensitive"
+            ),
+            pytest.param(
+                "##  Acceptance Criteria\n- [ ] Extra space before heading text\n",
+                ["Extra space before heading text"],
+                id="heading-tolerates-extra-whitespace",
+            ),
+            # A "## " line and a "- " line inside a fenced example must not be mistaken for the section boundary
+            # or for a criterion: either would truncate the real section early or invent a bogus criterion.
+            pytest.param(
+                (
+                    "## Acceptance Criteria\n"
+                    "- Do X\n"
+                    "The config reads like this:\n"
+                    "```toml\n"
+                    "- not_a_criterion = 1\n"
+                    "## fake heading inside fence\n"
+                    "```\n"
+                    "- Do Z\n"
+                    "\n"
+                    "## Out of Scope\n"
+                    "- Do Y (not in scope)\n"
+                ),
+                ["Do X", "Do Z"],
+                id="fenced-block-does-not-truncate-section-or-leak-lines",
+            ),
+            # A "---" horizontal rule has no whitespace after its marker, so it must not be parsed as a
+            # criterion with text "--".
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] real one\n\n---\n", ["real one"], id="horizontal-rule-is-not-a-criterion"
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n* [ ] Star bullet\n+ [ ] Plus bullet\n",
+                ["Star bullet", "Plus bullet"],
+                id="accepts-asterisk-and-plus-bullets",
+            ),
+            # A nested sub-bullet or continuation line must never be promoted to a top-level criterion, even
+            # when it uses checkbox syntax itself.
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] Top level thing\n  - [ ] sub detail one\n  - sub detail two\n",
+                ["Top level thing"],
+                id="indented-sub-bullet-is-not-promoted-to-a-criterion",
+            ),
+        ],
+    )
+    def test_extract_acceptance_criteria(self, body: str, expected: list[str]) -> None:
+        assert extract_acceptance_criteria(body) == expected
 
 
 class TestParseVerdicts:
-    def test_parses_matching_count(self) -> None:
-        criteria = ["First", "Second"]
-        tail = "- [met] First\n- [unmet] Second\n"
-        assert parse_verdicts(tail, criteria) == [("First", "met"), ("Second", "unmet")]
-
-    def test_count_mismatch_is_unparseable(self) -> None:
-        assert parse_verdicts("- [met] Only one\n", ["First", "Second"]) is None
-
-    def test_invalid_verdict_token_is_unparseable(self) -> None:
-        assert parse_verdicts("- [maybe] First\n", ["First"]) is None
-
-    def test_malformed_line_is_unparseable(self) -> None:
-        assert parse_verdicts("First is met\n", ["First"]) is None
-
-    def test_empty_criteria_and_empty_tail_parses_to_empty_list(self) -> None:
-        assert parse_verdicts("", []) == []
-
-    def test_tolerates_trailing_prose_after_well_formed_verdicts(self) -> None:
-        """A cosmetic LLM deviation (a trailing summary sentence after the
-        verdict list) must not degrade correctly-reported "met" verdicts to
-        "all unmet": only lines actually shaped like a verdict are counted."""
-        tail = "- [met] First\n- [met] Second\n\nAll criteria satisfied.\n"
-        assert parse_verdicts(tail, ["First", "Second"]) == [("First", "met"), ("Second", "met")]
+    @pytest.mark.parametrize(
+        ("tail", "criteria", "expected"),
+        [
+            pytest.param(
+                "- [met] First\n- [unmet] Second\n",
+                ["First", "Second"],
+                [("First", "met"), ("Second", "unmet")],
+                id="parses-matching-count",
+            ),
+            pytest.param("- [met] Only one\n", ["First", "Second"], None, id="count-mismatch-is-unparseable"),
+            pytest.param("- [maybe] First\n", ["First"], None, id="invalid-verdict-token-is-unparseable"),
+            pytest.param("First is met\n", ["First"], None, id="malformed-line-is-unparseable"),
+            pytest.param("", [], [], id="empty-criteria-and-empty-tail-parses-to-empty-list"),
+            # A cosmetic LLM deviation (a trailing summary sentence after the verdict list) must not degrade
+            # correctly-reported "met" verdicts to "all unmet": only lines shaped like a verdict are counted.
+            pytest.param(
+                "- [met] First\n- [met] Second\n\nAll criteria satisfied.\n",
+                ["First", "Second"],
+                [("First", "met"), ("Second", "met")],
+                id="tolerates-trailing-prose-after-well-formed-verdicts",
+            ),
+        ],
+    )
+    def test_parse_verdicts(self, tail: str, criteria: list[str], expected: list[tuple[str, str]] | None) -> None:
+        assert parse_verdicts(tail, criteria) == expected
 
 
 class TestApplyOwnerOverrides:
@@ -173,23 +184,34 @@ class TestApplyOwnerOverrides:
         ]
         assert apply_owner_overrides(verdicts, defaults) == verdicts
 
-    def test_matching_pattern_forces_owner(self) -> None:
-        verdicts = [("Deploy manually (owner only)", "met")]
-        result = apply_owner_overrides(verdicts, ["(owner"])
-        assert result == [("Deploy manually (owner only)", "owner")]
-
-    def test_case_insensitive_match(self) -> None:
-        verdicts = [("Needs HUMAN-ONLY review", "unmet")]
-        result = apply_owner_overrides(verdicts, ["human-only"])
-        assert result == [("Needs HUMAN-ONLY review", "owner")]
-
-    def test_no_match_leaves_verdict_unchanged(self) -> None:
-        verdicts = [("Automated fix works", "met")]
-        assert apply_owner_overrides(verdicts, ["(owner", "(manual"]) == verdicts
-
-    def test_empty_patterns_is_noop(self) -> None:
-        verdicts = [("Something", "unmet")]
-        assert apply_owner_overrides(verdicts, []) == verdicts
+    @pytest.mark.parametrize(
+        ("verdicts", "patterns", "expected"),
+        [
+            pytest.param(
+                [("Deploy manually (owner only)", "met")],
+                ["(owner"],
+                [("Deploy manually (owner only)", "owner")],
+                id="matching-pattern-forces-owner",
+            ),
+            pytest.param(
+                [("Needs HUMAN-ONLY review", "unmet")],
+                ["human-only"],
+                [("Needs HUMAN-ONLY review", "owner")],
+                id="case-insensitive-match",
+            ),
+            pytest.param(
+                [("Automated fix works", "met")],
+                ["(owner", "(manual"],
+                [("Automated fix works", "met")],
+                id="no-match-leaves-verdict-unchanged",
+            ),
+            pytest.param([("Something", "unmet")], [], [("Something", "unmet")], id="empty-patterns-is-noop"),
+        ],
+    )
+    def test_explicit_patterns(
+        self, verdicts: list[tuple[str, str]], patterns: list[str], expected: list[tuple[str, str]]
+    ) -> None:
+        assert apply_owner_overrides(verdicts, patterns) == expected
 
 
 class TestApplyCiGatedOverrides:
@@ -343,8 +365,21 @@ class TestComposeBody:
         body = compose_body("## Summary\n- stuff", "42", None, is_jira=False)
         assert body == "## Summary\n- stuff\n\n## Issue\n\nCloses #42\n"
 
-    def test_github_strips_llm_echoed_closing_keyword(self) -> None:
-        body = compose_body("## Summary\n- stuff\n\nFixes #42", "42", None, is_jira=False)
+    @pytest.mark.parametrize(
+        "summary",
+        [
+            pytest.param("## Summary\n- stuff\n\nFixes #42", id="llm-echoed-closing-keyword"),
+            pytest.param("## Summary\n- stuff\n\n- Closes #42", id="list-item-closing-keyword"),
+            pytest.param("## Summary\n- stuff\n\nCloses #42.", id="sentence-terminated-closing-keyword"),
+            # A PR body edited in the GitHub web UI uses CRLF line endings, so a stale "Closes #42\r" line must
+            # still be stripped (RefreshPrBodyStep applies this same pattern to the body it fetches from GitHub).
+            pytest.param(
+                "## Summary\r\n- stuff\r\n\r\nCloses #42\r", id="closing-keyword-with-trailing-carriage-return"
+            ),
+        ],
+    )
+    def test_github_strips_stray_closing_keyword(self, summary: str) -> None:
+        body = compose_body(summary, "42", None, is_jira=False)
         assert body.count("#42") == 1
         assert "Closes #42" in body
 
@@ -354,25 +389,6 @@ class TestComposeBody:
         body = compose_body("## Summary\n- This PR fixes #42 by rewiring the parser.", "42", None, is_jira=False)
         assert "This PR fixes #42 by rewiring the parser." in body
         assert "## Issue" in body
-        assert "Closes #42" in body
-
-    def test_github_strips_list_item_closing_keyword(self) -> None:
-        body = compose_body("## Summary\n- stuff\n\n- Closes #42", "42", None, is_jira=False)
-        assert body.count("#42") == 1
-        assert "Closes #42" in body
-
-    def test_github_strips_sentence_terminated_closing_keyword(self) -> None:
-        body = compose_body("## Summary\n- stuff\n\nCloses #42.", "42", None, is_jira=False)
-        assert body.count("#42") == 1
-        assert "Closes #42" in body
-
-    def test_github_strips_closing_keyword_with_trailing_carriage_return(self) -> None:
-        """A PR body edited in the GitHub web UI uses CRLF line endings, so a
-        stale "Closes #42\\r" line must still be recognized and stripped
-        (RefreshPrBodyStep applies this same pattern to the existing PR body
-        it fetches from the GitHub API)."""
-        body = compose_body("## Summary\r\n- stuff\r\n\r\nCloses #42\r", "42", None, is_jira=False)
-        assert body.count("#42") == 1
         assert "Closes #42" in body
 
     def test_github_unmet_criteria_neutralizes_inline_mention(self) -> None:
@@ -626,31 +642,35 @@ class TestSplitTitleTail:
         assert body == "## Summary\n- stuff"
         assert title == "feat(core): add widget"
 
-    def test_no_marker_returns_none_title(self) -> None:
-        body, title = split_title_tail("## Summary\n- stuff")
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("## Summary\n- stuff", id="no-marker"),
+            pytest.param(f"## Summary\n- stuff\n{TITLE_MARKER}\n", id="marker-with-no-following-content"),
+        ],
+    )
+    def test_returns_none_title(self, raw: str) -> None:
+        body, title = split_title_tail(raw)
         assert body == "## Summary\n- stuff"
         assert title is None
 
-    def test_marker_with_no_following_content_returns_none_title(self) -> None:
-        body, title = split_title_tail(f"## Summary\n- stuff\n{TITLE_MARKER}\n")
-        assert body == "## Summary\n- stuff"
-        assert title is None
-
-    def test_strips_title_tail_before_verdict_tail_when_both_present(self) -> None:
-        raw = f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [met] First thing\n{TITLE_MARKER}\nfeat(core): add widget"
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(
+                f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [met] First thing\n{TITLE_MARKER}\nfeat(core): add widget",
+                id="title-tail-after-verdict-tail",
+            ),
+            # Only the marker and the title line are removed, not the rest of the response: a model that emits
+            # the title block before the verdict block must not lose the verdicts, which drive `Closes #N`.
+            pytest.param(
+                f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget\n{VERDICT_MARKER}\n- [met] First thing",
+                id="title-block-emitted-before-verdict-block",
+            ),
+        ],
+    )
+    def test_title_and_verdict_tails_both_survive(self, raw: str) -> None:
         remainder, title = split_title_tail(raw)
-        assert title == "feat(core): add widget"
-        body, tail = split_verdict_tail(remainder)
-        assert body == "## Summary\n- stuff"
-        assert "- [met] First thing" in tail
-
-    def test_verdict_block_survives_a_title_block_emitted_out_of_order(self) -> None:
-        """Only the marker and the title line are removed, not the rest of the
-        response: a model that emits the title block before the verdict block
-        must not lose the verdicts, which is what drives `Closes #N`."""
-        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget\n{VERDICT_MARKER}\n- [met] First thing"
-        remainder, title = split_title_tail(raw)
-
         assert title == "feat(core): add widget"
         body, tail = split_verdict_tail(remainder)
         assert body == "## Summary\n- stuff"
@@ -678,20 +698,40 @@ class TestLineParsingIsWhitespaceTolerant:
     lazy-quantifier backtracking, so each one's whitespace handling is
     pinned here rather than left to the regex's shape."""
 
-    def test_criterion_line_tolerates_trailing_whitespace(self) -> None:
-        body = "## Acceptance Criteria\n- [ ] First thing works   \n-    Second thing works\t\n"
-        assert extract_acceptance_criteria(body) == ["First thing works", "Second thing works"]
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] First thing works   \n-    Second thing works\t\n",
+                ["First thing works", "Second thing works"],
+                id="criterion-line-tolerates-trailing-whitespace",
+            ),
+            pytest.param(
+                "## Acceptance Criteria\n-   \n- [ ] Real one\n",
+                ["Real one"],
+                id="dash-with-only-whitespace-is-not-a-criterion",
+            ),
+        ],
+    )
+    def test_criterion_line_whitespace(self, body: str, expected: list[str]) -> None:
+        assert extract_acceptance_criteria(body) == expected
 
-    def test_dash_with_only_whitespace_is_not_a_criterion(self) -> None:
-        body = "## Acceptance Criteria\n-   \n- [ ] Real one\n"
-        assert extract_acceptance_criteria(body) == ["Real one"]
-
-    def test_verdict_line_tolerates_padding_around_the_token(self) -> None:
-        tail = "-  [MET]   First thing works  \n- [unmet]Second thing works\n"
-        assert parse_verdicts(tail, ["First", "Second"]) == [("First", "met"), ("Second", "unmet")]
-
-    def test_verdict_line_with_no_text_is_unparseable(self) -> None:
-        assert parse_verdicts("- [met]\n", ["First"]) is None
+    @pytest.mark.parametrize(
+        ("tail", "criteria", "expected"),
+        [
+            pytest.param(
+                "-  [MET]   First thing works  \n- [unmet]Second thing works\n",
+                ["First", "Second"],
+                [("First", "met"), ("Second", "unmet")],
+                id="verdict-line-tolerates-padding-around-the-token",
+            ),
+            pytest.param("- [met]\n", ["First"], None, id="verdict-line-with-no-text-is-unparseable"),
+        ],
+    )
+    def test_verdict_line_whitespace(
+        self, tail: str, criteria: list[str], expected: list[tuple[str, str]] | None
+    ) -> None:
+        assert parse_verdicts(tail, criteria) == expected
 
     def test_split_sections_strips_heading_whitespace(self) -> None:
         sections = split_sections("## Summary   \n- a\n\n##\tTest plan\n- b\n")
