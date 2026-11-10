@@ -1238,10 +1238,9 @@ def _milestone_adapter(by_milestone: dict[str, list[Task]], individually: dict[i
 
 
 @pytest.fixture
-async def client(reset_db_rows):
-    from sova.dashboard.app import create_app
+async def client(reset_db_rows, dashboard_app):
 
-    app = create_app(multi_project=False)
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

@@ -20,7 +20,6 @@ from httpx import ASGITransport, AsyncClient
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import RolesConfig
-from sova.dashboard.app import create_app
 from sova.dashboard.services import agent_lifecycle, agent_validation
 from sova.dashboard.services.agent_validation import (
     RolePinUnavailable,
@@ -531,8 +530,8 @@ class TestOverrideRolePin:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
-    app = create_app(multi_project=False)
+async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
+    app = dashboard_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
         yield ac

@@ -162,7 +162,7 @@ NO_CSRF = {"origin": "", "x-csrf-token": ""}
 
 
 @pytest.fixture
-async def client():
+async def client(dashboard_app):
     """Shared dashboard test client, pre-armed with a valid CSRF/origin pair.
 
     Router-level `require_same_origin_csrf` (#1204) now guards every mutating
@@ -173,7 +173,7 @@ async def client():
     across the (now much larger) set of tests that post to a guarded route; a
     GET request is unaffected since the guard no-ops for safe methods.
     """
-    app = create_app(multi_project=False)
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))

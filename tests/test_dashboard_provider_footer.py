@@ -43,10 +43,9 @@ def clear_github_user_cache() -> Iterator[None]:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
-    from sova.dashboard.app import create_app
+async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
 
-    app = create_app(project_dir=Path.cwd())
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         c.headers.update(_csrf_request_headers(c))

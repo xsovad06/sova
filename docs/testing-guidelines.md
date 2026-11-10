@@ -41,7 +41,7 @@ timeout = 60
 
 ## Test File Layout
 
-All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtime/` holds the `@pytest.mark.runtime` process-lifecycle tests and the opt-in Codex smoke test, with its own `conftest.py`. The one flat-module exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`reset_db_rows`, `seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`/`invariant_history`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
+All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtime/` holds the `@pytest.mark.runtime` process-lifecycle tests and the opt-in Codex smoke test, with its own `conftest.py`. The one flat-module exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`reset_db_rows`, `dashboard_app`, `seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`/`invariant_history`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
@@ -59,7 +59,7 @@ All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtim
 
 Plus: `test_batch_service.py`, `test_commands.py`, `test_dag.py`, `test_db.py`, `test_external_reviews.py`, `test_extraction.py`, `test_harden.py`, `test_jira_adapter.py`, `test_knowledge.py`, `test_knowledge_sharing.py`, `test_lifecycle.py`, `test_llm.py`, `test_mcp.py`, `test_scheduler.py`, `test_settings_meta.py`, `test_spec.py`, `test_utils.py`.
 
-Tests use classes to group related assertions. Fixtures are defined per-file, not in conftest, except for the autouse isolation fixtures and the shared DB fixture (`reset_db_rows`) described below.
+Tests use classes to group related assertions. Fixtures are defined per-file, not in conftest, except for the autouse isolation fixtures, the shared DB fixture (`reset_db_rows`) and the shared dashboard app (`dashboard_app`) described below.
 
 ## In-Memory Database Fixture
 
@@ -179,14 +179,19 @@ patch.object(control_service, "_get_project_agents", return_value=pa)
 
 ## Dashboard / FastAPI Testing
 
+Build the client on the shared `dashboard_app` fixture rather than calling `create_app()` per test:
+
 ```python
 @pytest.fixture
-async def client(tmp_path):
-    app = create_app(project_dir=tmp_path)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+async def client(dashboard_app):
+    async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as ac:
+        ac.headers.update(csrf_request_headers(ac))  # only if the tests post to guarded routes
         yield ac
 ```
+
+`tests/conftest.py` builds one `create_app(multi_project=False)` per test module (`_module_dashboard_app`), under the same cwd, home, env and keyring isolation the autouse fixtures give a test, and `dashboard_app` resets it around every test: it clears `dependency_overrides`, restores `app.state` to its built value, empties the rate limiter's counters, and points `control_service` and `handoff_service` at the test's working directory, as `create_app()` did. Building the app mounts every router and a Jinja environment that compiles each template on first render, which the shared app does once per module instead of once per test. `tests/test_dashboard_app_fixture.py` proves an override set in one test is gone in the next.
+
+Call `create_app()` yourself only when the test needs an app built differently: an env var or config value read at build time (`SOVA_DASHBOARD_RATE_LIMIT_PER_MINUTE`, host, port), an explicit `project_dir`, or multi-project mode. Do not mutate the shared app in a way the reset does not undo (adding routes or middleware).
 
 ### File-backed service isolation
 

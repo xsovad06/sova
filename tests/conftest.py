@@ -555,6 +555,10 @@ def _isolate_sova_env(monkeypatch: pytest.MonkeyPatch) -> None:
     construction and change assertions. Tests that need a specific env var set
     it explicitly via ``monkeypatch.setenv`` after this fixture runs.
     """
+    _strip_sova_env(monkeypatch)
+
+
+def _strip_sova_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("SOVA_") and key not in _PRESERVED_ENV:
             monkeypatch.delenv(key, raising=False)
@@ -582,6 +586,10 @@ def _isolate_provider_routing_env(monkeypatch: pytest.MonkeyPatch) -> None:
     that need a specific var set it explicitly via ``monkeypatch.setenv`` after
     this fixture runs.
     """
+    _strip_provider_routing_env(monkeypatch)
+
+
+def _strip_provider_routing_env(monkeypatch: pytest.MonkeyPatch) -> None:
     from sova.utils.env import PARENT_SESSION_VARS, PROVIDER_ROUTING_VARS
 
     for key in PROVIDER_ROUTING_VARS | PARENT_SESSION_VARS:
@@ -601,6 +609,10 @@ def _isolate_os_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     keyring path patch ``is_keyring_available`` or ``_backend_usable``
     themselves, which overrides this per test.
     """
+    _disable_os_keyring(monkeypatch)
+
+
+def _disable_os_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     from sova.llm import keyring_store
 
     monkeypatch.setattr(keyring_store, "_backend_usable", False)
@@ -652,7 +664,10 @@ def _isolate_home_config(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
     rather than session-scoped, so one test's registry writes can't leak into
     another's.
     """
-    fake_home = tmp_path_factory.mktemp("home")
+    _redirect_home(monkeypatch, tmp_path_factory.mktemp("home"))
+
+
+def _redirect_home(monkeypatch: pytest.MonkeyPatch, fake_home: Path) -> None:
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     fake_config_dir = fake_home / ".config" / "sova"
 
@@ -835,6 +850,57 @@ def csrf_request_headers(client: Any) -> dict[str, str]:
     token = "test-csrf-token"
     client.cookies.set(CSRF_COOKIE_NAME, token)
     return {"origin": "http://localhost:8111", CSRF_HEADER_NAME: token}
+
+
+@pytest.fixture(scope="module")
+def _module_dashboard_app(tmp_path_factory: pytest.TempPathFactory) -> tuple[Any, dict[str, Any]]:
+    """Build one single-project dashboard app per test module, and record its initial ``app.state``.
+
+    Built under the isolation the autouse fixtures give each test (an empty cwd, a fake
+    home, no ambient ``SOVA_*`` or provider-routing env, no OS keyring), applied here by
+    hand because a module-scoped fixture is set up before those function-scoped ones run:
+    ``create_app()`` reads the config of ``Path.cwd()`` while it builds.
+    """
+    from sova.dashboard.app import create_app
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.chdir(tmp_path_factory.mktemp("dashboard-app"))
+        _strip_sova_env(mp)
+        _strip_provider_routing_env(mp)
+        _disable_os_keyring(mp)
+        _redirect_home(mp, tmp_path_factory.mktemp("dashboard-app-home"))
+        app = create_app(multi_project=False)
+    return app, dict(app.state._state)
+
+
+@pytest.fixture
+def dashboard_app(_module_dashboard_app: tuple[Any, dict[str, Any]]) -> Iterator[Any]:
+    """The module's shared dashboard app, reset to how ``create_app(multi_project=False)`` left it.
+
+    ``create_app()`` mounts every router and builds a Jinja environment whose compiled
+    templates it keeps, so building it per test repeated that work for each of several
+    hundred tests. Between tests this clears ``dependency_overrides``, restores
+    ``app.state``, empties the rate limiter's counters, and points the control and handoff
+    services at this test's working directory, which ``create_app()`` would have done.
+    A test that needs an app built differently (an env var or config read at build time,
+    an explicit ``project_dir``, multi-project mode) calls ``create_app()`` itself.
+    """
+    from sova.dashboard.services import control_service, handoff_service
+
+    app, initial_state = _module_dashboard_app
+
+    def reset() -> None:
+        app.dependency_overrides.clear()
+        app.state._state.clear()
+        app.state._state.update(initial_state)
+        if (limiter := initial_state.get("limiter")) is not None:
+            limiter.reset()
+
+    reset()
+    control_service.set_project_dir(Path.cwd().resolve())
+    handoff_service.set_project_dir(Path.cwd().resolve())
+    yield app
+    reset()
 
 
 INVARIANTS_DIR = Path(__file__).parent.parent / "invariants"

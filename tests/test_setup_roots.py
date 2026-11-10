@@ -28,10 +28,9 @@ def roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
 
 
 @pytest.fixture
-async def client(roots):
-    from sova.dashboard.app import create_app
+async def client(roots, dashboard_app):
 
-    app = create_app(multi_project=False)
+    app = dashboard_app
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://127.0.0.1:8111") as ac:
         ac.headers.update(csrf_request_headers(ac))
         yield ac

@@ -147,10 +147,9 @@ class TestPRMetricsService:
 
 class TestPRMetricsAPI:
     @pytest.fixture
-    def client(self):
-        from sova.dashboard.app import create_app
+    def client(self, dashboard_app):
 
-        app = create_app(multi_project=False)
+        app = dashboard_app
         transport = ASGITransport(app=app)
         return AsyncClient(transport=transport, base_url="http://test")
 
