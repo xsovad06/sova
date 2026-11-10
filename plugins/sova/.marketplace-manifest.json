@@ -1,9 +1,9 @@
 {
   "version": "0.1.0",
   "source_hashes": {
-    "sova/commands/data/commands/develop.md": "f82cfb156079796fc5aa589c74e6ee11211fa7512d16a67712b622f569884fe8",
+    "sova/commands/data/commands/develop.md": "18fca6234c982d40bb86b8d7b1d33afbc678b0d2b97713de67921ca52c93549b",
     "sova/commands/data/commands/spec.md": "b32565b13959c8b6e3c4a62b7a61c61ce15d23ff865ad0649263eefa82971790",
-    "sova/commands/data/commands/review.md": "d60547c154238be2b3ca57106e54cd2b28022a72fdafcc0c633cb641e25415ba",
+    "sova/commands/data/commands/review.md": "7896455ca248032bcf8ca20e5ae63e32e816881245d82f45225ff65c52ec4439",
     "sova/commands/data/commands/pr.md": "80d42a89d38bbb99b6447191a2328873eab45c86d164ba1249e56229055b44f6",
     "sova/commands/data/commands/debug.md": "de73b844862aa9c728ccea7edc26e31b36f9fb3edb6e4986ff303e020c2bbb0d",
     "sova/commands/data/commands/test.md": "c2bf1d035f053d05e1f0abf340f1aa28162df02799d8da8fc3ed002fd63e6b08"

@@ -49,6 +49,10 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 
 - Define expected behavior before implementation
 - Cover positive paths, negative paths, and edge cases
+- One test per behavior: add a test only for something no existing test already proves
+- When a new case differs from an existing test only in its inputs and expected result, add it as a case of that test (parametrize it if it is not yet) instead of writing a new function
+- Do not write a test whose only assertion is that a mock was called, unless that call is the contract (the side effect is what the code exists to produce)
+- Do not assert that a phrase exists in documentation or other prose unless another component parses that phrase, and do not assert only that an attribute or import exists
 
 ### Step 3: Implement the Solution
 

@@ -243,6 +243,19 @@ def test_rejects_invalid_values(model_cls, field, invalid_value):
         model_cls(**{field: invalid_value})
 ```
 
+Give each case a `pytest.param(..., id="...")` when the values alone do not say what the case is, so a failure names the scenario, and keep the reason a case exists (a regression, a review finding) as a comment above it.
+
+## Before Adding a Test
+
+Test code grew by about 1.7 lines per product line from May 2026, and by 2.7 in early November (#1383). The `develop` command, the `testing-patterns` skill and `/review` carry these rules:
+
+- **One test per behavior**: add a test only for something no existing test already proves
+- **Extend before adding**: a case that differs from an existing test only in its inputs and expected result becomes a case of that test (parametrize it if it is not yet), not a new function
+- **No mock-call-only tests**: a test whose only assertion is that a mock was called proves the wiring, not the behavior; keep one only when that call is the contract (the side effect is what the code exists to produce)
+- **No phrase tests on prose**: do not assert that a sentence exists in documentation or other prose unless another component parses that phrase (a heading `compute_quality_score()` scores, a marker a workflow matches on); do not assert only that an attribute or import exists
+
+`/review` flags a diff whose added test lines far exceed its added production lines.
+
 ## Common Pitfalls
 
 1. **Missing cache clears**: file-backed services cache by mtime. Clear `_handoff_caches` in tests.
