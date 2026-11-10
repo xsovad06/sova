@@ -313,16 +313,10 @@ restore point `_run_migrations()` took moments earlier in the same startup.
 ## Test Fixtures
 
 ```python
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 ```
 
-In-memory SQLite gives each test a fresh DB. Always `close_db()` in teardown.
+Tests share one in-memory SQLite engine per pytest-xdist worker, emptied before each test by `reset_db_rows` (`tests/conftest.py`). Never build a per-test engine or write `SOVA_DATABASE_URL` through `os.environ` (full entry: docs/testing-guidelines.md, "In-Memory Database Fixture").
 
 ## Index Naming
 

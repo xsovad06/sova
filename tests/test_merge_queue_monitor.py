@@ -19,18 +19,13 @@ from sova.dashboard.services.merge_queue_monitor import (
     create_monitors_for_merge_queue,
 )
 from sova.db.models import MergeQueueEntry
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.git.merge import MergeQueueStatus, _PartOfResult
 from sova.utils.shell import ShellResult
 
-
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch: pytest.MonkeyPatch):
-    """Initialize an in-memory DB for merge queue tests."""
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture

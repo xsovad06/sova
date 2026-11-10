@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize a fresh in-memory DB for each test."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 async def _backdate_memory(memory_id: int, created_at: datetime) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -19,20 +18,14 @@ from sova.cli.commands.harden import (
     _strip_code_fences,
 )
 from sova.config.models import ProjectConfig
-from sova.db.session import close_db, init_db
 from sova.utils.markdown import strip_preamble as _strip_preamble
 
 runner = CliRunner()
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for CLI tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter() -> AsyncMock:

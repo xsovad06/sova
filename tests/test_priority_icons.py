@@ -10,7 +10,6 @@ from httpx import ASGITransport, AsyncClient
 
 from sova.adapters.priority import Priority
 from sova.dashboard.app import create_app, priorities_json, priority_icon
-from sova.db.session import close_db, init_db
 from tests.conftest import agents_page_source
 
 # Derived from the registry, so a new Priority level fails these tests until its icon ships.
@@ -24,13 +23,9 @@ def _template_source(template: str) -> str:
     return (Path(__file__).parent.parent / "sova" / "dashboard" / "templates" / template).read_text(encoding="utf-8")
 
 
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch):
-    """Initialize an in-memory DB for icon tests."""
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,7 +12,6 @@ from sova.dashboard.services.output_stream_service import (
     OutputStreamService,
     get_output_stream_service,
 )
-from sova.db.session import close_db, init_db
 
 # Unit tests for OutputStreamService
 
@@ -127,17 +125,8 @@ class TestGetOutputStreamService:
 # Integration tests for SSE output endpoint
 
 
-@pytest.fixture
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
-
-
 @pytest.mark.asyncio
-async def test_output_stream_returns_sse_content_type(setup_db) -> None:
+async def test_output_stream_returns_sse_content_type(reset_db_rows) -> None:
     """SSE output stream endpoint returns event-stream content type."""
     from sova.dashboard.routers.agents import stream_agent_output
 
@@ -151,7 +140,7 @@ async def test_output_stream_returns_sse_content_type(setup_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_stream_sends_connected_event(setup_db) -> None:
+async def test_output_stream_sends_connected_event(reset_db_rows) -> None:
     """SSE stream should emit 'connected' as the first event."""
     from sova.dashboard.routers.agents import stream_agent_output
 
@@ -182,7 +171,7 @@ async def test_output_stream_sends_connected_event(setup_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_stream_delivers_published_lines(setup_db) -> None:
+async def test_output_stream_delivers_published_lines(reset_db_rows) -> None:
     """Lines published via OutputStreamService appear as SSE events."""
     import sova.dashboard.services.output_stream_service as mod
 
@@ -243,7 +232,7 @@ async def test_output_stream_delivers_published_lines(setup_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_stream_reports_a_dropped_line_as_a_gap_event(setup_db) -> None:
+async def test_output_stream_reports_a_dropped_line_as_a_gap_event(reset_db_rows) -> None:
     """A slow reader's full queue drops a line; the stream says so, since the client cannot find the hole."""
     import sova.dashboard.services.output_stream_service as mod
 
@@ -276,7 +265,7 @@ async def test_output_stream_reports_a_dropped_line_as_a_gap_event(setup_db) -> 
 
 
 @pytest.mark.asyncio
-async def test_output_stream_sends_no_gap_when_nothing_was_dropped(setup_db) -> None:
+async def test_output_stream_sends_no_gap_when_nothing_was_dropped(reset_db_rows) -> None:
     import sova.dashboard.services.output_stream_service as mod
 
     svc = OutputStreamService()
@@ -307,7 +296,7 @@ async def test_output_stream_sends_no_gap_when_nothing_was_dropped(setup_db) -> 
 
 
 @pytest.mark.asyncio
-async def test_output_stream_sends_done_on_terminal_run(setup_db) -> None:
+async def test_output_stream_sends_done_on_terminal_run(reset_db_rows) -> None:
     """When the run reaches terminal status, stream sends 'done' event."""
     import sova.dashboard.services.output_stream_service as mod
 
@@ -342,7 +331,7 @@ async def test_output_stream_sends_done_on_terminal_run(setup_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_buffer_line_publishes_to_output_stream(setup_db) -> None:
+async def test_buffer_line_publishes_to_output_stream(reset_db_rows) -> None:
     """_buffer_line should push lines to OutputStreamService subscribers."""
     import sova.dashboard.services.output_stream_service as mod
 
@@ -373,7 +362,7 @@ async def test_buffer_line_publishes_to_output_stream(setup_db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_run_terminal_exception_returns_false(setup_db) -> None:
+async def test_check_run_terminal_exception_returns_false(reset_db_rows) -> None:
     """_check_run_terminal returns False and logs on DB errors."""
     from sova.dashboard.routers.agents import _check_run_terminal
 
@@ -399,7 +388,7 @@ def _fake_agent(run_id: int, existing: list[str] | None = None):
 
 
 @pytest.mark.asyncio
-async def test_buffer_line_counts_every_line_and_keeps_counting_past_the_deque_cap(setup_db) -> None:
+async def test_buffer_line_counts_every_line_and_keeps_counting_past_the_deque_cap(reset_db_rows) -> None:
     """output_seq is the run's lifetime line count, so it is not capped like the deque is."""
     from collections import deque
 
@@ -415,7 +404,7 @@ async def test_buffer_line_counts_every_line_and_keeps_counting_past_the_deque_c
 
 
 @pytest.mark.asyncio
-async def test_buffer_line_publishes_before_the_db_flush_can_suspend(setup_db) -> None:
+async def test_buffer_line_publishes_before_the_db_flush_can_suspend(reset_db_rows) -> None:
     """A subscriber that reads output_seq must receive every later line, so the count and the publish happen
     in one step with the flush (the only await) after them."""
     import sova.dashboard.services.output_stream_service as mod
@@ -464,7 +453,7 @@ def test_get_output_seq_reports_an_in_memory_agent_and_none_otherwise() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_endpoint_returns_the_sequence_read_with_the_lines(setup_db) -> None:
+async def test_output_endpoint_returns_the_sequence_read_with_the_lines(reset_db_rows) -> None:
     from unittest.mock import MagicMock
 
     from sova.dashboard.routers.agents import get_agent_output
@@ -480,7 +469,7 @@ async def test_output_endpoint_returns_the_sequence_read_with_the_lines(setup_db
 
 
 @pytest.mark.asyncio
-async def test_connected_event_carries_the_sequence_at_subscribe_time(setup_db) -> None:
+async def test_connected_event_carries_the_sequence_at_subscribe_time(reset_db_rows) -> None:
     """The count is read right after the subscribe, so a line buffered while the generator waits to run is
     pushed to the stream but not counted in the event."""
     import json
@@ -513,7 +502,7 @@ async def test_connected_event_carries_the_sequence_at_subscribe_time(setup_db) 
 
 
 @pytest.mark.asyncio
-async def test_connected_event_has_no_sequence_for_an_agent_not_in_memory(setup_db) -> None:
+async def test_connected_event_has_no_sequence_for_an_agent_not_in_memory(reset_db_rows) -> None:
     import json
     from unittest.mock import MagicMock
 

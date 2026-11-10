@@ -20,7 +20,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.dashboard.services import setup_service
-from sova.db.session import close_db, init_db
 from tests.conftest import DASHBOARD_DIR
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -31,12 +30,9 @@ _APP_JS = (_STATIC / "app.js").read_text(encoding="utf-8")
 _STYLE_CSS = (_STATIC / "style.css").read_text(encoding="utf-8")
 
 
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture(autouse=True)

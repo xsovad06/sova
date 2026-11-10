@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,22 +12,18 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
-    return await get_session()
+async def session() -> AsyncIterator[AsyncSession]:
+    async with await get_session() as s:
+        yield s
 
 
 @pytest.fixture

@@ -166,6 +166,9 @@ class TestTrackerRegistry:
         assert status.hits_in_window == 1
 
 
+# Emits feed events, whose background write needs the shared DB and its teardown drain
+# (see ``tests/conftest.py:reset_db_rows``).
+@pytest.mark.usefixtures("reset_db_rows")
 class TestEmitEvents:
     def test_emit_hit_event_calls_feed_service(self) -> None:
         with patch("sova.supervisor.github_quota.GitHubQuotaTracker._emit_hit_event") as mock:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -405,19 +404,8 @@ class TestEngineAttribution:
         assert ctx.input_tokens == 2000
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestCostRecordWrite:
-    @pytest.fixture(autouse=True)
-    async def setup_db(self):
-        import os
-
-        from sova.db.session import close_db, init_db
-
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
-
     async def _engine_with_run(self, ctx: ExecutionContext) -> WorkflowEngine:
         """StepExecution.task_run_id is NOT NULL, so a real TaskRun is required."""
         from sova.db.models import TaskRun
@@ -722,19 +710,8 @@ class TestTurnCounters:
         assert ctx.routed_spend["cheap"].usage.turns_reported_calls == 1
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestNumTurnsCostRecord:
-    @pytest.fixture(autouse=True)
-    async def setup_db(self) -> AsyncIterator[None]:
-        import os
-
-        from sova.db.session import close_db, init_db
-
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
-
     async def _engine_with_run(self, ctx: ExecutionContext) -> WorkflowEngine:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -1081,19 +1058,8 @@ class TestStreamReplay:
         assert _command_agent(role="command:integrate-pr").phase_tally is not None
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestFinalizeWritesTurnsAndPhases:
-    @pytest.fixture(autouse=True)
-    async def setup_db(self) -> AsyncIterator[None]:
-        import os
-
-        from sova.db.session import close_db, init_db
-
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
-
     async def _run(self, status: str) -> int:
         from sova.db.models import TaskRun
         from sova.db.session import get_session

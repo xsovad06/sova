@@ -642,17 +642,14 @@ class TestDeveloperRepeatedFailuresGateIntegration:
     """Integration tests using real SQLite to verify the SQL subquery logic."""
 
     @pytest.fixture
-    async def db_engine(self, monkeypatch: pytest.MonkeyPatch) -> TaskProgressionEngine:
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+    async def db_engine(self, reset_db_rows: None, tmp_path: Path) -> TaskProgressionEngine:
+        from sova.db.session import get_session_factory
 
-        project_dir = Path(tempfile.mkdtemp())
-        await init_db(project_dir)
+        project_dir = tmp_path
         sf = await get_session_factory(project_dir)
         engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
         engine._session_factory = sf
-        yield engine
-        await close_db()
+        return engine
 
     @staticmethod
     def _dev_run(issue: str, status: str, hours_ago: int) -> object:
@@ -1795,15 +1792,12 @@ class TestGetAliveCountIntegration:
     """
 
     @pytest.fixture
-    async def session_factory(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+    async def session_factory(self, reset_db_rows: None, tmp_path: Path):
+        from sova.db.session import get_session_factory
 
-        project_dir = Path(tempfile.mkdtemp())
-        await init_db(project_dir)
+        project_dir = tmp_path
         sf = await get_session_factory(project_dir)
-        yield sf
-        await close_db()
+        return sf
 
     @pytest.mark.asyncio
     async def test_dead_pid_awaiting_approval_run_not_counted(self, session_factory) -> None:
@@ -4091,14 +4085,11 @@ class TestHumanInvolvementGateLocalRecord:
     """The `task_assessments` fallback consulted when no suitability label exists."""
 
     @pytest.fixture
-    async def session_factory(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+    async def session_factory(self, reset_db_rows: None, tmp_path: Path):
+        from sova.db.session import get_session_factory
 
-        project_dir = Path(tempfile.mkdtemp())
-        await init_db(project_dir, run_migrations=False)
-        yield await get_session_factory(project_dir)
-        await close_db()
+        project_dir = tmp_path
+        return await get_session_factory(project_dir)
 
     @staticmethod
     async def _record(session_factory, suitability: str, *, issue: str = "1", project: str = "owner/repo") -> None:

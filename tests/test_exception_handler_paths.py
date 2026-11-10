@@ -136,6 +136,9 @@ class TestAgentDbSessionFailures:
             assert await agent_db._finalize_task_run(1, exit_code=1, agent=_agent(tmp_path)) is False
 
 
+# Emits feed events, whose background write needs the shared DB and its teardown drain
+# (see ``tests/conftest.py:reset_db_rows``).
+@pytest.mark.usefixtures("reset_db_rows")
 class TestBatchServiceFailurePaths:
     """`sova/dashboard/services/batch_service.py` per-item and driver handlers."""
 

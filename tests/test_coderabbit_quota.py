@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -11,22 +11,20 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.config.models import CodeRabbitQuotaConfig
-from sova.db.session import close_db, init_db
 from sova.utils.shell import ShellResult
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
+
 
 @pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize a fresh in-memory DB for each test."""
+def _clear_sync_cache() -> Iterator[None]:
     from sova.supervisor.coderabbit_quota import _sync_cache
 
     _sync_cache.clear()
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
     yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
     _sync_cache.clear()
 
 

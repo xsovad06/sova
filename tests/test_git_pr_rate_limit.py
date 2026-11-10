@@ -15,6 +15,10 @@ from sova.git.pr import _track_gh_rate_limit
 from sova.supervisor.github_quota import get_github_quota_tracker
 from sova.utils.shell import ShellResult
 
+# Emits feed events, whose background write needs the shared DB and its teardown drain
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
+
 
 class TestTrackGhRateLimit:
     def setup_method(self) -> None:

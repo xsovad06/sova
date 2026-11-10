@@ -46,23 +46,12 @@ def _import_migration(migration_number: str) -> types.ModuleType:
     return mod
 
 
-@pytest.fixture(autouse=True)
-async def setup_db(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """Initialize a fresh in-memory DB for each test.
-
-    Kept as a private, per-test engine rather than migrated onto the shared
-    fixture in ``tests/conftest.py``: several tests in this file (e.g.
-    ``test_init_db_for_project_lock_prevents_concurrent_init``,
-    ``test_init_db_enables_wal_for_file_sqlite``,
-    ``test_init_db_disposes_when_ddl_executed``) call ``init_db()``/
-    ``close_db()``/``init_db_for_project()`` themselves as the thing under
-    test, against their own ``tmp_path`` project directories, and need
-    engine disposal and WAL/migration side effects to actually occur.
-    """
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``). Several tests here call
+# ``init_db()``/``close_db()``/``init_db_for_project()`` themselves as the thing
+# under test; ``close_db()`` disposes the shared engine too, and the next test's
+# ``reset_db_rows`` sweep recreates its schema.
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 async def test_create_task_run() -> None:
@@ -2226,15 +2215,12 @@ async def test_enable_sqlite_wal_swallows_exception(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_init_db_enables_wal_for_file_sqlite(tmp_path) -> None:
+async def test_init_db_enables_wal_for_file_sqlite(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """init_db calls _enable_sqlite_wal when using a file-based SQLite DB."""
-    import os
     from unittest.mock import AsyncMock, patch
 
-    from sova.db.session import close_db, init_db
-
     # Clear the in-memory URL set by autouse fixture so project_dir is used.
-    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
         wal_mock = AsyncMock()
         with (
@@ -2245,8 +2231,6 @@ async def test_init_db_enables_wal_for_file_sqlite(tmp_path) -> None:
             await init_db(project_dir=tmp_path)
             wal_mock.assert_awaited_once()
     finally:
-        if saved is not None:
-            os.environ["SOVA_DATABASE_URL"] = saved
         await close_db()
 
 
@@ -2264,8 +2248,6 @@ async def test_init_db_disposes_regardless_of_ddl(
     during the version/drift checks).
     """
     from unittest.mock import AsyncMock, MagicMock, patch
-
-    from sova.db.session import close_db, init_db
 
     monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
@@ -2305,7 +2287,7 @@ async def test_init_db_skips_dispose_when_previous_engine_still_registered(
     """
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from sova.db.session import _engines, close_db, init_db
+    from sova.db.session import _engines
 
     monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
@@ -2346,8 +2328,6 @@ async def test_init_db_disposes_previous_engine_when_unreachable(tmp_path, monke
     """
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from sova.db.session import close_db, init_db
-
     monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
         first_engine = MagicMock()
@@ -2385,8 +2365,6 @@ async def test_init_db_skips_dispose_for_in_memory_previous_engine(tmp_path, mon
     still be using.
     """
     from unittest.mock import AsyncMock, MagicMock, patch
-
-    from sova.db.session import close_db, init_db
 
     monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
     try:
@@ -2431,8 +2409,6 @@ async def test_init_db_serializes_concurrent_calls_for_the_same_url(tmp_path, mo
     import asyncio
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from sova.db.session import close_db, init_db
-
     monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     events: list[str] = []
 
@@ -2470,17 +2446,14 @@ async def test_init_db_serializes_concurrent_calls_for_the_same_url(tmp_path, mo
 # ---------------------------------------------------------------------------
 
 
-async def test_init_db_sets_restrictive_file_mode(tmp_path) -> None:
+async def test_init_db_sets_restrictive_file_mode(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A freshly created SQLite file is chmod 0600: it holds secrets
     (provider API keys, Jira/webhook tokens) in project_settings, so
     group/world access must be denied regardless of the process umask."""
-    import os
     import stat
     from unittest.mock import AsyncMock, patch
 
-    from sova.db.session import close_db, init_db
-
-    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     try:
         with patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False):
             await init_db(project_dir=tmp_path)
@@ -2489,8 +2462,6 @@ async def test_init_db_sets_restrictive_file_mode(tmp_path) -> None:
         assert db_path.exists()
         assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
     finally:
-        if saved is not None:
-            os.environ["SOVA_DATABASE_URL"] = saved
         await close_db()
 
 
@@ -2527,17 +2498,14 @@ def test_ensure_db_file_secured_before_open_secures_existing_file(tmp_path) -> N
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
 
 
-async def test_init_db_secures_new_file_before_engine_opens(tmp_path) -> None:
+async def test_init_db_secures_new_file_before_engine_opens(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The database file must already be restrictive by the time the engine
     connects, not only after migrations finish: the earlier ordering left a
     new file at the umask-derived mode for the full migration window."""
-    import os
     import stat
     from unittest.mock import AsyncMock, patch
 
-    from sova.db.session import close_db, init_db
-
-    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     observed_mode = {}
 
     def _spy_create_engine(url, **kwargs):
@@ -2557,8 +2525,6 @@ async def test_init_db_secures_new_file_before_engine_opens(tmp_path) -> None:
 
         assert observed_mode.get("mode") == 0o600
     finally:
-        if saved is not None:
-            os.environ["SOVA_DATABASE_URL"] = saved
         await close_db()
 
 
@@ -3044,12 +3010,13 @@ class TestInspectSchema:
 
     async def test_behind_head_reports_the_stamped_revision(self, tmp_path, monkeypatch) -> None:
         import sqlite3
+        from contextlib import closing
 
         from sova.db.session import inspect_schema
 
         monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
         db_path = await self._migrated_project(tmp_path)
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute("UPDATE alembic_version SET version_num = '0001_stale'")
 
         result = await inspect_schema(tmp_path)

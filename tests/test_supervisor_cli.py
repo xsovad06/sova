@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Callable, Coroutine
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,7 +11,6 @@ from typer.testing import CliRunner
 
 from sova.cli.commands.supervisor import app as supervisor_app
 from sova.config.models import ProjectConfig, SupervisorConfig
-from sova.db.session import close_db, init_db
 
 runner = CliRunner()
 
@@ -21,13 +20,9 @@ _PATCH_LOAD_CONFIG = "sova.config.loader.load_config"
 _PATCH_ASYNCIO = "sova.cli.commands.supervisor.asyncio"
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _supervisor_config(enabled: bool = True) -> ProjectConfig:
@@ -39,6 +34,22 @@ def _supervisor_config(enabled: bool = True) -> ProjectConfig:
         ),
         github_repo="test/repo",
     )
+
+
+def _close_and_return(result: object) -> Callable[[Coroutine], object]:
+    """An ``asyncio.run`` stand-in that closes the coroutine it is handed and returns ``result``.
+
+    A mocked ``asyncio.run`` with only a ``return_value`` never awaits or closes the coroutine, which is
+    then finalized whenever garbage collection runs. Inside a namedtuple's ``__new__`` (empty builtins)
+    its "never awaited" warning cannot import ``warnings``, and pytest reports the resulting
+    ``KeyError('__import__')`` as an unraisable exception on whichever test is running.
+    """
+
+    def run(coro: Coroutine) -> object:
+        coro.close()
+        return result
+
+    return run
 
 
 class TestSupervisorStatusCommand:
@@ -77,10 +88,7 @@ class TestSupervisorStatusCommand:
     def test_status_enabled_shows_config(self, mock_config, mock_asyncio) -> None:
         mock_config.return_value = _supervisor_config(enabled=True)
 
-        def run_and_close(coro) -> None:
-            coro.close()
-
-        mock_asyncio.run.side_effect = run_and_close
+        mock_asyncio.run.side_effect = _close_and_return(None)
         result = runner.invoke(supervisor_app, ["status"])
         assert result.exit_code == 0
         assert "60" in result.output
@@ -93,10 +101,7 @@ class TestSupervisorStatusCommand:
         (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
         mock_config.return_value = _supervisor_config(enabled=True)
 
-        def run_and_close(coro) -> None:
-            coro.close()
-
-        mock_asyncio.run.side_effect = run_and_close
+        mock_asyncio.run.side_effect = _close_and_return(None)
         result = runner.invoke(supervisor_app, ["status", "--project", str(tmp_path)])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()
@@ -118,11 +123,13 @@ class TestSupervisorPollCommand:
     @patch(_PATCH_LOAD_CONFIG)
     def test_poll_success_shows_output(self, mock_config, mock_asyncio) -> None:
         mock_config.return_value = _supervisor_config(enabled=True)
-        mock_asyncio.run.return_value = {
-            "progression": {"decisions": 2, "executed": 1},
-            "quota": {"enabled": False},
-            "health": {"db": "ok", "adapter": "ok (5 tasks)"},
-        }
+        mock_asyncio.run.side_effect = _close_and_return(
+            {
+                "progression": {"decisions": 2, "executed": 1},
+                "quota": {"enabled": False},
+                "health": {"db": "ok", "adapter": "ok (5 tasks)"},
+            }
+        )
         result = runner.invoke(supervisor_app, ["poll"])
         assert result.exit_code == 0
         assert "completed" in result.output.lower()
@@ -137,7 +144,7 @@ class TestSupervisorPollCommand:
             "quota": {"enabled": False},
             "health": {"db": "ok"},
         }
-        mock_asyncio.run.return_value = poll_result
+        mock_asyncio.run.side_effect = _close_and_return(poll_result)
         result = runner.invoke(supervisor_app, ["poll", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -148,11 +155,13 @@ class TestSupervisorPollCommand:
     @patch(_PATCH_LOAD_CONFIG)
     def test_poll_with_error_component(self, mock_config, mock_asyncio) -> None:
         mock_config.return_value = _supervisor_config(enabled=True)
-        mock_asyncio.run.return_value = {
-            "progression": {"error": "adapter failed"},
-            "quota": {"enabled": False},
-            "health": {"db": "ok"},
-        }
+        mock_asyncio.run.side_effect = _close_and_return(
+            {
+                "progression": {"error": "adapter failed"},
+                "quota": {"enabled": False},
+                "health": {"db": "ok"},
+            }
+        )
         result = runner.invoke(supervisor_app, ["poll"])
         assert result.exit_code == 0
         assert "adapter failed" in result.output
@@ -162,7 +171,7 @@ class TestSupervisorPollCommand:
     def test_poll_with_project_path(self, mock_config, mock_asyncio, tmp_path) -> None:
         (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
         mock_config.return_value = _supervisor_config(enabled=True)
-        mock_asyncio.run.return_value = {"progression": {"decisions": 0, "executed": 0}}
+        mock_asyncio.run.side_effect = _close_and_return({"progression": {"decisions": 0, "executed": 0}})
         result = runner.invoke(supervisor_app, ["poll", "--project", str(tmp_path)])
         assert result.exit_code == 0
         mock_asyncio.run.assert_called_once()

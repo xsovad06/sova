@@ -3,32 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-from sova.db.session import close_db, init_db
-
-
-@pytest.fixture(autouse=True)
-async def setup_db(tmp_path, worker_id):
-    """Initialize a fresh in-memory DB for each test.
-
-    Uses file-based DB for parallel execution to avoid worker isolation issues.
-    """
-    if worker_id == "master":
-        # Single-process execution
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    else:
-        # Parallel execution: use unique file per worker to avoid conflicts
-        db_file = tmp_path / f"test_{worker_id}.db"
-        os.environ["SOVA_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file}"
-
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 # ---------------------------------------------------------------------------

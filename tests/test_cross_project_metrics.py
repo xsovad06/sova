@@ -476,17 +476,8 @@ class TestMetricsSnapshotWriter:
         assert call_count >= 2
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestCrossProjectRouter:
-    @pytest.fixture(autouse=True)
-    async def setup_db(self):
-        from sova.db.session import close_db, init_db
-
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
-
     @pytest.fixture
     async def client(self):
         from sova.dashboard.app import create_app

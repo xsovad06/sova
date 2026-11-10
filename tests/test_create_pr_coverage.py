@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -13,22 +12,11 @@ from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import _closing_keyword_re
-from sova.db.session import close_db, init_db
 from sova.llm.models import LLMResult
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for workflow engine tests."""
-    original_db_url = os.environ.get("SOVA_DATABASE_URL")
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    if original_db_url is not None:
-        os.environ["SOVA_DATABASE_URL"] = original_db_url
-    else:
-        os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _mock_adapter() -> AsyncMock:

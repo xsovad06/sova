@@ -12,16 +12,11 @@ import pytest
 
 from sova.dashboard.services import agent_adopt
 from sova.dashboard.services.agent_pool import ProjectAgents
-from sova.db.session import close_db, init_db
 from sova.ipc.control import FileAgentProcess
 
-
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch):
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture(autouse=True)

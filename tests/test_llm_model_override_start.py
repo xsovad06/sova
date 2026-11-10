@@ -25,6 +25,10 @@ from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, _inject_agent_marke
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
+# Emits feed events, whose background write needs the shared DB and its teardown drain
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
+
 _DISCOVERY = {
     "layer": "llm",
     "provider_identity": "claude-code:firstparty",
