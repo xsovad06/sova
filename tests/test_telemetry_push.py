@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -12,16 +11,11 @@ import pytest
 
 from sova.config.models import ProjectConfig, TelemetryConfig
 from sova.db.models import StepExecution, TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 def _make_cfg(**telemetry_overrides) -> ProjectConfig:

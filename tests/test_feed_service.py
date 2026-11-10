@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
@@ -18,7 +17,6 @@ from sova.dashboard.services.feed_service import (
     emit_safe,
     get_feed_service,
 )
-from sova.db.session import close_db, init_db
 
 # Unit tests for FeedService
 
@@ -147,13 +145,9 @@ class TestGetFeedService:
 # Integration tests for feed router
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture
@@ -166,10 +160,9 @@ async def feed_service():
     yield svc
     # Drain any background persistence tasks a test scheduled via emit()
     # but never awaited (e.g. tests that only assert on the in-memory
-    # buffer/SSE path). Without this, a task still mid-commit can race the
-    # autouse setup_db fixture's close_db() -> engine.dispose(), which
-    # raises a raw KeyError from the SQLite StaticPool's internal state
-    # rather than anything emit()'s own try/except can catch.
+    # buffer/SSE path) before ``mod._feed_service`` is reset below, so
+    # ``reset_db_rows``'s own teardown drain (which looks the service up
+    # again) does not miss them.
     await svc.drain_persist()
     mod._feed_service = None
 

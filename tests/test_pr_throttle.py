@@ -17,7 +17,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.db.session import close_db, init_db
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,14 +25,9 @@ if TYPE_CHECKING:
     from sova.db.models import PRCreationQueue
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize a fresh in-memory DB for each test."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 async def _create_task_run() -> int:

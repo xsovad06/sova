@@ -230,6 +230,9 @@ class TestCallLLM:
         assert mock_invoke.call_args[1]["timeout"] == 180
 
 
+# The failure path emits a feed event, whose background write needs the shared DB and its
+# teardown drain (see ``tests/conftest.py:reset_db_rows``).
+@pytest.mark.usefixtures("reset_db_rows")
 class TestCallLLMRetry:
     async def test_planner_call_llm_retries_on_timeout(self, planner: SupervisorPlanner) -> None:
         from sova.llm.errors import LLMTimeoutError
@@ -698,21 +701,18 @@ class TestGetIssueCounts:
 
 class TestGetRecentFailures:
     @pytest.fixture
-    async def db_planner(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SupervisorPlanner:
+    async def db_planner(self, reset_db_rows: None, tmp_path: Path) -> SupervisorPlanner:
         """Planner with a real in-memory SQLite session factory."""
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True),
             github_repo="test/repo",
         )
         p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
-        yield p
-        await close_db()
+        return p
 
     async def test_with_failures(self, db_planner: SupervisorPlanner) -> None:
         from datetime import datetime, timezone
@@ -755,21 +755,18 @@ class TestGetRecentFailures:
 
 class TestGetIssueHealth:
     @pytest.fixture
-    async def db_planner(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SupervisorPlanner:
+    async def db_planner(self, reset_db_rows: None, tmp_path: Path) -> SupervisorPlanner:
         """Planner with a real in-memory SQLite session factory."""
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True, task_queue=[42, 17]),
             github_repo="test/repo",
         )
         p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
-        yield p
-        await close_db()
+        return p
 
     async def test_with_developer_runs(self, db_planner: SupervisorPlanner) -> None:
         from datetime import datetime, timedelta, timezone
@@ -850,12 +847,10 @@ class TestGetIssueHealth:
         assert "## Issue Health" in result
         assert "No developer runs for queued issues" in result
 
-    async def test_empty_task_queue(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+    async def test_empty_task_queue(self, reset_db_rows: None, tmp_path: Path) -> None:
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True, task_queue=[]),
@@ -865,7 +860,6 @@ class TestGetIssueHealth:
 
         result = await p._get_issue_health()
         assert "No task queue configured" in result
-        await close_db()
 
     async def test_db_error(self, tmp_path: Path) -> None:
         cfg = ProjectConfig(
@@ -886,13 +880,11 @@ class TestGetIssueHealth:
 
 class TestPromptSizeCaps:
     @pytest.fixture
-    async def db_planner(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SupervisorPlanner:
+    async def db_planner(self, reset_db_rows: None, tmp_path: Path) -> SupervisorPlanner:
         """Planner with a real in-memory SQLite session factory and a 100-item queue."""
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(
@@ -904,8 +896,7 @@ class TestPromptSizeCaps:
             github_repo="test/repo",
         )
         p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
-        yield p
-        await close_db()
+        return p
 
     async def test_planner_prompt_assembly_respects_caps(self, db_planner: SupervisorPlanner) -> None:
         from datetime import datetime, timezone
@@ -939,15 +930,13 @@ class TestPromptSizeCaps:
         assert "#80" not in result
         assert "_Showing 5 of 100 queued issues._" in result
 
-    async def test_recent_failures_respects_cap(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+    async def test_recent_failures_respects_cap(self, reset_db_rows: None, tmp_path: Path) -> None:
         from datetime import datetime, timezone
 
         from sova.db.models import TaskRun
-        from sova.db.session import close_db, get_session_factory, init_db
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_max_failures_in_context=2),
@@ -973,24 +962,21 @@ class TestPromptSizeCaps:
         result = await p._get_recent_failures()
         assert result.count("- Issue #") == 2
         assert "_Showing 2 of 3 failures._" in result
-        await close_db()
 
     async def test_recent_failures_no_truncation_note_when_exactly_at_cap(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, reset_db_rows: None, tmp_path: Path
     ) -> None:
         """A query capped with .limit(cap) always returns <= cap rows, so ``len(runs) == cap``
 
         alone cannot distinguish "truncated" from "exactly cap rows exist". Regression test
         for a false-positive truncation note when the true total equals the cap.
         """
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
         from datetime import datetime, timezone
 
         from sova.db.models import TaskRun
-        from sova.db.session import close_db, get_session_factory, init_db
+        from sova.db.session import get_session_factory
 
         project_dir = tmp_path
-        await init_db(project_dir)
         sf = await get_session_factory(project_dir)
         cfg = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True, llm_planning=True, planner_max_failures_in_context=3),
@@ -1016,7 +1002,6 @@ class TestPromptSizeCaps:
         result = await p._get_recent_failures()
         assert result.count("- Issue #") == 3
         assert "_Showing" not in result
-        await close_db()
 
 
 class TestPlannerRetryBackoffConfig:

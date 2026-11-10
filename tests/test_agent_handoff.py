@@ -20,9 +20,8 @@ import pytest
 
 from sova.dashboard.services.work_verdict import _NO_REVIEW
 from sova.db.models import TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.ipc.handoff import DashboardHandoff, handoff_filename, write_handoff_file
-from tests.conftest import drain_feed_persist
 
 # agent_handoff.py resolves `get_session` via a function-local `from sova.db.session
 # import get_session` on every call (not a module-level import), so patching
@@ -30,14 +29,9 @@ from tests.conftest import drain_feed_persist
 # unlike the general rule of patching at the importing module's namespace.
 
 
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch):
-    """Initialize an in-memory DB for agent_handoff tests."""
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await drain_feed_persist()
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture(autouse=True)

@@ -3,22 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
-from sova.db.session import close_db, init_db
 from sova.ipc.testing import MockRuntime
 
 
 @pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for runtime tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+def _shared_db(reset_db_rows: None) -> None:
+    """Run every runtime test on the shared per-worker in-memory DB (see ``tests/conftest.py:reset_db_rows``)."""
 
 
 @pytest.fixture

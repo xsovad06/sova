@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from sova.db.session import close_db, init_db
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize a fresh in-memory DB for each test."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 # ---------------------------------------------------------------------------
@@ -582,12 +574,10 @@ async def test_export_then_import_round_trip(tmp_path: Path) -> None:
     export_result = await export_memories(shared_dir, repo="source-repo")
     assert export_result.exported == 1
 
-    # Reset DB to simulate a different installation
-    from sova.db.session import close_db
+    # Empty the DB to simulate a different installation
+    from tests.conftest import _delete_all_rows
 
-    await close_db()
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
+    await _delete_all_rows()
 
     import_result = await import_memories(shared_dir)
     assert import_result.imported == 1

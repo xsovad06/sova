@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from sova.db.models import TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
 # agent_recovery.py resolves `get_session` via a function-local `from sova.db.session
 # import get_session` on every call (not a module-level import), so patching
@@ -17,13 +17,9 @@ from sova.db.session import close_db, get_session, init_db
 # unlike the general rule of patching at the importing module's namespace.
 
 
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch):
-    """Initialize an in-memory DB for agent_recovery tests."""
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 class TestControlServiceRecovery:

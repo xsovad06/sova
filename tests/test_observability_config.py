@@ -88,7 +88,7 @@ class TestCoverageReporting:
         assert "COVERAGE_CORE=sysmon" in recipe
         assert "-n auto" in recipe
         assert "--durations=25" in recipe
-        # xdist worker contention breaches pyproject's 30s global timeout.
+        # Restates pyproject's global timeout, so make test-py and make test-ci agree.
         assert "--timeout=60" in recipe
 
     def test_sonar_consumes_coverage_xml(self, sonar_text: str) -> None:

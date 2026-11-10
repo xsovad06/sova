@@ -31,6 +31,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -220,7 +221,7 @@ def _max_run_id(db: Path) -> int:
     """The highest task_run id now, so a later read sees only the runs the pilot itself created."""
     if not db.exists():
         return 0
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn:
         return int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM task_runs").fetchone()[0])
 
 
@@ -232,7 +233,7 @@ def _runs_since(db: Path, issue: str, after_id: int) -> list[dict[str, object]]:
     """
     if not db.exists():
         return []
-    with sqlite3.connect(db) as conn:
+    with closing(sqlite3.connect(db)) as conn:
         conn.row_factory = sqlite3.Row
         runs = conn.execute(
             "SELECT id, role, status, pr_number, error_message, termination_reason FROM task_runs "

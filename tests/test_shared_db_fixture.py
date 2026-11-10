@@ -32,7 +32,7 @@ from sqlalchemy import func, select
 import sova.db.session as _dbs
 from sova.db.models import Base, TaskRun
 from sova.db.session import get_session
-from tests.conftest import reset_shared_db_rows
+from tests.conftest import raw_db_url_writes, reset_shared_db_rows
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
@@ -147,3 +147,31 @@ class TestSelfHealAfterEngineDisposal:
         await reset_shared_db_rows(engine, factory, url, monkeypatch)
 
         assert await _task_run_count() == 0
+
+
+class TestRawDbUrlWriteGuard:
+    """``pytest_runtest_setup`` fails every test of a module writing ``SOVA_DATABASE_URL`` via ``os.environ``."""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"',
+            'os.environ.pop("SOVA_DATABASE_URL", None)',
+            'os.environ.setdefault("SOVA_DATABASE_URL", "x")',
+            'del os.environ["SOVA_DATABASE_URL"]',
+        ],
+    )
+    def test_flags_a_direct_write(self, line: str) -> None:
+        assert raw_db_url_writes(f"import os\n{line}\n") == [2]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")',
+            'patch.dict(os.environ, {"SOVA_DATABASE_URL": "x"})',
+            'url = os.environ.get("SOVA_DATABASE_URL")',
+            '"""Never os.environ.pop("SOVA_DATABASE_URL") by hand."""',
+        ],
+    )
+    def test_allows_a_restoring_write_or_a_read(self, line: str) -> None:
+        assert raw_db_url_writes(f"import os\n{line}\n") == []

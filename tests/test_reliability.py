@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -10,18 +9,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.db.models import TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
 NOW = datetime.now(timezone.utc)
 
 
-@pytest.fixture(autouse=True)
-async def setup_db():
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 async def _seed_runs() -> None:

@@ -110,7 +110,7 @@ asyncio_mode = "auto"
 # which "error" below turns into a session abort from pytest 9.2 on. No async
 # fixture declares a wider scope, so "function" matches the implicit default.
 asyncio_default_fixture_loop_scope = "function"
-timeout = 30
+timeout = 60
 markers = [
     "runtime: tests requiring real process lifecycle (deselect with -m 'not runtime')",
     "stress: high-concurrency stress tests (deselect with -m 'not stress')",
@@ -123,40 +123,13 @@ markers = [
 # failure, so a new, unreviewed warning is caught instead of scrolling by
 # unnoticed in a wall of output (issue #1209). Each entry below is a warning
 # category confirmed benign by inspection, scoped as narrowly as the warning
-# itself allows: most come from unawaited sqlite/aiosqlite connections and
-# AsyncMock coroutines in test doubles that the suite never runs to
-# completion, never from production code.
+# itself allows: most come from AsyncMock coroutines in test doubles that the
+# suite never runs to completion, never from production code. There is no entry
+# for an unclosed sqlite/aiosqlite connection: tests share one engine per worker
+# (tests/conftest.py:reset_db_rows), whose teardown drains feed writes and
+# disposes every other engine, so a leaked connection fails the run (#1383).
 filterwarnings = [
     "error",
-    # sqlite3/aiosqlite connections are garbage-collected rather than closed
-    # when a test's in-memory DB engine goes out of scope; nothing is left
-    # unflushed since the DB is in-memory and discarded with the process.
-    "ignore:unclosed database.*:ResourceWarning",
-    "ignore:unclosed <aiosqlite.core.Connection.*:ResourceWarning",
-    # aiosqlite 0.22 words the same warning differently.
-    "ignore:<aiosqlite\\.core\\.Connection object at .* was deleted before being closed:ResourceWarning",
-    # The same aiosqlite GC above, but when __del__ runs during garbage
-    # collection outside any test's own call stack, Python treats its
-    # ResourceWarning as unraisable and pytest's unraisablehook re-wraps it
-    # into this category instead, surfacing on whichever test happens to run
-    # when collection fires rather than on the test that created the
-    # connection. The message pytest generates names only the deallocator,
-    # not the warning it wraps, so this is matched on that name rather than
-    # on "unclosed" like the entries above. Python 3.12 phrases it
-    # "Exception ignored in:", 3.14 "Exception ignored while calling
-    # deallocator"; CI runs both. The 3.12 colon is matched with "." because
-    # a literal colon would end the filter's message field.
-    "ignore:Exception ignored (in.|while calling deallocator) <function Connection\\.__del__:pytest.PytestUnraisableExceptionWarning",
-    # The same leaked aiosqlite connection, when garbage collection finalizes a
-    # cursor() coroutine that was still suspended on the worker thread's reply
-    # (Python 3.14 words it "Exception ignored while finalizing coroutine").
-    # Scoped to aiosqlite's Connection.cursor so any other coroutine finalized
-    # this way still fails.
-    "ignore:Exception ignored while finalizing coroutine <coroutine object Connection\\.cursor at:pytest.PytestUnraisableExceptionWarning",
-    # The same unclosed connection seen from aiosqlite's worker thread: once
-    # the test's event loop has closed, the thread's attempt to hand back a
-    # result raises "Event loop is closed", which pytest reports per thread.
-    "ignore:Exception in thread .*\\(_connection_worker_thread\\):pytest.PytestUnhandledThreadExceptionWarning",
     # sova.db.migrate's lock file is intentionally left for the OS to reclaim
     # at process exit rather than closed per-test; see sova/db/migrate.py.
     "ignore:unclosed file.*sova\\.db\\.migrate\\.lock.*:ResourceWarning",
@@ -168,10 +141,9 @@ filterwarnings = [
     # code surfaces, so the category-wide ignore costs real signal. Measured
     # while promoting warnings to errors, replacing it with
     # "ignore:coroutine 'AsyncMockMixin\\._execute_mock_call' was never awaited"
-    # (the AsyncMock case alone) fails five tests on pre-existing leaks, none
-    # of them a test double: 'create_subprocess_exec' (tests/test_ipc.py),
-    # 'poll.<locals>._run_poll' (sova/cli/commands/supervisor.py, reached from
-    # tests/test_supervisor_cli.py), '_ConnectionManager._produce_loop'
+    # (the AsyncMock case alone) fails tests on pre-existing leaks, none of
+    # them a test double: 'create_subprocess_exec' (tests/test_ipc.py),
+    # '_ConnectionManager._produce_loop'
     # (tests/test_dashboard.py's websocket tests) and 'Queue.get' (garbage
     # collected during the setup of a tests/test_output_stream_service.py test,
     # so leaked by an earlier test on the same xdist worker, not yet traced).

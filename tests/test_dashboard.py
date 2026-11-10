@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,39 +19,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, exclude_pathspecs, unstage_command
-from tests.conftest import agents_page_source, drain_feed_persist
+from tests.conftest import agents_page_source
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
-
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch: pytest.MonkeyPatch):
-    """Initialize an in-memory DB for dashboard tests.
-
-    Kept as a private, per-test engine rather than migrated onto the shared
-    ``reset_db_rows`` fixture in ``tests/conftest.py``: a test in this file
-    that leaves a background task still touching the DB when its own
-    function-scoped event loop closes (observed via
-    ``TestDuplicateAgentPrevention``'s real, unmocked ``start_agent()`` calls)
-    raises ``asyncio.CancelledError`` through the pooled connection.
-    SQLAlchemy treats that as a dead connection and transparently reconnects
-    on the next checkout, which for ``sqlite+aiosqlite://`` means a brand new,
-    schema-less in-memory DB silently replacing the shared one for every test
-    that runs afterward in the same worker. Disposing the engine per test (as
-    here) makes that irrelevant: the engine is already on its way out, so an
-    invalidated connection on a doomed engine harms nothing.
-    """
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await drain_feed_persist()
-    await close_db()
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``). A test here that leaves a
+# background task touching the DB when its event loop closes (the real
+# ``start_agent()`` calls in ``TestDuplicateAgentPrevention``) can invalidate the
+# shared connection; the next test's sweep recreates the schema.
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
-    return await get_session()
+async def session() -> AsyncIterator[AsyncSession]:
+    async with await get_session() as s:
+        yield s
 
 
 @pytest.fixture

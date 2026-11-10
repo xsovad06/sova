@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -21,24 +22,17 @@ from sova.dashboard.services.mcp_service import (
     validate_mcp_token,
 )
 from sova.db.models import StepExecution, TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for MCP tests."""
-    import os
-
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture
-async def session() -> AsyncSession:
-    return await get_session()
+async def session() -> AsyncIterator[AsyncSession]:
+    async with await get_session() as s:
+        yield s
 
 
 @pytest.fixture

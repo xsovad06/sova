@@ -1335,78 +1335,63 @@ async def _load_all_settings(session: object) -> dict[str, object] | None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("reset_db_rows")
 class TestSaveConfigToDbAsync:
-    async def test_save_and_load(self, tmp_path: Path, monkeypatch: object) -> None:
-        import os
-
+    async def test_save_and_load(self) -> None:
         from sova.config.db_loader import save_config_to_db
-        from sova.db.session import close_db, get_session, init_db
+        from sova.db.session import get_session
 
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
-        await init_db(run_migrations=False)
-        try:
-            async with await get_session() as session:
-                async with session.begin():
-                    await save_config_to_db(
-                        session,
-                        {
-                            "github_repo": "owner/repo",
-                            "task_source": {"type": "jira"},
-                        },
-                    )
+        async with await get_session() as session:
+            async with session.begin():
+                await save_config_to_db(
+                    session,
+                    {
+                        "github_repo": "owner/repo",
+                        "task_source": {"type": "jira"},
+                    },
+                )
 
-            async with await get_session() as session:
-                loaded = await _load_all_settings(session)
-            assert loaded is not None
-            assert loaded["github_repo"] == "owner/repo"
-            assert loaded["task_source"]["type"] == "jira"
-        finally:
-            await close_db()
-            os.environ.pop("SOVA_DATABASE_URL", None)
+        async with await get_session() as session:
+            loaded = await _load_all_settings(session)
+        assert loaded is not None
+        assert loaded["github_repo"] == "owner/repo"
+        assert loaded["task_source"]["type"] == "jira"
 
-    async def test_jira_to_github_removes_stale_keys_async(self, tmp_path: Path, monkeypatch: object) -> None:
-        import os
-
+    async def test_jira_to_github_removes_stale_keys_async(self) -> None:
         from sova.config.db_loader import save_config_to_db
-        from sova.db.session import close_db, get_session, init_db
+        from sova.db.session import get_session
 
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")  # type: ignore[union-attr]
-        await init_db(run_migrations=False)
-        try:
-            async with await get_session() as session:
-                async with session.begin():
-                    await save_config_to_db(
-                        session,
-                        {
-                            "github_repo": "",
-                            "task_source": {
-                                "type": "jira",
-                                "jira_base_url": "https://jira.example.com",
-                                "jira_email": "user@example.com",
-                            },
+        async with await get_session() as session:
+            async with session.begin():
+                await save_config_to_db(
+                    session,
+                    {
+                        "github_repo": "",
+                        "task_source": {
+                            "type": "jira",
+                            "jira_base_url": "https://jira.example.com",
+                            "jira_email": "user@example.com",
                         },
-                    )
+                    },
+                )
 
-            async with await get_session() as session:
-                async with session.begin():
-                    await save_config_to_db(
-                        session,
-                        {
-                            "github_repo": "owner/repo",
-                            "task_source": {"type": "github"},
-                        },
-                    )
+        async with await get_session() as session:
+            async with session.begin():
+                await save_config_to_db(
+                    session,
+                    {
+                        "github_repo": "owner/repo",
+                        "task_source": {"type": "github"},
+                    },
+                )
 
-            async with await get_session() as session:
-                loaded = await _load_all_settings(session)
-            assert loaded is not None
-            assert loaded["github_repo"] == "owner/repo"
-            assert loaded["task_source"]["type"] == "github"
-            assert "jira_base_url" not in loaded.get("task_source", {})
-            assert "jira_email" not in loaded.get("task_source", {})
-        finally:
-            await close_db()
-            os.environ.pop("SOVA_DATABASE_URL", None)
+        async with await get_session() as session:
+            loaded = await _load_all_settings(session)
+        assert loaded is not None
+        assert loaded["github_repo"] == "owner/repo"
+        assert loaded["task_source"]["type"] == "github"
+        assert "jira_base_url" not in loaded.get("task_source", {})
+        assert "jira_email" not in loaded.get("task_source", {})
 
 
 class TestGenerateConfigDict:

@@ -925,16 +925,7 @@ class TestSettingsRouterErrors:
     """Router-level tests for settings API error and validation paths."""
 
     @pytest.fixture()
-    async def _db(self, monkeypatch):
-        from sova.db.session import close_db, init_db
-
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        await init_db(run_migrations=False)
-        yield
-        await close_db()
-
-    @pytest.fixture()
-    async def client(self, _db):
+    async def client(self, reset_db_rows):
         from httpx import ASGITransport, AsyncClient
 
         from sova.dashboard.app import create_app

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from sova.core.dag import DAGExecutor, _evaluate_condition, _get_start_command, _topological_sort, validate_dag
-from sova.db.session import close_db, init_db
 
 # Validation tests ----------------------------------------------------------
 
@@ -302,14 +300,9 @@ class TestGetStartCommand:
 # DAG executor execution tests ---------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-async def _dag_db():
-    """Initialize an in-memory DB for executor tests requiring StepExecution."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Executor tests require StepExecution rows: they use the shared per-worker
+# in-memory DB, emptied before each test (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 class TestDAGExecutorExecution:

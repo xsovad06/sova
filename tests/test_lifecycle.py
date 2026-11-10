@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -15,18 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sova.core.state import PhaseStatus
 from sova.dashboard.services import lifecycle_service
 from sova.db.models import IssueLifecycle, LifecyclePhaseRecord, TaskRun
-from sova.db.session import close_db, get_session, init_db
+from sova.db.session import get_session
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
-
-@pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize an in-memory DB for lifecycle tests."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
+# Uses the shared per-worker in-memory DB, emptied before each test
+# (see ``tests/conftest.py:reset_db_rows``).
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture

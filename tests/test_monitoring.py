@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -647,23 +647,13 @@ class TestMonitoringConfig:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=False)
-async def db():
-    """Initialize an in-memory DB for resource writer tests."""
-    from sova.db.session import close_db, init_db
-
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
-    os.environ.pop("SOVA_DATABASE_URL", None)
-
-
 @pytest.fixture
-async def session(db) -> AsyncSession:
+async def session(reset_db_rows: None) -> AsyncIterator[AsyncSession]:
+    """A session on the shared per-worker in-memory DB (see ``tests/conftest.py:reset_db_rows``)."""
     from sova.db.session import get_session
 
-    return await get_session()
+    async with await get_session() as s:
+        yield s
 
 
 async def _create_run(session: AsyncSession, run_id: int, **kwargs) -> None:
