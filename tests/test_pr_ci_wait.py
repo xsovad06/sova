@@ -325,6 +325,23 @@ class TestRulesLookup:
         assert calls == {"required": 0, "all": 0, "runs": 0}
 
 
+class TestClassicOnlyProtection:
+    """Issue #1434: with no ruleset names `/pr` still waits on the `--required` rows, as it did before #1430."""
+
+    def test_waits_on_the_required_rows_and_passes(self, tmp_path: Path) -> None:
+        rows = [_checks("pending", names=["classic-required-test"]), _checks("pass", names=["classic-required-test"])]
+        result, calls = _run_wait(
+            {"required": rows, "all": [_checks("pass", "fail", names=["lint", "extra"])]}, tmp_path
+        )
+        assert _verdict(result) == "CI PASSED (required checks): all 1 passed or were skipped"
+        assert calls["required"] == 2
+
+    def test_a_failing_required_row_fails_the_wait(self, tmp_path: Path) -> None:
+        required = _checks("fail", names=["classic-required-test"])
+        result, _calls = _run_wait({"required": [required]}, tmp_path)
+        assert _verdict(result) == "CI FAILED (required checks): 1 of 1 did not pass"
+
+
 class TestPaginatedRules:
     def test_a_required_name_on_a_later_page_is_never_missed(self, tmp_path: Path) -> None:
         scenario = {
