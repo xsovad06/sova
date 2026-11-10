@@ -23,35 +23,23 @@ def _fail(stderr: str = "error") -> ShellResult:
 
 
 class TestExtractIssueFromBranch:
-    def test_github_issue_branch(self) -> None:
-        assert extract_issue_from_branch("feat/issue-42-login") == ("42", None)
-
-    def test_fix_github_branch(self) -> None:
-        assert extract_issue_from_branch("fix/issue-100") == ("100", None)
-
-    def test_jira_branch(self) -> None:
-        assert extract_issue_from_branch("feat/RHCLOUD-123-fix-auth") == (None, "RHCLOUD-123")
-
-    def test_refactor_jira(self) -> None:
-        assert extract_issue_from_branch("refactor/PROJ-7-cleanup") == (None, "PROJ-7")
-
-    def test_no_match(self) -> None:
-        assert extract_issue_from_branch("main") == (None, None)
-
-    def test_no_match_random_branch(self) -> None:
-        assert extract_issue_from_branch("feature/login-page") == (None, None)
-
-    def test_chore_branch(self) -> None:
-        assert extract_issue_from_branch("chore/issue-5-deps") == ("5", None)
-
-    def test_docs_jira(self) -> None:
-        assert extract_issue_from_branch("docs/ABC-99-readme") == (None, "ABC-99")
-
-    def test_prefixed_branch_not_matched(self) -> None:
-        assert extract_issue_from_branch("wip/feat/issue-42") == (None, None)
-
-    def test_archive_branch_not_matched(self) -> None:
-        assert extract_issue_from_branch("backup/feat/RHCLOUD-9") == (None, None)
+    @pytest.mark.parametrize(
+        ("branch", "expected"),
+        [
+            pytest.param("feat/issue-42-login", ("42", None), id="github-issue-branch"),
+            pytest.param("fix/issue-100", ("100", None), id="fix-github-branch"),
+            pytest.param("feat/RHCLOUD-123-fix-auth", (None, "RHCLOUD-123"), id="jira-branch"),
+            pytest.param("refactor/PROJ-7-cleanup", (None, "PROJ-7"), id="refactor-jira"),
+            pytest.param("main", (None, None), id="no-match"),
+            pytest.param("feature/login-page", (None, None), id="no-match-random-branch"),
+            pytest.param("chore/issue-5-deps", ("5", None), id="chore-branch"),
+            pytest.param("docs/ABC-99-readme", (None, "ABC-99"), id="docs-jira"),
+            pytest.param("wip/feat/issue-42", (None, None), id="prefixed-branch-not-matched"),
+            pytest.param("backup/feat/RHCLOUD-9", (None, None), id="archive-branch-not-matched"),
+        ],
+    )
+    def test_extract_issue_from_branch(self, branch: str, expected: tuple[str | None, str | None]) -> None:
+        assert extract_issue_from_branch(branch) == expected
 
 
 class TestCleanupByIssueState:

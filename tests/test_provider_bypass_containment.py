@@ -266,9 +266,6 @@ class TestIsAnthropicModelId:
     def test_bare_tier_names_are_anthropic(self, tier: str) -> None:
         assert is_anthropic_model_id(tier) is True
 
-    def test_claude_prefixed_id_is_anthropic(self) -> None:
-        assert is_anthropic_model_id("claude-sonnet-4-6") is True
-
     def test_bedrock_dialect_ids_are_anthropic(self) -> None:
         assert is_anthropic_model_id("us.anthropic.claude-sonnet-4-5-20250929-v1:0") is True
         assert is_anthropic_model_id("anthropic.claude-haiku-4-5-20251001-v1:0") is True
@@ -295,50 +292,48 @@ class TestIsAnthropicModelId:
         unprefixed form would read every correctly-prefixed Claude route as non-Anthropic."""
         assert is_anthropic_model_id(model) is True
 
-    def test_multi_segment_litellm_route_with_anthropic_marker_is_anthropic(self) -> None:
-        """A multi-hop litellm route (e.g. a proxy vendor fronting Anthropic) can carry the
-        Anthropic marker one segment deeper than the first path component; checking only
-        model.split("/", 1)[1] as a whole would miss this and silently reach Anthropic
-        through an unrecognized "openrouter"-style route (#924)."""
-        assert is_anthropic_model_id("openrouter/anthropic/claude-3-opus") is True
-
-    def test_locally_served_model_named_claude_is_not_anthropic(self) -> None:
-        """The "ollama/" prefix is rejected, not stripped: a local model is not Anthropic
-        whatever it was named."""
-        assert is_anthropic_model_id("ollama/claude-sonnet-4-6") is False
-
-    def test_empty_string_is_not_anthropic(self) -> None:
-        assert is_anthropic_model_id("") is False
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            pytest.param("claude-sonnet-4-6", True, id="claude-prefixed-id"),
+            # A multi-hop litellm route (e.g. a proxy vendor fronting Anthropic) can carry the Anthropic marker one
+            # segment deeper than the first path component; checking only model.split("/", 1)[1] as a whole would
+            # miss this and silently reach Anthropic through an "openrouter"-style route (#924).
+            pytest.param(
+                "openrouter/anthropic/claude-3-opus", True, id="multi-segment-litellm-route-with-anthropic-marker"
+            ),
+            # The "ollama/" prefix is rejected, not stripped: a local model is not Anthropic whatever it was named.
+            pytest.param("ollama/claude-sonnet-4-6", False, id="locally-served-model-named-claude"),
+            pytest.param("", False, id="empty-string"),
+        ],
+    )
+    def test_model_id_classification(self, model: str, expected: bool) -> None:
+        assert is_anthropic_model_id(model) is expected
 
 
 class TestIsAnthropicCapable:
-    def test_claude_code_always_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="claude-code")) is True
-
-    def test_anthropic_always_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="anthropic", model="claude-sonnet-4-6")) is True
-
-    def test_vertex_with_claude_model_is_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="vertex", model="vertex_ai/claude-sonnet-4-5")) is True
-
-    def test_vertex_with_non_anthropic_model_is_not_capable(self) -> None:
-        """llm.provider="vertex" is generic LiteLLM Vertex routing, not Claude-only:
-        _VENDOR_MODEL_EXAMPLES documents "vertex_ai/gemini-2.5-pro" as its example model."""
-        assert is_anthropic_capable(LLMConfig(provider="vertex", model="vertex_ai/gemini-2.5-pro")) is False
-
-    def test_litellm_with_anthropic_model_is_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="litellm", model="claude-sonnet-4-6")) is True
-
-    def test_hybrid_with_anthropic_model_is_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="hybrid", model="claude-opus-4-1")) is True
-
-    def test_litellm_with_non_anthropic_model_is_not_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="litellm", model="gpt-5")) is False
-
-    def test_openai_is_never_capable_even_with_anthropic_model_string(self) -> None:
-        """A stale llm.model left over from a provider switch must not leak through:
-        openai always forwards to OpenAI regardless of what cfg.model says (#924)."""
-        assert is_anthropic_capable(LLMConfig(provider="openai", model="claude-sonnet-4-6")) is False
-
-    def test_ollama_is_never_capable(self) -> None:
-        assert is_anthropic_capable(LLMConfig(provider="ollama", model="ollama/claude-sonnet-4-6")) is False
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            pytest.param("claude-code", None, True, id="claude-code-always-capable"),
+            pytest.param("anthropic", "claude-sonnet-4-6", True, id="anthropic-always-capable"),
+            pytest.param("vertex", "vertex_ai/claude-sonnet-4-5", True, id="vertex-with-claude-model-is-capable"),
+            # llm.provider="vertex" is generic LiteLLM Vertex routing, not Claude-only: _VENDOR_MODEL_EXAMPLES
+            # documents "vertex_ai/gemini-2.5-pro" as its example model.
+            pytest.param(
+                "vertex", "vertex_ai/gemini-2.5-pro", False, id="vertex-with-non-anthropic-model-is-not-capable"
+            ),
+            pytest.param("litellm", "claude-sonnet-4-6", True, id="litellm-with-anthropic-model-is-capable"),
+            pytest.param("hybrid", "claude-opus-4-1", True, id="hybrid-with-anthropic-model-is-capable"),
+            pytest.param("litellm", "gpt-5", False, id="litellm-with-non-anthropic-model-is-not-capable"),
+            # A stale llm.model left over from a provider switch must not leak through: openai always forwards to
+            # OpenAI regardless of what cfg.model says (#924).
+            pytest.param(
+                "openai", "claude-sonnet-4-6", False, id="openai-is-never-capable-even-with-anthropic-model-string"
+            ),
+            pytest.param("ollama", "ollama/claude-sonnet-4-6", False, id="ollama-is-never-capable"),
+        ],
+    )
+    def test_is_anthropic_capable(self, provider: str, model: str | None, expected: bool) -> None:
+        cfg = LLMConfig(provider=provider) if model is None else LLMConfig(provider=provider, model=model)
+        assert is_anthropic_capable(cfg) is expected

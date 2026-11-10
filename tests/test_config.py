@@ -1166,7 +1166,6 @@ class TestMemoryGuardConfig:
 
     def test_project_config_includes_memory_guard(self) -> None:
         cfg = ProjectConfig()
-        assert hasattr(cfg, "memory_guard")
         assert cfg.memory_guard.enabled is True
 
     def test_toml_loading(self, tmp_path: Path) -> None:

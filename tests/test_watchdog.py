@@ -588,7 +588,6 @@ class TestConfigRegistration:
         from sova.config.models import ProjectConfig
 
         cfg = ProjectConfig()
-        assert hasattr(cfg, "watchdog")
         assert cfg.watchdog.enabled is False
 
     def test_watchdog_in_nested_sections(self) -> None:

@@ -67,6 +67,32 @@ class TestAppHelp:
         assert "cleanup" in result.output
         assert "memory" in result.output
 
+    @pytest.mark.parametrize(
+        "args",
+        [
+            pytest.param(["address-pr"], id="address-pr"),
+            pytest.param(["maintain-pr"], id="maintain-pr"),
+            pytest.param(["review-pr"], id="review-pr"),
+            pytest.param(["learn-from-pr"], id="learn-from-pr"),
+            pytest.param(["memory", "search"], id="memory-search"),
+            pytest.param(["memory", "prune"], id="memory-prune"),
+            pytest.param(["memory", "backfill-embeddings"], id="memory-backfill-embeddings"),
+            pytest.param(["status"], id="status"),
+            pytest.param(["costs"], id="costs"),
+            pytest.param(["cleanup"], id="cleanup"),
+            pytest.param(["install"], id="install"),
+            pytest.param(["setup"], id="setup"),
+            pytest.param(["uninstall"], id="uninstall"),
+            pytest.param(["watch"], id="watch"),
+            pytest.param(["parallel"], id="parallel"),
+        ],
+    )
+    def test_subcommand_help_exits_cleanly(self, args: list[str]) -> None:
+        from sova.cli.app import app
+
+        result = runner.invoke(app, [*args, "--help"])
+        assert result.exit_code == 0
+
     def test_version(self) -> None:
         from sova.cli.app import app
 
@@ -250,31 +276,24 @@ class TestConfigCommand:
         assert "OS keyring unavailable" in result.output
         assert "sk-super-secret-token" not in result.output
 
-    def test_set_warns_when_running_server_wont_pick_up_the_change(self, tmp_path: Path) -> None:
-        """`sova config set` runs in its own process, so it cannot dispatch the
-        live-reload a running `sova server`/dashboard would apply for itself.
-        """
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            # `sova config set` runs in its own process, so it cannot dispatch the live-reload a
+            # running `sova server`/dashboard would apply for itself.
+            pytest.param("llm.provider", "claude_code", id="live-reload-key"),
+            pytest.param("server.port", "9000", id="server-prefixed-key"),
+        ],
+    )
+    def test_set_warns_restart_required(self, tmp_path: Path, key: str, value: str) -> None:
         from sova.cli.app import app
 
         with patch(
             "sova.dashboard.services.settings_service.update_config",
             new_callable=AsyncMock,
-            return_value={"status": "ok", "key": "llm.provider", "value": "claude_code"},
+            return_value={"status": "ok", "key": key, "value": value},
         ):
-            result = runner.invoke(app, ["config", "set", "llm.provider", "claude_code", "--project", str(tmp_path)])
-
-        assert result.exit_code == 0
-        assert "restart" in result.output.lower()
-
-    def test_set_warns_restart_required_for_server_prefixed_keys(self, tmp_path: Path) -> None:
-        from sova.cli.app import app
-
-        with patch(
-            "sova.dashboard.services.settings_service.update_config",
-            new_callable=AsyncMock,
-            return_value={"status": "ok", "key": "server.port", "value": "9000"},
-        ):
-            result = runner.invoke(app, ["config", "set", "server.port", "9000", "--project", str(tmp_path)])
+            result = runner.invoke(app, ["config", "set", key, value, "--project", str(tmp_path)])
 
         assert result.exit_code == 0
         assert "restart" in result.output.lower()
@@ -395,24 +414,6 @@ class TestTriageCommand:
 
 
 class TestPRCommands:
-    def test_address_pr_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["address-pr", "--help"])
-        assert result.exit_code == 0
-
-    def test_maintain_pr_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["maintain-pr", "--help"])
-        assert result.exit_code == 0
-
-    def test_review_pr_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["review-pr", "--help"])
-        assert result.exit_code == 0
-
     async def test_review_pr_without_linked_issue_reviews_pr_alone(self, tmp_path: Path) -> None:
         """An unlinked PR runs the reviewer with no issue, not with the PR number posing as one."""
         from sova.cli.commands.pr import _review_pr
@@ -456,12 +457,6 @@ class TestPRCommands:
         assert exc_info.value.exit_code == 1
         execute.assert_not_called()
 
-    def test_learn_from_pr_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["learn-from-pr", "--help"])
-        assert result.exit_code == 0
-
 
 # ---------------------------------------------------------------------------
 # Memory commands
@@ -469,18 +464,6 @@ class TestPRCommands:
 
 
 class TestMemoryCommands:
-    def test_memory_search_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["memory", "search", "--help"])
-        assert result.exit_code == 0
-
-    def test_memory_prune_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["memory", "prune", "--help"])
-        assert result.exit_code == 0
-
     @patch("sova.knowledge.memory.search")
     @patch("sova.db.session.init_db")
     def test_memory_search_runs(self, mock_init, mock_search) -> None:
@@ -534,12 +517,6 @@ class TestMemoryCommands:
         assert "0.950" in result.output
         assert "1 result(s)" in result.output
 
-    def test_memory_backfill_embeddings_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["memory", "backfill-embeddings", "--help"])
-        assert result.exit_code == 0
-
     @patch("sova.knowledge.embeddings.is_available", return_value=False)
     @patch("sova.knowledge.embeddings.embed_text")
     @patch("sova.db.session.init_db")
@@ -568,48 +545,11 @@ class TestMemoryCommands:
 
 
 # ---------------------------------------------------------------------------
-# Admin commands
-# ---------------------------------------------------------------------------
-
-
-class TestAdminCommands:
-    def test_status_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["status", "--help"])
-        assert result.exit_code == 0
-
-    def test_costs_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["costs", "--help"])
-        assert result.exit_code == 0
-
-    def test_cleanup_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["cleanup", "--help"])
-        assert result.exit_code == 0
-
-
-# ---------------------------------------------------------------------------
 # Project commands
 # ---------------------------------------------------------------------------
 
 
 class TestProjectCommands:
-    def test_install_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["install", "--help"])
-        assert result.exit_code == 0
-
-    def test_setup_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["setup", "--help"])
-        assert result.exit_code == 0
-
     async def test_install_configures_githooks(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _install
 
@@ -1318,12 +1258,6 @@ def _scaffold_full_install(tmp_path: Path) -> None:
 
 
 class TestUninstallCommand:
-    def test_uninstall_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["uninstall", "--help"])
-        assert result.exit_code == 0
-
     def test_uninstall_default_keeps_optional(self, tmp_path: Path) -> None:
         """Default uninstall keeps commands, rules, memory, and config."""
         from sova.cli.commands.project import _uninstall
@@ -1602,18 +1536,6 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert "issue" in result.output.lower()
 
-    def test_watch_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["watch", "--help"])
-        assert result.exit_code == 0
-
-    def test_parallel_help(self) -> None:
-        from sova.cli.app import app
-
-        result = runner.invoke(app, ["parallel", "--help"])
-        assert result.exit_code == 0
-
 
 # ---------------------------------------------------------------------------
 # Triage helper functions
@@ -1772,73 +1694,50 @@ class TestHardenHelpers:
 
 
 class TestDetectGithubRepo:
-    async def test_returns_repo_from_ssh_url(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("success", "stdout", "expected"),
+        [
+            pytest.param(True, "git@github.com:owner/repo.git\n", "owner/repo", id="ssh-url"),
+            pytest.param(True, "https://github.com/owner/repo.git\n", "owner/repo", id="https-url"),
+            pytest.param(False, "", "", id="git-fails"),
+            pytest.param(True, "git@gitlab.com:owner/repo.git\n", "", id="not-github"),
+            pytest.param(True, "git@github.com-personal:owner/repo.git\n", "owner/repo", id="ssh-alias"),
+        ],
+    )
+    async def test_detects_repo_from_remote_url(
+        self, tmp_path: Path, success: bool, stdout: str, expected: str
+    ) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
-        mock_result = MagicMock(success=True, stdout="git@github.com:owner/repo.git\n")
+        mock_result = MagicMock(success=success, stdout=stdout)
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(tmp_path) == "owner/repo"
-
-    async def test_returns_repo_from_https_url(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_github_repo
-
-        mock_result = MagicMock(success=True, stdout="https://github.com/owner/repo.git\n")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(tmp_path) == "owner/repo"
-
-    async def test_returns_empty_when_git_fails(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_github_repo
-
-        mock_result = MagicMock(success=False, stdout="")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(tmp_path) == ""
-
-    async def test_returns_empty_when_not_github(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_github_repo
-
-        mock_result = MagicMock(success=True, stdout="git@gitlab.com:owner/repo.git\n")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(tmp_path) == ""
-
-    async def test_handles_ssh_alias(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_github_repo
-
-        mock_result = MagicMock(success=True, stdout="git@github.com-personal:owner/repo.git\n")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(tmp_path) == "owner/repo"
+            assert await _detect_github_repo(tmp_path) == expected
 
 
 class TestDetectGithubUser:
-    async def test_returns_user_when_authenticated(self) -> None:
+    @pytest.mark.parametrize(
+        ("success", "stdout", "expected"),
+        [
+            pytest.param(True, "ghp_token123\n", "owner", id="authenticated"),
+            pytest.param(False, "", "", id="auth-fails"),
+            pytest.param(True, "  \n", "", id="token-empty"),
+        ],
+    )
+    async def test_detects_user_from_auth_token(self, success: bool, stdout: str, expected: str) -> None:
         from sova.cli.commands.project import _detect_github_user
 
-        mock_result = MagicMock(success=True, stdout="ghp_token123\n")
+        mock_result = MagicMock(success=success, stdout=stdout)
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_user("owner/repo") == "owner"
+            assert await _detect_github_user("owner/repo") == expected
 
-    async def test_returns_empty_when_no_repo(self) -> None:
+    @pytest.mark.parametrize(
+        "repo",
+        [pytest.param("", id="no-repo"), pytest.param("justrepo", id="no-slash")],
+    )
+    async def test_returns_empty_for_unusable_repo(self, repo: str) -> None:
         from sova.cli.commands.project import _detect_github_user
 
-        assert await _detect_github_user("") == ""
-
-    async def test_returns_empty_when_no_slash(self) -> None:
-        from sova.cli.commands.project import _detect_github_user
-
-        assert await _detect_github_user("justrepo") == ""
-
-    async def test_returns_empty_when_auth_fails(self) -> None:
-        from sova.cli.commands.project import _detect_github_user
-
-        mock_result = MagicMock(success=False, stdout="")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_user("owner/repo") == ""
-
-    async def test_returns_empty_when_token_empty(self) -> None:
-        from sova.cli.commands.project import _detect_github_user
-
-        mock_result = MagicMock(success=True, stdout="  \n")
-        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_user("owner/repo") == ""
+        assert await _detect_github_user(repo) == ""
 
 
 class TestDetectTestCommand:
@@ -1847,23 +1746,19 @@ class TestDetectTestCommand:
 
         assert _detect_test_command(tmp_path) == "make test"
 
-    def test_detects_npm(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("marker_file", "content", "expected"),
+        [
+            pytest.param("package.json", "{}", "npm test", id="npm"),
+            pytest.param("Cargo.toml", "", "cargo test", id="cargo"),
+            pytest.param("go.mod", "", "go test ./...", id="go"),
+        ],
+    )
+    def test_detects_from_marker_file(self, tmp_path: Path, marker_file: str, content: str, expected: str) -> None:
         from sova.cli.commands.project import _detect_test_command
 
-        (tmp_path / "package.json").write_text("{}")
-        assert _detect_test_command(tmp_path) == "npm test"
-
-    def test_detects_cargo(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_test_command
-
-        (tmp_path / "Cargo.toml").write_text("")
-        assert _detect_test_command(tmp_path) == "cargo test"
-
-    def test_detects_go(self, tmp_path: Path) -> None:
-        from sova.cli.commands.project import _detect_test_command
-
-        (tmp_path / "go.mod").write_text("")
-        assert _detect_test_command(tmp_path) == "go test ./..."
+        (tmp_path / marker_file).write_text(content)
+        assert _detect_test_command(tmp_path) == expected
 
 
 class TestOfferStarterMilestones:

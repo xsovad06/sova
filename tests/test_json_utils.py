@@ -13,11 +13,33 @@ from sova.utils.markdown import strip_code_fences
 class TestExtractJson:
     """Test extract_json utility function."""
 
-    def test_plain_json_object(self):
-        text = '{"action_id": "review_pr", "reasoning": "PR needs review"}'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert parsed["action_id"] == "review_pr"
+    @pytest.mark.parametrize(
+        ("text", "key", "value"),
+        [
+            pytest.param(
+                '{"action_id": "review_pr", "reasoning": "PR needs review"}',
+                "action_id",
+                "review_pr",
+                id="plain-object",
+            ),
+            pytest.param('```json\n{"action_id": "review_pr"}\n```', "action_id", "review_pr", id="markdown-fenced"),
+            pytest.param('```\n{"action_id": "review_pr"}\n```', "action_id", "review_pr", id="fenced-no-lang"),
+            # From an llm_suggestion error: valid JSON followed by extra text.
+            pytest.param(
+                '{"action_id": "review_pr", "reasoning": "PR needs review"}\n\nThis is some extra commentary.',
+                "action_id",
+                "review_pr",
+                id="trailing-text",
+            ),
+            # Prose with brackets should be skipped.
+            pytest.param(
+                'Check [this doc] for details. JSON: {"status": "ok"}', "status", "ok", id="prose-brackets-before-json"
+            ),
+        ],
+    )
+    def test_extracts_object(self, text: str, key: str, value: str) -> None:
+        parsed = json.loads(extract_json(text))
+        assert parsed[key] == value
 
     def test_plain_json_array(self):
         text = '[{"title": "feat"}, {"title": "fix"}]'
@@ -25,61 +47,34 @@ class TestExtractJson:
         parsed = json.loads(result)
         assert len(parsed) == 2
 
-    def test_markdown_fenced_json(self):
-        text = '```json\n{"action_id": "review_pr"}\n```'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert parsed["action_id"] == "review_pr"
+    @pytest.mark.parametrize(
+        ("text", "key"),
+        [
+            # From a planner error: prose before JSON.
+            pytest.param(
+                'Here is my analysis:\n{"reasoning": "Based on resources", "actions": []}',
+                "reasoning",
+                id="leading-text",
+            ),
+            pytest.param('Let me plan:\n{"actions": []}\nThat is my plan.', "actions", id="leading-and-trailing-text"),
+        ],
+    )
+    def test_extracts_object_surrounded_by_prose(self, text: str, key: str) -> None:
+        parsed = json.loads(extract_json(text))
+        assert key in parsed
 
-    def test_markdown_fenced_no_lang(self):
-        text = '```\n{"action_id": "review_pr"}\n```'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert parsed["action_id"] == "review_pr"
-
-    def test_json_with_trailing_text(self):
-        """Test case from llm_suggestion error: valid JSON followed by extra text."""
-        text = '{"action_id": "review_pr", "reasoning": "PR needs review"}\n\nThis is some extra commentary.'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert parsed["action_id"] == "review_pr"
-
-    def test_json_with_leading_text(self):
-        """Test case from planner error: prose before JSON."""
-        text = 'Here is my analysis:\n{"reasoning": "Based on resources", "actions": []}'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert "reasoning" in parsed
-
-    def test_json_with_leading_and_trailing_text(self):
-        text = 'Let me plan:\n{"actions": []}\nThat is my plan.'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert "actions" in parsed
-
-    def test_empty_response(self):
-        """Test case from planner error: empty response."""
-        text = ""
-        result = extract_json(text)
-        assert result == ""
-
-    def test_whitespace_only(self):
-        text = "   \n\n  "
-        result = extract_json(text)
-        assert result == ""
-
-    def test_no_json_found(self):
-        """Text without any JSON delimiters returns empty string."""
-        text = "This is just prose with no JSON at all."
-        result = extract_json(text)
-        assert result == ""
-
-    def test_prose_brackets_before_json(self):
-        """Prose with brackets should be skipped."""
-        text = 'Check [this doc] for details. JSON: {"status": "ok"}'
-        result = extract_json(text)
-        parsed = json.loads(result)
-        assert parsed["status"] == "ok"
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # From a planner error: empty response.
+            pytest.param("", id="empty-response"),
+            pytest.param("   \n\n  ", id="whitespace-only"),
+            # Text without any JSON delimiters returns an empty string.
+            pytest.param("This is just prose with no JSON at all.", id="no-json-found"),
+        ],
+    )
+    def test_returns_empty_without_json(self, text: str) -> None:
+        assert extract_json(text) == ""
 
     def test_multiple_json_objects_returns_first(self):
         """When multiple JSON objects exist, extract the first valid one."""
@@ -128,12 +123,14 @@ class TestExtractJsonAgreesWithStripCodeFences:
     def test_a_multi_line_wrapper_is_returned_exactly_as_stripped(self, text: str) -> None:
         assert extract_json(text) == strip_code_fences(text)
 
-    def test_prose_after_the_closing_fence_is_tolerated(self) -> None:
-        text = f"```json\n{self.PAYLOAD}\n```\nHope this helps."
-        assert json.loads(extract_json(text)) == json.loads(self.PAYLOAD)
-
-    def test_prose_before_the_fence_is_tolerated(self) -> None:
-        text = f"Here is the result:\n```json\n{self.PAYLOAD}\n```"
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(f"```json\n{PAYLOAD}\n```\nHope this helps.", id="prose-after-closing-fence"),
+            pytest.param(f"Here is the result:\n```json\n{PAYLOAD}\n```", id="prose-before-fence"),
+        ],
+    )
+    def test_surrounding_prose_is_tolerated(self, text: str) -> None:
         assert json.loads(extract_json(text)) == json.loads(self.PAYLOAD)
 
     def test_a_fenced_block_that_is_not_json_is_returned_unchanged(self) -> None:

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from sova.adapters.base import Task, TaskState
 from sova.adapters.external_reviews import (
     CoverageReport,
@@ -351,9 +353,72 @@ class TestCondenseCodeRabbitComment:
         assert "Reserve the marker length" not in body[:500]
         assert "Reserve the marker length" in condense_coderabbit_comment(body)[:500]
 
-    def test_plain_markdown_passes_through(self) -> None:
-        body = "**Rename this.**\n\nThe name `x` hides the builtin.\n\n```python\nx = 1\n```"
-        assert condense_coderabbit_comment(body) == body
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(
+                "**Rename this.**\n\nThe name `x` hides the builtin.\n\n```python\nx = 1\n```",
+                "**Rename this.**\n\nThe name `x` hides the builtin.\n\n```python\nx = 1\n```",
+                id="plain-markdown-passes-through",
+            ),
+            pytest.param(
+                "<details open><summary>Learnings used</summary>noise</details>\nKeep this.",
+                "Keep this.",
+                id="details-with-attributes",
+            ),
+            pytest.param(
+                "Title\n<details><summary>Suggested fix</summary>half a block",
+                "Title\n<details><summary>Suggested fix</summary>half a block",
+                id="unclosed-details-left-verbatim",
+            ),
+            pytest.param(
+                "<details><summary>Suggested fix</summary>\n\n```diff\n+<details><summary>Tools</summary>"
+                "x</details>\n```\n\n</details>",
+                "Suggested fix:\n```diff\n+<details><summary>Tools</summary>x</details>\n```",
+                id="details-tag-in-code-fence-is-content",
+            ),
+            pytest.param(
+                "<details><summary>Suggested fix</summary>\nClose the block with `</details>` here.\n</details>",
+                "Suggested fix:\nClose the block with `</details>` here.",
+                id="closing-tag-in-inline-code-is-content",
+            ),
+            pytest.param(
+                "Replace `<details>` with a div.\n\n<details><summary>Analysis chain</summary>noise</details>",
+                "Replace `<details>` with a div.",
+                id="opening-tag-in-inline-code-opens-no-block",
+            ),
+            pytest.param(
+                "<details><summary>Use `<br>` here</summary>\nbody\n</details>",
+                "Use `<br>` here:\nbody",
+                id="inline-code-in-summary-keeps-tags",
+            ),
+            pytest.param(
+                "<details><summary>Suggested fix</summary>\n<dl>\n<dd>\n\n```diff\n+<blockquote>quote</blockquote>\n"
+                "```\n\n</dd>\n</dl>\n</details>",
+                "Suggested fix:\n```diff\n+<blockquote>quote</blockquote>\n```",
+                id="list-wrapper-in-code-fence-is-kept",
+            ),
+            # CodeRabbit wraps a diff of a markdown file in four backticks; the inner fences are content.
+            pytest.param(
+                "<details><summary>Suggested fix</summary>\n\n````diff\n+```bash\n+echo hi\n+```\n````\n\n</details>\n"
+                "<details><summary>Analysis chain</summary>noise</details>",
+                "Suggested fix:\n````diff\n+```bash\n+echo hi\n+```\n````",
+                id="four-backtick-fence-holds-triple-backticks",
+            ),
+            pytest.param(
+                "<details><summary>Suggested fix using itertools</summary>\nUse `itertools.chain`.\n</details>",
+                "Suggested fix using itertools:\nUse `itertools.chain`.",
+                id="summary-with-noise-label-fragment-is-kept",
+            ),
+            pytest.param(
+                "<details><summary>Supported by static analysis</summary>noise</details>\nKeep this.",
+                "Keep this.",
+                id="summary-that-is-a-noise-label-is-dropped",
+            ),
+        ],
+    )
+    def test_condenses_exactly(self, body: str, expected: str) -> None:
+        assert condense_coderabbit_comment(body) == expected
 
     def test_nested_details_render_inside_their_parent(self) -> None:
         body = (
@@ -366,50 +431,6 @@ class TestCondenseCodeRabbitComment:
         assert "Variant:\ninner" in result
         assert "noise" not in result
         assert result.endswith("after")
-
-    def test_details_with_attributes_is_recognised(self) -> None:
-        body = "<details open><summary>Learnings used</summary>noise</details>\nKeep this."
-        assert condense_coderabbit_comment(body) == "Keep this."
-
-    def test_unclosed_details_is_left_verbatim(self) -> None:
-        body = "Title\n<details><summary>Suggested fix</summary>half a block"
-        assert condense_coderabbit_comment(body) == body
-
-    def test_details_tag_inside_a_code_fence_is_content(self) -> None:
-        body = (
-            "<details><summary>Suggested fix</summary>\n\n```diff\n+<details><summary>Tools</summary>"
-            "x</details>\n```\n\n</details>"
-        )
-        assert condense_coderabbit_comment(body) == (
-            "Suggested fix:\n```diff\n+<details><summary>Tools</summary>x</details>\n```"
-        )
-
-    def test_closing_details_tag_in_inline_code_is_content(self) -> None:
-        body = "<details><summary>Suggested fix</summary>\nClose the block with `</details>` here.\n</details>"
-        assert condense_coderabbit_comment(body) == "Suggested fix:\nClose the block with `</details>` here."
-
-    def test_opening_details_tag_in_inline_code_does_not_open_a_block(self) -> None:
-        body = "Replace `<details>` with a div.\n\n<details><summary>Analysis chain</summary>noise</details>"
-        assert condense_coderabbit_comment(body) == "Replace `<details>` with a div."
-
-    def test_inline_code_in_a_summary_keeps_its_tags(self) -> None:
-        body = "<details><summary>Use `<br>` here</summary>\nbody\n</details>"
-        assert condense_coderabbit_comment(body) == "Use `<br>` here:\nbody"
-
-    def test_list_wrapper_inside_a_code_fence_is_kept(self) -> None:
-        body = (
-            "<details><summary>Suggested fix</summary>\n<dl>\n<dd>\n\n```diff\n+<blockquote>quote</blockquote>\n"
-            "```\n\n</dd>\n</dl>\n</details>"
-        )
-        assert condense_coderabbit_comment(body) == "Suggested fix:\n```diff\n+<blockquote>quote</blockquote>\n```"
-
-    def test_four_backtick_fence_holds_triple_backtick_lines(self) -> None:
-        """CodeRabbit wraps a diff of a markdown file in four backticks; the inner fences are content."""
-        body = (
-            "<details><summary>Suggested fix</summary>\n\n````diff\n+```bash\n+echo hi\n+```\n````\n\n</details>\n"
-            "<details><summary>Analysis chain</summary>noise</details>"
-        )
-        assert condense_coderabbit_comment(body) == "Suggested fix:\n````diff\n+```bash\n+echo hi\n+```\n````"
 
     def test_html_comment_inside_a_code_fence_is_kept(self) -> None:
         body = "Fix the marker.\n<!-- drop me -->\n```diff\n+<!-- sova-review: approve -->\n```"
@@ -429,14 +450,6 @@ class TestCondenseCodeRabbitComment:
         result = condense_coderabbit_comment(body)
         assert result.startswith("Before\n\nAfter\n")
         assert "a\n\n\nb" in result
-
-    def test_summary_containing_a_noise_label_as_a_fragment_is_kept(self) -> None:
-        body = "<details><summary>Suggested fix using itertools</summary>\nUse `itertools.chain`.\n</details>"
-        assert condense_coderabbit_comment(body) == "Suggested fix using itertools:\nUse `itertools.chain`."
-
-    def test_summary_that_is_a_noise_label_is_still_dropped(self) -> None:
-        body = "<details><summary>Supported by static analysis</summary>noise</details>\nKeep this."
-        assert condense_coderabbit_comment(body) == "Keep this."
 
     async def test_fetch_condenses_and_caps_the_message(self) -> None:
         oversized = _CODERABBIT_BODY.replace("The context reaches", "x" * 6000 + " The context reaches")
@@ -1083,56 +1096,40 @@ class TestAddressExternalFindingsStep:
         result = await AddressExternalFindingsStep().execute(ctx)
         assert not result.success
 
-    async def test_detect_changes_finds_uncommitted_changes(self) -> None:
-        """_detect_changes detects unstaged and staged changes."""
-        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
-
-        ctx = _make_ctx(branch_name="feat/test")
-        step = AddressExternalFindingsStep()
-
-        with patch(
-            "sova.core.steps.address_external_findings.run",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            # Simulate unstaged changes
-            mock_run.side_effect = [
-                _shell_result(stdout="1 file changed"),  # git diff --stat HEAD
-                _shell_result(stdout=""),  # git diff --cached --stat
-                _shell_result(stdout=""),  # git status --porcelain
-                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
-            ]
-
-            has_changes, new_commits = await step._detect_changes(ctx, 1)
-
-            assert has_changes is True
-            assert new_commits is False
-
-    async def test_detect_changes_finds_new_commits(self) -> None:
-        """_detect_changes detects new commits ahead of base."""
-        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
-
-        ctx = _make_ctx(branch_name="feat/test")
-        step = AddressExternalFindingsStep()
-
-        with patch(
-            "sova.core.steps.address_external_findings.run",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            # Simulate new commits (count increased from 1 to 2)
-            mock_run.side_effect = [
-                _shell_result(stdout=""),  # git diff --stat HEAD
-                _shell_result(stdout=""),  # git diff --cached --stat
-                _shell_result(stdout=""),  # git status --porcelain
-                _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline (2 commits)
-            ]
-
-            has_changes, new_commits = await step._detect_changes(ctx, 1)
-
-            assert has_changes is False
-            assert new_commits is True
-
-    async def test_detect_changes_finds_both(self) -> None:
-        """_detect_changes detects both uncommitted changes and new commits."""
+    @pytest.mark.parametrize(
+        ("diff_stat", "cached_stat", "status", "log", "expected_changes", "expected_new_commits"),
+        [
+            # Unstaged changes, commit count unchanged.
+            pytest.param("1 file changed", "", "", "abc123", True, False, id="uncommitted-changes"),
+            # Commit count increased from 1 to 2.
+            pytest.param("", "", "", "abc123\ndef456", False, True, id="new-commits"),
+            pytest.param("", "1 file changed", "", "abc123\ndef456", True, True, id="staged-changes-and-new-commits"),
+            # A brand-new file moves neither diff, so only `git status` can see it.
+            pytest.param("", "", "?? tests/test_new_module.py\n", "abc123", True, False, id="untracked-files-only"),
+            # A mirrored skills directory (copied in by ensure_claude_artifacts on every run) is not the
+            # agent's own work, so it must read as "no changes".
+            pytest.param(
+                "",
+                "",
+                "?? .agents/skills/source-command-extract-knowledge/\n",
+                "abc123",
+                False,
+                False,
+                id="mirrored-agent-infrastructure-ignored",
+            ),
+            # Only `??` lines are new files; a tracked ` M` line is already a diff.
+            pytest.param("", "", " M sova/app.py\n", "abc123", False, False, id="non-untracked-status-lines-ignored"),
+        ],
+    )
+    async def test_detect_changes(
+        self,
+        diff_stat: str,
+        cached_stat: str,
+        status: str,
+        log: str,
+        expected_changes: bool,
+        expected_new_commits: bool,
+    ) -> None:
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
         ctx = _make_ctx(branch_name="feat/test")
@@ -1143,64 +1140,16 @@ class TestAddressExternalFindingsStep:
             new_callable=AsyncMock,
         ) as mock_run:
             mock_run.side_effect = [
-                _shell_result(stdout=""),  # git diff --stat HEAD
-                _shell_result(stdout="1 file changed"),  # git diff --cached --stat
-                _shell_result(stdout=""),  # git status --porcelain
-                _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline
+                _shell_result(stdout=diff_stat),  # git diff --stat HEAD
+                _shell_result(stdout=cached_stat),  # git diff --cached --stat
+                _shell_result(stdout=status),  # git status --porcelain
+                _shell_result(stdout=log),  # git log base..HEAD --oneline
             ]
 
             has_changes, new_commits = await step._detect_changes(ctx, 1)
 
-            assert has_changes is True
-            assert new_commits is True
-
-    async def test_detect_changes_finds_untracked_files_only(self) -> None:
-        """A brand-new file moves neither diff, so only `git status` can see it."""
-        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
-
-        ctx = _make_ctx(branch_name="feat/test")
-        step = AddressExternalFindingsStep()
-
-        with patch(
-            "sova.core.steps.address_external_findings.run",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            mock_run.side_effect = [
-                _shell_result(stdout=""),  # git diff --stat HEAD
-                _shell_result(stdout=""),  # git diff --cached --stat
-                _shell_result(stdout="?? tests/test_new_module.py\n"),  # git status --porcelain
-                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
-            ]
-
-            has_changes, new_commits = await step._detect_changes(ctx, 1)
-
-            assert has_changes is True
-            assert new_commits is False
-
-    async def test_detect_changes_ignores_mirrored_agent_infrastructure(self) -> None:
-        """A worktree whose only untracked content is a mirrored skills directory
-        (e.g. `.agents/skills/<something>`, copied in by ensure_claude_artifacts on
-        every run) must read as "no changes": none of it is the agent's own work."""
-        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
-
-        ctx = _make_ctx(branch_name="feat/test")
-        step = AddressExternalFindingsStep()
-
-        with patch(
-            "sova.core.steps.address_external_findings.run",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            mock_run.side_effect = [
-                _shell_result(stdout=""),  # git diff --stat HEAD
-                _shell_result(stdout=""),  # git diff --cached --stat
-                _shell_result(stdout="?? .agents/skills/source-command-extract-knowledge/\n"),
-                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
-            ]
-
-            has_changes, new_commits = await step._detect_changes(ctx, 1)
-
-            assert has_changes is False
-            assert new_commits is False
+            assert has_changes is expected_changes
+            assert new_commits is expected_new_commits
 
     async def test_validate_output_passes_when_only_mirrored_infrastructure_is_untracked(self) -> None:
         """The gate must not fail on pure mirror churn, no commit or push involved."""
@@ -1267,29 +1216,6 @@ class TestAddressExternalFindingsStep:
 
         assert not result.passed
         assert "Could not verify" in (result.reason or "")
-
-    async def test_detect_changes_ignores_non_untracked_status_lines(self) -> None:
-        """Only `??` lines are new files; a tracked ` M` line is already a diff."""
-        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
-
-        ctx = _make_ctx(branch_name="feat/test")
-        step = AddressExternalFindingsStep()
-
-        with patch(
-            "sova.core.steps.address_external_findings.run",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            mock_run.side_effect = [
-                _shell_result(stdout=""),  # git diff --stat HEAD
-                _shell_result(stdout=""),  # git diff --cached --stat
-                _shell_result(stdout=" M sova/app.py\n"),  # git status --porcelain
-                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
-            ]
-
-            has_changes, new_commits = await step._detect_changes(ctx, 1)
-
-            assert has_changes is False
-            assert new_commits is False
 
     async def test_detect_changes_treats_failed_status_call_as_unverifiable(self) -> None:
         """A failed `git status` is genuinely unknown, so it must fail closed as "has changes",

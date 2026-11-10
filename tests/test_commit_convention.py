@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from sova.core.steps.commit_convention import (
     MAX_LINE_LENGTH,
     format_type_scope,
@@ -21,41 +23,28 @@ SCOPES = frozenset({"core", "dashboard", "cli"})
 
 
 class TestIsValidCommitLine:
-    def test_valid_type_and_scope(self) -> None:
-        assert is_valid_commit_line("feat(core): add widget", types=TYPES, scopes=SCOPES)
-
-    def test_ci_is_scopeless(self) -> None:
-        assert is_valid_commit_line("ci: add workflow step", types=TYPES, scopes=SCOPES)
-
-    def test_ci_accepts_a_configured_scope(self) -> None:
-        """invariants/commit-format.sh accepts "ci(scope): ..." via its
-        general type(scope) pattern, so "ci" is scope-optional, not
-        scope-forbidden: a validator stricter than the invariant it encodes
-        would discard a perfectly pushable LLM proposal."""
-        assert is_valid_commit_line("ci(core): pin the runner image", types=TYPES, scopes=SCOPES)
-
-    def test_ci_rejects_an_unconfigured_scope(self) -> None:
-        assert not is_valid_commit_line("ci(perf): add workflow step", types=TYPES, scopes=SCOPES)
-
-    def test_non_ci_type_requires_a_scope(self) -> None:
-        assert not is_valid_commit_line("feat: add widget", types=TYPES, scopes=SCOPES)
-
-    def test_unconfigured_type_is_rejected(self) -> None:
-        assert not is_valid_commit_line("perf(core): speed it up", types=TYPES, scopes=SCOPES)
-
-    def test_unconfigured_scope_is_rejected(self) -> None:
-        assert not is_valid_commit_line("feat(perf): speed it up", types=TYPES, scopes=SCOPES)
-
-    def test_uppercase_subject_is_rejected(self) -> None:
-        assert not is_valid_commit_line("feat(core): Add widget", types=TYPES, scopes=SCOPES)
-
-    def test_acronym_led_subject_is_accepted(self) -> None:
-        """lowercase_first_letter() leaves an all-caps opening word alone, so
-        the validator must accept the line it produces, not reject it."""
-        assert is_valid_commit_line("feat(core): LLM provider abstraction", types=TYPES, scopes=SCOPES)
-
-    def test_blank_subject_is_rejected(self) -> None:
-        assert not is_valid_commit_line("feat(core): ", types=TYPES, scopes=SCOPES)
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param("feat(core): add widget", True, id="valid-type-and-scope"),
+            pytest.param("ci: add workflow step", True, id="ci-is-scopeless"),
+            # invariants/commit-format.sh accepts "ci(scope): ..." via its general type(scope) pattern, so
+            # "ci" is scope-optional: a stricter validator would discard a perfectly pushable LLM proposal.
+            pytest.param("ci(core): pin the runner image", True, id="ci-accepts-configured-scope"),
+            pytest.param("ci(perf): add workflow step", False, id="ci-rejects-unconfigured-scope"),
+            pytest.param("feat: add widget", False, id="non-ci-type-requires-scope"),
+            pytest.param("perf(core): speed it up", False, id="unconfigured-type"),
+            pytest.param("feat(perf): speed it up", False, id="unconfigured-scope"),
+            pytest.param("feat(core): Add widget", False, id="uppercase-subject"),
+            # lowercase_first_letter() leaves an all-caps opening word alone, so the validator must accept
+            # the line it produces.
+            pytest.param("feat(core): LLM provider abstraction", True, id="acronym-led-subject"),
+            pytest.param("feat(core): ", False, id="blank-subject"),
+            pytest.param("just some text with no colon", False, id="malformed-line"),
+        ],
+    )
+    def test_validates(self, line: str, expected: bool) -> None:
+        assert is_valid_commit_line(line, types=TYPES, scopes=SCOPES) is expected
 
     def test_line_over_72_chars_is_rejected(self) -> None:
         subject = "a" * 61
@@ -68,177 +57,164 @@ class TestIsValidCommitLine:
         assert len(line) == 72
         assert is_valid_commit_line(line, types=TYPES, scopes=SCOPES)
 
-    def test_malformed_line_is_rejected(self) -> None:
-        assert not is_valid_commit_line("just some text with no colon", types=TYPES, scopes=SCOPES)
-
     def test_empty_configured_scopes_rejects_every_non_ci_type(self) -> None:
         assert not is_valid_commit_line("feat(core): add widget", types=TYPES, scopes=[])
 
 
 class TestResolveDefaultScope:
-    def test_prefers_core_when_configured(self) -> None:
-        assert resolve_default_scope(["widgets", "core"]) == "core"
-
-    def test_falls_back_to_first_configured_scope_when_core_is_absent(self) -> None:
-        """A project whose scopes are entirely its own (e.g. accounts/billing)
-        must get a scope its own commit-format check accepts, not "core"."""
-        assert resolve_default_scope(["accounts", "billing"]) == "accounts"
-
-    def test_empty_scopes_returns_core_as_a_last_resort(self) -> None:
-        assert resolve_default_scope([]) == "core"
+    @pytest.mark.parametrize(
+        ("scopes", "expected"),
+        [
+            pytest.param(["widgets", "core"], "core", id="prefers-core"),
+            # A project whose scopes are entirely its own must get a scope its own commit-format check
+            # accepts, not "core".
+            pytest.param(["accounts", "billing"], "accounts", id="first-configured-when-core-absent"),
+            pytest.param([], "core", id="empty-scopes-last-resort"),
+        ],
+    )
+    def test_resolves(self, scopes: list[str], expected: str) -> None:
+        assert resolve_default_scope(scopes) == expected
 
 
 class TestResolveDefaultType:
-    def test_prefers_feat_when_configured(self) -> None:
-        assert resolve_default_type(["fix", "feat"]) == "feat"
-
-    def test_falls_back_to_first_configured_type_when_preferred_is_absent(self) -> None:
-        """A project whose types omit "feat"/"fix" entirely must get a type
-        its own commit-format check accepts, not a hardcoded "feat"."""
-        assert resolve_default_type(["feature", "bugfix"]) == "feature"
-
-    def test_empty_types_returns_preferred_as_a_last_resort(self) -> None:
-        assert resolve_default_type([]) == "feat"
+    @pytest.mark.parametrize(
+        ("types", "expected"),
+        [
+            pytest.param(["fix", "feat"], "feat", id="prefers-feat"),
+            # A project whose types omit "feat"/"fix" must get a type its own commit-format check accepts.
+            pytest.param(["feature", "bugfix"], "feature", id="first-configured-when-preferred-absent"),
+            pytest.param([], "feat", id="empty-types-last-resort"),
+            # Both callers append a (scope) segment, which is_valid_commit_line() rejects for "ci":
+            # picking it would hand them a type they cannot legally use.
+            pytest.param(["ci", "chore"], "chore", id="skips-scopeless-ci"),
+            pytest.param(["ci"], "ci", id="only-type-is-scopeless"),
+        ],
+    )
+    def test_resolves(self, types: list[str], expected: str) -> None:
+        assert resolve_default_type(types) == expected
 
     def test_honors_an_explicit_preferred_type(self) -> None:
         assert resolve_default_type(["fix", "feat"], preferred="fix") == "fix"
         assert resolve_default_type(["bugfix"], preferred="fix") == "bugfix"
 
-    def test_skips_the_scopeless_ci_type_when_preferred_is_absent(self) -> None:
-        """Both callers of this function unconditionally append a (scope)
-        segment, which is_valid_commit_line() rejects for "ci": picking it
-        here would hand them a type they cannot legally use."""
-        assert resolve_default_type(["ci", "chore"]) == "chore"
-
-    def test_returns_the_only_type_when_every_type_is_scopeless(self) -> None:
-        assert resolve_default_type(["ci"]) == "ci"
-
 
 class TestFormatTypeScope:
-    def test_appends_the_scope_for_an_ordinary_type(self) -> None:
-        assert format_type_scope("feat", "core") == "feat(core)"
-
-    def test_omits_the_scope_for_the_scopeless_ci_type(self) -> None:
-        assert format_type_scope("ci", "core") == "ci"
+    @pytest.mark.parametrize(
+        ("commit_type", "expected"),
+        [
+            pytest.param("feat", "feat(core)", id="ordinary-type-gets-scope"),
+            pytest.param("ci", "ci", id="scopeless-ci-omits-scope"),
+        ],
+    )
+    def test_formats(self, commit_type: str, expected: str) -> None:
+        assert format_type_scope(commit_type, "core") == expected
 
 
 class TestMatchTypePrefix:
-    def test_matches_a_bare_type_prefix(self) -> None:
-        match = match_type_prefix("fix: broken login", ["feat", "fix"])
+    @pytest.mark.parametrize(
+        ("text", "types", "expected"),
+        [
+            pytest.param("fix: broken login", ["feat", "fix"], "fix", id="bare-type-prefix"),
+            pytest.param("fix(auth): broken login", ["feat", "fix"], "fix", id="scoped-type-prefix"),
+            pytest.param("perf: speed it up", ["perf", "feat"], "perf", id="configured-non-sova-type"),
+        ],
+    )
+    def test_matches(self, text: str, types: list[str], expected: str) -> None:
+        match = match_type_prefix(text, types)
         assert match is not None
-        assert match.group("type") == "fix"
+        assert match.group("type") == expected
 
-    def test_matches_a_scoped_type_prefix(self) -> None:
-        match = match_type_prefix("fix(auth): broken login", ["feat", "fix"])
-        assert match is not None
-        assert match.group("type") == "fix"
-
-    def test_matches_a_configured_non_sova_type(self) -> None:
-        match = match_type_prefix("perf: speed it up", ["perf", "feat"])
-        assert match is not None
-        assert match.group("type") == "perf"
-
-    def test_no_match_for_an_unconfigured_type(self) -> None:
-        assert match_type_prefix("perf: speed it up", ["feat", "fix"]) is None
-
-    def test_no_match_for_empty_types(self) -> None:
-        assert match_type_prefix("feat: add widget", []) is None
+    @pytest.mark.parametrize(
+        ("text", "types"),
+        [
+            pytest.param("perf: speed it up", ["feat", "fix"], id="unconfigured-type"),
+            pytest.param("feat: add widget", [], id="empty-types"),
+        ],
+    )
+    def test_no_match(self, text: str, types: list[str]) -> None:
+        assert match_type_prefix(text, types) is None
 
 
 class TestStripTypePrefix:
-    def test_strips_a_configured_prefix(self) -> None:
-        assert strip_type_prefix("perf: speed it up", ["perf", "feat"]) == "speed it up"
-
-    def test_leaves_an_unconfigured_prefix_alone(self) -> None:
-        assert strip_type_prefix("perf: speed it up", ["feat", "fix"]) == "perf: speed it up"
+    @pytest.mark.parametrize(
+        ("types", "expected"),
+        [
+            pytest.param(["perf", "feat"], "speed it up", id="configured-prefix-stripped"),
+            pytest.param(["feat", "fix"], "perf: speed it up", id="unconfigured-prefix-kept"),
+        ],
+    )
+    def test_strips(self, types: list[str], expected: str) -> None:
+        assert strip_type_prefix("perf: speed it up", types) == expected
 
 
 class TestInferScopeFromPaths:
-    def test_matches_a_directory_segment(self) -> None:
-        assert infer_scope_from_paths(["apps/accounts/models.py"], ["accounts", "billing"]) == "accounts"
-
-    def test_matches_a_top_level_directory(self) -> None:
-        assert infer_scope_from_paths(["docs/pricing.md"], ["accounts", "docs"]) == "docs"
-
-    def test_matches_a_filename_stem_when_no_directory_matches(self) -> None:
-        """A single-file change outside any configured directory still names
-        a configured scope when the filename itself does (e.g. a project
-        with a top-level app/billing.py and a "billing" scope)."""
-        assert infer_scope_from_paths(["app/billing.py"], ["accounts", "billing"]) == "billing"
-
-    def test_most_touched_scope_wins(self) -> None:
-        files = ["apps/accounts/a.py", "apps/accounts/b.py", "apps/billing/c.py"]
-        assert infer_scope_from_paths(files, ["accounts", "billing"]) == "accounts"
-
-    def test_a_single_unmatched_path_falls_back_to_default(self) -> None:
-        """A change that is mostly "accounts" must still fall back to the
-        *default* scope (first configured) when any path is unmatched, not
-        to whatever scope happens to match: ordering "billing" first here
-        means the assertion only holds if the unmatched-path rule fired."""
-        files = ["apps/accounts/a.py", "README.md"]
-        assert infer_scope_from_paths(files, ["billing", "accounts"]) == "billing"  # first configured, via default
-
-    def test_without_the_unmatched_path_the_matched_scope_wins(self) -> None:
-        files = ["apps/accounts/a.py"]
-        assert infer_scope_from_paths(files, ["billing", "accounts"]) == "accounts"
-
-    def test_empty_changed_files_falls_back_to_default(self) -> None:
-        assert infer_scope_from_paths([], ["accounts", "billing"]) == "accounts"
-        assert infer_scope_from_paths(None, ["accounts", "billing"]) == "accounts"
-
-    def test_a_deep_path_is_never_mis_scoped_by_its_own_filename(self) -> None:
-        """sova/utils/db.py must not match scope "db" (which names sova/db/):
-        the filename-stem fallback only applies to a single-directory-segment
-        path (app/billing.py), never a deeper one where the filename is
-        incidental to its real location."""
-        files = ["sova/utils/db.py"]
-        assert infer_scope_from_paths(files, ["accounts", "db"]) == "accounts"  # falls back to default, not "db"
+    @pytest.mark.parametrize(
+        ("files", "scopes", "expected"),
+        [
+            pytest.param(["apps/accounts/models.py"], ["accounts", "billing"], "accounts", id="directory-segment"),
+            pytest.param(["docs/pricing.md"], ["accounts", "docs"], "docs", id="top-level-directory"),
+            # A single-file change outside any configured directory still names a configured scope when the
+            # filename itself does (a top-level app/billing.py and a "billing" scope).
+            pytest.param(["app/billing.py"], ["accounts", "billing"], "billing", id="filename-stem"),
+            pytest.param(
+                ["apps/accounts/a.py", "apps/accounts/b.py", "apps/billing/c.py"],
+                ["accounts", "billing"],
+                "accounts",
+                id="most-touched-scope-wins",
+            ),
+            # Any unmatched path falls back to the *default* scope (first configured), not whatever scope
+            # matched: ordering "billing" first means this only holds if the unmatched-path rule fired.
+            pytest.param(
+                ["apps/accounts/a.py", "README.md"],
+                ["billing", "accounts"],
+                "billing",
+                id="unmatched-path-uses-default",
+            ),
+            pytest.param(["apps/accounts/a.py"], ["billing", "accounts"], "accounts", id="matched-scope-wins"),
+            pytest.param([], ["accounts", "billing"], "accounts", id="empty-files-uses-default"),
+            pytest.param(None, ["accounts", "billing"], "accounts", id="no-files-uses-default"),
+            # sova/utils/db.py must not match scope "db" (which names sova/db/): the filename-stem fallback
+            # applies only to a single-directory-segment path, so this falls back to the default.
+            pytest.param(["sova/utils/db.py"], ["accounts", "db"], "accounts", id="deep-path-not-scoped-by-filename"),
+        ],
+    )
+    def test_infers(self, files: list[str] | None, scopes: list[str], expected: str) -> None:
+        assert infer_scope_from_paths(files, scopes) == expected
 
 
 class TestInferTypeFromPaths:
-    def test_docs_only_change_is_docs(self) -> None:
-        assert infer_type_from_paths(["docs/guide.md"], ["feat", "docs"]) == "docs"
-
-    def test_docs_type_requires_configuration(self) -> None:
-        """A project whose commit.types omits "docs" must not get it anyway."""
-        assert infer_type_from_paths(["docs/guide.md"], ["feat", "fix"]) == "feat"
-
-    def test_tests_only_change_is_test(self) -> None:
-        assert infer_type_from_paths(["tests/test_x.py"], ["feat", "test"]) == "test"
-
-    def test_mixed_change_falls_back_to_default_type(self) -> None:
-        assert infer_type_from_paths(["docs/guide.md", "sova/core/x.py"], ["feat", "docs"]) == "feat"
-
-    def test_empty_changed_files_falls_back_to_default_type(self) -> None:
-        assert infer_type_from_paths([], ["feat", "docs"]) == "feat"
-
-    def test_documentation_directory_is_recognized_as_docs(self) -> None:
-        """A project whose docs live outside SOVA's own "docs/" layout must
-        still be recognized, not silently fall back to the default type."""
-        assert infer_type_from_paths(["documentation/guide.md"], ["feat", "docs"]) == "docs"
-
-    def test_jest_style_tests_directory_is_recognized(self) -> None:
-        assert infer_type_from_paths(["__tests__/widget.test.ts"], ["feat", "test"]) == "test"
-
-    def test_go_style_test_suffix_is_recognized(self) -> None:
-        assert infer_type_from_paths(["pkg/widget_test.go"], ["feat", "test"]) == "test"
-
-    def test_js_style_spec_suffix_is_recognized(self) -> None:
-        assert infer_type_from_paths(["src/widget.spec.ts"], ["feat", "test"]) == "test"
+    @pytest.mark.parametrize(
+        ("files", "types", "expected"),
+        [
+            pytest.param(["docs/guide.md"], ["feat", "docs"], "docs", id="docs-only"),
+            # A project whose commit.types omits "docs" must not get it anyway.
+            pytest.param(["docs/guide.md"], ["feat", "fix"], "feat", id="docs-type-requires-configuration"),
+            pytest.param(["tests/test_x.py"], ["feat", "test"], "test", id="tests-only"),
+            pytest.param(["docs/guide.md", "sova/core/x.py"], ["feat", "docs"], "feat", id="mixed-uses-default"),
+            pytest.param([], ["feat", "docs"], "feat", id="empty-uses-default"),
+            # Docs living outside SOVA's own "docs/" layout must still be recognized.
+            pytest.param(["documentation/guide.md"], ["feat", "docs"], "docs", id="documentation-directory"),
+            pytest.param(["__tests__/widget.test.ts"], ["feat", "test"], "test", id="jest-tests-directory"),
+            pytest.param(["pkg/widget_test.go"], ["feat", "test"], "test", id="go-test-suffix"),
+            pytest.param(["src/widget.spec.ts"], ["feat", "test"], "test", id="js-spec-suffix"),
+        ],
+    )
+    def test_infers(self, files: list[str], types: list[str], expected: str) -> None:
+        assert infer_type_from_paths(files, types) == expected
 
 
 class TestLowercaseFirstLetter:
-    def test_lowercases_first_char_only(self) -> None:
-        assert lowercase_first_letter("Add widget") == "add widget"
-
-    def test_preserves_rest_of_string_case(self) -> None:
-        assert lowercase_first_letter("LLM provider abstraction") == "LLM provider abstraction"
-
-    def test_empty_string_is_unchanged(self) -> None:
-        assert lowercase_first_letter("") == ""
-
-    def test_already_lowercase_is_unchanged(self) -> None:
-        assert lowercase_first_letter("add widget") == "add widget"
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("Add widget", "add widget", id="first-char-only"),
+            pytest.param("LLM provider abstraction", "LLM provider abstraction", id="all-caps-word-preserved"),
+            pytest.param("", "", id="empty-string"),
+            pytest.param("add widget", "add widget", id="already-lowercase"),
+        ],
+    )
+    def test_lowercases(self, text: str, expected: str) -> None:
+        assert lowercase_first_letter(text) == expected
 
 
 GWYM_TITLE = (

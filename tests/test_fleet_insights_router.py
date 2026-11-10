@@ -84,24 +84,22 @@ def override_fleet(client: AsyncClient) -> object:
 
 
 class TestFleetPage:
-    async def test_fleet_page_loads(self, client: AsyncClient) -> None:
+    @pytest.mark.parametrize(
+        "expected",
+        [
+            pytest.param("Fleet Insights", id="title"),
+            pytest.param("Step Failure Leaderboard", id="section-step-failure-leaderboard"),
+            pytest.param("Error Clusters", id="section-error-clusters"),
+            pytest.param("Cost by Project", id="section-cost-by-project"),
+            pytest.param("Retry Effectiveness", id="section-retry-effectiveness"),
+            pytest.param("Project Scan Status", id="section-project-scan-status"),
+            pytest.param("bg-sidebar-active", id="sidebar-active"),
+        ],
+    )
+    async def test_fleet_page_renders(self, client: AsyncClient, expected: str) -> None:
         resp = await client.get("/fleet")
         assert resp.status_code == 200
-        assert "Fleet Insights" in resp.text
-
-    async def test_fleet_page_has_sections(self, client: AsyncClient) -> None:
-        resp = await client.get("/fleet")
-        assert resp.status_code == 200
-        assert "Step Failure Leaderboard" in resp.text
-        assert "Error Clusters" in resp.text
-        assert "Cost by Project" in resp.text
-        assert "Retry Effectiveness" in resp.text
-        assert "Project Scan Status" in resp.text
-
-    async def test_fleet_sidebar_active(self, client: AsyncClient) -> None:
-        resp = await client.get("/fleet")
-        assert resp.status_code == 200
-        assert "bg-sidebar-active" in resp.text
+        assert expected in resp.text
 
 
 # ---------------------------------------------------------------------------

@@ -62,66 +62,51 @@ def _mock_adapter() -> AsyncMock:
 
 
 class TestDetectIssueType:
-    def test_feature_label(self) -> None:
-        assert _detect_issue_type(["type: feature", "priority: high"]) == "feature"
-
-    def test_bug_label(self) -> None:
-        assert _detect_issue_type(["type: bug"]) == "bug"
-
-    def test_task_label(self) -> None:
-        assert _detect_issue_type(["type: task"]) == "task"
-
-    def test_no_type_label_defaults_to_feature(self) -> None:
-        assert _detect_issue_type(["priority: high", "area: dashboard"]) == "feature"
-
-    def test_empty_labels(self) -> None:
-        assert _detect_issue_type([]) == "feature"
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param(["type: feature", "priority: high"], "feature", id="feature-label"),
+            pytest.param(["type: bug"], "bug", id="bug-label"),
+            pytest.param(["type: task"], "task", id="task-label"),
+            pytest.param(["priority: high", "area: dashboard"], "feature", id="no-type-label-defaults-to-feature"),
+            pytest.param([], "feature", id="empty-labels"),
+        ],
+    )
+    def test_detects(self, labels: list[str], expected: str) -> None:
+        assert _detect_issue_type(labels) == expected
 
 
 class TestStripCodeFences:
-    def test_no_fences(self) -> None:
-        assert _strip_code_fences("## Title\nContent") == "## Title\nContent"
-
-    def test_markdown_fences(self) -> None:
-        text = "```markdown\n## Title\nContent\n```"
-        assert _strip_code_fences(text) == "## Title\nContent"
-
-    def test_plain_fences(self) -> None:
-        text = "```\n## Title\nContent\n```"
-        assert _strip_code_fences(text) == "## Title\nContent"
-
-    def test_whitespace_around_fences(self) -> None:
-        text = "\n  ```markdown\n## Title\n```  \n"
-        assert _strip_code_fences(text) == "## Title"
-
-    def test_single_line_fence(self) -> None:
-        assert _strip_code_fences("```foo```") == "foo"
-
-    def test_closing_fence_on_last_content_line(self) -> None:
-        assert _strip_code_fences('```json\n{"a": 1}```') == '{"a": 1}'
-
-    def test_four_backtick_fence_loses_all_four_closing_backticks(self) -> None:
-        assert _strip_code_fences("````markdown\n## Title\n````") == "## Title"
-
-    def test_longer_closing_fence_on_own_line(self) -> None:
-        assert _strip_code_fences("```json\n{}\n`````") == "{}"
-
-    def test_shorter_closing_line_still_closes_the_wrapper(self) -> None:
-        """The strip always accepted a lone three-backtick last line; LLMs mismatch fence lengths."""
-        assert _strip_code_fences("````md\nbody\n```") == "body"
-
-    def test_closing_line_with_surrounding_spaces_closes_the_wrapper(self) -> None:
-        assert _strip_code_fences("````md\nbody\n  ``` ") == "body"
-
-    def test_glued_closing_run_shorter_than_the_opener_is_content(self) -> None:
-        """The width rule applies only where it disambiguates: a run glued to a content line."""
-        assert _strip_code_fences("````md\nuse ```x```") == "use ```x```"
-
-    def test_glued_closing_fence_keeps_the_inline_span_delimiter(self) -> None:
-        assert _strip_code_fences("```md\nuse `x````") == "use `x`"
-
-    def test_single_line_glued_closing_fence_keeps_the_inline_span_delimiter(self) -> None:
-        assert _strip_code_fences("```use `x````") == "use `x`"
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("## Title\nContent", "## Title\nContent", id="no-fences"),
+            pytest.param("```markdown\n## Title\nContent\n```", "## Title\nContent", id="markdown-fences"),
+            pytest.param("```\n## Title\nContent\n```", "## Title\nContent", id="plain-fences"),
+            pytest.param("\n  ```markdown\n## Title\n```  \n", "## Title", id="whitespace-around-fences"),
+            pytest.param("```foo```", "foo", id="single-line-fence"),
+            pytest.param('```json\n{"a": 1}```', '{"a": 1}', id="closing-fence-on-last-content-line"),
+            pytest.param("````markdown\n## Title\n````", "## Title", id="four-backtick-fence-loses-all-four"),
+            pytest.param("```json\n{}\n`````", "{}", id="longer-closing-fence-on-own-line"),
+            # The strip always accepted a lone three-backtick last line; LLMs mismatch fence lengths.
+            pytest.param("````md\nbody\n```", "body", id="shorter-closing-line-closes-wrapper"),
+            pytest.param("````md\nbody\n  ``` ", "body", id="closing-line-with-surrounding-spaces"),
+            # The width rule applies only where it disambiguates: a run glued to a content line.
+            pytest.param("````md\nuse ```x```", "use ```x```", id="glued-shorter-closing-run-is-content"),
+            pytest.param("```md\nuse `x````", "use `x`", id="glued-closing-keeps-inline-span-delimiter"),
+            pytest.param("```use `x````", "use `x`", id="single-line-glued-closing-keeps-inline-span-delimiter"),
+            pytest.param("````json\n{}````", "{}", id="four-backtick-closing-glued-to-last-line"),
+            pytest.param("```md\nuse ```x```", "use ```x```", id="unclosed-wrapper-keeps-trailing-inline-span"),
+            pytest.param("```use ```x```", "use ```x```", id="unclosed-single-line-wrapper-keeps-trailing-inline-span"),
+            pytest.param(
+                "```markdown\n## Title\n```python\nx = 1\n```\n```",
+                "## Title\n```python\nx = 1\n```",
+                id="nested-closing-fence-kept-when-outer-on-own-line",
+            ),
+        ],
+    )
+    def test_strips(self, text: str, expected: str) -> None:
+        assert _strip_code_fences(text) == expected
 
     @pytest.mark.parametrize(
         ("text", "expected"),
@@ -137,67 +122,49 @@ class TestStripCodeFences:
     def test_single_line_fence_drops_a_language_tag_only_in_front_of_json(self, text: str, expected: str) -> None:
         assert _strip_code_fences(text) == expected
 
-    def test_four_backtick_closing_glued_to_last_line(self) -> None:
-        assert _strip_code_fences("````json\n{}````") == "{}"
-
-    def test_unclosed_wrapper_keeps_a_trailing_inline_code_span_intact(self) -> None:
-        assert _strip_code_fences("```md\nuse ```x```") == "use ```x```"
-
-    def test_unclosed_single_line_wrapper_keeps_a_trailing_inline_code_span_intact(self) -> None:
-        assert _strip_code_fences("```use ```x```") == "use ```x```"
-
-    def test_nested_closing_fence_kept_when_outer_fence_on_own_line(self) -> None:
-        text = "```markdown\n## Title\n```python\nx = 1\n```\n```"
-        assert _strip_code_fences(text) == "## Title\n```python\nx = 1\n```"
-
 
 class TestStripPreamble:
-    def test_no_preamble(self) -> None:
-        text = "## Title\nContent"
-        assert _strip_preamble(text) == text
-
-    def test_strips_reasoning_preamble(self) -> None:
-        text = "Now I have all the context needed.\nLet me produce the output.\n## Title\nContent"
-        assert _strip_preamble(text) == "## Title\nContent"
-
-    def test_no_heading_returns_unchanged(self) -> None:
-        text = "Just some plain text\nwith no headings at all."
-        assert _strip_preamble(text) == text
-
-    def test_heading_inside_code_block_ignored(self) -> None:
-        text = "Preamble text\n```python\n## This is a comment\n```\n## Real Heading\nContent"
-        assert _strip_preamble(text) == "## Real Heading\nContent"
-
-    def test_heading_only_inside_code_block(self) -> None:
-        text = "Preamble\n```\n## Not a heading\n```\nMore text"
-        assert _strip_preamble(text) == text
-
-    def test_first_line_is_heading(self) -> None:
-        text = "## Title\nContent\nMore"
-        assert _strip_preamble(text) == text
-
-    def test_multiple_headings_strips_to_first(self) -> None:
-        text = "Reasoning here.\n# First\nBody\n## Second\nMore"
-        assert _strip_preamble(text) == "# First\nBody\n## Second\nMore"
-
-    def test_empty_string(self) -> None:
-        assert _strip_preamble("") == ""
-
-    def test_issue_number_not_treated_as_heading(self) -> None:
-        text = "#123 is closed\n## Real Heading\nContent"
-        assert _strip_preamble(text) == "## Real Heading\nContent"
-
-    def test_bare_hash_treated_as_heading(self) -> None:
-        text = "Preamble\n#\nContent"
-        assert _strip_preamble(text) == "#\nContent"
-
-    def test_multi_hash_without_space_not_heading(self) -> None:
-        text = "##no-space\n## Real\nContent"
-        assert _strip_preamble(text) == "## Real\nContent"
-
-    def test_indented_heading_not_treated_as_heading(self) -> None:
-        text = "Preamble\n  # Indented\n## Real\nBody"
-        assert _strip_preamble(text) == "## Real\nBody"
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("## Title\nContent", "## Title\nContent", id="no-preamble"),
+            pytest.param(
+                "Now I have all the context needed.\nLet me produce the output.\n## Title\nContent",
+                "## Title\nContent",
+                id="reasoning-preamble",
+            ),
+            pytest.param(
+                "Just some plain text\nwith no headings at all.",
+                "Just some plain text\nwith no headings at all.",
+                id="no-heading-unchanged",
+            ),
+            pytest.param(
+                "Preamble text\n```python\n## This is a comment\n```\n## Real Heading\nContent",
+                "## Real Heading\nContent",
+                id="heading-inside-code-block-ignored",
+            ),
+            pytest.param(
+                "Preamble\n```\n## Not a heading\n```\nMore text",
+                "Preamble\n```\n## Not a heading\n```\nMore text",
+                id="heading-only-inside-code-block",
+            ),
+            pytest.param("## Title\nContent\nMore", "## Title\nContent\nMore", id="first-line-is-heading"),
+            pytest.param(
+                "Reasoning here.\n# First\nBody\n## Second\nMore",
+                "# First\nBody\n## Second\nMore",
+                id="multiple-headings-strip-to-first",
+            ),
+            pytest.param("", "", id="empty-string"),
+            pytest.param(
+                "#123 is closed\n## Real Heading\nContent", "## Real Heading\nContent", id="issue-number-not-heading"
+            ),
+            pytest.param("Preamble\n#\nContent", "#\nContent", id="bare-hash-is-heading"),
+            pytest.param("##no-space\n## Real\nContent", "## Real\nContent", id="multi-hash-without-space-not-heading"),
+            pytest.param("Preamble\n  # Indented\n## Real\nBody", "## Real\nBody", id="indented-heading-not-heading"),
+        ],
+    )
+    def test_strips(self, text: str, expected: str) -> None:
+        assert _strip_preamble(text) == expected
 
 
 class TestIsAtxHeading:

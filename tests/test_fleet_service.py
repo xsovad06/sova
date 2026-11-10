@@ -92,13 +92,6 @@ class TestFleetConfig:
         cfg = FleetConfig()
         assert cfg.cache_ttl_seconds == 120
 
-    def test_in_project_config(self) -> None:
-        from sova.config.models import ProjectConfig
-
-        pc = ProjectConfig()
-        assert hasattr(pc, "fleet")
-        assert isinstance(pc.fleet, FleetConfig)
-
     def test_toml_loading(self, tmp_path: Path) -> None:
         from sova.config.loader import load_config
 

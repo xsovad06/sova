@@ -426,26 +426,6 @@ class TestResourceRouterErrors:
 
 
 class TestWorkHistoryHelpers:
-    def test_compute_duration_ms_with_tz(self) -> None:
-        from sova.dashboard.services.work_service import _compute_duration_ms
-
-        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        end = datetime(2024, 1, 1, 0, 1, 0, tzinfo=timezone.utc)
-        assert _compute_duration_ms(start, end) == 60_000
-
-    def test_compute_duration_ms_without_tz(self) -> None:
-        from sova.dashboard.services.work_service import _compute_duration_ms
-
-        start = datetime(2024, 1, 1, 0, 0, 0)
-        end = datetime(2024, 1, 1, 0, 0, 30)
-        assert _compute_duration_ms(start, end) == 30_000
-
-    def test_compute_duration_ms_none(self) -> None:
-        from sova.dashboard.services.work_service import _compute_duration_ms
-
-        assert _compute_duration_ms(None, datetime.now(timezone.utc)) is None
-        assert _compute_duration_ms(datetime.now(timezone.utc), None) is None
-
     def test_resolve_variant_researcher(self) -> None:
         from sova.dashboard.services.work_service import _resolve_variant
 
@@ -707,6 +687,15 @@ class TestSystemMetricsHistory:
         import sova.dashboard.services.resource_service as rs
 
         rs._metrics_cache.clear()
+
+    def test_expired_cache_entries_are_evicted(self) -> None:
+        import time
+
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache["other-project"] = (time.monotonic() - rs._METRICS_CACHE_TTL - 1, {})
+        rs.get_system_metrics("this-project")
+        assert set(rs._metrics_cache) == {"this-project"}
 
     def test_history_accumulates(self) -> None:
         import sova.dashboard.services.resource_service as rs

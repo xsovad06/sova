@@ -44,573 +44,503 @@ def _state(**kwargs: object) -> str:
     return compute_pr_state(**defaults)  # type: ignore[arg-type]
 
 
+_BOT_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}
+_HUMAN_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}
+_COMMENTED = {"state": "COMMENTED", "author": {"login": "reviewer"}}
+
+
 class TestComputePrState:
-    def test_draft(self) -> None:
-        assert _state(is_draft=True) == ComputedPRState.DRAFT
-
-    def test_draft_overrides_approved(self) -> None:
-        assert _state(is_draft=True, review_decision="APPROVED", ci_status="passed") == ComputedPRState.DRAFT
-
-    def test_ci_running(self) -> None:
-        assert _state(ci_status="pending") == ComputedPRState.CI_RUNNING
-
-    def test_ci_failed(self) -> None:
-        assert _state(ci_status="failed") == ComputedPRState.CI_FAILED
-
-    def test_changes_requested(self) -> None:
-        assert _state(review_decision="CHANGES_REQUESTED", ci_status="passed") == ComputedPRState.CHANGES_REQUESTED
-
-    def test_approved_ci_green(self) -> None:
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="MERGEABLE")
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_approved_with_no_ci_is_green(self) -> None:
-        """A repository with no CI checks configured (ci_status="none") is neutral, not blocking."""
-        result = _state(review_decision="APPROVED", ci_status="none", mergeable="MERGEABLE")
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_approved_no_ci_blocked_by_github_is_not_green(self) -> None:
-        """An approved, CI-less, mergeable=MERGEABLE PR must not report ready to merge when
-        GitHub's own mergeStateStatus is BLOCKED (e.g. branch protection awaiting a required
-        review): sova/supervisor/pr_monitor.py trusts this computed state directly to decide
-        whether to fire notify_on_ready_to_merge (CodeRabbit, PR #1114)."""
-        result = _state(review_decision="APPROVED", ci_status="none", mergeable="MERGEABLE", merge_state="BLOCKED")
-        assert result == ComputedPRState.APPROVED
-
-    def test_approved_ci_green_blocked_by_github_is_not_green(self) -> None:
-        """Same BLOCKED guard applies even when CI actually passed."""
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="MERGEABLE", merge_state="BLOCKED")
-        assert result == ComputedPRState.APPROVED
-
-    def test_dirty_merge_state_is_conflicted(self) -> None:
-        """merge_state DIRTY is the mergeStateStatus equivalent of mergeable CONFLICTING."""
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="UNKNOWN", merge_state="DIRTY")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_approved_ci_not_green(self) -> None:
-        assert _state(review_decision="APPROVED") == ComputedPRState.APPROVED
-
-    def test_approved_not_mergeable(self) -> None:
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="CONFLICTING")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_awaiting_review_default(self) -> None:
-        assert _state(ci_status="none", mergeable="MERGEABLE") == ComputedPRState.AWAITING_REVIEW
-
-    def test_ci_failed_beats_changes_requested(self) -> None:
-        assert _state(review_decision="CHANGES_REQUESTED", ci_status="failed") == ComputedPRState.CI_FAILED
-
-    def test_ci_running_beats_approved(self) -> None:
-        result = _state(review_decision="APPROVED", ci_status="pending", mergeable="MERGEABLE")
-        assert result == ComputedPRState.CI_RUNNING
-
-    def test_threads_resolved_ci_green_ready_to_merge(self) -> None:
-        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
-        result = _state(
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_threads_resolved_ci_not_green_approved(self) -> None:
-        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
-        result = _state(latest_reviews=reviews, all_threads_resolved=True, ci_status="none")
-        assert result == ComputedPRState.APPROVED
-
-    def test_threads_not_resolved_stays_in_review(self) -> None:
-        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
-        result = _state(latest_reviews=reviews, all_threads_resolved=False, ci_status="passed")
-        assert result == ComputedPRState.REVIEW_ADDRESSED
-
-    def test_threads_resolved_with_changes_requested_stays_blocked(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "reviewer"}}]
-        result = _state(latest_reviews=reviews, all_threads_resolved=True, ci_status="passed")
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_no_reviews_ci_green_mergeable_ready_to_ship(self) -> None:
-        result = _state(ci_status="passed", mergeable="MERGEABLE", latest_reviews=None)
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_no_reviews_ci_green_not_mergeable_is_conflicted(self) -> None:
-        result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_bot_changes_requested_threads_resolved_ci_green(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_bot_changes_requested_threads_resolved_ci_not_green(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="none",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED
-
-    def test_bot_changes_requested_threads_resolved_no_new_commit_stays_blocked(self) -> None:
-        """New commits do not auto-dismiss a bot review: without one, stays blocked."""
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=False,
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_bot_changes_requested_zero_threads_stays_blocked(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=False,
-            ci_status="passed",
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_bot_changes_requested_threads_not_resolved_stays_blocked(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=False,
-            ci_status="passed",
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_mixed_bot_and_human_changes_requested_stays_blocked(self) -> None:
-        reviews = [
-            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
-            {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
-        ]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_multiple_bots_changes_requested_threads_resolved(self) -> None:
-        reviews = [
-            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
-            {"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}},
-        ]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_changes_requested_no_latest_reviews_stays_blocked(self) -> None:
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=None,
-            all_threads_resolved=True,
-            ci_status="passed",
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_bot_changes_requested_in_latest_reviews_threads_resolved(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}}]
-        result = _state(
-            review_decision="",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_bot_changes_requested_human_approved_threads_resolved(self) -> None:
-        reviews = [
-            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
-            {"state": "APPROVED", "author": {"login": "alice"}},
-        ]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_human_changes_requested_in_latest_reviews_stays_blocked(self) -> None:
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}]
-        result = _state(
-            review_decision="",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_human_changes_requested_never_superseded_by_new_commit(self) -> None:
-        """Human CHANGES_REQUESTED reviews are never auto-superseded, unlike bot reviews."""
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
-
-    def test_unknown_threads_never_unblocks_bot_review(self) -> None:
-        """all_threads_resolved=None (unknown) must never authorize unblocking."""
-        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
-        result = _state(
-            review_decision="CHANGES_REQUESTED",
-            latest_reviews=reviews,
-            all_threads_resolved=None,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.CHANGES_REQUESTED
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            pytest.param({"is_draft": True}, ComputedPRState.DRAFT, id="draft"),
+            pytest.param(
+                {"is_draft": True, "review_decision": "APPROVED", "ci_status": "passed"},
+                ComputedPRState.DRAFT,
+                id="draft-overrides-approved",
+            ),
+            pytest.param({"ci_status": "pending"}, ComputedPRState.CI_RUNNING, id="ci-running"),
+            pytest.param({"ci_status": "failed"}, ComputedPRState.CI_FAILED, id="ci-failed"),
+            pytest.param(
+                {"review_decision": "CHANGES_REQUESTED", "ci_status": "passed"},
+                ComputedPRState.CHANGES_REQUESTED,
+                id="changes-requested",
+            ),
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "passed", "mergeable": "MERGEABLE"},
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="approved-ci-green",
+            ),
+            # A repository with no CI checks configured (ci_status="none") is neutral, not blocking.
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "none", "mergeable": "MERGEABLE"},
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="approved-with-no-ci-is-green",
+            ),
+            # GitHub's mergeStateStatus BLOCKED (e.g. branch protection awaiting a required review) must
+            # not report ready to merge: sova/supervisor/pr_monitor.py fires notify_on_ready_to_merge
+            # from this state directly (CodeRabbit, PR #1114).
+            pytest.param(
+                {
+                    "review_decision": "APPROVED",
+                    "ci_status": "none",
+                    "mergeable": "MERGEABLE",
+                    "merge_state": "BLOCKED",
+                },
+                ComputedPRState.APPROVED,
+                id="approved-no-ci-blocked-by-github-is-not-green",
+            ),
+            # Same BLOCKED guard applies even when CI actually passed.
+            pytest.param(
+                {
+                    "review_decision": "APPROVED",
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "merge_state": "BLOCKED",
+                },
+                ComputedPRState.APPROVED,
+                id="approved-ci-green-blocked-by-github-is-not-green",
+            ),
+            # merge_state DIRTY is the mergeStateStatus equivalent of mergeable CONFLICTING.
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "passed", "mergeable": "UNKNOWN", "merge_state": "DIRTY"},
+                ComputedPRState.CONFLICTED,
+                id="dirty-merge-state-is-conflicted",
+            ),
+            pytest.param({"review_decision": "APPROVED"}, ComputedPRState.APPROVED, id="approved-ci-not-green"),
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "passed", "mergeable": "CONFLICTING"},
+                ComputedPRState.CONFLICTED,
+                id="approved-not-mergeable",
+            ),
+            pytest.param(
+                {"ci_status": "none", "mergeable": "MERGEABLE"},
+                ComputedPRState.AWAITING_REVIEW,
+                id="awaiting-review-default",
+            ),
+            pytest.param(
+                {"review_decision": "CHANGES_REQUESTED", "ci_status": "failed"},
+                ComputedPRState.CI_FAILED,
+                id="ci-failed-beats-changes-requested",
+            ),
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "pending", "mergeable": "MERGEABLE"},
+                ComputedPRState.CI_RUNNING,
+                id="ci-running-beats-approved",
+            ),
+            pytest.param(
+                {
+                    "latest_reviews": [_COMMENTED],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="threads-resolved-ci-green-ready-to-merge",
+            ),
+            pytest.param(
+                {"latest_reviews": [_COMMENTED], "all_threads_resolved": True, "ci_status": "none"},
+                ComputedPRState.APPROVED,
+                id="threads-resolved-ci-not-green-approved",
+            ),
+            pytest.param(
+                {"latest_reviews": [_COMMENTED], "all_threads_resolved": False, "ci_status": "passed"},
+                ComputedPRState.REVIEW_ADDRESSED,
+                id="threads-not-resolved-stays-in-review",
+            ),
+            pytest.param(
+                {
+                    "latest_reviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "reviewer"}}],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="threads-resolved-with-changes-requested-stays-blocked",
+            ),
+            pytest.param(
+                {"ci_status": "passed", "mergeable": "MERGEABLE", "latest_reviews": None},
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="no-reviews-ci-green-mergeable-ready-to-ship",
+            ),
+            pytest.param(
+                {"ci_status": "passed", "mergeable": "CONFLICTING", "latest_reviews": None},
+                ComputedPRState.CONFLICTED,
+                id="no-reviews-ci-green-not-mergeable-is-conflicted",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="bot-changes-requested-threads-resolved-ci-green",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "none",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED,
+                id="bot-changes-requested-threads-resolved-ci-not-green",
+            ),
+            # New commits do not auto-dismiss a bot review: without one, stays blocked.
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": False,
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="bot-changes-requested-threads-resolved-no-new-commit-stays-blocked",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": False,
+                    "ci_status": "passed",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="bot-changes-requested-zero-threads-stays-blocked",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": False,
+                    "ci_status": "passed",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="bot-changes-requested-threads-not-resolved-stays-blocked",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR, _HUMAN_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="mixed-bot-and-human-changes-requested-stays-blocked",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [
+                        _BOT_CR,
+                        {"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}},
+                    ],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="multiple-bots-changes-requested-threads-resolved",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": None,
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="changes-requested-no-latest-reviews-stays-blocked",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "",
+                    "latest_reviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}}],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="bot-changes-requested-in-latest-reviews-threads-resolved",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR, {"state": "APPROVED", "author": {"login": "alice"}}],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="bot-changes-requested-human-approved-threads-resolved",
+            ),
+            pytest.param(
+                {
+                    "review_decision": "",
+                    "latest_reviews": [_HUMAN_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="human-changes-requested-in-latest-reviews-stays-blocked",
+            ),
+            # Human CHANGES_REQUESTED reviews are never auto-superseded, unlike bot reviews.
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_HUMAN_CR],
+                    "all_threads_resolved": True,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="human-changes-requested-never-superseded-by-new-commit",
+            ),
+            # all_threads_resolved=None (unknown) must never authorize unblocking.
+            pytest.param(
+                {
+                    "review_decision": "CHANGES_REQUESTED",
+                    "latest_reviews": [_BOT_CR],
+                    "all_threads_resolved": None,
+                    "ci_status": "passed",
+                    "mergeable": "MERGEABLE",
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.CHANGES_REQUESTED,
+                id="unknown-threads-never-unblocks-bot-review",
+            ),
+        ],
+    )
+    def test_computed_state(self, kwargs: dict[str, object], expected: ComputedPRState) -> None:
+        assert _state(**kwargs) == expected
 
 
 class TestConflictedState:
     """mergeable == CONFLICTING must short-circuit compute_pr_state() to CONFLICTED."""
 
-    def test_conflicting_outranks_approved(self) -> None:
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="CONFLICTING")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_conflicting_outranks_ci_green(self) -> None:
-        result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_conflicting_outranks_changes_requested(self) -> None:
-        result = _state(review_decision="CHANGES_REQUESTED", ci_status="passed", mergeable="CONFLICTING")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_conflicting_outranks_ci_failed(self) -> None:
-        result = _state(ci_status="failed", mergeable="CONFLICTING")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_conflicting_outranks_awaiting_review(self) -> None:
-        result = _state(mergeable="CONFLICTING")
-        assert result == ComputedPRState.CONFLICTED
-
-    def test_unknown_mergeable_is_not_conflicted(self) -> None:
-        result = _state(review_decision="APPROVED", ci_status="passed", mergeable="UNKNOWN")
-        assert result == ComputedPRState.APPROVED
-
-    def test_draft_precedence_unchanged(self) -> None:
-        result = _state(is_draft=True, mergeable="CONFLICTING")
-        assert result == ComputedPRState.DRAFT
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "passed", "mergeable": "CONFLICTING"},
+                ComputedPRState.CONFLICTED,
+                id="conflicting-outranks-approved",
+            ),
+            pytest.param(
+                {"ci_status": "passed", "mergeable": "CONFLICTING", "latest_reviews": None},
+                ComputedPRState.CONFLICTED,
+                id="conflicting-outranks-ci-green",
+            ),
+            pytest.param(
+                {"review_decision": "CHANGES_REQUESTED", "ci_status": "passed", "mergeable": "CONFLICTING"},
+                ComputedPRState.CONFLICTED,
+                id="conflicting-outranks-changes-requested",
+            ),
+            pytest.param(
+                {"ci_status": "failed", "mergeable": "CONFLICTING"},
+                ComputedPRState.CONFLICTED,
+                id="conflicting-outranks-ci-failed",
+            ),
+            pytest.param(
+                {"mergeable": "CONFLICTING"}, ComputedPRState.CONFLICTED, id="conflicting-outranks-awaiting-review"
+            ),
+            pytest.param(
+                {"review_decision": "APPROVED", "ci_status": "passed", "mergeable": "UNKNOWN"},
+                ComputedPRState.APPROVED,
+                id="unknown-mergeable-is-not-conflicted",
+            ),
+            pytest.param(
+                {"is_draft": True, "mergeable": "CONFLICTING"}, ComputedPRState.DRAFT, id="draft-precedence-unchanged"
+            ),
+        ],
+    )
+    def test_conflict_precedence(self, kwargs: dict[str, object], expected: ComputedPRState) -> None:
+        assert _state(**kwargs) == expected
 
 
 class TestParseLinkedIssue:
-    def test_closes(self) -> None:
-        assert parse_linked_issue("Some text\nCloses #42\nMore text") == 42
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param("Some text\nCloses #42\nMore text", 42, id="closes"),
+            pytest.param("Fixes #123", 123, id="fixes"),
+            pytest.param("Resolves #7", 7, id="resolves"),
+            pytest.param("closes #99", 99, id="case-insensitive"),
+            pytest.param("No issue linked here", None, id="no-match"),
+            pytest.param(None, None, id="none-body"),
+            pytest.param("", None, id="empty-body"),
+            pytest.param("Closes #10\nFixes #20", 10, id="first-match"),
+            pytest.param(
+                "## JIRA\n[RHCLOUD-48767](https://issues.redhat.com/browse/RHCLOUD-48767)",
+                48767,
+                id="jira-markdown-link",
+            ),
+            pytest.param("JIRA: https://issues.redhat.com/browse/RHCLOUD-48767", 48767, id="jira-plain-link"),
+            pytest.param(
+                "Closes #42\nJIRA: https://issues.redhat.com/browse/RHCLOUD-48767", 42, id="github-preferred-over-jira"
+            ),
+            pytest.param("[ABC-123](https://jira.example.com/browse/ABC-123)", 123, id="jira-multi-letter-project"),
+            pytest.param("Part of #42\n\nNot done in this PR:\n- Some thing", 42, id="part-of-marker"),
+            # "Part of #N" is also this repo's epic-linkage marker, so a body that mentions an epic that way
+            # before its own "Closes #N" must still resolve to the PR's own issue, not the epic.
+            pytest.param(
+                "## Summary\n- Part of #1300 (epic rollout)\n\n## Issue\n\nCloses #42",
+                42,
+                id="closes-preferred-over-epic-part-of",
+            ),
+            # Neither "Part of" reference is a closing keyword, so the plain whole-body search would otherwise
+            # return the epic mentioned first in "## Summary" instead of the PR's own issue in "## Issue".
+            pytest.param(
+                "## Summary\n- Part of #1300 rollout: adds the parser\n\n## Issue\n\nPart of #42",
+                42,
+                id="part-of-in-issue-section-preferred-over-epic-mention-in-summary",
+            ),
+        ],
+    )
+    def test_parse_linked_issue(self, body: str | None, expected: int | None) -> None:
+        assert parse_linked_issue(body) == expected
 
-    def test_fixes(self) -> None:
-        assert parse_linked_issue("Fixes #123") == 123
 
-    def test_resolves(self) -> None:
-        assert parse_linked_issue("Resolves #7") == 7
-
-    def test_case_insensitive(self) -> None:
-        assert parse_linked_issue("closes #99") == 99
-
-    def test_no_match(self) -> None:
-        assert parse_linked_issue("No issue linked here") is None
-
-    def test_none_body(self) -> None:
-        assert parse_linked_issue(None) is None
-
-    def test_empty_body(self) -> None:
-        assert parse_linked_issue("") is None
-
-    def test_first_match(self) -> None:
-        assert parse_linked_issue("Closes #10\nFixes #20") == 10
-
-    def test_jira_markdown_link(self) -> None:
-        body = "## JIRA\n[RHCLOUD-48767](https://issues.redhat.com/browse/RHCLOUD-48767)"
-        assert parse_linked_issue(body) == 48767
-
-    def test_jira_plain_link(self) -> None:
-        body = "JIRA: https://issues.redhat.com/browse/RHCLOUD-48767"
-        assert parse_linked_issue(body) == 48767
-
-    def test_github_preferred_over_jira(self) -> None:
-        body = "Closes #42\nJIRA: https://issues.redhat.com/browse/RHCLOUD-48767"
-        assert parse_linked_issue(body) == 42
-
-    def test_jira_multi_letter_project(self) -> None:
-        body = "[ABC-123](https://jira.example.com/browse/ABC-123)"
-        assert parse_linked_issue(body) == 123
-
-    def test_part_of_marker(self) -> None:
-        body = "Part of #42\n\nNot done in this PR:\n- Some thing"
-        assert parse_linked_issue(body) == 42
-
-    def test_closes_preferred_over_epic_part_of(self) -> None:
-        """ "Part of #N" is also this repo's epic-linkage marker, so a PR body
-        that mentions an epic that way before its own "Closes #N" must still
-        resolve to the PR's own issue, not the epic."""
-        body = "## Summary\n- Part of #1300 (epic rollout)\n\n## Issue\n\nCloses #42"
-        assert parse_linked_issue(body) == 42
-
-    def test_part_of_in_issue_section_preferred_over_epic_mention_in_summary(self) -> None:
-        """Neither "Part of" reference is a closing keyword, so the plain
-        whole-body search would otherwise return the epic mentioned first in
-        "## Summary" instead of the PR's own issue in "## Issue"."""
-        body = "## Summary\n- Part of #1300 rollout: adds the parser\n\n## Issue\n\nPart of #42"
-        assert parse_linked_issue(body) == 42
+def _linked_raw(body: str, title: str, branch: str) -> dict:
+    return {"closingIssuesReferences": [], "body": body, "title": title, "headRefName": branch}
 
 
 class TestExtractLinkedIssue:
-    def test_closing_references_preferred(self) -> None:
-        raw = {"closingIssuesReferences": [{"number": 42}], "body": "Fixes #99", "title": "feat(#77)"}
-        assert _extract_linked_issue(raw) == 42
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                {"closingIssuesReferences": [{"number": 42}], "body": "Fixes #99", "title": "feat(#77)"},
+                42,
+                id="closing-references-preferred",
+            ),
+            pytest.param(_linked_raw("Closes #88", "feat(#99)", "feat/issue-77"), 88, id="body-fallback"),
+            pytest.param(
+                _linked_raw("No link here", "feat(#374): merge conflict gate", "feat/issue-111"),
+                374,
+                id="title-fallback-parens",
+            ),
+            pytest.param(_linked_raw("", "[#55] fix something", "feat/issue-222"), 55, id="title-fallback-brackets"),
+            pytest.param(_linked_raw("", "some fix", "feat/issue-314"), 314, id="branch-fallback"),
+            pytest.param(_linked_raw("", "some fix", "feat/notissue-314"), None, id="branch-requires-segment-boundary"),
+            pytest.param(
+                _linked_raw("", "some fix", "feat/issue-314draft"), None, id="branch-requires-suffix-boundary"
+            ),
+            pytest.param(_linked_raw("", "some fix", "feat/issue-314-fix"), 314, id="branch-with-suffix-delimiter"),
+            pytest.param(_linked_raw("nothing", "generic", "main"), None, id="no-match"),
+            pytest.param({"closingIssuesReferences": None, "body": "Fixes #10"}, 10, id="empty-closing-refs-is-none"),
+            pytest.param(
+                {"closingIssuesReferences": [], "body": "", "title": "fix: handle (500) errors"},
+                None,
+                id="title-number-in-parens-without-hash-is-not-issue",
+            ),
+            pytest.param(
+                _linked_raw("", "[RHCLOUD-49651] feat: eval() security fix", "feat/some-branch"),
+                49651,
+                id="title-jira-key-brackets",
+            ),
+            pytest.param(_linked_raw("", "[ABC-7] fix something", "main"), 7, id="title-jira-key-with-short-project"),
+            pytest.param(
+                _linked_raw("", "some fix", "feat/RHCLOUD-49651-turnpike-eval-security"), 49651, id="branch-jira-key"
+            ),
+            pytest.param(_linked_raw("", "some fix", "fix/ABC-123"), 123, id="branch-jira-key-at-end"),
+            pytest.param(
+                _linked_raw("", "some fix", "feat/rhcloud-49651-stuff"),
+                None,
+                id="branch-jira-key-does-not-match-lowercase",
+            ),
+            # A 'Part of #N' PR (sova/core/steps/_pr_body.py) still links to its issue, even though it is
+            # deliberately not a GitHub auto-close keyword.
+            pytest.param(
+                {"closingIssuesReferences": [], "body": "Part of #42\n\nNot done in this PR:\n- Some thing"},
+                42,
+                id="part-of-links-without-closing-keyword",
+            ),
+            pytest.param(
+                _linked_raw(
+                    "JIRA: https://redhat.atlassian.net/browse/RHCLOUD-48767",
+                    "[RHCLOUD-49651] feat: something",
+                    "feat/RHCLOUD-49651-stuff",
+                ),
+                48767,
+                id="body-preferred-over-title-jira-key",
+            ),
+        ],
+    )
+    def test_extract_linked_issue(self, raw: dict, expected: int | None) -> None:
+        assert _extract_linked_issue(raw) == expected
 
-    def test_body_fallback(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "Closes #88",
-            "title": "feat(#99)",
-            "headRefName": "feat/issue-77",
-        }
-        assert _extract_linked_issue(raw) == 88
 
-    def test_title_fallback_parens(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "No link here",
-            "title": "feat(#374): merge conflict gate",
-            "headRefName": "feat/issue-111",
-        }
-        assert _extract_linked_issue(raw) == 374
+def _check(conclusion: str, status: str = "COMPLETED") -> dict[str, str]:
+    return {"status": status, "conclusion": conclusion}
 
-    def test_title_fallback_brackets(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "[#55] fix something",
-            "headRefName": "feat/issue-222",
-        }
-        assert _extract_linked_issue(raw) == 55
 
-    def test_branch_fallback(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314"}
-        assert _extract_linked_issue(raw) == 314
-
-    def test_branch_requires_segment_boundary(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/notissue-314"}
-        assert _extract_linked_issue(raw) is None
-
-    def test_branch_requires_suffix_boundary(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314draft"}
-        assert _extract_linked_issue(raw) is None
-
-    def test_branch_with_suffix_delimiter(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314-fix"}
-        assert _extract_linked_issue(raw) == 314
-
-    def test_no_match(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "nothing", "title": "generic", "headRefName": "main"}
-        assert _extract_linked_issue(raw) is None
-
-    def test_empty_closing_refs_is_none(self) -> None:
-        raw = {"closingIssuesReferences": None, "body": "Fixes #10"}
-        assert _extract_linked_issue(raw) == 10
-
-    def test_title_number_in_parens_without_hash_is_not_issue(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "", "title": "fix: handle (500) errors"}
-        assert _extract_linked_issue(raw) is None
-
-    def test_title_jira_key_brackets(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "[RHCLOUD-49651] feat: eval() security fix",
-            "headRefName": "feat/some-branch",
-        }
-        assert _extract_linked_issue(raw) == 49651
-
-    def test_title_jira_key_with_short_project(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "[ABC-7] fix something",
-            "headRefName": "main",
-        }
-        assert _extract_linked_issue(raw) == 7
-
-    def test_branch_jira_key(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "some fix",
-            "headRefName": "feat/RHCLOUD-49651-turnpike-eval-security",
-        }
-        assert _extract_linked_issue(raw) == 49651
-
-    def test_branch_jira_key_at_end(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "some fix",
-            "headRefName": "fix/ABC-123",
-        }
-        assert _extract_linked_issue(raw) == 123
-
-    def test_branch_jira_key_does_not_match_lowercase(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "some fix",
-            "headRefName": "feat/rhcloud-49651-stuff",
-        }
-        assert _extract_linked_issue(raw) is None
-
-    def test_part_of_links_without_closing_keyword(self) -> None:
-        """A 'Part of #N' PR (sova/core/steps/_pr_body.py) still links to its issue,
-        even though it is deliberately not a GitHub auto-close keyword."""
-        raw = {"closingIssuesReferences": [], "body": "Part of #42\n\nNot done in this PR:\n- Some thing"}
-        assert _extract_linked_issue(raw) == 42
-
-    def test_body_preferred_over_title_jira_key(self) -> None:
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "JIRA: https://redhat.atlassian.net/browse/RHCLOUD-48767",
-            "title": "[RHCLOUD-49651] feat: something",
-            "headRefName": "feat/RHCLOUD-49651-stuff",
-        }
-        assert _extract_linked_issue(raw) == 48767
+def _status_context(state: str, **extra: str) -> dict[str, str]:
+    return {"__typename": "StatusContext", "state": state, **extra}
 
 
 class TestSummarizeCi:
-    def test_empty(self) -> None:
-        assert _summarize_ci(None) == "none"
-        assert _summarize_ci([]) == "none"
-
-    def test_all_success(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "SUCCESS"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_pending(self) -> None:
-        checks = [
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-            {"status": "IN_PROGRESS", "conclusion": ""},
-        ]
-        assert _summarize_ci(checks) == "pending"
-
-    def test_failed(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "FAILURE"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_status_context_success(self) -> None:
-        checks = [
-            {"__typename": "StatusContext", "state": "SUCCESS", "context": "CodeRabbit"},
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_status_context_pending(self) -> None:
-        checks = [
-            {"__typename": "StatusContext", "state": "PENDING", "context": "CodeRabbit"},
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(checks) == "pending"
-
-    def test_skipped_only(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "SKIPPED"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_skipped_plus_success(self) -> None:
-        checks = [
-            {"status": "COMPLETED", "conclusion": "SKIPPED"},
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_failed_beats_pending(self) -> None:
-        checks = [
-            {"status": "IN_PROGRESS", "conclusion": ""},
-            {"status": "COMPLETED", "conclusion": "FAILURE"},
-        ]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_error_conclusion(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "ERROR"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_timed_out(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "TIMED_OUT"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_queued(self) -> None:
-        checks = [{"status": "QUEUED", "conclusion": ""}]
-        assert _summarize_ci(checks) == "pending"
-
-    def test_completed_no_conclusion(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": ""}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_neutral(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "NEUTRAL"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_status_context_failure(self) -> None:
-        checks = [{"__typename": "StatusContext", "state": "FAILURE"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_status_context_error(self) -> None:
-        checks = [{"__typename": "StatusContext", "state": "ERROR"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_unknown_status_defaults_pending(self) -> None:
-        checks = [{"status": "UNKNOWN", "conclusion": ""}]
-        assert _summarize_ci(checks) == "pending"
-
-    def test_cancelled(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "CANCELLED"}]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_action_required(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_stale(self) -> None:
-        checks = [{"status": "COMPLETED", "conclusion": "STALE"}]
-        assert _summarize_ci(checks) == "failed"
-
-    def test_status_context_unknown_state_ignored(self) -> None:
-        checks = [
-            {"__typename": "StatusContext", "state": "SOMETHING_ELSE"},
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(checks) == "passed"
+    @pytest.mark.parametrize(
+        ("checks", "expected"),
+        [
+            pytest.param(None, "none", id="none-checks"),
+            pytest.param([], "none", id="empty-checks"),
+            pytest.param([_check("SUCCESS")], "passed", id="all-success"),
+            pytest.param([_check("SUCCESS"), _check("", status="IN_PROGRESS")], "pending", id="pending"),
+            pytest.param([_check("FAILURE")], "failed", id="failed"),
+            pytest.param(
+                [_status_context("SUCCESS", context="CodeRabbit"), _check("SUCCESS")],
+                "passed",
+                id="status-context-success",
+            ),
+            pytest.param(
+                [_status_context("PENDING", context="CodeRabbit"), _check("SUCCESS")],
+                "pending",
+                id="status-context-pending",
+            ),
+            pytest.param([_check("SKIPPED")], "passed", id="skipped-only"),
+            pytest.param([_check("SKIPPED"), _check("SUCCESS")], "passed", id="skipped-plus-success"),
+            pytest.param([_check("", status="IN_PROGRESS"), _check("FAILURE")], "failed", id="failed-beats-pending"),
+            pytest.param([_check("ERROR")], "failed", id="error-conclusion"),
+            pytest.param([_check("TIMED_OUT")], "failed", id="timed-out"),
+            pytest.param([_check("", status="QUEUED")], "pending", id="queued"),
+            pytest.param([_check("")], "passed", id="completed-no-conclusion"),
+            pytest.param([_check("NEUTRAL")], "passed", id="neutral"),
+            pytest.param([_status_context("FAILURE")], "failed", id="status-context-failure"),
+            pytest.param([_status_context("ERROR")], "failed", id="status-context-error"),
+            pytest.param([_check("", status="UNKNOWN")], "pending", id="unknown-status-defaults-pending"),
+            pytest.param([_check("CANCELLED")], "passed", id="cancelled"),
+            pytest.param([_check("ACTION_REQUIRED")], "failed", id="action-required"),
+            pytest.param([_check("STALE")], "failed", id="stale"),
+            pytest.param(
+                [_status_context("SOMETHING_ELSE"), _check("SUCCESS")],
+                "passed",
+                id="status-context-unknown-state-ignored",
+            ),
+            # StatusContext items with unknown states are skipped, leaving the state set empty, which falls
+            # through to "none".
+            pytest.param(
+                [_status_context("EXPECTED"), _status_context("RANDOM")],
+                "none",
+                id="only-unknown-status-contexts-is-none",
+            ),
+            # An unknown CheckRun status adds "pending", unlike an unknown StatusContext state.
+            pytest.param([_check("", status="UNKNOWN")], "pending", id="unknown-check-run-status-defaults-to-pending"),
+        ],
+    )
+    def test_summarize_ci(self, checks: list[dict[str, str]] | None, expected: str) -> None:
+        assert _summarize_ci(checks) == expected
 
 
 class TestEnrichPr:
@@ -651,21 +581,18 @@ class TestEnrichPr:
         assert result["mergeable"] == "MERGEABLE"
         assert result["is_draft"] is False
 
-    def test_head_sha_populated(self) -> None:
-        result = _enrich_pr(self._raw_pr(headRefOid="abc1234"), time.time())
-        assert result["head_sha"] == "abc1234"
-
-    def test_head_sha_missing_defaults_empty(self) -> None:
-        result = _enrich_pr(self._raw_pr(), time.time())
-        assert result["head_sha"] == ""
-
-    def test_merge_state_populated(self) -> None:
-        result = _enrich_pr(self._raw_pr(mergeStateStatus="BEHIND"), time.time())
-        assert result["merge_state"] == "BEHIND"
-
-    def test_merge_state_missing_defaults_empty(self) -> None:
-        result = _enrich_pr(self._raw_pr(), time.time())
-        assert result["merge_state"] == ""
+    @pytest.mark.parametrize(
+        ("overrides", "field", "expected"),
+        [
+            pytest.param({"headRefOid": "abc1234"}, "head_sha", "abc1234", id="head-sha-populated"),
+            pytest.param({}, "head_sha", "", id="head-sha-missing-defaults-empty"),
+            pytest.param({"mergeStateStatus": "BEHIND"}, "merge_state", "BEHIND", id="merge-state-populated"),
+            pytest.param({}, "merge_state", "", id="merge-state-missing-defaults-empty"),
+        ],
+    )
+    def test_optional_string_field(self, overrides: dict[str, object], field: str, expected: str) -> None:
+        result = _enrich_pr(self._raw_pr(**overrides), time.time())
+        assert result[field] == expected
 
     def test_diff_stats_enrichment(self) -> None:
         result = _enrich_pr(self._raw_pr(), time.time())
@@ -802,46 +729,52 @@ class TestEnrichPr:
 
 
 class TestExtractPrLabels:
-    def test_extracts_label_names(self) -> None:
-        raw = {"labels": [{"name": "bug"}, {"name": "priority: high"}]}
-        assert _extract_pr_labels(raw) == ["bug", "priority: high"]
-
-    def test_missing_labels_returns_empty_list(self) -> None:
-        assert _extract_pr_labels({}) == []
-
-    def test_none_labels_returns_empty_list(self) -> None:
-        assert _extract_pr_labels({"labels": None}) == []
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(
+                {"labels": [{"name": "bug"}, {"name": "priority: high"}]},
+                ["bug", "priority: high"],
+                id="extracts-label-names",
+            ),
+            pytest.param({}, [], id="missing-labels-returns-empty-list"),
+            pytest.param({"labels": None}, [], id="none-labels-returns-empty-list"),
+        ],
+    )
+    def test_extract_pr_labels(self, raw: dict, expected: list[str]) -> None:
+        assert _extract_pr_labels(raw) == expected
 
 
 class TestExtractPrAssignees:
-    def test_extracts_logins(self) -> None:
-        raw = {"assignees": [{"login": "alice"}, {"login": "bob"}]}
-        assert _extract_pr_assignees(raw) == ["alice", "bob"]
-
-    def test_filters_out_entries_without_login(self) -> None:
-        raw = {"assignees": [{"login": "alice"}, {}, {"login": ""}]}
-        assert _extract_pr_assignees(raw) == ["alice"]
-
-    def test_missing_assignees_returns_empty_list(self) -> None:
-        assert _extract_pr_assignees({}) == []
-
-    def test_none_assignees_returns_empty_list(self) -> None:
-        assert _extract_pr_assignees({"assignees": None}) == []
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param({"assignees": [{"login": "alice"}, {"login": "bob"}]}, ["alice", "bob"], id="extracts-logins"),
+            pytest.param(
+                {"assignees": [{"login": "alice"}, {}, {"login": ""}]},
+                ["alice"],
+                id="filters-out-entries-without-login",
+            ),
+            pytest.param({}, [], id="missing-assignees-returns-empty-list"),
+            pytest.param({"assignees": None}, [], id="none-assignees-returns-empty-list"),
+        ],
+    )
+    def test_extract_pr_assignees(self, raw: dict, expected: list[str]) -> None:
+        assert _extract_pr_assignees(raw) == expected
 
 
 class TestCountPrCommits:
-    def test_counts_commit_list(self) -> None:
-        raw = {"commits": [{"oid": "a"}, {"oid": "b"}, {"oid": "c"}]}
-        assert _count_pr_commits(raw) == 3
-
-    def test_missing_commits_returns_zero(self) -> None:
-        assert _count_pr_commits({}) == 0
-
-    def test_none_commits_returns_zero(self) -> None:
-        assert _count_pr_commits({"commits": None}) == 0
-
-    def test_non_list_commits_returns_zero(self) -> None:
-        assert _count_pr_commits({"commits": "not-a-list"}) == 0
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param({"commits": [{"oid": "a"}, {"oid": "b"}, {"oid": "c"}]}, 3, id="counts-commit-list"),
+            pytest.param({}, 0, id="missing-commits-returns-zero"),
+            pytest.param({"commits": None}, 0, id="none-commits-returns-zero"),
+            pytest.param({"commits": "not-a-list"}, 0, id="non-list-commits-returns-zero"),
+        ],
+    )
+    def test_count_pr_commits(self, raw: dict, expected: int) -> None:
+        assert _count_pr_commits(raw) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1266,11 +1199,12 @@ class TestAgeSeconds:
         now = dt.timestamp() + 100
         assert _age_seconds("2025-06-15T06:00:00Z", now) == 100
 
-    def test_empty_string(self) -> None:
-        assert _age_seconds("", 1_750_000_000.0) == 0
-
-    def test_invalid_date(self) -> None:
-        assert _age_seconds("not-a-date", 1_750_000_000.0) == 0
+    @pytest.mark.parametrize(
+        "timestamp",
+        [pytest.param("", id="empty-string"), pytest.param("not-a-date", id="invalid-date")],
+    )
+    def test_unparseable_timestamp_is_zero(self, timestamp: str) -> None:
+        assert _age_seconds(timestamp, 1_750_000_000.0) == 0
 
     def test_zulu_suffix(self) -> None:
         result = _age_seconds("2026-01-01T00:00:00Z", time.time())
@@ -1278,96 +1212,83 @@ class TestAgeSeconds:
 
 
 class TestExtractReviewLogins:
-    def test_extracts_unique_logins(self) -> None:
-        reviews = [
-            {"author": {"login": "alice"}},
-            {"author": {"login": "bob"}},
-            {"author": {"login": "alice"}},
-        ]
-        assert _extract_review_logins(reviews) == ["alice", "bob"]
-
-    def test_none_reviews(self) -> None:
-        assert _extract_review_logins(None) == []
-
-    def test_empty_reviews(self) -> None:
-        assert _extract_review_logins([]) == []
-
-    def test_missing_author(self) -> None:
-        reviews = [{"author": None}, {"author": {"login": "bob"}}]
-        assert _extract_review_logins(reviews) == ["bob"]
-
-    def test_empty_login(self) -> None:
-        reviews = [{"author": {"login": ""}}, {"author": {"login": "bob"}}]
-        assert _extract_review_logins(reviews) == ["bob"]
+    @pytest.mark.parametrize(
+        ("reviews", "expected"),
+        [
+            pytest.param(
+                [{"author": {"login": "alice"}}, {"author": {"login": "bob"}}, {"author": {"login": "alice"}}],
+                ["alice", "bob"],
+                id="extracts-unique-logins",
+            ),
+            pytest.param(None, [], id="none-reviews"),
+            pytest.param([], [], id="empty-reviews"),
+            pytest.param([{"author": None}, {"author": {"login": "bob"}}], ["bob"], id="missing-author"),
+            pytest.param([{"author": {"login": ""}}, {"author": {"login": "bob"}}], ["bob"], id="empty-login"),
+        ],
+    )
+    def test_extract_review_logins(self, reviews: list[dict] | None, expected: list[str]) -> None:
+        assert _extract_review_logins(reviews) == expected
 
 
 class TestIsBotReview:
-    def test_bot_suffix(self) -> None:
-        review = {"author": {"login": "coderabbitai[bot]"}}
-        assert _is_bot_review(review) is True
-
-    def test_dependabot(self) -> None:
-        review = {"author": {"login": "dependabot[bot]"}}
-        assert _is_bot_review(review) is True
-
-    def test_human_reviewer(self) -> None:
-        review = {"author": {"login": "alice"}}
-        assert _is_bot_review(review) is False
-
-    def test_no_author(self) -> None:
-        review = {"author": None}
-        assert _is_bot_review(review) is False
-
-    def test_empty_login(self) -> None:
-        review = {"author": {"login": ""}}
-        assert _is_bot_review(review) is False
-
-    def test_no_login_field(self) -> None:
-        review = {"author": {}}
-        assert _is_bot_review(review) is False
+    @pytest.mark.parametrize(
+        ("review", "expected"),
+        [
+            pytest.param({"author": {"login": "coderabbitai[bot]"}}, True, id="bot-suffix"),
+            pytest.param({"author": {"login": "dependabot[bot]"}}, True, id="dependabot"),
+            pytest.param({"author": {"login": "alice"}}, False, id="human-reviewer"),
+            pytest.param({"author": None}, False, id="no-author"),
+            pytest.param({"author": {"login": ""}}, False, id="empty-login"),
+            pytest.param({"author": {}}, False, id="no-login-field"),
+        ],
+    )
+    def test_is_bot_review(self, review: dict, expected: bool) -> None:
+        assert _is_bot_review(review) is expected
 
 
 class TestExtractLatestApprovalAt:
-    def test_picks_latest_approved(self) -> None:
-        reviews = [
-            {"state": "APPROVED", "submittedAt": "2026-07-18T10:00:00Z"},
-            {"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z"},
-            {"state": "COMMENTED", "submittedAt": "2026-07-21T08:00:00Z"},
-        ]
-        assert _extract_latest_approval_at(reviews) == "2026-07-20T12:00:00Z"
-
-    def test_no_approvals(self) -> None:
-        reviews = [
-            {"state": "CHANGES_REQUESTED", "submittedAt": "2026-07-20T10:00:00Z"},
-        ]
-        assert _extract_latest_approval_at(reviews) is None
-
-    def test_none_reviews(self) -> None:
-        assert _extract_latest_approval_at(None) is None
-
-    def test_empty_reviews(self) -> None:
-        assert _extract_latest_approval_at([]) is None
-
-    def test_missing_submitted_at(self) -> None:
-        reviews = [{"state": "APPROVED"}]
-        assert _extract_latest_approval_at(reviews) is None
-
-    def test_excludes_bot_suffix_approval(self) -> None:
-        """A bot approval (e.g. dependabot) must never count as a human sign-off."""
-        reviews = [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "dependabot[bot]"}}]
-        assert _extract_latest_approval_at(reviews) is None
-
-    def test_excludes_coderabbit_classic_login_approval(self) -> None:
-        """CodeRabbit's classic-bot login has no [bot] suffix; must still be excluded."""
-        reviews = [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "coderabbitai"}}]
-        assert _extract_latest_approval_at(reviews) is None
-
-    def test_human_approval_after_bot_approval_still_counted(self) -> None:
-        reviews = [
-            {"state": "APPROVED", "submittedAt": "2026-07-21T12:00:00Z", "author": {"login": "coderabbitai"}},
-            {"state": "APPROVED", "submittedAt": "2026-07-20T10:00:00Z", "author": {"login": "alice"}},
-        ]
-        assert _extract_latest_approval_at(reviews) == "2026-07-20T10:00:00Z"
+    @pytest.mark.parametrize(
+        ("reviews", "expected"),
+        [
+            pytest.param(
+                [
+                    {"state": "APPROVED", "submittedAt": "2026-07-18T10:00:00Z"},
+                    {"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z"},
+                    {"state": "COMMENTED", "submittedAt": "2026-07-21T08:00:00Z"},
+                ],
+                "2026-07-20T12:00:00Z",
+                id="picks-latest-approved",
+            ),
+            pytest.param(
+                [{"state": "CHANGES_REQUESTED", "submittedAt": "2026-07-20T10:00:00Z"}], None, id="no-approvals"
+            ),
+            pytest.param(None, None, id="none-reviews"),
+            pytest.param([], None, id="empty-reviews"),
+            pytest.param([{"state": "APPROVED"}], None, id="missing-submitted-at"),
+            # A bot approval (e.g. dependabot) must never count as a human sign-off.
+            pytest.param(
+                [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "dependabot[bot]"}}],
+                None,
+                id="excludes-bot-suffix-approval",
+            ),
+            # CodeRabbit's classic-bot login has no [bot] suffix; must still be excluded.
+            pytest.param(
+                [{"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "coderabbitai"}}],
+                None,
+                id="excludes-coderabbit-classic-login-approval",
+            ),
+            pytest.param(
+                [
+                    {"state": "APPROVED", "submittedAt": "2026-07-21T12:00:00Z", "author": {"login": "coderabbitai"}},
+                    {"state": "APPROVED", "submittedAt": "2026-07-20T10:00:00Z", "author": {"login": "alice"}},
+                ],
+                "2026-07-20T10:00:00Z",
+                id="human-approval-after-bot-approval-still-counted",
+            ),
+        ],
+    )
+    def test_extract_latest_approval_at(self, reviews: list[dict] | None, expected: str | None) -> None:
+        assert _extract_latest_approval_at(reviews) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1376,26 +1297,22 @@ class TestExtractLatestApprovalAt:
 
 
 class TestGetUnresolvedThreadCount:
-    def test_some_unresolved(self) -> None:
-        assert get_unresolved_thread_count({"thread_total": 5, "thread_resolved": 3}) == 2
-
-    def test_all_resolved(self) -> None:
-        assert get_unresolved_thread_count({"thread_total": 5, "thread_resolved": 5}) == 0
-
-    def test_no_threads(self) -> None:
-        assert get_unresolved_thread_count({"thread_total": 0, "thread_resolved": 0}) == 0
-
-    def test_missing_keys(self) -> None:
-        """Absent thread-count keys are treated as zero, not unknown, so a synthetic
-        dict without them is never reclassified as an unknown state."""
-        assert get_unresolved_thread_count({}) == 0
-
-    def test_explicit_none_is_unknown(self) -> None:
-        """Thread-count keys explicitly set to None are genuinely unknown."""
-        assert get_unresolved_thread_count({"thread_total": None, "thread_resolved": None}) is None
-
-    def test_resolved_exceeds_total(self) -> None:
-        assert get_unresolved_thread_count({"thread_total": 3, "thread_resolved": 5}) == 0
+    @pytest.mark.parametrize(
+        ("pr", "expected"),
+        [
+            pytest.param({"thread_total": 5, "thread_resolved": 3}, 2, id="some-unresolved"),
+            pytest.param({"thread_total": 5, "thread_resolved": 5}, 0, id="all-resolved"),
+            pytest.param({"thread_total": 0, "thread_resolved": 0}, 0, id="no-threads"),
+            # Absent thread-count keys are treated as zero, not unknown, so a synthetic dict without them is
+            # never reclassified as an unknown state.
+            pytest.param({}, 0, id="missing-keys"),
+            # Thread-count keys explicitly set to None are genuinely unknown.
+            pytest.param({"thread_total": None, "thread_resolved": None}, None, id="explicit-none-is-unknown"),
+            pytest.param({"thread_total": 3, "thread_resolved": 5}, 0, id="resolved-exceeds-total"),
+        ],
+    )
+    def test_unresolved_thread_count(self, pr: dict[str, int | None], expected: int | None) -> None:
+        assert get_unresolved_thread_count(pr) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1406,51 +1323,42 @@ class TestGetUnresolvedThreadCount:
 class TestExtractAllLinkedIssues:
     """Tests for _extract_all_linked_issues helper."""
 
-    def test_returns_closing_references_when_present(self) -> None:
-        """Test line 120: early return when closingIssuesReferences has items."""
-        raw = {
-            "closingIssuesReferences": [{"number": 42}, {"number": 43}, {"number": None}],
-            "body": "Closes #99",
-        }
-        result = _extract_all_linked_issues(raw)
-        assert result == [42, 43]
-
-    def test_filters_none_from_closing_references(self) -> None:
-        """Test that None values are filtered from closingIssuesReferences."""
-        raw = {
-            "closingIssuesReferences": [{"number": None}, {"number": 10}, {"foo": "bar"}],
-        }
-        result = _extract_all_linked_issues(raw)
-        assert result == [10]
-
-    def test_falls_back_to_body_when_no_closing_refs(self) -> None:
-        """Test fallback to parse_linked_issue when closingIssuesReferences is empty."""
-        raw = {"closingIssuesReferences": [], "body": "Fixes #88"}
-        result = _extract_all_linked_issues(raw)
-        assert result == [88]
-
-    def test_returns_empty_when_no_refs_and_no_body_match(self) -> None:
-        """Test empty list when no references and body doesn't match."""
-        raw = {"closingIssuesReferences": [], "body": "No issue here"}
-        result = _extract_all_linked_issues(raw)
-        assert result == []
-
-    def test_falls_back_to_title_and_branch_like_extract_linked_issue(self) -> None:
-        """A PR with no closingIssuesReferences and no body keyword (e.g. a
-        future 'Part of #N' phrasing this function doesn't recognize) must
-        still resolve via title/branch, matching _extract_linked_issue's
-        fallback chain rather than silently returning []."""
-        raw = {
-            "closingIssuesReferences": [],
-            "body": "",
-            "title": "some fix",
-            "headRefName": "feat/issue-314",
-        }
-        assert _extract_all_linked_issues(raw) == [314]
-
-    def test_part_of_in_body_is_linked(self) -> None:
-        raw = {"closingIssuesReferences": [], "body": "Part of #88"}
-        assert _extract_all_linked_issues(raw) == [88]
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # Early return when closingIssuesReferences has items.
+            pytest.param(
+                {"closingIssuesReferences": [{"number": 42}, {"number": 43}, {"number": None}], "body": "Closes #99"},
+                [42, 43],
+                id="returns-closing-references-when-present",
+            ),
+            pytest.param(
+                {"closingIssuesReferences": [{"number": None}, {"number": 10}, {"foo": "bar"}]},
+                [10],
+                id="filters-none-from-closing-references",
+            ),
+            # Falls back to parse_linked_issue when closingIssuesReferences is empty.
+            pytest.param(
+                {"closingIssuesReferences": [], "body": "Fixes #88"}, [88], id="falls-back-to-body-when-no-closing-refs"
+            ),
+            pytest.param(
+                {"closingIssuesReferences": [], "body": "No issue here"},
+                [],
+                id="returns-empty-when-no-refs-and-no-body-match",
+            ),
+            # With no closingIssuesReferences and no body keyword (e.g. a future 'Part of #N' phrasing this
+            # function doesn't recognize), must still resolve via title/branch, matching
+            # _extract_linked_issue's fallback chain rather than silently returning [].
+            pytest.param(
+                _linked_raw("", "some fix", "feat/issue-314"),
+                [314],
+                id="falls-back-to-title-and-branch-like-extract-linked-issue",
+            ),
+            pytest.param({"closingIssuesReferences": [], "body": "Part of #88"}, [88], id="part-of-in-body-is-linked"),
+        ],
+    )
+    def test_extract_all_linked_issues(self, raw: dict, expected: list[int]) -> None:
+        assert _extract_all_linked_issues(raw) == expected
 
 
 class TestPrimaryClosingReference:
@@ -1465,49 +1373,81 @@ class TestPrimaryClosingReference:
             "headRefName": branch,
         }
 
-    def test_issue_section_beats_first_listed(self) -> None:
-        raw = self._raw(body="## Summary\nmentions Closes #12\n\n## Issue\n\nCloses #1354")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_issue_section_wins_over_branch(self) -> None:
-        raw = self._raw(body="## Issue\n\nCloses #1354", branch="feat/issue-12")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_branch_breaks_tie_inside_issue_section(self) -> None:
-        raw = self._raw(body="## Issue\n\nCloses #12\nCloses #1354", branch="feat/issue-1354")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_section_naming_several_without_branch_keeps_first_listed(self) -> None:
-        raw = self._raw(body="## Issue\n\nCloses #12\nCloses #1354", branch="refactor/cleanup")
-        assert _extract_linked_issue(raw) == 12
-
-    def test_part_of_section_names_the_primary(self) -> None:
-        raw = self._raw(body="## Issue\n\nPart of #1354\n\nNot done in this PR:\n- A")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_branch_breaks_tie_without_issue_section(self) -> None:
-        raw = self._raw(body="Closes #12\nCloses #1354", branch="fix/issue-1354")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_branch_without_issue_number_leaves_first_listed(self) -> None:
-        raw = self._raw(body="Closes #12\nCloses #1354", branch="refactor/cleanup")
-        assert _extract_linked_issue(raw) == 12
-
-    def test_section_issue_not_listed_by_github_is_not_a_candidate(self) -> None:
-        raw = self._raw(body="## Issue\n\nCloses #999", branch="feat/issue-1354")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_branch_issue_not_listed_by_github_is_not_a_candidate(self) -> None:
-        raw = self._raw(body="", branch="feat/issue-999")
-        assert _extract_linked_issue(raw) == 12
-
-    def test_jira_only_section_names_no_issue(self) -> None:
-        raw = self._raw(body="## Issue\n\n[PROJ-7](https://jira.example.com/browse/PROJ-7)", branch="feat/issue-1354")
-        assert _extract_linked_issue(raw) == 1354
-
-    def test_code_span_in_section_is_not_read(self) -> None:
-        raw = self._raw(body="## Issue\n\nsee `Closes #1354`", branch="")
-        assert _extract_linked_issue(raw) == 12
+    @pytest.mark.parametrize(
+        ("body", "branch", "numbers", "expected"),
+        [
+            pytest.param(
+                "## Summary\nmentions Closes #12\n\n## Issue\n\nCloses #1354",
+                "",
+                (12, 1354),
+                1354,
+                id="issue-section-beats-first-listed",
+            ),
+            pytest.param(
+                "## Issue\n\nCloses #1354", "feat/issue-12", (12, 1354), 1354, id="issue-section-wins-over-branch"
+            ),
+            pytest.param(
+                "## Issue\n\nCloses #12\nCloses #1354",
+                "feat/issue-1354",
+                (12, 1354),
+                1354,
+                id="branch-breaks-tie-inside-issue-section",
+            ),
+            pytest.param(
+                "## Issue\n\nCloses #12\nCloses #1354",
+                "refactor/cleanup",
+                (12, 1354),
+                12,
+                id="section-naming-several-without-branch-keeps-first-listed",
+            ),
+            pytest.param(
+                "## Issue\n\nPart of #1354\n\nNot done in this PR:\n- A",
+                "",
+                (12, 1354),
+                1354,
+                id="part-of-section-names-the-primary",
+            ),
+            pytest.param(
+                "Closes #12\nCloses #1354",
+                "fix/issue-1354",
+                (12, 1354),
+                1354,
+                id="branch-breaks-tie-without-issue-section",
+            ),
+            pytest.param(
+                "Closes #12\nCloses #1354",
+                "refactor/cleanup",
+                (12, 1354),
+                12,
+                id="branch-without-issue-number-leaves-first-listed",
+            ),
+            pytest.param(
+                "## Issue\n\nCloses #999",
+                "feat/issue-1354",
+                (12, 1354),
+                1354,
+                id="section-issue-not-listed-by-github-is-not-a-candidate",
+            ),
+            pytest.param(
+                "", "feat/issue-999", (12, 1354), 12, id="branch-issue-not-listed-by-github-is-not-a-candidate"
+            ),
+            pytest.param(
+                "## Issue\n\n[PROJ-7](https://jira.example.com/browse/PROJ-7)",
+                "feat/issue-1354",
+                (12, 1354),
+                1354,
+                id="jira-only-section-names-no-issue",
+            ),
+            pytest.param("## Issue\n\nsee `Closes #1354`", "", (12, 1354), 12, id="code-span-in-section-is-not-read"),
+            pytest.param("## Issue\n\nCloses #1354", "feat/issue-1354", (12,), 12, id="single-reference-is-unchanged"),
+            pytest.param(
+                "## issue\n\nCloses #1354", "", (12, 1354), 12, id="lowercase-issue-heading-is-not-the-section"
+            ),
+        ],
+    )
+    def test_primary_closing_reference(self, body: str, branch: str, numbers: tuple[int, ...], expected: int) -> None:
+        raw = self._raw(body=body, branch=branch, numbers=numbers)
+        assert _extract_linked_issue(raw) == expected
 
     def test_entries_without_number_are_skipped(self) -> None:
         raw = {
@@ -1515,10 +1455,6 @@ class TestPrimaryClosingReference:
             "body": "## Issue\n\nCloses #1354",
         }
         assert _extract_linked_issue(raw) == 1354
-
-    def test_single_reference_is_unchanged(self) -> None:
-        raw = self._raw(body="## Issue\n\nCloses #1354", branch="feat/issue-1354", numbers=(12,))
-        assert _extract_linked_issue(raw) == 12
 
     @pytest.fixture(autouse=True)
     def _fresh_tie_log(self) -> None:
@@ -1566,10 +1502,6 @@ class TestPrimaryClosingReference:
             _extract_linked_issue({**raw, "headRefOid": "def"})
         assert mock_log.warning.call_count == 2
 
-    def test_lowercase_issue_heading_is_not_the_section(self) -> None:
-        raw = self._raw(body="## issue\n\nCloses #1354")
-        assert _extract_linked_issue(raw) == 12
-
     def test_all_linked_issues_lists_primary_first(self) -> None:
         raw = self._raw(body="## Issue\n\nCloses #1354")
         assert _extract_all_linked_issues(raw) == [1354, 12]
@@ -1595,108 +1527,63 @@ class TestPrimaryClosingReference:
             assert _extract_all_linked_issues(raw)[0] == _extract_linked_issue(raw)
 
 
-class TestSummarizeCiNoneState:
-    """Test _summarize_ci returning 'none' default."""
-
-    def test_returns_none_when_only_unknown_status_contexts(self) -> None:
-        """Test line 174: returns 'none' when all StatusContexts have unknown states."""
-        # StatusContext items with unknown states skip state addition (continue)
-        # leaving states set empty, which falls through to 'none'
-        checks = [
-            {"__typename": "StatusContext", "state": "EXPECTED"},
-            {"__typename": "StatusContext", "state": "RANDOM"},
-        ]
-        assert _summarize_ci(checks) == "none"
-
-    def test_unknown_check_run_status_defaults_to_pending(self) -> None:
-        """Test that unknown CheckRun status defaults to pending, not none."""
-        # CheckRun with unknown status/conclusion adds "pending" (line 165)
-        checks = [{"status": "UNKNOWN", "conclusion": ""}]
-        assert _summarize_ci(checks) == "pending"
+_PLAIN_BOT_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}
 
 
 class TestShouldUnblockBotReviews:
     """Test _should_unblock_bot_reviews early return paths."""
 
-    def test_returns_none_when_cr_reviews_empty(self) -> None:
-        """Test line 195: early return when cr_reviews is empty list."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_none_when_threads_not_resolved(self) -> None:
-        """Test early return when threads are not all resolved."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=False,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_none_when_human_reviewer_present(self) -> None:
-        """Test early return when not all reviews are from bots."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[
-                {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}},
-                {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
-            ],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_none_when_unresolved_unknown(self) -> None:
-        """all_threads_resolved=None (unknown) must never unblock."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=None,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result is None
-
-    def test_returns_none_when_not_superseded_by_new_commit(self) -> None:
-        """Threads resolved is not enough on its own: needs a new commit too."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=False,
-        )
-        assert result is None
-
-    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
-        """Test successful unblock when all bot reviews, threads resolved, CI passed,
-        and the review has been superseded by a new commit."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
-
-    def test_recognizes_classic_coderabbit_login_without_bot_suffix(self) -> None:
-        """CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still be
-        recognized as a bot, matching the DEFAULT_CODERABBIT_AUTHORS convention used
-        by review_completed.py's _has_human_approval()."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai"}}],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-            superseded_by_new_commit=True,
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            # Early return when cr_reviews is an empty list.
+            pytest.param({"cr_reviews": [], "all_threads_resolved": True}, None, id="cr-reviews-empty"),
+            pytest.param(
+                {"cr_reviews": [_PLAIN_BOT_CR], "all_threads_resolved": False}, None, id="threads-not-resolved"
+            ),
+            # Early return when not all reviews are from bots.
+            pytest.param(
+                {
+                    "cr_reviews": [_PLAIN_BOT_CR, {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
+                    "all_threads_resolved": True,
+                },
+                None,
+                id="human-reviewer-present",
+            ),
+            # all_threads_resolved=None (unknown) must never unblock.
+            pytest.param(
+                {"cr_reviews": [_PLAIN_BOT_CR], "all_threads_resolved": None, "superseded_by_new_commit": True},
+                None,
+                id="unresolved-unknown",
+            ),
+            # Threads resolved is not enough on its own: needs a new commit too.
+            pytest.param(
+                {"cr_reviews": [_PLAIN_BOT_CR], "all_threads_resolved": True, "superseded_by_new_commit": False},
+                None,
+                id="not-superseded-by-new-commit",
+            ),
+            # All bot reviews, threads resolved, CI passed, and the review superseded by a new commit.
+            pytest.param(
+                {"cr_reviews": [_PLAIN_BOT_CR], "all_threads_resolved": True, "superseded_by_new_commit": True},
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="all-conditions-met",
+            ),
+            # CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still be recognized as a bot,
+            # matching the DEFAULT_CODERABBIT_AUTHORS convention of review_completed.py's _has_human_approval().
+            pytest.param(
+                {
+                    "cr_reviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai"}}],
+                    "all_threads_resolved": True,
+                    "superseded_by_new_commit": True,
+                },
+                ComputedPRState.APPROVED_CI_GREEN,
+                id="classic-coderabbit-login-without-bot-suffix",
+            ),
+        ],
+    )
+    def test_should_unblock_bot_reviews(self, kwargs: dict[str, object], expected: ComputedPRState | None) -> None:
+        result = _should_unblock_bot_reviews(ci_status="passed", mergeable="MERGEABLE", **kwargs)  # type: ignore[arg-type]
+        assert result == expected
 
 
 class TestListOpenPrsWithState:

@@ -926,67 +926,64 @@ class TestSynthesizePrActions:
         assert actions[0]["args"]["pr"] == 99
         assert actions[0]["auto_execute"] is False
 
-    async def test_returns_integrate_on_all_approved(self) -> None:
+    @pytest.mark.parametrize(
+        ("reviews", "expected_id"),
+        [
+            pytest.param(
+                [("alice", "APPROVED", "LGTM", "2026-01-01T10:00:00Z", False)],
+                "integrate",
+                id="integrate-on-all-approved",
+            ),
+            pytest.param(
+                [
+                    ("alice", "APPROVED", "LGTM", "2026-01-01T10:00:00Z", False),
+                    ("bob", "CHANGES_REQUESTED", "Fix this", "2026-01-01T11:00:00Z", False),
+                ],
+                "address_review",
+                id="changes-requested-takes-priority-over-approval",
+            ),
+            pytest.param(
+                [
+                    ("alice", "CHANGES_REQUESTED", "Fix", "2026-01-01T10:00:00Z", False),
+                    ("alice", "APPROVED", "LGTM now", "2026-01-01T12:00:00Z", False),
+                ],
+                "integrate",
+                id="deduplicates-reviewer-keeps-latest",
+            ),
+        ],
+    )
+    async def test_single_action_for_reviews(
+        self, reviews: list[tuple[str, str, str, str, bool]], expected_id: str
+    ) -> None:
         from sova.adapters.base import PRReview
         from sova.dashboard.services import agent_recovery
 
         self.mock_adapter.get_pr_reviews.return_value = [
-            PRReview(
-                reviewer="alice", state="APPROVED", body="LGTM", submitted_at="2026-01-01T10:00:00Z", is_bot=False
-            ),
+            PRReview(reviewer=r, state=st, body=b, submitted_at=at, is_bot=bot) for r, st, b, at, bot in reviews
         ]
 
         actions = await agent_recovery.synthesize_pr_actions("42")
 
         assert actions is not None
         assert len(actions) == 1
-        assert actions[0]["id"] == "integrate"
+        assert actions[0]["id"] == expected_id
 
-    async def test_returns_none_for_only_bot_reviews(self) -> None:
+    @pytest.mark.parametrize(
+        "review",
+        [
+            pytest.param(
+                ("coderabbit[bot]", "CHANGES_REQUESTED", "Issues", "2026-01-01T10:00:00Z", True), id="only-bot-reviews"
+            ),
+            pytest.param(("alice", "DISMISSED", "", "2026-01-01T10:00:00Z", False), id="dismissed-reviews-excluded"),
+        ],
+    )
+    async def test_returns_none_for_reviews(self, review: tuple[str, str, str, str, bool]) -> None:
         from sova.adapters.base import PRReview
         from sova.dashboard.services import agent_recovery
 
+        reviewer, state, body, submitted_at, is_bot = review
         self.mock_adapter.get_pr_reviews.return_value = [
-            PRReview(
-                reviewer="coderabbit[bot]",
-                state="CHANGES_REQUESTED",
-                body="Issues",
-                submitted_at="2026-01-01T10:00:00Z",
-                is_bot=True,
-            ),
-        ]
-
-        actions = await agent_recovery.synthesize_pr_actions("42")
-        assert actions is None
-
-    async def test_changes_requested_takes_priority_over_approval(self) -> None:
-        from sova.adapters.base import PRReview
-        from sova.dashboard.services import agent_recovery
-
-        self.mock_adapter.get_pr_reviews.return_value = [
-            PRReview(
-                reviewer="alice", state="APPROVED", body="LGTM", submitted_at="2026-01-01T10:00:00Z", is_bot=False
-            ),
-            PRReview(
-                reviewer="bob",
-                state="CHANGES_REQUESTED",
-                body="Fix this",
-                submitted_at="2026-01-01T11:00:00Z",
-                is_bot=False,
-            ),
-        ]
-
-        actions = await agent_recovery.synthesize_pr_actions("42")
-        assert actions is not None
-        assert len(actions) == 1
-        assert actions[0]["id"] == "address_review"
-
-    async def test_dismissed_reviews_excluded(self) -> None:
-        from sova.adapters.base import PRReview
-        from sova.dashboard.services import agent_recovery
-
-        self.mock_adapter.get_pr_reviews.return_value = [
-            PRReview(reviewer="alice", state="DISMISSED", body="", submitted_at="2026-01-01T10:00:00Z", is_bot=False),
+            PRReview(reviewer=reviewer, state=state, body=body, submitted_at=submitted_at, is_bot=is_bot)
         ]
 
         actions = await agent_recovery.synthesize_pr_actions("42")
@@ -1004,28 +1001,6 @@ class TestSynthesizePrActions:
 
         actions = await agent_recovery.synthesize_pr_actions("42")
         assert actions is None
-
-    async def test_deduplicates_reviewer_keeps_latest(self) -> None:
-        from sova.adapters.base import PRReview
-        from sova.dashboard.services import agent_recovery
-
-        self.mock_adapter.get_pr_reviews.return_value = [
-            PRReview(
-                reviewer="alice",
-                state="CHANGES_REQUESTED",
-                body="Fix",
-                submitted_at="2026-01-01T10:00:00Z",
-                is_bot=False,
-            ),
-            PRReview(
-                reviewer="alice", state="APPROVED", body="LGTM now", submitted_at="2026-01-01T12:00:00Z", is_bot=False
-            ),
-        ]
-
-        actions = await agent_recovery.synthesize_pr_actions("42")
-        assert actions is not None
-        assert len(actions) == 1
-        assert actions[0]["id"] == "integrate"
 
 
 class TestSummarizeCiChecks:
@@ -1732,25 +1707,22 @@ class TestGetSynthesizedHandoff:
 
 
 class TestGetRecoveryConfig:
-    def test_returns_repo_and_user(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("repo", "user", "expected"),
+        [
+            pytest.param("user/repo", "alice", ("user/repo", "alice"), id="returns-repo-and-user"),
+            pytest.param(None, None, ("", ""), id="missing-fields-fall-back-to-empty-string"),
+        ],
+    )
+    def test_reads_repo_and_user(
+        self, monkeypatch, repo: str | None, user: str | None, expected: tuple[str, str]
+    ) -> None:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
 
-        mock_cfg = type("Cfg", (), {"github_repo": "user/repo", "github_user": "alice"})()
+        mock_cfg = type("Cfg", (), {"github_repo": repo, "github_user": user})()
         monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
 
-        repo, user = _get_recovery_config(None)
-        assert repo == "user/repo"
-        assert user == "alice"
-
-    def test_missing_fields_fall_back_to_empty_string(self, monkeypatch) -> None:
-        from sova.dashboard.services.agent_recovery import _get_recovery_config
-
-        mock_cfg = type("Cfg", (), {"github_repo": None, "github_user": None})()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
-
-        repo, user = _get_recovery_config(None)
-        assert repo == ""
-        assert user == ""
+        assert _get_recovery_config(None) == expected
 
     def test_load_config_exception_returns_empty_tuple(self, monkeypatch) -> None:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
@@ -1767,7 +1739,14 @@ class TestGetPrBranchForRecovery:
         result = await _get_pr_branch_for_recovery(1, "", None)
         assert result == ""
 
-    async def test_returns_branch_on_success(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("success", "stdout", "expected"),
+        [
+            pytest.param(True, "feat/issue-42\n", "feat/issue-42", id="returns-branch-on-success"),
+            pytest.param(False, "", "", id="returns-empty-string-on-failed-command"),
+        ],
+    )
+    async def test_gh_command_result(self, monkeypatch, success: bool, stdout: str, expected: str) -> None:
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services import agent_recovery
@@ -1776,26 +1755,11 @@ class TestGetPrBranchForRecovery:
         monkeypatch.setattr("sova.utils.gh.resolve_gh_env", AsyncMock(return_value={}))
         monkeypatch.setattr(
             "sova.utils.shell.run",
-            AsyncMock(return_value=type("Result", (), {"success": True, "stdout": "feat/issue-42\n"})()),
+            AsyncMock(return_value=type("Result", (), {"success": success, "stdout": stdout})()),
         )
 
         result = await agent_recovery._get_pr_branch_for_recovery(42, "user/repo", None)
-        assert result == "feat/issue-42"
-
-    async def test_returns_empty_string_on_failed_command(self, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services import agent_recovery
-
-        monkeypatch.setattr(agent_recovery, "_get_recovery_config", lambda _: ("user/repo", "alice"))
-        monkeypatch.setattr("sova.utils.gh.resolve_gh_env", AsyncMock(return_value={}))
-        monkeypatch.setattr(
-            "sova.utils.shell.run",
-            AsyncMock(return_value=type("Result", (), {"success": False, "stdout": ""})()),
-        )
-
-        result = await agent_recovery._get_pr_branch_for_recovery(42, "user/repo", None)
-        assert result == ""
+        assert result == expected
 
     async def test_returns_empty_string_on_exception(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock

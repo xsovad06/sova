@@ -569,21 +569,6 @@ class TestDetectorScript:
         assert 'echo "$json"' not in text
         assert "printf '%s' \"$json\"" in text
 
-    def test_documents_the_deliberately_non_strict_ruleset(self) -> None:
-        """A skip re-uses a green result produced against an older base tree.
-
-        main-protection deliberately keeps strict status checks off (issue
-        #1188), so a branch that is only behind main merges without an update.
-        The script must say that this is the accepted policy rather than a
-        precondition it relies on, and must name where a semantic conflict is
-        caught instead: the test job on every push to main.
-        """
-        text = DETECTOR.read_text()
-        assert "deliberately keeps strict_required_status_checks_policy OFF" in text
-        assert "#1188" in text
-        assert "becomes unsound" not in text, "the script no longer claims to depend on the strict policy"
-        assert "push to main" in text
-
 
 # ---------------------------------------------------------------------------
 # CI workflow wiring

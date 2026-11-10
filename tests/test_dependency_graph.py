@@ -71,52 +71,56 @@ def _task(
 
 
 class TestParseDependencies:
-    def test_no_body(self) -> None:
-        assert parse_dependencies("") == set()
-
-    def test_no_dependencies_section(self) -> None:
-        body = "## Summary\nSome text\n## Tasks\n- Do stuff"
-        assert parse_dependencies(body) == set()
-
-    def test_empty_dependencies_section(self) -> None:
-        body = "## Dependencies\n\n## Next Section\nStuff"
-        assert parse_dependencies(body) == set()
-
-    def test_single_dep(self) -> None:
-        body = "## Dependencies\n- #100\n"
-        assert parse_dependencies(body) == {100}
-
-    def test_multiple_deps(self) -> None:
-        body = "## Dependencies\n- #100\n- #101\n- #102\n"
-        assert parse_dependencies(body) == {100, 101, 102}
-
-    def test_inline_refs(self) -> None:
-        body = "## Dependencies\n- Depends on #100 and #101\n"
-        assert parse_dependencies(body) == {100, 101}
-
-    def test_stops_at_next_heading(self) -> None:
-        body = "## Dependencies\n- #100\n## Other\n- #200\n"
-        assert parse_dependencies(body) == {100}
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param("", set(), id="no-body"),
+            pytest.param("## Summary\nSome text\n## Tasks\n- Do stuff", set(), id="no-dependencies-section"),
+            pytest.param("## Dependencies\n\n## Next Section\nStuff", set(), id="empty-dependencies-section"),
+            pytest.param("## Dependencies\n- #100\n", {100}, id="single-dep"),
+            pytest.param("## Dependencies\n- #100\n- #101\n- #102\n", {100, 101, 102}, id="multiple-deps"),
+            pytest.param("## Dependencies\n- Depends on #100 and #101\n", {100, 101}, id="inline-refs"),
+            pytest.param("## Dependencies\n- #100\n## Other\n- #200\n", {100}, id="stops-at-next-heading"),
+            pytest.param(
+                "## Dependencies\n- depends on issue 100\n- see number 200\n", set(), id="malformed-refs-ignored"
+            ),
+            pytest.param("## dependencies\n- #42\n", {42}, id="case-insensitive-heading"),
+            pytest.param(
+                "## Dependencies\n- #10\n## Other\ntext\n## Dependencies\n- #20\n",
+                {10},
+                id="multiple-sections-uses-first",
+            ),
+            pytest.param(
+                "## Dependencies\n- #100 (blocker)\n- see issue 200\n- #300\n",
+                {100, 300},
+                id="mixed-valid-and-invalid",
+            ),
+            # '## Code Dependencies' (code-level) must not match the issue-level parser.
+            pytest.param(
+                "## Code Dependencies\n- utils.parse_dependencies()\n- models.Task\n",
+                set(),
+                id="code-dependencies-not-matched",
+            ),
+            # Both sections coexist: only '## Dependencies' is parsed for issue refs.
+            pytest.param(
+                "## Code Dependencies\n- utils.module\n\n## Dependencies\n- #42\n",
+                {42},
+                id="code-dependencies-does-not-interfere",
+            ),
+            # Parser is order-agnostic: Dependencies before Code Dependencies works too.
+            pytest.param(
+                "## Dependencies\n- #42\n\n## Code Dependencies\n- utils.module\n",
+                {42},
+                id="code-dependencies-does-not-interfere-reversed-order",
+            ),
+        ],
+    )
+    def test_parses(self, body: str, expected: set[int]) -> None:
+        assert parse_dependencies(body) == expected
 
     def test_self_reference_excluded(self) -> None:
         body = "## Dependencies\n- #50\n- #100\n"
         assert parse_dependencies(body, exclude_self=50) == {100}
-
-    def test_malformed_refs_ignored(self) -> None:
-        body = "## Dependencies\n- depends on issue 100\n- see number 200\n"
-        assert parse_dependencies(body) == set()
-
-    def test_case_insensitive_heading(self) -> None:
-        body = "## dependencies\n- #42\n"
-        assert parse_dependencies(body) == {42}
-
-    def test_multiple_sections_uses_first(self) -> None:
-        body = "## Dependencies\n- #10\n## Other\ntext\n## Dependencies\n- #20\n"
-        assert parse_dependencies(body) == {10}
-
-    def test_mixed_valid_and_invalid(self) -> None:
-        body = "## Dependencies\n- #100 (blocker)\n- see issue 200\n- #300\n"
-        assert parse_dependencies(body) == {100, 300}
 
     def test_multiple_sections_logs_warning(self) -> None:
         body = "## Dependencies\n- #10\n## Other\ntext\n## Dependencies\n- #20\n"
@@ -125,21 +129,6 @@ class TestParseDependencies:
         assert result == {10}
         mock_log.warning.assert_called_once()
         assert mock_log.warning.call_args[0][0] == "dependency_graph.multiple_dependencies_sections"
-
-    def test_code_dependencies_not_matched(self) -> None:
-        """'## Code Dependencies' (code-level) must not match the issue-level parser."""
-        body = "## Code Dependencies\n- utils.parse_dependencies()\n- models.Task\n"
-        assert parse_dependencies(body) == set()
-
-    def test_code_dependencies_does_not_interfere(self) -> None:
-        """Both sections coexist: only '## Dependencies' is parsed for issue refs."""
-        body = "## Code Dependencies\n- utils.module\n\n## Dependencies\n- #42\n"
-        assert parse_dependencies(body) == {42}
-
-    def test_code_dependencies_does_not_interfere_reversed_order(self) -> None:
-        """Parser is order-agnostic: Dependencies before Code Dependencies works too."""
-        body = "## Dependencies\n- #42\n\n## Code Dependencies\n- utils.module\n"
-        assert parse_dependencies(body) == {42}
 
     def test_spec_template_uses_code_dependencies_heading(self) -> None:
         """Spec templates must use '## Code Dependencies' to avoid collision."""
@@ -1409,35 +1398,31 @@ class TestFetchPrMap:
 
 
 class TestParseIssueInt:
-    def test_plain_number(self) -> None:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("507", 507, id="plain-number"),
+            pytest.param("#507", 507, id="hash-prefix"),
+            pytest.param("  42 ", 42, id="whitespace"),
+        ],
+    )
+    def test_parses_valid(self, raw: str, expected: int) -> None:
         from sova.dashboard.routers.dependencies import _parse_issue_int
 
-        assert _parse_issue_int("507") == 507
+        assert _parse_issue_int(raw) == expected
 
-    def test_hash_prefix(self) -> None:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(None, id="none"),
+            pytest.param("", id="empty-string"),
+            pytest.param("abc", id="malformed"),
+        ],
+    )
+    def test_returns_none_for_invalid(self, raw: str | None) -> None:
         from sova.dashboard.routers.dependencies import _parse_issue_int
 
-        assert _parse_issue_int("#507") == 507
-
-    def test_none(self) -> None:
-        from sova.dashboard.routers.dependencies import _parse_issue_int
-
-        assert _parse_issue_int(None) is None
-
-    def test_empty_string(self) -> None:
-        from sova.dashboard.routers.dependencies import _parse_issue_int
-
-        assert _parse_issue_int("") is None
-
-    def test_malformed(self) -> None:
-        from sova.dashboard.routers.dependencies import _parse_issue_int
-
-        assert _parse_issue_int("abc") is None
-
-    def test_whitespace(self) -> None:
-        from sova.dashboard.routers.dependencies import _parse_issue_int
-
-        assert _parse_issue_int("  42 ") == 42
+        assert _parse_issue_int(raw) is None
 
 
 class TestFetchAgentMap:
@@ -1905,44 +1890,29 @@ class TestDependencyAPI:
         assert resp.status_code == 503
 
     @pytest.mark.asyncio
-    async def test_ready_endpoint_error(self, client: AsyncClient) -> None:
-        with patch(
-            "sova.dashboard.routers.dependencies.load_ranking_graph",
-            side_effect=RuntimeError("boom"),
-        ):
-            resp = await client.get("/api/dependencies/ready")
-        assert resp.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_ready_endpoint_config_error(self, client: AsyncClient) -> None:
+    @pytest.mark.parametrize(
+        ("target", "url"),
+        [
+            pytest.param("load_ranking_graph", "/api/dependencies/ready", id="ready"),
+            pytest.param("_build_graph", "/api/dependencies/chain/1", id="chain"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("config_error", "status"),
+        [
+            pytest.param(False, 500, id="error"),
+            pytest.param(True, 503, id="config-error"),
+        ],
+    )
+    async def test_endpoint_error_status(
+        self, client: AsyncClient, target: str, url: str, config_error: bool, status: int
+    ) -> None:
         from sova.dashboard.routers.dependencies import _ConfigError
 
-        with patch(
-            "sova.dashboard.routers.dependencies.load_ranking_graph",
-            side_effect=_ConfigError("bad config"),
-        ):
-            resp = await client.get("/api/dependencies/ready")
-        assert resp.status_code == 503
-
-    @pytest.mark.asyncio
-    async def test_chain_endpoint_error(self, client: AsyncClient) -> None:
-        with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
-            side_effect=RuntimeError("boom"),
-        ):
-            resp = await client.get("/api/dependencies/chain/1")
-        assert resp.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_chain_endpoint_config_error(self, client: AsyncClient) -> None:
-        from sova.dashboard.routers.dependencies import _ConfigError
-
-        with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
-            side_effect=_ConfigError("bad config"),
-        ):
-            resp = await client.get("/api/dependencies/chain/1")
-        assert resp.status_code == 503
+        error = _ConfigError("bad config") if config_error else RuntimeError("boom")
+        with patch(f"sova.dashboard.routers.dependencies.{target}", side_effect=error):
+            resp = await client.get(url)
+        assert resp.status_code == status
 
     @pytest.mark.asyncio
     async def test_graph_endpoint_queue_position_enrichment(self, client: AsyncClient) -> None:
@@ -2056,32 +2026,25 @@ class TestNodePriorityField:
         data = graph.to_dict()
         assert data["nodes"][0]["priority"] == "undefined"
 
-    def test_critical_label_sets_priority(self) -> None:
-        task = _task(1, labels=["priority: critical"])
-        graph = DependencyGraph([task])
-        assert graph.to_dict()["nodes"][0]["priority"] == "critical"
-
-    def test_high_label_sets_priority(self) -> None:
-        task = _task(2, labels=["priority: high"])
-        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "high"
-
-    def test_medium_label_sets_priority(self) -> None:
-        task = _task(3, labels=["priority: medium"])
-        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "medium"
-
-    def test_low_label_sets_priority(self) -> None:
-        task = _task(4, labels=["priority: low"])
-        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "low"
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param(["priority: critical"], "critical", id="critical"),
+            pytest.param(["priority: high"], "high", id="high"),
+            pytest.param(["priority: medium"], "medium", id="medium"),
+            pytest.param(["priority: low"], "low", id="low"),
+            pytest.param(["area: dashboard", "priority: low", "type: feature"], "low", id="mixed-labels"),
+        ],
+    )
+    def test_label_sets_priority(self, labels: list[str], expected: str) -> None:
+        task = _task(1, labels=labels)
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == expected
 
     def test_priority_field_present_when_unlabelled(self) -> None:
         task = _task(5, labels=["area: dashboard"])
         node = DependencyGraph([task]).to_dict()["nodes"][0]
         assert "priority" in node
         assert node["priority"] == "undefined"
-
-    def test_mixed_labels_extracts_correct_priority(self) -> None:
-        task = _task(6, labels=["area: dashboard", "priority: low", "type: feature"])
-        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "low"
 
 
 # ---------------------------------------------------------------------------
@@ -2090,83 +2053,67 @@ class TestNodePriorityField:
 
 
 class TestIsHumanOnly:
-    def test_no_labels(self) -> None:
-        assert is_human_only([]) is False
-
-    def test_exact_match(self) -> None:
-        assert is_human_only(["agent:human-only"]) is True
-
-    def test_case_insensitive(self) -> None:
-        assert is_human_only(["Agent:Human-Only"]) is True
-
-    def test_with_spaces(self) -> None:
-        assert is_human_only(["  agent:human-only  "]) is True
-
-    def test_unrelated_labels(self) -> None:
-        assert is_human_only(["area: dashboard", "priority: high"]) is False
-
-    def test_among_other_labels(self) -> None:
-        assert is_human_only(["type: feature", "agent:human-only", "priority: low"]) is True
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param([], False, id="no-labels"),
+            pytest.param(["agent:human-only"], True, id="exact-match"),
+            pytest.param(["Agent:Human-Only"], True, id="case-insensitive"),
+            pytest.param(["  agent:human-only  "], True, id="with-spaces"),
+            pytest.param(["area: dashboard", "priority: high"], False, id="unrelated-labels"),
+            pytest.param(["type: feature", "agent:human-only", "priority: low"], True, id="among-other-labels"),
+        ],
+    )
+    def test_detects_label(self, labels: list[str], expected: bool) -> None:
+        assert is_human_only(labels) is expected
 
 
 class TestIsInteractiveRecommended:
-    def test_no_labels(self) -> None:
-        assert is_interactive_recommended([]) is False
-
-    def test_exact_match(self) -> None:
-        assert is_interactive_recommended(["agent:interactive-recommended"]) is True
-
-    def test_case_insensitive(self) -> None:
-        assert is_interactive_recommended(["Agent:Interactive-Recommended"]) is True
-
-    def test_with_spaces(self) -> None:
-        assert is_interactive_recommended(["  agent:interactive-recommended  "]) is True
-
-    def test_unrelated_labels(self) -> None:
-        assert is_interactive_recommended(["area: dashboard", "agent:human-only"]) is False
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param([], False, id="no-labels"),
+            pytest.param(["agent:interactive-recommended"], True, id="exact-match"),
+            pytest.param(["Agent:Interactive-Recommended"], True, id="case-insensitive"),
+            pytest.param(["  agent:interactive-recommended  "], True, id="with-spaces"),
+            pytest.param(["area: dashboard", "agent:human-only"], False, id="unrelated-labels"),
+        ],
+    )
+    def test_detects_label(self, labels: list[str], expected: bool) -> None:
+        assert is_interactive_recommended(labels) is expected
 
 
 class TestIsOnHold:
-    def test_no_labels(self) -> None:
-        assert is_on_hold([]) is False
-
-    def test_exact_match(self) -> None:
-        assert is_on_hold(["agent:on-hold"]) is True
-
-    def test_case_insensitive(self) -> None:
-        assert is_on_hold(["Agent:On-Hold"]) is True
-
-    def test_with_spaces(self) -> None:
-        assert is_on_hold(["  agent:on-hold  "]) is True
-
-    def test_unrelated_labels(self) -> None:
-        assert is_on_hold(["area: dashboard", "agent:human-only"]) is False
-
-    def test_prefix_is_not_a_match(self) -> None:
-        assert is_on_hold(["agent:on-hold-forever"]) is False
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param([], False, id="no-labels"),
+            pytest.param(["agent:on-hold"], True, id="exact-match"),
+            pytest.param(["Agent:On-Hold"], True, id="case-insensitive"),
+            pytest.param(["  agent:on-hold  "], True, id="with-spaces"),
+            pytest.param(["area: dashboard", "agent:human-only"], False, id="unrelated-labels"),
+            pytest.param(["agent:on-hold-forever"], False, id="prefix-is-not-a-match"),
+        ],
+    )
+    def test_detects_label(self, labels: list[str], expected: bool) -> None:
+        assert is_on_hold(labels) is expected
 
 
 class TestIsReady:
-    def test_no_labels(self) -> None:
-        assert is_ready([]) is False
-
-    def test_exact_match(self) -> None:
-        assert is_ready(["agent:ready"]) is True
-
-    def test_case_insensitive(self) -> None:
-        assert is_ready(["Agent:Ready"]) is True
-
-    def test_with_spaces(self) -> None:
-        assert is_ready(["  agent:ready  "]) is True
-
-    def test_unrelated_labels(self) -> None:
-        assert is_ready(["area: dashboard", "priority: high"]) is False
-
-    def test_among_other_labels(self) -> None:
-        assert is_ready(["type: feature", "agent:ready", "priority: low"]) is True
-
-    def test_prefix_is_not_a_match(self) -> None:
-        assert is_ready(["agent:ready-for-review"]) is False
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param([], False, id="no-labels"),
+            pytest.param(["agent:ready"], True, id="exact-match"),
+            pytest.param(["Agent:Ready"], True, id="case-insensitive"),
+            pytest.param(["  agent:ready  "], True, id="with-spaces"),
+            pytest.param(["area: dashboard", "priority: high"], False, id="unrelated-labels"),
+            pytest.param(["type: feature", "agent:ready", "priority: low"], True, id="among-other-labels"),
+            pytest.param(["agent:ready-for-review"], False, id="prefix-is-not-a-match"),
+        ],
+    )
+    def test_detects_label(self, labels: list[str], expected: bool) -> None:
+        assert is_ready(labels) is expected
 
 
 class TestLocalAssessmentApplies:
@@ -2178,37 +2125,23 @@ class TestLocalAssessmentApplies:
 
         assert local_assessment_applies([]) is True
 
-    def test_ready_label_does_not_apply(self) -> None:
-        from sova.supervisor.labels import local_assessment_applies
-
-        assert local_assessment_applies(["agent:ready"]) is False
-
-    def test_human_only_label_does_not_apply(self) -> None:
-        from sova.supervisor.labels import local_assessment_applies
-
-        assert local_assessment_applies(["agent:human-only"]) is False
-
-    def test_interactive_recommended_label_does_not_apply(self) -> None:
-        from sova.supervisor.labels import local_assessment_applies
-
-        assert local_assessment_applies(["agent:interactive-recommended"]) is False
-
-    def test_epic_label_does_not_apply(self) -> None:
-        from sova.supervisor.labels import local_assessment_applies
-
-        assert local_assessment_applies(["type: epic"]) is False
-
-    def test_on_hold_label_does_not_apply(self) -> None:
-        """A stale local `ready` record must never be applied over (or skip the check of) a hold label."""
-        from sova.supervisor.labels import local_assessment_applies
-
-        assert local_assessment_applies(["agent:on-hold"]) is False
-
     @pytest.mark.parametrize(
         "label",
-        ["agent:triaged", "agent:researched", "agent:in-progress", "agent:in-review", "agent:on-qa"],
+        [
+            pytest.param("agent:ready", id="ready"),
+            pytest.param("agent:human-only", id="human-only"),
+            pytest.param("agent:interactive-recommended", id="interactive-recommended"),
+            pytest.param("type: epic", id="epic"),
+            # A stale local `ready` record must never be applied over (or skip the check of) a hold label.
+            pytest.param("agent:on-hold", id="on-hold"),
+            "agent:triaged",
+            "agent:researched",
+            "agent:in-progress",
+            "agent:in-review",
+            "agent:on-qa",
+        ],
     )
-    def test_pipeline_state_label_does_not_apply(self, label: str) -> None:
+    def test_label_does_not_apply(self, label: str) -> None:
         from sova.supervisor.labels import local_assessment_applies
 
         assert local_assessment_applies([label]) is False
@@ -2225,29 +2158,25 @@ class TestLocalAssessmentApplies:
 
 
 class TestToDictHumanInvolvementFlags:
-    def test_no_labels_both_false(self) -> None:
-        tasks = [_task(1)]
+    @pytest.mark.parametrize(
+        ("labels", "human_only", "interactive"),
+        [
+            pytest.param(None, False, False, id="no-labels-both-false"),
+            pytest.param(["agent:human-only"], True, False, id="human-only-label-sets-flag"),
+            pytest.param(["agent:interactive-recommended"], False, True, id="interactive-recommended-label-sets-flag"),
+            pytest.param(
+                ["agent:human-only", "agent:interactive-recommended"],
+                True,
+                False,
+                id="both-labels-human-only-takes-precedence",
+            ),
+        ],
+    )
+    def test_flags(self, labels: list[str] | None, human_only: bool, interactive: bool) -> None:
+        tasks = [_task(1, labels=labels)]
         node = DependencyGraph(tasks).to_dict()["nodes"][0]
-        assert node["is_human_only"] is False
-        assert node["is_interactive_recommended"] is False
-
-    def test_human_only_label_sets_flag(self) -> None:
-        tasks = [_task(1, labels=["agent:human-only"])]
-        node = DependencyGraph(tasks).to_dict()["nodes"][0]
-        assert node["is_human_only"] is True
-        assert node["is_interactive_recommended"] is False
-
-    def test_interactive_recommended_label_sets_flag(self) -> None:
-        tasks = [_task(1, labels=["agent:interactive-recommended"])]
-        node = DependencyGraph(tasks).to_dict()["nodes"][0]
-        assert node["is_human_only"] is False
-        assert node["is_interactive_recommended"] is True
-
-    def test_both_labels_human_only_takes_precedence(self) -> None:
-        tasks = [_task(1, labels=["agent:human-only", "agent:interactive-recommended"])]
-        node = DependencyGraph(tasks).to_dict()["nodes"][0]
-        assert node["is_human_only"] is True
-        assert node["is_interactive_recommended"] is False
+        assert node["is_human_only"] is human_only
+        assert node["is_interactive_recommended"] is interactive
 
     def test_flags_present_alongside_existing_fields(self) -> None:
         tasks = [_task(1, labels=["type: epic", "agent:human-only", "priority: high"])]

@@ -477,7 +477,6 @@ def test_awareness_config_in_project_config() -> None:
     from sova.config.models import ProjectConfig
 
     cfg = ProjectConfig()
-    assert hasattr(cfg, "awareness")
     assert cfg.awareness.enabled is False
 
 

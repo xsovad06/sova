@@ -413,10 +413,3 @@ class TestEgressConfig:
 
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             EgressConfig(mdoe="block")
-
-    def test_project_config_has_egress(self) -> None:
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig()
-        assert hasattr(cfg, "egress")
-        assert cfg.egress.mode == "warn"

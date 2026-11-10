@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from sova.roles._review_format import (
     _format_finding_line,
     _verdict_action,
@@ -35,71 +37,66 @@ def _fd(
 
 
 class TestClampSeverity:
-    def test_within_range(self) -> None:
-        assert clamp_severity(5) == 5
-
-    def test_zero_clamps_to_one(self) -> None:
-        assert clamp_severity(0) == 1
-
-    def test_negative_clamps_to_one(self) -> None:
-        assert clamp_severity(-3) == 1
-
-    def test_above_ten_clamps(self) -> None:
-        assert clamp_severity(15) == 10
-
-    def test_boundary_one(self) -> None:
-        assert clamp_severity(1) == 1
-
-    def test_boundary_ten(self) -> None:
-        assert clamp_severity(10) == 10
+    @pytest.mark.parametrize(
+        ("severity", "expected"),
+        [
+            pytest.param(5, 5, id="within-range"),
+            pytest.param(0, 1, id="zero-clamps-to-one"),
+            pytest.param(-3, 1, id="negative-clamps-to-one"),
+            pytest.param(15, 10, id="above-ten-clamps"),
+            pytest.param(1, 1, id="boundary-one"),
+            pytest.param(10, 10, id="boundary-ten"),
+        ],
+    )
+    def test_clamp(self, severity: int, expected: int) -> None:
+        assert clamp_severity(severity) == expected
 
 
 class TestSeverityLabel:
-    def test_critical(self) -> None:
-        assert severity_label(7) == "CRITICAL"
-        assert severity_label(10) == "CRITICAL"
-
-    def test_high(self) -> None:
-        assert severity_label(5) == "HIGH"
-        assert severity_label(6) == "HIGH"
-
-    def test_medium(self) -> None:
-        assert severity_label(3) == "MEDIUM"
-        assert severity_label(4) == "MEDIUM"
-
-    def test_low(self) -> None:
-        assert severity_label(1) == "LOW"
-        assert severity_label(2) == "LOW"
-
-    def test_clamps_before_labeling(self) -> None:
-        assert severity_label(0) == "LOW"
-        assert severity_label(-1) == "LOW"
-        assert severity_label(11) == "CRITICAL"
+    @pytest.mark.parametrize(
+        ("severity", "expected"),
+        [
+            pytest.param(7, "CRITICAL", id="critical-lower-bound"),
+            pytest.param(10, "CRITICAL", id="critical-upper-bound"),
+            pytest.param(5, "HIGH", id="high-lower-bound"),
+            pytest.param(6, "HIGH", id="high-upper-bound"),
+            pytest.param(3, "MEDIUM", id="medium-lower-bound"),
+            pytest.param(4, "MEDIUM", id="medium-upper-bound"),
+            pytest.param(1, "LOW", id="low-lower-bound"),
+            pytest.param(2, "LOW", id="low-upper-bound"),
+            # Out-of-range severities are clamped before labeling.
+            pytest.param(0, "LOW", id="zero-clamps-to-low"),
+            pytest.param(-1, "LOW", id="negative-clamps-to-low"),
+            pytest.param(11, "CRITICAL", id="above-ten-clamps-to-critical"),
+        ],
+    )
+    def test_label(self, severity: int, expected: str) -> None:
+        assert severity_label(severity) == expected
 
 
 class TestVerdictFromFindings:
     def test_empty_approve(self) -> None:
         assert verdict_from_findings([]) == "APPROVE"
 
-    def test_critical_block(self) -> None:
-        assert verdict_from_findings([_fd(severity=7)]) == "BLOCK"
-        assert verdict_from_findings([_fd(severity=10)]) == "BLOCK"
-
-    def test_below_critical_revise(self) -> None:
-        assert verdict_from_findings([_fd(severity=3)]) == "REVISE"
-        assert verdict_from_findings([_fd(severity=6)]) == "REVISE"
-
-    def test_below_revise_severity_approve(self) -> None:
-        """Below the default revise_severity (3): advisory, not blocking."""
-        assert verdict_from_findings([_fd(severity=1)]) == "APPROVE"
-        assert verdict_from_findings([_fd(severity=2)]) == "APPROVE"
+    @pytest.mark.parametrize(
+        ("severity", "expected"),
+        [
+            pytest.param(7, "BLOCK", id="critical-lower-bound-blocks"),
+            pytest.param(10, "BLOCK", id="critical-upper-bound-blocks"),
+            pytest.param(3, "REVISE", id="revise-lower-bound"),
+            pytest.param(6, "REVISE", id="just-below-critical-revises"),
+            # Below the default revise_severity (3): advisory, not blocking.
+            pytest.param(1, "APPROVE", id="advisory-severity-one"),
+            pytest.param(2, "APPROVE", id="advisory-severity-two"),
+            pytest.param(0, "APPROVE", id="zero-clamps-to-approve"),
+            pytest.param(15, "BLOCK", id="above-ten-clamps-to-block"),
+        ],
+    )
+    def test_single_finding_verdict(self, severity: int, expected: str) -> None:
+        assert verdict_from_findings([_fd(severity=severity)]) == expected
 
     def test_mixed_uses_max(self) -> None:
         assert verdict_from_findings([_fd(severity=2), _fd(severity=8)]) == "BLOCK"
-
-    def test_clamps_severity(self) -> None:
-        assert verdict_from_findings([_fd(severity=0)]) == "APPROVE"
-        assert verdict_from_findings([_fd(severity=15)]) == "BLOCK"
 
     def test_explicit_thresholds(self) -> None:
         """Acceptance criteria: verdict_from_severities(..., revise_at=3, block_at=7)."""
@@ -124,46 +121,51 @@ class TestFormatReviewBody:
         body = format_review_body([], "")
         assert body.split("\n")[0] == "<!-- sova-review: approve -->"
 
-    def test_marker_revise(self) -> None:
-        body = format_review_body([_fd(severity=4)], "")
-        assert "<!-- sova-review: revise -->" in body
+    @pytest.mark.parametrize(
+        ("severity", "marker"),
+        [
+            pytest.param(4, "<!-- sova-review: revise -->", id="revise"),
+            pytest.param(8, "<!-- sova-review: block -->", id="block"),
+        ],
+    )
+    def test_marker_for_single_finding(self, severity: int, marker: str) -> None:
+        body = format_review_body([_fd(severity=severity)], "")
+        assert marker in body
 
-    def test_marker_block(self) -> None:
-        body = format_review_body([_fd(severity=8)], "")
-        assert "<!-- sova-review: block -->" in body
-
-    def test_review_heading(self) -> None:
+    @pytest.mark.parametrize(
+        "expected",
+        [
+            pytest.param("## Review: APPROVE", id="review-heading"),
+            pytest.param("Review of changes.", id="empty-summary-fallback"),
+            pytest.param("No issues found after thorough review.", id="no-findings-message"),
+        ],
+    )
+    def test_empty_review_contains(self, expected: str) -> None:
         body = format_review_body([], "")
-        assert "## Review: APPROVE" in body
-
-    def test_empty_summary_fallback(self) -> None:
-        body = format_review_body([], "")
-        assert "Review of changes." in body
+        assert expected in body
 
     def test_provided_summary(self) -> None:
         body = format_review_body([], "Custom summary here")
         assert "Custom summary here" in body
         assert "Review of changes." not in body
 
-    def test_no_findings_message(self) -> None:
-        body = format_review_body([], "")
-        assert "No issues found after thorough review." in body
-
     def test_findings_count(self) -> None:
         body = format_review_body([_fd(), _fd(severity=3)], "")
         assert "**2 findings**" in body
 
-    def test_numeric_severity_in_label(self) -> None:
-        body = format_review_body([_fd(severity=6)], "")
-        assert "**[HIGH 6/10]**" in body
-
-    def test_critical_numeric_label(self) -> None:
-        body = format_review_body([_fd(severity=8)], "")
-        assert "**[CRITICAL 8/10]**" in body
-
-    def test_low_numeric_label(self) -> None:
-        body = format_review_body([_fd(severity=2)], "")
-        assert "**[LOW 2/10]**" in body
+    @pytest.mark.parametrize(
+        ("severity", "label"),
+        [
+            pytest.param(6, "**[HIGH 6/10]**", id="high"),
+            pytest.param(8, "**[CRITICAL 8/10]**", id="critical"),
+            pytest.param(2, "**[LOW 2/10]**", id="low"),
+            pytest.param(0, "**[LOW 1/10]**", id="clamped-below"),
+            pytest.param(15, "**[CRITICAL 10/10]**", id="clamped-above"),
+        ],
+    )
+    def test_numeric_severity_label(self, severity: int, label: str) -> None:
+        body = format_review_body([_fd(severity=severity)], "")
+        assert label in body
 
     def test_sorted_desc_by_severity(self) -> None:
         findings = [_fd(severity=2, file="low.py"), _fd(severity=9, file="high.py")]
@@ -206,34 +208,34 @@ class TestFormatReviewBody:
         assert "### Verdict" in body
         assert "**Approved**: no issues found." in body
 
-    def test_verdict_section_block(self) -> None:
-        body = format_review_body([_fd(severity=8, description="SQL injection")], "")
-        assert "**Block**: 1 critical finding(s) require changes." in body
-
-    def test_verdict_section_revise(self) -> None:
-        body = format_review_body([_fd(severity=5, description="Missing check")], "")
-        assert "**Request changes**: 1 high finding(s) require changes." in body
-
-    def test_verdict_counts_blocking_findings_by_severity(self) -> None:
-        findings = [
-            _fd(severity=7, description="critical issue"),
-            _fd(severity=5, description="moderate"),
-        ]
+    @pytest.mark.parametrize(
+        ("findings", "expected"),
+        [
+            pytest.param(
+                [_fd(severity=8, description="SQL injection")],
+                "**Block**: 1 critical finding(s) require changes.",
+                id="block",
+            ),
+            pytest.param(
+                [_fd(severity=5, description="Missing check")],
+                "**Request changes**: 1 high finding(s) require changes.",
+                id="revise",
+            ),
+            pytest.param(
+                [_fd(severity=7, description="critical issue"), _fd(severity=5, description="moderate")],
+                "**Block**: 1 critical, 1 high finding(s) require changes.",
+                id="counts-blocking-findings-by-severity",
+            ),
+            pytest.param(
+                [_fd(severity=8, description="crash"), _fd(severity=2, description="nit")],
+                "**Block**: 1 critical finding(s) require changes.",
+                id="rationale-excludes-advisory-findings",
+            ),
+        ],
+    )
+    def test_verdict_section(self, findings: list[dict], expected: str) -> None:
         body = format_review_body(findings, "")
-        assert "**Block**: 1 critical, 1 high finding(s) require changes." in body
-
-    def test_verdict_rationale_excludes_advisory_findings(self) -> None:
-        findings = [_fd(severity=8, description="crash"), _fd(severity=2, description="nit")]
-        body = format_review_body(findings, "")
-        assert "**Block**: 1 critical finding(s) require changes." in body
-
-    def test_severity_clamped_in_label(self) -> None:
-        body = format_review_body([_fd(severity=0)], "")
-        assert "**[LOW 1/10]**" in body
-
-    def test_severity_clamped_above(self) -> None:
-        body = format_review_body([_fd(severity=15)], "")
-        assert "**[CRITICAL 10/10]**" in body
+        assert expected in body
 
     def test_category_in_finding(self) -> None:
         body = format_review_body([_fd(category="security")], "")
@@ -330,14 +332,16 @@ class TestFormatFindingLine:
         assert "see inline comment above" in result
         assert "`a.py:10`" in result
 
-    def test_full_text_when_location_not_in_inline_keys(self) -> None:
-        result = _format_finding_line(_fd(file="a.py", line=10, description="bad"), {("b.py", 10)})
-        assert "bad" in result
-        assert "see inline comment above" not in result
-
-    def test_file_level_finding_never_collapses(self) -> None:
-        """A finding with line=None can never have an inline comment (those require a diff line)."""
-        result = _format_finding_line(_fd(file="a.py", line=None, description="bad"), {("a.py", 10)})
+    @pytest.mark.parametrize(
+        ("line", "inline_keys"),
+        [
+            pytest.param(10, {("b.py", 10)}, id="location-not-in-inline-keys"),
+            # A finding with line=None can never have an inline comment (those require a diff line).
+            pytest.param(None, {("a.py", 10)}, id="file-level-finding-never-collapses"),
+        ],
+    )
+    def test_keeps_full_text(self, line: int | None, inline_keys: set[tuple[str, int]]) -> None:
+        result = _format_finding_line(_fd(file="a.py", line=line, description="bad"), inline_keys)
         assert "bad" in result
         assert "see inline comment above" not in result
 
@@ -347,43 +351,47 @@ class TestFormatFindingLine:
 
 
 class TestVerdictAction:
-    def test_approve(self) -> None:
-        assert _verdict_action("APPROVE") == "Approved"
-
-    def test_block(self) -> None:
-        assert _verdict_action("BLOCK") == "Block"
-
-    def test_revise(self) -> None:
-        assert _verdict_action("REVISE") == "Request changes"
-
-    def test_unknown_defaults_to_request_changes(self) -> None:
-        assert _verdict_action("OTHER") == "Request changes"
+    @pytest.mark.parametrize(
+        ("verdict", "expected"),
+        [
+            pytest.param("APPROVE", "Approved", id="approve"),
+            pytest.param("BLOCK", "Block", id="block"),
+            pytest.param("REVISE", "Request changes", id="revise"),
+            pytest.param("OTHER", "Request changes", id="unknown-defaults-to-request-changes"),
+        ],
+    )
+    def test_action(self, verdict: str, expected: str) -> None:
+        assert _verdict_action(verdict) == expected
 
 
 class TestVerdictRationale:
-    def test_approve_verdict(self) -> None:
-        assert _verdict_rationale("APPROVE", []) == "no issues found"
-
-    def test_approve_with_findings_still_no_issues(self) -> None:
-        assert _verdict_rationale("APPROVE", [_fd()]) == "no issues found"
-
-    def test_non_approve_empty_findings(self) -> None:
-        assert _verdict_rationale("REVISE", []) == "no issues found"
-
-    def test_non_approve_only_advisory_findings(self) -> None:
-        """Advisory findings (below revise_at) never drove a non-APPROVE verdict."""
-        assert _verdict_rationale("REVISE", [_fd(severity=1)]) == "no issues found"
-
-    def test_single_blocking_finding(self) -> None:
-        assert _verdict_rationale("BLOCK", [_fd(severity=8)]) == "1 critical finding(s) require changes"
-
-    def test_counts_grouped_by_severity_label(self) -> None:
-        findings = [_fd(severity=2), _fd(severity=8), _fd(severity=5), _fd(severity=9)]
-        assert _verdict_rationale("BLOCK", findings) == "2 critical, 1 high finding(s) require changes"
-
-    def test_ordered_most_severe_first(self) -> None:
-        findings = [_fd(severity=3), _fd(severity=8)]
-        assert _verdict_rationale("BLOCK", findings) == "1 critical, 1 medium finding(s) require changes"
+    @pytest.mark.parametrize(
+        ("verdict", "findings", "expected"),
+        [
+            pytest.param("APPROVE", [], "no issues found", id="approve-verdict"),
+            pytest.param("APPROVE", [_fd()], "no issues found", id="approve-with-findings-still-no-issues"),
+            pytest.param("REVISE", [], "no issues found", id="non-approve-empty-findings"),
+            # Advisory findings (below revise_at) never drove a non-APPROVE verdict.
+            pytest.param("REVISE", [_fd(severity=1)], "no issues found", id="non-approve-only-advisory-findings"),
+            pytest.param(
+                "BLOCK", [_fd(severity=8)], "1 critical finding(s) require changes", id="single-blocking-finding"
+            ),
+            pytest.param(
+                "BLOCK",
+                [_fd(severity=2), _fd(severity=8), _fd(severity=5), _fd(severity=9)],
+                "2 critical, 1 high finding(s) require changes",
+                id="counts-grouped-by-severity-label",
+            ),
+            pytest.param(
+                "BLOCK",
+                [_fd(severity=3), _fd(severity=8)],
+                "1 critical, 1 medium finding(s) require changes",
+                id="ordered-most-severe-first",
+            ),
+        ],
+    )
+    def test_rationale(self, verdict: str, findings: list[dict], expected: str) -> None:
+        assert _verdict_rationale(verdict, findings) == expected
 
 
 class TestFormatFromJson:
@@ -414,8 +422,6 @@ class TestFormatFromJson:
         assert "### What's Done Well" not in body
 
     def test_invalid_json_raises(self) -> None:
-        import pytest
-
         with pytest.raises(json.JSONDecodeError):
             format_from_json("not json")
 
@@ -423,19 +429,25 @@ class TestFormatFromJson:
 class TestFormatFromJsonSha:
     """The /review-pr command anchors its verdict to the reviewed commit via the ``sha`` field."""
 
-    def test_sha_is_embedded_in_marker(self) -> None:
-        sha = "892372e3512475e42638ffe7cab9a14d0734a2b5"
-        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": sha}))
-        assert body.splitlines()[0] == f"<!-- sova-review: approve sha={sha} -->"
-
-    def test_missing_sha_leaves_marker_unanchored(self) -> None:
-        body = format_from_json(json.dumps({"findings": [], "summary": "s"}))
-        assert body.splitlines()[0] == "<!-- sova-review: approve -->"
-
-    def test_malformed_sha_is_not_embedded(self) -> None:
-        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": "<headRefOid from Step 1>"}))
-        assert body.splitlines()[0] == "<!-- sova-review: approve -->"
-
-    def test_uppercase_sha_is_lowercased_to_match_github_head(self) -> None:
-        body = format_from_json(json.dumps({"findings": [], "summary": "s", "sha": "892372E3"}))
-        assert body.splitlines()[0] == "<!-- sova-review: approve sha=892372e3 -->"
+    @pytest.mark.parametrize(
+        ("extra", "marker"),
+        [
+            pytest.param(
+                {"sha": "892372e3512475e42638ffe7cab9a14d0734a2b5"},
+                "<!-- sova-review: approve sha=892372e3512475e42638ffe7cab9a14d0734a2b5 -->",
+                id="sha-is-embedded-in-marker",
+            ),
+            pytest.param({}, "<!-- sova-review: approve -->", id="missing-sha-leaves-marker-unanchored"),
+            pytest.param(
+                {"sha": "<headRefOid from Step 1>"}, "<!-- sova-review: approve -->", id="malformed-sha-is-not-embedded"
+            ),
+            pytest.param(
+                {"sha": "892372E3"},
+                "<!-- sova-review: approve sha=892372e3 -->",
+                id="uppercase-sha-is-lowercased-to-match-github-head",
+            ),
+        ],
+    )
+    def test_marker(self, extra: dict[str, str], marker: str) -> None:
+        body = format_from_json(json.dumps({"findings": [], "summary": "s", **extra}))
+        assert body.splitlines()[0] == marker

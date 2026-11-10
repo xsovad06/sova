@@ -18,102 +18,87 @@ class TestComputeIssueRevisionHash:
         b = compute_issue_revision_hash("Title", "Body text")
         assert a == b
 
-    def test_changes_with_title(self) -> None:
-        a = compute_issue_revision_hash("Title A", "Body text")
-        b = compute_issue_revision_hash("Title B", "Body text")
-        assert a != b
-
-    def test_changes_with_body(self) -> None:
-        a = compute_issue_revision_hash("Title", "Body A")
-        b = compute_issue_revision_hash("Title", "Body B")
-        assert a != b
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            pytest.param(("Title A", "Body text"), ("Title B", "Body text"), id="title-changed"),
+            pytest.param(("Title", "Body A"), ("Title", "Body B"), id="body-changed"),
+            pytest.param(
+                (
+                    "Title",
+                    "## Original Description\n\nDo the thing.\n\n---\n\n## Implementation Spec\n\nSpec stuff here.\n",
+                ),
+                (
+                    "Title",
+                    "## Original Description\n\nDo a completely different thing.\n\n---\n\n"
+                    "## Implementation Spec\n\nSpec stuff here.\n",
+                ),
+                id="real-change-after-original-description-writeback",
+            ),
+        ],
+    )
+    def test_changes_with_content(self, first: tuple[str, str], second: tuple[str, str]) -> None:
+        assert compute_issue_revision_hash(*first) != compute_issue_revision_hash(*second)
 
     def test_is_short_hex(self) -> None:
         digest = compute_issue_revision_hash("Title", "Body")
         assert len(digest) == 12
         int(digest, 16)  # does not raise
 
-    def test_ignores_triage_assessment_section(self) -> None:
-        base = compute_issue_revision_hash("Title", "Body text")
-        with_triage = compute_issue_revision_hash("Title", "Body text\n\n## Triage Assessment\n\nScore: 8/10\n")
-        assert base == with_triage
-
-    def test_ignores_research_section(self) -> None:
-        base = compute_issue_revision_hash("Title", "Body text")
-        with_research = compute_issue_revision_hash("Title", "Body text\n\n## Research\n\nFindings here.\n")
-        assert base == with_research
-
-    def test_triage_and_research_both_stripped_regardless_of_order(self) -> None:
-        base = compute_issue_revision_hash("Title", "Body text")
-        combined = compute_issue_revision_hash(
-            "Title",
-            "Body text\n\n## Research\n\nFindings.\n\n## Triage Assessment\n\nScore: 8/10\n",
-        )
-        assert base == combined
-
-    def test_research_subheading_residue_is_fully_stripped(self) -> None:
-        """An LLM-authored Research section containing its own ``## `` subheading must not
-        leave residue in the hash: appended sections are stripped by position (first match
-        to EOF), not per-heading up to the next ``## ``, which would stop at that subheading."""
-        base = compute_issue_revision_hash("Title", "Body text")
-        with_subheading = compute_issue_revision_hash(
-            "Title",
-            "Body text\n\n## Research\n\n### Findings\nSome text\n\n## More stuff\njunk\n",
-        )
-        assert base == with_subheading
-
-    def test_original_description_writeback_preserves_hash(self) -> None:
-        """The ``/spec`` command's optional Step 8 write-back restructures the whole issue
-        body as ``## Original Description`` + ``---`` + ``## Implementation Spec``, purely
-        cosmetically. That restructuring must not change the hash it is meant to protect."""
-        base = compute_issue_revision_hash("Title", "Do the thing.")
-        after_writeback = compute_issue_revision_hash(
-            "Title",
-            "## Original Description\n\nDo the thing.\n\n---\n\n## Implementation Spec\n\nSpec stuff here.\n",
-        )
-        assert base == after_writeback
-
-    def test_original_description_writeback_still_detects_real_change(self) -> None:
-        after_writeback = compute_issue_revision_hash(
-            "Title",
-            "## Original Description\n\nDo the thing.\n\n---\n\n## Implementation Spec\n\nSpec stuff here.\n",
-        )
-        changed = compute_issue_revision_hash(
-            "Title",
-            "## Original Description\n\nDo a completely different thing.\n\n---\n\n"
-            "## Implementation Spec\n\nSpec stuff here.\n",
-        )
-        assert after_writeback != changed
+    @pytest.mark.parametrize(
+        ("base", "variant"),
+        [
+            pytest.param(
+                ("Title", "Body text"),
+                ("Title", "Body text\n\n## Triage Assessment\n\nScore: 8/10\n"),
+                id="triage-assessment-section-ignored",
+            ),
+            pytest.param(
+                ("Title", "Body text"),
+                ("Title", "Body text\n\n## Research\n\nFindings here.\n"),
+                id="research-section-ignored",
+            ),
+            pytest.param(
+                ("Title", "Body text"),
+                ("Title", "Body text\n\n## Research\n\nFindings.\n\n## Triage Assessment\n\nScore: 8/10\n"),
+                id="triage-and-research-stripped-in-any-order",
+            ),
+            # An LLM-authored Research section with its own `## ` subheading must leave no residue: appended
+            # sections are stripped by position (first match to EOF), not per heading up to the next `## `.
+            pytest.param(
+                ("Title", "Body text"),
+                ("Title", "Body text\n\n## Research\n\n### Findings\nSome text\n\n## More stuff\njunk\n"),
+                id="research-subheading-residue-stripped",
+            ),
+            # The /spec command's optional Step 8 write-back restructures the body as
+            # `## Original Description` + `---` + `## Implementation Spec`, purely cosmetically.
+            pytest.param(
+                ("Title", "Do the thing."),
+                (
+                    "Title",
+                    "## Original Description\n\nDo the thing.\n\n---\n\n## Implementation Spec\n\nSpec stuff here.\n",
+                ),
+                id="original-description-writeback-preserves-hash",
+            ),
+            # `remove_section` trims only when it removed a section, so a body ending in whitespace used to
+            # hash differently once SOVA appended a Triage Assessment: the drift the stripping exists to prevent.
+            pytest.param(
+                ("Title", "Body text\n"),
+                ("Title", "Body text\n\n## Triage Assessment\n\nScore: 8/10\n"),
+                id="trailing-whitespace-before-appended-section",
+            ),
+            pytest.param(("Title", "Body text"), ("Title", "  Body text\n\n"), id="body-surrounding-whitespace"),
+            # The legacy title comparison in `spec_is_current` already trims `task.title`; the hash must
+            # normalize the same way or one path sees a whitespace edit as a real change.
+            pytest.param(("Title", "Body text"), ("  Title  \n", "Body text"), id="title-surrounding-whitespace"),
+        ],
+    )
+    def test_hash_unchanged(self, base: tuple[str, str], variant: tuple[str, str]) -> None:
+        assert compute_issue_revision_hash(*base) == compute_issue_revision_hash(*variant)
 
     def test_empty_body(self) -> None:
         # Must not raise.
         compute_issue_revision_hash("Title", "")
-
-    def test_trailing_whitespace_does_not_change_hash_when_section_appended(self) -> None:
-        """A body ending in a newline must hash the same before and after an append.
-
-        ``remove_section`` trims its result only when it actually removed a
-        section, so a body whose own text ends in whitespace used to hash
-        differently once SOVA appended a Triage Assessment section: exactly the
-        drift ``_APPENDED_SECTION_HEADINGS`` exists to prevent.
-        """
-        base = compute_issue_revision_hash("Title", "Body text\n")
-        with_triage = compute_issue_revision_hash("Title", "Body text\n\n## Triage Assessment\n\nScore: 8/10\n")
-        assert base == with_triage
-
-    def test_surrounding_whitespace_in_body_is_normalized(self) -> None:
-        assert compute_issue_revision_hash("Title", "  Body text\n\n") == compute_issue_revision_hash(
-            "Title", "Body text"
-        )
-
-    def test_surrounding_whitespace_in_title_is_normalized(self) -> None:
-        """The legacy title-comparison path in ``spec_is_current`` already trims
-        ``task.title``; the hash must normalize the same way or a title edited
-        to add/remove surrounding whitespace looks like a real content change
-        to one path but not the other."""
-        assert compute_issue_revision_hash("  Title  \n", "Body text") == compute_issue_revision_hash(
-            "Title", "Body text"
-        )
 
 
 class TestSpecIsCurrent:
@@ -123,10 +108,88 @@ class TestSpecIsCurrent:
         spec_text = f"# Spec: Fix the thing\n\n**Issue revision**: {digest}\n\n## Solution\nDo it.\n"
         assert spec_is_current(spec_text, task) is True
 
-    def test_stale_when_hash_mismatches(self) -> None:
-        task = _task()
-        spec_text = "# Spec: Fix the thing\n\n**Issue revision**: deadbeef0000\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is False
+    @pytest.mark.parametrize(
+        ("title", "spec_text", "expected"),
+        [
+            pytest.param(
+                "Fix the thing",
+                "# Spec: Fix the thing\n\n**Issue revision**: deadbeef0000\n\n## Solution\nDo it.\n",
+                False,
+                id="stale-when-hash-mismatches",
+            ),
+            # A marker with a hand-edited, non-hex value is stale and must not fall through to the legacy
+            # title comparison (which would match here): a spec carrying the marker is never compared by title.
+            pytest.param(
+                "Fix the thing",
+                "# Spec: Fix the thing\n\n**Issue revision**: not-a-valid-hash!!\n",
+                False,
+                id="corrupted-hash-is-stale",
+            ),
+            pytest.param(
+                "Fix the thing", "# Spec: Fix the thing\n\n## Solution\nDo it.\n", True, id="legacy-matching-title"
+            ),
+            pytest.param(
+                "Fix the thing",
+                "# Spec: Fix a different thing\n\n## Solution\nDo it.\n",
+                False,
+                id="legacy-mismatched-title",
+            ),
+            pytest.param(
+                "  Fix the thing  ",
+                "# Spec: Fix the thing\n\n## Solution\nDo it.\n",
+                True,
+                id="legacy-title-match-trims-whitespace",
+            ),
+            # No revision line and no parseable title: nothing to compare, so don't block.
+            pytest.param("Fix the thing", "## Solution\nDo it.\n", True, id="legacy-no-title-heading"),
+            # A marker with no value must not capture text from a following line as the hash
+            # (`\s*` used to span the newline).
+            pytest.param(
+                "Fix the thing",
+                "# Spec: Fix the thing\n\n**Issue revision**:\n\nabc\n\n## Solution\nDo it.\n",
+                False,
+                id="marker-value-on-next-line-not-captured",
+            ),
+            # A `# ` line inside a fenced block before the real title is not the title: the real one is
+            # found and compared instead, and it matches here.
+            pytest.param(
+                "Fix the thing",
+                "```bash\n# some note\necho hi\n```\n\n# Spec: Fix the thing\n\n## Solution\nDo it.\n",
+                True,
+                id="legacy-title-inside-fence-ignored",
+            ),
+            # The fix for the case above: a real title behind a leading fence that does NOT match must be
+            # caught as stale, not trusted just because the first line isn't a heading.
+            pytest.param(
+                "Fix the thing",
+                "```bash\n# some note\necho hi\n```\n\n# Spec: Fix a different thing\n\n## Solution\nDo it.\n",
+                False,
+                id="legacy-title-behind-fence-mismatch",
+            ),
+            # A first line of frontmatter prose (not a fence, not a heading) must not hide the real title.
+            pytest.param(
+                "Fix the thing",
+                "**Status**: approved\n\n# Spec: Fix a different thing\n\n## Solution\nDo it.\n",
+                False,
+                id="frontmatter-before-title",
+            ),
+            # Frontmatter quoting the marker format inside a fence (as this repo's docs do) is not the real
+            # stamp; without fence-masking `deadbeef0000` read as a mismatched stamp and marked the spec stale.
+            pytest.param(
+                "Fix the thing",
+                "# Spec: Fix the thing\n"
+                "Stamp specs with a line like:\n\n"
+                "```\n"
+                "**Issue revision**: deadbeef0000\n"
+                "```\n\n"
+                "## Solution\nDo it.\n",
+                True,
+                id="marker-quoted-in-fence-not-the-stamp",
+            ),
+        ],
+    )
+    def test_spec_text_without_a_matching_stamp(self, title: str, spec_text: str, expected: bool) -> None:
+        assert spec_is_current(spec_text, _task(title=title)) is expected
 
     def test_stale_when_body_changes_after_spec_written(self) -> None:
         task = _task(body="Original body.")
@@ -141,50 +204,11 @@ class TestSpecIsCurrent:
         spec_text = f"# Spec: Fix the thing\n\n**Issue revision**: {digest}\n"
         assert spec_is_current(spec_text, task) is True
 
-    def test_corrupted_hash_treated_as_stale_not_raising(self) -> None:
-        """A marker present with a hand-edited, non-hex value is stale, not a legacy fallback.
-
-        Must not fall through to the legacy title comparison even though the
-        spec's title here would otherwise match: a spec new enough to carry
-        the marker is never compared by title.
-        """
-        task = _task()
-        spec_text = "# Spec: Fix the thing\n\n**Issue revision**: not-a-valid-hash!!\n"
-        assert spec_is_current(spec_text, task) is False
-
-    def test_legacy_spec_with_matching_title_is_current(self) -> None:
-        task = _task(title="Fix the thing")
-        spec_text = "# Spec: Fix the thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is True
-
-    def test_legacy_spec_with_mismatched_title_is_stale(self) -> None:
-        task = _task(title="Fix the thing")
-        spec_text = "# Spec: Fix a different thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is False
-
-    def test_legacy_spec_title_match_trims_whitespace(self) -> None:
-        task = _task(title="  Fix the thing  ")
-        spec_text = "# Spec: Fix the thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is True
-
-    def test_legacy_spec_with_no_title_heading_is_current(self) -> None:
-        """No revision line and no parseable title: nothing to compare, so don't block."""
-        task = _task()
-        spec_text = "## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is True
-
     def test_legacy_spec_title_without_spec_prefix_is_compared_verbatim(self) -> None:
         """A heading that omits the ``Spec: `` prefix compares as the whole title."""
         task = _task(title="Fix the thing")
         assert spec_is_current("# Fix the thing\n\n## Solution\nDo it.\n", task) is True
         assert spec_is_current("# Fix another thing\n\n## Solution\nDo it.\n", task) is False
-
-    def test_marker_value_on_next_line_is_not_captured_as_hash(self) -> None:
-        """A marker with no value on its own line must not pick up unrelated text
-        from a following line as the hash (``\\s*`` used to span the newline)."""
-        task = _task(title="Fix the thing")
-        spec_text = "# Spec: Fix the thing\n\n**Issue revision**:\n\nabc\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is False
 
     def test_hash_of_wrong_length_is_rejected(self) -> None:
         """A value that is hex but not exactly 12 chars must not be accepted as a hash."""
@@ -192,48 +216,6 @@ class TestSpecIsCurrent:
         digest = compute_issue_revision_hash(task.title, task.body)
         spec_text = f"# Spec: Fix the thing\n\n**Issue revision**: {digest[:10]}\n"
         assert spec_is_current(spec_text, task) is False
-
-    def test_legacy_title_inside_fenced_block_is_not_mistaken_for_title(self) -> None:
-        """A ``# `` line inside a fenced example block that precedes the real title
-        heading must not be read as the spec's title: the real title (outside
-        the fence) is found and compared instead, and it happens to match here."""
-        task = _task(title="Fix the thing")
-        spec_text = "```bash\n# some note\necho hi\n```\n\n# Spec: Fix the thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is True
-
-    def test_legacy_title_behind_fence_mismatch_is_detected(self) -> None:
-        """The fix for the case above: a real title behind a leading fence that
-        does NOT match the issue's current title must be caught as stale, not
-        unconditionally trusted just because the first line isn't a heading."""
-        task = _task(title="Fix the thing")
-        spec_text = "```bash\n# some note\necho hi\n```\n\n# Spec: Fix a different thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is False
-
-    def test_frontmatter_line_before_title_does_not_defeat_the_title_check(self) -> None:
-        """A spec whose very first line is frontmatter prose (not a fence, not a
-        heading) must still have its real title found and compared."""
-        task = _task(title="Fix the thing")
-        spec_text = "**Status**: approved\n\n# Spec: Fix a different thing\n\n## Solution\nDo it.\n"
-        assert spec_is_current(spec_text, task) is False
-
-    def test_marker_quoted_inside_fenced_block_is_not_read_as_the_stamp(self) -> None:
-        """A spec's frontmatter that quotes the ``**Issue revision**:`` marker
-        format inside a fenced example (as this repo's own docs do) must not
-        have that quoted text read as the spec's real stamp. With no real
-        marker present, this legacy spec falls back to the title comparison,
-        which matches. Without fence-masking, ``deadbeef0000`` is valid hex of
-        the right length and would have been read as a mismatched real stamp,
-        incorrectly marking this spec stale."""
-        task = _task(title="Fix the thing")
-        spec_text = (
-            "# Spec: Fix the thing\n"
-            "Stamp specs with a line like:\n\n"
-            "```\n"
-            "**Issue revision**: deadbeef0000\n"
-            "```\n\n"
-            "## Solution\nDo it.\n"
-        )
-        assert spec_is_current(spec_text, task) is True
 
     def test_marker_quoted_in_fence_does_not_shadow_the_real_stamp(self) -> None:
         """A fenced example quoting the marker format, placed before the real
