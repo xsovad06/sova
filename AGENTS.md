@@ -110,7 +110,7 @@ This project uses **GitHub Issues** with a project board.
 - **Bash scripts**: `make lint-bash` + `make test-bash`; every script under `invariants/` and `.github/scripts/` must handle `--help` gracefully and stay executable (CI enforces both)
 - **Dashboard JS**: `make lint-js` (`node --check` per script and ES module); `node` is a dev requirement
 - **Python (local iteration)**: `make test-py` (deselects `runtime`/`stress`/`chaos`/`evaluation`; `PYTEST_WORKERS`, default 2)
-- **CI test invocation**: `make test-ci`, which does not deselect those markers, so a test carrying one gates itself with its own `skipif`
+- **CI test invocation**: `make test-ci`, which does not deselect those markers, so a test carrying one gates itself with its own `skipif`; SOVA caps its `-n auto` per agent (`testing.check_workers`)
 - **Commands**: validate markdown structure (frontmatter, sections)
 - Real-money targets, CI matrix, coverage artifact: full entry: docs/testing-guidelines.md, "CI Matrix and Opt-in Targets"
 

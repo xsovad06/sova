@@ -117,6 +117,7 @@ class PushStep(BaseStep):
             cwd=ctx.working_dir,
             no_verify=no_verify,
             github_user=ctx.config.github_user,
+            config=ctx.config,
         )
 
     async def _log_dropped_commits(self, ctx: ExecutionContext, divergence: DivergenceCheck) -> None:

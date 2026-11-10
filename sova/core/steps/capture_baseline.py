@@ -45,6 +45,7 @@ class CaptureBaselineStep(BaseStep):
                 test_cmd=test_cmd,
                 cwd=ctx.worktree_dir,
                 cmd_timeout=ctx.config.testing.baseline_timeout,
+                config=ctx.config,
             )
             path = save_baseline(snapshot, ctx.worktree_dir)
             ctx.test_baseline_path = path

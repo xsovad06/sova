@@ -52,6 +52,7 @@ from sova.llm.errors import BillingError, LLMInvocationError, LLMTimeoutError, c
 from sova.llm.models import LLMResult, accumulate_llm_result
 from sova.llm.provider import _assert_command_exists
 from sova.llm.routing import task_type_model_compatible
+from sova.utils.env import with_pytest_worker_cap
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
@@ -663,11 +664,15 @@ async def _run_agent_process(
     # start_command() spawn (neither goes through this module). Lets a
     # command's full-check instruction (develop.md, review.md, pr.md) reuse
     # an identical check an earlier call site in this cycle already ran; see
-    # sova.core.check_cache.should_skip().
+    # sova.core.check_cache.should_skip(). The pytest worker cap reaches the
+    # agent's own `make check` the same way (sova.utils.env.with_pytest_worker_cap()).
+    spawn_env = with_pytest_worker_cap(
+        {**os.environ, PIPELINE_STAGE_ENV_KEY: "1"}, ctx.config if ctx is not None else None
+    )
     proc = await runtime.spawn(
         prompt,
         cwd,
-        env={**os.environ, PIPELINE_STAGE_ENV_KEY: "1"},
+        env=spawn_env,
         model=model,
         fallback_model=fallback_model,
         max_budget_usd=max_budget_usd,

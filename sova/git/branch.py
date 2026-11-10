@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.git.artifact_exclusions import (
     RUNTIME_STATE_PATHS,
@@ -23,6 +24,9 @@ from sova.utils.env import scrub_check_env
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked, subprocess_error
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="git.branch")
 
@@ -164,8 +168,12 @@ async def commit(
     files: list[str] | None = None,
     cwd: Path | None = None,
     no_verify: bool = False,
+    config: ProjectConfig | None = None,
 ) -> None:
-    """Stage files and create a commit."""
+    """Stage files and create a commit.
+
+    *config* is the caller's project config, which the pre-commit hook's pytest worker cap is read from.
+    """
     log.info("git.commit", message=message[:80])
 
     if files:
@@ -186,7 +194,7 @@ async def commit(
     if no_verify:
         args.append("--no-verify")
     # The project's pre-commit hook runs here: keep the orchestrator's database URL out of it.
-    await run_checked(*args, cwd=cwd, env=scrub_check_env())
+    await run_checked(*args, cwd=cwd, env=scrub_check_env(config=config))
 
 
 async def push(
@@ -198,6 +206,7 @@ async def push(
     cwd: Path | None = None,
     no_verify: bool = False,
     github_user: str | None = None,
+    config: ProjectConfig | None = None,
 ) -> None:
     """Push a branch to origin.
 
@@ -243,7 +252,7 @@ async def push(
         env = None
     # The project's pre-push hook runs here: keep the orchestrator's database URL out of it
     # (scrubs the resolved GH_TOKEN env when there is one, the ambient env otherwise).
-    await run_checked(*args, cwd=cwd, env=scrub_check_env(env))
+    await run_checked(*args, cwd=cwd, env=scrub_check_env(env, config=config))
 
 
 class DivergenceStatus(StrEnum):

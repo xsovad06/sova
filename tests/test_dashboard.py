@@ -2832,6 +2832,53 @@ class TestStartCommandWorktreeResolution:
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == worktree, f"Expected worktree {worktree}, got {spawn_cwd}"
 
+    @pytest.mark.parametrize(("operator_value", "expected"), [(None, "from-config"), ("5", "5")])
+    async def test_spawn_env_carries_the_pytest_worker_cap(
+        self, tmp_path: Path, operator_value: str | None, expected: str
+    ) -> None:
+        """A command agent runs its own `make check`, so it gets the worker cap unless the operator set one."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+        from sova.utils.env import PYTEST_WORKERS_ENV_KEY
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        mock_process = MagicMock()
+        mock_process.pid = 9999
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+        gh_env = {"GH_TOKEN": "t"}
+        if operator_value is not None:
+            gh_env[PYTEST_WORKERS_ENV_KEY] = operator_value
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=gh_env),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                return_value=worktree,
+            ),
+            patch("sova.utils.env.configured_pytest_workers", return_value="from-config"),
+        ):
+            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+
+        assert result.get("status") == "started"
+        env = mock_runtime.spawn.call_args.kwargs["env"]
+        assert env[PYTEST_WORKERS_ENV_KEY] == expected
+        assert env["GH_TOKEN"] == "t"
+
     async def test_rejects_pr_command_when_worktree_isolation_fails(self, tmp_path: Path) -> None:
         """PR-based commands should be rejected when worktree resolution falls back to project_dir."""
         from unittest.mock import AsyncMock, patch

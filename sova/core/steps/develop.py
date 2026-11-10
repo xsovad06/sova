@@ -584,7 +584,7 @@ class DevelopStep(BaseStep):
             check_cmd,
             cwd=ctx.working_dir,
             timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
-            env=scrub_check_env(),
+            env=scrub_check_env(config=ctx.config),
         )
         last_check_duration = time.monotonic() - check_start
         max_check_duration = last_check_duration
@@ -631,7 +631,7 @@ class DevelopStep(BaseStep):
                 check_cmd,
                 cwd=ctx.working_dir,
                 timeout=_check_timeout_for_remaining(ctx, develop_cfg.check_timeout),
-                env=scrub_check_env(),
+                env=scrub_check_env(config=ctx.config),
             )
             last_check_duration = time.monotonic() - check_start
             max_check_duration = max(max_check_duration, last_check_duration)

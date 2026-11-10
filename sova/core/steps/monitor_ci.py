@@ -660,6 +660,7 @@ class MonitorCIStep(BaseStep):
                     set_upstream=True,
                     cwd=ctx.working_dir,
                     github_user=ctx.config.github_user,
+                    config=ctx.config,
                 )
             except RuntimeError as exc:
                 log.error("step.monitor_ci.push_failed", error=str(exc), exc_info=True)
@@ -789,7 +790,7 @@ class MonitorCIStep(BaseStep):
             "-m",
             f"{format_type_scope(commit_type, scope)}: address CI failures",
             cwd=ctx.working_dir,
-            env=scrub_check_env(),
+            env=scrub_check_env(config=ctx.config),
         )
         if commit.success:
             log.info("step.monitor_ci.auto_committed")
@@ -824,7 +825,9 @@ class MonitorCIStep(BaseStep):
 
         hook = await find_pre_push_hook(ctx.working_dir)
         if hook:
-            hook_result = await run(hook, "origin", "unused", cwd=ctx.working_dir, timeout=120, env=scrub_check_env())
+            hook_result = await run(
+                hook, "origin", "unused", cwd=ctx.working_dir, timeout=120, env=scrub_check_env(config=ctx.config)
+            )
             if not hook_result.success:
                 hook_output = (hook_result.stdout + "\n" + hook_result.stderr).strip()
                 log.warning(

@@ -62,6 +62,9 @@ from sova.dashboard.services.agent_context import (
 from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
+from sova.dashboard.services.agent_context import (
+    with_check_worker_cap,
+)
 from sova.dashboard.services.agent_db import (
     SUITABILITY_CHECK_KEY,
     SUITABILITY_OVERRIDDEN,
@@ -822,7 +825,7 @@ async def start_agent(
                 process = await runtime.spawn(
                     prompt,
                     cwd,
-                    env=gh_env,
+                    env=with_check_worker_cap(gh_env, project_dir),
                     model=model,
                     fallback_model=fallback_model,
                     output_dir=output_dir,
@@ -1051,7 +1054,7 @@ async def start_command(
             process = await runtime.spawn(
                 prompt,
                 cwd,
-                env=gh_env,
+                env=with_check_worker_cap(gh_env, project_dir),
                 model=model,
                 fallback_model=fallback_model,
                 output_dir=output_dir,

@@ -682,6 +682,7 @@ class WorkflowEngine:
             f"{step_name} (timeout)",
             commit_type=resolve_default_type(commit.types, preferred="chore"),
             scope=resolve_default_scope(commit.scopes),
+            config=self._ctx.config,
         )
 
     async def _persist_step_result(

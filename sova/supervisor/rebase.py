@@ -330,7 +330,7 @@ async def _run_rebase_and_push(
         ops.write_manual_handoff(project_dir, issue_number, pr_number, branch, f"Auto-rebase failed: {result.error}")
         return {"status": "failed", "pr_number": pr_number, "error": result.error}
 
-    hook_result = await ops.run_pre_push_hook(worktree_path)
+    hook_result = await ops.run_pre_push_hook(worktree_path, project_dir=project_dir)
     if not hook_result["passed"]:
         log.warning("auto_rebase.pre_push_failed", issue=issue_number, pr=pr_number, output=hook_result["output"][:500])
         await ops.finalize_run(task_run.id, "failed", "Pre-push hook failed", head_sha, session_factory)
@@ -345,7 +345,13 @@ async def _run_rebase_and_push(
         return {"status": "failed", "pr_number": pr_number, "error": "Pre-push hook failed after rebase"}
 
     push_result = await ops.run(
-        "git", "push", "origin", branch, "--force-with-lease", cwd=worktree_path, env=scrub_check_env()
+        "git",
+        "push",
+        "origin",
+        branch,
+        "--force-with-lease",
+        cwd=worktree_path,
+        env=scrub_check_env(project_dir=project_dir),
     )
     if not push_result.success:
         if "stale info" in push_result.stderr or "rejected" in push_result.stderr:
@@ -469,13 +475,16 @@ async def _finalize_run(
             await session.commit()
 
 
-async def _run_pre_push_hook(worktree_path: Path) -> dict[str, Any]:
-    """Run the pre-push hook in the worktree. Returns {passed, output}."""
+async def _run_pre_push_hook(worktree_path: Path, project_dir: Path | None = None) -> dict[str, Any]:
+    """Run the pre-push hook in the worktree. Returns {passed, output}.
+
+    *project_dir* picks the config the pytest worker cap comes from; the server's cwd may be another project.
+    """
     hook_path = worktree_path / ".githooks" / "pre-push"
     if not hook_path.exists():
         return {"passed": True, "output": ""}
 
-    result = await run(str(hook_path), cwd=worktree_path, timeout=300, env=scrub_check_env())
+    result = await run(str(hook_path), cwd=worktree_path, timeout=300, env=scrub_check_env(project_dir=project_dir))
     return {"passed": result.success, "output": (result.stdout or "") + (result.stderr or "")}
 
 

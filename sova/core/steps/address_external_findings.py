@@ -436,6 +436,7 @@ class AddressExternalFindingsStep(BaseStep):
                     # would otherwise stage and commit it onto the PR branch.
                     files=[".", *EXCLUDED_PATHSPECS],
                     cwd=ctx.working_dir,
+                    config=ctx.config,
                 )
                 committed = True
             except RuntimeError:
@@ -450,6 +451,7 @@ class AddressExternalFindingsStep(BaseStep):
                     set_upstream=True,
                     cwd=ctx.working_dir,
                     github_user=ctx.config.github_user,
+                    config=ctx.config,
                 )
                 pushed = True
             except RuntimeError:

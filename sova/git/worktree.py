@@ -23,6 +23,7 @@ from sova.utils.shell import ShellResult, run, run_checked, subprocess_error
 
 if TYPE_CHECKING:
     from sova.agents.base import RuntimeAdapter
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="git.worktree")
 
@@ -61,7 +62,12 @@ async def _reset_index(work_dir: Path, reason: str) -> None:
 
 
 async def preserve_partial_work(
-    work_dir: Path | None, reason: str, *, commit_type: str = "chore", scope: str = "core"
+    work_dir: Path | None,
+    reason: str,
+    *,
+    commit_type: str = "chore",
+    scope: str = "core",
+    config: ProjectConfig | None = None,
 ) -> bool:
     """Stage and commit changes (tracked and new) in *work_dir*, if any.
 
@@ -137,7 +143,7 @@ async def preserve_partial_work(
             return False
 
         message = f"{format_type_scope(commit_type, scope)}: preserve partial work from {reason}"
-        commit_result = await run("git", "commit", "-m", message, cwd=work_dir, env=scrub_check_env())
+        commit_result = await run("git", "commit", "-m", message, cwd=work_dir, env=scrub_check_env(config=config))
         if not commit_result.success:
             log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
             return False

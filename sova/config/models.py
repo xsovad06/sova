@@ -930,10 +930,15 @@ class DependencyHealthConfig(BaseSettings):
 
 
 class TestingConfig(BaseSettings):
-    """Test baseline and regression detection configuration."""
+    """Test baseline, regression detection and check-command worker configuration."""
 
     baseline_enabled: bool = True
     baseline_timeout: int = Field(300, gt=0)
+    # pytest-xdist workers a SOVA-run check command (and a dispatched agent's own check) gets
+    # through PYTEST_XDIST_AUTO_NUM_WORKERS: 0 splits the cores between max_parallel_agents
+    # (sova.utils.env.pytest_worker_count), any other value is a fixed count. An operator's own
+    # PYTEST_XDIST_AUTO_NUM_WORKERS still wins over both.
+    check_workers: int = Field(0, ge=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_TESTING_")
 

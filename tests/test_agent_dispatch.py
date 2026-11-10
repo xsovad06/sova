@@ -274,6 +274,38 @@ class TestDispatchToolStep:
         spawn_call = runtime.spawn_calls[0]
         assert spawn_call["env"]["SOVA_PIPELINE_STAGE"] == "1"
 
+    @pytest.mark.parametrize(
+        ("operator_value", "expected"),
+        [pytest.param(None, "5", id="testing.check_workers"), pytest.param("9", "9", id="operator value wins")],
+    )
+    async def test_spawn_env_caps_pytest_workers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operator_value: str | None, expected: str
+    ) -> None:
+        """The agent's own `make check` runs `-n auto`, so it must see SOVA's share of the cores."""
+        from sova.config import models as config_models
+
+        if operator_value is None:
+            monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+        else:
+            monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", operator_value)
+        _write_command(tmp_path, "develop", "Do the thing for issue")
+        process = _StubProcess(stdout=["__RESULT__"])
+        runtime = _StubRuntime(process)
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(testing=config_models.TestingConfig(check_workers=5)),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+        )
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight("routed-model", 30.0),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert runtime.spawn_calls[0]["env"]["PYTEST_XDIST_AUTO_NUM_WORKERS"] == expected
+
     async def test_multiple_terminal_results_accumulate_usage(self, tmp_path: Path) -> None:
         """A thread that runs several turns (today only Codex) reports each turn's own
         token usage, not a thread-cumulative total, so two terminal 'result' events in

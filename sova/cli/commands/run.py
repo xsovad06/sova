@@ -284,6 +284,7 @@ async def _handle_sigterm_shutdown(
             "sigterm",
             commit_type=resolve_default_type(commit.types, preferred="chore"),
             scope=resolve_default_scope(commit.scopes),
+            config=ctx.config,
         )
 
     if task_run_id is None:

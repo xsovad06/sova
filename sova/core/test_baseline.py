@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="test_baseline")
 
@@ -91,8 +94,13 @@ async def run_test_suite(
     test_cmd: str,
     cwd: Path,
     cmd_timeout: int = 300,
+    *,
+    config: ProjectConfig | None = None,
 ) -> BaselineSnapshot:
     """Run the project's test suite and capture results.
+
+    *config* supplies the pytest worker cap (``testing.check_workers``, ``max_parallel_agents``);
+    without it the cap is read from the config of the current working directory.
 
     For pytest projects with pytest-json-report installed, captures per-test
     results. Otherwise falls back to exit-code-only mode.
@@ -102,14 +110,14 @@ async def run_test_suite(
 
     if not _is_pytest_cmd(test_cmd):
         log.info("test_baseline.exit_code_mode", reason="non-pytest runner")
-        return await _run_exit_code_only(test_cmd, cwd, cmd_timeout)
+        return await _run_exit_code_only(test_cmd, cwd, cmd_timeout, config)
 
     # Try pytest-json-report for per-test results
     report_path = cwd / BASELINE_DIR / ".test-report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     enriched_cmd = f"{test_cmd} --json-report --json-report-file={report_path} --tb=no -q"
-    result = await run("sh", "-c", enriched_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env())
+    result = await run("sh", "-c", enriched_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env(config=config))
 
     if report_path.exists():
         try:
@@ -126,12 +134,14 @@ async def run_test_suite(
     # The enriched command may have exited with code 4 (usage error) if
     # pytest-json-report is not installed, so we can't trust its exit code.
     log.info("test_baseline.exit_code_fallback", reason="pytest-json-report unavailable")
-    return await _run_exit_code_only(test_cmd, cwd, cmd_timeout)
+    return await _run_exit_code_only(test_cmd, cwd, cmd_timeout, config)
 
 
-async def _run_exit_code_only(test_cmd: str, cwd: Path, cmd_timeout: int) -> BaselineSnapshot:
+async def _run_exit_code_only(
+    test_cmd: str, cwd: Path, cmd_timeout: int, config: ProjectConfig | None = None
+) -> BaselineSnapshot:
     """Capture only the exit code from the test command."""
-    result = await run("sh", "-c", test_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env())
+    result = await run("sh", "-c", test_cmd, cwd=cwd, timeout=cmd_timeout, env=scrub_check_env(config=config))
     return BaselineSnapshot(mode="exit_code", exit_code=result.returncode, tests=[])
 
 

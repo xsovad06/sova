@@ -10,7 +10,8 @@ PYTEST := $(or $(shell command -v pytest 2>/dev/null),$(shell python3 -m site --
 # or set the pytest-xdist-native PYTEST_XDIST_AUTO_NUM_WORKERS env var. Defaults to 2 so
 # concurrent test-py runs on one machine do not each claim every core (issue #1156). It does
 # not apply to `make check`, which goes through test-ci's `-n auto` to stay identical to CI
-# (issue #1209): use test-py directly when several runs may overlap.
+# (issue #1209). `-n auto` reads PYTEST_XDIST_AUTO_NUM_WORKERS too, which SOVA sets for every
+# check it runs and agent it starts (`testing.check_workers`, issue #1191).
 PYTEST_WORKERS ?= $(or $(PYTEST_XDIST_AUTO_NUM_WORKERS),2)
 
 # ── Main targets ──────────────────────────────────────────────

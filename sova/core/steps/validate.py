@@ -137,7 +137,13 @@ class ValidateStep(BaseStep):
         hook_timeout = ctx.config.validation.hook_timeout
         hook_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
         result = await run(
-            hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=hook_stdin, env=scrub_check_env()
+            hook,
+            "origin",
+            "unused",
+            cwd=cwd,
+            timeout=hook_timeout,
+            stdin=hook_stdin,
+            env=scrub_check_env(config=ctx.config),
         )
         if result.success:
             return StepResult(success=True, summary="Pre-push hook passed")
@@ -249,7 +255,13 @@ class ValidateStep(BaseStep):
 
             retry_stdin = await build_pre_push_stdin(cwd, ctx.branch_name)
             retry = await run(
-                hook, "origin", "unused", cwd=cwd, timeout=hook_timeout, stdin=retry_stdin, env=scrub_check_env()
+                hook,
+                "origin",
+                "unused",
+                cwd=cwd,
+                timeout=hook_timeout,
+                stdin=retry_stdin,
+                env=scrub_check_env(config=ctx.config),
             )
             if retry.success:
                 if not folded and await self._worktree_is_dirty(cwd):
@@ -454,6 +466,7 @@ class ValidateStep(BaseStep):
                 test_cmd=test_cmd,
                 cwd=test_dir,
                 cmd_timeout=ctx.config.testing.baseline_timeout,
+                config=ctx.config,
             )
         except Exception:  # noqa: BLE001 (regression check is advisory; validation proceeds without a baseline diff)
             log.warning("step.validate.regression_check_failed", exc_info=True)

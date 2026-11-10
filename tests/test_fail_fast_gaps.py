@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from sova.config import models as config_models
 from sova.config.models import AgentConfig, DevelopConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.develop import DevelopStep
@@ -55,6 +56,8 @@ def mock_config():
         step_timeout=1200,
     )
     cfg.ci = Mock(max_wait=1500)
+    cfg.testing = config_models.TestingConfig()
+    cfg.max_parallel_agents = 2
     cfg.check_cmd = ""
     cfg.notification = Mock()
     return cfg
