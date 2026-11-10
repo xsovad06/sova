@@ -117,6 +117,7 @@ markers = [
     "chaos: failure injection and crash recovery tests (deselect with -m 'not chaos')",
     "codex_smoke: opt-in smoke tests against a real Codex CLI (set SOVA_CODEX_SMOKE=1; deselect with -m 'not codex_smoke')",
     "evaluation: opt-in model-evaluation harness tests against live providers (set SOVA_EVAL_LIVE=1; deselect with -m 'not evaluation')",
+    "slow(reason): slow by nature; exempt from SOVA_TEST_DURATION_BUDGET (tests/duration_budget.py), and the reason is required",
 ]
 # "error" promotes every warning not explicitly allowlisted below into a test
 # failure, so a new, unreviewed warning is caught instead of scrolling by

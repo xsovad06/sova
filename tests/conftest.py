@@ -34,7 +34,8 @@ from sova.db.session import get_session, init_db
 
 # Enables the ``pytester`` fixture: ``tests/test_shared_db_fixture.py`` uses it to
 # drive a deterministic, isolated two-test pytest run in a subprocess.
-pytest_plugins = ["pytester"]
+# ``tests.duration_budget`` fails a test over ``SOVA_TEST_DURATION_BUDGET`` (set in CI).
+pytest_plugins = ["pytester", "tests.duration_budget"]
 
 # ``SOVA_DATABASE_URL`` is set deliberately by several test modules (at import
 # time) to route ORM access to an in-memory SQLite DB, so it must survive the

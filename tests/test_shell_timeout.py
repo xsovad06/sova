@@ -12,32 +12,33 @@ class TestShellKillTimeout:
     """Test that shell.run handles unkillable processes gracefully."""
 
     async def test_run_handles_kill_timeout(self) -> None:
-        """When process.wait() hangs after SIGKILL, timeout prevents indefinite hang."""
+        """When process.wait() hangs after SIGKILL (uninterruptible I/O), the bounded wait gives up and logs it.
+
+        _KILL_TIMEOUT_SECONDS is patched down from 5s: the bound is what is under test, not its length.
+        """
         from sova.utils.shell import run
 
-        # Mock a process that times out, then hangs on wait() after kill
         mock_proc = AsyncMock()
         mock_proc.pid = 12345
         mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
         mock_proc.kill = MagicMock()
 
-        # Simulate wait() hanging forever (simulate uninterruptible I/O)
-        async def hanging_wait():
-            import asyncio
-
-            await asyncio.sleep(100)  # Will be interrupted by timeout
+        async def hanging_wait() -> None:
+            await asyncio.sleep(100)
 
         mock_proc.wait = AsyncMock(side_effect=hanging_wait)
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = await run("test_command", timeout=1)
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.utils.shell._KILL_TIMEOUT_SECONDS", 0.05),
+            patch("sova.utils.shell.log") as mock_log,
+        ):
+            result = await run("test_command", timeout=0.01)
 
-        # Process should be killed
         mock_proc.kill.assert_called_once()
-
-        # Result should indicate timeout
         assert result.returncode == -1
         assert "timed out" in result.stderr.lower()
+        mock_log.warning.assert_called_once_with("shell.kill_timeout", cmd="test_command", pid=12345)
 
     async def test_run_normal_timeout_without_kill_hang(self) -> None:
         """Normal timeout case where process exits cleanly after SIGKILL."""
