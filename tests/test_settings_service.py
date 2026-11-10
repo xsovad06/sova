@@ -925,12 +925,10 @@ class TestSettingsRouterErrors:
     """Router-level tests for settings API error and validation paths."""
 
     @pytest.fixture()
-    async def client(self, reset_db_rows):
+    async def client(self, reset_db_rows, dashboard_app):
         from httpx import ASGITransport, AsyncClient
 
-        from sova.dashboard.app import create_app
-
-        app = create_app()
+        app = dashboard_app
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c

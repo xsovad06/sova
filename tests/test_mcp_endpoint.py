@@ -11,7 +11,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sova.dashboard.app import create_app
 from sova.dashboard.services.mcp_service import generate_mcp_token
 from sova.db.models import TaskRun
 from sova.db.session import get_session
@@ -56,9 +55,9 @@ def test_secret():
 
 
 @pytest.fixture
-async def client():
+async def client(dashboard_app):
     """HTTP client for testing the MCP endpoint."""
-    app = create_app()
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

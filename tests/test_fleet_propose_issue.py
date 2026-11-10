@@ -44,10 +44,9 @@ def _make_insights(
 
 
 @pytest.fixture
-async def client():
-    from sova.dashboard.app import create_app
+async def client(dashboard_app):
 
-    app = create_app(multi_project=False)
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))

@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sova.adapters.priority import Priority
-from sova.dashboard.app import create_app, priorities_json, priority_icon
+from sova.dashboard.app import priorities_json, priority_icon
 from tests.conftest import agents_page_source
 
 # Derived from the registry, so a new Priority level fails these tests until its icon ships.
@@ -29,9 +29,9 @@ pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
 @pytest.fixture
-async def client() -> AsyncClient:
+async def client(dashboard_app) -> AsyncClient:
     """Create test client."""
-    app = create_app(project_dir=None)
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

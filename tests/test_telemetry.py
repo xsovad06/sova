@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -37,12 +36,6 @@ def telemetry_token(monkeypatch: pytest.MonkeyPatch) -> str:
     return token
 
 
-def _make_app():
-    from sova.dashboard.app import create_app
-
-    return create_app(project_dir=Path.cwd())
-
-
 def _make_payload(**overrides) -> dict:
     base = {
         "machine_id": "machine-001",
@@ -65,21 +58,21 @@ def _make_payload(**overrides) -> dict:
 
 @pytest.mark.asyncio
 class TestTelemetryAuth:
-    async def test_no_token_configured_returns_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_no_token_configured_returns_503(self, dashboard_app, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SOVA_TELEMETRY_TOKEN", raising=False)
-        app = _make_app()
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/telemetry/ingest", json=_make_payload())
         assert resp.status_code == 503
 
-    async def test_missing_auth_header_returns_401(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_missing_auth_header_returns_401(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/telemetry/ingest", json=_make_payload())
         assert resp.status_code == 401
 
-    async def test_wrong_token_returns_403(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_wrong_token_returns_403(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest",
@@ -88,8 +81,8 @@ class TestTelemetryAuth:
             )
         assert resp.status_code == 403
 
-    async def test_valid_token_accepted(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_valid_token_accepted(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest",
@@ -100,9 +93,11 @@ class TestTelemetryAuth:
         assert resp.json()["status"] == "ok"
 
     @pytest.mark.parametrize("body", [{}, {"machine_id": 5}, {"run_at": "not-a-date"}])
-    async def test_invalid_body_without_token_returns_401_not_422(self, telemetry_token: str, body: dict) -> None:
+    async def test_invalid_body_without_token_returns_401_not_422(
+        self, dashboard_app, telemetry_token: str, body: dict
+    ) -> None:
         """Auth runs before body validation: an unauthenticated caller never sees the schema."""
-        app = _make_app()
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/telemetry/ingest", json=body)
         assert resp.status_code == 401
@@ -110,17 +105,17 @@ class TestTelemetryAuth:
         assert "detail" in body_json
         assert isinstance(body_json["detail"], str)
 
-    async def test_malformed_json_without_token_returns_401_not_422(self, telemetry_token: str) -> None:
+    async def test_malformed_json_without_token_returns_401_not_422(self, dashboard_app, telemetry_token: str) -> None:
         """FastAPI decodes a body parameter before dependencies; this route parses after auth."""
-        app = _make_app()
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest", content=b"{not json", headers={"Content-Type": "application/json"}
             )
         assert resp.status_code == 401
 
-    async def test_malformed_json_with_valid_token_returns_422(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_malformed_json_with_valid_token_returns_422(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest",
@@ -130,8 +125,10 @@ class TestTelemetryAuth:
         assert resp.status_code == 422
         assert resp.json()["detail"][0]["loc"][0] == "body"
 
-    async def test_non_utf8_body_with_valid_token_returns_422_not_500(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_non_utf8_body_with_valid_token_returns_422_not_500(
+        self, dashboard_app, telemetry_token: str
+    ) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest",
@@ -143,9 +140,9 @@ class TestTelemetryAuth:
 
     @pytest.mark.parametrize("content_type", ["text/plain", None])
     async def test_non_json_content_type_with_valid_token_returns_415(
-        self, telemetry_token: str, content_type: str | None
+        self, dashboard_app, telemetry_token: str, content_type: str | None
     ) -> None:
-        app = _make_app()
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
         if content_type:
             headers["Content-Type"] = content_type
@@ -153,25 +150,27 @@ class TestTelemetryAuth:
             resp = await client.post("/api/telemetry/ingest", content=b"{}", headers=headers)
         assert resp.status_code == 415
 
-    async def test_openapi_still_documents_the_request_body(self) -> None:
-        schema = _make_app().openapi()["paths"]["/api/telemetry/ingest"]["post"]["requestBody"]
+    async def test_openapi_still_documents_the_request_body(self, dashboard_app) -> None:
+        schema = dashboard_app.openapi()["paths"]["/api/telemetry/ingest"]["post"]["requestBody"]
         assert "machine_id" in schema["content"]["application/json"]["schema"]["properties"]
 
-    async def test_invalid_body_with_wrong_token_returns_403(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_invalid_body_with_wrong_token_returns_403(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/telemetry/ingest", json={}, headers={"Authorization": "Bearer wrong-token"})
         assert resp.status_code == 403
 
-    async def test_invalid_body_when_unconfigured_returns_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_invalid_body_when_unconfigured_returns_503(
+        self, dashboard_app, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("SOVA_TELEMETRY_TOKEN", raising=False)
-        app = _make_app()
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/telemetry/ingest", json={})
         assert resp.status_code == 503
 
-    async def test_invalid_body_with_valid_token_returns_422(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_invalid_body_with_valid_token_returns_422(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(
                 "/api/telemetry/ingest", json={}, headers={"Authorization": f"Bearer {telemetry_token}"}
@@ -186,8 +185,8 @@ class TestTelemetryAuth:
 
 @pytest.mark.asyncio
 class TestTelemetryIngest:
-    async def test_basic_ingest(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_basic_ingest(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         payload = _make_payload(
             step_outcomes={"develop": "done", "push": {"status": "done"}},
             issue_number="42",
@@ -222,8 +221,8 @@ class TestTelemetryIngest:
             assert event.step_outcomes == {"develop": "done", "push": {"status": "done"}}
             assert event.received_at is not None
 
-    async def test_duplicate_returns_200(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_duplicate_returns_200(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
         payload = _make_payload()
 
@@ -243,9 +242,9 @@ class TestTelemetryIngest:
             result = await session.execute(select(func.count(TelemetryEvent.id)))
             assert result.scalar_one() == 1
 
-    async def test_malformed_run_at_returns_422(self, telemetry_token: str) -> None:
+    async def test_malformed_run_at_returns_422(self, dashboard_app, telemetry_token: str) -> None:
         """A genuinely malformed timestamp is a 422 validation error, not a 500."""
-        app = _make_app()
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
         payload = _make_payload(run_at="not-a-timestamp")
 
@@ -253,8 +252,8 @@ class TestTelemetryIngest:
             resp = await client.post("/api/telemetry/ingest", json=payload, headers=headers)
         assert resp.status_code == 422
 
-    async def test_different_run_ids_both_stored(self, telemetry_token: str) -> None:
-        app = _make_app()
+    async def test_different_run_ids_both_stored(self, dashboard_app, telemetry_token: str) -> None:
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -285,13 +284,15 @@ class TestTelemetryIngest:
 
 @pytest.mark.asyncio
 class TestTelemetryRateLimit:
-    async def test_rate_limit_enforced(self, telemetry_token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_rate_limit_enforced(
+        self, dashboard_app, telemetry_token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from sova.dashboard.routers import telemetry as telemetry_mod
 
         # Lower limit for testing
         monkeypatch.setattr(telemetry_mod, "_RATE_LIMIT_MAX", 3)
 
-        app = _make_app()
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -312,13 +313,15 @@ class TestTelemetryRateLimit:
             assert resp.status_code == 429
             assert resp.headers.get("retry-after") == "60"
 
-    async def test_rate_limit_retry_after_header(self, telemetry_token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_rate_limit_retry_after_header(
+        self, dashboard_app, telemetry_token: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """429 response includes Retry-After header."""
         from sova.dashboard.routers import telemetry as telemetry_mod
 
         monkeypatch.setattr(telemetry_mod, "_RATE_LIMIT_MAX", 1)
 
-        app = _make_app()
+        app = dashboard_app
         headers = {"Authorization": f"Bearer {telemetry_token}"}
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

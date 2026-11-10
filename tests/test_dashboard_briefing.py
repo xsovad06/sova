@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,10 +26,9 @@ def clear_dismissed():
 
 
 @pytest.fixture
-async def client():
-    from sova.dashboard.app import create_app
+async def client(dashboard_app):
 
-    app = create_app(project_dir=Path.cwd())
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         c.headers.update(_csrf_request_headers(c))

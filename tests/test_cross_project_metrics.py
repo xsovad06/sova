@@ -479,10 +479,9 @@ class TestMetricsSnapshotWriter:
 @pytest.mark.usefixtures("reset_db_rows")
 class TestCrossProjectRouter:
     @pytest.fixture
-    async def client(self):
-        from sova.dashboard.app import create_app
+    async def client(self, dashboard_app):
 
-        app = create_app(multi_project=False)
+        app = dashboard_app
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac

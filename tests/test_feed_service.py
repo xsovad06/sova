@@ -168,10 +168,9 @@ async def feed_service():
 
 
 @pytest.fixture
-async def client(feed_service):
-    from sova.dashboard.app import create_app
+async def client(feed_service, dashboard_app):
 
-    app = create_app(project_dir=Path.cwd())
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

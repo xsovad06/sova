@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sova.dashboard.app import create_app
 from sova.dashboard.services import agent_lifecycle
 from sova.dashboard.services.control_service import ProjectAgents, start_agent
 from sova.ipc.runtime import RUN_RUNTIME_MODEL_OVERRIDE_ENV, _inject_agent_marker
@@ -44,8 +43,8 @@ _DISCOVERY = {
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[AsyncClient]:
-    app = create_app(multi_project=False)
+async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
+    app = dashboard_app
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
