@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -55,28 +57,43 @@ def repo(invariant_repo: InvariantRepo) -> InvariantRepo:
     return invariant_repo
 
 
+Seeded = Callable[..., InvariantRepo]
+
+
 def seed_on_main(repo: InvariantRepo, path: str, n: int = 80, message: str = "feat(core): seed") -> str:
     """Land ``n`` old lines in ``path`` on main (outside the recency window)."""
     repo.write(path, lines(n))
     return repo.land_on_main(message)
 
 
+@pytest.fixture
+def seeded(tmp_path: Path, invariant_history: Callable[..., InvariantRepo]) -> Seeded:
+    """``seeded(path, n=80)``: a repo after ``seed_on_main(repo, path, n)``, a history built once per module."""
+
+    def seeded_repo(path: str, n: int = 80) -> InvariantRepo:
+        return invariant_history(tmp_path, seed_on_main, path, n)
+
+    return seeded_repo
+
+
 def rewrite_on_branch(
-    repo: InvariantRepo, path: str, message: str, *, seed_lines: int = 80, content: str = "# reduced\n"
-) -> None:
+    seeded: Seeded, path: str, message: str, *, seed_lines: int = 80, content: str = "# reduced\n"
+) -> InvariantRepo:
     """Seed ``path`` on main, then replace its content in one commit on a new branch."""
-    seed_on_main(repo, path, n=seed_lines)
+    repo = seeded(path, seed_lines)
     repo.start_branch()
     repo.write(path, content)
     repo.commit(message)
+    return repo
 
 
-def delete_on_branch(repo: InvariantRepo, path: str, message: str, *, seed_lines: int = 80) -> None:
+def delete_on_branch(seeded: Seeded, path: str, message: str, *, seed_lines: int = 80) -> InvariantRepo:
     """Seed ``path`` on main, then delete it in one commit on a new branch."""
-    seed_on_main(repo, path, n=seed_lines)
+    repo = seeded(path, seed_lines)
     repo.start_branch()
     (repo.dir / path).unlink()
     repo.commit(message)
+    return repo
 
 
 def land_recent_feature(
@@ -156,13 +173,13 @@ class TestScopeAndProse:
         ],
     )
     def test_rewrite_verdict(
-        self, repo: InvariantRepo, path: str, seed_lines: int, message: str, env: dict[str, str], expected: int
+        self, seeded: Seeded, path: str, seed_lines: int, message: str, env: dict[str, str], expected: int
     ) -> None:
-        rewrite_on_branch(repo, path, message, seed_lines=seed_lines)
+        repo = rewrite_on_branch(seeded, path, message, seed_lines=seed_lines)
         assert repo.run(GUARD, **env).returncode == expected
 
-    def test_out_of_scope_failure_names_the_file_and_scope(self, repo: InvariantRepo) -> None:
-        rewrite_on_branch(repo, ADAPTER, "fix(db): simplify")
+    def test_out_of_scope_failure_names_the_file_and_scope(self, seeded: Seeded) -> None:
+        repo = rewrite_on_branch(seeded, ADAPTER, "fix(db): simplify")
         result = repo.run(GUARD)
         assert result.returncode == 1
         assert "outside their declared scope" in result.stdout
@@ -177,9 +194,9 @@ class TestScopeAndProse:
         repo.commit("fix(db,ipc): cleanup")
         assert repo.run(GUARD).returncode == 0
 
-    def test_generated_files_are_exempt(self, repo: InvariantRepo) -> None:
-        rewrite_on_branch(
-            repo,
+    def test_generated_files_are_exempt(self, seeded: Seeded) -> None:
+        repo = rewrite_on_branch(
+            seeded,
             "sova/dashboard/static/tailwind.min.css",
             "fix(db): rebuild css",
             seed_lines=300,
@@ -224,9 +241,9 @@ class TestScopeAndProse:
         ],
     )
     def test_whole_file_deletion_of_protected_files(
-        self, repo: InvariantRepo, path: str, seed_lines: int, message: str, expected: int, fragment: str
+        self, seeded: Seeded, path: str, seed_lines: int, message: str, expected: int, fragment: str
     ) -> None:
-        delete_on_branch(repo, path, message, seed_lines=seed_lines)
+        repo = delete_on_branch(seeded, path, message, seed_lines=seed_lines)
         result = repo.run(GUARD)
         assert result.returncode == expected
         assert fragment in result.stdout
@@ -286,7 +303,7 @@ class TestRenames:
     )
     def test_rename_verdict(
         self,
-        repo: InvariantRepo,
+        seeded: Seeded,
         src: str,
         dst: str,
         seed_lines: int,
@@ -294,7 +311,7 @@ class TestRenames:
         message: str,
         expected: int,
     ) -> None:
-        seed_on_main(repo, src, n=seed_lines)
+        repo = seeded(src, seed_lines)
         repo.start_branch()
         (repo.dir / dst).parent.mkdir(parents=True, exist_ok=True)
         repo.git("mv", src, dst)
@@ -328,8 +345,8 @@ class TestEscapeHatch:
             ),
         ],
     )
-    def test_trailer(self, repo: InvariantRepo, body: str, env: dict[str, str], expected: int, fragment: str) -> None:
-        rewrite_on_branch(repo, ADAPTER, f"fix(db): simplify\n\n{body}")
+    def test_trailer(self, seeded: Seeded, body: str, env: dict[str, str], expected: int, fragment: str) -> None:
+        repo = rewrite_on_branch(seeded, ADAPTER, f"fix(db): simplify\n\n{body}")
         result = repo.run(GUARD, **env)
         assert result.returncode == expected
         assert fragment in result.stdout
@@ -338,7 +355,7 @@ class TestEscapeHatch:
 class TestRange:
     @pytest.mark.parametrize("integrate", ["rebase", "merge"])
     def test_default_range_does_not_blame_a_branch_for_the_base_branchs_commits(
-        self, repo: InvariantRepo, integrate: str
+        self, seeded: Seeded, integrate: str
     ) -> None:
         """Pulling a newer main into a branch must not make main's own commits part of the push.
 
@@ -346,7 +363,7 @@ class TestRange:
         the old remote tip is no longer an ancestor, so every commit main gained
         since then looks like part of the push.
         """
-        seed_on_main(repo, ADAPTER)
+        repo = seeded(ADAPTER)
         repo.start_branch()
         repo.write("sova/db/models.py", "# work\n")
         repo.commit("feat(db): add models")
@@ -358,8 +375,8 @@ class TestRange:
         repo.git(integrate, "-q", "main", *(["--no-edit"] if integrate == "merge" else []))
         assert repo.run(GUARD).returncode == 0
 
-    def test_explicit_range_catches_what_the_default_range_cannot_see(self, repo: InvariantRepo) -> None:
-        seed_on_main(repo, ADAPTER)
+    def test_explicit_range_catches_what_the_default_range_cannot_see(self, seeded: Seeded) -> None:
+        repo = seeded(ADAPTER)
         pre_tip = repo.git("rev-parse", "HEAD")
         repo.write(ADAPTER, "# reduced\n")
         repo.land_on_main("fix(db): simplify")
@@ -367,8 +384,8 @@ class TestRange:
         assert repo.run(GUARD).returncode == 0
         assert repo.run(GUARD, SILENT_REVERT_RANGE=f"{pre_tip}..{post_tip}").returncode == 1
 
-    def test_explicit_range_with_no_violation_passes(self, repo: InvariantRepo) -> None:
-        seed_on_main(repo, "sova/db/models.py")
+    def test_explicit_range_with_no_violation_passes(self, seeded: Seeded) -> None:
+        repo = seeded("sova/db/models.py")
         pre_tip = repo.git("rev-parse", "HEAD")
         repo.write("sova/db/models.py", "# reduced\n")
         repo.land_on_main("fix(db): simplify", when=SETTLED)

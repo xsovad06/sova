@@ -33,7 +33,7 @@ asyncio_default_fixture_loop_scope = "function"
 timeout = 30
 ```
 
-`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. `asyncio_default_fixture_loop_scope` must stay set: left unset, pytest-asyncio warns while pytest configures, and from pytest 9.2 on the `filterwarnings = ["error"]` entry turns that warning into a session abort before any test runs (`tests/test_pytest_config.py` guards it). `timeout = 30` caps every test; a test whose runtime scales with the repository rather than with one unit of work (for example `tests/test_no_double_dash.py`'s whole-tree scan) needs an explicit `@pytest.mark.timeout(N)`, which overrides both this value and any `--timeout` passed on the command line. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` (the `timeout` setting and `--timeout`), `pytest-xdist` (`-n auto`), `httpx` (ASGI testing), `aiosqlite`.
+`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically: no `@pytest.mark.asyncio` needed. `asyncio_default_fixture_loop_scope` must stay set: left unset, pytest-asyncio warns while pytest configures, and from pytest 9.2 on the `filterwarnings = ["error"]` entry turns that warning into a session abort before any test runs (`tests/test_pytest_config.py` guards it). `timeout = 30` caps every test; a test whose runtime scales with the repository rather than with one unit of work needs an explicit `@pytest.mark.timeout(N)`, which overrides both this value and any `--timeout` passed on the command line, and a `slow(reason=...)` marker (see "Duration Budget"). A whole-tree scan belongs in `make lint-tree` instead. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` (the `timeout` setting and `--timeout`), `pytest-xdist` (`-n auto`), `httpx` (ASGI testing), `aiosqlite`.
 
 ## Duration Budget
 
@@ -41,7 +41,7 @@ timeout = 30
 
 ## Test File Layout
 
-All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtime/` holds the `@pytest.mark.runtime` process-lifecycle tests and the opt-in Codex smoke test, with its own `conftest.py`. The one flat-module exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
+All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtime/` holds the `@pytest.mark.runtime` process-lifecycle tests and the opt-in Codex smoke test, with its own `conftest.py`. The one flat-module exception is `tests/conftest.py`, which holds only autouse isolation fixtures and a small set of fixtures/helpers shared across many test modules (`seed_config`, `csrf_request_headers`, `InvariantRepo`/`invariant_repo`/`invariant_history`): it does not host per-file-only fixtures or helpers, those stay in their own test modules.
 
 | Test file | Source package | Approx tests |
 |-----------|---------------|--------------|
@@ -214,6 +214,15 @@ assert result.exit_code == 0
 Each invariant script must:
 1. Pass `shellcheck` (enforced by `make lint-bash`)
 2. Handle `--help` gracefully (tested by `make test-bash`)
+
+A script's own logic is tested in pytest against throwaway repositories; a scan of this repository's whole tree is not. `invariants/no-double-dash.sh --all` and `invariants/file-encoding.sh --all` run in `make lint-tree`, which `make lint` and CI's invariants job both run (#1191; inside pytest they cost 33 s of a local run). `invariants/structured-logging.sh` has no `--all` mode, so `tests/test_structured_logging.py` keeps its whole-tree test.
+
+Real-git tests are dominated by process starts, which a Mac runs several times slower than a CI runner, so build each history once and copy it:
+
+- `invariant_repo` is a copy of a session-scoped template (`InvariantRepo.copy_to()` copies the bare `origin` and the clone, and relinks the clone's `origin` URL), not a fresh `git init` per test.
+- `invariant_history(dest, build, *args)` (module scope) runs `build(repo, *args)` once per module for each distinct `(build, args)` and returns a copy at `dest`, so parametrized cases that start from the same commits share one history (`tests/test_squash_file_set_check.py`, the `seeded` fixture in `tests/test_silent_revert_guard.py`). `build`'s return value is discarded: read a commit back from a ref.
+- A read-only check that must behave the same in several shells runs each shell against one repository and compares the results, instead of parametrizing a test that rebuilds the history per shell (`Repo.run_check()` in `tests/test_integrate_pr_dropped_file_check.py`).
+- A fake CLI that a polled bash block calls many times is a bash function, not a script: `tests/ci_wait_fakes.py` writes `gh` and `sleep` functions to a file the block's `bash -c` sources through `BASH_ENV`, keeps a failing `gh` on `PATH` behind them, and the tests cut the block's 16-poll budget to `TEST_POLL_BUDGET` with `shorten_poll_budget()`.
 
 ## Parametrized Tests
 

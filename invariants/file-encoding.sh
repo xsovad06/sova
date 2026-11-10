@@ -8,7 +8,7 @@
 # CI) checks only calls touching a line a branch adds. `--all` checks every tracked
 # sova/*.py file, which is what keeps a call that predates the rule, or one added by
 # a path the diff does not see, from surviving just because no change touched its
-# line (see TestRepositoryHasNoUnencodedTextIo in tests/test_file_encoding.py).
+# line (`make lint-tree` and CI's invariants job run it over this repository).
 #
 # Each changed file is parsed with Python's `ast` rather than grepped, so a string
 # literal that merely contains `p.read_text()`, a call split over several lines,

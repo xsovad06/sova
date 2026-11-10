@@ -132,6 +132,12 @@ jobs:
         # Node ships on ubuntu-latest; the target fails if it is ever missing instead of passing silently.
         run: make lint-js
 
+      # The whole-tree scans left the pytest suite (issue #1191). "Static Checks" is a required
+      # status check on main and the "Invariants" job is not, so running them here as well keeps
+      # a whole-tree violation merge-blocking, as it was when they ran inside "Python Tests".
+      - name: Run whole-tree invariant scans
+        run: make lint-tree
+
       - name: Check YAML frontmatter in all commands
         run: |
           errors=0
@@ -537,3 +543,10 @@ jobs:
             exit 1
           fi
           echo "=== All invariants passed ==="
+
+      # The diff mode above checks only lines a branch adds; these check every
+      # tracked file, so an occurrence no change touches cannot survive either.
+      # `make lint-tree` runs the same two, which is how `make lint` and
+      # `make check` cover them locally (issue #1191 moved them out of pytest).
+      - name: Run whole-tree invariant scans
+        run: make lint-tree

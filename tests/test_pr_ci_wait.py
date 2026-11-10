@@ -37,9 +37,11 @@ from tests.ci_wait_fakes import (
     NO_REQUIRED,
     NO_RULESETS_PLAN,
     SONAR,
+    TEST_POLL_BUDGET,
     five,
     install_fakes,
     read_calls,
+    shorten_poll_budget,
 )
 from tests.ci_wait_fakes import (
     checks as _checks,
@@ -74,10 +76,13 @@ def _wait_block(path: Path) -> str:
 
 
 def _run_wait(scenario: dict[str, object], tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], dict[str, int]]:
-    """Run the canonical wait block against a fake `gh` and a no-op `sleep`; return the result and calls per mode."""
+    """Run the canonical wait block (poll budget shortened) against a fake `gh` and a no-op `sleep`.
+
+    Returns the result and the calls per mode.
+    """
     env = install_fakes(tmp_path, scenario)
     result = subprocess.run(
-        ["bash", "-c", _wait_block(CANONICAL_PR)],
+        ["bash", "-c", shorten_poll_budget(_wait_block(CANONICAL_PR))],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -118,7 +123,7 @@ class TestRequiredChecksConfigured:
     def test_still_pending_after_one_call_says_so(self, tmp_path: Path) -> None:
         result, calls = _run_wait({"required": [_checks("pending")]}, tmp_path)
         assert _verdict(result) == "CI PENDING (required checks): 1 of 1 still pending"
-        assert calls == {"required": 16, "all": 0, "runs": 0}
+        assert calls == {"required": TEST_POLL_BUDGET, "all": 0, "runs": 0}
 
 
 class TestNoRequiredChecksConfigured:
@@ -165,7 +170,7 @@ class TestNoChecksAtAll:
         )
         assert "run\tcompleted\tfailure\tworkflow-0" in result.stdout
         assert "NO CI TRIGGERED" not in result.stdout
-        assert calls == {"required": 16, "all": 0, "runs": 16}
+        assert calls == {"required": TEST_POLL_BUDGET, "all": 0, "runs": TEST_POLL_BUDGET}
 
     def test_failed_run_lookup_restarts_the_grace(self, tmp_path: Path) -> None:
         """Only consecutive polls that confirmed zero runs count: 3 empty, 1 failed lookup, then 5 empty."""
@@ -179,7 +184,7 @@ class TestNoChecksAtAll:
         result, calls = _run_wait({"required": [NO_CHECKS], "runs": [_runs()], "head_fails": True}, tmp_path)
         assert _verdict(result).startswith("NO CHECKS: ")
         assert "NO CI TRIGGERED" not in result.stdout
-        assert calls == {"required": 16, "all": 0, "runs": 0}
+        assert calls == {"required": TEST_POLL_BUDGET, "all": 0, "runs": 0}
 
     def test_waits_for_checks_that_register_late(self, tmp_path: Path) -> None:
         scenario = {"required": [NO_CHECKS, NO_CHECKS, _checks("pass")], "runs": [_runs()]}
@@ -210,7 +215,7 @@ class TestRequiredNamesMissing:
             == f"CI PENDING (required checks): 0 of 3 still pending; 2 required not registered: {SONAR}, docs"
         )
         assert f"missing\t{SONAR}" in result.stdout
-        assert calls == {"required": 16, "all": 0, "runs": 0}
+        assert calls == {"required": TEST_POLL_BUDGET, "all": 0, "runs": 0}
 
     def test_missing_checks_that_register_later_and_pass(self, tmp_path: Path) -> None:
         scenario = {

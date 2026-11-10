@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from sova.core.steps._commit_fold import fold_fix_into_branch, resolve_fixup_target
 from sova.utils.shell import run
@@ -16,22 +20,37 @@ async def _git(*args: str, cwd: Path) -> None:
     assert result.success, f"git {args} failed: {result.stderr}"
 
 
-async def _init_repo(cwd: Path) -> None:
-    """Init a repo with one base commit on main, mirrored to refs/remotes/origin/main."""
-    await _git("init", "-q", "-b", BASE, cwd=cwd)
-    await _git("config", "user.email", "test@example.com", cwd=cwd)
-    await _git("config", "user.name", "Test User", cwd=cwd)
+def _git_sync(*args: str, cwd: Path) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def _base_repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A repo with one base commit on main, mirrored to refs/remotes/origin/main; built once per module."""
+    cwd = tmp_path_factory.mktemp("commit-fold-base")
+    _git_sync("init", "-q", "-b", BASE, cwd=cwd)
+    _git_sync("config", "user.email", "test@example.com", cwd=cwd)
+    _git_sync("config", "user.name", "Test User", cwd=cwd)
     # Neutralize a developer's global git config: commit.gpgsign would make
     # every `git commit` here try to sign (hang on a GPG prompt, or fail),
     # and core.hooksPath would run this repository's own pre-commit hooks
     # against these throwaway trees.
-    await _git("config", "commit.gpgsign", "false", cwd=cwd)
-    await _git("config", "core.hooksPath", "/dev/null", cwd=cwd)
-    (cwd / "base.txt").write_text("base\n")
-    await _git("add", "base.txt", cwd=cwd)
-    await _git("commit", "-m", "chore(core): base", cwd=cwd)
-    head = (await run("git", "rev-parse", "HEAD", cwd=cwd)).stdout.strip()
-    await _git("update-ref", "refs/remotes/origin/main", head, cwd=cwd)
+    _git_sync("config", "commit.gpgsign", "false", cwd=cwd)
+    _git_sync("config", "core.hooksPath", "/dev/null", cwd=cwd)
+    (cwd / "base.txt").write_text("base\n", encoding="utf-8")
+    _git_sync("add", "base.txt", cwd=cwd)
+    _git_sync("commit", "-q", "-m", "chore(core): base", cwd=cwd)
+    _git_sync("update-ref", "refs/remotes/origin/main", _git_sync("rev-parse", "HEAD", cwd=cwd), cwd=cwd)
+    return cwd
+
+
+@pytest.fixture
+def base_repo(tmp_path: Path, _base_repo_template: Path) -> Path:
+    """tmp_path as a copy of the module's base repo (copying beats re-running git init and the first commit)."""
+    shutil.copytree(_base_repo_template, tmp_path, symlinks=True, dirs_exist_ok=True)
+    # Refresh the copied index: it keeps the original's inode and ctime, which plumbing reads as modified.
+    subprocess.run(["git", "update-index", "-q", "--refresh"], cwd=tmp_path, check=True)
+    return tmp_path
 
 
 async def _commit_file(cwd: Path, name: str, content: str, message: str) -> str:
@@ -42,8 +61,8 @@ async def _commit_file(cwd: Path, name: str, content: str, message: str) -> str:
 
 
 class TestFoldFixIntoBranch:
+    @pytest.mark.usefixtures("base_repo")
     async def test_no_diff_and_no_fixup_commit_is_a_noop(self, tmp_path: Path) -> None:
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
 
         folded = await fold_fix_into_branch(tmp_path, BASE)
@@ -52,8 +71,8 @@ class TestFoldFixIntoBranch:
         log_result = await run("git", "log", "--oneline", f"origin/{BASE}..HEAD", cwd=tmp_path)
         assert len(log_result.stdout.strip().splitlines()) == 1
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_folds_uncommitted_fix_into_the_commit_that_touched_the_file(self, tmp_path: Path) -> None:
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         await _commit_file(tmp_path, "b.py", "b\n", "feat(core): add b")
 
@@ -71,8 +90,8 @@ class TestFoldFixIntoBranch:
         status = await run("git", "status", "--porcelain", cwd=tmp_path)
         assert status.stdout.strip() == ""
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_fix_touching_multiple_commits_falls_back_to_head(self, tmp_path: Path) -> None:
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         await _commit_file(tmp_path, "b.py", "b\n", "feat(core): add b")
 
@@ -90,8 +109,8 @@ class TestFoldFixIntoBranch:
         assert "a.py" in diff.stdout
         assert "b.py" in diff.stdout
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_new_untracked_file_falls_back_to_head(self, tmp_path: Path) -> None:
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
 
         (tmp_path / "new_file.py").write_text("new\n")
@@ -102,10 +121,10 @@ class TestFoldFixIntoBranch:
         log_result = await run("git", "log", "--format=%s", f"origin/{BASE}..HEAD", cwd=tmp_path)
         assert log_result.stdout.strip().splitlines() == ["feat(core): add a"]
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_first_branch_commit_can_still_be_folded(self, tmp_path: Path) -> None:
         """Edge case: the fixup target is the only commit on the branch, so the
         rebase root is the merge-base itself, not a parent within base..HEAD."""
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
 
         (tmp_path / "a.py").write_text("a\nfixed\n")
@@ -117,10 +136,10 @@ class TestFoldFixIntoBranch:
         assert log_result.stdout.strip().splitlines() == ["feat(core): add a"]
         assert (tmp_path / "a.py").read_text() == "a\nfixed\n"
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_folds_a_reword_commit_the_agent_made_itself(self, tmp_path: Path) -> None:
         """When the fix agent reworded a commit's message directly via
         `git commit --fixup=reword:<sha>`, SOVA still runs the autosquash."""
-        await _init_repo(tmp_path)
         target = await _commit_file(tmp_path, "a.py", "a\n", "Add a (bad subject)")
         await _commit_file(tmp_path, "b.py", "b\n", "feat(core): add b")
 
@@ -147,6 +166,7 @@ class TestFoldFixIntoBranch:
         log_result = await run("git", "log", "--format=%s", f"origin/{BASE}..HEAD", cwd=tmp_path)
         assert log_result.stdout.strip().splitlines() == ["feat(core): add b", "feat(core): add a"]
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_never_folds_into_a_commit_already_on_the_base_branch(self, tmp_path: Path) -> None:
         """With no branch commit of its own, there is nothing to fold into.
 
@@ -155,15 +175,14 @@ class TestFoldFixIntoBranch:
         outside the merge-base..HEAD range) and would leave the ``fixup!``
         commit on the branch.
         """
-        await _init_repo(tmp_path)
         # Modify the base-branch file without any new branch commit: the only
         # commit that touched base.txt is the one already on origin/main.
         (tmp_path / "base.txt").write_text("base\nfixed\n")
 
         assert await resolve_fixup_target(tmp_path, BASE) is None
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_no_branch_commit_leaves_the_fix_staged_and_folds_nothing(self, tmp_path: Path) -> None:
-        await _init_repo(tmp_path)
         (tmp_path / "base.txt").write_text("base\nfixed\n")
         head_before = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
 
@@ -175,6 +194,7 @@ class TestFoldFixIntoBranch:
         assert "fixup!" not in subjects.stdout
         assert (tmp_path / "base.txt").read_text() == "base\nfixed\n"
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_failed_autosquash_unwinds_the_fixup_commit(self, tmp_path: Path) -> None:
         """A fixup that cannot be replayed must leave no marker commit behind.
 
@@ -184,7 +204,6 @@ class TestFoldFixIntoBranch:
         extra commit) rather than letting a "fixup! ..." commit, which no
         conventional-commit hook accepts, reach git push.
         """
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         head_before = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
 
@@ -201,6 +220,7 @@ class TestFoldFixIntoBranch:
         staged = await run("git", "diff", "--cached", "--name-only", cwd=tmp_path)
         assert staged.stdout.strip() == "a.py"
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_marker_commit_surviving_a_clean_rebase_is_reported_as_not_folded(self, tmp_path: Path) -> None:
         """A fixup! whose target is outside the rebase range is replayed as an
         ordinary commit, so the rebase exits 0 while the marker survives.
@@ -209,7 +229,6 @@ class TestFoldFixIntoBranch:
         real content), so the fold drops it outright rather than leaving an
         unpushable "fixup! ..." subject on the branch.
         """
-        await _init_repo(tmp_path)
         base_sha = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         # An agent-authored fixup aimed at a commit already on origin/main.
@@ -221,11 +240,11 @@ class TestFoldFixIntoBranch:
         assert "fixup!" not in log_result.stdout
         assert log_result.stdout.strip().splitlines() == ["feat(core): add a"]
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_non_empty_stranded_marker_is_logged_and_left_in_place(self, tmp_path: Path) -> None:
         """A surviving marker that carries real content cannot be safely
         dropped or rewritten here, so it is left in place rather than lost,
         but the fold still reports failure."""
-        await _init_repo(tmp_path)
         base_sha = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         # A non-empty fixup aimed at a commit already on origin/main: its
@@ -242,11 +261,11 @@ class TestFoldFixIntoBranch:
         assert any(s.startswith("fixup!") for s in subjects)
         assert (tmp_path / "b.py").read_text() == "b\n"
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_non_ascii_path_folds_into_the_commit_that_touched_it(self, tmp_path: Path) -> None:
         """A non-ASCII filename must not be matched as a quoted, C-escaped
         literal string against branch history, which would silently fall
         back to HEAD instead of the commit that actually owns the file."""
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "héllo.txt", "hello\n", "feat(core): add hello")
         await _commit_file(tmp_path, "b.py", "b\n", "feat(core): add b")
 
@@ -266,11 +285,11 @@ class TestFoldFixIntoBranch:
         show = await run("git", "show", "HEAD~1:héllo.txt", cwd=tmp_path)
         assert show.stdout == "hello\nfixed\n"
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_suspicious_staged_file_blocks_the_fold(self, tmp_path: Path) -> None:
         """`git add -A` sweeps in whatever else the agent left behind, so the
         shared suspicious-path guard must stop a credential file being folded
         into a branch commit and pushed with it."""
-        await _init_repo(tmp_path)
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
 
         (tmp_path / "a.py").write_text("a\nfixed\n")
@@ -288,6 +307,7 @@ class TestFoldFixIntoBranch:
         staged = await run("git", "diff", "--cached", "--name-only", cwd=tmp_path)
         assert staged.stdout.strip() == ""
 
+    @pytest.mark.usefixtures("base_repo")
     async def test_our_fixup_folds_even_when_an_unrelated_empty_marker_survives_autosquash(
         self, tmp_path: Path
     ) -> None:
@@ -300,7 +320,6 @@ class TestFoldFixIntoBranch:
         stranded-marker cleanup. The completed fold must still be reported
         as folded, not reset back to a staged diff.
         """
-        await _init_repo(tmp_path)
         base_sha = (await run("git", "rev-parse", "HEAD", cwd=tmp_path)).stdout.strip()
         await _commit_file(tmp_path, "a.py", "a\n", "feat(core): add a")
         # An unrelated, agent-authored empty marker aimed at a commit already

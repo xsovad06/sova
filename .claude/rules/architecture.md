@@ -98,7 +98,7 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - `make serve`: start dashboard
 - `make check`: lint + test (CI-equivalent)
 - `make test`: bash (shellcheck + invariant --help) + python (pytest)
-- `make lint`: shellcheck + ruff + `lint-js` (`node --check` on `static/*.js` as scripts and `static/js/**/*.js` as ES modules)
+- `make lint`: shellcheck + ruff + `lint-js` (`node --check` on `static/*.js` as scripts and `static/js/**/*.js` as ES modules) + `lint-tree` (the whole-tree `no-double-dash` and `file-encoding` scans, also CI's invariants job, kept out of pytest)
 - `make format`: ruff auto-format
 
 ## Key Design Decisions

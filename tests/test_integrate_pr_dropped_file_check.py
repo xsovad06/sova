@@ -33,10 +33,9 @@ RENDERED = REPO_ROOT / ".claude" / "commands" / "integrate-pr.md"
 
 PR_NUMBER = "42"
 BACKUP_REF = f"refs/integrate-backup/{PR_NUMBER}"
-SHELLS = [
-    "bash",
-    pytest.param("zsh", marks=pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not installed")),
-]
+# The check is read-only, so run_check() runs it under each of these on the same repository and requires
+# them to agree, instead of a parametrized test building every history once per shell (issue #1191).
+SHELLS = ["bash", *(["zsh"] if shutil.which("zsh") else [])]
 
 
 def _step_4b(text: str) -> str:
@@ -112,8 +111,16 @@ class Repo:
         self.git("add", "-A")
         self.git("rebase", "--continue")
 
-    def run_check(self, script: str, shell: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([shell, "-c", script], cwd=cwd or self.dir, env=self.env, capture_output=True, text=True)
+    def run_check(self, script: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        """Run the check under every shell in SHELLS, require identical results, and return bash's."""
+        results = [
+            subprocess.run([shell, "-c", script], cwd=cwd or self.dir, env=self.env, capture_output=True, text=True)
+            for shell in SHELLS
+        ]
+        for shell, result in zip(SHELLS[1:], results[1:], strict=True):
+            got = (result.returncode, result.stdout, result.stderr)
+            assert got == (results[0].returncode, results[0].stdout, results[0].stderr), f"{shell} disagrees with bash"
+        return results[0]
 
 
 @pytest.fixture
@@ -142,9 +149,14 @@ def conflicting_pins(repo: Repo, names: tuple[str, ...], pr_pins: int = 30) -> N
     assert repo.rebase().returncode != 0, "the scenario must conflict"
 
 
-@pytest.mark.parametrize("shell", SHELLS)
+def test_the_cross_shell_agreement_covers_zsh() -> None:
+    """Visible signal (a skip) when zsh is missing, so run_check() is not silently bash-only."""
+    if "zsh" not in SHELLS:
+        pytest.skip("zsh is not installed: run_check() compares bash only")
+
+
 class TestPassingRebases:
-    def test_clean_rebase_passes_with_the_pass_marker(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_clean_rebase_passes_with_the_pass_marker(self, repo: Repo, check_script: str) -> None:
         repo.write("lock.txt", pins("old", 5))
         repo.write("app.py", "x = 1\n")
         repo.land_on_main("seed")
@@ -158,24 +170,24 @@ class TestPassingRebases:
         repo.land_on_main("base: unrelated")
         assert repo.rebase().returncode == 0
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout == "DROPPED_FILE_CHECK_PASS\n"
         assert result.stderr == ""
 
-    def test_correctly_resolved_lockfile_conflict_passes(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_correctly_resolved_lockfile_conflict_passes(self, repo: Repo, check_script: str) -> None:
         conflicting_pins(repo, ("requirements.txt",))
         repo.write("requirements.txt", pins("old", 5) + pins("base", 3) + pins("pr", 30))
         repo.git("add", "-A")
         repo.git("rebase", "--continue")
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_multi_commit_pr_compares_the_whole_diff(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_multi_commit_pr_compares_the_whole_diff(self, repo: Repo, check_script: str) -> None:
         repo.write("lock.txt", pins("old", 5))
         repo.land_on_main("seed")
         repo.start_pr()
@@ -189,11 +201,9 @@ class TestPassingRebases:
         repo.land_on_main("base: unrelated")
         assert repo.rebase().returncode == 0
 
-        assert repo.run_check(check_script, shell).returncode == 0
+        assert repo.run_check(check_script).returncode == 0
 
-    def test_file_the_base_already_carries_in_the_prs_exact_version_passes(
-        self, repo: Repo, check_script: str, shell: str
-    ) -> None:
+    def test_file_the_base_already_carries_in_the_prs_exact_version_passes(self, repo: Repo, check_script: str) -> None:
         repo.write("lock.txt", pins("old", 5))
         repo.write("app.py", "x = 1\n")
         repo.land_on_main("seed")
@@ -207,12 +217,12 @@ class TestPassingRebases:
         repo.land_on_main("base: same lockfile")
         assert repo.rebase().returncode == 0
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_file_deleted_by_both_sides_passes(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_file_deleted_by_both_sides_passes(self, repo: Repo, check_script: str) -> None:
         repo.write("legacy.py", "old = 1\n" * 30)
         repo.write("app.py", "x = 1\n")
         repo.land_on_main("seed")
@@ -226,12 +236,12 @@ class TestPassingRebases:
         repo.land_on_main("base: remove legacy")
         assert repo.rebase().returncode == 0
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_binary_file_is_checked_for_presence_only(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_binary_file_is_checked_for_presence_only(self, repo: Repo, check_script: str) -> None:
         repo.write("seed.txt", "seed\n")
         repo.land_on_main("seed")
         repo.start_pr()
@@ -243,14 +253,12 @@ class TestPassingRebases:
         repo.land_on_main("base: unrelated")
         assert repo.rebase().returncode == 0
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_text_file_that_becomes_binary_is_checked_for_presence_only(
-        self, repo: Repo, check_script: str, shell: str
-    ) -> None:
+    def test_text_file_that_becomes_binary_is_checked_for_presence_only(self, repo: Repo, check_script: str) -> None:
         """numstat prints "-" for the rebased side alone: that must not reach the shrink arithmetic."""
         repo.write("data.txt", "seed\n")
         repo.land_on_main("seed")
@@ -266,42 +274,40 @@ class TestPassingRebases:
         repo.git("add", "-A")
         repo.git("rebase", "--continue")
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_prs_with_no_changed_files_pass_trivially(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_prs_with_no_changed_files_pass_trivially(self, repo: Repo, check_script: str) -> None:
         repo.write("seed.txt", "seed\n")
         repo.land_on_main("seed")
         repo.start_pr()
         repo.back_up()
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
 
-    def test_small_loss_inside_the_tolerance_passes(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_small_loss_inside_the_tolerance_passes(self, repo: Repo, check_script: str) -> None:
         """A one-line conflict that costs a line or two must not trip the shrink rule."""
         conflicting_pins(repo, ("requirements.txt",), pr_pins=6)
         repo.write("requirements.txt", pins("old", 5) + pins("base", 3) + pins("pr", 5))
         repo.git("add", "-A")
         repo.git("rebase", "--continue")
 
-        assert repo.run_check(check_script, shell).returncode == 0
+        assert repo.run_check(check_script).returncode == 0
 
-    def test_loss_of_under_half_the_changed_lines_passes(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_loss_of_under_half_the_changed_lines_passes(self, repo: Repo, check_script: str) -> None:
         conflicting_pins(repo, ("requirements.txt",), pr_pins=40)
         repo.write("requirements.txt", pins("old", 5) + pins("base", 3) + pins("pr", 24))
         repo.git("add", "-A")
         repo.git("rebase", "--continue")
 
-        assert repo.run_check(check_script, shell).returncode == 0
+        assert repo.run_check(check_script).returncode == 0
 
-    def test_file_identical_to_the_backup_passes_though_its_diff_shrank(
-        self, repo: Repo, check_script: str, shell: str
-    ) -> None:
+    def test_file_identical_to_the_backup_passes_though_its_diff_shrank(self, repo: Repo, check_script: str) -> None:
         """The base landed two of the PR's three hunks: the diff shrinks, but nothing the PR wrote was lost."""
         lines = [f"line {i}\n" for i in range(60)]
         repo.write("config.txt", "".join(lines))
@@ -316,20 +322,19 @@ class TestPassingRebases:
         repo.land_on_main("base: lands two of the hunks")
         assert repo.rebase().returncode == 0
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout == "DROPPED_FILE_CHECK_PASS\n"
 
 
-@pytest.mark.parametrize("shell", SHELLS)
 class TestFailingRebases:
-    def test_incident_replay_reports_both_dropped_lockfiles(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_incident_replay_reports_both_dropped_lockfiles(self, repo: Repo, check_script: str) -> None:
         names = ("requirements.txt", "requirements-dev.txt")
         conflicting_pins(repo, names)
         repo.resolve_taking_base(*names)
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         for name in names:
@@ -338,22 +343,20 @@ class TestFailingRebases:
         assert "step 6" in result.stderr
         assert "DROPPED_FILE_CHECK_PASS" not in result.stdout
 
-    def test_check_run_from_a_subdirectory_still_reports(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_check_run_from_a_subdirectory_still_reports(self, repo: Repo, check_script: str) -> None:
         """Regenerating a lockfile leaves the shell in its directory; the repo-relative paths must still resolve."""
         repo.write("frontend/package.json", "{}\n")
         names = ("requirements.txt", "requirements-dev.txt")
         conflicting_pins(repo, names)
         repo.resolve_taking_base(*names)
 
-        result = repo.run_check(check_script, shell, cwd=repo.dir / "frontend")
+        result = repo.run_check(check_script, cwd=repo.dir / "frontend")
 
         assert result.returncode == 1
         for name in names:
             assert f"DROPPED: {name}" in result.stderr
 
-    def test_only_the_dropped_file_is_reported_when_other_pr_files_survive(
-        self, repo: Repo, check_script: str, shell: str
-    ) -> None:
+    def test_only_the_dropped_file_is_reported_when_other_pr_files_survive(self, repo: Repo, check_script: str) -> None:
         repo.write("requirements.txt", pins("old", 5))
         repo.write("app.py", "x = 1\n")
         repo.land_on_main("seed")
@@ -368,24 +371,24 @@ class TestFailingRebases:
         assert repo.rebase().returncode != 0
         repo.resolve_taking_base("requirements.txt")
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert "DROPPED: requirements.txt" in result.stderr
         assert "app.py" not in result.stderr
 
-    def test_sharp_shrink_is_reported_with_both_counts(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_sharp_shrink_is_reported_with_both_counts(self, repo: Repo, check_script: str) -> None:
         conflicting_pins(repo, ("requirements.txt",), pr_pins=40)
         repo.write("requirements.txt", pins("old", 5) + pins("base", 3) + pins("pr", 10))
         repo.git("add", "-A")
         repo.git("rebase", "--continue")
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert "SHRUNK: requirements.txt had 40 changed lines before the rebase and has 10 after it" in result.stderr
 
-    def test_dropped_binary_file_is_reported(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_dropped_binary_file_is_reported(self, repo: Repo, check_script: str) -> None:
         repo.write("seed.txt", "seed\n")
         repo.land_on_main("seed")
         repo.start_pr()
@@ -398,60 +401,60 @@ class TestFailingRebases:
         assert repo.rebase().returncode != 0
         repo.resolve_taking_base("logo.png")
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert "DROPPED: logo.png" in result.stderr
 
-    def test_unusual_file_names_are_matched_literally(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_unusual_file_names_are_matched_literally(self, repo: Repo, check_script: str) -> None:
         """A name with spaces, quotes and glob characters is neither mis-quoted nor expanded as a pathspec."""
         name = 'lock [1] "x" *.txt'
         conflicting_pins(repo, (name,))
         repo.resolve_taking_base(name)
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert f"DROPPED: {name}" in result.stderr
 
-    def test_names_with_tabs_and_newlines_are_read_whole(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_names_with_tabs_and_newlines_are_read_whole(self, repo: Repo, check_script: str) -> None:
         """A leading or trailing tab, or a newline, must not split or trim the path the NUL-separated list carries."""
         names = ("\tlead.txt", "trail.txt\t", "new\nline.txt")
         conflicting_pins(repo, names)
         repo.resolve_taking_base(*names)
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         for name in names:
             assert f"DROPPED: {name} is in the PR" in result.stderr
 
-    def test_missing_backup_ref_fails_closed(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_missing_backup_ref_fails_closed(self, repo: Repo, check_script: str) -> None:
         repo.write("seed.txt", "seed\n")
         repo.land_on_main("seed")
         repo.start_pr()
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert f"{BACKUP_REF} is missing" in result.stderr
 
-    def test_unresolvable_base_ref_fails_closed(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_unresolvable_base_ref_fails_closed(self, repo: Repo, check_script: str) -> None:
         """No origin/main means no diff can be taken: that is a failure, not an empty file list."""
         repo.write("seed.txt", "seed\n")
         repo.git("add", "-A")
         repo.git("commit", "-q", "-m", "seed")
         repo.back_up()
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert "could not read the PR's file list" in result.stderr
 
-    def test_rebase_still_in_progress_fails(self, repo: Repo, check_script: str, shell: str) -> None:
+    def test_rebase_still_in_progress_fails(self, repo: Repo, check_script: str) -> None:
         conflicting_pins(repo, ("requirements.txt",))
 
-        result = repo.run_check(check_script, shell)
+        result = repo.run_check(check_script)
 
         assert result.returncode == 1
         assert "rebase is still in progress" in result.stderr
