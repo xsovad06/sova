@@ -361,6 +361,18 @@ class TestAttemptAutoRebasePrLookup:
         assert result == {"status": "skipped", "reason": "No open PR found for issue #42"}
         mock_log.warning.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_non_lookup_setup_error_returns_failed_and_logs_exception(self) -> None:
+        """A non-PRLookupError raised during setup takes the generic branch, not the lookup one."""
+        factory, _ = _mock_session_factory()
+        ops = _make_ops(get_pr_info=AsyncMock(side_effect=RuntimeError("config exploded")))
+        with patch.object(rebase_module, "log") as mock_log:
+            result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert result == {"status": "failed", "pr_number": None, "error": "config exploded"}
+        mock_log.exception.assert_called_once()
+        mock_log.warning.assert_not_called()
+        ops.create_rebase_run.assert_not_called()
+
 
 class TestCreateRebaseRun:
     @pytest.mark.asyncio
@@ -704,6 +716,22 @@ class TestAttemptAutoRebaseExecution:
         assert result["status"] == "failed"
         assert "unexpected crash" in result["error"]
         ops.finalize_run.assert_awaited_once()
+        ops.cleanup_worktree.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_rebase_finalizes_run_and_reraises(self, tmp_path: Path) -> None:
+        factory, session, mock_task_run, pr_info = self._setup_mocks()
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        wt_info = MagicMock()
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        ops.finalize_run.assert_awaited_once_with(1, "failed", "Rebase cancelled", "abc123def", factory)
         ops.cleanup_worktree.assert_awaited_once()
 
     @pytest.mark.asyncio
