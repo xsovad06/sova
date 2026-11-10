@@ -18,6 +18,9 @@ the check command itself) and scoped to autonomous pipeline invocations only
 via ``PIPELINE_STAGE_ENV_KEY``: a standalone ``/develop``, ``/review``, or
 ``/pr`` invocation never sees that env var, so ``should_skip()`` always
 returns False for it and the command's documented full check always runs.
+DevelopStep's inner check loop is the one in-process caller: it uses
+``has_recorded_pass()`` for its first run only, since it is itself the
+pipeline.
 
 The marker is a plain worktree-local JSON file under
 ``.claude/agent-control/``, matching the convention ``sova.ipc.handoff``
@@ -166,6 +169,17 @@ async def should_skip(cwd: Path, check_cmd: str) -> bool:
     """
     if not is_pipeline_dispatch():
         return False
+    return await has_recorded_pass(cwd, check_cmd)
+
+
+async def has_recorded_pass(cwd: Path, check_cmd: str) -> bool:
+    """Return True when a pass is recorded for this exact worktree content and check command.
+
+    The content-hash lookup behind should_skip(), without its pipeline-dispatch
+    gate: DevelopStep's own process never has PIPELINE_STAGE_ENV_KEY (only the
+    agents it dispatches do), yet its first inner-loop check re-runs the very
+    check its develop agent just recorded.
+    """
     marker = _read_marker(cwd)
     if marker is None or marker.get("passed") is not True:
         return False

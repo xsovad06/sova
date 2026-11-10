@@ -8,6 +8,8 @@ with zero changes).
 After the /develop command returns, an inner check loop runs the project's
 check command (e.g. ``make check``) and feeds failures back to the LLM for
 correction, repeating until green or ``develop.max_fix_cycles`` exhausted.
+Its first run is skipped when the develop agent already recorded a pass for
+the identical worktree content (``sova.core.check_cache``).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import re
 from pathlib import Path
 
 from sova.core.agent_dispatch import dispatch_command, dispatch_prompt
+from sova.core.check_cache import has_recorded_pass
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.steps.research import split_research_section
@@ -566,6 +569,13 @@ class DevelopStep(BaseStep):
 
         loop_start_time = time.monotonic()
 
+        if await self._agent_recorded_pass(ctx, check_cmd):
+            # The marker is written by the agent's own `sova checks record` call, so a reused pass is
+            # trusted rather than re-verified. `reused` marks it in the log, and the summary below
+            # carries the same wording into the StepResult, so this path can be audited.
+            log.info("step.develop.checks_reused", check_cmd=check_cmd, reused=True)
+            return True, "checks passed (reused the recorded run)"
+
         # Initial check run
         check_start = time.monotonic()
         check_result = await run(
@@ -738,6 +748,31 @@ class DevelopStep(BaseStep):
             log.warning("step.develop.duplicate_failure_detected", cycle=cycle)
             return f"checks still failing after {cycle} fix cycle(s) (duplicate failure)"
         return None
+
+    async def _agent_recorded_pass(self, ctx: ExecutionContext, check_cmd: str) -> bool:
+        """Whether the develop agent already recorded a passing check for this exact worktree content.
+
+        The marker is keyed by the command text, so both spellings of the project's full check are
+        looked up: *check_cmd* (this step's own, ``make check`` when a Makefile exists and
+        ``check_cmd`` is unset) and the one the develop command renders for the agent
+        (``build_variables()``'s ``check_cmd``, ``lint_cmd && test_cmd`` when unset). Without the
+        second, a project that leaves ``check_cmd`` unset would never match and always re-run.
+
+        Only the loop's first run consults it: a run after a fix cycle checks
+        the fix, which no earlier record covers. A failed lookup reads as no
+        record, so the check runs.
+        """
+        try:
+            from sova.commands.templates import build_variables
+
+            candidates = dict.fromkeys((check_cmd, build_variables(ctx.config)["check_cmd"]))
+            for candidate in candidates:
+                if await has_recorded_pass(Path(ctx.working_dir), candidate):
+                    return True
+            return False
+        except Exception:  # noqa: BLE001 (a failed cache lookup degrades to running the real check)
+            log.warning("step.develop.check_reuse_lookup_failed", exc_info=True)
+            return False
 
     async def _resolve_and_verify_check_cmd(self, ctx: ExecutionContext) -> str | None:
         """Resolve the check command and verify it is executable.
