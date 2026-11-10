@@ -84,6 +84,7 @@ git diff --stat --diff-filter=RD HEAD
 - Are edge cases and error paths tested?
 - Do tests assert meaningful behavior (not just status codes)?
 - Are there missing tests for important scenarios?
+- Does the diff add far more test lines than production lines (`git diff --numstat` for the test paths against the rest, over about 3 to 1 on a change that is not test-only)? Then look for cases that should be parameters of one test, tests that only assert a mock was called, and phrase checks on prose, and report each as Medium
 
 ### Code Quality (Medium)
 - Consistent with existing codebase patterns and conventions?

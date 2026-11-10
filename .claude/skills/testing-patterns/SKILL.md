@@ -12,30 +12,32 @@ When writing or modifying files in `tests/`, follow these conventions. Reference
 
 - `asyncio_mode = "auto"`: no `@pytest.mark.asyncio` needed on async tests
 - Most tests are flat in `tests/`; a few isolated areas (e.g. `tests/runtime/`) get their own subdirectory with a local `conftest.py` when their fixtures don't apply elsewhere
-- `tests/conftest.py` holds only truly cross-suite fixtures: `_isolate_sova_env` (autouse, strips ambient `SOVA_*` env vars) and `seed_config` (seeds DB-backed `project_settings` instead of writing `sova.toml`, matching production config storage). Use `seed_config(project_dir, **values)` for any test that needs configured values, don't write a `sova.toml` file.
+- `tests/conftest.py` holds only truly cross-suite fixtures: the autouse isolation fixtures (`_isolate_sova_env` strips ambient `SOVA_*` env vars), `reset_db_rows`, `dashboard_app` and `seed_config` (seeds DB-backed `project_settings` instead of writing `sova.toml`, matching production config storage). Use `seed_config(project_dir, **values)` for any test that needs configured values, don't write a `sova.toml` file.
 - Tests grouped with classes. Beyond the shared fixtures above, fixtures are defined per-file, not shared.
+
+## Before Adding a Test
+
+- One test per behavior: add a test only for something no existing test already proves
+- A case that differs from an existing test only in inputs and expected result becomes a case of that test (parametrize it if it is not yet), not a new function
+- No test whose only assertion is that a mock was called, unless that call is the contract (the side effect is what the code exists to produce)
+- No test asserting that a phrase exists in documentation or other prose, unless another component parses that phrase; no test asserting only that an attribute or import exists
 
 ## Required Fixtures
 
-### In-memory DB (autouse in any file touching ORM):
+### Shared in-memory DB (any file touching the ORM, or emitting feed events):
 ```python
-@pytest.fixture(autouse=True)
-async def setup_db(monkeypatch):
-    monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-    await init_db(run_migrations=False)
-    yield
-    await close_db()
+pytestmark = pytest.mark.usefixtures("reset_db_rows")
 ```
+One engine per xdist worker, emptied before each test. Never build a per-test engine with `init_db()`/`close_db()`, and never write `SOVA_DATABASE_URL` through `os.environ` (`tests/conftest.py` fails the module).
 
-### Dashboard client:
+### Dashboard client (one app per module):
 ```python
 @pytest.fixture
-async def client(tmp_path):
-    app = create_app(project_dir=tmp_path)
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+async def client(dashboard_app):
+    async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as ac:
         yield ac
 ```
+Call `create_app()` yourself only for an app built differently (build-time env or config, an explicit `project_dir`, multi-project mode).
 
 ## Mock Rules
 
@@ -81,8 +83,8 @@ async def client(tmp_path):
 
 - **Clear caches**: file-backed services (handoff, log) cache by mtime. Clear `_handoff_caches` in tests.
 - **Session pattern**: always `async with await get_session() as session:`.
-- **DB fixture scope**: per-test only. Never `scope="module"`.
-- **Don't add new shared fixtures to `tests/conftest.py`** beyond `_isolate_sova_env`/`seed_config`: copy per-file helpers instead, unless the fixture is genuinely needed suite-wide.
+- **DB fixture**: request `reset_db_rows`; never add a `scope="module"` DB fixture.
+- **Don't add new shared fixtures to `tests/conftest.py`** beyond the ones listed above: copy per-file helpers instead, unless the fixture is genuinely needed suite-wide.
 - **A new module-level cache or lock dict needs an autouse clear fixture in the same PR**: any `_cache: dict` or `_locks: dict[..., asyncio.Lock]` added to `sova/` gets an autouse fixture that `.clear()`s it before and after each test. An `asyncio.Lock` is bound to the event loop that first used it, so a stale one leaks across tests and can bypass active patches.
 - **A regression or concurrency test must fail with the fix reverted**: before trusting it, revert the fix locally and watch it fail. A `gather()` test whose mocks never suspend (no `await asyncio.sleep(0)` or `asyncio.Event` barrier) runs sequentially and proves nothing about concurrency.
 - **Module-level cache requires `setup_method` in ALL test classes**: when a service function has a module-level cache, add `setup_method: clear_cache()` to every test class in the file that calls it, not just new ones. Cache type changes (`tuple|None` -> `dict`) require updating all reset patterns (`= None` -> `.clear()`).

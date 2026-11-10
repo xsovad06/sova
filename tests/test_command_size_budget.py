@@ -47,6 +47,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     "pr.md": 36_000,
+    # Issue #1383 took this over the default with the Test Coverage check that flags a diff adding far more
+    # test lines than production lines, the main source of test-suite growth.
+    "review.md": 12_400,
     "review-pr.md": 22_000,
 }
 # Skill directory name -> cap for its SKILL.md. Only skills over _DEFAULT_SKILL_CAP belong here.

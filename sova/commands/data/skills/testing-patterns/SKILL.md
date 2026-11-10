@@ -22,6 +22,13 @@ When writing or modifying test files, follow these conventions.
 - Prefer real implementations over mocks when practical
 - Mock at system boundaries (external APIs, file I/O, databases), not internal interfaces
 
+## Before Adding a Test
+
+- One test per behavior: add a test only for something no existing test already proves
+- A case that differs from an existing test only in inputs and expected result becomes a case of that test (parametrize it if it is not yet), not a new function
+- No test whose only assertion is that a mock was called, unless that call is the contract (the side effect is what the code exists to produce)
+- No test asserting that a phrase exists in documentation or other prose, unless another component parses that phrase; no test asserting only that an attribute or import exists
+
 ## Fixture Patterns
 
 - Put fixtures used by several test files in the nearest shared fixture module (for example `conftest.py`); keep single-file fixtures local
