@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.git.pr import PRLookupError
 from sova.supervisor import rebase as rebase_module
 from sova.supervisor.rebase import (
     ROLE_SUPERVISOR_REBASE,
@@ -61,6 +62,13 @@ def _clear_rebase_locks():
     rebase_module._rebase_locks.clear()
     yield
     rebase_module._rebase_locks.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gh_token_lookup():
+    """`_get_pr_info()` resolves a per-user GH_TOKEN through `gh auth token`; keep tests off the real gh CLI."""
+    with patch("sova.supervisor.rebase.resolve_gh_env", new_callable=AsyncMock, return_value=None):
+        yield
 
 
 def _mock_session_factory():
@@ -127,7 +135,7 @@ class TestAlreadyAttempted:
 
 class TestGetPrInfo:
     @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
     async def test_no_pr_returns_none(self, mock_find: AsyncMock) -> None:
         mock_find.return_value = None
         result = await _get_pr_info(42, "owner/repo", "user")
@@ -135,7 +143,7 @@ class TestGetPrInfo:
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_pr_for_issue", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
     async def test_successful_lookup(self, mock_find: AsyncMock, mock_run: AsyncMock) -> None:
         import json
 
@@ -263,27 +271,95 @@ class TestRoleSupervisorRebaseConstant:
 
 
 class TestGetPrInfoEdgeCases:
-    @pytest.mark.asyncio
-    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_pr_for_issue", new_callable=AsyncMock)
-    async def test_gh_view_fails_returns_none(self, mock_find, mock_run) -> None:
-        mock_pr = MagicMock()
-        mock_pr.number = 55
-        mock_find.return_value = mock_pr
-        mock_run.return_value = MagicMock(success=False, stdout="", stderr="error")
-        result = await _get_pr_info(42, "owner/repo", "user")
-        assert result is None
+    @staticmethod
+    def _pr(number: int = 55) -> MagicMock:
+        pr = MagicMock()
+        pr.number = number
+        return pr
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
-    @patch("sova.supervisor.rebase.find_pr_for_issue", new_callable=AsyncMock)
-    async def test_invalid_json_returns_none(self, mock_find, mock_run) -> None:
-        mock_pr = MagicMock()
-        mock_pr.number = 55
-        mock_find.return_value = mock_pr
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
+    async def test_gh_view_fails_raises_with_stderr(self, mock_find, mock_run) -> None:
+        mock_find.return_value = self._pr()
+        mock_run.return_value = MagicMock(success=False, stdout="", stderr="Could not resolve to a Repository")
+        with pytest.raises(PRLookupError, match="Could not resolve to a Repository"):
+            await _get_pr_info(42, "owner/repo", "user")
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
+    async def test_invalid_json_raises(self, mock_find, mock_run) -> None:
+        mock_find.return_value = self._pr()
         mock_run.return_value = MagicMock(success=True, stdout="not valid json")
-        result = await _get_pr_info(42, "owner/repo", "user")
-        assert result is None
+        with pytest.raises(PRLookupError, match="unparseable"):
+            await _get_pr_info(42, "owner/repo", "user")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "[]",
+            "null",
+            "{}",
+            '{"headRefName": "feat/x"}',
+            '{"headRefOid": "abc123"}',
+            '{"headRefName": "", "headRefOid": "abc123"}',
+            '{"headRefName": "feat/x", "headRefOid": ""}',
+        ],
+    )
+    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
+    async def test_missing_head_ref_raises(self, mock_find, mock_run, stdout: str) -> None:
+        mock_find.return_value = self._pr()
+        mock_run.return_value = MagicMock(success=True, stdout=stdout)
+        with pytest.raises(PRLookupError, match="no head ref"):
+            await _get_pr_info(42, "owner/repo", "user")
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
+    async def test_search_lookup_error_propagates(self, mock_find) -> None:
+        mock_find.side_effect = PRLookupError("all searches failed")
+        with pytest.raises(PRLookupError, match="all searches failed"):
+            await _get_pr_info(42, "owner/repo", "user")
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.rebase.resolve_gh_env", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.run", new_callable=AsyncMock)
+    @patch("sova.supervisor.rebase.find_pr_for_issue_checked", new_callable=AsyncMock)
+    async def test_gh_view_runs_with_per_user_env(self, mock_find, mock_run, mock_env) -> None:
+        mock_find.return_value = self._pr()
+        mock_env.return_value = {"GH_TOKEN": "tok"}
+        mock_run.return_value = MagicMock(
+            success=True, stdout='{"headRefOid": "abc123", "headRefName": "feat/x", "baseRefName": "main"}'
+        )
+        await _get_pr_info(42, "owner/repo", "dsova06")
+        mock_env.assert_awaited_once_with("dsova06")
+        assert mock_run.call_args.kwargs["env"] == {"GH_TOKEN": "tok"}
+
+
+class TestAttemptAutoRebasePrLookup:
+    @pytest.mark.asyncio
+    async def test_lookup_error_returns_failed_and_warns(self) -> None:
+        factory, _ = _mock_session_factory()
+        ops = _make_ops(get_pr_info=AsyncMock(side_effect=PRLookupError("gh pr view failed: boom")))
+        with patch.object(rebase_module, "log") as mock_log:
+            result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert result["status"] == "failed"
+        assert result["pr_number"] is None
+        assert "gh pr view failed: boom" in result["error"]
+        mock_log.warning.assert_called_once()
+        mock_log.exception.assert_not_called()
+        ops.create_rebase_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_confirmed_empty_search_is_skipped_without_warning(self) -> None:
+        factory, _ = _mock_session_factory()
+        ops = _make_ops(get_pr_info=AsyncMock(return_value=None))
+        with patch.object(rebase_module, "log") as mock_log:
+            result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert result == {"status": "skipped", "reason": "No open PR found for issue #42"}
+        mock_log.warning.assert_not_called()
 
 
 class TestCreateRebaseRun:
@@ -393,6 +469,24 @@ class TestAttemptAutoRebaseExecution:
         assert result["status"] == "success"
         assert result["pr_number"] == 55
         ops.cleanup_worktree.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_pr_base_branch_falls_back_to_config(self, tmp_path: Path) -> None:
+        factory, session, mock_task_run, pr_info = self._setup_mocks()
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.load_config.return_value.base_branch = "develop"
+        ops.get_pr_info.return_value = {**pr_info, "base_branch": ""}
+        wt_info = MagicMock()
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            MagicMock(success=True, conflicts_resolved=0),
+            Decimal("0"),
+        )
+        await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert ops.rebase_with_conflict_resolution.call_args.args[0] == "develop"
 
     @pytest.mark.asyncio
     async def test_rebase_failure_writes_handoff(self, tmp_path: Path) -> None:

@@ -22,11 +22,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.config.loader import load_config
 from sova.db.models import TaskRun
-from sova.git.pr import find_pr_for_issue
+from sova.git.pr import PRLookupError, find_pr_for_issue_checked
 from sova.git.rebase import rebase_with_conflict_resolution
 from sova.git.worktree import check_worktree_active_agent, cleanup_worktree, create_worktree, find_worktree_by_branch
 from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
 from sova.utils.env import scrub_check_env
+from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -95,6 +96,9 @@ async def attempt_auto_rebase(
         pr_info = await ops.get_pr_info(issue_number, cfg.github_repo, cfg.github_user)
         if pr_info is None:
             return {"status": "skipped", "reason": f"No open PR found for issue #{issue_number}"}
+    except PRLookupError as exc:
+        log.warning("auto_rebase.pr_lookup_failed", issue=issue_number, error=str(exc))
+        return {"status": "failed", "pr_number": None, "error": f"PR lookup failed: {exc}"}
     except Exception as exc:  # noqa: BLE001 (no TaskRun exists yet; nothing to finalize)
         log.exception("auto_rebase.setup_error", issue=issue_number)
         return {"status": "failed", "pr_number": None, "error": str(exc)}
@@ -102,7 +106,7 @@ async def attempt_auto_rebase(
     pr_number = pr_info["number"]
     branch = pr_info["branch"]
     head_sha = pr_info["head_sha"]
-    base_branch = pr_info.get("base_branch", cfg.base_branch)
+    base_branch = pr_info.get("base_branch") or cfg.base_branch
 
     # Finalization and worktree cleanup happen inside this lock (in
     # _run_locked_rebase's own try/except/finally), not after it: releasing
@@ -367,8 +371,13 @@ async def _run_rebase_and_push(
 
 
 async def _get_pr_info(issue_number: int, repo: str, github_user: str) -> dict[str, Any] | None:
-    """Fetch PR number, branch, and HEAD SHA for an issue."""
-    pr = await find_pr_for_issue(str(issue_number), repo=repo, github_user=github_user)
+    """Fetch PR number, branch, and HEAD SHA for an issue.
+
+    Returns None only for a confirmed empty search. Raises PRLookupError when the search or
+    the `gh pr view` call fails or returns an unusable result, so a failed lookup is never
+    reported as "no PR found".
+    """
+    pr = await find_pr_for_issue_checked(str(issue_number), repo=repo, github_user=github_user)
     if pr is None:
         return None
 
@@ -381,19 +390,27 @@ async def _get_pr_info(issue_number: int, repo: str, github_user: str) -> dict[s
         repo,
         "--json",
         "headRefOid,headRefName,baseRefName",
+        env=await resolve_gh_env(github_user),
     )
     if not head_result.success:
-        return None
+        raise PRLookupError(f"gh pr view failed for PR #{pr.number} in {repo!r}: {head_result.stderr[:200]}")
 
     try:
         data = json.loads(head_result.stdout)
-    except (ValueError, KeyError):
-        return None
+    except ValueError:
+        raise PRLookupError(f"gh pr view returned unparseable output for PR #{pr.number} in {repo!r}") from None
+
+    if not isinstance(data, dict):
+        data = {}
+    branch = data.get("headRefName")
+    head_sha = data.get("headRefOid")
+    if not branch or not head_sha:
+        raise PRLookupError(f"gh pr view returned no head ref for PR #{pr.number} in {repo!r}")
 
     return {
         "number": pr.number,
-        "branch": data.get("headRefName", ""),
-        "head_sha": data.get("headRefOid", ""),
+        "branch": branch,
+        "head_sha": head_sha,
         "base_branch": data.get("baseRefName", ""),
     }
 
