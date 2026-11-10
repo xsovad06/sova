@@ -563,14 +563,18 @@ if [ "$PUSHED" -eq 0 ]; then
       [.[][] | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[].context] | unique end' \
       <<<"$RULES_JSON" 2>/dev/null); then
     CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
-    # Names GitHub reports as required join the ruleset names (a check only classic protection requires still
-    # decides). An unreadable lookup leaves DECIDE_JSON and STATS empty, so the fast path stays unmet.
-    GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$FP_ERR")
-    if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
-    elif grep -q "no required checks reported\|no checks reported" "$FP_ERR"; then GH_REQ_JSON="[]"
-    else GH_REQ_JSON=; fi
+    # With ruleset names, the names GitHub reports as required join them (a check only classic protection requires
+    # still decides). With none, every check decides, as before rulesets were read: the lookup is skipped. An
+    # unreadable lookup leaves DECIDE_JSON and STATS empty, so the fast path stays unmet.
     DECIDE_JSON=
-    [ -z "$GH_REQ_JSON" ] || DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique' 2>/dev/null) || DECIDE_JSON=
+    if [ "$REQUIRED_JSON" = "[]" ]; then DECIDE_JSON="[]"
+    else
+      GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$FP_ERR")
+      if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
+      elif grep -q "no required checks reported\|no checks reported" "$FP_ERR"; then GH_REQ_JSON="[]"
+      else GH_REQ_JSON=; fi
+      [ -z "$GH_REQ_JSON" ] || DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique' 2>/dev/null) || DECIDE_JSON=
+    fi
     # TOTAL: every check. PENDING, FAILED: deciding names only (all when none). MISSING: deciding names not registered.
     STATS=$(jq -r --argjson req "${DECIDE_JSON:-null}" '
       (if ($req | length) == 0 then . else map(select(.name as $n | any($req[]; . == $n))) end) as $c
@@ -589,14 +593,15 @@ fi
 
 If it printed "Skipping the poll", go to Phase 5. Otherwise (a push happened,
 or checks are still pending, failed or absent), fall through to the poll below.
-When the base branch has required checks (rulesets, every page of `gh api --paginate repos/{owner}/{repo}/rules/branches/<base>`,
-plus every name `gh pr checks <PR_NUMBER> --required` reports, which covers classic protection),
-the poll decides on the union of those names: one not yet registered blocks a pass, and non-required checks such as
-review bots (e.g., CodeRabbit) neither block nor fail it, and zero checks is never `NO_CHECKS`. Classic branch
-protection is not read for names directly (its endpoint needs the admin right, which a push-only account lacks),
-so a classic-only required check is known only once it has registered. With none required (a repository relying on
-classic protection alone with nothing registered, or a private repository whose plan has no rulesets)
-it covers every check. Requires gh CLI v2.32+ (for the `bucket` field).
+When the rulesets of the base branch name required checks (every page of `gh api --paginate repos/{owner}/{repo}/rules/branches/<base>`),
+the poll decides on the union of those names and every name `gh pr checks <PR_NUMBER> --required` reports (which
+covers classic protection): one not yet registered blocks a pass, and non-required checks such as review bots
+(e.g., CodeRabbit) neither block nor fail it, and zero checks is never `NO_CHECKS`. Classic branch protection is not
+read for names directly (its endpoint needs the admin right, which a push-only account lacks), so a classic-only
+required check is known only once it has registered. So `--required` is consulted only when rulesets name checks:
+with no ruleset names (classic protection alone, or a private repository whose plan has no rulesets) its registered
+names alone would let a failing, pending or unregistered check through, so the poll skips that lookup and covers
+every check, as it did before rulesets were read. Requires gh CLI v2.32+ (for the `bucket` field).
 
 **Run the poll as a synchronous foreground command and wait for it to finish.** Do NOT launch it as a background task and then stop to "wait" for a notification: headless mode has no mechanism to resume you when a background task completes, and ending your turn without a tool call terminates the run, leaving the PR unmerged. One call polls at most 16 x 30s (8 minutes), which exceeds the Bash tool's 2 minute default timeout, so pass an explicit `timeout` of at least 540000 ms (never above the tool's 600000 ms cap). If more waiting is needed, repeat the same block as a new, separate call rather than lengthening one loop past the cap.
 
@@ -620,13 +625,17 @@ for i in $(seq 1 16); do
   CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null)
   [ -n "$CHECKS_JSON" ] || CHECKS_JSON="[]"
   echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
-  # Names GitHub itself reports as required (a ruleset or classic protection) join the ruleset names: a check
-  # only classic protection requires still decides. "no required checks reported" means none.
-  GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$ERR_FILE")
-  if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
-  elif grep -q "no required checks reported\|no checks reported" "$ERR_FILE"; then GH_REQ_JSON="[]"
-  else echo "Unable to read the required checks of PR <PR_NUMBER>: $(cat "$ERR_FILE")" >&2; exit 1; fi
-  DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique')
+  # With ruleset names, the names GitHub itself reports as required (a ruleset or classic protection) join them: a
+  # check only classic protection requires still decides. "no required checks reported" means none. With no ruleset
+  # names every check decides, as before rulesets were read, so that lookup is skipped.
+  if [ "$REQUIRED_JSON" = "[]" ]; then DECIDE_JSON="[]"
+  else
+    GH_REQ_OUT=$(gh pr checks <PR_NUMBER> --required --json name 2>"$ERR_FILE")
+    if jq -e 'type == "array"' >/dev/null 2>&1 <<<"$GH_REQ_OUT"; then GH_REQ_JSON=$(jq -c '[.[].name]' <<<"$GH_REQ_OUT")
+    elif grep -q "no required checks reported\|no checks reported" "$ERR_FILE"; then GH_REQ_JSON="[]"
+    else echo "Unable to read the required checks of PR <PR_NUMBER>: $(cat "$ERR_FILE")" >&2; exit 1; fi
+    DECIDE_JSON=$(jq -nc --argjson a "$REQUIRED_JSON" --argjson b "$GH_REQ_JSON" '$a + $b | unique')
+  fi
   # TOTAL: every check. PENDING, FAILED, DECIDING: the deciding names only (all when none). MISSING: deciding names not registered.
   STATS=$(jq -r --argjson req "$DECIDE_JSON" '
     (if ($req | length) == 0 then . else map(select(.name as $n | any($req[]; . == $n))) end) as $c

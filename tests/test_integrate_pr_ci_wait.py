@@ -5,6 +5,8 @@ check such as SonarCloud had not registered yet) read as `CI PASSED`, and the fa
 on the same list. Both blocks now read the base branch's required check names from the rulesets and
 count a missing name as not passed. With required names the pass test covers those names only (a pending
 non-required check such as CodeRabbit no longer blocks); with none it covers every check as before.
+Issue #1434: the names `gh pr checks --required` reports join the deciding set only when the rulesets name
+some check, so a classic-protection-only repository still decides on every check.
 These tests extract the shipped bash blocks and execute them, sharing the fake `gh` with `/pr`'s tests.
 """
 
@@ -128,7 +130,11 @@ class TestPoll:
         assert _verdict(result).endswith(f"1 required not registered: {SONAR}")
 
     def test_no_required_checks_polls_every_check_as_before(self, tmp_path: Path) -> None:
-        scenario = {"all": [checks("pass", "pending"), checks("pass", "pass")]}
+        # Classic protection requires check-0 only: the pending check-1 must still hold the pass (issue #1434).
+        scenario = {
+            "required": [checks("pass", names=["check-0"])],
+            "all": [checks("pass", "pending"), checks("pass", "pass")],
+        }
         result, calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
         assert _verdict(result) == "CI PASSED: all 2 checks passed"
         assert calls["all"] == 2
@@ -225,7 +231,10 @@ class TestFastPath:
 
 
 class TestClassicAndRulesetProtection:
-    """A check that `gh pr checks --required` reports but the rulesets do not list (classic protection) decides too."""
+    """With ruleset names, a check that `gh pr checks --required` reports but the rulesets do not list decides too.
+
+    That is a check only classic protection requires. With no ruleset names every check decides (TestNoRulesetNames).
+    """
 
     def test_a_failing_classic_required_check_fails_the_poll(self, tmp_path: Path) -> None:
         required = checks("pass", "fail", names=["lint", "classic-required-test"])
@@ -292,3 +301,64 @@ class TestPollPagination:
         result, _calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
         assert result.returncode == 0, result.stderr
         assert "CI PASSED" in _verdict(result)
+
+
+class TestNoRulesetNames:
+    """With no ruleset names every check decides, and the `--required` lookup is not made (issue #1434)."""
+
+    CLASSIC = "classic-required-test"
+    CLASSIC_ONLY = {"required": [checks("pass", names=[CLASSIC])]}
+
+    def test_the_poll_decides_on_every_check_without_consulting_required(self, tmp_path: Path) -> None:
+        scenario = {**self.CLASSIC_ONLY, "all": [checks("pass", "pass", names=[self.CLASSIC, "CodeRabbit"])]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED: all 2 checks passed"
+        assert read_calls(tmp_path, ("required",)) == {"required": 0}
+
+    def test_the_poll_fails_on_a_failing_non_required_check(self, tmp_path: Path) -> None:
+        scenario = {**self.CLASSIC_ONLY, "all": [checks("pass", "fail", names=[self.CLASSIC, "extra"])]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert _verdict(result) == "CI FAILED: 1 check(s) failed"
+
+    def test_the_poll_waits_on_a_pending_non_required_check(self, tmp_path: Path) -> None:
+        names = [self.CLASSIC, "extra"]
+        scenario = {**self.CLASSIC_ONLY, "all": [checks("pass", "pending", names=names), checks("pass", "pass")]}
+        result, calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED: all 2 checks passed"
+        assert calls["all"] == 2
+
+    def test_an_unreadable_required_lookup_does_not_stop_the_poll(self, tmp_path: Path) -> None:
+        scenario = {"required": [GH_ERROR], "all": [checks("pass")]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert _verdict(result) == "CI PASSED: all 1 checks passed"
+
+    def test_a_plan_without_rulesets_does_not_consult_required(self, tmp_path: Path) -> None:
+        scenario = {"rules": [NO_RULESETS_PLAN], "required": [GH_ERROR], "all": [checks("pass")]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert _verdict(result) == "CI PASSED: all 1 checks passed"
+        assert read_calls(tmp_path, ("required",)) == {"required": 0}
+
+    def test_the_fast_path_skips_on_a_green_list_without_consulting_required(self, tmp_path: Path) -> None:
+        scenario = {**self.CLASSIC_ONLY, "all": [checks("pass", "skipping", names=[self.CLASSIC, "extra"])]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[0], scenario, tmp_path)
+        assert SKIPPING in result.stdout
+        assert read_calls(tmp_path, ("required",)) == {"required": 0}
+
+    def test_the_fast_path_ignores_an_unreadable_required_lookup(self, tmp_path: Path) -> None:
+        scenario = {"required": [GH_ERROR], "all": [checks("pass")]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[0], scenario, tmp_path)
+        assert SKIPPING in result.stdout
+
+    @pytest.mark.parametrize("bucket", ["fail", "pending"])
+    def test_the_fast_path_does_not_skip_on_a_non_required_check_that_is_not_green(
+        self, tmp_path: Path, bucket: str
+    ) -> None:
+        scenario = {**self.CLASSIC_ONLY, "all": [checks("pass", bucket, names=[self.CLASSIC, "extra"])]}
+        result, _calls = _run(_phase4_blocks(CANONICAL)[0], scenario, tmp_path)
+        assert SKIPPING not in result.stdout
+
+    def test_ruleset_names_still_consult_required(self, tmp_path: Path) -> None:
+        scenario = {"rules": [rules("lint")], "all": [checks("pass", names=["lint"])]}
+        _run(_phase4_blocks(CANONICAL)[1], scenario, tmp_path)
+        assert read_calls(tmp_path, ("required",))["required"] >= 1
