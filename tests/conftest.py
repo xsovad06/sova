@@ -15,9 +15,11 @@ import functools
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -765,6 +767,14 @@ class InvariantRepo:
     """
 
     def __init__(self, root: Path) -> None:
+        self._attach(root)
+        self.git("init", "-q", "--bare", "--initial-branch=main", str(self.origin), cwd=root)
+        self.git("clone", "-q", str(self.origin), str(self.dir), cwd=root)
+        self.git("checkout", "-q", "-b", "main")
+        self.write("README.md", "# project\n")
+        self.land_on_main("chore(docs): init")
+
+    def _attach(self, root: Path) -> None:
         self.origin = root / "origin.git"
         self.dir = root / "work"
         self.env = {
@@ -776,11 +786,27 @@ class InvariantRepo:
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
         }
-        self.git("init", "-q", "--bare", "--initial-branch=main", str(self.origin), cwd=root)
-        self.git("clone", "-q", str(self.origin), str(self.dir), cwd=root)
-        self.git("checkout", "-q", "-b", "main")
-        self.write("README.md", "# project\n")
-        self.land_on_main("chore(docs): init")
+
+    def copy_to(self, root: Path) -> InvariantRepo:
+        """An independent repository at *root* with this one's history, built by copying, not by git.
+
+        Copying two small directories costs a fraction of the git processes that built them, which
+        is most of a real-git test's setup (issue #1191). The clone's ``origin`` URL is an absolute
+        path, so it is pointed at the copied remote.
+        """
+        shutil.copytree(self.origin, root / "origin.git", symlinks=True)
+        shutil.copytree(self.dir, root / "work", symlinks=True)
+        copy = InvariantRepo.__new__(InvariantRepo)
+        copy._attach(root)
+        config = copy.dir / ".git" / "config"
+        text = config.read_text(encoding="utf-8")
+        relinked = re.sub(r"(?m)^(\s*url = ).*$", lambda m: m.group(1) + str(copy.origin), text)
+        assert relinked != text, "the clone has no origin URL to relink"
+        config.write_text(relinked, encoding="utf-8")
+        # The copied index holds the originals' inode and ctime, which git's plumbing (`diff-index`,
+        # `diff-files`) reads as every tracked file modified; porcelain refreshes it, plumbing does not.
+        copy.git("update-index", "-q", "--refresh")
+        return copy
 
     def git(self, *args: str, cwd: Path | None = None, when: str | None = None) -> str:
         env = dict(self.env)
@@ -821,9 +847,41 @@ class InvariantRepo:
         )
 
 
+@pytest.fixture(scope="session")
+def _invariant_repo_template(tmp_path_factory: pytest.TempPathFactory) -> InvariantRepo:
+    """The fresh InvariantRepo every test starts from, built once per worker and copied per test."""
+    return InvariantRepo(tmp_path_factory.mktemp("invariant-repo-template"))
+
+
 @pytest.fixture
-def invariant_repo(tmp_path: Path) -> InvariantRepo:
-    return InvariantRepo(tmp_path)
+def invariant_repo(tmp_path: Path, _invariant_repo_template: InvariantRepo) -> InvariantRepo:
+    return _invariant_repo_template.copy_to(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def invariant_history(
+    tmp_path_factory: pytest.TempPathFactory, _invariant_repo_template: InvariantRepo
+) -> Callable[..., InvariantRepo]:
+    """Build a repository history once per module, and hand each test its own copy of it.
+
+    ``invariant_history(dest, build, *args)`` runs ``build(repo, *args)`` on a fresh
+    InvariantRepo the first time the module asks for that ``(build, args)`` pair, then
+    returns a copy of the result at ``dest`` (usually ``tmp_path``). Use it when several
+    tests, or parametrized cases, start from the same commits: each history is built by
+    git once instead of once per test. ``build``'s return value is discarded, so a test
+    that needs a commit reads it back from a ref.
+    """
+    built: dict[tuple[object, ...], InvariantRepo] = {}
+
+    def copy_of(dest: Path, build: Callable[..., object], *args: object) -> InvariantRepo:
+        key = (build, *args)
+        if key not in built:
+            repo = _invariant_repo_template.copy_to(tmp_path_factory.mktemp("invariant-history"))
+            build(repo, *args)
+            built[key] = repo
+        return built[key].copy_to(dest)
+
+    return copy_of
 
 
 def full_stash_pathspecs(

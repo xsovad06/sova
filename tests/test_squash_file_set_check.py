@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 import subprocess
 import textwrap
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -66,13 +68,13 @@ def test_every_squash_recipe_carries_the_same_check() -> None:
     assert len(set(bodies.values())) == 1, "the file-set check drifted between recipes"
 
 
-def _branch_behind_a_moved_base(repo: InvariantRepo) -> str:
-    """Fork a branch, then land a sibling PR on main. Returns the branch's own commit SHA."""
+def _build_branch_behind_a_moved_base(repo: InvariantRepo) -> None:
+    """Fork a branch, then land a sibling PR on main; ``backup/test`` points at the branch's own commit."""
     repo.write("requirements.txt", "pkg==1.13.0\n")
     repo.land_on_main("chore(deps): pin pkg")
     repo.start_branch()
     repo.write("feature.py", "VALUE = 1\n")
-    sha = repo.commit("feat(core): add feature")
+    repo.commit("feat(core): add feature")
     repo.git("checkout", "-q", "main")
     repo.write("requirements.txt", "pkg==1.15.0\n")
     repo.write("tests/test_sibling.py", "def test_sibling():\n    pass\n")
@@ -80,7 +82,12 @@ def _branch_behind_a_moved_base(repo: InvariantRepo) -> str:
     repo.git("checkout", "-q", "feat/work")
     repo.git("fetch", "-q", "origin")
     repo.git("branch", "backup/test")
-    return sha
+
+
+@pytest.fixture
+def repo(tmp_path: Path, invariant_history: Callable[..., InvariantRepo]) -> InvariantRepo:
+    """A per-test copy of a branch-behind-a-moved-base history that git builds once per module."""
+    return invariant_history(tmp_path, _build_branch_behind_a_moved_base)
 
 
 def _run_check(repo: InvariantRepo, command: str, backup: str = "backup/test") -> subprocess.CompletedProcess[str]:
@@ -94,13 +101,13 @@ def _run_check(repo: InvariantRepo, command: str, backup: str = "backup/test") -
 
 
 @pytest.mark.parametrize("command", _SQUASH_COMMANDS)
-def test_reset_to_moved_base_is_reported(invariant_repo: InvariantRepo, command: str) -> None:
+def test_reset_to_moved_base_is_reported(repo: InvariantRepo, command: str) -> None:
     """The incident recipe: soft reset to origin/main after main moved, then recommit."""
-    sha = _branch_behind_a_moved_base(invariant_repo)
-    invariant_repo.git("reset", "-q", "--soft", "origin/main")
-    invariant_repo.git("commit", "-q", "-C", sha)
+    sha = repo.git("rev-parse", "backup/test")
+    repo.git("reset", "-q", "--soft", "origin/main")
+    repo.git("commit", "-q", "-C", sha)
 
-    result = _run_check(invariant_repo, command)
+    result = _run_check(repo, command)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "requirements.txt" in result.stderr
@@ -108,23 +115,22 @@ def test_reset_to_moved_base_is_reported(invariant_repo: InvariantRepo, command:
 
 
 @pytest.mark.parametrize("command", _SQUASH_COMMANDS)
-def test_reset_to_fork_point_passes(invariant_repo: InvariantRepo, command: str) -> None:
-    sha = _branch_behind_a_moved_base(invariant_repo)
-    fork_point = invariant_repo.git("merge-base", "HEAD", "origin/main")
-    invariant_repo.git("reset", "-q", "--soft", fork_point)
-    invariant_repo.git("commit", "-q", "-C", sha)
+def test_reset_to_fork_point_passes(repo: InvariantRepo, command: str) -> None:
+    sha = repo.git("rev-parse", "backup/test")
+    fork_point = repo.git("merge-base", "HEAD", "origin/main")
+    repo.git("reset", "-q", "--soft", fork_point)
+    repo.git("commit", "-q", "-C", sha)
 
-    result = _run_check(invariant_repo, command)
+    result = _run_check(repo, command)
 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("command", _SQUASH_COMMANDS)
-def test_unresolvable_backup_fails_closed(invariant_repo: InvariantRepo, command: str) -> None:
+def test_unresolvable_backup_fails_closed(repo: InvariantRepo, command: str) -> None:
     """A typo'd backup name must stop the recipe, never read as "nothing reverted"."""
-    _branch_behind_a_moved_base(invariant_repo)
 
-    result = _run_check(invariant_repo, command, backup="backup/does-not-exist")
+    result = _run_check(repo, command, backup="backup/does-not-exist")
 
     assert result.returncode != 0
     assert "STOP" in result.stderr
@@ -141,37 +147,35 @@ def _run_rescue(repo: InvariantRepo, command: str) -> subprocess.CompletedProces
 
 
 @pytest.mark.parametrize("command", _SQUASH_COMMANDS)
-def test_recovery_rescues_edits_made_during_recreation(invariant_repo: InvariantRepo, command: str) -> None:
+def test_recovery_rescues_edits_made_during_recreation(repo: InvariantRepo, command: str) -> None:
     """A failed verification with edits only in the working tree must not lose them to the hard reset."""
-    _branch_behind_a_moved_base(invariant_repo)
-    backup_sha = invariant_repo.git("rev-parse", "backup/test")
-    fork_point = invariant_repo.git("merge-base", "HEAD", "origin/main")
-    invariant_repo.git("reset", "-q", "--soft", fork_point)
-    invariant_repo.git("reset", "-q", "HEAD", ".")
+    backup_sha = repo.git("rev-parse", "backup/test")
+    fork_point = repo.git("merge-base", "HEAD", "origin/main")
+    repo.git("reset", "-q", "--soft", fork_point)
+    repo.git("reset", "-q", "HEAD", ".")
     # Recreation was interrupted: a tracked edit and a new file exist nowhere but the working tree.
-    invariant_repo.write("feature.py", "VALUE = 2\n")
-    invariant_repo.write("notes.txt", "made during recreation\n")
+    repo.write("feature.py", "VALUE = 2\n")
+    repo.write("notes.txt", "made during recreation\n")
 
-    result = _run_rescue(invariant_repo, command)
+    result = _run_rescue(repo, command)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert invariant_repo.git("rev-parse", "HEAD") == backup_sha
-    assert invariant_repo.git("status", "--porcelain") == ""
-    rescues = invariant_repo.git("branch", "--list", "rescue/squash-*", "--format=%(refname:short)").splitlines()
+    assert repo.git("rev-parse", "HEAD") == backup_sha
+    assert repo.git("status", "--porcelain") == ""
+    rescues = repo.git("branch", "--list", "rescue/squash-*", "--format=%(refname:short)").splitlines()
     assert len(rescues) == 1, rescues
-    assert invariant_repo.git("show", f"{rescues[0]}:feature.py") == "VALUE = 2"
-    assert invariant_repo.git("show", f"{rescues[0]}:notes.txt") == "made during recreation"
+    assert repo.git("show", f"{rescues[0]}:feature.py") == "VALUE = 2"
+    assert repo.git("show", f"{rescues[0]}:notes.txt") == "made during recreation"
 
 
 @pytest.mark.parametrize("command", _SQUASH_COMMANDS)
-def test_recovery_on_clean_tree_creates_no_rescue_branch(invariant_repo: InvariantRepo, command: str) -> None:
-    _branch_behind_a_moved_base(invariant_repo)
-    backup_sha = invariant_repo.git("rev-parse", "backup/test")
-    invariant_repo.git("reset", "-q", "--soft", "origin/main")
-    invariant_repo.git("commit", "-q", "-m", "feat(core): wrong-base squash")
+def test_recovery_on_clean_tree_creates_no_rescue_branch(repo: InvariantRepo, command: str) -> None:
+    backup_sha = repo.git("rev-parse", "backup/test")
+    repo.git("reset", "-q", "--soft", "origin/main")
+    repo.git("commit", "-q", "-m", "feat(core): wrong-base squash")
 
-    result = _run_rescue(invariant_repo, command)
+    result = _run_rescue(repo, command)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert invariant_repo.git("rev-parse", "HEAD") == backup_sha
-    assert invariant_repo.git("branch", "--list", "rescue/squash-*") == ""
+    assert repo.git("rev-parse", "HEAD") == backup_sha
+    assert repo.git("branch", "--list", "rescue/squash-*") == ""

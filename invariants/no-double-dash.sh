@@ -6,7 +6,7 @@
 #
 # Two modes share every exemption rule, so they cannot disagree:
 #   <worktree_dir> [base_branch]   only lines added against origin/<base_branch> (pre-push and CI)
-#   --all <worktree_dir>           every tracked file (whole-tree guard, see tests/test_no_double_dash.py)
+#   --all <worktree_dir>           every tracked file (whole-tree guard: make lint-tree, CI invariants job)
 set -euo pipefail
 
 # The flagged literal is assembled from two quoted parts so that this script does not

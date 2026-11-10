@@ -74,7 +74,7 @@ git push origin main
 ```bash
 make check    # Lint + test (close to CI, run before submitting PR; see docs/testing-guidelines.md for what it does not cover)
 make test     # Run all tests
-make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node)
+make lint     # ShellCheck + Ruff + dashboard JS syntax check (needs node) + whole-tree invariant scans
 make format   # Auto-format Python code
 ```
 

@@ -3,15 +3,13 @@
 ``Path.read_text()``/``Path.write_text()`` with no ``encoding=`` argument uses
 the platform's default encoding, not UTF-8. Code under ``sova/`` must pass
 ``encoding=`` explicitly. The default mode checks only lines a branch adds;
-``--all`` checks every tracked file, and ``TestRepositoryHasNoUnencodedTextIo``
-runs it over this repository itself, so a call cannot survive just because no
-change touched its line.
+``--all`` checks every tracked file. ``--all`` over this repository itself runs
+in ``make lint`` and CI's invariants job (``make lint-tree``), not here.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 
 import pytest
@@ -229,21 +227,3 @@ class TestAllMode:
     def test_help_documents_the_mode(self) -> None:
         result = subprocess.run(["bash", str(INVARIANTS_DIR / SCRIPT), "--help"], capture_output=True, text=True)
         assert "--all" in result.stdout
-
-
-class TestRepositoryHasNoUnencodedTextIo:
-    """The permanent guard: no ``read_text()``/``write_text()`` under ``sova/`` lacks ``encoding="utf-8"``."""
-
-    # Parses every tracked sova/*.py file, so its runtime scales with the package rather than one unit of work.
-    @pytest.mark.timeout(120)
-    @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-    def test_whole_tree_is_clean(self) -> None:
-        if not (REPO_ROOT / ".git").exists():
-            pytest.skip("not a git checkout (for example an sdist)")
-
-        result = run_all(REPO_ROOT)
-
-        assert result.returncode == 0, (
-            'read_text()/write_text() without encoding="utf-8" (AGENTS.md: reading text files). '
-            "Pass the encoding, or put '# file-encoding: <reason>' on a line of the call.\n" + result.stdout
-        )

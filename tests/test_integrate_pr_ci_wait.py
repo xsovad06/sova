@@ -25,12 +25,14 @@ from tests.ci_wait_fakes import (
     NO_REQUIRED,
     NO_RULESETS_PLAN,
     SONAR,
+    TEST_POLL_BUDGET,
     checks,
     five,
     install_fakes,
     paged_rules,
     read_calls,
     rules,
+    shorten_poll_budget,
 )
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -61,6 +63,10 @@ def _run(
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, int]]:
     # Unless a scenario says what `gh pr checks --required` reports, GitHub reports no required check.
     env = install_fakes(tmp_path, {"required": [NO_REQUIRED], **scenario})
+    # Decide by which block is under test, not by its text: a poll loop that changed shape must raise
+    # in shorten_poll_budget(), not silently fall back to 16 real polls. The fast path block has no loop.
+    if block == _phase4_blocks(CANONICAL)[1]:
+        block = shorten_poll_budget(block)
     result = subprocess.run(["bash", "-c", block], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
     return result, read_calls(tmp_path, ("all", "rules"))
 
@@ -85,7 +91,7 @@ class TestPoll:
         assert _verdict(result) == (
             f"CI TIMEOUT: checks still pending after 8 minutes; 2 required not registered: {SONAR}, docs"
         )
-        assert calls == {"all": 16, "rules": 1}
+        assert calls == {"all": TEST_POLL_BUDGET, "rules": 1}
 
     def test_missing_checks_that_register_later_and_pass(self, tmp_path: Path) -> None:
         scenario = {"rules": [rules(*FIVE)], "all": [five("pass", "pass", "pass"), five(*["pass"] * 5)]}
@@ -140,7 +146,7 @@ class TestPoll:
         assert "NO_CHECKS" not in result.stdout
         missing = f"5 required not registered: {SONAR}, build, docs, lint, test"
         assert _verdict(result) == f"CI TIMEOUT: checks still pending after 8 minutes; {missing}"
-        assert calls["all"] == 16
+        assert calls["all"] == TEST_POLL_BUDGET
 
     def test_a_plan_without_rulesets_counts_as_no_required_names(self, tmp_path: Path) -> None:
         scenario = {"rules": [NO_RULESETS_PLAN], "all": [checks("pass")]}

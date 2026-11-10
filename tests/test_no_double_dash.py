@@ -3,14 +3,12 @@
 Exercises all code paths in the invariant script by creating temporary
 git repos with controlled diffs and running the script against them, in both
 modes: the default one that checks lines added against origin/<base>, and
-``--all``, which checks every tracked file. ``TestRepositoryHasNoProseDoubleDash``
-runs ``--all`` over this repository itself, so a prose occurrence cannot survive
-just because no change touched its line.
+``--all``, which checks every tracked file. ``--all`` over this repository itself
+runs in ``make lint`` and CI's invariants job (``make lint-tree``), not here.
 """
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -596,27 +594,3 @@ class TestEndOfLineMarker:
         repo = _init_repo(tmp_path)
         _commit(repo, "doc.md", f"Intro\n\nHorizontal rule follows{_DD_EOL}-\n")
         assert _run_all(repo).returncode == 0
-
-
-class TestRepositoryHasNoProseDoubleDash:
-    """The permanent guard: this repository stays clean no matter which lines a change touches."""
-
-    # Scans every tracked file, so its runtime scales with the repo, not with one
-    # unit of work: measured 57s sharing a runner under `-n auto`, overrunning both
-    # pyproject's 30s global and the 60s cap CI passes. A marker overrides both, so
-    # the cap has to live here rather than on the command line.
-    @pytest.mark.timeout(120)
-    @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-    # Overrides pyproject.toml's global 30s: the scan reads every tracked file
-    # in bash, about 15s alone and past 30s under `make check`'s parallel load,
-    # where the timeout reads as a violation and is not one.
-    @pytest.mark.timeout(180)
-    def test_whole_tree_is_clean(self) -> None:
-        if not (REPO_ROOT / ".git").exists():
-            pytest.skip("not a git checkout (for example an sdist)")
-        result = _run_all(REPO_ROOT)
-        assert result.returncode == 0, (
-            "Spaced double dashes used as punctuation. Replace each with a colon, period, comma or "
-            "parentheses (AGENTS.md: No double dashes). Literal syntax such as `git checkout -- <path>` "
-            "belongs in backticks or a fenced block.\n" + result.stdout
-        )

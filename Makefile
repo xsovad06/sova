@@ -60,7 +60,7 @@ test-evaluation: ## Run the model-evaluation harness against live providers (req
 
 # ── Linting ───────────────────────────────────────────────────
 
-lint: lint-bash lint-py lint-js ## Run all linters
+lint: lint-bash lint-py lint-js lint-tree ## Run all linters
 
 lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 	shellcheck invariants/*.sh .github/scripts/*.sh
@@ -68,6 +68,10 @@ lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 lint-py: ## Ruff lint + format check
 	$(RUFF) check sova/ tests/
 	$(RUFF) format --check sova/ tests/
+
+lint-tree: ## Whole-tree invariant scans (every tracked file, not just a diff); CI's invariants job runs the same two
+	bash invariants/no-double-dash.sh --all .
+	bash invariants/file-encoding.sh --all .
 
 lint-js: ## Syntax-check dashboard JS (static/*.js as scripts, static/js/**/*.js as ES modules); needs node
 	@command -v node >/dev/null || { echo "lint-js: node is required"; exit 1; }

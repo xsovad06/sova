@@ -83,7 +83,7 @@ This project uses **GitHub Issues** with a project board.
 - **Type hints**: required on all function signatures
 - **f-strings**: preferred for string formatting
 - **No emojis**: not in code or documentation
-- **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation. Enforced on the whole tree, not only on changed lines: `tests/test_no_double_dash.py` runs `invariants/no-double-dash.sh --all` over every tracked file, and the same script checks added lines in pre-push and CI.
+- **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation. Enforced on the whole tree, not only on changed lines: `make lint` and CI run `invariants/no-double-dash.sh --all`, and the same script checks added lines in pre-push and CI.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
 - **Never clamp an explicit config value against a broader default**: `min(develop.step_timeout, agent.step_timeout)` silently discards the operator's specific override. Let the more specific value win; if a hard ceiling is genuinely required, log when it fires.
