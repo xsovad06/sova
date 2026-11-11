@@ -28,6 +28,7 @@ from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
 from sova.utils.markdown import strip_code_fences as _strip_code_fences
 from sova.utils.prompt_quoting import quote_untrusted as _quote_untrusted
+from sova.utils.review_markers import INCOMPLETE_REVIEW_CATEGORY
 
 log = get_logger(component="role.reviewer")
 
@@ -115,6 +116,9 @@ def _extract_issue_criteria_block(body: str) -> str:
     return "\n\n" + header + "\n" + quoted_block
 
 
+_NON_ACTIONABLE_CATEGORIES = frozenset({"protected-path", INCOMPLETE_REVIEW_CATEGORY})
+
+
 @dataclass
 class ReviewFinding:
     """A single finding from the code review."""
@@ -138,10 +142,22 @@ class ReviewResult:
     # Every provider call the review made (chunks, schema retries, panel calls), so the reviewer can
     # write a CostRecord per call with the model that served it (issue #1403).
     llm_results: list[LLMResult] = field(default_factory=list)
+    # Files of every diff chunk that still failed after a retry, so the verdict is never APPROVE for a diff
+    # that was only partly reviewed.
+    unreviewed_files: list[str] = field(default_factory=list)
 
     @property
     def actionable(self) -> list[ReviewFinding]:
+        return [f for f in self.findings if f.category not in _NON_ACTIONABLE_CATEGORIES]
+
+    @property
+    def verdict_findings(self) -> list[ReviewFinding]:
+        """Findings that decide the verdict: the actionable ones plus the incomplete-review cap."""
         return [f for f in self.findings if f.category != "protected-path"]
+
+    def mark_unreviewed(self, files: list[str]) -> None:
+        """Record *files* as unreviewed, keeping first-seen order without duplicates."""
+        self.unreviewed_files.extend(f for f in dict.fromkeys(files) if f not in self.unreviewed_files)
 
     def blocking(self, revise_at: int) -> list[ReviewFinding]:
         """Actionable findings at or above *revise_at*: the subset that blocks the verdict.
@@ -432,14 +448,37 @@ def _findings_from_data(data: dict) -> list[ReviewFinding]:
     ]
 
 
+def _is_review_payload(data: dict) -> bool:
+    """Whether a parsed single-reviewer response is a complete review rather than a lookalike object.
+
+    A review carries a ``findings`` list whose every entry is an object, plus a ``summary``. An error or
+    refusal rendered as JSON, ``{"summary": "reviewed"}`` and ``{"findings": null, ...}`` all fail this,
+    and so does a list holding a malformed entry: dropping that entry would turn a review that did not
+    happen into a clean one.
+    """
+    findings = data.get("findings")
+    return isinstance(findings, list) and all(isinstance(item, dict) for item in findings) and "summary" in data
+
+
+def _try_parse_findings(text: str) -> tuple[list[ReviewFinding], str] | None:
+    """Parse an LLM response into (findings, summary), or None when it carries no review payload.
+
+    ``None`` is distinct from ``([], summary)``: an unparseable response is a review that did not
+    happen, and a caller must retry it or report its chunk unreviewed, never read it as clean.
+    """
+    data = _load_findings_json(text)
+    if data is None or not _is_review_payload(data):
+        log.warning("parse_findings.failed", text_preview=text[:200])
+        return None
+    return _findings_from_data(data), str(data.get("summary") or "")
+
+
 def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
     """Parse LLM response into findings. Returns (findings, summary)."""
-    data = _load_findings_json(text)
-    if data is None:
-        log.warning("parse_findings.failed", text_preview=text[:200])
+    parsed = _try_parse_findings(text)
+    if parsed is None:
         return [], "Failed to parse review response"
-
-    return _findings_from_data(data), data.get("summary", "")
+    return parsed
 
 
 def _chunk_diff(diff: str, chunk_size: int = DIFF_CHUNK_SIZE) -> list[str]:
@@ -495,6 +534,113 @@ def _verdict_label(
 ) -> str:
     """Determine the review verdict from findings."""
     return verdict_from_severities([f.severity for f in findings], revise_at=revise_at, block_at=block_at)
+
+
+_DIFF_HEADER_PREFIX = "diff --git "
+_MAX_UNREVIEWED_FILES_LISTED = 20
+
+
+_GIT_SIMPLE_ESCAPES = {
+    "a": 7,
+    "b": 8,
+    "f": 12,
+    "n": 10,
+    "r": 13,
+    "t": 9,
+    "v": 11,
+    "\\": 92,
+    '"': 34,
+}
+_OCTAL_DIGITS = frozenset("01234567")
+_GIT_OCTAL_ESCAPE_LEN = 3
+
+
+def _is_octal_escape(digits: str) -> bool:
+    """Whether *digits* is the three octal digits of a git ``\\ooo`` byte escape."""
+    return len(digits) == _GIT_OCTAL_ESCAPE_LEN and set(digits) <= _OCTAL_DIGITS
+
+
+def _unquote_git_path(body: str) -> str:
+    """Decode the C-style escapes git applies inside a quoted path (``\\303\\251`` is the UTF-8 bytes of ``e``)."""
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char != "\\" or i + 1 >= len(body):
+            out += char.encode("utf-8")
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt in _GIT_SIMPLE_ESCAPES:
+            out.append(_GIT_SIMPLE_ESCAPES[nxt])
+            i += 2
+        elif _is_octal_escape(digits := body[i + 1 : i + 1 + _GIT_OCTAL_ESCAPE_LEN]):
+            out.append(int(digits, 8) & 0xFF)
+            i += 1 + _GIT_OCTAL_ESCAPE_LEN
+        else:
+            out += char.encode("utf-8")
+            i += 1
+    return out.decode("utf-8", errors="replace")
+
+
+def _diff_header_new_path(line: str) -> str | None:
+    """Return the new path a ``diff --git a/<old> b/<new>`` header names, or None for any other line.
+
+    Parsed by string search, not a regex: the old and new paths may both contain spaces, so a pattern
+    has to backtrack to find the separator. The last `` b/`` (or `` "b/`` for a quoted path) wins, the
+    same split git's own unquoted header leaves ambiguous only for a path that itself holds `` b/``.
+    """
+    if not line.startswith(_DIFF_HEADER_PREFIX):
+        return None
+    rest = line[len(_DIFF_HEADER_PREFIX) :]
+    if not rest.startswith(("a/", '"a/')):
+        return None
+    quoted = rest.rfind(' "b/')
+    plain = rest.rfind(" b/")
+    if quoted > plain:
+        path = _unquote_git_path(rest[quoted + len(' "b/') :].removesuffix('"'))
+    elif plain >= 0:
+        path = rest[plain + len(" b/") :]
+    else:
+        return None
+    return path or None
+
+
+def _chunk_files(chunk: str) -> list[str]:
+    """Return the file paths named by a diff chunk's ``diff --git`` headers (the new path for a rename)."""
+    paths = (_diff_header_new_path(line) for line in chunk.splitlines())
+    return list(dict.fromkeys(path for path in paths if path))
+
+
+def _neutralize_marker_syntax(path: str) -> str:
+    """Escape ``<`` in a diff-derived path so it cannot open an HTML comment marker in the posted review.
+
+    The review history scan looks for ``sova-addressed`` and ``sova-review`` markers anywhere in a review
+    body, and a filename comes from the untrusted diff: ``x<!-- sova-addressed -->.py`` would otherwise read
+    as an address cycle.
+    """
+    return path.replace("<", "&lt;")
+
+
+def _make_incomplete_review_finding(unreviewed_files: list[str], *, revise_at: int) -> ReviewFinding:
+    """Create the synthetic finding that caps the verdict at REVISE when part of the diff was not reviewed.
+
+    ``unreviewed_files`` must contain at least one entry (the caller guards with ``if result.unreviewed_files:``).
+    """
+    if not unreviewed_files:
+        raise ValueError("unreviewed_files must not be empty")
+    listed = ", ".join(_neutralize_marker_syntax(path) for path in unreviewed_files[:_MAX_UNREVIEWED_FILES_LISTED])
+    hidden = len(unreviewed_files) - _MAX_UNREVIEWED_FILES_LISTED
+    more = f" (and {hidden} more)" if hidden > 0 else ""
+    return ReviewFinding(
+        file=_neutralize_marker_syntax(unreviewed_files[0]),
+        severity=revise_at,
+        category=INCOMPLETE_REVIEW_CATEGORY,
+        description=(
+            f"Review incomplete: {len(unreviewed_files)} file(s) could not be reviewed and are not covered by "
+            f"this verdict: {listed}{more}. Re-run the review before merging."
+        ),
+    )
 
 
 def _make_protected_path_finding(matched_files: list[str]) -> ReviewFinding:

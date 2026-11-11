@@ -224,6 +224,7 @@ When adding LLM-facing code:
 2. Constrain output format (JSON, not freeform)
 3. Validate parsed output against known schemas or enums
 4. Wrap LLM calls in try/except so injection-caused errors are non-fatal
+5. Pass an embedded data block (a reviewed diff) as `invoke(..., untrusted_segments=...)` only on a tool-free call (`isolated=True`): the guard then scores it as data and logs `guard.data_segment_flagged` instead of rejecting the prompt, while every other part of the prompt stays guarded. Never use it for a prompt that reaches an agent runtime with tools.
 
 ## Dashboard Security Model
 

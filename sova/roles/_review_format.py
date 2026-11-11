@@ -10,7 +10,12 @@ from __future__ import annotations
 import json
 from collections import Counter
 
-from sova.utils.review_markers import INLINE_COMMENT_STUB, SHA_RE
+from sova.utils.review_markers import (
+    INCOMPLETE_REVIEW_CATEGORY,
+    INLINE_COMMENT_STUB,
+    SHA_RE,
+    SOVA_INCOMPLETE_REVIEW_MARKER,
+)
 
 _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
@@ -159,6 +164,8 @@ def format_review_body(
         positives: Positive observations. Section omitted when empty/None.
         sha: Full SHA of the reviewed PR head commit. When known, embedded in
             the marker so the verdict can be anchored to the reviewed commit.
+            When every blocking finding is the incomplete-review cap, the
+            ``sova-review-incomplete`` marker follows the verdict marker.
         revise_at: Severity at or above which a finding blocks the verdict
             and is listed under ``### Findings``. Findings below this are
             advisory: still recorded, listed under
@@ -170,14 +177,17 @@ def format_review_body(
             one-line reference instead of repeating the full text.
     """
     verdict = verdict_from_findings(findings, revise_at=revise_at, block_at=block_at)
+    blocking = [f for f in findings if clamp_severity(f.get("severity", 5)) >= revise_at]
+    advisory = [f for f in findings if clamp_severity(f.get("severity", 5)) < revise_at]
+
     sha_suffix = f" sha={sha}" if sha else ""
-    lines = [f"<!-- sova-review: {verdict.lower()}{sha_suffix} -->", "", f"## Review: {verdict}", ""]
+    lines = [f"<!-- sova-review: {verdict.lower()}{sha_suffix} -->"]
+    if blocking and all(f.get("category") == INCOMPLETE_REVIEW_CATEGORY for f in blocking):
+        lines.append(SOVA_INCOMPLETE_REVIEW_MARKER)
+    lines.extend(["", f"## Review: {verdict}", ""])
 
     effective_summary = (summary or "").strip() or "Review of changes."
     lines.extend([effective_summary, ""])
-
-    blocking = [f for f in findings if clamp_severity(f.get("severity", 5)) >= revise_at]
-    advisory = [f for f in findings if clamp_severity(f.get("severity", 5)) < revise_at]
 
     lines.append("### Findings")
     lines.append("")

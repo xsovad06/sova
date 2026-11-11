@@ -43,6 +43,20 @@ SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 # sova.roles._review_format writes it, and sova.core.steps.address_review
 # recognizes it as "the real text is in the inline comment, go fetch it".
 INLINE_COMMENT_STUB = "see inline comment above."
+
+# Category of the synthetic finding that caps the verdict when part of the diff was never reviewed. It is a
+# result-level condition, not an LLM finding: never an inline comment, an actionable finding, or a finding the
+# address-review step tries to fix.
+INCOMPLETE_REVIEW_CATEGORY = "incomplete-review"
+
+# Second marker a review body carries, right after ``sova-review``, when its only blocking finding is that
+# incomplete-review cap. The verdict stays ``revise`` (never ``approve``), but the verdict resolver reads this
+# marker to route the PR to a manual re-review instead of an address-review cycle, which cannot fix an
+# unreviewed chunk. A separate marker rather than a token inside ``sova-review``, so the verdict marker's shape
+# (and every reader of it) is unchanged.
+SOVA_INCOMPLETE_REVIEW_MARKER = "<!-- sova-review-incomplete -->"
+SOVA_INCOMPLETE_REVIEW_MARKER_RE = re.compile(r"<!--\s*sova-review-incomplete\s*-->", re.IGNORECASE)
+
 _FINDING_TEXT_MAX = 140
 
 
