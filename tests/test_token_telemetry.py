@@ -1044,6 +1044,98 @@ class TestStreamReplay:
         assert agent.last_result_num_turns == 53
         assert agent.last_result_cost == 3.42
 
+    def test_token_usage_sums_across_result_events(self) -> None:
+        """Each segment reports its own usage while total_cost_usd is cumulative: the tokens are summed, the
+        cost is the last event's. A zero segment adds nothing and an unreported cache write keeps the total."""
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        assert agent.last_result_cache_write_tokens is None
+        usages = (
+            {
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 5,
+            },
+            {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
+            {"input_tokens": 50, "output_tokens": 7, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 3},
+        )
+        for usage, cost in zip(usages, (1.0, 1.5, 2.0), strict=True):
+            _parse_stream_line(json.dumps({"type": "result", "usage": usage, "total_cost_usd": cost}), agent)
+
+        assert agent.last_result_input_tokens == 150
+        assert agent.last_result_output_tokens == 17
+        assert agent.last_result_cache_read_tokens == 1500
+        assert agent.last_result_cache_write_tokens == 8
+        assert agent.last_result_cost == 2.0
+
+    def test_a_field_no_result_event_reported_stays_none(self) -> None:
+        """build_claude_cli_result() fills a missing usage key with 0, so the parser must read the raw event: a
+        result without usage, or with a malformed value, adds nothing and never turns NULL into 0."""
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        for event in (
+            {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 10}, "total_cost_usd": 1.0},
+            {"type": "result", "total_cost_usd": 1.2},
+            {"type": "result", "usage": "n/a", "total_cost_usd": 1.3},
+            {"type": "result", "usage": {"input_tokens": None, "output_tokens": "7"}, "total_cost_usd": 1.4},
+        ):
+            _parse_stream_line(json.dumps(event), agent)
+
+        assert agent.last_result_input_tokens == 100
+        assert agent.last_result_output_tokens == 10
+        assert agent.last_result_cache_read_tokens is None
+        assert agent.last_result_cache_write_tokens is None
+        assert agent.last_result_cost == 1.4
+
+    def test_single_result_event_matches_build_claude_cli_result(self) -> None:
+        """One realistic CLI result event records what build_claude_cli_result() reads from it, so the two
+        parsers cannot drift apart on the key names."""
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.llm.models import build_claude_cli_result
+
+        event = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": 41234,
+            "num_turns": 12,
+            "result": "done",
+            "session_id": "abc-123",
+            "total_cost_usd": 0.4321,
+            "usage": {
+                "input_tokens": 321,
+                "cache_creation_input_tokens": 4567,
+                "cache_read_input_tokens": 89012,
+                "output_tokens": 654,
+                "server_tool_use": {"web_search_requests": 0},
+                "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 4567},
+            },
+            "modelUsage": {
+                "claude-sonnet-5-5": {"inputTokens": 321, "outputTokens": 654, "costUSD": 0.4321},
+            },
+        }
+        expected = build_claude_cli_result(event)
+        agent = _command_agent()
+        _parse_stream_line(json.dumps(event), agent)
+
+        assert agent.last_result_input_tokens == expected.input_tokens == 321
+        assert agent.last_result_output_tokens == expected.output_tokens == 654
+        assert agent.last_result_cache_read_tokens == expected.cache_read_tokens == 89012
+        assert agent.last_result_cache_write_tokens == expected.cache_creation_tokens == 4567
+        assert agent.last_result_num_turns == expected.num_turns == 12
+
+    def test_num_turns_stays_none_when_no_result_event_reports_it(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        _parse_stream_line(json.dumps({"type": "result", "total_cost_usd": 1.0}), agent)
+        _parse_stream_line(json.dumps({"type": "result", "total_cost_usd": 2.0}), agent)
+
+        assert agent.last_result_num_turns is None
+
     def test_a_result_without_num_turns_keeps_the_running_total(self) -> None:
         from sova.dashboard.services.agent_output import _parse_stream_line
 
@@ -1052,6 +1144,55 @@ class TestStreamReplay:
         _parse_stream_line(json.dumps({"type": "result"}), agent)
 
         assert agent.last_result_num_turns == 5
+
+    @pytest.mark.parametrize(
+        ("total", "usage", "expected"),
+        [
+            (None, {"input_tokens": 7}, 7),
+            (10, {"input_tokens": 0}, 10),
+            (10, {"input_tokens": 5}, 15),
+            (None, {}, None),
+            (10, {}, 10),
+            (10, {"input_tokens": True}, 10),
+            (None, {"input_tokens": False}, None),
+            (10, {"input_tokens": -3}, 10),
+            (10, {"input_tokens": 2.5}, 10),
+            (10, {"input_tokens": "5"}, 10),
+            (None, {"input_tokens": None}, None),
+        ],
+    )
+    def test_add_reported_tokens_adds_only_non_negative_ints(
+        self, total: int | None, usage: dict[str, Any], expected: int | None
+    ) -> None:
+        """A bool (an int subclass), a negative, a float or a string adds nothing and keeps the running total."""
+        from sova.dashboard.services.agent_output import _add_reported_tokens
+
+        assert _add_reported_tokens(total, usage, "input_tokens") == expected
+
+    def test_result_event_with_bool_or_negative_tokens_keeps_the_totals(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = _command_agent()
+        _parse_stream_line(json.dumps({"type": "result", "usage": {"input_tokens": 20, "output_tokens": 4}}), agent)
+        _parse_stream_line(
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {
+                        "input_tokens": True,
+                        "output_tokens": -1,
+                        "cache_read_input_tokens": False,
+                        "cache_creation_input_tokens": -5,
+                    },
+                }
+            ),
+            agent,
+        )
+
+        assert agent.last_result_input_tokens == 20
+        assert agent.last_result_output_tokens == 4
+        assert agent.last_result_cache_read_tokens is None
+        assert agent.last_result_cache_write_tokens is None
 
     def test_only_command_runs_keep_a_tally(self) -> None:
         assert _command_agent(role="reviewer").phase_tally is None
@@ -1098,6 +1239,62 @@ class TestFinalizeWritesTurnsAndPhases:
         assert [p["phase"] for p in task_run.phase_usage] == ["unmarked", "fix", "push-ci-wait"]
         assert record.phase == "agent"
         assert record.num_turns == 9
+
+    async def test_agent_record_sums_tokens_across_result_events(self) -> None:
+        """Tokens are the sum of every segment, the cost is the last (cumulative) total_cost_usd, and a cache
+        write no segment reported is stored as NULL."""
+        from sqlalchemy import select
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        run_id = await self._run("running")
+        agent = _command_agent()
+        agent.run_id = run_id
+        agent.project_dir = None
+        for usage, cost in (
+            ({"input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 1000}, 2.5),
+            ({"input_tokens": 40, "output_tokens": 4, "cache_read_input_tokens": 200}, 3.0),
+        ):
+            _parse_stream_line(json.dumps({"type": "result", "usage": usage, "total_cost_usd": cost}), agent)
+        await _finalize_task_run(run_id, exit_code=0, agent=agent)
+
+        async with await get_session() as session:
+            record = (await session.execute(select(CostRecord).where(CostRecord.task_run_id == run_id))).scalar_one()
+
+        assert (record.input_tokens, record.output_tokens, record.cache_read_tokens) == (140, 14, 1200)
+        assert record.cache_write_tokens is None
+        assert float(record.cost_usd) == 3.0
+
+    async def test_agent_record_written_when_no_event_reports_cache_tokens(self) -> None:
+        """A result carrying cost and input/output but no cache keys must still finalize: the CostRecord is
+        written, the cache read and write columns are NULL, and the combined cache_tokens is 0, not a crash."""
+        from sqlalchemy import select
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_output import _parse_stream_line
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+
+        run_id = await self._run("running")
+        agent = _command_agent()
+        agent.run_id = run_id
+        agent.project_dir = None
+        for usage, cost in (({"input_tokens": 100, "output_tokens": 10}, 1.0), ({"input_tokens": 5}, 1.5)):
+            _parse_stream_line(json.dumps({"type": "result", "usage": usage, "total_cost_usd": cost}), agent)
+        assert agent.last_result_cache_read_tokens is None
+        await _finalize_task_run(run_id, exit_code=0, agent=agent)
+
+        async with await get_session() as session:
+            record = (await session.execute(select(CostRecord).where(CostRecord.task_run_id == run_id))).scalar_one()
+
+        assert (record.input_tokens, record.output_tokens) == (105, 10)
+        assert record.cache_read_tokens is None
+        assert record.cache_write_tokens is None
+        assert record.cache_tokens == 0
+        assert float(record.cost_usd) == 1.5
 
     async def test_phase_usage_written_when_the_run_is_already_terminal(self) -> None:
         """The terminal-status early return must not drop the breakdown."""
