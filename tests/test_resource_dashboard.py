@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import deque
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -278,6 +280,169 @@ class TestResourceService:
 
         with pytest.raises(ValueError, match="limit must be positive"):
             _downsample(list(range(10)), -5)
+
+
+class TestNoCpuReadingYet:
+    """A collector's first sample has no CPU baseline (``cpu_percent`` None); every live consumer must pass it on."""
+
+    @staticmethod
+    def _agent_with_unmeasured_sample(run_id: int):
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.monitoring.models import ResourceSample
+
+        process = MagicMock()
+        process.pid = 12345
+        agent = AgentState(run_id=run_id, issue="60", role="developer", process=process)
+        collector = MagicMock()
+        collector.samples = deque(
+            [
+                ResourceSample(
+                    timestamp=1000.0,
+                    cpu_percent=None,
+                    memory_rss_bytes=150_000_000,
+                    memory_vms_bytes=300_000_000,
+                    io_read_bytes=None,
+                    io_write_bytes=None,
+                    num_children=1,
+                    num_threads=3,
+                )
+            ]
+        )
+        agent.resource_collector = collector
+        return agent
+
+    def test_live_metrics_report_null_cpu_with_the_memory_reading(self) -> None:
+        from sova.dashboard.services.agent_pool import _get_project_agents
+        from sova.dashboard.services.resource_service import get_live_metrics
+
+        pa = _get_project_agents()
+        pa.agents[880] = self._agent_with_unmeasured_sample(880)
+        try:
+            result = get_live_metrics(880)
+        finally:
+            del pa.agents[880]
+        assert result == {"run_id": 880, "cpu_percent": None, "memory_rss_bytes": 150_000_000}
+
+    def test_system_metrics_report_null_agent_cpu(self) -> None:
+        from sova.dashboard.services.agent_pool import _get_project_agents
+        from sova.dashboard.services.resource_service import _metrics_cache, get_system_metrics
+
+        _metrics_cache.clear()
+        pa = _get_project_agents()
+        pa.agents[881] = self._agent_with_unmeasured_sample(881)
+        try:
+            result = get_system_metrics()
+        finally:
+            del pa.agents[881]
+            _metrics_cache.clear()
+        entry = next(a for a in result["agents"] if a["run_id"] == 881)
+        assert entry["cpu_percent"] is None
+        assert entry["memory_rss_bytes"] == 150_000_000
+
+    def test_fleet_totals_sum_only_the_measured_agents(self) -> None:
+        from sova.monitoring.cross_project import _aggregate_totals
+
+        project = {
+            "agent_slots": {"used": 2, "max": 4},
+            "agents": [
+                {"cpu_percent": None, "memory_rss_bytes": 100},
+                {"cpu_percent": 40.0, "memory_rss_bytes": 200},
+            ],
+        }
+        totals = _aggregate_totals([project])
+        assert totals["total_agent_cpu_percent"] == 40.0
+        assert totals["total_agent_memory_bytes"] == 300
+        # The total is partial, and says so: one of the two running agents has a reading.
+        assert totals["agents_with_cpu_reading"] == 1
+        assert totals["agents_running"] == 2
+
+    def test_fleet_totals_report_null_when_no_agent_has_a_reading(self) -> None:
+        """Agents that all sit in their first interval give no total, not a measured 0.0%."""
+        from sova.monitoring.cross_project import _aggregate_totals
+
+        project = {
+            "agent_slots": {"used": 2, "max": 4},
+            "agents": [
+                {"cpu_percent": None, "memory_rss_bytes": 100},
+                {"cpu_percent": None, "memory_rss_bytes": 200},
+            ],
+        }
+        totals = _aggregate_totals([project])
+        assert totals["total_agent_cpu_percent"] is None
+        assert totals["total_agent_memory_bytes"] == 300
+        assert totals["agents_with_cpu_reading"] == 0
+        assert totals["agents_running"] == 2
+
+    def test_fleet_totals_with_no_agents_are_a_measured_zero(self) -> None:
+        from sova.monitoring.cross_project import _aggregate_totals
+
+        totals = _aggregate_totals([{"agent_slots": {"used": 0, "max": 4}, "agents": []}])
+        assert totals["total_agent_cpu_percent"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_an_unmeasured_stored_summary_is_served_as_null_cpu(self, session: AsyncSession) -> None:
+        """A run that ended before its second sample stores NULL CPU columns and its true sample count."""
+        from sova.dashboard.services.resource_service import get_resource_summary
+
+        run = TaskRun(
+            issue_number="102",
+            role="developer",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("0.10"),
+            project_slug="test",
+            started_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            ended_at=datetime.now(timezone.utc),
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            ResourceSummaryRecord(
+                task_run_id=run.id,
+                sample_count=1,
+                peak_cpu_percent=None,
+                avg_cpu_percent=None,
+                peak_memory_rss_bytes=50_000_000,
+                peak_memory_vms_bytes=90_000_000,
+                total_io_read_bytes=None,
+                total_io_write_bytes=None,
+                peak_num_threads=3,
+            )
+        )
+        await session.commit()
+
+        result = await get_resource_summary(session, run.id)
+        assert result is not None
+        summary = result["summary"]
+        assert summary["peak_cpu_percent"] is None
+        assert summary["avg_cpu_percent"] is None
+        # sample_count stays the true count, beside the memory reading of that sample.
+        assert summary["sample_count"] == 1
+        assert summary["peak_memory_rss_bytes"] == 50_000_000
+
+    @pytest.mark.asyncio
+    async def test_agent_listing_reports_null_cpu(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_all_agents
+        from sova.dashboard.services.agent_pool import _get_project_agents
+
+        pa = _get_project_agents()
+        pa.agents[882] = self._agent_with_unmeasured_sample(882)
+        try:
+            result = await get_all_agents()
+        finally:
+            del pa.agents[882]
+        entry = next(a for a in result["agents"] if a["run_id"] == 882)
+        assert entry["cpu_percent"] is None
+        assert entry["memory_rss_bytes"] == 150_000_000
+
+    def test_agent_status_live_fields_report_null_cpu(self) -> None:
+        from sova.dashboard.services.agent_status import _compute_live_fields
+
+        agent = self._agent_with_unmeasured_sample(883)
+        fields = _compute_live_fields(MagicMock(id=883), {883: agent})
+        assert fields["cpu_percent"] is None
+        assert fields["memory_rss_bytes"] == 150_000_000
+        assert fields["source"] == "dashboard"
 
 
 class TestResourceRouter:
@@ -966,6 +1131,33 @@ class TestComputeAndStoreEnergy:
             mock_est.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_summary_without_a_cpu_reading_stores_no_estimate(self) -> None:
+        """A run that ended before its second sample has no CPU reading, so no energy is estimated from 0.0."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _compute_and_store_energy
+        from sova.monitoring.collector import ResourceSummary
+
+        summary = ResourceSummary(
+            sample_count=1,
+            peak_cpu_percent=0.0,
+            avg_cpu_percent=0.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            total_io_read_bytes=None,
+            total_io_write_bytes=None,
+            peak_num_threads=6,
+            cpu_measured=False,
+        )
+        with (
+            patch("sova.db.session.get_session") as mock_session,
+            patch("sova.monitoring.energy.estimate_energy") as mock_est,
+        ):
+            await _compute_and_store_energy(1, summary, None)
+        mock_session.assert_not_called()
+        mock_est.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_zero_duration_noop(self, session: AsyncSession) -> None:
         """Zero-duration estimate returns None, no DB update."""
         from sova.dashboard.services.agent_lifecycle import _compute_and_store_energy
@@ -1227,3 +1419,56 @@ class TestCo2GramsColumn:
         assert "energy_wh" not in d
         assert "co2_grams" not in d
         assert "chip_name" not in d
+
+
+class TestCpuRenderingInTheClient:
+    """The documented unit (percent of one core, unbounded) and null as "no reading" reach the page unchanged."""
+
+    _STATIC = Path(__file__).parent.parent / "sova" / "dashboard" / "static"
+    _TEMPLATES = Path(__file__).parent.parent / "sova" / "dashboard" / "templates"
+
+    @staticmethod
+    def _format(values: list[float | None]) -> list[str]:
+        import json
+        import shutil
+        import subprocess
+
+        if shutil.which("node") is None:
+            if os.environ.get("CI"):
+                pytest.fail("node is required in CI: formatCpuPercent is evaluated with node")
+            pytest.skip("node is not installed")
+        app_js = (TestCpuRenderingInTheClient._STATIC / "app.js").read_text(encoding="utf-8")
+        script = (
+            "const src = process.argv[1];\n"
+            "const start = src.indexOf('function formatCpuPercent(');\n"
+            "const body = src.slice(start, src.indexOf('\\n}\\n', start) + 2);\n"
+            "const fn = new Function(body + '; return formatCpuPercent;')();\n"
+            "console.log(JSON.stringify(JSON.parse(process.argv[2]).map((v) => fn(v))));\n"
+        )
+        result = subprocess.run(
+            ["node", "-e", script, app_js, json.dumps(values)], capture_output=True, text=True, timeout=30, check=True
+        )
+        return json.loads(result.stdout)
+
+    def test_null_is_a_placeholder_not_zero_or_nan(self) -> None:
+        assert self._format([None]) == ["--"]
+
+    def test_zero_is_a_measured_reading(self) -> None:
+        assert self._format([0]) == ["0.0%"]
+
+    def test_a_multi_core_tree_is_shown_above_one_hundred(self) -> None:
+        assert self._format([250.04, 100, 99.96]) == ["250.0%", "100.0%", "100.0%"]
+
+    def test_the_pages_format_cpu_through_the_shared_helper(self) -> None:
+        widget = (self._STATIC / "resource-widget.js").read_text(encoding="utf-8")
+        run_detail = (self._TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
+        assert widget.count("formatCpuPercent(") == 3
+        assert "formatCpuPercent(s.peak_cpu_percent)" in run_detail
+        assert "formatCpuPercent(s.avg_cpu_percent)" in run_detail
+        # No clamp to one core anywhere a CPU value is drawn or formatted.
+        assert not re.search(r"Math\.min\([^)]*cpu[^)]*100", widget + run_detail)
+
+    def test_the_run_chart_skips_a_null_sample_instead_of_plotting_nan(self) -> None:
+        run_detail = (self._TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
+        assert "s.cpu_percent != null ? parseFloat(s.cpu_percent) : null" in run_detail
+        assert "if (vals[j] === null)" in run_detail

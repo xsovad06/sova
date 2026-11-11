@@ -48,12 +48,17 @@ class ResourceCollector:
         # counters from the previous sample so that children dying between
         # samples don't produce negative totals.
         self._prev_io: dict[int, tuple[int, int]] = {}
+        # CPU seconds (user + system) used so far by each process of the tree at the previous sample, keyed
+        # by (pid, create_time) so a reused pid is a different process, and when that sample was taken.
+        self._prev_cpu: dict[tuple[int, float], float] = {}
+        self._prev_cpu_at: float | None = None
 
         # Rolling aggregates: updated on every sample so that summaries
         # remain accurate even after early samples are evicted from the deque.
         self._total_samples: int = 0
         self._peak_cpu: float = 0.0
         self._cpu_sum: float = 0.0
+        self._cpu_samples: int = 0
         self._peak_rss: int = 0
         self._peak_vms: int = 0
         self._total_io_read: int = 0
@@ -69,10 +74,6 @@ class ResourceCollector:
         try:
             proc = psutil.Process(self.pid)
             self._create_time = proc.create_time()
-            # Prime cpu_percent() so the first real sample returns a
-            # meaningful value instead of 0.0 (psutil needs a prior
-            # measurement as baseline).
-            proc.cpu_percent()
         except psutil.NoSuchProcess:
             log.warning("collector.start_failed", pid=self.pid, reason="process_not_found")
             return
@@ -100,20 +101,23 @@ class ResourceCollector:
         return ResourceSummary(
             sample_count=self._total_samples,
             peak_cpu_percent=self._peak_cpu,
-            avg_cpu_percent=self._cpu_sum / self._total_samples,
+            avg_cpu_percent=self._cpu_sum / self._cpu_samples if self._cpu_samples else 0.0,
             peak_memory_rss_bytes=self._peak_rss,
             peak_memory_vms_bytes=self._peak_vms,
             total_io_read_bytes=self._total_io_read if self._has_any_io else None,
             total_io_write_bytes=self._total_io_write if self._has_any_io else None,
             peak_num_threads=self._peak_threads,
+            cpu_measured=self._cpu_samples > 0,
         )
 
     def _update_aggregates(self, sample: ResourceSample) -> None:
         """Update rolling aggregates with a new sample."""
         self._total_samples += 1
-        self._cpu_sum += sample.cpu_percent
-        if sample.cpu_percent > self._peak_cpu:
-            self._peak_cpu = sample.cpu_percent
+        if sample.cpu_percent is not None:
+            self._cpu_samples += 1
+            self._cpu_sum += sample.cpu_percent
+            if sample.cpu_percent > self._peak_cpu:
+                self._peak_cpu = sample.cpu_percent
         if sample.memory_rss_bytes > self._peak_rss:
             self._peak_rss = sample.memory_rss_bytes
         if sample.memory_vms_bytes > self._peak_vms:
@@ -148,6 +152,35 @@ class ResourceCollector:
             except TimeoutError:
                 pass  # interval elapsed, continue sampling
 
+    def _tree_cpu_percent(self, procs: list[psutil.Process], now: float) -> float | None:
+        """CPU percent of *procs* over the interval since the previous call, or None without a baseline.
+
+        psutil's convention: 100 is one full core and a tree on several cores exceeds it, the unit
+        ``cpu_percent(interval=None)`` summed over the tree reported before. Each process is keyed by
+        (pid, create_time) and counted once however often the tree lists it (a reparented descendant). A
+        process that exited, denies access, or is a zombie is skipped; one that exited between samples
+        drops out of the baseline, so the reading is the live remainder's. A process first seen this
+        sample has no baseline and contributes from the next one. None as well when no process was read
+        in both samples (every read denied, or a wholly new tree): an unmeasured interval is not idle.
+        """
+        current: dict[tuple[int, float], float] = {}
+        for p in procs:
+            try:
+                times = p.cpu_times()
+                current[(p.pid, p.create_time())] = times.user + times.system
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        previous, previous_at = self._prev_cpu, self._prev_cpu_at
+        self._prev_cpu, self._prev_cpu_at = current, now
+        if previous_at is None or now <= previous_at:
+            return None
+        shared = [key for key in current if key in previous]
+        if not shared:
+            return None
+        used = sum(max(0.0, current[key] - previous[key]) for key in shared)
+        return used / (now - previous_at) * 100.0
+
     def _take_sample(self, proc: psutil.Process) -> ResourceSample:
         """Take a single resource measurement of the process tree.
 
@@ -155,10 +188,10 @@ class ResourceCollector:
         This avoids incorrect (negative) totals when child processes die
         between samples and their cumulative counters disappear from the tree.
 
-        CPU measurements for newly-discovered child processes will be 0.0 in
-        their first sample as psutil requires a baseline measurement.
+        CPU is the CPU time the whole tree used since the previous sample divided by the
+        time between them (see ``_tree_cpu_percent``); the first sample has no baseline and
+        reports ``None``.
         """
-        cpu = proc.cpu_percent()
         mem = proc.memory_info()
         rss = mem.rss
         vms = mem.vms
@@ -185,13 +218,12 @@ class ResourceCollector:
             pass
 
         num_children = 0
+        children: list[psutil.Process] = []
         try:
             children = proc.children(recursive=True)
             num_children = len(children)
             for child in children:
                 try:
-                    child_cpu = child.cpu_percent()
-                    cpu += child_cpu
                     child_mem = child.memory_info()
                     rss += child_mem.rss
                     vms += child_mem.vms
@@ -219,9 +251,10 @@ class ResourceCollector:
 
         self._prev_io = current_io
 
+        now = time.monotonic()
         return ResourceSample(
-            timestamp=time.monotonic(),
-            cpu_percent=cpu,
+            timestamp=now,
+            cpu_percent=self._tree_cpu_percent([proc, *children], now),
             memory_rss_bytes=rss,
             memory_vms_bytes=vms,
             io_read_bytes=io_delta_read if has_any_io else None,

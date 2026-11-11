@@ -322,6 +322,12 @@ function statusBadge(status, classMap) {
   return '<span class="text-xs px-2 py-0.5 rounded ' + cls + '">' + escapeHtml(status) + '</span>';
 }
 
+// A CPU reading in the API's unit (percent of one core: 100 is one full core, and a multi-core process tree
+// exceeds it, so it is never clamped to 100). null or undefined is "no reading yet", never 0%.
+function formatCpuPercent(value) {
+  return value != null ? Number(value).toFixed(1) + '%' : '--';
+}
+
 function setText(id, text) {
   var el = document.getElementById(id);
   if (el) el.textContent = text;

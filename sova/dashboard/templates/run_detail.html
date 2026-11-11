@@ -600,8 +600,8 @@ async function loadResources() {
     var section = document.getElementById('resource-section');
     section.classList.remove('hidden');
     document.getElementById('resource-cards').innerHTML =
-      resourceCard('Peak CPU', parseFloat(s.peak_cpu_percent).toFixed(1) + '%', 'text-accent') +
-      resourceCard('Avg CPU', parseFloat(s.avg_cpu_percent).toFixed(1) + '%', 'text-accent') +
+      resourceCard('Peak CPU', formatCpuPercent(s.peak_cpu_percent), 'text-accent') +
+      resourceCard('Avg CPU', formatCpuPercent(s.avg_cpu_percent), 'text-accent') +
       resourceCard('Peak Memory', formatBytes(s.peak_memory_rss_bytes), 'text-accent-green') +
       resourceCard('Peak Threads', s.peak_num_threads, 'text-accent-yellow') +
       (s.total_io_read_bytes != null ? resourceCard('I/O Read', formatBytes(s.total_io_read_bytes), 'text-gray-300') : '') +
@@ -635,10 +635,12 @@ function drawResourceChart(samples) {
   var ch = h - pad.top - pad.bottom;
 
   // Extract data
-  var cpuVals = samples.map(function(s) { return parseFloat(s.cpu_percent); });
+  // The first sample of a run has no CPU reading (null): the line starts at the first measured one.
+  var cpuVals = samples.map(function(s) { return s.cpu_percent != null ? parseFloat(s.cpu_percent) : null; });
   var memVals = samples.map(function(s) { return s.memory_rss_bytes / 1048576; }); // MB
 
-  var maxCpu = Math.max(10, Math.ceil(Math.max.apply(null, cpuVals) * 1.1));
+  var measuredCpu = cpuVals.filter(function(v) { return v !== null; });
+  var maxCpu = Math.max(10, Math.ceil(Math.max.apply(null, measuredCpu.concat([0])) * 1.1));
   var maxMem = Math.max(10, Math.ceil(Math.max.apply(null, memVals) * 1.1));
 
   // Background
@@ -658,10 +660,12 @@ function drawResourceChart(samples) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
+    var penDown = false;
     for (var j = 0; j < vals.length; j++) {
+      if (vals[j] === null) { penDown = false; continue; }
       var x = pad.left + (j / (vals.length - 1)) * cw;
       var y = pad.top + ch - (vals[j] / maxVal) * ch;
-      if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      if (!penDown) { ctx.moveTo(x, y); penDown = true; } else ctx.lineTo(x, y);
     }
     ctx.stroke();
   }

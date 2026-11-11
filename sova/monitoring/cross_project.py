@@ -250,6 +250,8 @@ def _aggregate_totals(projects: list[dict]) -> dict:
     total_agents_used = 0
     total_agents_max = 0
     total_agent_cpu = 0.0
+    agents_seen = 0
+    agents_measured = 0
     total_agent_memory = 0
 
     for p in projects:
@@ -259,8 +261,10 @@ def _aggregate_totals(projects: list[dict]) -> dict:
         for agent in p.get("agents", []):
             cpu = agent.get("cpu_percent")
             mem = agent.get("memory_rss_bytes")
+            agents_seen += 1
             if isinstance(cpu, (int, float)):
                 total_agent_cpu += cpu
+                agents_measured += 1
             if isinstance(mem, (int, float)):
                 total_agent_memory += int(mem)
 
@@ -268,8 +272,12 @@ def _aggregate_totals(projects: list[dict]) -> dict:
         "project_count": len(projects),
         "total_agents_used": total_agents_used,
         "total_agents_max": total_agents_max,
-        "total_agent_cpu_percent": round(total_agent_cpu, 1),
+        # None, not 0.0, when agents run but none has a CPU reading yet (every one is in its first interval).
+        "total_agent_cpu_percent": None if agents_seen and not agents_measured else round(total_agent_cpu, 1),
         "total_agent_memory_bytes": total_agent_memory,
+        # How many of the running agents the CPU total covers: it sums only agents past their first interval.
+        "agents_with_cpu_reading": agents_measured,
+        "agents_running": agents_seen,
     }
 
 

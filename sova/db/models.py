@@ -412,7 +412,7 @@ class ResourceSampleRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID, ondelete="CASCADE"), nullable=False)
     sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    cpu_percent: Mapped[float | None] = mapped_column(Numeric(8, 2))
     memory_rss_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     memory_vms_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     io_read_bytes: Mapped[int | None] = mapped_column(Integer)
@@ -435,8 +435,9 @@ class ResourceSummaryRecord(Base):
         Integer, ForeignKey(_FK_TASK_RUNS_ID, ondelete="CASCADE"), nullable=False, unique=True
     )
     sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    peak_cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False, default=0.0)
-    avg_cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False, default=0.0)
+    # NULL for a run with no CPU reading (it ended before its second sample), never 0.0.
+    peak_cpu_percent: Mapped[float | None] = mapped_column(Numeric(8, 2))
+    avg_cpu_percent: Mapped[float | None] = mapped_column(Numeric(8, 2))
     peak_memory_rss_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     peak_memory_vms_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_io_read_bytes: Mapped[int | None] = mapped_column(Integer)
