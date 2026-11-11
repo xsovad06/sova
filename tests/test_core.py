@@ -1471,6 +1471,17 @@ class TestHandleStepFailureResultClassificationBoundary:
 
         assert result == "billing_exhausted"
 
+    def test_non_retryable_flag_wins_over_a_billing_looking_error(self, tmp_path: Path) -> None:
+        """A step that left the tracker in a state a retry would worsen is never retried or fallback-hopped."""
+        from sova.core.steps.base import StepResult
+
+        result = WorkflowEngine._handle_step_failure_result(
+            self._engine(tmp_path),
+            StepResult(success=False, summary="Research corrupted", error="rate_limit exceeded", non_retryable=True),
+        )
+
+        assert result == "non_retryable"
+
 
 # ---------------------------------------------------------------------------
 # Step implementations (unit tests for individual steps)
