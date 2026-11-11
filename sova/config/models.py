@@ -935,8 +935,9 @@ class TestingConfig(BaseSettings):
     baseline_enabled: bool = True
     baseline_timeout: int = Field(300, gt=0)
     # pytest-xdist workers a SOVA-run check command (and a dispatched agent's own check) gets
-    # through PYTEST_XDIST_AUTO_NUM_WORKERS: 0 splits the cores between max_parallel_agents
-    # (sova.utils.env.pytest_worker_count), any other value is a fixed count. An operator's own
+    # through PYTEST_XDIST_AUTO_NUM_WORKERS: 0 splits the cores and available memory between the agents
+    # running now (sova.utils.env.decide_pytest_workers; max_parallel_agents only sizes the fallback
+    # when leases or memory cannot be read), any other value is a fixed count. An operator's own
     # PYTEST_XDIST_AUTO_NUM_WORKERS still wins over both.
     check_workers: int = Field(0, ge=0)
 

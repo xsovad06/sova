@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -18,9 +20,14 @@ from sova.utils.env import (
     PYTEST_WORKERS_ENV_KEY,
     SCRUBBED_VARS,
     SERVICE_MANAGER_VARS,
+    WORKER_CAP_SOURCE_COMPUTED,
+    WORKER_CAP_SOURCE_CONFIG,
+    WORKER_CAP_SOURCE_ENV_KEY,
+    auto_workers,
     pytest_worker_count,
     scrub_agent_env,
     scrub_check_env,
+    worker_shares,
 )
 
 
@@ -236,6 +243,24 @@ class TestScrubOrchestratorEnv:
             assert PYTEST_WORKERS_ENV_KEY not in scrub_orchestrator_env({"PATH": "/bin"})
 
 
+@contextmanager
+def _machine(*, cpus: int, active: int | OSError = 1, available_gb: int | OSError = 64) -> Iterator[None]:
+    """A machine with *cpus* cores, *active* agents and *available_gb* of free memory; an exception means unreadable."""
+    memory = MagicMock()
+    if isinstance(available_gb, OSError):
+        memory_patch = patch("sova.utils.env.psutil.virtual_memory", side_effect=available_gb)
+    else:
+        memory.available = available_gb * 1024**3
+        memory_patch = patch("sova.utils.env.psutil.virtual_memory", return_value=memory)
+    leases = (
+        patch("sova.utils.env.active_agent_count", side_effect=active)
+        if isinstance(active, OSError)
+        else patch("sova.utils.env.active_agent_count", return_value=active)
+    )
+    with patch("sova.utils.env.os.cpu_count", return_value=cpus), memory_patch, leases:
+        yield
+
+
 class TestPytestWorkerCap:
     """Concurrent full checks each ran `-n auto` across every core; SOVA splits the cores between agents."""
 
@@ -252,20 +277,185 @@ class TestPytestWorkerCap:
     def test_worker_count(self, check_workers: int, max_parallel_agents: int, cpus: int, expected: int) -> None:
         assert pytest_worker_count(check_workers, max_parallel_agents, cpu_count=cpus) == expected
 
-    def test_check_env_carries_the_split_from_the_passed_config(self) -> None:
-        config = ProjectConfig(max_parallel_agents=4)
-        with patch("sova.utils.env.os.cpu_count", return_value=12):
-            env = scrub_check_env({"PATH": "/bin"}, config=config)
+    @pytest.mark.parametrize(
+        ("cpus", "active", "available_gb", "expected"),
+        [
+            pytest.param(14, 1, 32, 14, id="one agent gets every core"),
+            pytest.param(14, 3, 32, 4, id="cores split between the active agents"),
+            pytest.param(14, 3, 6, 2, id="memory binds below the floor"),
+            pytest.param(14, 2, 11, 7, id="memory share equals the cpu share"),
+            pytest.param(14, 2, 8, 4, id="memory binds below the cpu share"),
+            pytest.param(14, 14, 32, 2, id="never below two workers"),
+            pytest.param(14, 1, 1, 2, id="below the memory reserve is the floor"),
+            pytest.param(14, 0, 32, 14, id="zero active agents reads as one"),
+            pytest.param(14, 1, 8, 8, id="memory binds a lone agent"),
+            pytest.param(14, 2, 8, 4, id="the same memory is divided between two agents"),
+            pytest.param(14, 4, 8, 2, id="the same memory is divided between four agents"),
+            pytest.param(8, 1, 16, 8, id="8 cores with 16 GB free: one agent gets every core"),
+            pytest.param(8, 2, 16, 4, id="8 cores with 16 GB free: two agents split the cores"),
+            pytest.param(8, 1, 6, 4, id="8 cores with 6 GB free: memory binds one agent"),
+            pytest.param(8, 2, 6, 2, id="8 cores with 6 GB free: memory binds two agents to the floor"),
+            pytest.param(8, 3, 5, 2, id="8 cores with 5 GB free: three agents sit on the floor"),
+        ],
+    )
+    def test_worker_count_for_the_machine(self, cpus: int, active: int, available_gb: int, expected: int) -> None:
+        """The production function's result: the floor, the smaller share, and memory divided by agents."""
+        assert auto_workers(cpu_count=cpus, available_bytes=available_gb * 1024**3, active_agents=active) == expected
+
+    def test_the_shares_split_the_memory_above_the_reserve_between_the_agents(self) -> None:
+        # 8 GiB free less the 4 GiB reserve is 4 GiB, which holds eight 512 MiB workers for one agent, four for two.
+        assert worker_shares(cpu_count=14, available_bytes=8 * 1024**3, active_agents=1) == (14, 8)
+        assert worker_shares(cpu_count=14, available_bytes=8 * 1024**3, active_agents=2) == (7, 4)
+
+    def test_check_env_carries_the_computed_split_and_logs_it(self) -> None:
+        with _machine(cpus=12, active=3, available_gb=64), patch("sova.utils.env.log") as log:
+            env = scrub_check_env({"PATH": "/bin"}, config=ProjectConfig(max_parallel_agents=8))
+        assert env[PYTEST_WORKERS_ENV_KEY] == "4"
+        log.info.assert_called_once()
+        assert log.info.call_args.args == ("env.worker_cap",)
+        fields = log.info.call_args.kwargs
+        assert fields == {
+            "source": "computed",
+            "workers": 4,
+            "cpu_cores": 12,
+            "active_agents": 3,
+            "available_mb": 64 * 1024,
+            "cpu_share": 4,
+            "mem_share": 40,
+            "limited_by": "cpu",
+            "floor_applied": False,
+        }
+
+    def test_the_floor_is_logged_when_memory_forces_it(self) -> None:
+        with _machine(cpus=12, active=1, available_gb=1), patch("sova.utils.env.log") as log:
+            env = scrub_check_env({}, config=ProjectConfig())
+        assert env[PYTEST_WORKERS_ENV_KEY] == "2"
+        assert log.info.call_args.kwargs["floor_applied"] is True
+        assert log.info.call_args.kwargs["limited_by"] == "memory"
+
+    def test_the_floor_is_attributed_to_the_cpu_when_the_cores_force_it(self) -> None:
+        with _machine(cpus=4, active=4, available_gb=64), patch("sova.utils.env.log") as log:
+            env = scrub_check_env({}, config=ProjectConfig())
+        assert env[PYTEST_WORKERS_ENV_KEY] == "2"
+        assert log.info.call_args.kwargs["floor_applied"] is True
+        assert log.info.call_args.kwargs["limited_by"] == "cpu"
+
+    def test_unreadable_leases_fall_back_to_the_static_split(self) -> None:
+        with _machine(cpus=12, available_gb=64, active=OSError("denied")), patch("sova.utils.env.log") as log:
+            env = scrub_check_env({}, config=ProjectConfig(max_parallel_agents=4))
         assert env[PYTEST_WORKERS_ENV_KEY] == "3"
+        assert log.warning.call_args.args == ("env.worker_cap",)
+        assert log.warning.call_args.kwargs["source"] == "fallback"
+        assert "leases unreadable" in log.warning.call_args.kwargs["reason"]
 
-    def test_check_env_carries_the_fixed_setting(self) -> None:
+    def test_unreadable_memory_falls_back_to_the_static_split(self) -> None:
+        with _machine(cpus=12, active=3, available_gb=OSError("no vm stats")), patch("sova.utils.env.log") as log:
+            env = scrub_check_env({}, config=ProjectConfig(max_parallel_agents=4))
+        assert env[PYTEST_WORKERS_ENV_KEY] == "3"
+        assert log.warning.call_args.args == ("env.worker_cap",)
+        assert log.warning.call_args.kwargs["source"] == "fallback"
+        assert "memory unreadable" in log.warning.call_args.kwargs["reason"]
+
+    def test_check_env_carries_the_fixed_setting_and_does_not_read_the_machine(self) -> None:
         config = ProjectConfig(max_parallel_agents=4, testing=config_models.TestingConfig(check_workers=5))
-        assert scrub_check_env({"PATH": "/bin"}, config=config)[PYTEST_WORKERS_ENV_KEY] == "5"
+        with (
+            patch("sova.utils.env.active_agent_count", side_effect=AssertionError("leases read")),
+            patch("sova.utils.env.psutil.virtual_memory", side_effect=AssertionError("memory read")),
+            patch("sova.utils.env.os.cpu_count", side_effect=AssertionError("cores read")),
+            patch("sova.utils.env.log") as log,
+        ):
+            env = scrub_check_env({"PATH": "/bin"}, config=config)
+        assert env[PYTEST_WORKERS_ENV_KEY] == "5"
+        assert env[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_CONFIG
+        assert log.info.call_args.args == ("env.worker_cap",)
+        assert log.info.call_args.kwargs == {"source": "config", "workers": 5}
+        log.debug.assert_not_called()
 
-    def test_operator_value_is_kept(self) -> None:
+    def test_operator_value_is_kept_and_logged(self) -> None:
         config = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
-        env = scrub_check_env({PYTEST_WORKERS_ENV_KEY: "11"}, config=config)
+        with patch("sova.utils.env.log") as log:
+            env = scrub_check_env({PYTEST_WORKERS_ENV_KEY: "11"}, config=config)
         assert env[PYTEST_WORKERS_ENV_KEY] == "11"
+        assert log.info.call_args.kwargs == {"source": "operator", "workers": "11"}
+
+    @pytest.mark.parametrize("source", ["config", "inherited", "operator", "computed"])
+    def test_every_source_logs_at_info_for_a_real_check_and_at_debug_when_quiet(self, source: str) -> None:
+        """A slow check must be explainable whichever source decided it; git commit and push stay quiet."""
+        configs = {
+            "config": (ProjectConfig(testing=config_models.TestingConfig(check_workers=5)), {}),
+            "inherited": (ProjectConfig(), {PYTEST_WORKERS_ENV_KEY: "7", WORKER_CAP_SOURCE_ENV_KEY: "config"}),
+            "operator": (ProjectConfig(), {PYTEST_WORKERS_ENV_KEY: "11"}),
+            "computed": (ProjectConfig(), {}),
+        }
+        config, env = configs[source]
+        with _machine(cpus=12, active=3, available_gb=64), patch("sova.utils.env.log") as log:
+            scrub_check_env(env, config=config)
+            assert log.info.call_args.kwargs["source"] == source
+            log.debug.assert_not_called()
+        with _machine(cpus=12, active=3, available_gb=64), patch("sova.utils.env.log") as log:
+            scrub_check_env(env, config=config, quiet=True)
+            assert log.debug.call_args.kwargs["source"] == source
+            log.info.assert_not_called()
+
+    def test_a_degraded_value_is_a_warning_even_when_quiet(self) -> None:
+        with _machine(cpus=12, available_gb=64, active=OSError("denied")), patch("sova.utils.env.log") as log:
+            scrub_check_env({}, config=ProjectConfig(), quiet=True)
+        assert log.warning.call_args.kwargs["source"] == "fallback"
+
+    def test_a_config_value_from_a_parent_holds_for_a_nested_project_without_its_own(self) -> None:
+        """`testing.check_workers` set by the parent process is inherited over the machine split."""
+        spawn = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
+        spawn_env = scrub_check_env({"PATH": "/bin"}, config=spawn)
+        assert spawn_env[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_CONFIG
+        with (
+            patch("sova.utils.env.active_agent_count", side_effect=AssertionError("leases read")),
+            patch("sova.utils.env.log") as log,
+        ):
+            nested = scrub_check_env(spawn_env, config=ProjectConfig())
+        assert nested[PYTEST_WORKERS_ENV_KEY] == "5"
+        assert nested[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_CONFIG
+        assert log.info.call_args.kwargs == {"source": "inherited", "workers": "5"}
+
+    @pytest.mark.parametrize("nested_check_workers", [5, 3], ids=["same", "different"])
+    def test_a_nested_projects_own_explicit_setting_beats_an_inherited_value(self, nested_check_workers: int) -> None:
+        """`testing.check_workers > 0` of the config in use wins; inheritance only replaces the computed default."""
+        spawn = ProjectConfig(testing=config_models.TestingConfig(check_workers=5))
+        spawn_env = scrub_check_env({"PATH": "/bin"}, config=spawn)
+        nested_config = ProjectConfig(testing=config_models.TestingConfig(check_workers=nested_check_workers))
+        nested = scrub_check_env(spawn_env, config=nested_config)
+        assert nested[PYTEST_WORKERS_ENV_KEY] == str(nested_check_workers)
+        assert nested[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_CONFIG
+
+    def test_a_computed_value_is_marked_as_computed(self) -> None:
+        with _machine(cpus=12, active=3, available_gb=64):
+            env = scrub_check_env({}, config=ProjectConfig())
+        assert env[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_COMPUTED
+
+    def test_an_inherited_computed_share_is_recomputed_from_the_live_agent_count(self) -> None:
+        """An agent spawned alone on 14 cores gets the 3-agent share for a check run once three agents are active."""
+        with _machine(cpus=14, active=1, available_gb=64):
+            spawn_env = scrub_check_env({"PATH": "/bin"}, config=ProjectConfig())
+        assert spawn_env[PYTEST_WORKERS_ENV_KEY] == "14"
+        with _machine(cpus=14, active=3, available_gb=64), patch("sova.utils.env.log") as log:
+            check_env = scrub_check_env(spawn_env, config=ProjectConfig())
+        assert check_env[PYTEST_WORKERS_ENV_KEY] == "4"
+        assert check_env[WORKER_CAP_SOURCE_ENV_KEY] == WORKER_CAP_SOURCE_COMPUTED
+        assert log.info.call_args.kwargs["source"] == "computed"
+        assert log.info.call_args.kwargs["active_agents"] == 3
+
+    def test_an_inherited_computed_share_is_replaced_by_the_projects_own_setting(self) -> None:
+        with _machine(cpus=14, active=1, available_gb=64):
+            spawn_env = scrub_check_env({}, config=ProjectConfig())
+        config = ProjectConfig(testing=config_models.TestingConfig(check_workers=3))
+        assert scrub_check_env(spawn_env, config=config)[PYTEST_WORKERS_ENV_KEY] == "3"
+
+    def test_an_unknown_marker_is_treated_as_the_operators_value(self) -> None:
+        env = scrub_check_env({PYTEST_WORKERS_ENV_KEY: "9", WORKER_CAP_SOURCE_ENV_KEY: "sova"}, config=ProjectConfig())
+        assert env[PYTEST_WORKERS_ENV_KEY] == "9"
+
+    def test_an_operator_value_is_not_marked(self) -> None:
+        env = scrub_check_env({PYTEST_WORKERS_ENV_KEY: "11"}, config=ProjectConfig())
+        assert WORKER_CAP_SOURCE_ENV_KEY not in env
 
     def test_an_empty_operator_value_is_unset(self) -> None:
         """pytest-xdist ignores an empty value, so it does not count as the operator's choice."""
@@ -284,16 +474,13 @@ class TestPytestWorkerCap:
     def test_an_unloadable_config_falls_back_to_the_default_split(self) -> None:
         with (
             patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
-            patch("sova.utils.env.os.cpu_count", return_value=12),
+            _machine(cpus=12, active=2, available_gb=64),
         ):
             assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
 
     @pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("bad override")], ids=["os", "value"])
     def test_other_load_failures_fall_back_to_the_default_split(self, error: Exception) -> None:
-        with (
-            patch("sova.config.loader.load_config", side_effect=error),
-            patch("sova.utils.env.os.cpu_count", return_value=12),
-        ):
+        with patch("sova.config.loader.load_config", side_effect=error), _machine(cpus=12, active=2, available_gb=64):
             assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
 
     def test_the_fallback_does_not_rebuild_a_project_config(self) -> None:
@@ -301,7 +488,7 @@ class TestPytestWorkerCap:
         with (
             patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
             patch("sova.config.models.ProjectConfig", side_effect=ValueError("bad SOVA_MAX_PARALLEL_AGENTS")),
-            patch("sova.utils.env.os.cpu_count", return_value=12),
+            _machine(cpus=12, active=2, available_gb=64),
         ):
             assert scrub_check_env({})[PYTEST_WORKERS_ENV_KEY] == "6"
 

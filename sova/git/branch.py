@@ -194,7 +194,7 @@ async def commit(
     if no_verify:
         args.append("--no-verify")
     # The project's pre-commit hook runs here: keep the orchestrator's database URL out of it.
-    await run_checked(*args, cwd=cwd, env=scrub_check_env(config=config))
+    await run_checked(*args, cwd=cwd, env=scrub_check_env(config=config, quiet=True))
 
 
 async def push(
@@ -252,7 +252,7 @@ async def push(
         env = None
     # The project's pre-push hook runs here: keep the orchestrator's database URL out of it
     # (scrubs the resolved GH_TOKEN env when there is one, the ambient env otherwise).
-    await run_checked(*args, cwd=cwd, env=scrub_check_env(env, config=config))
+    await run_checked(*args, cwd=cwd, env=scrub_check_env(env, config=config, quiet=True))
 
 
 class DivergenceStatus(StrEnum):

@@ -11898,6 +11898,125 @@ class TestRunWorkflowOutcome:
         assert any("Workflow failed (researcher)" in m for m in messages)
 
 
+class TestRunWorkflowLease:
+    """A run holds one machine-wide lease while it dispatches, so concurrent checks split the cores (issue #1157)."""
+
+    @pytest.mark.parametrize("raises", [False, True], ids=["dispatch returns", "dispatch raises"])
+    async def test_the_lease_is_held_during_dispatch_and_released_after(self, tmp_path: Path, raises: bool) -> None:
+        import os
+
+        from sova.cli.commands.run import _run_workflow
+        from sova.config.models import ProjectConfig
+        from sova.roles.base import RoleResult
+        from sova.utils import agent_leases
+
+        seen: dict[str, set[int]] = {}
+
+        async def dispatch(*args: object, **kwargs: object) -> tuple[MagicMock, RoleResult]:
+            seen["during"] = agent_leases.live_lease_pids()
+            if raises:
+                raise RuntimeError("role crashed")
+            return MagicMock(), RoleResult(success=True, summary="done")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.utils.logging.setup_logging"),
+            patch("sova.roles.dispatcher.dispatch", new=dispatch),
+            patch("sova.cli.commands.run._install_sigterm_handler"),
+            patch("sova.cli.commands.run._persist_run_cost", new=AsyncMock()),
+            patch("sova.cli.commands.run.console.print"),
+        ):
+            if raises:
+                with pytest.raises(RuntimeError):
+                    await _run_workflow("1", project_dir=tmp_path, role_name="researcher", force=False)
+            else:
+                await _run_workflow("1", project_dir=tmp_path, role_name="researcher", force=False)
+
+        assert seen["during"] == {os.getpid()}
+        assert agent_leases.live_lease_pids() == set()
+        assert agent_leases.LEASE_ENV_KEY not in os.environ
+
+    async def test_parallel_holds_one_lease_per_pipeline_it_runs_concurrently(self, tmp_path: Path) -> None:
+        """Pipelines sharing one process each count as an agent, so their checks split the cores (issue #1157)."""
+        import asyncio
+        import os
+
+        from sova.cli.commands.run import _parallel
+        from sova.config.models import ProjectConfig
+        from sova.roles.base import RoleResult
+        from sova.utils import agent_leases
+
+        counts: list[int] = []
+        markers: list[str | None] = []
+        everyone_started = asyncio.Event()
+        everyone_counted = asyncio.Event()
+        started = 0
+
+        async def dispatch(*args: object, **kwargs: object) -> tuple[MagicMock, RoleResult]:
+            nonlocal started
+            started += 1
+            if started == 3:
+                everyone_started.set()
+            await everyone_started.wait()
+            counts.append(agent_leases.active_agent_count())
+            markers.append(os.environ.get(agent_leases.LEASE_ENV_KEY))
+            if len(counts) == 3:
+                everyone_counted.set()
+            await everyone_counted.wait()
+            return MagicMock(), RoleResult(success=True, summary="done")
+
+        config = ProjectConfig(max_parallel_agents=3)
+        with (
+            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.roles.dispatcher.dispatch", new=dispatch),
+            patch("sova.cli.commands.run.console.print"),
+        ):
+            await _parallel(issues=["1", "2", "3"], project_dir=tmp_path, force=False)
+
+        assert counts == [3, 3, 3]
+        assert markers == [None, None, None]
+        assert agent_leases.live_lease_pids() == set()
+
+    async def test_watch_holds_a_lease_for_each_task_it_dispatches(self, tmp_path: Path) -> None:
+        """`sova watch` runs pipelines in its own process, so it leases each one as `sova run` does."""
+        import os
+
+        from sova.adapters.base import TaskState
+        from sova.cli.commands.run import _watch
+        from sova.config.models import ProjectConfig
+        from sova.roles.base import RoleResult
+        from sova.utils import agent_leases
+
+        seen: dict[str, set[int]] = {}
+
+        async def dispatch(*args: object, **kwargs: object) -> tuple[MagicMock, RoleResult]:
+            seen["during"] = agent_leases.live_lease_pids()
+            return MagicMock(), RoleResult(success=True, summary="done")
+
+        config = ProjectConfig()
+        config.watch.interval_active = 0
+        adapter = MagicMock()
+        task = MagicMock(id="1", title="t", state=TaskState.BACKLOG)
+        # The second poll stops the loop the way Ctrl-C does.
+        adapter.list_tasks = AsyncMock(side_effect=[[task], KeyboardInterrupt()])
+        with (
+            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.db.session.init_db", new=AsyncMock()),
+            patch("sova.roles.dispatcher.dispatch", new=dispatch),
+            patch("sova.cli.commands.run.console.print"),
+        ):
+            await _watch(project_dir=tmp_path, force=False)
+
+        assert seen["during"] == {os.getpid()}
+        assert agent_leases.live_lease_pids() == set()
+        assert agent_leases.LEASE_ENV_KEY not in os.environ
+
+
 # ---------------------------------------------------------------------------
 # _run_workflow: cost persistence for roles that bypass WorkflowEngine (issue #1368)
 # ---------------------------------------------------------------------------

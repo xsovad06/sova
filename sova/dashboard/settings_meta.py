@@ -1498,8 +1498,8 @@ _REGISTRY: list[SettingMeta] = [
         "testing.check_workers",
         "Check workers",
         "pytest-xdist workers for each check command SOVA runs or an agent it starts runs (sets "
-        "PYTEST_XDIST_AUTO_NUM_WORKERS unless already set). 0 splits the cores between max parallel agents, "
-        "at least 2; any other value is a fixed count",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS unless already set). 0 splits the cores and available memory between the "
+        "agents running now (counted machine-wide from lease files), at least 2; any other value is a fixed count",
         "develop",
         "number",
     ),

@@ -16,6 +16,7 @@ from sova.adapters.base import AdapterError, Task, TaskFilters, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.roles.dispatcher import dispatch
+from sova.utils.agent_leases import pipeline_lease
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -134,7 +135,10 @@ class WatchLoop:
         )
 
         try:
-            role, result = await dispatch(ctx, config=self._config.roles)
+            # One lease per dispatched task, never marking the environment: the server runs other
+            # pipelines and spawns independent agents, which must lease for themselves.
+            with pipeline_lease(inherit=False):
+                role, result = await dispatch(ctx, config=self._config.roles)
 
             if result.success:
                 log.info("task.completed", task_id=task.id, role=role.name, summary=result.summary)

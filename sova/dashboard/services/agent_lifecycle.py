@@ -204,6 +204,7 @@ from sova.ipc.runtime import (
 )
 from sova.llm.backends import TIER_NAMES
 from sova.llm.client import RUN_MODEL_OVERRIDE_ENV
+from sova.utils.agent_leases import acquire_lease_for, release_lease
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 
@@ -1113,6 +1114,11 @@ async def start_command(
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
     hold_spawn_claim(project_dir, run_id, wait_task)
+    # A command agent runs `claude -p /<command>` directly, not `sova run`, so nothing inside it leases a
+    # pipeline: lease on its behalf, so it and the checks it runs count when other agents split the cores.
+    # The lease ends with the reaper task; a crash before that is pruned by the next count (dead pid).
+    child_lease = acquire_lease_for(process.pid)
+    wait_task.add_done_callback(lambda _task: release_lease(child_lease))
 
     log.info("command.started", command=command, pid=process.pid, run_id=run_id, cwd=str(cwd))
     return {"status": "started", "pid": process.pid, "run_id": run_id}

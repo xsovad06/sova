@@ -84,7 +84,9 @@ async def _maintain_pr(*, pr: int, project_dir: Path | None) -> None:
         raise typer.Exit(code=1)
 
     # Force-push
-    result = await run("git", "push", "--force-with-lease", cwd=resolved_dir, env=scrub_check_env(config=config))
+    result = await run(
+        "git", "push", "--force-with-lease", cwd=resolved_dir, env=scrub_check_env(config=config, quiet=True)
+    )
     if not result.success:
         console.print(f"[red]Push failed: {result.stderr}[/red]")
         raise typer.Exit(code=1)
