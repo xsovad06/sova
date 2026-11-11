@@ -170,6 +170,9 @@ class ExecutionContext:
 
     # Populated during execution
     task: Task | None = None
+    # The issue as it was before the /research command ran: ResearchStep.execute() sets it so the gate checks
+    # only a section this run added, against the title the run started for. None on the runtime path.
+    research_snapshot: Task | None = None
     branch_name: str = ""
     worktree_dir: Path | None = None
     pr_number: int | None = None
