@@ -698,6 +698,8 @@ class WorkflowEngine:
         """Classify step failure and determine retry strategy."""
         if _is_runaway_failure(step_result.error):
             return "runaway"
+        if step_result.non_retryable:
+            return "non_retryable"
         # DevelopStep's inner check loop appends a target project's own raw
         # check output after this separator (sova/core/steps/develop.py's
         # _with_check_output_tail()). That text is not an LLM invocation

@@ -43,6 +43,9 @@ class StepResult:
     # PAUSED + failure_type="runaway_guard" path as the pre-step guard check,
     # instead of the generic FAILED/step_hard_timeout path.
     runaway_triggered: bool = False
+    # Set by a step whose failure a retry or a fallback-model hop would only repeat or worsen (the tracker holds
+    # state the step could not repair). WorkflowEngine._handle_step_failure_result maps it to "non_retryable".
+    non_retryable: bool = False
 
 
 @dataclass
