@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from sova.utils.log_dedup import warn_once
@@ -301,11 +302,18 @@ def scan_prompt(text: str, *, custom_deny_patterns: list[str] | None = None) -> 
     )
 
 
-def guard_prompt(prompt: str) -> None:
+def guard_prompt(prompt: str, *, untrusted_segments: Sequence[str] = ()) -> None:
     """Check a prompt and raise PromptInjectionError if it exceeds the threshold.
 
     Loads config lazily to avoid circular imports. When the guard is disabled
     via config, this is a no-op.
+
+    ``untrusted_segments`` are data blocks embedded verbatim in *prompt* (a reviewed diff, for
+    example). Each is removed by exact text before the scan, so a fixture string inside reviewed
+    code does not reject the whole prompt, and is scanned on its own: a score at or above the
+    threshold logs ``guard.data_segment_flagged`` instead of raising. A segment that does not occur
+    verbatim removes nothing, so the whole prompt stays guarded (fail closed). The caller must only
+    pass a segment for a call that reaches no tools (see ``invoke(isolated=True)``).
     """
     from sova.config.loader import load_config
 
@@ -319,10 +327,22 @@ def guard_prompt(prompt: str) -> None:
     if not security.prompt_guard:
         return
 
-    result = scan_prompt(
-        prompt,
-        custom_deny_patterns=security.custom_deny_patterns or None,
-    )
+    custom_deny_patterns = security.custom_deny_patterns or None
+    scanned = prompt
+    for segment in untrusted_segments:
+        if not segment or segment not in scanned:
+            continue
+        scanned = scanned.replace(segment, "\n")
+        segment_result = scan_prompt(segment, custom_deny_patterns=custom_deny_patterns)
+        if segment_result.risk_score >= security.prompt_guard_threshold:
+            log.warning(
+                "guard.data_segment_flagged",
+                segment_hash=_compute_hash(segment),
+                risk_score=segment_result.risk_score,
+                flags=segment_result.flags,
+            )
+
+    result = scan_prompt(scanned, custom_deny_patterns=custom_deny_patterns)
 
     if result.risk_score >= security.prompt_guard_threshold:
         prompt_hash = _compute_hash(prompt)

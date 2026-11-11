@@ -317,6 +317,9 @@ class PRFacts:
     # to 0) in this case, so review_budget_exhausted must fail closed on this flag the same
     # way agent_handoff.py's circuit breaker already does, rather than reading "0 cycles".
     review_history_unresolved: bool = False
+    # True when the verdict's only blocking finding is the incomplete-review cap (part of the diff was never
+    # reviewed): an address cycle cannot fix that, so a standing verdict routes to a manual re-review instead.
+    sova_review_incomplete: bool = False
 
 
 @dataclass(frozen=True)
@@ -483,6 +486,11 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
 
     chain.append("sova_standing_changes")
     if _has_standing_sova_changes(facts):
+        if facts.sova_review_incomplete:
+            # Only a review gap stands: an address cycle cannot fix an unreviewed chunk and would spend
+            # one of max_address_cycles. action_id None parks the supervisor at CHECKPOINT_NEEDED, and the
+            # dashboard's PR_AWAITING_REVIEW buttons offer the manual re-review.
+            return resolved(WorkItemState.PR_AWAITING_REVIEW, None)
         return resolved(WorkItemState.PR_SOVA_CHANGES, "address_review")
 
     chain.append("sova_verdict_stale")
@@ -582,6 +590,11 @@ def _fact_review_budget_exhausted(facts: PRFacts) -> str:
 
 def _fact_sova_standing_changes(facts: PRFacts) -> str:
     if _has_standing_sova_changes(facts):
+        if facts.sova_review_incomplete:
+            return (
+                f"SOVA has a standing '{facts.sova_verdict}' verdict on the current head, "
+                "but only because part of the diff went unreviewed: re-run the review"
+            )
         return f"SOVA has a standing '{facts.sova_verdict}' verdict on the current head"
     return "no standing SOVA revise/block verdict on the current head"
 
@@ -723,6 +736,7 @@ def _build_pr_facts(
         address_cycles=verdict.get("address_cycles", 0),
         max_address_cycles=max_address_cycles,
         review_history_unresolved=bool(verdict.get(UNRESOLVED_KEY, False)),
+        sova_review_incomplete=bool(verdict.get("review_incomplete", False)) if has_review else False,
     )
 
 

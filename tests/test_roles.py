@@ -3843,6 +3843,7 @@ class TestSpecAnchoredReview:
             return LLMResult(
                 text='{"findings": [], "summary": "ok"}',
                 cost_usd=Dec("0.01"),
+                model="sonnet",
             )
 
         import asyncio
@@ -3888,7 +3889,7 @@ class TestSpecAnchoredReview:
 
             from sova.llm.models import LLMResult
 
-            return LLMResult(text='{"findings": [], "summary": "ok"}', cost_usd=Dec("0.01"))
+            return LLMResult(text='{"findings": [], "summary": "ok"}', cost_usd=Dec("0.01"), model="sonnet")
 
         import asyncio
 

@@ -48,6 +48,7 @@ from sova.ipc.handoff import (
 )
 from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key, _resolve_codex_cost_source
 from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model
+from sova.llm.guard import PromptInjectionError
 from sova.llm.models import CostSource, accumulate_llm_result
 
 if TYPE_CHECKING:
@@ -63,6 +64,7 @@ from sova.roles._review_comments import (
     _build_review_comments,
     _build_review_prompt,
     _chunk_diff,
+    _chunk_files,
     _compact_spec_ref,
     _extract_json,
     _extract_spec_sections,
@@ -71,11 +73,13 @@ from sova.roles._review_comments import (
     _format_findings_comment,
     _format_inline_comment,
     _format_review_body,
+    _make_incomplete_review_finding,
     _make_protected_path_finding,
     _parse_findings,
     _safe_severity,
     _severity_label,
     _sova_verdict_label_name,
+    _try_parse_findings,
     _verdict_label,
 )
 from sova.roles._review_format import _SEVERITY_HIGH
@@ -157,6 +161,10 @@ _REPO_CONTEXT_ENV_ALLOWLIST = (
     "REQUESTS_CA_BUNDLE",
 )
 _REPO_CONTEXT_MAX_FILES = 30
+
+
+class _UnparseableReviewError(RuntimeError):
+    """A chunk's review response held no parseable review payload, even after the schema retries."""
 
 
 def _build_finding_summary(review: ReviewResult) -> dict:
@@ -611,6 +619,11 @@ class ReviewerRole(AgentRole):
                 result=result,
             )
 
+        if result.unreviewed_files:
+            result.findings.append(
+                _make_incomplete_review_finding(result.unreviewed_files, revise_at=ctx.config.review.revise_severity)
+            )
+
         if staleness_note:
             prefix = f"[Spec freshness: {staleness_note}]"
             result.summary = f"{prefix} {result.summary}".strip() if result.summary else prefix
@@ -720,6 +733,8 @@ class ReviewerRole(AgentRole):
         # Resolved once so every chunk and every schema retry share one model.
         model = self._resolve_review_model(ctx)
 
+        failed_chunks = 0
+
         for i, chunk in enumerate(chunks):
             try:
                 chunk_spec = spec_sections if i == 0 else _compact_spec_ref(spec_sections)
@@ -736,80 +751,124 @@ class ReviewerRole(AgentRole):
                     revise_at=ctx.config.review.revise_severity,
                     repo_context=chunk_repo_context,
                 )
-                chunk_budget = ctx.config.agent.max_budget / len(chunks)
-
-                llm_result = await invoke(
-                    prompt,
-                    model=model,
-                    task_type="review",
-                    cwd=ctx.working_dir,
-                    max_budget_usd=chunk_budget,
+                findings, summary = await self._review_chunk_with_retry(
+                    ctx, prompt, chunk, i, model, ctx.config.agent.max_budget / len(chunks), result
                 )
-                ctx.add_cost(llm_result.cost_usd)
-                result.total_cost += llm_result.cost_usd
-                result.llm_results.append(llm_result)
-
-                chunk_spent = llm_result.cost_usd
-                last_retry_text = llm_result.text
-
-                async def retry_review(retry_prompt: str) -> LLMResult:
-                    nonlocal chunk_spent, last_retry_text
-                    remaining = chunk_budget - chunk_spent
-                    if remaining <= Decimal("0"):
-                        raise RuntimeError("Chunk review budget exhausted, cannot retry")
-                    max_retry_budget = max(Decimal("0"), remaining)
-                    retry_result = await invoke(
-                        retry_prompt,
-                        model=model,
-                        task_type="review",
-                        cwd=ctx.working_dir,
-                        max_budget_usd=max_retry_budget,
-                    )
-                    chunk_spent += retry_result.cost_usd
-                    # Counted as each retry completes, so a cancellation of a later retry still keeps this one.
-                    ctx.add_cost(retry_result.cost_usd)
-                    result.total_cost += retry_result.cost_usd
-                    last_retry_text = retry_result.text
-                    result.llm_results.append(retry_result)
-                    return retry_result
-
-                # Validate output with retry on failure
-                try:
-                    data, _ = await validate_step_output(
-                        raw_text=llm_result.text,
-                        schema=get_review_schema(),
-                        llm_invoke=retry_review,
-                        original_prompt=prompt,
-                        max_retries=2,
-                    )
-
-                    # Convert validated dict to ReviewFinding objects
-                    findings = [
-                        ReviewFinding(
-                            file=item.get("file", "unknown"),
-                            severity=_safe_severity(item.get("severity", 5)),
-                            category=item.get("category", "other"),
-                            description=item.get("description", ""),
-                            suggestion=item.get("suggestion", ""),
-                            line=item.get("line"),
-                        )
-                        for item in data.get("findings", [])
-                    ]
-                    summary = data.get("summary", "")
-                except ValidationError as ve:
-                    log.warning("reviewer.validation_failed", chunk=i + 1, error=str(ve), exc_info=True)
-                    findings, summary = _parse_findings(last_retry_text)
-
-                result.findings.extend(findings)
-                if i == 0 or not result.summary:
-                    result.summary = summary
-
             except Exception:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
+                failed_chunks += 1
+                result.mark_unreviewed(_chunk_files(chunk) or files)
                 if not result.findings:
                     result.summary = "LLM review unavailable: manual review recommended"
+                continue
 
+            result.findings.extend(findings)
+            if i == 0 or not result.summary:
+                result.summary = summary
+
+        if failed_chunks:
+            log.warning(
+                "reviewer.chunks_unreviewed",
+                failed=failed_chunks,
+                total=len(chunks),
+                files=len(result.unreviewed_files),
+            )
         return result
+
+    async def _review_chunk_with_retry(
+        self,
+        ctx: ExecutionContext,
+        prompt: str,
+        chunk: str,
+        chunk_index: int,
+        model: str,
+        chunk_budget: Decimal,
+        result: ReviewResult,
+    ) -> tuple[list[ReviewFinding], str]:
+        """Review one chunk, retrying the whole attempt once on a transient failure.
+
+        A ``PromptInjectionError`` is not retried: the guard is deterministic, so the same prompt
+        would be rejected again. The retry spends only what is left of *chunk_budget*, so a chunk's
+        worst-case spend does not double. Raises the last error when both attempts fail.
+        """
+        first_call = len(result.llm_results)
+        try:
+            return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call)
+        except PromptInjectionError:
+            raise
+        except Exception:  # noqa: BLE001 (any transient failure is retried once before the chunk is reported unreviewed)
+            log.warning("reviewer.chunk_retry", chunk=chunk_index + 1, exc_info=True)
+        return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call)
+
+    async def _review_chunk(
+        self,
+        ctx: ExecutionContext,
+        prompt: str,
+        chunk: str,
+        chunk_index: int,
+        model: str,
+        chunk_budget: Decimal,
+        result: ReviewResult,
+        first_call: int,
+    ) -> tuple[list[ReviewFinding], str]:
+        """One attempt at reviewing a chunk: the call, schema validation with retries, and parsing.
+
+        ``first_call`` is the index in ``result.llm_results`` where this chunk's calls begin, so the
+        spend counted against *chunk_budget* includes every earlier attempt on the same chunk.
+        """
+
+        async def call(call_prompt: str) -> LLMResult:
+            spent = sum((r.cost_usd for r in result.llm_results[first_call:]), Decimal("0"))
+            remaining = chunk_budget - spent
+            if len(result.llm_results) > first_call and remaining <= Decimal("0"):
+                raise RuntimeError("Chunk review budget exhausted, cannot retry")
+            # The review turn needs no tools, and isolated=True is what makes it sound to let the guard
+            # score the diff as data: an injection string inside reviewed code must not reject the chunk.
+            llm_result = await invoke(
+                call_prompt,
+                model=model,
+                task_type="review",
+                cwd=ctx.working_dir,
+                max_budget_usd=remaining,
+                isolated=True,
+                untrusted_segments=(chunk,),
+            )
+            # Counted as each call completes, so a cancellation of a later call still keeps this one.
+            ctx.add_cost(llm_result.cost_usd)
+            result.total_cost += llm_result.cost_usd
+            result.llm_results.append(llm_result)
+            return llm_result
+
+        llm_result = await call(prompt)
+        try:
+            data, _ = await validate_step_output(
+                raw_text=llm_result.text,
+                schema=get_review_schema(),
+                llm_invoke=call,
+                original_prompt=prompt,
+                max_retries=2,
+            )
+        except ValidationError as ve:
+            log.warning("reviewer.validation_failed", chunk=chunk_index + 1, error=str(ve), exc_info=True)
+            recovered = _try_parse_findings(result.llm_results[-1].text)
+            if recovered is None:
+                # No review payload survived the schema retries: raising sends the chunk through the retry
+                # path and, failing that, marks it unreviewed, rather than reading it as a clean review.
+                raise _UnparseableReviewError(f"chunk {chunk_index + 1}: no parseable review response") from ve
+            return recovered
+
+        findings = [
+            ReviewFinding(
+                file=item.get("file", "unknown"),
+                severity=_safe_severity(item.get("severity", 5)),
+                category=item.get("category", "other"),
+                description=item.get("description", ""),
+                suggestion=item.get("suggestion", ""),
+                line=item.get("line"),
+            )
+            for item in data.get("findings", [])
+        ]
+        return findings, data.get("summary", "")
 
     def _load_spec_sections(self, ctx: ExecutionContext, task: Task) -> dict[str, str] | None:
         """Load spec sections for intent-anchored review. Returns None if no spec exists.
@@ -1039,7 +1098,7 @@ class ReviewerRole(AgentRole):
         the current verdict. Non-fatal: if the label write fails, the GitHub
         review marker resolve_sova_verdict() reads remains the source of truth.
 
-        Derives the verdict from ``review.actionable`` (excluding
+        Derives the verdict from ``review.verdict_findings`` (excluding
         protected-path) rather than from ``review.blocking()``: both
         ``verdict_from_severities()`` and ``blocking()`` already apply the
         same ``revise_severity`` threshold with the same clamping, so
@@ -1047,10 +1106,12 @@ class ReviewerRole(AgentRole):
         threshold a second time for no behavioral difference. Protected-path
         or advisory-only reviews (every actionable finding below
         ``revise_severity``) write ``sova:approved`` instead of
-        ``sova:revise``, preventing spurious address-review routing.
+        ``sova:revise``, preventing spurious address-review routing. The
+        incomplete-review cap is the one non-actionable finding that does
+        count: a partly reviewed diff must never read ``sova:approved``.
         """
         label = _sova_verdict_label_name(
-            review.actionable,
+            review.verdict_findings,
             revise_at=ctx.config.review.revise_severity,
             block_at=ctx.config.review.block_severity,
         )
@@ -1082,9 +1143,6 @@ class ReviewerRole(AgentRole):
         against, recorded in handoff metadata so the verdict can be anchored
         to the reviewed commit rather than a timestamp.
         """
-        actionable = review.actionable
-        blocking = review.blocking(ctx.config.review.revise_severity)
-
         findings_data = [
             {
                 "file": f.file,
@@ -1094,148 +1152,12 @@ class ReviewerRole(AgentRole):
                 "description": f.description,
                 "suggestion": f.suggestion,
             }
-            for f in actionable
+            for f in review.actionable
         ]
+        metadata = {"finding_summary": _build_finding_summary(review), "review_head_sha": review_head_sha}
 
-        finding_summary = _build_finding_summary(review)
-
-        if review.post_failed:
-            next_action = "review_post_failed"
-            post_failed_summary = (
-                "Review completed but could not be posted to GitHub. Re-run the reviewer to retry posting."
-            )
-            agent_handoff = AgentHandoff(
-                role="reviewer",
-                phase="review",
-                summary=post_failed_summary,
-                key_decisions=[],
-                next_action=next_action,
-                pending_findings=findings_data,
-                metadata={"finding_summary": finding_summary, "review_head_sha": review_head_sha},
-                pr_number=ctx.pr_number,
-                branch_name=ctx.branch_name,
-            )
-            rerun_action = HandoffAction(
-                id="rerun_review",
-                label="Re-run Review",
-                description="Retry posting the review to GitHub",
-                style="neutral",
-                mode="agent",
-                command="",
-                args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "reviewer"},
-                auto_execute=False,
-            )
-            dashboard_handoff = DashboardHandoff(
-                source="reviewer",
-                status="awaiting_action",
-                issue=ctx.issue_number,
-                pr_number=ctx.pr_number,
-                branch=ctx.branch_name,
-                summary=post_failed_summary,
-                details={
-                    "next_action": next_action,
-                    "cost_usd": str(review.total_cost),
-                    "pending_findings": findings_data,
-                },
-                next_actions=[rerun_action],
-            )
-            log.warning(
-                "reviewer.post_failed_handoff_written",
-                pr=ctx.pr_number,
-                issue=ctx.issue_number,
-                finding_count=len(actionable),
-            )
-        else:
-            has_protected_only = not actionable and review.findings
-            if blocking:
-                next_action = "address_review"
-            elif has_protected_only:
-                next_action = "needs_human_review"
-            else:
-                next_action = "approve"
-
-            # Derived from the full actionable list rather than the already
-            # revise_severity-filtered `blocking`, since verdict_from_severities()
-            # applies that same threshold itself; filtering twice is redundant
-            # and the two never disagree (see _write_verdict_label above).
-            verdict = _verdict_label(
-                actionable,
-                revise_at=ctx.config.review.revise_severity,
-                block_at=ctx.config.review.block_severity,
-            ).lower()
-
-            agent_handoff = AgentHandoff(
-                role="reviewer",
-                phase="review",
-                summary=review.summary,
-                key_decisions=[],
-                next_action=next_action,
-                pending_findings=findings_data,
-                metadata={
-                    "finding_summary": finding_summary,
-                    "review_head_sha": review_head_sha,
-                    "verdict": verdict,
-                },
-                pr_number=ctx.pr_number,
-                branch_name=ctx.branch_name,
-            )
-
-            actions: list[HandoffAction] = []
-
-            if blocking:
-                auto = ctx.config.pipeline.auto_address_review
-                actions.append(
-                    HandoffAction(
-                        id="address_review",
-                        label="Address Review",
-                        description=f"Fix {len(blocking)} blocking findings",
-                        style="approve",
-                        mode="agent",
-                        command="",
-                        args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
-                        auto_execute=auto,
-                    ),
-                )
-            elif has_protected_only:
-                actions.append(
-                    HandoffAction(
-                        id="integrate",
-                        label="Integrate PR",
-                        description="Code review passed. Protected paths touched: human approval required.",
-                        style="approve",
-                        mode="claude-command",
-                        command=f"/integrate-pr {ctx.pr_number}",
-                        args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                        auto_execute=False,
-                    ),
-                )
-            else:
-                actions.append(
-                    HandoffAction(
-                        id="integrate",
-                        label="Integrate PR",
-                        description="No blocking findings: rebase, merge, cleanup, and learn",
-                        style="approve",
-                        mode="claude-command",
-                        command=f"/integrate-pr {ctx.pr_number}",
-                        args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                    ),
-                )
-
-            dashboard_handoff = DashboardHandoff(
-                source="reviewer",
-                status="awaiting_action",
-                issue=ctx.issue_number,
-                pr_number=ctx.pr_number,
-                branch=ctx.branch_name,
-                summary=f"{len(review.findings)} findings ({len(blocking)} blocking)",
-                details={
-                    "next_action": next_action,
-                    "cost_usd": str(review.total_cost),
-                    "pending_findings": findings_data,
-                },
-                next_actions=actions,
-            )
+        build = _post_failed_handoffs if review.post_failed else _review_handoffs
+        agent_handoff, dashboard_handoff = build(ctx, review, findings_data, metadata)
 
         if ctx.task_run_id:
             try:
@@ -1247,3 +1169,146 @@ class ReviewerRole(AgentRole):
             write_handoff_file(ctx.project_dir, dashboard_handoff)
         except (OSError, ValueError):
             log.warning("reviewer.handoff_file_failed", exc_info=True)
+
+
+def _post_failed_handoffs(
+    ctx: ExecutionContext, review: ReviewResult, findings_data: list[dict], metadata: dict
+) -> tuple[AgentHandoff, DashboardHandoff]:
+    """Handoffs for a review that could not be posted: a manual Re-run Review, never an address cycle."""
+    next_action = "review_post_failed"
+    summary = "Review completed but could not be posted to GitHub. Re-run the reviewer to retry posting."
+    agent_handoff = AgentHandoff(
+        role="reviewer",
+        phase="review",
+        summary=summary,
+        key_decisions=[],
+        next_action=next_action,
+        pending_findings=findings_data,
+        metadata=metadata,
+        pr_number=ctx.pr_number,
+        branch_name=ctx.branch_name,
+    )
+    dashboard_handoff = DashboardHandoff(
+        source="reviewer",
+        status="awaiting_action",
+        issue=ctx.issue_number,
+        pr_number=ctx.pr_number,
+        branch=ctx.branch_name,
+        summary=summary,
+        details={"next_action": next_action, "cost_usd": str(review.total_cost), "pending_findings": findings_data},
+        next_actions=[_rerun_review_action(ctx, "Retry posting the review to GitHub")],
+    )
+    log.warning(
+        "reviewer.post_failed_handoff_written",
+        pr=ctx.pr_number,
+        issue=ctx.issue_number,
+        finding_count=len(review.actionable),
+    )
+    return agent_handoff, dashboard_handoff
+
+
+def _review_handoffs(
+    ctx: ExecutionContext, review: ReviewResult, findings_data: list[dict], metadata: dict
+) -> tuple[AgentHandoff, DashboardHandoff]:
+    """Handoffs for a posted review, routed by what the verdict needs next."""
+    blocking = review.blocking(ctx.config.review.revise_severity)
+    next_action = _review_next_action(review, blocking)
+
+    # Derived from the full verdict_findings list rather than the already
+    # revise_severity-filtered `blocking`, since verdict_from_severities()
+    # applies that same threshold itself; filtering twice is redundant
+    # and the two never disagree (see _write_verdict_label above).
+    verdict = _verdict_label(
+        review.verdict_findings,
+        revise_at=ctx.config.review.revise_severity,
+        block_at=ctx.config.review.block_severity,
+    ).lower()
+
+    agent_handoff = AgentHandoff(
+        role="reviewer",
+        phase="review",
+        summary=review.summary,
+        key_decisions=[],
+        next_action=next_action,
+        pending_findings=findings_data,
+        metadata={**metadata, "verdict": verdict},
+        pr_number=ctx.pr_number,
+        branch_name=ctx.branch_name,
+    )
+    dashboard_handoff = DashboardHandoff(
+        source="reviewer",
+        status="awaiting_action",
+        issue=ctx.issue_number,
+        pr_number=ctx.pr_number,
+        branch=ctx.branch_name,
+        summary=f"{len(review.findings)} findings ({len(blocking)} blocking)",
+        details={"next_action": next_action, "cost_usd": str(review.total_cost), "pending_findings": findings_data},
+        next_actions=[_review_next_handoff_action(ctx, review, next_action, blocking)],
+    )
+    return agent_handoff, dashboard_handoff
+
+
+def _review_next_action(review: ReviewResult, blocking: list[ReviewFinding]) -> str:
+    """The handoff ``next_action`` for a posted review: blocking findings first, then a review gap."""
+    if blocking:
+        return "address_review"
+    if review.unreviewed_files:
+        return "review_incomplete"
+    if review.findings and not review.actionable:
+        return "needs_human_review"
+    return "approve"
+
+
+def _rerun_review_action(ctx: ExecutionContext, description: str) -> HandoffAction:
+    """A manual Re-run Review action: never auto-executed, so it cannot loop on a deterministic failure."""
+    return HandoffAction(
+        id="rerun_review",
+        label="Re-run Review",
+        description=description,
+        style="neutral",
+        mode="agent",
+        command="",
+        args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "reviewer"},
+        auto_execute=False,
+    )
+
+
+def _review_next_handoff_action(
+    ctx: ExecutionContext, review: ReviewResult, next_action: str, blocking: list[ReviewFinding]
+) -> HandoffAction:
+    """The dashboard action offered for *next_action* (see ``_review_next_action``)."""
+    if next_action == "address_review":
+        return HandoffAction(
+            id="address_review",
+            label="Address Review",
+            description=f"Fix {len(blocking)} blocking findings",
+            style="approve",
+            mode="agent",
+            command="",
+            args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
+            auto_execute=ctx.config.pipeline.auto_address_review,
+        )
+    if next_action == "review_incomplete":
+        # An address-review run cannot fix an unreviewed chunk and would spend one of
+        # pipeline.max_address_review_cycles, so offer a manual re-review instead.
+        return _rerun_review_action(ctx, f"{len(review.unreviewed_files)} file(s) were not reviewed: re-run the review")
+    if next_action == "needs_human_review":
+        return HandoffAction(
+            id="integrate",
+            label="Integrate PR",
+            description="Code review passed. Protected paths touched: human approval required.",
+            style="approve",
+            mode="claude-command",
+            command=f"/integrate-pr {ctx.pr_number}",
+            args={"issue": ctx.issue_number, "pr": ctx.pr_number},
+            auto_execute=False,
+        )
+    return HandoffAction(
+        id="integrate",
+        label="Integrate PR",
+        description="No blocking findings: rebase, merge, cleanup, and learn",
+        style="approve",
+        mode="claude-command",
+        command=f"/integrate-pr {ctx.pr_number}",
+        args={"issue": ctx.issue_number, "pr": ctx.pr_number},
+    )

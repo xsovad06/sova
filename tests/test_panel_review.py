@@ -275,7 +275,9 @@ class TestRunPanelReview:
 
         async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
             calls.append((model, prompt))
-            return LLMResult(text=_combined_response(), model=model or "sonnet", cost_usd=Decimal("0.01"))
+            # A lone-dimension group takes the single-dimension prompt, whose response shape is findings + summary.
+            text = _combined_response() if task_type == "review_panel" else _llm_response()
+            return LLMResult(text=text, model=model or "sonnet", cost_usd=Decimal("0.01"))
 
         with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
             await _run(panel_config)
@@ -613,6 +615,62 @@ class TestRunPanelReview:
         # Fallback runs correctness, hits the critical finding, and the haiku group never runs.
         assert task_types == ["review_panel", "review_correctness"]
         assert result.findings[0].severity == 10
+
+    async def test_combined_response_missing_a_dimension_reviews_it_separately(self) -> None:
+        """A combined response summarising only some dimensions leaves the rest to a per-dimension call."""
+        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness", "security"])
+        task_types: list[str] = []
+
+        async def mock_invoke(
+            prompt: str, *, model: str | None = None, task_type: str | None = None, cwd: object = None, **kwargs: object
+        ) -> LLMResult:
+            task_types.append(task_type or "")
+            if task_type == "review_panel":
+                text = _combined_response([], {"correctness": "clean"})
+            else:
+                text = _llm_response([], "security clean")
+            return LLMResult(text=text, model="sonnet", cost_usd=Decimal("0.01"))
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            result = await _run(panel_config)
+
+        assert task_types == ["review_panel", "review_security"]
+        assert not result.unreviewed_files
+
+    async def test_combined_response_with_null_dimension_summary_reviews_it_separately(self) -> None:
+        """A dimension whose combined summary is null did not report, so it gets its own call."""
+        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness", "security"])
+        task_types: list[str] = []
+
+        async def mock_invoke(
+            prompt: str, *, model: str | None = None, task_type: str | None = None, cwd: object = None, **kwargs: object
+        ) -> LLMResult:
+            task_types.append(task_type or "")
+            if task_type == "review_panel":
+                text = _combined_response([], {"correctness": "clean", "security": None})
+            else:
+                text = _llm_response([], "security clean")
+            return LLMResult(text=text, model="sonnet", cost_usd=Decimal("0.01"))
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            result = await _run(panel_config)
+
+        assert task_types == ["review_panel", "review_security"]
+        assert not result.unreviewed_files
+
+    async def test_combined_response_missing_a_dimension_marks_chunk_unreviewed_when_retry_fails(self) -> None:
+        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness", "security"])
+
+        async def mock_invoke(
+            prompt: str, *, model: str | None = None, task_type: str | None = None, cwd: object = None, **kwargs: object
+        ) -> LLMResult:
+            text = _combined_response([], {"correctness": "clean"}) if task_type == "review_panel" else "no review"
+            return LLMResult(text=text, model="sonnet", cost_usd=Decimal("0.01"))
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            result = await _run(panel_config)
+
+        assert result.unreviewed_files == ["a.py"]
 
     async def test_budget_skipped_dimension_stays_skipped_across_chunks(self) -> None:
         """A dimension skipped for budget in chunk 1 stays skipped in chunk 2."""

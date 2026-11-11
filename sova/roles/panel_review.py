@@ -12,25 +12,28 @@ aggregated into the same ReviewResult shape used by the single-reviewer path.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from sova.adapters.base import Task
 from sova.config.models import ReviewPanelConfig
 from sova.llm.client import invoke
+from sova.llm.guard import PromptInjectionError
 from sova.llm.routing import get_model_family
 from sova.roles._review_comments import (
     ReviewFinding,
     ReviewResult,
     _chunk_diff,
+    _chunk_files,
     _compact_spec_ref,
     _extract_issue_criteria_block,
     _findings_from_data,
     _format_addressed_findings,
     _load_findings_json,
-    _parse_findings,
     _quote_untrusted,
+    _try_parse_findings,
 )
 from sova.roles._review_format import _SEVERITY_MEDIUM
 from sova.utils.logging import get_logger
@@ -44,6 +47,10 @@ log = get_logger(component="role.panel_review")
 
 _DEFAULT_MODEL = "sonnet"
 _CRITICAL_SEVERITY = 9
+# A panel call is tried at most this many times (one retry) before its chunk is reported unreviewed.
+_PANEL_CALL_ATTEMPTS = 2
+
+_Parsed = TypeVar("_Parsed")
 
 # Dimensions ordered by priority (lowest-priority last, skipped first on budget).
 _DIMENSION_PRIORITY: dict[str, int] = {
@@ -287,6 +294,8 @@ class _CombinedResponse:
     summaries: dict[str, str] = field(default_factory=dict)
     group_summary: str = ""
     parsed: bool = False
+    reported_dimensions: frozenset[str] = frozenset()
+    summaries_named: bool = False
 
 
 def _parse_multi_dimension_findings(text: str) -> _CombinedResponse:
@@ -314,7 +323,22 @@ def _parse_multi_dimension_findings(text: str) -> _CombinedResponse:
         summaries=summaries,
         group_summary=str(data.get("summary") or ""),
         parsed=True,
+        reported_dimensions=frozenset(summaries),
+        summaries_named=isinstance(raw_summaries, dict) and bool(raw_summaries),
     )
+
+
+def _unreported_dimensions(active: list[str], response: _CombinedResponse) -> list[str]:
+    """Return the active dimensions a combined response gave no usable summary for, when it named any.
+
+    A response whose ``summaries`` object covers some dimensions but not others skipped the rest, so a clean
+    result for them would be a review that did not happen. A dimension whose summary is null or empty counts
+    as skipped too. A response with no ``summaries`` object at all carries no per-dimension signal and is
+    read as one review of the whole group.
+    """
+    if not response.summaries_named:
+        return []
+    return [dim for dim in active if dim not in response.reported_dimensions]
 
 
 def _summary_fragments(dimensions: list[str], response: _CombinedResponse) -> list[str]:
@@ -409,6 +433,20 @@ class _PanelState:
         if self.budget_remaining is not None:
             self.budget_remaining -= cost
 
+    def charge_estimate(self, estimated_cost: Decimal) -> None:
+        """Charge a failed call's estimated spend against the remaining budget.
+
+        A call that raised reports no cost, yet it may have spent some, and not every provider enforces
+        ``max_budget_usd``: charging the estimate keeps the gate conservative (budget over-counted, never
+        under-counted). It is not added to ``result.total_cost``, which records only reported spend.
+        """
+        if self.budget_remaining is not None:
+            self.budget_remaining -= estimated_cost
+
+    def can_afford(self, estimated_cost: Decimal) -> bool:
+        """True when no budget cap is set, or the remaining budget still covers *estimated_cost*."""
+        return self.budget_remaining is None or self.budget_remaining >= estimated_cost
+
     def add_summary(self, fragment: str) -> None:
         """Append a summary fragment to the aggregated review summary."""
         self.result.summary = f"{self.result.summary} | {fragment}" if self.result.summary else fragment
@@ -438,12 +476,17 @@ class _ChunkRequest:
     revise_at: int = _SEVERITY_MEDIUM
 
     @property
+    def chunk_files(self) -> list[str]:
+        """Files this chunk's diff covers, or every PR file when the chunk carries no ``diff --git`` header."""
+        return _chunk_files(self.diff) or self.files
+
+    @property
     def is_first(self) -> bool:
         return self.index == 0
 
 
-def _affordable_dimensions(state: _PanelState, dimensions: list[str], model: str) -> list[str]:
-    """Return the dimensions still worth calling, marking unaffordable ones skipped.
+def _group_cost(model: str, dimensions: list[str]) -> Decimal:
+    """Estimated cost of one call reviewing *dimensions* together on *model*.
 
     The per-model floor is scaled by group size: a combined call bundling
     several dimensions' focus sections produces proportionally more output
@@ -451,22 +494,49 @@ def _affordable_dimensions(state: _PanelState, dimensions: list[str], model: str
     floor must grow with the group or the guard silently gets weaker as
     ``dimension_models`` grouping changes how many dimensions share a call.
     """
+    return _estimate_call_cost(model) * max(1, len(dimensions))
+
+
+def _affordable_dimensions(state: _PanelState, dimensions: list[str], model: str, request: _ChunkRequest) -> list[str]:
+    """Return the dimensions still worth calling, marking unaffordable ones skipped.
+
+    A dimension skipped for budget (now, or on an earlier chunk) leaves this chunk without that
+    dimension's review, so the chunk's files are recorded unreviewed: a budget skip must never read as
+    a clean review and let the verdict approve.
+    """
     active = [dim for dim in dimensions if dim not in state.skipped_dimensions]
-    if not active:
-        return []
+    if active:
+        estimated_cost = _group_cost(model, active)
+        if not state.can_afford(estimated_cost):
+            state.skipped_dimensions.update(active)
+            log.warning(
+                "panel_review.budget_skip",
+                dimensions=active,
+                budget_remaining=str(state.budget_remaining),
+                estimated_cost=str(estimated_cost),
+            )
+            active = []
 
-    estimated_cost = _estimate_call_cost(model) * max(1, len(active))
-    if state.budget_remaining is not None and state.budget_remaining < estimated_cost:
-        state.skipped_dimensions.update(active)
-        log.warning(
-            "panel_review.budget_skip",
-            dimensions=active,
-            budget_remaining=str(state.budget_remaining),
-            estimated_cost=str(estimated_cost),
-        )
-        return []
-
+    if len(active) < len(dimensions):
+        state.result.mark_unreviewed(request.chunk_files)
     return active
+
+
+def _finalize_panel_result(state: _PanelState, panel_config: ReviewPanelConfig) -> ReviewResult:
+    """Deduplicate the panel's findings onto its result and fill in a summary when none was written."""
+    if state.skipped_dimensions:
+        log.info("panel_review.skipped_dimensions", dimensions=sorted(state.skipped_dimensions))
+
+    result = state.result
+    result.findings = deduplicate_findings(state.findings, line_proximity=panel_config.line_proximity)
+
+    if result.summary:
+        return result
+    if result.unreviewed_files:
+        result.summary = "LLM review unavailable for part of the diff: manual review recommended"
+    elif not result.findings:
+        result.summary = "All dimensions report no issues: code looks good."
+    return result
 
 
 def _log_unknown_categories(findings: list[ReviewFinding], dimensions: list[str]) -> None:
@@ -477,11 +547,69 @@ def _log_unknown_categories(findings: list[ReviewFinding], dimensions: list[str]
         log.info("panel_review.unknown_category", count=len(unknown), categories=sorted(set(unknown)))
 
 
+async def _review_call(
+    state: _PanelState,
+    prompt: str,
+    *,
+    model: str,
+    task_type: str,
+    request: _ChunkRequest,
+    estimated_cost: Decimal,
+    parse: Callable[[str], _Parsed | None],
+) -> _Parsed | None:
+    """Run one panel call over *request*'s chunk and parse it, retrying once.
+
+    A transient failure or a response *parse* rejects (returns None for) is retried once. Every attempt
+    is capped at the panel budget still left (``max_budget_usd``), and the retry runs only while that
+    budget covers *estimated_cost*; a failed attempt reports no cost, so its estimate is charged instead.
+    A ``PromptInjectionError`` is not retried: the guard is deterministic.
+
+    The call is tool-free (``isolated=True``), which is what lets the guard score the embedded diff as
+    data. Returns None when no attempt produced a parseable review, and the caller then reports the chunk
+    unreviewed: an unparseable response is a review that did not happen, never a clean one.
+    """
+    for attempt in range(1, _PANEL_CALL_ATTEMPTS + 1):
+        if attempt > 1 and not state.can_afford(estimated_cost):
+            log.warning(
+                "panel_review.retry_budget_exhausted",
+                task_type=task_type,
+                chunk=request.index + 1,
+                budget_remaining=str(state.budget_remaining),
+            )
+            return None
+        try:
+            llm_result = await invoke(
+                prompt,
+                model=model,
+                task_type=task_type,
+                cwd=request.cwd,
+                max_budget_usd=state.budget_remaining,
+                isolated=True,
+                untrusted_segments=(request.diff,),
+            )
+        except PromptInjectionError:
+            log.warning("panel_review.call_rejected", task_type=task_type, chunk=request.index + 1, exc_info=True)
+            return None
+        except Exception:  # noqa: BLE001 (a failed call is retried once, then its chunk is reported unreviewed)
+            log.warning(
+                "panel_review.call_failed", task_type=task_type, chunk=request.index + 1, attempt=attempt, exc_info=True
+            )
+            state.charge_estimate(estimated_cost)
+            continue
+
+        state.record_call(llm_result)
+        parsed = parse(llm_result.text)
+        if parsed is not None:
+            return parsed
+        log.warning("panel_review.response_unparseable", task_type=task_type, chunk=request.index + 1, attempt=attempt)
+    return None
+
+
 async def _review_dimensions(state: _PanelState, dimensions: list[str], request: _ChunkRequest) -> None:
     """Review a chunk with one LLM call per dimension."""
     for dim in dimensions:
         model = request.panel_config.dimension_models.get(dim, request.default_model)
-        if not _affordable_dimensions(state, [dim], model):
+        if not _affordable_dimensions(state, [dim], model, request):
             continue
 
         prompt = _build_dimension_prompt(
@@ -493,14 +621,22 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
             addressed_findings=request.addressed_findings,
             revise_at=request.revise_at,
         )
-        try:
-            llm_result = await invoke(prompt, model=model, task_type=f"review_{dim}", cwd=request.cwd)
-        except Exception as exc:  # noqa: BLE001 (one dimension failing must not abort the panel review)
-            log.warning("panel_review.dimension_failed", dimension=dim, error=str(exc), exc_info=True)
+        parsed = await _review_call(
+            state,
+            prompt,
+            model=model,
+            task_type=f"review_{dim}",
+            request=request,
+            estimated_cost=_group_cost(model, [dim]),
+            parse=_try_parse_findings,
+        )
+        if parsed is None:
+            # One dimension failing must not abort the panel review, but its chunk is not reviewed.
+            log.warning("panel_review.dimension_failed", dimension=dim, chunk=request.index + 1)
+            state.result.mark_unreviewed(request.chunk_files)
             continue
 
-        state.record_call(llm_result)
-        findings, summary = _parse_findings(llm_result.text)
+        findings, summary = parsed
         state.findings.extend(findings)
         if request.is_first and summary:
             state.add_summary(f"{dim}: {summary}")
@@ -521,7 +657,7 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
     an ``llm.routing.review_panel`` override never applying to it.
     """
     for model, group in groups:
-        active = _affordable_dimensions(state, group, model)
+        active = _affordable_dimensions(state, group, model, request)
         if not active:
             continue
 
@@ -540,14 +676,22 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
             addressed_findings=request.addressed_findings,
             revise_at=request.revise_at,
         )
-        try:
-            llm_result = await invoke(prompt, model=model, task_type="review_panel", cwd=request.cwd)
-        except Exception as exc:  # noqa: BLE001 (one group failing must not abort the panel review)
-            log.warning("panel_review.group_failed", dimensions=active, error=str(exc), exc_info=True)
+        # An unparsed combined response is not retried here: the per-dimension fallback below re-reviews it,
+        # and each of those calls validates its own response.
+        response = await _review_call(
+            state,
+            prompt,
+            model=model,
+            task_type="review_panel",
+            request=request,
+            estimated_cost=_group_cost(model, active),
+            parse=_parse_multi_dimension_findings,
+        )
+        if response is None:
+            # One group failing must not abort the panel review, but its chunk is not reviewed.
+            log.warning("panel_review.group_failed", dimensions=active, chunk=request.index + 1)
+            state.result.mark_unreviewed(request.chunk_files)
             continue
-
-        state.record_call(llm_result)
-        response = _parse_multi_dimension_findings(llm_result.text)
 
         if not response.parsed:
             log.warning("panel_review.combined_fallback", dimensions=active, chunk=request.index + 1)
@@ -564,6 +708,13 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
 
         if state.note_critical(response.findings, active, request.index):
             return
+
+        missing = _unreported_dimensions(active, response)
+        if missing:
+            log.warning("panel_review.combined_partial", missing=missing, chunk=request.index + 1)
+            await _review_dimensions(state, missing, request)
+            if state.critical_exit:
+                return
 
 
 async def run_panel_review(
@@ -599,22 +750,22 @@ async def run_panel_review(
     already made when the panel is cancelled part-way.
     """
     state = _PanelState(result=result if result is not None else ReviewResult(), budget_remaining=budget_remaining)
-    chunks = _chunk_diff(diff)
     dimensions = sorted(panel_config.dimensions, key=lambda d: _DIMENSION_PRIORITY.get(d, 99))
     groups = _group_dimensions_by_model(dimensions, panel_config, default_model)
 
-    for chunk_idx, chunk in enumerate(chunks):
+    for chunk_idx, chunk in enumerate(_chunk_diff(diff)):
         if state.critical_exit:
             break
 
+        first = chunk_idx == 0
         request = _ChunkRequest(
             task=task,
             diff=chunk,
             files=files,
             panel_config=panel_config,
             index=chunk_idx,
-            spec_sections=spec_sections if chunk_idx == 0 else _compact_spec_ref(spec_sections),
-            addressed_findings=addressed_findings if chunk_idx == 0 else None,
+            spec_sections=spec_sections if first else _compact_spec_ref(spec_sections),
+            addressed_findings=addressed_findings if first else None,
             cwd=cwd,
             default_model=default_model,
             revise_at=revise_at,
@@ -625,14 +776,7 @@ async def run_panel_review(
         else:
             await _review_dimensions(state, dimensions, request)
 
-    if state.skipped_dimensions:
-        log.info("panel_review.skipped_dimensions", dimensions=sorted(state.skipped_dimensions))
-
-    result = state.result
-    result.findings = deduplicate_findings(state.findings, line_proximity=panel_config.line_proximity)
-
-    if not result.findings and not result.summary:
-        result.summary = "All dimensions report no issues: code looks good."
+    result = _finalize_panel_result(state, panel_config)
 
     log.info(
         "panel_review.complete",

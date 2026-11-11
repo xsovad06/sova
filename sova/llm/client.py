@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
@@ -801,6 +801,7 @@ async def invoke(
     system_prompt: str | None = None,
     max_tokens: int | None = None,
     isolated: bool = False,
+    untrusted_segments: Sequence[str] = (),
 ) -> LLMResult:
     """Run a prompt via the active LLM provider.
 
@@ -815,10 +816,16 @@ async def invoke(
         max_tokens: Optional max output tokens (provider-dependent).
         isolated: See ``LLMProvider.invoke()``: forces a tool-free, hook-free
             turn on a provider that would otherwise load workspace context.
+        untrusted_segments: Data blocks embedded verbatim in *prompt* (a reviewed diff) that the
+            injection guard scans separately and does not reject the prompt for; everything else in
+            the prompt stays fully guarded. Allowed only with ``isolated=True``: the guard protects
+            calls that reach tools, so a data block is exempt only on a tool-free turn.
     """
     from sova.llm.guard import guard_prompt
 
-    guard_prompt(prompt)
+    if untrusted_segments and not isolated:
+        raise ValueError("untrusted_segments requires isolated=True: the guard protects calls that reach tools")
+    guard_prompt(prompt, untrusted_segments=untrusted_segments)
     original_prompt = prompt
     # Config is loaded unconditionally, and before compression: the fallback
     # chain lives in agent.fallback_models, so it is needed even when both

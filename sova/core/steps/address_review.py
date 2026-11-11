@@ -16,6 +16,7 @@ from sova.llm.guard import sanitize_external_input, scan_prompt
 from sova.llm.payload import trim_payload
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import (
+    INCOMPLETE_REVIEW_CATEGORY,
     INLINE_COMMENT_STUB,
     SOVA_ADDRESSED_MARKER_RE,
     SOVA_VERDICT_MARKER_RE,
@@ -166,6 +167,10 @@ def _parse_finding_lines(section_text: str) -> list[dict]:
         m = _FINDING_LINE_RE.match(line.strip())
         if not m:
             continue
+        category = m.group("category").strip().lower()
+        if category == INCOMPLETE_REVIEW_CATEGORY:
+            # A review gap, not a code defect: a developer run cannot fix an unreviewed chunk.
+            continue
         file_path, line_num = _split_location(m.group("location"))
         description, suggestion = _split_on_fix_marker(m.group("rest"))
         findings.append(
@@ -173,7 +178,7 @@ def _parse_finding_lines(section_text: str) -> list[dict]:
                 "file": file_path,
                 "line": line_num,
                 "severity": int(m.group("severity")),
-                "category": m.group("category").strip().lower(),
+                "category": category,
                 "description": description.strip(),
                 "suggestion": suggestion.strip(),
                 "source": "github-review",

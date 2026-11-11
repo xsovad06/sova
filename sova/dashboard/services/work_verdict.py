@@ -16,7 +16,11 @@ from typing import Any
 
 from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
-from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, parse_verdict_marker
+from sova.utils.review_markers import (
+    SOVA_ADDRESSED_MARKER_RE,
+    SOVA_INCOMPLETE_REVIEW_MARKER_RE,
+    parse_verdict_marker,
+)
 
 log = get_logger(component="dashboard.work_item")
 
@@ -58,6 +62,7 @@ _NO_REVIEW: dict = {
     "reviewed_at": None,
     "review_head_sha": None,
     "address_cycles": 0,
+    "review_incomplete": False,
 }
 
 # A verdict that could not be looked up at all (GitHub unreachable, or no
@@ -111,6 +116,11 @@ def parse_review_history(reviews: list[dict], *, trusted_login: str = "") -> dic
     the commit GitHub recorded the review against: an anchor is what the
     reviewer claims it reviewed, which is the only thing a staleness check can
     act on.
+
+    ``review_incomplete`` is True when the verdict review also carries the
+    ``sova-review-incomplete`` marker: its only blocking finding is that part
+    of the diff went unreviewed, which resolve_next_action() routes to a
+    manual re-review rather than an address cycle.
     """
     trusted = trusted_login.lower() if trusted_login else ""
     ordered = sorted(
@@ -143,6 +153,8 @@ def parse_review_history(reviews: list[dict], *, trusted_login: str = "") -> dic
             "reviewed_at": r.get("submitted_at") or None,
             "review_head_sha": None if addressed_after_verdict else sha,
             "address_cycles": address_cycles,
+            # Only an unaddressed verdict carries it: an address cycle supersedes the whole review.
+            "review_incomplete": not addressed_after_verdict and bool(SOVA_INCOMPLETE_REVIEW_MARKER_RE.search(body)),
         }
 
     return {**_NO_REVIEW, "address_cycles": address_cycles}
