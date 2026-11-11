@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -163,6 +163,18 @@ def _parse_runtime_stream_line(line: str, agent: AgentState, parser: StreamParse
     return f"\n--- Result [tokens: {result.input_tokens} in / {result.output_tokens} out] ---"
 
 
+def _add_reported_tokens(total: int | None, usage: dict[str, Any], key: str) -> int | None:
+    """Add a Claude result event's ``usage[key]`` to *total*, or keep *total* when the event did not report it.
+
+    A missing key, or a value that is not a non-negative int, adds nothing, so a field that no
+    event reported stays ``None`` (a NULL column) and a malformed value cannot crash the reader.
+    """
+    value = usage.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return total
+    return (total or 0) + value
+
+
 def _parse_stream_line(line: str, agent: AgentState) -> str:
     """Extract readable text from an agent output line.
 
@@ -216,14 +228,23 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
             agent.runtime_model = result.model
         agent.last_result_cost_source = result.cost_source
         agent.last_result_cost = float(result.cost_usd)
-        agent.last_result_input_tokens = result.input_tokens
-        agent.last_result_output_tokens = result.output_tokens
-        agent.last_result_cache_read_tokens = result.cache_read_tokens
-        if result.cache_creation_tokens is not None:
-            agent.last_result_cache_write_tokens = result.cache_creation_tokens
         # Summed, unlike the cost above: a session that resumes after background
         # tasks emits one result per segment, and while total_cost_usd is
-        # cumulative across them, num_turns covers its own segment only.
+        # cumulative across them, the token usage and num_turns cover their own
+        # segment only. Tokens are read from the raw usage dict because
+        # build_claude_cli_result() fills a missing key with 0, which would turn
+        # a field no event reported into 0 instead of NULL. The key names below
+        # are the ones build_claude_cli_result() reads: rename them in both places.
+        raw_usage = data.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        agent.last_result_input_tokens = _add_reported_tokens(agent.last_result_input_tokens, usage, "input_tokens")
+        agent.last_result_output_tokens = _add_reported_tokens(agent.last_result_output_tokens, usage, "output_tokens")
+        agent.last_result_cache_read_tokens = _add_reported_tokens(
+            agent.last_result_cache_read_tokens, usage, "cache_read_input_tokens"
+        )
+        agent.last_result_cache_write_tokens = _add_reported_tokens(
+            agent.last_result_cache_write_tokens, usage, "cache_creation_input_tokens"
+        )
         if result.num_turns is not None:
             agent.last_result_num_turns = (agent.last_result_num_turns or 0) + result.num_turns
         return f"\n--- Result [cost: ${result.cost_usd}] ---"
