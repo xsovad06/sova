@@ -2761,6 +2761,56 @@ class TestStartCommandWorktreeResolution:
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == worktree, f"Expected worktree {worktree}, got {spawn_cwd}"
 
+    async def test_a_command_agent_is_leased_for_its_lifetime(self, tmp_path: Path) -> None:
+        """`claude -p /<command>` is not a `sova run`, so the dashboard leases on its behalf and releases on reap."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        mock_process = MagicMock()
+        mock_process.pid = 9999
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+        lease = tmp_path / "9999-abc.supervised.json"
+        reaped = asyncio.Event()
+
+        async def reap(*args: object, **kwargs: object) -> None:
+            await reaped.wait()
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value={}),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new=reap),
+            patch(
+                "sova.dashboard.services.agent_context.ensure_worktree_usable",
+                new_callable=AsyncMock,
+                return_value=worktree,
+            ),
+            patch.object(agent_lifecycle, "acquire_lease_for", return_value=lease) as acquire,
+            patch.object(agent_lifecycle, "release_lease") as release,
+        ):
+            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+            assert result.get("status") == "started"
+            acquire.assert_called_once_with(9999)
+            release.assert_not_called()
+            reaped.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            release.assert_called_once_with(lease)
+
     @pytest.mark.parametrize(("operator_value", "expected"), [(None, "from-config"), ("5", "5")])
     async def test_spawn_env_carries_the_pytest_worker_cap(
         self, tmp_path: Path, operator_value: str | None, expected: str
@@ -2799,7 +2849,7 @@ class TestStartCommandWorktreeResolution:
                 new_callable=AsyncMock,
                 return_value=worktree,
             ),
-            patch("sova.utils.env.configured_pytest_workers", return_value="from-config"),
+            patch("sova.utils.env.decide_pytest_workers", return_value=("from-config", "config")),
         ):
             result = await start_command("address-pr", {"issue": "42", "pr": 10})
 

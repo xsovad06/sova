@@ -204,6 +204,65 @@ class TestWatchLoop:
 
         assert result is False
 
+    async def test_process_task_holds_a_lease_for_the_pipeline_without_marking_the_environment(self) -> None:
+        """The server runs other pipelines and spawns independent agents, so its lease must not be inherited."""
+        from sova.roles.base import RoleResult
+        from sova.scheduler.watch import WatchLoop
+        from sova.utils import agent_leases
+
+        seen: dict[str, object] = {}
+
+        async def dispatch(*args: object, **kwargs: object) -> tuple[MagicMock, RoleResult]:
+            seen["count"] = agent_leases.active_agent_count()
+            seen["marker"] = os.environ.get(agent_leases.LEASE_ENV_KEY)
+            return MagicMock(name="dev"), RoleResult(success=True, summary="ok")
+
+        loop = WatchLoop(config=_make_config(), adapter=_mock_adapter())
+        with patch("sova.scheduler.watch.dispatch", new=dispatch):
+            assert await loop.process_task(_make_task("42")) is True
+
+        assert seen == {"count": 1, "marker": None}
+        assert agent_leases.live_lease_pids() == set()
+
+    async def test_two_concurrent_tasks_hold_two_leases_and_one_release_keeps_the_other(self) -> None:
+        """Lease identity is per run (pid plus uuid), so concurrent tasks in the server process do not collapse."""
+        from sova.roles.base import RoleResult
+        from sova.scheduler.watch import WatchLoop
+        from sova.utils import agent_leases
+
+        both_running = asyncio.Event()
+        first_may_finish = asyncio.Event()
+        first_finished = asyncio.Event()
+        counts: dict[str, int] = {}
+        running = 0
+
+        async def dispatch(ctx: object, **kwargs: object) -> tuple[MagicMock, RoleResult]:
+            nonlocal running
+            running += 1
+            first = running == 1
+            if running == 2:
+                both_running.set()
+            await both_running.wait()
+            if first:
+                counts["overlap"] = agent_leases.active_agent_count()
+                await first_may_finish.wait()
+            else:
+                first_may_finish.set()
+                await first_finished.wait()
+                counts["after_first_finished"] = agent_leases.active_agent_count()
+            return MagicMock(name="dev"), RoleResult(success=True, summary="ok")
+
+        loop = WatchLoop(config=_make_config(), adapter=_mock_adapter())
+        with patch("sova.scheduler.watch.dispatch", new=dispatch):
+            first_task = asyncio.create_task(loop.process_task(_make_task("1")))
+            second_task = asyncio.create_task(loop.process_task(_make_task("2")))
+            await first_task
+            first_finished.set()
+            assert await second_task is True
+
+        assert counts == {"overlap": 2, "after_first_finished": 1}
+        assert agent_leases.active_agent_count() == 1
+
     @patch("sova.scheduler.watch.dispatch", new=AsyncMock())
     async def test_process_task_handles_exception(self) -> None:
         from sova.scheduler.watch import WatchLoop, dispatch

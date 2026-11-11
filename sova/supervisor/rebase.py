@@ -355,7 +355,7 @@ async def _run_rebase_and_push(
         branch,
         "--force-with-lease",
         cwd=worktree_path,
-        env=scrub_check_env(project_dir=project_dir),
+        env=scrub_check_env(project_dir=project_dir, quiet=True),
     )
     if not push_result.success:
         if "stale info" in push_result.stderr or "rejected" in push_result.stderr:

@@ -63,7 +63,7 @@ from sova.git.worktree import (
     list_worktrees,
     resolve_worktree_conflict,
 )
-from sova.utils.env import PYTEST_WORKERS_ENV_KEY, scrub_check_env
+from sova.utils.env import PYTEST_WORKERS_ENV_KEY, WORKER_CAP_SOURCE_ENV_KEY, scrub_check_env
 from sova.utils.shell import ShellResult
 from tests.conftest import InvariantRepo
 
@@ -914,7 +914,8 @@ class TestPush:
             mock_resolve.assert_awaited_once_with("alice")
             push_env = dict(mock_run.call_args.kwargs["env"])
             assert PYTEST_WORKERS_ENV_KEY in push_env
-            push_env.pop(PYTEST_WORKERS_ENV_KEY)  # the worker cap scrub_check_env() adds
+            push_env.pop(PYTEST_WORKERS_ENV_KEY)  # the worker cap scrub_check_env() adds, and its source marker
+            assert push_env.pop(WORKER_CAP_SOURCE_ENV_KEY) in {"config", "computed"}
             assert push_env == resolved_env
 
     async def test_pushes_falls_back_to_ambient_env_when_token_unresolved(self) -> None:

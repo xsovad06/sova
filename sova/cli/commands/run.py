@@ -83,6 +83,7 @@ async def _run_workflow(
     from sova.db.session import init_db
     from sova.git.worktree import get_primary_worktree_root
     from sova.roles.dispatcher import dispatch
+    from sova.utils.agent_leases import acquire_lease, release_lease
     from sova.utils.logging import rotation_kwargs, setup_logging
 
     # When called from inside a linked git worktree (e.g. a dashboard-spawned
@@ -161,6 +162,9 @@ async def _run_workflow(
 
     _install_sigterm_handler(task_run_id)
 
+    # One lease per run, held until it ends, so every check and agent started elsewhere on the machine
+    # counts this run when it splits the cores (sova.utils.agent_leases).
+    lease = acquire_lease()
     try:
         role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
         # Inside the try: a SIGTERM landing during this write takes the shielded shutdown path below,
@@ -175,6 +179,8 @@ async def _run_workflow(
         # A role that raised after spending still owes its cost to the TaskRun.
         await _persist_run_cost(ctx, ctx.task_run_id, prior_cost)
         raise
+    finally:
+        release_lease(lease)
 
     if result.success:
         console.print(f"[green]Workflow completed ({role.name}): {result.summary}[/green]")
@@ -395,6 +401,7 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.dispatcher import dispatch
+    from sova.utils.agent_leases import pipeline_lease
 
     resolved_dir = project_dir or Path.cwd()
     config = load_config(resolved_dir)
@@ -424,7 +431,9 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
                     force=force,
                 )
 
-                _, result = await dispatch(ctx, config=config.roles)
+                # One lease per dispatched task, as _run_workflow() holds for a `sova run`.
+                with pipeline_lease():
+                    _, result = await dispatch(ctx, config=config.roles)
                 if result.success:
                     console.print(f"[green]Done: {result.summary}[/green]")
                 else:
@@ -459,6 +468,7 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.dispatcher import dispatch
+    from sova.utils.agent_leases import pipeline_lease
 
     resolved_dir = project_dir or Path.cwd()
     config = load_config(resolved_dir)
@@ -483,7 +493,10 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
                 force=force,
             )
             try:
-                _, result = await dispatch(ctx, config=config.roles)
+                # One lease per pipeline, not per process: these run concurrently in this one, and a lease
+                # that marked the environment would make the independent agents it spawns skip their own.
+                with pipeline_lease(inherit=False):
+                    _, result = await dispatch(ctx, config=config.roles)
                 return issue, result.success, result.summary
             except Exception as exc:  # noqa: BLE001 (one issue must not abort the batch; the error lands in the result row)
                 return issue, False, str(exc)

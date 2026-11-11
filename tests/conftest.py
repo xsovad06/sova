@@ -676,6 +676,14 @@ def _redirect_home(monkeypatch: pytest.MonkeyPatch, fake_home: Path) -> None:
     monkeypatch.setattr(registry, "_REGISTRY_DIR", fake_config_dir)
     monkeypatch.setattr(registry, "_REGISTRY_FILE", fake_config_dir / "projects.json")
 
+    # The agent lease directory sits beside the registry: a test that runs the pipeline entry point would
+    # otherwise write a lease into the developer's real directory and skew every live agent's worker split.
+    from sova.utils import agent_leases
+
+    monkeypatch.setattr(agent_leases, "_LEASE_DIR", fake_config_dir / "leases")
+    monkeypatch.setattr(agent_leases, "_held", {})
+    monkeypatch.delenv(agent_leases.LEASE_ENV_KEY, raising=False)
+
     # ``_CONFIG_DIR``, ``_ALLOWED_ROOTS``, and the ``DEFAULT_TOKEN_PATH``/
     # ``DEFAULT_CREDENTIALS_PATH`` constants derived from it are all bound to
     # the real ``Path.home()`` at import time, so a test that forgets to pass

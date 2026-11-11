@@ -143,7 +143,9 @@ async def preserve_partial_work(
             return False
 
         message = f"{format_type_scope(commit_type, scope)}: preserve partial work from {reason}"
-        commit_result = await run("git", "commit", "-m", message, cwd=work_dir, env=scrub_check_env(config=config))
+        commit_result = await run(
+            "git", "commit", "-m", message, cwd=work_dir, env=scrub_check_env(config=config, quiet=True)
+        )
         if not commit_result.success:
             log.warning("worktree.partial_work.commit_failed", reason=reason, error=commit_result.stderr)
             return False
