@@ -124,27 +124,46 @@ If no such questions exist, omit this section.
 - Question 1: context for why this cannot be determined from code
 ```
 
-Write the updated body back to the tracker. You MUST append the research to the issue description/body, NOT as a comment. Use file-based input for reliability with long content:
+Write the updated body back to the tracker. You MUST append the research to the issue description/body, NOT as a comment. The body you write replaces the whole description, so it must be the live original followed by your section, and nothing else:
+
+- Use a temp file that you create in this step, named for this issue (`mktemp` with the issue number in the template, so a concurrent run never shares a path), and remove it with a `trap` on EXIT. Never reuse, read or edit a temp file this run did not create: a leftover file may hold another issue's body.
+- Run the tracker CLI from the project root (`cd "$(git rev-parse --show-toplevel)"`), so it resolves the right repository.
+- GitHub: build the file from a fresh read of the issue body (not from memory or an earlier file), then append your section.
+- JIRA is the exception, because jira-cli has no raw description output to redirect: run `jira issue view the arguments provided when this skill is invoked` first, and only if it shows the description unchanged from Step 1, copy the Step 1 description verbatim into the file, then append your section. If it differs, stop without editing.
+- If the fresh read fails or returns an empty or whitespace-only body, stop without editing: writing then would replace the description with your section alone.
 
 **GitHub**:
 ```bash
-BODY=$(mktemp)
-cat > "$BODY" <<'ISSUE_BODY'
-<original body + research section>
+cd "$(git rev-parse --show-toplevel)"
+BODY=$(mktemp "${TMPDIR:-/tmp}/research-<arguments>.XXXXXX")
+trap 'rm -f "$BODY"' EXIT
+gh issue view <arguments> --json body --jq .body > "$BODY" || { echo "Could not re-read the issue body; stopping" >&2; exit 1; }
+grep -q '[^[:space:]]' "$BODY" || { echo "Issue body is empty on re-read; stopping" >&2; exit 1; }
+cat >> "$BODY" <<'ISSUE_BODY'
+
+<research section>
 ISSUE_BODY
 gh issue edit <arguments> --body-file "$BODY"
 ```
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-BODY=$(mktemp)
+cd "$(git rev-parse --show-toplevel)"
+BODY=$(mktemp "${TMPDIR:-/tmp}/research-<arguments>.XXXXXX")
+trap 'rm -f "$BODY"' EXIT
 cat > "$BODY" <<'ISSUE_BODY'
-<original body + research section>
+<original description, as saved in Step 1 and re-checked against a fresh `jira issue view`>
+
+<research section>
 ISSUE_BODY
 jira issue edit <arguments> --no-input < "$BODY"
 ```
 
-After writing, verify the research was saved to the description (not as a comment). If verification fails, retry the body edit.
+After writing, fetch the issue again and verify all of the following. If any check fails, do not edit the body again with guessed content: restore the original description you saved in Step 1 verbatim, report the failure, and stop.
+
+- The research section is in the description (not a comment).
+- The description still starts with the original text you saved in Step 1, unchanged.
+- The `**Issue**:` line in the research section is this issue's title (from Step 1).
 
 ### Step 6: Report
 
