@@ -1867,6 +1867,14 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "supervisor.research_lookahead",
+        "Research lookahead",
+        "Hold new researchers once this many queued issues already wait ahead of development: researched, "
+        "or being researched (0 = unlimited)",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
         "supervisor.ci_warn_minutes",
         "CI warn threshold (minutes)",
         "Warn in dashboard when remaining CI minutes drop below this value",
