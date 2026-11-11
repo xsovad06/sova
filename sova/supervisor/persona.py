@@ -43,8 +43,8 @@ No restrictions. Run whenever issues are ready.
 ## Priorities
 1. Merge approved PRs (no resource cost)
 2. Address open review findings
-3. Start researchers on high-priority issues
-4. Start developers on researched issues
+3. Start developers on researched issues
+4. Start researchers just in time, only as researched issues run low (specs go stale while they wait)
 5. Triage backlog issues (lowest priority)
 """
 
