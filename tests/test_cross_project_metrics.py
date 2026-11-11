@@ -226,7 +226,8 @@ class TestAggregateTotals:
             }
         ]
         result = _aggregate_totals(projects)
-        assert result["total_agent_cpu_percent"] == 0.0
+        # No agent has a CPU reading yet: no total, not a measured 0.0.
+        assert result["total_agent_cpu_percent"] is None
         assert result["total_agent_memory_bytes"] == 0
 
 

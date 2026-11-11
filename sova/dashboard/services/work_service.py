@@ -430,7 +430,9 @@ def _run_to_dict(run: TaskRun) -> dict:
     try:
         summary = run.resource_summary
         if summary is not None:
-            result["peak_cpu_percent"] = float(summary.peak_cpu_percent)
+            result["peak_cpu_percent"] = (
+                float(summary.peak_cpu_percent) if summary.peak_cpu_percent is not None else None
+            )
             result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
     except (InvalidRequestError, StatementError):
         # A lazy load outside the async greenlet context (e.g. MissingGreenlet)

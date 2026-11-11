@@ -225,10 +225,12 @@ def _extract_latest_metrics(collector: ResourceCollector | None) -> tuple[float 
 
 
 def _summary_to_dict(s: ResourceSummaryRecord) -> dict:
+    # NULL CPU columns mean the run ended before its second sample (see ResourceWriter.write_summary): they
+    # are served as null, never as a measured 0%, beside the memory fields of the samples that were taken.
     d = {
         "sample_count": s.sample_count,
-        "peak_cpu_percent": float(s.peak_cpu_percent),
-        "avg_cpu_percent": float(s.avg_cpu_percent),
+        "peak_cpu_percent": float(s.peak_cpu_percent) if s.peak_cpu_percent is not None else None,
+        "avg_cpu_percent": float(s.avg_cpu_percent) if s.avg_cpu_percent is not None else None,
         "peak_memory_rss_bytes": s.peak_memory_rss_bytes,
         "peak_memory_vms_bytes": s.peak_memory_vms_bytes,
         "total_io_read_bytes": s.total_io_read_bytes,
@@ -249,7 +251,7 @@ def _sample_to_dict(s: ResourceSampleRecord) -> dict:
         ts = ts.replace(tzinfo=timezone.utc)
     return {
         "sampled_at": ts.isoformat(),
-        "cpu_percent": float(s.cpu_percent),
+        "cpu_percent": float(s.cpu_percent) if s.cpu_percent is not None else None,
         "memory_rss_bytes": s.memory_rss_bytes,
         "memory_vms_bytes": s.memory_vms_bytes,
         "io_read_bytes": s.io_read_bytes,
@@ -323,7 +325,11 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
         async with await get_session(project_dir=project_dir) as session:
             stmt = (
                 select(ResourceSummaryRecord)
-                .where(ResourceSummaryRecord.sample_count > 0)
+                .where(
+                    ResourceSummaryRecord.sample_count > 0,
+                    ResourceSummaryRecord.avg_cpu_percent.isnot(None),
+                    ResourceSummaryRecord.peak_cpu_percent.isnot(None),
+                )
                 .order_by(ResourceSummaryRecord.created_at.desc())
                 .limit(50)
             )
@@ -363,7 +369,9 @@ async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
         resolved = (project_dir or Path.cwd()).resolve()
         cross = await asyncio.to_thread(get_cross_project_metrics, resolved)
         totals = cross.get("machine_totals", {})
-        cross_cpu = totals.get("total_agent_cpu_percent", 0.0)
+        reported_cpu = totals.get("total_agent_cpu_percent")
+        # None means no agent had a reading yet: it adds nothing to the other projects' load.
+        cross_cpu = reported_cpu if reported_cpu is not None else 0.0
     except Exception:  # noqa: BLE001 (cross-project totals are optional context for the recommendation)
         log.warning("capacity.cross_project_failed", exc_info=True)
 

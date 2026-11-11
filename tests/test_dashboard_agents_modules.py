@@ -1454,7 +1454,9 @@ class TestStatePayloads:
 
 
 class TestSharedHelpersHaveOneDefinition:
-    @pytest.mark.parametrize("name", ["escapeHtml", "timeAgo", "setText", "renderSectionError", "statusBadge"])
+    @pytest.mark.parametrize(
+        "name", ["escapeHtml", "timeAgo", "setText", "renderSectionError", "statusBadge", "formatCpuPercent"]
+    )
     def test_defined_once_in_app_js_and_nowhere_else(self, name: str) -> None:
         assert len(re.findall(rf"^function {name}\(", _APP_JS, re.MULTILINE)) == 1
         for path in [*_TEMPLATES.glob("*.html"), *_STATIC.glob("*.js"), *(_STATIC / "js").rglob("*.js")]:

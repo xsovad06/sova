@@ -11,12 +11,13 @@ class ResourceSample:
     """A single point-in-time resource measurement for a process tree.
 
     I/O values are per-interval deltas (computed per-PID in ResourceCollector).
-    CPU measurements for newly-discovered child processes will be 0.0 in their
-    first sample as psutil requires a baseline measurement.
+    ``cpu_percent`` is the CPU time the whole process tree used over the last
+    sampling interval (100 is one full core, so a multi-core tree exceeds it), or
+    ``None`` for the first sample of a collector, which has no baseline yet.
     """
 
     timestamp: float
-    cpu_percent: float
+    cpu_percent: float | None
     memory_rss_bytes: int
     memory_vms_bytes: int
     io_read_bytes: int | None
@@ -43,6 +44,9 @@ class ResourceSummary:
     total_io_read_bytes: int | None
     total_io_write_bytes: int | None
     peak_num_threads: int = 0
+    # False when no sample carried a CPU reading (a run that ended before its second sample): the CPU
+    # fields then hold 0.0 for the NOT NULL columns, but are not a measurement and give no energy estimate.
+    cpu_measured: bool = True
 
     @classmethod
     def empty(cls) -> ResourceSummary:
@@ -55,6 +59,7 @@ class ResourceSummary:
             total_io_read_bytes=None,
             total_io_write_bytes=None,
             peak_num_threads=0,
+            cpu_measured=False,
         )
 
     @classmethod
@@ -62,7 +67,7 @@ class ResourceSummary:
         if not samples:
             return cls.empty()
 
-        cpu_values = [s.cpu_percent for s in samples]
+        cpu_values = [s.cpu_percent for s in samples if s.cpu_percent is not None]
 
         # Each sample's I/O values are per-interval deltas (computed per-PID
         # in ResourceCollector). Total I/O during monitoring = sum of deltas.
@@ -75,11 +80,12 @@ class ResourceSummary:
 
         return cls(
             sample_count=len(samples),
-            peak_cpu_percent=max(cpu_values),
-            avg_cpu_percent=sum(cpu_values) / len(cpu_values),
+            peak_cpu_percent=max(cpu_values, default=0.0),
+            avg_cpu_percent=sum(cpu_values) / len(cpu_values) if cpu_values else 0.0,
             peak_memory_rss_bytes=max(s.memory_rss_bytes for s in samples),
             peak_memory_vms_bytes=max(s.memory_vms_bytes for s in samples),
             total_io_read_bytes=io_read,
             total_io_write_bytes=io_write,
             peak_num_threads=max(s.num_threads for s in samples),
+            cpu_measured=bool(cpu_values),
         )

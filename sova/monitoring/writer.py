@@ -146,14 +146,18 @@ class ResourceWriter:
                 session.add_all(records)
 
     async def write_summary(self, summary: ResourceSummary) -> None:
-        """Persist the final resource summary to the database."""
+        """Persist the final resource summary to the database.
+
+        A summary with no CPU reading (``cpu_measured`` False) stores NULL CPU columns, not 0.0, and keeps the
+        true ``sample_count``: the memory, I/O and thread fields rest on real samples.
+        """
         from sova.db.models import ResourceSummaryRecord
 
         record = ResourceSummaryRecord(
             task_run_id=self._run_id,
             sample_count=summary.sample_count,
-            peak_cpu_percent=summary.peak_cpu_percent,
-            avg_cpu_percent=summary.avg_cpu_percent,
+            peak_cpu_percent=summary.peak_cpu_percent if summary.cpu_measured else None,
+            avg_cpu_percent=summary.avg_cpu_percent if summary.cpu_measured else None,
             peak_memory_rss_bytes=summary.peak_memory_rss_bytes,
             peak_memory_vms_bytes=summary.peak_memory_vms_bytes,
             total_io_read_bytes=summary.total_io_read_bytes,

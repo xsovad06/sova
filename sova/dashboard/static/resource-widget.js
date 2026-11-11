@@ -130,7 +130,7 @@
   function updatePanel(data) {
     var sys = data.system;
 
-    setText('rw-cpu-val', sys.cpu_percent != null ? sys.cpu_percent.toFixed(1) + '%' : '--');
+    setText('rw-cpu-val', formatCpuPercent(sys.cpu_percent));
     setText('rw-cpu-cores', sys.cpu_count != null ? sys.cpu_count + ' cores' : '');
 
     if (sys.memory_used_bytes != null && sys.memory_total_bytes != null) {
@@ -160,7 +160,7 @@
         tbody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-500 py-2 text-xs">No agents running</td></tr>';
       } else {
         tbody.innerHTML = data.agents.map(function (a) {
-          var cpu = a.cpu_percent != null ? a.cpu_percent.toFixed(1) + '%' : '--';
+          var cpu = formatCpuPercent(a.cpu_percent);
           var mem = a.memory_rss_bytes != null ? fmtBytes(a.memory_rss_bytes) : '--';
           return '<tr class="border-t border-gray-700/30">' +
             '<td class="py-1.5 px-2 text-xs">#' + escapeHtml(String(a.issue)) + '</td>' +
@@ -300,7 +300,7 @@
       '</div>' +
       '<div class="flex items-center justify-between">' +
       '<span class="text-xs text-gray-500">Agent CPU</span>' +
-      '<span class="text-xs text-gray-300">' + totals.total_agent_cpu_percent.toFixed(1) + '%</span>' +
+      '<span class="text-xs text-gray-300">' + formatCpuPercent(totals.total_agent_cpu_percent) + '</span>' +
       '</div>' +
       '<div class="flex items-center justify-between">' +
       '<span class="text-xs text-gray-500">Agent memory</span>' +

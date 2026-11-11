@@ -584,6 +584,72 @@ async def test_migration_041_round_trips_on_a_real_sqlite_file(tmp_path: Path) -
     assert "num_turns" in cost and "phase_usage" in runs
 
 
+async def test_migration_042_revision_chain() -> None:
+    mod = _import_migration("042")
+
+    assert mod.revision == "042"
+    assert mod.down_revision == "041"
+
+
+async def test_migration_042_round_trips_on_a_real_sqlite_file(tmp_path: Path) -> None:
+    """Upgrade makes the CPU columns nullable and keeps rows; downgrade restores NOT NULL with 0.0 for NULLs."""
+    import asyncio
+    import sqlite3
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+
+    db_path = tmp_path / "nullable_cpu.db"
+    alembic_cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+
+    def not_null() -> dict[tuple[str, str], int]:
+        raw = sqlite3.connect(str(db_path))
+        try:
+            return {
+                (table, row[1]): row[3]
+                for table in ("resource_samples", "resource_summaries")
+                for row in raw.execute(f"PRAGMA table_info({table})")
+                if row[1] in {"cpu_percent", "peak_cpu_percent", "avg_cpu_percent"}
+            }
+        finally:
+            raw.close()
+
+    expected = {
+        ("resource_samples", "cpu_percent"),
+        ("resource_summaries", "peak_cpu_percent"),
+        ("resource_summaries", "avg_cpu_percent"),
+    }
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    assert not_null().keys() == expected
+    assert set(not_null().values()) == {0}
+
+    raw = sqlite3.connect(str(db_path))
+    try:
+        raw.execute(
+            "INSERT INTO task_runs (id, issue_number, role, status, project_slug) VALUES (1, '1', 'd', 'x', 'p')"
+        )
+        raw.execute(
+            "INSERT INTO resource_samples (task_run_id, sampled_at, cpu_percent, memory_rss_bytes, memory_vms_bytes, "
+            "num_children, num_threads) VALUES (1, '2026-11-11 00:00:00', NULL, 10, 20, 0, 1)"
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    await asyncio.to_thread(command.downgrade, alembic_cfg, "041")
+    assert set(not_null().values()) == {1}
+    raw = sqlite3.connect(str(db_path))
+    try:
+        assert raw.execute("SELECT cpu_percent, memory_rss_bytes FROM resource_samples").fetchall() == [(0, 10)]
+    finally:
+        raw.close()
+
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    assert set(not_null().values()) == {0}
+
+
 async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None:
     """Every new connection should get PRAGMA synchronous=NORMAL, not the FULL default.
 

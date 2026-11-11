@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import psutil
@@ -135,7 +137,7 @@ class TestResourceSummary:
 def _make_mock_process(
     pid: int = 123,
     create_time: float = 1000.0,
-    cpu_percent: float = 25.0,
+    cpu_seconds: float = 1.0,
     rss: int = 1024,
     vms: int = 2048,
     children: list | None = None,
@@ -146,7 +148,7 @@ def _make_mock_process(
     proc = MagicMock()
     proc.pid = pid
     proc.create_time.return_value = create_time
-    proc.cpu_percent.return_value = cpu_percent
+    proc.cpu_times.return_value = SimpleNamespace(user=cpu_seconds, system=0.0)
     proc.num_threads.return_value = num_threads
 
     mem = MagicMock()
@@ -179,17 +181,14 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.5)
 
-            # First call is the priming call in start(), then one real
-            # sample, then process dies.
-            mock_proc.cpu_percent.side_effect = [0.0, 25.0, psutil.NoSuchProcess(123)]
-
             collector.start()
             await _wait_for_samples(collector, 1)
             await collector.stop()
 
             assert len(collector.samples) >= 1
             sample = collector.samples[0]
-            assert sample.cpu_percent == 25.0
+            # The first sample has no CPU baseline: no reading yet, not zero.
+            assert sample.cpu_percent is None
             assert sample.memory_rss_bytes == 1024
 
     @pytest.mark.asyncio
@@ -209,14 +208,9 @@ class TestResourceCollector:
     async def test_process_dies_mid_run_returns_summary(self) -> None:
         """Process dying mid-sampling returns collected samples."""
         mock_proc = _make_mock_process()
-        # Priming call succeeds, first real sample succeeds,
-        # second sample's create_time check succeeds but cpu_percent dies.
-        mock_proc.cpu_percent.side_effect = [
-            0.0,  # start() priming
-            25.0,  # first sample succeeds
-            psutil.NoSuchProcess(123),  # second sample dies
-        ]
-        mock_proc.create_time.side_effect = [1000.0, 1000.0, 1000.0]
+        # The first sample succeeds, the second finds the process gone when it reads memory.
+        mem = MagicMock(rss=1024, vms=2048)
+        mock_proc.memory_info.side_effect = [mem, psutil.NoSuchProcess(123)]
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.01)
@@ -231,22 +225,30 @@ class TestResourceCollector:
     async def test_pid_reuse_detection(self) -> None:
         mock_proc = _make_mock_process(create_time=1000.0)
         # After first sample, create_time changes (PID reuse)
-        mock_proc.create_time.side_effect = [1000.0, 1000.0, 9999.0]
+        # The PID is reused once the first sample is recorded, however many times create_time() is read per pass.
+        collector_ref: list[ResourceCollector] = []
+
+        def create_time() -> float:
+            return 1000.0 if not collector_ref or collector_ref[0]._total_samples == 0 else 9999.0
+
+        mock_proc.create_time.side_effect = create_time
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
+            collector_ref.append(collector)
             collector.start()
-            await _wait_for_samples(collector, 1)
+            assert collector._task is not None
+            # The loop ends by itself on the next pass's PID check; stop() would wake it before that check.
+            await asyncio.wait_for(collector._task, timeout=5)
             summary = await collector.stop()
 
-            # Should have stopped after detecting PID reuse
-            assert summary.sample_count >= 1
+            assert summary.sample_count == 1
 
     @pytest.mark.asyncio
     async def test_access_denied_on_child(self) -> None:
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.side_effect = psutil.AccessDenied(456)
+        child.cpu_times.side_effect = psutil.AccessDenied(456)
         child.memory_info.side_effect = psutil.AccessDenied(456)
         child.io_counters.side_effect = psutil.AccessDenied(456)
 
@@ -285,7 +287,7 @@ class TestResourceCollector:
 
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.return_value = 10.0
+        child.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
         child.memory_info.return_value = child_mem
         child.io_counters.return_value = child_io
         child.num_threads.return_value = 3
@@ -346,11 +348,8 @@ class TestResourceCollector:
     async def test_sample_loop_process_exit_during_sample(self) -> None:
         """Cover the NoSuchProcess except branch in _sample_loop."""
         mock_proc = _make_mock_process()
-        # First create_time() call is for start(), second is the PID-reuse
-        # check in _sample_loop which then calls _take_sample -> cpu_percent
-        # raises NoSuchProcess to simulate process dying mid-sample.
-        mock_proc.create_time.side_effect = [1000.0, 1000.0]
-        mock_proc.cpu_percent.side_effect = [0.0, psutil.NoSuchProcess(123)]
+        # The PID-reuse check in _sample_loop passes, then _take_sample finds the process gone.
+        mock_proc.memory_info.side_effect = psutil.NoSuchProcess(123)
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.01)
@@ -368,7 +367,7 @@ class TestResourceCollector:
 
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.return_value = 5.0
+        child.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
         child.memory_info.return_value = child_mem
         child.io_counters.side_effect = NotImplementedError
 
@@ -391,7 +390,6 @@ class TestResourceCollector:
         collector._create_time = 1000.0
         sample = collector._take_sample(mock_proc)
         # Should still return a valid sample from parent data
-        assert sample.cpu_percent == 25.0
         assert sample.memory_rss_bytes == 1024
         assert sample.num_children == 0
 
@@ -427,7 +425,7 @@ class TestResourceCollector:
 
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.return_value = 10.0
+        child.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
         child.memory_info.return_value = child_mem
         child.io_counters.return_value = child_io
 
@@ -462,7 +460,7 @@ class TestResourceCollector:
 
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.return_value = 5.0
+        child.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
         child.memory_info.return_value = child_mem
         child.io_counters.return_value = child_io
 
@@ -499,25 +497,13 @@ class TestResourceCollector:
 
     def test_rolling_aggregates_cover_full_period(self) -> None:
         """get_summary() uses rolling aggregates, not just the sample window."""
-        mock_proc = _make_mock_process()
         collector = ResourceCollector(pid=123)
-        collector._create_time = 1000.0
-
-        # Simulate adding samples and verify aggregates track the full history
-        s1 = collector._take_sample(mock_proc)
-        collector.samples.append(s1)
-        collector._update_aggregates(s1)
-
-        # Change mock values for second sample
-        mem2 = MagicMock()
-        mem2.rss = 4096
-        mem2.vms = 8192
-        mock_proc.memory_info.return_value = mem2
-        mock_proc.cpu_percent.return_value = 80.0
-
-        s2 = collector._take_sample(mock_proc)
-        collector.samples.append(s2)
-        collector._update_aggregates(s2)
+        for sample in (
+            ResourceSample(1.0, 25.0, 1024, 2048, 0, 0, 0),
+            ResourceSample(2.0, 80.0, 4096, 8192, 0, 0, 0),
+        ):
+            collector.samples.append(sample)
+            collector._update_aggregates(sample)
 
         summary = collector.get_summary()
         assert summary.sample_count == 2
@@ -527,40 +513,67 @@ class TestResourceCollector:
 
     def test_rolling_aggregates_survive_eviction(self) -> None:
         """Rolling aggregates remain accurate after samples are evicted."""
-        mock_proc = _make_mock_process(rss=9999, cpu_percent=99.0)
-        collector = ResourceCollector(pid=123)
-        collector._create_time = 1000.0
-
-        # Use a tiny deque to force eviction
         from collections import deque
 
-        collector.samples = deque(maxlen=2)
+        collector = ResourceCollector(pid=123)
+        collector.samples = deque(maxlen=2)  # a tiny deque forces eviction
+        for sample in (
+            ResourceSample(1.0, 99.0, 9999, 200, 0, 0, 0),
+            ResourceSample(2.0, 10.0, 100, 200, 0, 0, 0),
+            ResourceSample(3.0, 10.0, 100, 200, 0, 0, 0),
+        ):
+            collector.samples.append(sample)
+            collector._update_aggregates(sample)
 
-        # Take 3 samples: first will be evicted
-        s1 = collector._take_sample(mock_proc)
-        collector.samples.append(s1)
-        collector._update_aggregates(s1)
-
-        mock_proc.cpu_percent.return_value = 10.0
-        mem2 = MagicMock()
-        mem2.rss = 100
-        mem2.vms = 200
-        mock_proc.memory_info.return_value = mem2
-
-        s2 = collector._take_sample(mock_proc)
-        collector.samples.append(s2)
-        collector._update_aggregates(s2)
-
-        s3 = collector._take_sample(mock_proc)
-        collector.samples.append(s3)
-        collector._update_aggregates(s3)
-
-        # s1 (peak) is evicted from deque, but rolling aggregates keep it
+        # the first sample (the peak) is evicted from the deque, but the rolling aggregates keep it
         assert len(collector.samples) == 2
         summary = collector.get_summary()
         assert summary.sample_count == 3
-        assert summary.peak_cpu_percent == 99.0  # from evicted s1
-        assert summary.peak_memory_rss_bytes == 9999  # from evicted s1
+        assert summary.peak_cpu_percent == 99.0
+        assert summary.peak_memory_rss_bytes == 9999
+
+    def test_a_sample_without_a_cpu_reading_does_not_dilute_the_average(self) -> None:
+        collector = ResourceCollector(pid=123)
+        for sample in (
+            ResourceSample(1.0, None, 100, 200, 0, 0, 0),
+            ResourceSample(2.0, 40.0, 100, 200, 0, 0, 0),
+        ):
+            collector._update_aggregates(sample)
+
+        summary = collector.get_summary()
+        assert summary.sample_count == 2
+        assert summary.avg_cpu_percent == 40.0
+        assert summary.peak_cpu_percent == 40.0
+
+    def test_from_samples_ignores_a_missing_cpu_reading(self) -> None:
+        summary = ResourceSummary.from_samples(
+            [ResourceSample(1.0, None, 100, 200, 0, 0, 0), ResourceSample(2.0, 30.0, 100, 200, 0, 0, 0)]
+        )
+        assert summary.avg_cpu_percent == 30.0
+        assert ResourceSummary.from_samples([ResourceSample(1.0, None, 1, 1, 0, 0, 0)]).avg_cpu_percent == 0.0
+
+    def test_a_summary_without_any_cpu_reading_is_marked_unmeasured(self) -> None:
+        """A run that ended before its second sample has no CPU reading, so its 0.0 average is not a measurement."""
+        collector = ResourceCollector(pid=123)
+        collector._update_aggregates(ResourceSample(1.0, None, 100, 200, 0, 0, 0))
+
+        summary = collector.get_summary()
+        assert summary.sample_count == 1
+        assert summary.cpu_measured is False
+
+    def test_a_summary_with_a_cpu_reading_is_measured(self) -> None:
+        collector = ResourceCollector(pid=123)
+        collector._update_aggregates(ResourceSample(1.0, None, 100, 200, 0, 0, 0))
+        collector._update_aggregates(ResourceSample(2.0, 0.0, 100, 200, 0, 0, 0))
+
+        assert collector.get_summary().cpu_measured is True
+
+    def test_from_samples_marks_whether_any_cpu_was_measured(self) -> None:
+        unmeasured = ResourceSummary.from_samples([ResourceSample(1.0, None, 1, 1, 0, 0, 0)])
+        measured = ResourceSummary.from_samples([ResourceSample(1.0, 0.0, 1, 1, 0, 0, 0)])
+        assert unmeasured.cpu_measured is False
+        assert measured.cpu_measured is True
+        assert ResourceSummary.empty().cpu_measured is False
 
     def test_thread_count_in_sample(self) -> None:
         """Thread count is captured in samples."""
@@ -578,7 +591,7 @@ class TestResourceCollector:
         child_mem.vms = 1024
         child = MagicMock()
         child.pid = 456
-        child.cpu_percent.return_value = 5.0
+        child.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
         child.memory_info.return_value = child_mem
         child.io_counters.side_effect = NotImplementedError
         child.num_threads.return_value = 3
@@ -599,6 +612,136 @@ class TestResourceCollector:
         ]
         summary = ResourceSummary.from_samples(samples)
         assert summary.peak_num_threads == 12
+
+
+class TestTreeCpuPercent:
+    """CPU is CPU-time deltas over the whole tree, keyed by (pid, create_time), never cpu_percent() on fresh objects."""
+
+    @staticmethod
+    def _proc(pid: int, seconds: float, create_time: float = 1.0) -> MagicMock:
+        proc = MagicMock()
+        proc.pid = pid
+        proc.create_time.return_value = create_time
+        proc.cpu_times.return_value = SimpleNamespace(user=seconds, system=0.0)
+        return proc
+
+    def test_first_reading_is_none_not_zero(self) -> None:
+        collector = ResourceCollector(pid=1)
+        assert collector._tree_cpu_percent([self._proc(1, 5.0)], now=10.0) is None
+
+    def test_reading_is_cpu_seconds_over_elapsed_seconds(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 1.0)], now=10.0)
+        assert collector._tree_cpu_percent([self._proc(1, 2.0)], now=12.0) == pytest.approx(50.0)
+
+    def test_a_tree_on_several_cores_exceeds_one_hundred(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0), self._proc(2, 0.0)], now=0.0)
+        reading = collector._tree_cpu_percent([self._proc(1, 2.0), self._proc(2, 2.0)], now=2.0)
+        assert reading == pytest.approx(200.0)
+
+    def test_a_child_seen_for_the_first_time_counts_from_the_next_sample(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0)], now=0.0)
+        assert collector._tree_cpu_percent([self._proc(1, 1.0), self._proc(2, 50.0)], now=2.0) == pytest.approx(50.0)
+        assert collector._tree_cpu_percent([self._proc(1, 2.0), self._proc(2, 52.0)], now=4.0) == pytest.approx(150.0)
+
+    def test_a_child_that_exits_leaves_no_stale_value(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0), self._proc(2, 0.0)], now=0.0)
+        collector._tree_cpu_percent([self._proc(1, 1.0), self._proc(2, 1.0)], now=2.0)
+        assert collector._tree_cpu_percent([self._proc(1, 2.0)], now=4.0) == pytest.approx(50.0)
+        assert collector._prev_cpu.keys() == {(1, 1.0)}
+
+    def test_a_reused_pid_is_a_different_process(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0), self._proc(2, 90.0, create_time=5.0)], now=0.0)
+        reading = collector._tree_cpu_percent([self._proc(1, 1.0), self._proc(2, 0.5, create_time=9.0)], now=2.0)
+        assert reading == pytest.approx(50.0)
+
+    def test_a_process_listed_twice_is_counted_once(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0), self._proc(2, 0.0)], now=0.0)
+        reading = collector._tree_cpu_percent([self._proc(1, 1.0), self._proc(2, 1.0), self._proc(2, 1.0)], now=2.0)
+        assert reading == pytest.approx(100.0)
+
+    @pytest.mark.parametrize(
+        "error", [psutil.NoSuchProcess(2), psutil.AccessDenied(2), psutil.ZombieProcess(2)], ids=type
+    )
+    def test_an_unreadable_process_is_skipped_without_breaking_the_others(self, error: Exception) -> None:
+        collector = ResourceCollector(pid=1)
+        broken = self._proc(2, 0.0)
+        collector._tree_cpu_percent([self._proc(1, 0.0), broken], now=0.0)
+        broken.cpu_times.side_effect = error
+        assert collector._tree_cpu_percent([self._proc(1, 1.0), broken], now=2.0) == pytest.approx(50.0)
+
+    def test_no_process_read_in_both_samples_reports_no_reading(self) -> None:
+        """Every CPU-time read denied leaves nothing to compare: unmeasured, not idle."""
+        collector = ResourceCollector(pid=1)
+        denied = self._proc(1, 0.0)
+        collector._tree_cpu_percent([denied], now=0.0)
+        denied.cpu_times.side_effect = psutil.AccessDenied(1)
+        assert collector._tree_cpu_percent([denied], now=2.0) is None
+
+    def test_a_wholly_new_tree_reports_no_reading(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0)], now=0.0)
+        assert collector._tree_cpu_percent([self._proc(1, 1.0, create_time=9.0)], now=2.0) is None
+
+    def test_a_clock_that_did_not_advance_reports_no_reading(self) -> None:
+        collector = ResourceCollector(pid=1)
+        collector._tree_cpu_percent([self._proc(1, 0.0)], now=5.0)
+        assert collector._tree_cpu_percent([self._proc(1, 1.0)], now=5.0) is None
+
+    def test_take_sample_reports_the_tree_over_two_samples(self) -> None:
+        child = _make_mock_process(pid=456, cpu_seconds=0.0)
+        mock_proc = _make_mock_process(cpu_seconds=0.0, children=[child])
+        collector = ResourceCollector(pid=123)
+        with patch("sova.monitoring.collector.time.monotonic", side_effect=[10.0, 12.0]):
+            first = collector._take_sample(mock_proc)
+            mock_proc.cpu_times.return_value = SimpleNamespace(user=1.0, system=0.0)
+            child.cpu_times.return_value = SimpleNamespace(user=1.0, system=1.0)
+            second = collector._take_sample(mock_proc)
+        assert first.cpu_percent is None
+        assert second.cpu_percent == pytest.approx(150.0)
+
+    def test_a_real_busy_child_reads_nonzero_and_drops_out_after_it_exits(self) -> None:
+        """Real psutil objects, not mocks: the bug was a fresh child's cpu_percent() always reading 0.0."""
+        import subprocess
+        import sys
+
+        root = psutil.Process()
+        collector = ResourceCollector(pid=root.pid)
+        child = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+        try:
+            child_proc = psutil.Process(child.pid)
+            first = collector._take_sample(root)
+
+            def child_seconds() -> float:
+                times = child_proc.cpu_times()
+                return times.user + times.system
+
+            # Wait for the child to accumulate measurable CPU instead of sleeping a fixed time: under `-n auto`
+            # with coverage it can get a small share of a core, and interpreter startup eats part of any window.
+            before = child_seconds()
+            deadline = time.monotonic() + 30
+            while child_seconds() - before < 0.1:
+                assert time.monotonic() < deadline, "the busy child never accumulated 0.1 s of CPU"
+                time.sleep(0.05)
+            busy = collector._take_sample(root)
+        finally:
+            child.kill()
+            child.wait(timeout=10)
+        collector._take_sample(root)
+
+        assert first.cpu_percent is None
+        assert busy.cpu_percent is not None
+        # The reading attributes at least the CPU the child was seen to use between the samples (a lower bound:
+        # `before` was read after the baseline and the last read before the sample). The pytest process alone
+        # would not reach it, so the child's contribution is what this asserts.
+        elapsed = busy.timestamp - first.timestamp
+        assert busy.cpu_percent >= 0.1 / elapsed * 100 * 0.99
+        assert all(pid != child.pid for pid, _ in collector._prev_cpu)
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +870,29 @@ class TestResourceWriter:
         assert writer.should_flush()
 
     @pytest.mark.asyncio
+    async def test_a_sample_without_a_cpu_reading_is_stored_with_a_null_cpu(self, session: AsyncSession) -> None:
+        """The first sample has no CPU baseline but valid memory: it is stored with NULL CPU, not dropped or 0.0."""
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSampleRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 6)
+        writer = ResourceWriter(project_dir=None, run_id=6)
+        writer.add_sample(ResourceSample(1.0, None, 123_456, 200, None, None, 0))
+        assert len(writer._buffer) == 1
+        await writer.flush()
+
+        async with await get_session() as s:
+            async with s.begin():
+                row = (
+                    await s.execute(select(ResourceSampleRecord).where(ResourceSampleRecord.task_run_id == 6))
+                ).scalar_one()
+        assert row.cpu_percent is None
+        assert row.memory_rss_bytes == 123_456
+
+    @pytest.mark.asyncio
     async def test_close_is_idempotent(self, session: AsyncSession) -> None:
         from sova.monitoring.writer import ResourceWriter
 
@@ -795,6 +961,43 @@ class TestResourceWriter:
         assert row.sample_count == 10
         assert row.peak_cpu_percent == 80.0
         assert row.peak_num_threads == 12
+
+    @pytest.mark.asyncio
+    async def test_a_summary_without_a_cpu_reading_is_stored_with_null_cpu_and_the_true_count(
+        self, session: AsyncSession
+    ) -> None:
+        """NULL CPU columns mean no reading; sample_count stays the count of the samples that were taken."""
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSummaryRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 5)
+        writer = ResourceWriter(project_dir=None, run_id=5)
+        await writer.write_summary(
+            ResourceSummary(
+                sample_count=1,
+                peak_cpu_percent=0.0,
+                avg_cpu_percent=0.0,
+                peak_memory_rss_bytes=4096,
+                peak_memory_vms_bytes=8192,
+                total_io_read_bytes=None,
+                total_io_write_bytes=None,
+                peak_num_threads=3,
+                cpu_measured=False,
+            )
+        )
+
+        async with await get_session() as s:
+            async with s.begin():
+                row = (
+                    await s.execute(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == 5))
+                ).scalar_one()
+        assert row.sample_count == 1
+        assert row.peak_cpu_percent is None
+        assert row.avg_cpu_percent is None
+        assert row.peak_memory_rss_bytes == 4096
 
     @pytest.mark.asyncio
     async def test_write_summary_empty(self, session: AsyncSession) -> None:

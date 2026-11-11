@@ -133,7 +133,13 @@ async def _compute_and_store_energy(
     summary: ResourceSummary,
     project_dir: Path | None,
 ) -> None:
-    """Compute energy estimate from run duration and update the summary record."""
+    """Compute energy estimate from run duration and update the summary record.
+
+    A summary without a CPU reading stores no estimate: its 0.0 average was never measured.
+    """
+    if not summary.cpu_measured:
+        log.debug("energy.skipped", run_id=run_id, reason="no cpu reading")
+        return
     from sova.db.models import ResourceSummaryRecord, TaskRun
     from sova.db.session import get_session
     from sova.monitoring.energy import estimate_energy
