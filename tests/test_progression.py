@@ -1269,6 +1269,7 @@ class TestSupervisorConfig:
         assert cfg.respect_dependencies is True
         assert cfg.poll_interval_seconds == 120
         assert cfg.max_researcher_failures == 3
+        assert cfg.research_lookahead == 2
 
     def test_custom_values(self) -> None:
         cfg = SupervisorConfig(

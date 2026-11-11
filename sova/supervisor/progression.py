@@ -47,6 +47,12 @@ from sova.supervisor.gates.ownership import check_ownership_gate
 from sova.supervisor.gates.quota import check_quota_gate
 from sova.supervisor.gates.rate_limit import check_github_rate_limit_gate
 from sova.supervisor.gates.repeated_failure import check_repeated_failures_gate
+from sova.supervisor.gates.research_lookahead import (
+    RESEARCHING,
+    LookaheadHolder,
+    check_research_lookahead_gate,
+    collect_lookahead_holders,
+)
 from sova.supervisor.gates.review_completed import check_review_completed_gate
 from sova.supervisor.gates.slots import check_slot_gate, get_alive_count
 from sova.supervisor.gates.stale_commands import check_stale_commands_gate
@@ -233,6 +239,17 @@ class TaskProgressionEngine:
             remaining_quota = False
         return remaining_slots, remaining_quota
 
+    async def _lookahead_holders(self, graph: DependencyGraph, task_ids: list[int]) -> list[LookaheadHolder] | None:
+        """Queued issues ahead of development, or ``None`` when unavailable or the gate cannot apply.
+
+        ``None`` is never a block: the gate fails open on it. Skipped (no queries) when research is
+        off, since only a researcher candidate is ever gated, or when the limit is 0.
+        """
+        sup = self._config.supervisor
+        if not sup.auto_research or sup.research_lookahead <= 0:
+            return None
+        return await collect_lookahead_holders(graph, task_ids, self._config, self._session_factory, self._adapter)
+
     async def evaluate_all(self, *, plan: PlanResult | None = None) -> list[ProgressionDecision]:
         """Scan all active tasks, return next action for each.
 
@@ -286,57 +303,78 @@ class TaskProgressionEngine:
                 gate="slots",
                 detail=f"All agent slots occupied ({alive_count}/{cfg.max_parallel_agents})",
             )
-        remaining_slots = cfg.max_parallel_agents - alive_count
-        remaining_quota = not bool(global_quota)
 
         task_ids = self._resolve_task_ids(graph)
+        lookahead_holders = await self._lookahead_holders(graph, task_ids)
         tasks = [graph.get_task(nid) for nid in task_ids]
-        decisions: list[ProgressionDecision] = []
-        for task in tasks:
-            if task is None:
-                continue
 
-            mid_loop_rate_limit = check_github_rate_limit_gate(self._adapter.github_user)
-            if mid_loop_rate_limit is not None:
-                log.info("evaluate_all.mid_loop_rate_limited", issue=int(task.id))
-                break
+        async def run_pass(plan_approved: set[tuple[str, int]] | None) -> list[ProgressionDecision]:
+            """One walk over the queue. A researcher spawn that *plan_approved* excludes is not offered."""
+            remaining_slots = cfg.max_parallel_agents - alive_count
+            remaining_quota = not bool(global_quota)
+            # Running copy: each researcher spawn emitted here takes a place, like remaining_slots.
+            reserved = list(lookahead_holders) if lookahead_holders is not None else None
+            decisions: list[ProgressionDecision] = []
+            for task in tasks:
+                if task is None:
+                    continue
 
-            effective_slots = self._effective_gate(
-                global_slots,
-                remaining_slots <= 0,
-                "slots",
-                "All agent slots would be occupied",
-            )
-            effective_quota = self._effective_gate(
-                global_quota,
-                not remaining_quota,
-                "quota",
-                "CodeRabbit quota would be exhausted",
-            )
+                mid_loop_rate_limit = check_github_rate_limit_gate(self._adapter.github_user)
+                if mid_loop_rate_limit is not None:
+                    log.info("evaluate_all.mid_loop_rate_limited", issue=int(task.id))
+                    break
 
-            decision = await self._evaluate_single(
-                int(task.id),
-                task.state,
-                graph,
-                precomputed_memory=global_memory,
-                precomputed_rate_limit=global_rate_limit,
-                precomputed_quota=effective_quota,
-                precomputed_slots=effective_slots,
-                precomputed_ci_budget=global_ci_budget,
-                precomputed_file_sets=precomputed_file_sets,
-                task_labels=task.labels,
-                task_body=task.body,
-                task_assignees=task.assignees,
-            )
-            decisions.append(decision)
+                effective_slots = self._effective_gate(
+                    global_slots,
+                    remaining_slots <= 0,
+                    "slots",
+                    "All agent slots would be occupied",
+                )
+                effective_quota = self._effective_gate(
+                    global_quota,
+                    not remaining_quota,
+                    "quota",
+                    "CodeRabbit quota would be exhausted",
+                )
 
-            remaining_slots, remaining_quota = self._update_remaining_capacity(
-                decision,
-                remaining_slots,
-                remaining_quota,
-            )
+                decision = await self._evaluate_single(
+                    int(task.id),
+                    task.state,
+                    graph,
+                    precomputed_memory=global_memory,
+                    precomputed_rate_limit=global_rate_limit,
+                    precomputed_quota=effective_quota,
+                    precomputed_slots=effective_slots,
+                    precomputed_ci_budget=global_ci_budget,
+                    precomputed_file_sets=precomputed_file_sets,
+                    precomputed_lookahead=reserved,
+                    task_labels=task.labels,
+                    task_body=task.body,
+                    task_assignees=task.assignees,
+                )
+                decisions.append(decision)
 
+                is_researcher = decision.action == ProgressionAction.SPAWN_RESEARCHER
+                offered = plan_approved is None or (decision.action.value, decision.issue_number) in plan_approved
+                if is_researcher and not offered:
+                    continue  # apply_plan turns it into WAIT: it takes neither a slot nor a lookahead place
+
+                remaining_slots, remaining_quota = self._update_remaining_capacity(
+                    decision,
+                    remaining_slots,
+                    remaining_quota,
+                )
+                if is_researcher and reserved is not None:
+                    reserved.append(LookaheadHolder(issue=decision.issue_number, kind=RESEARCHING))
+            return decisions
+
+        approved = {(a.action, a.issue) for a in plan.actions} if plan is not None else None
+        decisions = await run_pass(approved)
         if plan is not None:
+            if self._plan_names_no_offered_issue(decisions, plan):
+                # apply_plan keeps every decision in this case, so redo the walk without the plan's veto
+                # to account slots and lookahead places for the spawns that will actually run.
+                decisions = await run_pass(None)
             decisions = self.apply_plan(decisions, plan)
 
         evaluated_issues = {d.issue_number for d in decisions}
@@ -421,6 +459,13 @@ class TaskProgressionEngine:
             )
         return stale
 
+    @staticmethod
+    def _plan_names_no_offered_issue(decisions: list[ProgressionDecision], plan: PlanResult) -> bool:
+        """True when the plan approved some actions but none names an actionable decision of this cycle."""
+        approved_issues = {a.issue for a in plan.actions}
+        actionable = {d.issue_number for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS}
+        return bool(approved_issues and actionable and approved_issues.isdisjoint(actionable))
+
     def apply_plan(self, decisions: list[ProgressionDecision], plan: PlanResult) -> list[ProgressionDecision]:
         """Convert actionable decisions the plan did not approve into WAIT.
 
@@ -437,10 +482,9 @@ class TaskProgressionEngine:
         holding the fleet, and it is honoured.
         """
         approved_set = {(a.action, a.issue) for a in plan.actions}
-        approved_issues = {issue for _, issue in approved_set}
         actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
-        if approved_issues and actionable and approved_issues.isdisjoint({d.issue_number for d in actionable}):
+        if self._plan_names_no_offered_issue(decisions, plan):
             log.warning(
                 "progression.plan_disjoint",
                 approved=sorted(f"{a}:{i}" for a, i in approved_set),
@@ -841,6 +885,7 @@ class TaskProgressionEngine:
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_file_sets: list[BranchFileSet] | None = None,
+        precomputed_lookahead: list[LookaheadHolder] | None | object = _NOT_COMPUTED,
         task_labels: list[str] | None = None,
         task_body: str = "",
         task_assignees: list[str] | None = None,
@@ -959,6 +1004,10 @@ class TaskProgressionEngine:
             task_assignees=task_assignees,
             refined_pr_info=refined_pr_info,
         )
+        if candidate == ProgressionAction.SPAWN_RESEARCHER:
+            lookahead_block = await self._check_research_lookahead(graph, precomputed_lookahead)
+            if lookahead_block:
+                blockers.append(lookahead_block)
 
         if blockers:
             reasons = "; ".join(b.detail for b in blockers)
@@ -1114,6 +1163,21 @@ class TaskProgressionEngine:
         blockers.extend(global_blocks)
 
         return blockers, discovered_pr
+
+    async def _check_research_lookahead(
+        self, graph: DependencyGraph, precomputed: list[LookaheadHolder] | None | object
+    ) -> BlockReason | None:
+        """Apply the research lookahead gate, computing the holders on demand when not precomputed."""
+        limit = self._config.supervisor.research_lookahead
+        if limit <= 0:
+            return None
+        if precomputed is _NOT_COMPUTED:
+            holders = await collect_lookahead_holders(
+                graph, self._resolve_task_ids(graph), self._config, self._session_factory, self._adapter
+            )
+        else:
+            holders = precomputed
+        return check_research_lookahead_gate(holders, limit)
 
     async def _resolve_global_gates(
         self,
