@@ -974,6 +974,320 @@ class TestResearchStep:
         assert "ValueError" in result.error
         assert "unexpected value" in result.error
 
+    async def _run_command_research(
+        self,
+        tmp_path: Path,
+        before: Task,
+        after: Task | Exception,
+        restore_error: Exception | None = None,
+        read_back: Task | None = None,
+        invoke_error: BaseException | None = None,
+        lossless_body: bool = True,
+    ):
+        """Run the /research command path where the tracker shows *before*, then *after*, then *read_back*.
+
+        *read_back* is what a restore reads back, the snapshot by default. *invoke_error* makes the command
+        raise after the model may have written; *lossless_body* False models Jira.
+        """
+        from sova.core.steps.research import ResearchStep
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.side_effect = [before, after, read_back or before]
+        adapter.edit_body.side_effect = restore_error
+        adapter.lossless_body = lossless_body
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        llm_result = LLMResult(text="done", model="m", cost_usd=Decimal("0.02"), input_tokens=1, output_tokens=1)
+        with patch(
+            "sova.core.steps.research.invoke_command",
+            new_callable=AsyncMock,
+            return_value=llm_result,
+            side_effect=invoke_error,
+        ):
+            result = await ResearchStep().execute(ctx)
+        return result, adapter
+
+    @staticmethod
+    def _task(body: str, title: str = "Warn on bad models") -> Task:
+        return Task(id="42", title=title, body=body, state=TaskState.TRIAGED)
+
+    @pytest.mark.parametrize(
+        ("after_body", "problem"),
+        [
+            ("Another issue's entire body.\n\n## Research\n\n**Issue**: Warn on bad models", "original text"),
+            (
+                "Original body.\n\n## Research\n\n**Issue**: Rewrite the dashboard\n**Complexity**: simple",
+                "another issue",
+            ),
+            # the model's formatting must not hide the foreign title: list marker, colon in the bold, indent
+            ("Original body.\n\n## Research\n\n- **Issue**: Rewrite the dashboard", "another issue"),
+            ("Original body.\n\n## Research\n\n**Issue:** Rewrite the dashboard", "another issue"),
+            ("Original body.\n\n## Research\n\n  **Issue**: Rewrite the dashboard", "another issue"),
+        ],
+    )
+    async def test_command_result_that_replaced_the_body_or_named_another_issue_is_restored(
+        self, tmp_path: Path, after_body: str, problem: str
+    ) -> None:
+        """/research rewrites the whole body, so a stale temp file can replace it (gwym#1019): fail, restore."""
+        before = self._task("Original body.\n")
+        result, adapter = await self._run_command_research(tmp_path, before, self._task(after_body))
+
+        assert not result.success
+        assert problem in result.error
+        assert "restored" in result.error
+        assert result.cost_usd == Decimal("0.02")
+        adapter.edit_body.assert_awaited_once_with("42", "Original body.\n")
+
+    @pytest.mark.parametrize(
+        ("before_body", "after_body"),
+        [
+            (
+                "Original body.",
+                "Original body.\n\n## Research\n\n**Issue**: Warn on bad models\n**Complexity**: simple",
+            ),
+            # GitHub stores web-edited bodies with CRLF and the heredoc changes trailing whitespace.
+            (
+                "Line one.  \r\nLine two.\r\n",
+                "Line one.\nLine two.\n\n## Research\n\n**Issue**: #42 WARN on   bad models",
+            ),
+            # the "#{number}: {title}" form of the Step 6 report, with trailing spaces and a CRLF line end
+            (
+                "Original body.",
+                "Original body.\n\n## Research\n\n**Issue**:  #42: Warn on bad models  \r\n**Complexity**: simple",
+            ),
+            ("Original body.", "Original body.\n\n## Research\n\n**Complexity**: simple"),  # no Issue line
+            # Jira reads paragraphs back one per line; jira-cli turns a single newline into a soft break
+            ("## Objective\np1\np2", "## Objective\np1 p2\n## Research\n**Issue**: Warn on bad models"),
+            ("", ""),  # empty original: the command stops and writes nothing
+            # an old section naming another title is not this run's doing
+            ("Body.\n\n## Research\n\n**Issue**: Old title", "Body.\n\n## Research\n\n**Issue**: Old title"),
+            # formatting the model adds or drops around the title does not make good research foreign
+            ("Body.", "Body.\n\n## Research\n\n**Issue**: Fix 'sova config' crash [a+b]*"),
+            ("Body.", "Body.\n\n## Research\n\n**Issue**: **Fix `sova config` crash [a+b]**"),
+            # **Issue**: before the heading belongs to the original text, not to the section
+            (
+                "**Issue**: Spec title\n\nBody.",
+                "**Issue**: Spec title\n\nBody.\n\n## Research\n\n**Complexity**: simple",
+            ),
+        ],
+    )
+    async def test_command_result_that_only_appends_its_section_is_accepted(
+        self, tmp_path: Path, before_body: str, after_body: str
+    ) -> None:
+        title = "Fix `sova config` crash [a+b]*" if "[a+b]" in after_body else "Warn on bad models"
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task(before_body, title), self._task(after_body, title)
+        )
+
+        assert result.success
+        adapter.edit_body.assert_not_awaited()
+
+    async def test_command_result_that_appends_a_foreign_section_after_an_existing_one_is_restored(
+        self, tmp_path: Path
+    ) -> None:
+        """The old body already has a section, so "no section before" cannot decide: count the headings."""
+        old = "Body.\n\n## Research\n\n**Issue**: Warn on bad models"
+        new = f"{old}\n\n## Research\n\n**Issue**: Rewrite the dashboard"
+        result, adapter = await self._run_command_research(tmp_path, self._task(old), self._task(new))
+
+        assert not result.success
+        assert "another issue" in result.error
+        adapter.edit_body.assert_awaited_once_with("42", old)
+
+    async def test_command_result_is_checked_against_the_title_the_run_started_for(self, tmp_path: Path) -> None:
+        """A title changed while the command ran must not make the model's own section match."""
+        before = self._task("Original body.", title="Warn on bad models")
+        after = self._task("Original body.\n\n## Research\n\n**Issue**: Renamed", title="Renamed")
+        result, adapter = await self._run_command_research(tmp_path, before, after)
+
+        assert not result.success
+        adapter.edit_body.assert_awaited_once_with("42", "Original body.")
+
+    @pytest.mark.parametrize("error", [TimeoutError("step deadline"), RuntimeError("cli crashed")])
+    async def test_command_failure_after_the_write_still_restores_a_replaced_body(
+        self, tmp_path: Path, error: Exception
+    ) -> None:
+        """The model writes in Step 5 and keeps working, so a timeout or crash can follow a replaced body."""
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task("Original body."), self._task("Foreign body."), invoke_error=error
+        )
+
+        assert not result.success
+        assert str(error) in result.error
+        assert "restored" in result.error
+        assert not result.non_retryable
+        adapter.edit_body.assert_awaited_once_with("42", "Original body.")
+
+    async def test_command_failure_with_an_untouched_body_keeps_the_plain_failure(self, tmp_path: Path) -> None:
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task("Original body."), self._task("Original body."), invoke_error=TimeoutError("late")
+        )
+
+        assert result.summary == "Research timed out"
+        assert "restored" not in result.error
+        adapter.edit_body.assert_not_awaited()
+
+    async def test_command_cancelled_by_the_engine_restores_a_replaced_body(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.side_effect = [
+            self._task("Original body."),
+            self._task("Foreign body."),
+            self._task("Original body."),
+        ]
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        with patch(
+            "sova.core.steps.research.invoke_command", new_callable=AsyncMock, side_effect=asyncio.CancelledError()
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await ResearchStep().execute(ctx)
+
+        adapter.edit_body.assert_awaited_once_with("42", "Original body.")
+
+    async def test_failed_restore_is_non_retryable_and_leaves_the_snapshot_in_a_comment(self, tmp_path: Path) -> None:
+        result, adapter = await self._run_command_research(
+            tmp_path,
+            self._task("Original `code` body."),
+            self._task("Foreign body."),
+            restore_error=RuntimeError("gh down"),
+        )
+
+        assert result.non_retryable
+        adapter.post_comment.assert_awaited_once()
+        comment = adapter.post_comment.await_args.args[1]
+        assert "sova:research-manual-restore" in comment
+        assert "Original `code` body." in comment
+
+    async def test_restored_body_stays_retryable(self, tmp_path: Path) -> None:
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task("Original body."), self._task("Foreign body.")
+        )
+
+        assert not result.non_retryable
+        adapter.post_comment.assert_not_awaited()
+
+    async def test_jira_shaped_body_that_differs_only_in_rendering_is_accepted_and_never_restored(
+        self, tmp_path: Path
+    ) -> None:
+        """Jira flattens the ADF description, so link and code rendering differ and the prefix check is skipped."""
+        before = self._task("See the guide for `make check`.\nSecond paragraph.")
+        after = self._task(
+            "See [the guide](https://x.example/guide) for make check.\nSecond paragraph."
+            "\n\n## Research\n\n**Issue**: Warn on bad models"
+        )
+        result, adapter = await self._run_command_research(tmp_path, before, after, lossless_body=False)
+
+        assert result.success
+        adapter.edit_body.assert_not_awaited()
+
+    async def test_jira_shaped_foreign_section_fails_without_an_edit_body_restore(self, tmp_path: Path) -> None:
+        before = self._task("Original body.")
+        after = self._task("Original body.\n\n## Research\n\n**Issue**: Rewrite the dashboard")
+        result, adapter = await self._run_command_research(tmp_path, before, after, lossless_body=False)
+
+        assert not result.success
+        assert result.non_retryable
+        assert "description history" in result.error
+        adapter.edit_body.assert_not_awaited()
+        adapter.post_comment.assert_awaited_once()
+
+    async def test_command_rejection_says_so_when_the_restore_fails(self, tmp_path: Path) -> None:
+        result, _ = await self._run_command_research(
+            tmp_path, self._task("Original body."), self._task("Foreign body."), restore_error=RuntimeError("gh down")
+        )
+
+        assert not result.success
+        assert "restoring the original body failed" in result.error
+        assert "gh down" in result.error
+
+    async def test_command_rejection_says_so_when_the_restore_does_not_take(self, tmp_path: Path) -> None:
+        """edit_body returns silently when the egress filter blocks the body; the read-back catches it."""
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task("Original body."), self._task("Foreign body."), read_back=self._task("Foreign body.")
+        )
+
+        assert not result.success
+        assert "restoring the original body failed" in result.error
+        adapter.edit_body.assert_awaited_once_with("42", "Original body.")
+
+    def test_research_command_write_back_is_pinned(self) -> None:
+        """gwym#1019: the write-back reused another run's temp file from the wrong directory and kept no prefix."""
+        command = (
+            Path(__file__).resolve().parent.parent / "sova" / "commands" / "data" / "commands" / "research.md"
+        ).read_text(encoding="utf-8")
+        step5 = command.split("### Step 5", 1)[1].split("### Step 6", 1)[0]
+        for block in step5.split("```bash")[1:]:
+            block = block.split("```", 1)[0]
+            assert 'cd "$(git rev-parse --show-toplevel)"' in block
+            assert 'BODY=$(mktemp "${TMPDIR:-/tmp}/research-{{ arguments }}.XXXXXX")' in block
+            assert "trap 'rm -f \"$BODY\"' EXIT" in block
+        # gh prints a newline for an empty body, so a file-size test never fires
+        assert "grep -q '[^[:space:]]' \"$BODY\"" in step5
+        assert '[ -s "$BODY" ]' not in step5
+
+    async def test_command_result_that_cannot_be_reread_fails_without_a_restore(self, tmp_path: Path) -> None:
+        result, adapter = await self._run_command_research(
+            tmp_path, self._task("Original body."), RuntimeError("tracker unreachable")
+        )
+
+        assert not result.success
+        assert "unknown" in result.error
+        adapter.edit_body.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("body", "comments", "snapshot_body", "passed"),
+        [
+            ("Body.\n\n## Research\n\n**Issue**: Rewrite the dashboard", [], "Body.", False),
+            ("Body.\n\n## Research\n\n**Issue**: Warn on bad models", [], "Body.", True),
+            ("Body.\n\n## Research\n\n**Complexity**: simple", [], "Body.", True),
+            ("Body.\n\n## Research\n\n- **Issue**: Rewrite the dashboard", [], "Body.", False),
+            ("Body.\n\n## Research\n\n**Issue:** Rewrite the dashboard", [], "Body.", False),
+            ("Body.\n\n## Research\n\n**Issue:** Warn on bad models", [], "Body.", True),
+            # the command appends, so the last heading is the one to read
+            (
+                "## Research\n\n**Issue**: Old\n\n## Research\n\n**Issue**: Warn on bad models",
+                [],
+                "## Research\n\n**Issue**: Old",
+                True,
+            ),
+            # a foreign section appended after an existing one
+            (
+                "## Research\n\n**Issue**: Warn on bad models\n\n## Research\n\n**Issue**: Rewrite the dashboard",
+                [],
+                "## Research\n\n**Issue**: Warn on bad models",
+                False,
+            ),
+            # an older section for a title since renamed, left unchanged by this run
+            ("Body.\n\n## Research\n\n**Issue**: Old title", [], "Body.\n\n## Research\n\n**Issue**: Old title", True),
+            # no snapshot (runtime path): the title is not checked
+            ("Body.\n\n## Research\n\n**Issue**: Rewrite the dashboard", [], None, True),
+            # quoting or emphasis around a title with backticks and regex characters
+            ("Body.\n\n## Research\n\n**Issue**: Fix 'sova config' crash (a+b)", [], "Body.", True),
+            ("Body.\n\n## Research\n\n**Issue**: Fix `sova config` crash (a+b)", [], "Body.", True),
+            ("No research.", ["## Research\n\n**Issue**: Rewrite the dashboard"], "No research.", False),
+            ("No research.", ["## Research\n\n**Issue**: Warn on bad models"], "No research.", True),
+        ],
+    )
+    async def test_validate_output_checks_the_section_names_this_issue(
+        self, tmp_path: Path, body: str, comments: list[str], snapshot_body: str | None, passed: bool
+    ) -> None:
+        from sova.core.steps.research import ResearchStep
+
+        quoted = "Fix" in body
+        title = "Fix `sova config` crash (a+b)" if quoted else "Warn on bad models"
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = self._task(body, title)
+        adapter.get_comments.return_value = comments
+        ctx = _make_ctx(tmp_path, role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        ctx.research_snapshot = None if snapshot_body is None else self._task(snapshot_body, title)
+
+        gate = await ResearchStep().validate_output(ctx)
+
+        assert gate.passed is passed
+
     @staticmethod
     def _text_only_provider() -> MagicMock:
         from sova.llm.provider import ProviderCapabilities
