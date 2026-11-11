@@ -160,6 +160,9 @@ def _build_adf_doc(text: str) -> dict:
 class JiraAdapter(TaskAdapter):
     """Task adapter backed by Jira Cloud REST API v3."""
 
+    # get_task flattens the ADF description to text and edit_body writes plain paragraphs back.
+    lossless_body = False
+
     def __init__(
         self,
         base_url: str,

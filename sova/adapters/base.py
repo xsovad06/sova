@@ -113,6 +113,11 @@ class TaskAdapter(ABC):
     Subclasses implement ``_do_*`` instead of the public method.
     """
 
+    # True when ``edit_body(get_task(...).body)`` returns the body unchanged in substance. Jira is not: its
+    # description is read back as flattened text (links, code, emphasis dropped) and written as plain paragraphs,
+    # so restoring a snapshot through ``edit_body`` would degrade a description it is meant to protect.
+    lossless_body: bool = True
+
     def __init__(self, repo: str, github_user: str = "") -> None:
         self.repo = repo
         self.github_user = github_user
