@@ -883,6 +883,7 @@ class TestGetWorkItemsStalePr:
         }
         cfg = MagicMock(github_repo=repo, github_user="u")
         cfg.pipeline.max_address_review_cycles = 0
+        cfg.max_parallel_agents = 3
         with (
             patch(
                 "sova.dashboard.services.work_item_service._fetch_all_sources",

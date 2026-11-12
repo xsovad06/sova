@@ -193,6 +193,35 @@ class TestAgentPoolConfig:
             agent_pool._projects.clear()
             agent_pool._projects.update(old_projects)
 
+    def test_lowering_the_limit_below_the_running_count_stops_no_agent(self, tmp_path, monkeypatch):
+        """The Agents page stepper can lower max_parallel_agents under the number running (#1461): the
+        pool keeps every agent, and start_agent()'s len(pa.agents) >= max_concurrent check refuses new
+        starts until the count drops below the new limit."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_parallel_agents = 1
+        monkeypatch.setattr("sova.config.loader.load_config", MagicMock(return_value=mock_cfg))
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-lower")
+            pa.max_concurrent = 4
+            running = {1: MagicMock(), 2: MagicMock(), 3: MagicMock()}
+            pa.agents.update(running)
+            agent_pool.sync_max_concurrent(project_dir=tmp_path, slug="test-lower")
+            assert pa.max_concurrent == 1
+            assert pa.agents == running
+            for agent in running.values():
+                agent.stop.assert_not_called()
+                agent.kill.assert_not_called()
+            assert len(pa.agents) >= pa.max_concurrent, "a new start is refused until agents finish"
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
     def test_sync_max_concurrent_no_change_when_equal(self, tmp_path, monkeypatch):
         from unittest.mock import MagicMock
 

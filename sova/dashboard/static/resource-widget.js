@@ -151,7 +151,8 @@
       }
     }
 
-    setText('rw-slots-val', data.agent_slots.used + ' / ' + data.agent_slots.max);
+    // Same running and limit numbers as the Agents page's "N of M agents running".
+    setText('rw-slots-val', data.agent_slots.used + ' of ' + data.agent_slots.max + ' running');
 
     // Agent table
     var tbody = document.getElementById('rw-agent-tbody');

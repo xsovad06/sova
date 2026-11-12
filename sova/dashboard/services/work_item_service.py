@@ -96,6 +96,7 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
+    from sova.dashboard.services.agent_pool import ProjectAgents
     from sova.supervisor.dependency_graph import DependencyGraph
 
 log = get_logger(component="dashboard.work_item")
@@ -639,7 +640,8 @@ def _attach_merge_blockers(
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
-    Returns: {items, running_count, slots_available, max_concurrent, github_user, jira_display_name, api_health}
+    Returns: {items, running_count, slots_available, max_concurrent, agents_running, github_user, jira_display_name,
+    api_health}
     api_health: {status: "ok"}, {status: "unreachable", detail, down_seconds},
     or {status: "rate_limited", detail, cooldown_seconds, hits}
     """
@@ -713,9 +715,10 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
 
     _sort_items(items)
 
-    pa = _get_project_agents(slug)
-    max_concurrent = pa.max_concurrent if pa else 3
     running_count = sum(1 for i in items if i["state"] == WorkItemState.AGENT_RUNNING)
+    max_concurrent, agents_running = _pool_limit_and_running(
+        _get_project_agents(slug), running_count, cfg.max_parallel_agents if cfg else 3
+    )
 
     github_user = cfg.github_user if cfg else ""
 
@@ -750,8 +753,9 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     return {
         "items": items,
         "running_count": running_count,
-        "slots_available": max(0, max_concurrent - running_count),
+        "slots_available": max(0, max_concurrent - agents_running),
         "max_concurrent": max_concurrent,
+        "agents_running": agents_running,
         "github_user": github_user,
         "jira_display_name": jira_display_name,
         "api_health": api_health,
@@ -958,6 +962,15 @@ def _index_handoffs(handoffs: list[dict]) -> dict[str, dict]:
         if pr_num:
             result[f"pr:{pr_num}"] = h
     return result
+
+
+def _pool_limit_and_running(pa: ProjectAgents | None, running_count: int, configured_limit: int = 3) -> tuple[int, int]:
+    """Return the agent limit and the pool's running count, the number start_agent() compares with the limit and
+    the resource widget shows. Without a pool, the limit is the configured ``max_parallel_agents`` (3 when no config
+    loaded) and the count is the items in AGENT_RUNNING; the stepper seeds from this, so it must be the stored value."""
+    if pa is None:
+        return configured_limit, running_count
+    return pa.max_concurrent, len(pa.agents)
 
 
 def _index_prs_by_issue(prs: list[dict]) -> dict[str, dict]:

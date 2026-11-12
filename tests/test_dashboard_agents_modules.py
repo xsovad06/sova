@@ -518,6 +518,50 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
+# The Agents page's "N of M agents running": the running count is the pool's (agents_running), and the limit is a
+# settingStepper for max_parallel_agents built once, then updated in place on each poll.
+_AGENT_LIMIT_SCENARIO = r"""
+const workItems = await load('work-items');
+const els = {};
+const baseGetElementById = doc.getElementById;
+doc.getElementById = (id) => {
+  if (id === 'agent-limit-running' || id === 'agent-limit-control') {
+    return els[id] ||= { textContent: '', children: [], appendChild(c) { this.children.push(c); } };
+  }
+  return baseGetElementById(id);
+};
+const made = [];
+const setValues = [];
+globalThis.settingStepper = (key, opts) => {
+  const ctl = { key, opts, sovaSetValue: (v) => setValues.push(v) };
+  made.push({ key, value: opts.value, min: opts.min, step: opts.step });
+  return ctl;
+};
+let reply = {
+  items: [], github_user: 'octocat', running_count: 0, agents_running: 2, slots_available: 2, max_concurrent: 4,
+};
+globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(reply) });
+await workItems.loadWorkItems();
+out.running = els['agent-limit-running'].textContent;
+out.made = made;
+out.mounted = els['agent-limit-control'].children.length;
+reply = Object.assign({}, reply, { agents_running: 1, max_concurrent: 3 });
+await workItems.loadWorkItems();
+out.runningAfterPoll = els['agent-limit-running'].textContent;
+out.madeAfterPoll = made.length;
+out.setValues = setValues;
+// A save completed while the next poll was in flight: that poll's limit may predate the save and is not shown.
+let saves = 0;
+globalThis.settingSaveCount = () => saves;
+reply = Object.assign({}, reply, { agents_running: 0, max_concurrent: 2 });
+globalThis.fetch = () => { saves += 1; return Promise.resolve({ ok: true, json: () => Promise.resolve(reply) }); };
+await workItems.loadWorkItems();
+out.runningAfterStalePoll = els['agent-limit-running'].textContent;
+out.setValuesAfterStalePoll = setValues;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
 # The first open of a running agent's logs backfills like a tab return does: the stream's lines are held until the
 # snapshot of everything written before it connected has been rendered.
 _LOG_FIRST_OPEN_SCENARIO = r"""
@@ -2059,6 +2103,20 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["afterFirstLoad"] == ["octocat", 1]
         assert result["callsAfterSecondLoad"] == 1, "an unchanged user must not redraw the PR tracker on every poll"
         assert result["errorsLogged"] == 1
+
+    def test_agent_limit_shows_the_pool_count_and_one_stepper_updated_in_place(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _AGENT_LIMIT_SCENARIO)
+        assert result["running"] == "2", "the running count is agents_running, the number the limit check uses"
+        assert result["made"] == [{"key": "max_parallel_agents", "value": 4, "min": 1, "step": 1}]
+        assert result["mounted"] == 1
+        assert result["runningAfterPoll"] == "1"
+        assert result["madeAfterPoll"] == 1, "a poll must update the stepper, not replace it mid-save"
+        assert result["setValues"] == [3]
+
+    def test_a_poll_that_overlapped_a_save_does_not_reset_the_limit(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _AGENT_LIMIT_SCENARIO)
+        assert result["runningAfterStalePoll"] == "0", "the running count still updates"
+        assert result["setValuesAfterStalePoll"] == [3], "the limit from a response that predates a save is dropped"
 
 
 class TestRenderIfChanged:
