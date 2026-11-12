@@ -86,6 +86,7 @@ from sova.dashboard.security import (
 from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
+from sova.dashboard.settings_meta import get_meta as get_setting_meta
 from sova.db.session import close_db, init_db, init_db_for_project
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
@@ -1145,6 +1146,8 @@ def create_app(
     templates.env.globals["github_user"] = _footer_github_user
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
+    # A page control's label and tooltip come from the settings registry, so they match the Settings page.
+    templates.env.globals["setting_meta"] = get_setting_meta
 
     if is_multi:
         _setup_multi_project(app, templates)
