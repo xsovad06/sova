@@ -21,11 +21,71 @@ from typer.testing import CliRunner
 from sova.adapters.base import TaskState
 from sova.cli.app import app
 from sova.git.merge import MergedIssues, OpenedPrIssues
-from sova.utils.gh import IssueLinks, parse_issue_links, parse_not_done_items
+from sova.utils.gh import (
+    IssueLinks,
+    choose_pr_issue,
+    github_title_or_branch_issue,
+    parse_issue_links,
+    parse_not_done_items,
+)
 from sova.utils.shell import ShellResult
 
 REPO_ROOT = Path(__file__).parent.parent
 runner = CliRunner()
+
+
+class TestGithubTitleOrBranchIssue:
+    @pytest.mark.parametrize(
+        ("title", "branch", "expected"),
+        [
+            pytest.param("feat: add thing (#374)", "", "374", id="title-parenthesised"),
+            pytest.param("fix [#9]", "feat/issue-5", "9", id="title-before-branch"),
+            pytest.param("no number", "feat/issue-5", "5", id="branch"),
+            pytest.param("[PROJ-42] add thing", "feat/PROJ-42-thing", None, id="jira-keys-are-not-read"),
+            pytest.param("", "", None, id="empty"),
+        ],
+    )
+    def test_github_syntax_only(self, title: str, branch: str, expected: str | None) -> None:
+        assert github_title_or_branch_issue(title, branch) == expected
+
+
+class TestChoosePrIssue:
+    @pytest.mark.parametrize(
+        ("body", "branch", "refs", "expected"),
+        [
+            pytest.param("## Issue\n\nCloses #1354", "", (), ("1354",), id="no-refs-section-closing"),
+            pytest.param("Closes #12\n\n## Issue\n\nPart of #7", "", (), ("7", "12"), id="section-before-body"),
+            pytest.param("Closes #12\nCloses #1354", "fix/issue-1354", (), ("1354", "12"), id="branch-breaks-tie"),
+            pytest.param("Part of #5\n", "", (), ("5",), id="part-of-only"),
+            pytest.param("see `Closes #12`\n```\nCloses #13\n```", "", (), (), id="masked-code-yields-nothing"),
+            pytest.param("Closes #12", "feat/issue-99", (), ("12",), id="branch-never-invents-without-refs"),
+            pytest.param("", "", (), (), id="empty"),
+            pytest.param(
+                "## Issue\n\nPart of #1213", "feat/issue-1213", (42,), ("1213",), id="refs-section-and-branch"
+            ),
+            pytest.param("", "feat/issue-7", (42, 43), ("7",), id="refs-branch-outranks-unlisted"),
+            pytest.param("## Issue\n\nCloses #12", "feat/issue-5", (12,), ("12",), id="refs-stacked-section-stands"),
+            pytest.param("", "", ("42", 42, 43), ("42", "43"), id="refs-without-signal-keep-order-deduped"),
+        ],
+    )
+    def test_candidates(self, body: str, branch: str, refs: tuple[int | str, ...], expected: tuple[str, ...]) -> None:
+        assert choose_pr_issue(body, branch, refs).candidates == expected
+
+    def test_primary_is_none_without_candidates(self) -> None:
+        assert choose_pr_issue("nothing", "main").primary is None
+
+    @pytest.mark.parametrize(
+        ("body", "branch", "refs", "signal"),
+        [
+            pytest.param("## Issue\n\nCloses #1", "", (), "section", id="section"),
+            pytest.param("Closes #1", "", (), "body", id="body"),
+            pytest.param("", "feat/issue-7", (42,), "branch", id="branch"),
+            pytest.param("", "", (42,), "none", id="none-with-refs"),
+            pytest.param("", "", (), "none", id="none-without-refs"),
+        ],
+    )
+    def test_signal(self, body: str, branch: str, refs: tuple[int, ...], signal: str) -> None:
+        assert choose_pr_issue(body, branch, refs).signal == signal
 
 
 class TestParseIssueLinks:
