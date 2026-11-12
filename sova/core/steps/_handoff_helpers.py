@@ -15,7 +15,7 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
-from sova.ipc.notifications import notify
+from sova.ipc.notifications import NotificationKind, notify
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.handoff")
@@ -83,8 +83,12 @@ async def write_step_handoff(
         ctx.config.notification,
         "SOVA",
         f"{project_name} | {notification_message}",
+        # An approval pause is announced as needs_human by WorkflowEngine._handle_step_approval, so
+        # sending needs_human here too would push the same approval to ntfy twice.
+        kind=NotificationKind.NEEDS_HUMAN if needs_human and not awaiting_approval else NotificationKind.INFO,
         subtitle=notification_subtitle,
         group=ctx.notification_group,
+        **ctx.notification_item,
     )
 
     return StepResult(

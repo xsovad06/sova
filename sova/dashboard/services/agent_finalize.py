@@ -18,6 +18,7 @@ from sova.dashboard.services.agent_context import (
 )
 from sova.dashboard.services.agent_db import (
     _downgrade_to_failed,
+    _engine_announced_failure,
     _finalize_task_run,
     _get_task_run_status,
     _validate_command_outcome,
@@ -470,6 +471,44 @@ async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, s
         log.debug("ws.agent_finished_broadcast_failed", run_id=agent.run_id, exc_info=True)
 
 
+# TaskRun statuses where the run waits on a person: the engine inside the agent process already sent the
+# NEEDS_HUMAN push, so the exit-time summary must not claim a failure or a finish.
+_WAITING_ON_HUMAN_STATUSES = frozenset({"awaiting_approval", "paused", "rejected"})
+
+
+def _exit_notification_kind(
+    exit_code: int,
+    *,
+    announced_status: str | None,
+    engine_announced_failure: bool,
+    outcome_downgraded: bool,
+    status_changed: bool,
+) -> str:
+    """The ntfy kind of the exit-time summary, keyed on the run's recorded status before the exit code.
+
+    The agent CLI exits 0 for an approval pause and 1 for a failed step, so the exit code alone misreports both.
+    ``failed`` is INFO only when the engine's own FAILED push is on record (``engine_announced_failure``): every
+    other way a run ends up failed (crash, setup error, validation downgrade, a command writing its own status)
+    sent nothing and is announced here. A recorded ``done`` is FINISHED only when this finalize wrote it
+    (``status_changed``): otherwise the engine's own ``_finalize`` already sent FINISHED, and a second one
+    would double the push for a user who opts into ``finished``. A user stop is INFO: the user did it. The
+    exit code decides only when no status is recorded.
+    """
+    from sova.ipc.notifications import NotificationKind
+
+    if outcome_downgraded:
+        return NotificationKind.FAILED
+    if announced_status in _WAITING_ON_HUMAN_STATUSES or announced_status == "stopped":
+        return NotificationKind.INFO
+    if announced_status == "failed":
+        return NotificationKind.INFO if engine_announced_failure else NotificationKind.FAILED
+    if announced_status == "done":
+        return NotificationKind.FINISHED if status_changed else NotificationKind.INFO
+    if announced_status == "interrupted":
+        return NotificationKind.FAILED
+    return NotificationKind.FINISHED if exit_code == 0 else NotificationKind.FAILED
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -577,6 +616,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # Downgrades "done" to "failed" if the command exited cleanly but
     # didn't actually perform its core work (e.g., address-pr without
     # pushing commits, review-pr without posting a review).
+    outcome_downgraded = False
     if exit_code == 0 and run_id:
         validation = await _validate_command_outcome(run_id, agent)
         failure_reason = validation.failure_reason
@@ -591,6 +631,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             status = "interrupted" if network_blocked else "failed"
             await _downgrade_to_failed(run_id, failure_reason, agent.project_dir, status=status)
             exit_code = 1
+            outcome_downgraded = True
             log.warning(
                 "agent.outcome_validation_failed",
                 run_id=run_id,
@@ -630,6 +671,13 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         from sova.config.loader import load_config
         from sova.ipc.notifications import notify
 
+        # Inside the best-effort block: this read only picks a notification kind, so whatever it raises must not
+        # skip the lifecycle finalization or the auto-handoff that follow.
+        engine_announced_failure = (
+            announced_status == "failed"
+            and not outcome_downgraded
+            and await _engine_announced_failure(run_id, agent.project_dir)
+        )
         cfg = load_config(agent.project_dir)
         role_label = agent.role.split(":")[-1].replace("-", " ").title()
         project_name = agent.project_dir.name
@@ -645,8 +693,19 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 cfg.notification,
                 "SOVA",
                 f"{project_name} | Exit code {exit_code}",
+                kind=_exit_notification_kind(
+                    exit_code,
+                    announced_status=announced_status,
+                    engine_announced_failure=engine_announced_failure,
+                    outcome_downgraded=outcome_downgraded,
+                    status_changed=status_changed,
+                ),
                 subtitle=f"{role_label} failed {issue_label}",
                 group=group_key,
+                issue=agent.issue or None,
+                pr_number=agent.pr_number,
+                run_id=run_id,
+                project_dir=agent.project_dir,
             )
         else:
             msg = project_name
@@ -656,8 +715,19 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 cfg.notification,
                 "SOVA",
                 msg,
+                kind=_exit_notification_kind(
+                    exit_code,
+                    announced_status=announced_status,
+                    engine_announced_failure=engine_announced_failure,
+                    outcome_downgraded=outcome_downgraded,
+                    status_changed=status_changed,
+                ),
                 subtitle=f"{role_label} finished {issue_label}",
                 group=group_key,
+                issue=agent.issue or None,
+                pr_number=agent.pr_number,
+                run_id=run_id,
+                project_dir=agent.project_dir,
             )
     except Exception:  # noqa: BLE001 (notification is best-effort; config and OS notifier both fail in many ways)
         log.debug("notify.failed", run_id=run_id, exc_info=True)

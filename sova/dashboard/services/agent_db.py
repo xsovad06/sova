@@ -478,6 +478,32 @@ async def _get_task_run_status(run_id: int, project_dir: Path) -> str | None:
         return None
 
 
+async def _engine_announced_failure(run_id: int, project_dir: Path) -> bool:
+    """True when the workflow engine already sent the FAILED push for this run (its newest FailureRecord says so).
+
+    Only the newest record counts: an earlier announced failure says nothing about how the run last failed.
+
+    Fails toward False: an unreadable DB costs a possible duplicate push, never a silent failed run.
+    """
+    try:
+        from sqlalchemy import select
+
+        from sova.db.models import FAILURE_ANNOUNCED_KEY, FailureRecord
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            latest = await session.scalar(
+                select(FailureRecord.context)
+                .where(FailureRecord.task_run_id == run_id)
+                .order_by(FailureRecord.id.desc())
+                .limit(1)
+            )
+            return isinstance(latest, dict) and latest.get(FAILURE_ANNOUNCED_KEY) is True
+    except (SQLAlchemyError, OSError):
+        log.debug("task_run.failure_marker_read_failed", run_id=run_id, exc_info=True)
+        return False
+
+
 async def _finalize_orphaned_steps(session: object, run_id: int) -> None:
     """Mark any StepExecution records still in 'running' as 'interrupted'.
 

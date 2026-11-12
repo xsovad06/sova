@@ -61,6 +61,10 @@ for _flag in _NOTIFY_STATES.values():
         raise AttributeError(f"_NOTIFY_STATES references unknown PRMonitorConfig field: {_flag!r}")
 del _flag
 
+# A ready-to-merge PR waits on the user to merge it; every other monitored state is
+# handled by the agents or is informational, so it is sent as an info notification.
+_NEEDS_USER_STATES = frozenset({ComputedPRState.APPROVED_CI_GREEN})
+
 
 @dataclass
 class PRSnapshot:
@@ -209,15 +213,19 @@ class PRMonitor:
         if not getattr(self.monitor_config, config_flag, False):
             return
 
-        from sova.ipc.notifications import notify
+        from sova.ipc.notifications import NotificationKind, notify
 
         label = state_label(snapshot.computed_state)
+        kind = NotificationKind.NEEDS_HUMAN if snapshot.computed_state in _NEEDS_USER_STATES else NotificationKind.INFO
         notify(
             self.notification_config,
             title="SOVA",
             subtitle=f"PR #{snapshot.number} {label}",
             message=snapshot.title,
+            kind=kind,
             group=f"sova-pr-{snapshot.number}",
+            pr_number=snapshot.number,
+            project_dir=self.project_dir,
         )
         log.info(
             "pr_monitor.notified",
