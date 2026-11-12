@@ -141,7 +141,7 @@ class TestPostReviewReturnsBool:
 
         assert result is False
         mock_ctx.adapter.post_pr_review.assert_awaited()
-        mock_ctx.adapter.post_pr_comment.assert_awaited_once()
+        assert mock_ctx.adapter.post_pr_comment.await_count == 2  # the chain is retried once
 
     @pytest.mark.asyncio
     async def test_post_review_returns_false_on_non_runtime_adapter_error(self) -> None:
@@ -163,7 +163,7 @@ class TestPostReviewReturnsBool:
         result = await role._post_review(mock_ctx, review, "diff content")
 
         assert result is False
-        mock_ctx.adapter.post_pr_comment.assert_awaited_once()
+        assert mock_ctx.adapter.post_pr_comment.await_count == 2  # the chain is retried once
 
     @pytest.mark.asyncio
     async def test_post_review_falls_back_to_comment_after_review_api_failure(self) -> None:

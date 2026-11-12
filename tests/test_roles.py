@@ -7524,7 +7524,7 @@ class TestReviewerExceptionPaths:
         assert db_handoff.next_action == "address_review"
 
     async def test_execute_total_posting_failure_writes_post_failed_handoff(self, tmp_path: Path) -> None:
-        """When all posting attempts fail, execute() succeeds and handoff signals review_post_failed.
+        """When all posting attempts fail (twice), execute() fails and handoff signals review_post_failed.
 
         Verifies the full chain: _post_review() returns False -> review.post_failed=True ->
         _write_handoff() uses next_action='review_post_failed' with auto_execute=False on all actions.
@@ -7557,7 +7557,9 @@ class TestReviewerExceptionPaths:
         ):
             result = await role.execute(ctx)
 
-        assert result.success, "execute() must succeed even when posting fails"
+        assert not result.success, "silence on GitHub must not look like a completed review"
+        assert adapter.post_pr_review.call_count == 2, "the whole chain is attempted once more"
+        assert adapter.post_pr_comment.call_count == 2
 
         db_handoff = mock_db_handoff.call_args[0][1]
         assert db_handoff.next_action == "review_post_failed", (
@@ -7572,6 +7574,150 @@ class TestReviewerExceptionPaths:
         action_ids = [a.id for a in file_handoff.next_actions]
         assert "rerun_review" in action_ids
         assert "address_review" not in action_ids
+
+    async def test_execute_post_failure_keeps_revise_verdict_in_handoff(self, tmp_path: Path) -> None:
+        """A REVISE whose post failed still records the verdict and reviewed head for /integrate-pr."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("review API down"))
+        adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        ctx.task_run_id = 10
+
+        findings = [{"file": "a.py", "line": 2, "severity": 6, "category": "bug", "description": "Broken"}]
+        llm_result = LLMResult(
+            text=json.dumps({"findings": findings, "summary": "Found a bug"}), model="sonnet", cost_usd=Decimal("0")
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc1234"),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
+        ):
+            result = await ReviewerRole().execute(ctx)
+
+        assert not result.success
+        assert mock_db_handoff.call_args[0][1].metadata["verdict"] == "revise"
+        details = mock_file_handoff.call_args[0][1].details
+        assert details["verdict"] == "revise"
+        assert details["review_head_sha"] == "abc1234"
+        adapter.add_label.assert_not_called()
+
+    async def test_post_failure_handoff_file_survives_with_verdict(self, tmp_path: Path) -> None:
+        """The real handoff file (not a mock) still carries the revise verdict and head after a failed post."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, patch
+
+        from sova.ipc.handoff import read_handoff_file
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("review API down"))
+        adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        ctx.task_run_id = 10
+        findings = [{"file": "a.py", "line": 2, "severity": 6, "category": "bug", "description": "Broken"}]
+        llm_result = LLMResult(
+            text=json.dumps({"findings": findings, "summary": "Found a bug"}), model="sonnet", cost_usd=Decimal("0")
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc1234"),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+        ):
+            result = await ReviewerRole().execute(ctx)
+
+        assert not result.success
+        handoff = read_handoff_file(tmp_path, issue=ctx.issue_number)
+        assert handoff is not None
+        assert handoff.details["verdict"] == "revise"
+        assert handoff.details["review_head_sha"] == "abc1234"
+        assert [a.id for a in handoff.next_actions] == ["rerun_review"]
+
+    @pytest.mark.parametrize(
+        ("marker_at", "expect_calls"),
+        [
+            pytest.param("2999-01-01T00:00:00Z", 1, id="marker-landed-so-no-second-post"),
+            pytest.param("2000-01-01T00:00:00Z", 2, id="older-review-of-same-head-is-not-this-post"),
+        ],
+    )
+    async def test_retry_skipped_when_first_post_landed_server_side(
+        self, tmp_path: Path, marker_at: str, expect_calls: int
+    ) -> None:
+        """A post that failed client-side after GitHub stored it is not posted a second time."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.roles._review_comments import ReviewResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review = AsyncMock(side_effect=[RuntimeError("timeout"), None])
+        adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        history = [
+            {
+                "state": "COMMENTED",
+                "body": "<!-- sova-review: approve sha=abc1234 -->",
+                "submitted_at": marker_at,
+                "author": "sova-bot",
+            }
+        ]
+        review_data = MagicMock(review_history=history, review_history_truncated=False)
+
+        with (
+            patch("sova.git.pr.get_pr_review_data", new_callable=AsyncMock, return_value={55: review_data}),
+            patch("sova.utils.gh.get_active_gh_user", new_callable=AsyncMock, return_value="sova-bot"),
+        ):
+            ctx.config.github_user = "sova-bot"
+            posted = await ReviewerRole()._post_review(ctx, ReviewResult(findings=[], summary="ok"), "", sha="abc1234")
+
+        assert posted
+        assert adapter.post_pr_review.call_count == expect_calls
+
+    async def test_post_review_retry_success_ends_run_done(self, tmp_path: Path) -> None:
+        """A transient outage that clears on the second pass leaves the run successful, label write included."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review = AsyncMock(side_effect=[RuntimeError("blip"), None])
+        adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
+        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        llm_result = LLMResult(
+            text=json.dumps({"findings": [], "summary": "Looks OK"}), model="sonnet", cost_usd=Decimal("0")
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc1234"),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+        ):
+            result = await ReviewerRole().execute(ctx)
+
+        assert result.success
+        assert adapter.post_pr_review.call_count == 2
+        adapter.add_label.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

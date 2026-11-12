@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -122,6 +123,10 @@ log = get_logger(component="role.reviewer")
 # Terminal fallback when neither role config nor complexity routing resolves a
 # model (the reviewer is a standalone role, so ``ctx.complexity`` is usually None).
 _DEFAULT_REVIEW_MODEL = "sonnet"
+
+# Pause before the one retry of a review post that failed every method (see ReviewerRole._post_review). A module
+# constant rather than a setting: no operator needs to tune it, and tests patch it to zero.
+_POST_RETRY_DELAY_SECONDS = 5.0
 
 # Synthetic leading key ``_load_spec_sections`` inserts into its returned dict
 # when the spec is not current, carrying a caveat for both the review prompt
@@ -283,13 +288,23 @@ class ReviewerRole(AgentRole):
         await self._extract_review_memories(ctx, task, review)
 
         total_count = len(review.findings)
+        findings = [f.description for f in review.findings]
+        if review.post_failed:
+            # No sova-review marker reached GitHub, so nothing there tells the merge gates this PR was reviewed
+            # (or that it was told to revise). Reporting success would read as a completed review: fail the run
+            # and keep the verdict in the handoff for the local fallback in /integrate-pr.
+            log.error("reviewer.post_failed", issue=ctx.issue_number, pr=ctx.pr_number, findings=total_count)
+            error = (
+                f"Review of PR #{ctx.pr_number} could not be posted to GitHub after a retry; verdict kept in handoff"
+            )
+            return RoleResult(success=False, summary=error, error=error, findings=findings)
         log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
 
         return RoleResult(
             success=True,
             summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings",
             output_state=TaskState.IN_REVIEW,
-            findings=[f.description for f in review.findings],
+            findings=findings,
         )
 
     async def _resolve_task(self, ctx: ExecutionContext) -> Task | RoleResult:
@@ -489,6 +504,60 @@ class ReviewerRole(AgentRole):
             log.warning("reviewer.clear_step_failed", exc_info=True)
 
     async def _post_review(
+        self, ctx: ExecutionContext, review: ReviewResult, diff: str, *, sha: str | None = None
+    ) -> bool:
+        """Post the review, retrying the whole fallback chain once after ``_POST_RETRY_DELAY_SECONDS``.
+
+        A transient GitHub outage that fails every method on the first pass gets one more chance
+        without stalling the pipeline. Returns False only when both passes failed.
+        """
+        started_at = datetime.now(timezone.utc)
+        if await self._post_review_once(ctx, review, diff, sha=sha):
+            return True
+        log.warning("reviewer.post_retry", pr=ctx.pr_number, delay=_POST_RETRY_DELAY_SECONDS)
+        await asyncio.sleep(_POST_RETRY_DELAY_SECONDS)
+        # A post that landed server-side but failed client-side (a gh timeout after the write) must not
+        # be posted twice: that would duplicate the review, its inline comments and its marker.
+        if await self._marker_posted_since(ctx, sha, started_at):
+            log.info("reviewer.post_landed_before_retry", pr=ctx.pr_number)
+            return True
+        return await self._post_review_once(ctx, review, diff, sha=sha)
+
+    async def _marker_posted_since(self, ctx: ExecutionContext, sha: str | None, since: datetime) -> bool:
+        """True when GitHub already holds this run's ``sova-review`` marker for ``sha``, posted after ``since``.
+
+        Fail-open to False: an unreadable history means the retry goes ahead, as it would have anyway.
+        """
+        if not sha:
+            return False
+        try:
+            from sova.dashboard.services.work_verdict import parse_review_history
+            from sova.git.pr import get_pr_review_data
+            from sova.utils.gh import get_active_gh_user
+
+            data = (await get_pr_review_data([ctx.pr_number], repo=ctx.repo, github_user=ctx.config.github_user)).get(
+                ctx.pr_number
+            )
+            trusted_login = ctx.config.github_user or await get_active_gh_user() or ""
+            if data is None or not trusted_login:
+                return False
+            marker = parse_review_history(data.review_history, trusted_login=trusted_login)
+            reviewed_at = marker["reviewed_at"]
+            return bool(
+                marker["has_sova_review"]
+                and marker["verdict"] != "addressed"
+                and reviewed_at
+                and marker["review_head_sha"]
+                and (marker["review_head_sha"].startswith(sha) or sha.startswith(marker["review_head_sha"]))
+                # A short slack for clock skew between GitHub and this machine; an older review of the
+                # same head is not this run's post.
+                and datetime.fromisoformat(reviewed_at) >= since - timedelta(seconds=30)
+            )
+        except (RuntimeError, OSError, ValueError, KeyError):
+            log.warning("reviewer.marker_check_failed", pr=ctx.pr_number, exc_info=True)
+            return False
+
+    async def _post_review_once(
         self, ctx: ExecutionContext, review: ReviewResult, diff: str, *, sha: str | None = None
     ) -> bool:
         """Post review findings as inline PR review comments, with fallback.
@@ -1154,7 +1223,18 @@ class ReviewerRole(AgentRole):
             }
             for f in review.actionable
         ]
-        metadata = {"finding_summary": _build_finding_summary(review), "review_head_sha": review_head_sha}
+        # Derived from the full verdict_findings list rather than the revise_severity-filtered `blocking`:
+        # verdict_from_severities() applies that threshold itself, so the two never disagree.
+        verdict = _verdict_label(
+            review.verdict_findings,
+            revise_at=ctx.config.review.revise_severity,
+            block_at=ctx.config.review.block_severity,
+        ).lower()
+        metadata = {
+            "finding_summary": _build_finding_summary(review),
+            "review_head_sha": review_head_sha,
+            "verdict": verdict,
+        }
 
         build = _post_failed_handoffs if review.post_failed else _review_handoffs
         agent_handoff, dashboard_handoff = build(ctx, review, findings_data, metadata)
@@ -1169,6 +1249,14 @@ class ReviewerRole(AgentRole):
             write_handoff_file(ctx.project_dir, dashboard_handoff)
         except (OSError, ValueError):
             log.warning("reviewer.handoff_file_failed", exc_info=True)
+
+
+def _verdict_details(metadata: dict) -> dict:
+    """The verdict and the head it was reached on, for the handoff file's ``details``.
+
+    ``/integrate-pr`` reads these as its local fallback when GitHub carries no ``sova-review`` marker for the head.
+    """
+    return {"verdict": metadata["verdict"], "review_head_sha": metadata["review_head_sha"]}
 
 
 def _post_failed_handoffs(
@@ -1195,7 +1283,12 @@ def _post_failed_handoffs(
         pr_number=ctx.pr_number,
         branch=ctx.branch_name,
         summary=summary,
-        details={"next_action": next_action, "cost_usd": str(review.total_cost), "pending_findings": findings_data},
+        details={
+            "next_action": next_action,
+            "cost_usd": str(review.total_cost),
+            "pending_findings": findings_data,
+            **_verdict_details(metadata),
+        },
         next_actions=[_rerun_review_action(ctx, "Retry posting the review to GitHub")],
     )
     log.warning(
@@ -1214,16 +1307,6 @@ def _review_handoffs(
     blocking = review.blocking(ctx.config.review.revise_severity)
     next_action = _review_next_action(review, blocking)
 
-    # Derived from the full verdict_findings list rather than the already
-    # revise_severity-filtered `blocking`, since verdict_from_severities()
-    # applies that same threshold itself; filtering twice is redundant
-    # and the two never disagree (see _write_verdict_label above).
-    verdict = _verdict_label(
-        review.verdict_findings,
-        revise_at=ctx.config.review.revise_severity,
-        block_at=ctx.config.review.block_severity,
-    ).lower()
-
     agent_handoff = AgentHandoff(
         role="reviewer",
         phase="review",
@@ -1231,7 +1314,7 @@ def _review_handoffs(
         key_decisions=[],
         next_action=next_action,
         pending_findings=findings_data,
-        metadata={**metadata, "verdict": verdict},
+        metadata=metadata,
         pr_number=ctx.pr_number,
         branch_name=ctx.branch_name,
     )
@@ -1242,7 +1325,12 @@ def _review_handoffs(
         pr_number=ctx.pr_number,
         branch=ctx.branch_name,
         summary=f"{len(review.findings)} findings ({len(blocking)} blocking)",
-        details={"next_action": next_action, "cost_usd": str(review.total_cost), "pending_findings": findings_data},
+        details={
+            "next_action": next_action,
+            "cost_usd": str(review.total_cost),
+            "pending_findings": findings_data,
+            **_verdict_details(metadata),
+        },
         next_actions=[_review_next_handoff_action(ctx, review, next_action, blocking)],
     )
     return agent_handoff, dashboard_handoff
