@@ -1,7 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Costs - SOVA{% endblock %}
 {% block content %}
-<h2 class="text-2xl font-semibold mb-6">Cost Tracking</h2>
+<div class="flex items-center justify-between gap-3 flex-wrap mb-6">
+  <h2 class="text-2xl font-semibold">Cost Tracking</h2>
+  <div class="flex items-center gap-2 text-xs text-gray-400">
+    <span>Per-issue spending limit</span>
+    <span class="flex" data-setting-stepper="agent.max_issue_budget" data-label="Per-issue spending limit"
+          data-min="5" data-step="5" data-prefix="$"
+          data-tooltip="The most one issue may cost across all its runs. Runs started after a change use the new limit; a run already going keeps its own."></span>
+  </div>
+</div>
 
 <!-- Summary row -->
 <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
@@ -205,6 +213,8 @@ function renderCostTable(data, keyField) {
   </table>`;
 }
 
+// Header stepper for agent.max_issue_budget (settingStepper in app.js): steps of 5 USD, never below 5.
+mountSettingControls(document);
 loadCosts();
 </script>
 {% endblock %}
