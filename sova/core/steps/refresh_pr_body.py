@@ -10,13 +10,12 @@ from sova.core.steps._pr_body import (
     _closing_keyword_re,
     _jira_ticket_link,
     apply_sections,
-    build_prompt,
     compose_body,
+    generate_pr_body_text,
     process_llm_result,
     split_sections,
     split_title_tail,
     title_from_branch,
-    truncate_diff,
 )
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.pr import get_pr_body, update_pr_body
@@ -31,6 +30,11 @@ log = get_logger(component="step.refresh_pr_body")
 
 class RefreshPrBodyStep(BaseStep):
     name = "refresh_pr_body"
+
+    def __init__(self, *, closing_only: bool = False) -> None:
+        # True re-judges the acceptance criteria and rewrites only the "## Issue" section: a body a
+        # human has edited since create_pr keeps its Summary, Review guidance and Test plan as they are.
+        self.closing_only = closing_only
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.refresh_pr_body", pr=ctx.pr_number)
@@ -70,25 +74,31 @@ class RefreshPrBodyStep(BaseStep):
             )
 
         task_title, issue_body, resolved = await self._resolve_task(ctx)
+        if self.closing_only and ctx.has_issue and not resolved:
+            # No evidence to judge from: skip the LLM call, and leave create_pr's decision as it stands.
+            log.warning("step.refresh_pr_body.closing_only_unresolved", pr=ctx.pr_number)
+            return StepResult(
+                success=True, summary="PR body refresh skipped: issue body unavailable; closing decision left unchanged"
+            )
 
         diffs = await self._collect_diff(ctx)
         if diffs is None:
             return StepResult(success=True, summary="PR body refresh skipped: could not collect the branch diff")
-        commit_log, diff_stat, diff_content = diffs
+        commit_log, diff_stat, full_diff = diffs
 
-        prompt, criteria = build_prompt(
-            ctx,
-            task_title=task_title,
-            issue_body=issue_body,
-            commit_log=commit_log,
-            diff_stat=diff_stat,
-            diff_content=diff_content,
-            request_title=False,
-        )
-
-        model = ctx.resolved_model or ctx.config.agent.model
         try:
-            result = await invoke(prompt, model=model, task_type="pr_body", cwd=ctx.working_dir, timeout=120)
+            result, criteria = await generate_pr_body_text(
+                ctx,
+                invoke,
+                task_title=task_title,
+                issue_body=issue_body,
+                commit_log=commit_log,
+                diff_stat=diff_stat,
+                full_diff=full_diff,
+                diff_succeeded=True,
+                request_title=False,
+                verdict_only=self.closing_only,
+            )
         except Exception as exc:  # noqa: BLE001 (advisory step; a provider or guard failure must not abort the round)
             log.warning("step.refresh_pr_body.llm_failed", pr=ctx.pr_number, exc_info=True)
             return StepResult(success=True, summary=f"PR body refresh skipped (non-fatal): {exc}")
@@ -100,6 +110,8 @@ class RefreshPrBodyStep(BaseStep):
         # cannot leak into the regenerated body sections below.
         llm_text, _title_candidate = split_title_tail(result.text)
         sections = self._build_sections(ctx, llm_text, criteria, resolved=resolved)
+        if self.closing_only:
+            sections = {h: c for h, c in sections.items() if h == _ISSUE_SECTION_HEADING}
         if not sections:
             log.warning("step.refresh_pr_body.no_sections", pr=ctx.pr_number)
             return StepResult(success=True, summary="PR body refresh skipped: LLM output had no sections")
@@ -135,7 +147,7 @@ class RefreshPrBodyStep(BaseStep):
 
     @staticmethod
     async def _collect_diff(ctx: ExecutionContext) -> tuple[str, str, str] | None:
-        """Collect (commit_log, diff_stat, diff_content) for the refresh prompt.
+        """Collect (commit_log, diff_stat, full_diff) for the refresh prompt.
 
         Returns ``None`` when any of the three git calls failed. The caller
         then skips the whole refresh rather than ask the LLM to describe a
@@ -173,8 +185,7 @@ class RefreshPrBodyStep(BaseStep):
             return None
         commit_log = log_result.stdout.strip()
         diff_stat = diff_stat_result.stdout.strip()
-        diff_content = truncate_diff(diff_content_result.stdout.strip(), True)
-        return commit_log, diff_stat, diff_content
+        return commit_log, diff_stat, diff_content_result.stdout.strip()
 
     @staticmethod
     def _build_sections(ctx: ExecutionContext, llm_text: str, criteria: list[str], *, resolved: bool) -> dict[str, str]:

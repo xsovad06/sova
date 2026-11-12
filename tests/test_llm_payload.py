@@ -59,6 +59,7 @@ class TestTrimPayloadTail:
         assert events[0]["label"] == "ci_failure_logs"
         assert events[0]["original_chars"] == 300
         assert events[0]["kept_chars"] == 100
+        assert events[0]["limit"] == 100
 
     def test_no_log_when_untouched(self) -> None:
         with structlog.testing.capture_logs() as logs:

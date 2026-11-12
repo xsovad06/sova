@@ -45,5 +45,5 @@ def trim_payload(text: str, limit: int, *, label: str, keep: KeepDirection = "ta
         return text
 
     kept = body[len(body) - limit :] if keep == "tail" else body[:limit]
-    log.info("llm.payload.trimmed", label=label, keep=keep, original_chars=len(body), kept_chars=len(kept))
+    log.info("llm.payload.trimmed", label=label, keep=keep, original_chars=len(body), kept_chars=len(kept), limit=limit)
     return f"{marker}{kept}" if keep == "tail" else f"{kept}{marker}"

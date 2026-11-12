@@ -4,9 +4,12 @@ verdict parsing, owner-only overrides, and section-based body assembly.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
+import structlog
 
 from sova.config.models import CommitConfig, ProjectConfig
 from sova.core.context import ExecutionContext
@@ -18,14 +21,18 @@ from sova.core.steps._pr_body import (
     apply_sections,
     compose_body,
     extract_acceptance_criteria,
+    generate_pr_body_text,
     parse_verdicts,
     process_llm_result,
     render_closing_block,
     split_sections,
     split_title_tail,
     split_verdict_tail,
+    truncate_diff,
 )
 from sova.core.steps._pr_body import build_prompt as build_pr_body_prompt
+from sova.llm.errors import LLMInvocationError, LLMTimeoutError
+from sova.llm.models import LLMResult
 from sova.utils.gh import IssueLinks, parse_issue_links
 
 
@@ -743,3 +750,160 @@ class TestLineParsingIsWhitespaceTolerant:
         sections = split_sections("## Summary\n- a\n\n##\n\nTest plan\n- b\n")
         assert list(sections) == ["Summary"]
         assert "Test plan" in sections["Summary"]
+
+
+class TestTruncateDiff:
+    def test_diff_exactly_at_the_cap_is_untouched(self) -> None:
+        assert truncate_diff("x" * 100, True, 100) == "x" * 100
+
+    def test_longer_diff_is_cut_to_the_cap_and_marked(self) -> None:
+        trimmed = truncate_diff("x" * 101, True, 100)
+        assert trimmed.startswith("x" * 100)
+        assert "x" * 101 not in trimmed
+        assert "...(truncated)" in trimmed
+
+    def test_a_cut_logs_one_event_with_the_sizes_and_the_cap(self) -> None:
+        with structlog.testing.capture_logs() as logs:
+            truncate_diff("x" * 101, True, 100)
+        events = [e for e in logs if e["event"] == "llm.payload.trimmed"]
+        assert len(events) == 1
+        assert events[0]["label"] == "pr_body_diff"
+        assert (events[0]["original_chars"], events[0]["kept_chars"], events[0]["limit"]) == (101, 100, 100)
+
+    def test_a_diff_at_the_cap_logs_nothing(self) -> None:
+        with structlog.testing.capture_logs() as logs:
+            assert truncate_diff("x" * 100, True, 100) == "x" * 100
+        assert [e for e in logs if e["event"] == "llm.payload.trimmed"] == []
+
+    def test_empty_successful_diff_reports_no_changes(self) -> None:
+        assert truncate_diff("", True, 100) == "(no changes detected)"
+
+    def test_stat_only_input_still_builds_a_valid_prompt(self, tmp_path: Path) -> None:
+        prompt, _ = build_pr_body_prompt(
+            _ctx(tmp_path),
+            task_title="Rename",
+            issue_body="",
+            commit_log="abc rename",
+            diff_stat=" a.png => b.png | 0",
+            diff_content=truncate_diff("", True, 100),
+        )
+        assert "a.png => b.png" in prompt
+        assert "(no changes detected)" in prompt
+
+
+class TestVerdictOnlyPrompt:
+    def test_asks_for_the_verdict_block_and_no_body_sections(self, tmp_path: Path) -> None:
+        prompt, criteria = build_pr_body_prompt(
+            _ctx(tmp_path),
+            task_title="T",
+            issue_body="## Acceptance Criteria\n- Works\n",
+            commit_log="log",
+            diff_stat="stat",
+            diff_content="diff",
+            request_title=False,
+            verdict_only=True,
+        )
+        assert criteria == ["Works"]
+        assert VERDICT_MARKER in prompt
+        assert "- Works" in prompt
+        assert "## Review guidance" not in prompt
+        assert "## Test plan" not in prompt
+
+    def test_without_criteria_the_full_prompt_is_kept(self, tmp_path: Path) -> None:
+        prompt, criteria = build_pr_body_prompt(
+            _ctx(tmp_path),
+            task_title="T",
+            issue_body="no criteria here",
+            commit_log="log",
+            diff_stat="stat",
+            diff_content="diff",
+            request_title=False,
+            verdict_only=True,
+        )
+        assert criteria == []
+        assert "## Review guidance" in prompt
+
+
+class TestGeneratePrBodyText:
+    @staticmethod
+    def _call(tmp_path: Path, invoke: AsyncMock, *, full_diff: str = "x" * 1000, diff_succeeded: bool = True, **commit):
+        ctx = _ctx(tmp_path)
+        ctx.config.commit = CommitConfig(**commit)
+        return generate_pr_body_text(
+            ctx,
+            invoke,
+            task_title="Title",
+            issue_body="",
+            commit_log="log",
+            diff_stat="stat",
+            full_diff=full_diff,
+            diff_succeeded=diff_succeeded,
+            request_title=False,
+        )
+
+    @staticmethod
+    def _result() -> LLMResult:
+        return LLMResult(text="## Summary", model="m", cost_usd=Decimal(0))
+
+    async def test_uses_the_configured_timeout_and_diff_cap(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(return_value=self._result())
+        await self._call(tmp_path, invoke, pr_body_timeout=77, pr_body_diff_cap=200)
+
+        assert invoke.await_count == 1
+        assert invoke.call_args.kwargs["timeout"] == 77
+        assert invoke.call_args.kwargs["task_type"] == "pr_body"
+        assert "x" * 200 in invoke.call_args.args[0]
+        assert "x" * 201 not in invoke.call_args.args[0]
+
+    async def test_timeout_is_retried_once_with_half_the_diff_cap(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=[LLMTimeoutError("t"), self._result()])
+        await self._call(tmp_path, invoke, pr_body_diff_cap=200)
+
+        assert invoke.await_count == 2
+        retry_prompt = invoke.call_args.args[0]
+        assert "x" * 100 in retry_prompt
+        assert "x" * 101 not in retry_prompt
+
+    async def test_retry_keeps_the_timeout_and_sends_at_most_half_the_cap(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=[LLMTimeoutError("t"), self._result()])
+        await self._call(tmp_path, invoke, full_diff="x" * 5000, pr_body_timeout=77, pr_body_diff_cap=200)
+
+        first, second = invoke.call_args_list
+        assert first.kwargs["timeout"] == second.kwargs["timeout"] == 77
+        assert "x" * 200 in first.args[0]
+        assert "x" * 100 in second.args[0]
+        assert "x" * 101 not in second.args[0]
+
+    async def test_retry_of_a_small_diff_is_smaller_than_the_first_input(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=[LLMTimeoutError("t"), self._result()])
+        await self._call(tmp_path, invoke, full_diff="x" * 60, pr_body_diff_cap=8000)
+
+        first, second = invoke.call_args_list
+        assert "x" * 60 in first.args[0]
+        assert "x" * 30 in second.args[0]
+        assert "x" * 31 not in second.args[0]
+
+    async def test_timeout_on_an_empty_diff_is_not_retried_with_the_same_prompt(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=LLMTimeoutError("t"))
+        with pytest.raises(LLMTimeoutError):
+            await self._call(tmp_path, invoke, full_diff="")
+        assert invoke.await_count == 1
+
+    async def test_timeout_on_a_failed_diff_is_not_retried_with_a_garbled_placeholder(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=LLMTimeoutError("t"))
+        with pytest.raises(LLMTimeoutError):
+            await self._call(tmp_path, invoke, full_diff="(unavailable)", diff_succeeded=False)
+        assert invoke.await_count == 1
+        assert "(unavailable)" in invoke.call_args.args[0]
+
+    async def test_second_timeout_propagates_without_a_third_call(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=LLMTimeoutError("t"))
+        with pytest.raises(LLMTimeoutError):
+            await self._call(tmp_path, invoke)
+        assert invoke.await_count == 2
+
+    async def test_other_failures_are_not_retried(self, tmp_path: Path) -> None:
+        invoke = AsyncMock(side_effect=LLMInvocationError("boom"))
+        with pytest.raises(LLMInvocationError):
+            await self._call(tmp_path, invoke)
+        assert invoke.await_count == 1

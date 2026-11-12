@@ -17,12 +17,11 @@ from sova.core.steps._pr_body import (
     _UNAVAILABLE,
     _jira_ticket_link,
     apply_verdict_overrides,
-    build_prompt,
     compose_body,
     extract_acceptance_criteria,
+    generate_pr_body_text,
     process_llm_result,
     split_title_tail,
-    truncate_diff,
 )
 from sova.core.steps._pr_body import (
     title_from_branch as _title_from_branch,
@@ -569,21 +568,19 @@ class CreatePRStep(BaseStep):
         commit_log = log_result.stdout.strip() if log_result.success else _UNAVAILABLE
         diff_stat = diff_stat_result.stdout.strip() if diff_stat_result.success else _UNAVAILABLE
         full_diff = diff_content_result.stdout.strip() if diff_content_result.success else _UNAVAILABLE
-        diff_content = truncate_diff(full_diff, diff_content_result.success)
 
-        prompt, criteria = build_prompt(
-            ctx,
-            task_title=task_title,
-            issue_body=issue_body,
-            commit_log=commit_log,
-            diff_stat=diff_stat,
-            diff_content=diff_content,
-            request_title=request_title,
-        )
-
-        model = ctx.resolved_model or ctx.config.agent.model
         try:
-            result = await invoke(prompt, model=model, task_type="pr_body", cwd=ctx.working_dir, timeout=120)
+            result, criteria = await generate_pr_body_text(
+                ctx,
+                invoke,
+                task_title=task_title,
+                issue_body=issue_body,
+                commit_log=commit_log,
+                diff_stat=diff_stat,
+                full_diff=full_diff,
+                diff_succeeded=diff_content_result.success,
+                request_title=request_title,
+            )
         except Exception:  # noqa: BLE001 (guard_prompt raises PromptInjectionError; fall back to the structured body)
             log.warning("step.create_pr.body_generation_failed", fallback="structured", exc_info=True)
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat), fallback_title

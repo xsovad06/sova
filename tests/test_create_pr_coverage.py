@@ -11,7 +11,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
-from sova.core.steps._pr_body import _closing_keyword_re
+from sova.core.steps._pr_body import UNPARSEABLE_NOTE, _closing_keyword_re
 from sova.llm.models import LLMResult
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -476,6 +476,50 @@ class TestCreatePRStepAcceptanceCriteria:
 
         assert result.success
         assert "Closes #42" in mock_create_pr.call_args.kwargs["body"]
+
+    @pytest.mark.parametrize(
+        ("second_call", "expected_marker", "expected_keyword"),
+        [
+            pytest.param(
+                LLMResult(
+                    text="## Summary\n- stuff\n\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] Works",
+                    model="s",
+                    cost_usd=Decimal(0),
+                ),
+                False,
+                "Closes #42",
+                id="retry-parses",
+            ),
+            pytest.param(
+                LLMResult(text="## Summary\n- stuff\n\nno verdicts", model="s", cost_usd=Decimal(0)),
+                True,
+                "Part of #42",
+                id="retry-unparseable-falls-back-conservatively",
+            ),
+        ],
+    )
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_timed_out_verdict_call_is_retried_once(
+        self, mock_create_pr, mock_run, mock_invoke, _find, second_call, expected_marker, expected_keyword, tmp_path
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.errors import LLMTimeoutError
+
+        self._wire(mock_run, mock_invoke, mock_create_pr, "")
+        mock_invoke.side_effect = [LLMTimeoutError("timed out"), second_call]
+
+        ctx = self._ctx(tmp_path, issue_body="## Acceptance Criteria\n- Works\n")
+        result = await CreatePRStep().execute(ctx)
+
+        assert result.success
+        assert mock_invoke.await_count == 2
+        assert mock_invoke.call_args_list[0].kwargs["timeout"] == ctx.config.commit.pr_body_timeout == 300
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert expected_keyword in body_arg
+        assert (UNPARSEABLE_NOTE in body_arg) is expected_marker
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
@@ -1195,7 +1239,7 @@ class TestCreatePRStepDiffTruncation:
     async def test_large_diff_content_is_truncated(
         self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
     ) -> None:
-        """When diff content exceeds 8000 chars, should truncate with message."""
+        """When diff content exceeds the pr_body_diff_cap (8000 chars), it is trimmed with a marker."""
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -1216,8 +1260,9 @@ class TestCreatePRStepDiffTruncation:
         assert result.success
         # Verify LLM prompt contains truncated diff
         prompt_arg = mock_invoke.call_args.args[0]
-        assert "(diff truncated" in prompt_arg
-        assert "showing first 8000 chars)" in prompt_arg
+        assert "...(truncated)" in prompt_arg
+        assert "+" + "x" * 7999 in prompt_arg
+        assert "x" * 8000 not in prompt_arg
 
 
 class TestCreatePRStepFallbackBodyFailsTowardPartOf:
