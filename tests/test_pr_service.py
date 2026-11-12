@@ -434,10 +434,21 @@ class TestParseLinkedIssue:
                 42,
                 id="part-of-in-issue-section-preferred-over-epic-mention-in-summary",
             ),
+            pytest.param(
+                "## Issue\n\nPart of #1354\n\n## Test plan\n- `closes #12`", 1354, id="code-span-keyword-is-not-read"
+            ),
+            pytest.param("Tested with `Closes #12`\n```\nFixes #13\n```", None, id="masked-keywords-name-nothing"),
+            pytest.param(
+                "## Summary\n- Closes #42\n\n## Issue\n\nPart of #1354", 1354, id="section-outranks-body-keyword"
+            ),
+            pytest.param("Part of #5\nJIRA: https://issues.redhat.com/browse/RHCLOUD-9", 9, id="jira-above-part-of"),
         ],
     )
     def test_parse_linked_issue(self, body: str | None, expected: int | None) -> None:
         assert parse_linked_issue(body) == expected
+
+    def test_branch_breaks_a_tie_between_closing_keywords(self) -> None:
+        assert parse_linked_issue("Closes #12\nCloses #1354", "feat/issue-1354") == 1354
 
 
 def _linked_raw(body: str, title: str, branch: str) -> dict:
@@ -1456,9 +1467,7 @@ class TestPrimaryClosingReference:
                 1354,
                 id="section-issue-not-listed-by-github-is-not-a-candidate",
             ),
-            pytest.param(
-                "", "feat/issue-999", (12, 1354), 12, id="branch-issue-not-listed-by-github-is-not-a-candidate"
-            ),
+            pytest.param("", "feat/issue-999", (12, 1354), 999, id="branch-issue-outranks-references-it-is-not-among"),
             pytest.param(
                 "## Issue\n\n[PROJ-7](https://jira.example.com/browse/PROJ-7)",
                 "feat/issue-1354",
@@ -1467,7 +1476,28 @@ class TestPrimaryClosingReference:
                 id="jira-only-section-names-no-issue",
             ),
             pytest.param("## Issue\n\nsee `Closes #1354`", "", (12, 1354), 12, id="code-span-in-section-is-not-read"),
-            pytest.param("## Issue\n\nCloses #1354", "feat/issue-1354", (12,), 12, id="single-reference-is-unchanged"),
+            pytest.param(
+                "## Issue\n\nCloses #1354", "feat/issue-1354", (12,), 1354, id="single-foreign-reference-is-overridden"
+            ),
+            pytest.param("## Issue\n\nCloses #12", "feat/issue-12", (12,), 12, id="single-reference-matching-branch"),
+            pytest.param("## Issue\n\nCloses #12", "", (12,), 12, id="single-reference-without-branch-is-kept"),
+            pytest.param(
+                "## Issue\n\nCloses #12", "feat/issue-5", (12,), 12, id="stacked-pr-section-names-the-listed-reference"
+            ),
+            pytest.param(
+                "## Issue\n\nPart of #1213\n\n## Test plan\n- Closes #42",
+                "feat/issue-1213",
+                (42,),
+                1213,
+                id="pr-1325-shape-part-of-section-and-stray-reference",
+            ),
+            pytest.param(
+                "## Issue\n\nCloses #1354\n\n## Test plan\n- `closes #12`",
+                "feat/issue-1354",
+                (12,),
+                1354,
+                id="run-3003-shape-closing-keyword-in-code-span-is-not-read",
+            ),
             pytest.param(
                 "## issue\n\nCloses #1354", "", (12, 1354), 12, id="lowercase-issue-heading-is-not-the-section"
             ),
@@ -1497,6 +1527,76 @@ class TestPrimaryClosingReference:
         assert mock_log.warning.call_args.kwargs["chosen"] == 1354
         assert mock_log.warning.call_args.kwargs["first_listed"] == 12
         assert mock_log.warning.call_args.kwargs["signal"] == "section"
+
+    def test_single_override_logs_one_warning_and_drops_the_foreign_reference(self) -> None:
+        raw = self._raw(body="## Issue\n\nPart of #1213", branch="feat/issue-1213", numbers=(42,))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_all_linked_issues(raw) == [1213]
+            assert _extract_all_linked_issues(raw) == [1213]
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "pr_service.closing_reference_overridden"
+        assert mock_log.warning.call_args.kwargs["first_listed"] == 42
+        assert mock_log.warning.call_args.kwargs["chosen"] == 1213
+
+    def test_overridden_single_reference_adds_no_work_item_row(self) -> None:
+        """The #1325 shape yields no issue 42 for work items or open-PR issue collection."""
+        from sova.dashboard.services.work_item_service import _open_pr_issues
+
+        raw = self._raw(body="## Issue\n\nPart of #1213", branch="feat/issue-1213", numbers=(42,))
+        linked = _extract_all_linked_issues(raw)
+        pr = {"linked_issue": _extract_linked_issue(raw), "linked_issues": linked}
+        assert _open_pr_issues([pr]) == {1213}
+
+    def test_multi_reference_override_of_every_reference_drops_them(self) -> None:
+        from sova.dashboard.services.work_item_service import _open_pr_issues
+
+        raw = self._raw(body="## Issue\n\nPart of #1213", branch="feat/issue-1213", numbers=(42, 43))
+        linked = _extract_all_linked_issues(raw)
+        assert linked == [1213]
+        pr = {"linked_issue": _extract_linked_issue(raw), "linked_issues": linked}
+        assert _open_pr_issues([pr]) == {1213}
+
+    def test_multi_reference_keeps_the_others_when_the_primary_is_listed(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #1354", branch="feat/issue-1354", numbers=(42, 1354))
+        assert _extract_all_linked_issues(raw) == [1354, 42]
+
+    def test_changed_decision_on_same_head_is_logged_again(self) -> None:
+        stacked = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12,))
+        edited = self._raw(body="## Issue\n\nPart of #5", branch="feat/issue-5", numbers=(12,))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            _extract_all_linked_issues(stacked)
+            _extract_all_linked_issues(edited)
+        mock_log.info.assert_called_once()
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "pr_service.closing_reference_overridden"
+
+    def test_single_stacked_reference_logs_a_branch_mismatch_at_info(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12,))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_all_linked_issues(raw) == [12]
+            assert _extract_all_linked_issues(raw) == [12]
+        mock_log.warning.assert_not_called()
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args.args[0] == "pr_service.closing_reference_branch_mismatch"
+        assert mock_log.info.call_args.kwargs["chosen"] == 12
+        assert mock_log.info.call_args.kwargs["branch_issue"] == 5
+
+    def test_multi_reference_stacked_pr_logs_at_info_not_warning(self) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #12", branch="feat/issue-5", numbers=(12, 1354))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_linked_issue(raw) == 12
+        mock_log.warning.assert_not_called()
+        mock_log.info.assert_called_once()
+        assert mock_log.info.call_args.args[0] == "pr_service.multiple_closing_references"
+        assert mock_log.info.call_args.kwargs["branch_issue"] == 5
+
+    @pytest.mark.parametrize("branch", ["feat/issue-12", ""])
+    def test_single_reference_without_disagreement_logs_nothing(self, branch: str) -> None:
+        raw = self._raw(body="## Issue\n\nCloses #12", branch=branch, numbers=(12,))
+        with patch("sova.dashboard.services.pr_service.log") as mock_log:
+            assert _extract_all_linked_issues(raw) == [12]
+        mock_log.warning.assert_not_called()
+        mock_log.info.assert_not_called()
 
     def test_untied_choice_is_logged(self) -> None:
         raw = self._raw()

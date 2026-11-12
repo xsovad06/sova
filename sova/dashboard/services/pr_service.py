@@ -17,10 +17,9 @@ from sova.dashboard.services.work_state import state_color, state_label
 from sova.dashboard.services.work_verdict import parse_review_history
 from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state
 from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
-from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
-from sova.utils.gh import get_active_gh_user, parse_issue_links
+from sova.utils.gh import TITLE_ISSUE_RE as _TITLE_ISSUE_RE
+from sova.utils.gh import choose_pr_issue, get_active_gh_user, parse_issue_links
 from sova.utils.logging import get_logger
-from sova.utils.markdown import extract_section
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -29,21 +28,8 @@ if TYPE_CHECKING:
 
 log = get_logger(component="dashboard.pr_service")
 
-# "part of" is SOVA's own deterministic marker for a PR that only partially
-# satisfies an issue's acceptance criteria (sova/core/steps/_pr_body.py);
-# it still links the PR to the issue, just without auto-closing it. Ranked
-# below the GitHub closing keywords, not folded into one alternation with
-# them: this repo also uses "Part of #N" for epic linkage (a sub-issue's PR
-# body can legitimately mention its epic that way before its own "Closes
-# #N"), and re.search would otherwise return the epic's number first. A
-# "Part of" search is also scoped to the code-controlled "## Issue" section
-# first (see parse_linked_issue()): that section is where _pr_body.py always
-# renders the PR's own closing decision, so a "Part of #<epic>" mention an
-# LLM wrote earlier in "## Summary" can never win a bare whole-body search.
-_PART_OF_RE = re.compile(r"part of\s+#(\d+)", re.IGNORECASE)
 _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
-_TITLE_ISSUE_RE = re.compile(r"[(\[]#(\d+)[)\]]")
 _TITLE_JIRA_KEY_RE = re.compile(r"\[[A-Z]+-(\d+)\]")
 _BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
 
@@ -62,7 +48,7 @@ _pr_fetch_failed_until: dict[tuple[str, str], float] = {}
 # Multi-reference resolutions already logged, keyed by (PR number, head SHA, issues). The resolver runs on
 # every cache refresh, so without this a PR that stays open would repeat the same line every TTL.
 # Cache invalidation does not clear it (that would re-log other repos' PRs too): a new push changes the head SHA.
-_logged_closing_ties: set[tuple[int | None, str, tuple[int, ...]]] = set()
+_logged_closing_ties: set[tuple[int | None, str, tuple[int, ...], int, str]] = set()
 _LOGGED_CLOSING_TIES_MAX = 1000
 
 _last_known_states: dict[int, str] = {}
@@ -106,36 +92,28 @@ class ComputedPRState(StrEnum):
     AWAITING_REVIEW = "awaiting_review"
 
 
-def parse_linked_issue(body: str | None) -> int | None:
-    """Extract the first issue number from PR body.
+def parse_linked_issue(body: str | None, branch: str = "") -> int | None:
+    """Extract the issue number a PR body links to.
 
-    Supports GitHub syntax (Closes/Fixes/Resolves/Part of #N) and JIRA syntax
-    ([PROJ-42](https://...) or JIRA: https://.../browse/PROJ-42). A closing
-    keyword outranks both JIRA syntax and "Part of #N": the latter can name
-    an epic elsewhere in the body rather than this PR's own issue.
-
-    The "Part of" search itself is scoped to the ``## Issue`` section first,
-    falling back to the whole body only when that section is absent (a
-    pre-migration body) or carries no match: ``_pr_body.py`` always renders
-    this PR's own closing decision there, while an epic mention written by
-    the LLM into ``## Summary`` comes earlier in the document and would
-    otherwise win a plain ``re.search`` over the PR's own issue.
+    GitHub syntax (Closes/Fixes/Resolves/Part of #N) is resolved by
+    :func:`sova.utils.gh.choose_pr_issue` with the PR's *branch*, the same rules the run's
+    recorded issue uses, so code spans and fenced blocks never name an issue and the
+    ``## Issue`` section is read before the rest of the body. JIRA syntax
+    ([PROJ-42](https://...) or JIRA: https://.../browse/PROJ-42) ranks below a GitHub closing
+    keyword and above a body whose only GitHub link is "Part of #N", which can name an epic.
     """
     if not body:
         return None
-    m = _CLOSING_KEYWORD_RE.search(body)
-    if m:
-        return int(m.group(1))
+    primary = choose_pr_issue(body, branch).primary
+    if primary is not None and parse_issue_links(body).closes:
+        return int(primary)
     m = _JIRA_MARKDOWN_RE.search(body)
     if m:
         return int(m.group(1).split("-")[-1])
     m = _JIRA_PLAIN_RE.search(body)
     if m:
         return int(m.group(1))
-    m = _PART_OF_RE.search(extract_section(body, "Issue")) or _PART_OF_RE.search(body)
-    if m:
-        return int(m.group(1))
-    return None
+    return int(primary) if primary is not None else None
 
 
 def _title_or_branch_linked_issue(raw: dict) -> int | None:
@@ -169,64 +147,62 @@ def _closing_references(raw: dict) -> list[int]:
     return [r["number"] for r in raw.get("closingIssuesReferences") or [] if r.get("number") is not None]
 
 
-def _primary_closing_reference(refs: list[int], raw: dict) -> int:
-    """Pick the PR's own issue out of several closingIssuesReferences entries.
+def _primary_closing_reference(refs: list[int], raw: dict) -> list[int]:
+    """Pick the PR's own issue out of the closingIssuesReferences entries.
 
-    GitHub lists every issue a body closes in the order it chooses, so ``refs[0]``
-    can be an issue the body only mentions in passing (a quoted ``Closes #12`` in
-    a review note closed #12 once). The tie is broken by the issue the ``## Issue``
-    section names (the branch's issue first when the section names several), then
-    the one the branch name carries; only a listed issue can win, so an issue
-    GitHub does not link is never invented. With neither signal the first entry
-    stays primary, as before. One ``multiple_closing_references`` event records
-    every multi-reference resolution (once per PR, head SHA and reference set),
-    at warning when the signals disagree with each other or with ``refs[0]``.
+    Returns the chosen issue first, then the other candidates :func:`sova.utils.gh.choose_pr_issue`
+    keeps (none when the choice overrode every listed reference).
+
+    GitHub lists every issue a body closes in the order it chooses, so ``refs[0]`` can be an
+    issue the body only mentions in passing (a quoted ``Closes #12`` in a review note closed #12
+    once), and even a single entry can be that stray one. :func:`sova.utils.gh.choose_pr_issue`
+    picks: the ``## Issue`` section and the branch's ``issue-N`` outrank GitHub's order, and a
+    branch issue GitHub does not list can win over the listed ones. With neither signal the first
+    entry stays primary. A multi-reference resolution is recorded once per PR, head SHA and
+    reference set as ``multiple_closing_references`` (warning when the choice overrides ``refs[0]``).
+    A single reference is recorded as ``closing_reference_overridden`` (warning) when overridden, or
+    as ``closing_reference_branch_mismatch`` (info) when the section kept it against a different
+    branch issue (a stacked PR); any other single reference logs nothing.
     """
-    section = parse_issue_links(extract_section(raw.get("body") or "", "Issue"))
-    section_issues = {int(n) for n in (*section.closes, *section.part_of)}
+    choice = choose_pr_issue(raw.get("body") or "", raw.get("headRefName") or "", refs)
+    chosen = int(choice.candidates[0])
     branch_match = _BRANCH_ISSUE_RE.search(raw.get("headRefName") or "")
     branch_issue = int(branch_match.group(1)) if branch_match else None
-    from_branch = branch_issue if branch_issue in refs else None
-    section_matches = [n for n in refs if n in section_issues]
-    if from_branch in section_matches:
-        from_section = from_branch
-    else:
-        from_section = section_matches[0] if section_matches else None
+    overridden = choice.signal != "none" and chosen != refs[0]
+    branch_mismatch = branch_issue is not None and branch_issue != chosen
+    disagreement = overridden or branch_mismatch
 
-    chosen = from_section if from_section is not None else from_branch
-    if chosen is None:
-        chosen = refs[0]
-        signal = "none"
-    else:
-        signal = "section" if from_section is not None else "branch"
-    disagreement = signal != "none" and (chosen != refs[0] or (from_branch is not None and from_branch != chosen))
-
-    key = (raw.get("number"), raw.get("headRefOid") or "", tuple(refs))
-    if key not in _logged_closing_ties:
-        if len(_logged_closing_ties) >= _LOGGED_CLOSING_TIES_MAX:
-            _logged_closing_ties.clear()
-        _logged_closing_ties.add(key)
-        emit = log.warning if disagreement else log.info
-        emit(
-            "pr_service.multiple_closing_references",
-            pr=raw.get("number"),
-            issues=refs,
-            first_listed=refs[0],
-            chosen=chosen,
-            signal=signal,
-            section_issue=from_section,
-            branch_issue=from_branch,
-            disagreement=disagreement,
-        )
-    return chosen
+    if len(refs) > 1 or disagreement:
+        key = (raw.get("number"), raw.get("headRefOid") or "", tuple(refs), chosen, choice.signal)
+        if key not in _logged_closing_ties:
+            if len(_logged_closing_ties) >= _LOGGED_CLOSING_TIES_MAX:
+                _logged_closing_ties.clear()
+            _logged_closing_ties.add(key)
+            emit = log.warning if overridden else log.info
+            if len(refs) > 1:
+                event = "multiple_closing_references"
+            else:
+                event = "closing_reference_overridden" if overridden else "closing_reference_branch_mismatch"
+            emit(
+                f"pr_service.{event}",
+                pr=raw.get("number"),
+                issues=refs,
+                first_listed=refs[0],
+                chosen=chosen,
+                signal=choice.signal,
+                section_issue=chosen if choice.signal == "section" else None,
+                branch_issue=branch_issue,
+                disagreement=disagreement,
+            )
+    return [int(n) for n in choice.candidates]
 
 
 def _extract_linked_issue(raw: dict) -> int | None:
     """Extract linked issue from closingIssuesReferences, PR body, title, or branch.
 
-    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs; with several
-    entries the ``## Issue`` section then the branch name pick the primary, see
-    :func:`_primary_closing_reference`)
+    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs; the ``## Issue``
+    section and the branch name decide which entry is primary, and a branch issue can
+    outrank a lone foreign entry, see :func:`_primary_closing_reference`)
     > body keywords (Closes/Fixes/Resolves/Part of #N, JIRA links)
     > title (#N or [PROJ-N]) > branch (issue-N or PROJ-N).
     """
@@ -238,15 +214,16 @@ def _extract_all_linked_issues(raw: dict) -> list[int]:
     """Return all issue numbers linked to a PR from closingIssuesReferences, body,
     or (with the same fallback chain as :func:`_extract_linked_issue`) title/branch.
 
-    The primary issue, the one :func:`_extract_linked_issue` returns, comes first.
+    The primary issue, the one :func:`_extract_linked_issue` returns, comes first; the other
+    closingIssuesReferences entries follow as secondary entries. The exception is a primary that
+    is not among those entries (the branch or the ``## Issue`` section overrode every stray closing
+    phrase GitHub listed): it is returned alone, because work items and open-PR issue collection
+    read this list and would otherwise give each stray issue a duplicate row.
     """
     refs = _closing_references(raw)
-    if len(refs) > 1:
-        primary = _primary_closing_reference(refs, raw)
-        return [primary, *(n for n in refs if n != primary)]
     if refs:
-        return refs
-    single = parse_linked_issue(raw.get("body"))
+        return _primary_closing_reference(refs, raw)
+    single = parse_linked_issue(raw.get("body"), raw.get("headRefName") or "")
     if single is not None:
         return [single]
     fallback = _title_or_branch_linked_issue(raw)
