@@ -539,6 +539,13 @@ class CommitConfig(BaseSettings):
         ]
     )
 
+    # Time budget of one PR-body LLM call (the acceptance-criteria verdicts ride on it). A timed-out first
+    # call is retried once with half the diff it first sent (at most half of pr_body_diff_cap). 120s used to cut
+    # off a real diff at ~114s and left the PR on "Part of #N" with an unparseable-verdict note.
+    pr_body_timeout: int = Field(300, gt=0)
+    # Largest diff (characters) the PR-body prompt carries; a longer one is cut to this size after the diff stat.
+    pr_body_diff_cap: int = Field(8000, gt=0)
+
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMMIT_")
 
     @field_validator("types", "scopes", mode="after")

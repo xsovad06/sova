@@ -933,6 +933,22 @@ _REGISTRY: list[SettingMeta] = [
         "commit",
         "list",
     ),
+    SettingMeta(
+        "commit.pr_body_timeout",
+        "PR body timeout (seconds)",
+        "Time budget of the LLM call that writes the PR description and its acceptance-criteria verdicts. "
+        "A call that times out is retried once with half the diff it first sent (at most half of the diff cap)",
+        "commit",
+        "number",
+    ),
+    SettingMeta(
+        "commit.pr_body_diff_cap",
+        "PR body diff cap (characters)",
+        "Largest diff the PR description prompt carries after the diff stat; a longer diff is cut to this size. "
+        "Lower it when the PR-body call times out on large diffs",
+        "commit",
+        "number",
+    ),
     # Triage
     SettingMeta(
         "triage.mode",
