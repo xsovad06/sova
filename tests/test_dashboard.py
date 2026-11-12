@@ -6716,7 +6716,7 @@ class TestLLMSettingsAPI:
         assert entry["status"] == "new"
 
     async def test_installation_diff_no_project(self, client: AsyncClient, monkeypatch) -> None:
-        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: None)
+        monkeypatch.setattr("sova.dashboard.routers.settings._settings_project_dir", lambda: None)
         resp = await client.get("/api/settings/installation/diff")
         assert resp.status_code == 400
         assert "No active project" in resp.json()["detail"]
