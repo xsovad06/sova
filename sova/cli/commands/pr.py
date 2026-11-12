@@ -1,9 +1,10 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, learn-from-pr."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, refresh-pr-body, learn-from-pr."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Optional
 
@@ -14,6 +15,16 @@ if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
 
 console = Console(stderr=True)
+
+# `sova refresh-pr-body` exit codes. 0 is a clean re-judge or nothing to do; the rest tell /integrate-pr
+# whether the merge may still go ahead (1 and 4: the body is unchanged, it stays "Part of") or must not (3).
+REFRESH_STILL_UNPARSEABLE = 1
+REFRESH_USAGE = 2
+REFRESH_HEAD_MOVED = 3
+REFRESH_INFRASTRUCTURE = 4
+
+_REFRESH_REF_PREFIX = "refs/sova/refresh-pr-body/"
+_HEAD_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
 
 
 def address_pr(
@@ -229,6 +240,155 @@ async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
         trusted_login=config.github_user or await get_active_gh_user() or "",
         handoffs=read_all_handoff_files(root),
     )
+
+
+def refresh_pr_body(
+    pr: Annotated[int, typer.Argument(help="PR number.")],
+    only_if_unparseable: Annotated[
+        bool,
+        typer.Option(
+            "--only-if-unparseable",
+            help="Do nothing unless the body carries the unparseable-verdicts note (no LLM call otherwise).",
+        ),
+    ] = False,
+    head: Annotated[
+        Optional[str],
+        typer.Option("--head", help="Judge only if the PR head is this commit (the SHA a merge gate checked)."),
+    ] = None,
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Re-judge a PR's acceptance criteria and rewrite only its "## Issue" closing section.
+
+    Exit codes: 0 re-judged (or nothing to re-judge); 1 the verdicts still could not be obtained, or the
+    PR links no issue, so it stays "Part of #N"; 2 usage error (non-GitHub project, malformed --head);
+    3 the PR head is no longer the --head commit, so the gated commit is not what would merge; 4 the
+    re-judge could not run (body unreadable, git fetch or worktree failed) and the body is unchanged.
+
+    A re-judge takes up to two LLM calls of commit.pr_body_timeout each: give the calling shell a budget
+    of at least 2 x that plus 60 seconds.
+    """
+    if head is not None:
+        head = head.strip().lower()
+        if not _HEAD_SHA_RE.fullmatch(head):
+            console.print("[red]--head must be a commit SHA of 7 to 40 hex characters.[/red]")
+            raise typer.Exit(code=REFRESH_USAGE)
+    asyncio.run(
+        _refresh_pr_body(pr=pr, only_if_unparseable=only_if_unparseable, expected_head=head, project_dir=project)
+    )
+
+
+async def _refresh_pr_body(
+    *, pr: int, only_if_unparseable: bool, expected_head: str | None, project_dir: Path | None
+) -> None:
+    import shutil
+    import tempfile
+    import uuid
+
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.core.context import ExecutionContext
+    from sova.core.steps._pr_body import UNPARSEABLE_NOTE
+    from sova.core.steps.refresh_pr_body import RefreshPrBodyStep
+    from sova.git.pr import get_pr_body
+    from sova.git.worktree import cleanup_worktree, get_primary_worktree_root
+    from sova.utils.gh import parse_issue_links
+    from sova.utils.markdown import extract_section
+    from sova.utils.shell import run
+
+    root = project_dir or await get_primary_worktree_root()
+    config = load_config(root)
+    if config.task_source.type != "github":
+        console.print("[red]refresh-pr-body judges GitHub acceptance criteria; a Jira PR has no closing keyword.[/red]")
+        raise typer.Exit(code=REFRESH_USAGE)
+
+    async def read_body() -> str:
+        try:
+            return await get_pr_body(pr, repo=config.github_repo, github_user=config.github_user)
+        except RuntimeError as exc:
+            console.print(f"[red]Could not read the body of PR #{pr}: {exc}[/red]")
+            raise typer.Exit(code=REFRESH_INFRASTRUCTURE) from exc
+
+    body = await read_body()
+    if only_if_unparseable and UNPARSEABLE_NOTE not in body:
+        typer.echo(f"PR #{pr} carries no unparseable-verdicts note: not re-judged.")
+        return
+    # The unparseable note is only ever rendered inside "## Issue", so that section names the issue that was
+    # judged. A closing keyword a human added elsewhere in the body must not redirect the re-judge to another issue.
+    section_links = parse_issue_links(extract_section(body, "Issue"))
+    links = parse_issue_links(body)
+    issues = [*section_links.closes, *section_links.part_of] or [*links.closes, *links.part_of]
+    if not issues:
+        console.print(f"[red]PR #{pr} links no issue: nothing to judge.[/red]")
+        raise typer.Exit(code=REFRESH_STILL_UNPARSEABLE)
+
+    # The step diffs HEAD against origin/<base>, so judge from a detached checkout of the PR head.
+    # The head goes to a private ref, not FETCH_HEAD: the primary checkout's FETCH_HEAD is shared
+    # with every other SOVA process fetching there, and a concurrent fetch would swap the commit judged.
+    # The ref is unique per invocation, so two concurrent runs for one PR neither clobber nor delete each other's.
+    await _drop_stale_refresh_refs(root, pr)
+    head_ref = f"{_REFRESH_REF_PREFIX}{pr}-{uuid.uuid4().hex[:8]}"
+    fetched = await run("git", "fetch", "origin", config.base_branch, f"+pull/{pr}/head:{head_ref}", cwd=root)
+    if not fetched.success:
+        console.print(f"[red]git fetch of PR #{pr} and {config.base_branch} failed: {fetched.stderr.strip()}[/red]")
+        raise typer.Exit(code=REFRESH_INFRASTRUCTURE)
+    if expected_head:
+        resolved = await run("git", "rev-parse", "--verify", f"{head_ref}^{{commit}}", cwd=root)
+        fetched_sha = resolved.stdout.strip()
+        if not resolved.success or not fetched_sha:
+            await run("git", "update-ref", "-d", head_ref, cwd=root)
+            console.print(f"[red]Could not read the fetched head of PR #{pr}: {resolved.stderr.strip()}[/red]")
+            raise typer.Exit(code=REFRESH_INFRASTRUCTURE)
+        if not fetched_sha.lower().startswith(expected_head):
+            await run("git", "update-ref", "-d", head_ref, cwd=root)
+            console.print(
+                f"[red]PR #{pr} head is {fetched_sha[:12]}, not the expected {expected_head}: not re-judged.[/red]"
+            )
+            raise typer.Exit(code=REFRESH_HEAD_MOVED)
+    with tempfile.TemporaryDirectory(prefix=f"sova-pr-{pr}-") as tmp:
+        worktree = Path(tmp) / "head"
+        added = await run("git", "worktree", "add", "--detach", str(worktree), head_ref, cwd=root)
+        if not added.success:
+            await run("git", "update-ref", "-d", head_ref, cwd=root)
+            console.print(f"[red]Could not check out PR #{pr}: {added.stderr.strip()}[/red]")
+            raise typer.Exit(code=REFRESH_INFRASTRUCTURE)
+        try:
+            ctx = ExecutionContext(
+                project_dir=root,
+                config=config,
+                adapter=create_adapter(config),
+                issue_number=issues[0],
+                pr_number=pr,
+                worktree_dir=worktree,
+            )
+            result = await RefreshPrBodyStep(closing_only=True).execute(ctx)
+        finally:
+            await cleanup_worktree(worktree, cwd=root)
+            # TemporaryDirectory removes the directory next: drop any worktree metadata cleanup left behind.
+            shutil.rmtree(worktree, ignore_errors=True)
+            await run("git", "worktree", "prune", cwd=root)
+            await run("git", "update-ref", "-d", head_ref, cwd=root)
+
+    typer.echo(result.summary)
+    if UNPARSEABLE_NOTE in await read_body():
+        console.print(f"[red]PR #{pr} still has no per-criterion verdicts: it stays 'Part of #{issues[0]}'.[/red]")
+        raise typer.Exit(code=REFRESH_STILL_UNPARSEABLE)
+
+
+async def _drop_stale_refresh_refs(root: Path, pr: int) -> None:
+    """Delete private head refs and worktree registrations a killed earlier run of this command left behind.
+
+    The refs carry a unique suffix, so nothing else ever reuses or deletes one, and a run killed before
+    its ``finally`` (a shell tool timeout) leaks its ref and a worktree registration pointing into a
+    removed temp dir. Best effort: a failure here must not stop the re-judge. A detached worktree does not
+    need its ref once checked out, so dropping a concurrent run's ref after its checkout is harmless.
+    """
+    from sova.utils.shell import run
+
+    listed = await run("git", "for-each-ref", "--format=%(refname)", f"{_REFRESH_REF_PREFIX}{pr}-*", cwd=root)
+    if listed.success:
+        for ref in listed.stdout.split():
+            await run("git", "update-ref", "-d", ref, cwd=root)
+    await run("git", "worktree", "prune", cwd=root)
 
 
 async def _pr_state(pr: int, repo: str, env: dict[str, str] | None) -> str:

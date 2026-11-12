@@ -45,7 +45,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # the union with the names `gh pr checks --required` reports (classic protection).
     # Phase 1b (SOVA verdict gate) added 2,400: a COMMENT review is never a GitHub block, so the merge path
     # asks the shared resolver for a standing REVISE or BLOCK on the head (issue #1436).
-    "integrate-pr.md": 67_000,
+    # Issue #1428 raised this by 700 for the Phase 5 `sova refresh-pr-body --only-if-unparseable --head` re-judge
+    # of a body whose verdicts could not be parsed: the shell time budget (two LLM calls) and the exit codes.
+    "integrate-pr.md": 67_700,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     "pr.md": 36_000,

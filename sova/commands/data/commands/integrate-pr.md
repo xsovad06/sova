@@ -732,6 +732,8 @@ Act on the result:
 
 ### Phase 5: Merge
 
+Before merging, on a GitHub project, run `sova refresh-pr-body <PR_NUMBER> --only-if-unparseable`, adding `--head <sha>` only when Phase 2b printed `GATE_PASS <sha>` (omit the flag after `GATE_SKIPPED`, which records no sha, and never pass an empty or invented value): it re-judges a body whose verdicts could not be parsed (with `--head`, only if the head is still the gated commit), rewriting only its `## Issue` section. It can make two LLM calls of `commit.pr_body_timeout` each (`sova config get commit.pr_body_timeout`), so give the shell a timeout of at least 2 x that + 60 s (600000 ms, the Bash tool maximum, at the default 300 s). Exit 0 or 2: continue. Exit 1 or 4: the body is unchanged and stays `Part of #N`, so merge anyway. Exit 3: the head moved since the gate, so stop and re-run the gate instead of merging.
+
 Resolve the merge settings through the config loader (they are not in the `sova config` table):
 
 ```bash
@@ -965,7 +967,7 @@ Output a concise summary covering:
 - Silent-revert checks: the Phase 2b and Phase 6 results (pass, or skipped because no guard honouring an explicit range exists at the path checked), which replay Phase 2b used (rebase, merged, or rebase-fallback), and how Phase 6 classified the landing, including any wide-window note
 - CI status (passed, retried, or skipped because nothing was re-pushed)
 - Branches cleaned up (local + remote), and any worktree or branch kept and why
-- Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue
+- Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue; whether Phase 5 re-judged the closing decision
 - Documentation and knowledge: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
 - **Manual post-merge actions** (omit if none apply), derived from `gh pr diff <PR_NUMBER> --name-only`:
