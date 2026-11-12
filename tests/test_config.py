@@ -1926,6 +1926,12 @@ class TestCommitConfigTypeScopeValidation:
     (api-gateway, health_score) could never configure it.
     """
 
+    @pytest.mark.parametrize("field", ["pr_body_timeout", "pr_body_diff_cap"])
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_pr_body_limits_must_be_positive(self, field: str, value: int) -> None:
+        with pytest.raises(ValueError, match=field):
+            CommitConfig(**{field: value})
+
     def test_digit_bearing_type_is_accepted_and_round_trips(self) -> None:
         from sova.core.steps.commit_convention import is_valid_commit_line
 
