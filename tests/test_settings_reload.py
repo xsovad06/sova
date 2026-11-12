@@ -299,6 +299,14 @@ class TestRestartRequiredFlag:
         assert _key_requires_restart("llm.provider") is False
         assert _key_requires_restart("unknown.key") is False
 
+    def test_supervisor_enabled_applies_without_restart(self) -> None:
+        """Saving supervisor.enabled starts or stops the daemon at once (_reload_daemon_config), so the
+        save must not answer restart_required: the page switches would show a false warning (#1461)."""
+        from sova.dashboard.routers.settings import _key_requires_restart, _match_reload_target
+
+        assert _match_reload_target("supervisor.enabled") == "supervisor"
+        assert _key_requires_restart("supervisor.enabled") is False
+
 
 class TestConfigValueToStr:
     """JSON values from the settings form normalize to the service's string form."""
