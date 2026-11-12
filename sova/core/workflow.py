@@ -20,15 +20,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.context import ADDRESS_CYCLE_KEY, ExecutionContext, TokenUsage
 from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
+from sova.db.models import FAILURE_ANNOUNCED_KEY, CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
-from sova.ipc.notifications import notify
+from sova.ipc.notifications import NotificationKind, notify
 from sova.llm.client import start_call_counter
 from sova.llm.errors import is_billing_failure, is_configuration_failure
 from sova.llm.models import CostSource
@@ -264,7 +265,15 @@ class WorkflowEngine:
             result.final_status = TaskStatus.FAILED
             failure_type = "exception"
 
-        await self._record_failure(step.name, failure_type, result.error or "Unknown error")
+        # announced: the notify() below is this failure's push, and the dashboard's exit-time summary reads the
+        # marker to avoid a second one. Only a run that ends "failed" carries it (a gate failure ends "paused"),
+        # and any other path that writes "failed" leaves it unset and gets its push there.
+        await self._record_failure(
+            step.name,
+            failure_type,
+            result.error or "Unknown error",
+            announced=result.final_status == TaskStatus.FAILED,
+        )
         await self._update_task_run_status(result.final_status, error=result.error)
         await self._sync_task_run_context()
 
@@ -278,8 +287,10 @@ class WorkflowEngine:
             self._ctx.config.notification,
             "SOVA",
             f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
+            kind=NotificationKind.FAILED,
             subtitle=f"{role_label} failed {label}",
             group=self._ctx.notification_group,
+            **self._ctx.notification_item,
         )
 
         log.error(
@@ -401,8 +412,10 @@ class WorkflowEngine:
             self._ctx.config.notification,
             "SOVA",
             f"{project_name} | Step '{step.name}' awaiting approval",
+            kind=NotificationKind.NEEDS_HUMAN,
             subtitle=f"{role_label} paused {label}",
             group=self._ctx.notification_group,
+            **self._ctx.notification_item,
         )
 
         log.info("workflow.step.awaiting_approval", step=step.name)
@@ -423,8 +436,10 @@ class WorkflowEngine:
             self._ctx.config.notification,
             "SOVA",
             f"{project_name} | ${result.total_cost_usd}",
+            kind=NotificationKind.FINISHED,
             subtitle=f"{role_label} finished {label}",
             group=self._ctx.notification_group,
+            **self._ctx.notification_item,
         )
 
         log.info("workflow.done", label=label, cost=str(result.total_cost_usd))
@@ -925,7 +940,7 @@ class WorkflowEngine:
 
         max_issue_budget = self._ctx.config.agent.max_issue_budget
         async with await get_session(self._ctx.project_dir) as session:
-            from sqlalchemy import func, select
+            from sqlalchemy import func
 
             _TERMINAL = ("done", "failed", "rejected", "interrupted", "paused", "stopped")
             stmt = (
@@ -1000,6 +1015,12 @@ class WorkflowEngine:
             task_run.status = TaskStatus.RUNNING.value
             task_run.current_step = None
             task_run.resumed_from_id = self._ctx.resume_run_id
+            # The run is moving away from its prior terminal state: a failure announced then must not make the
+            # dashboard treat a later, unannounced failure of this same run as already pushed.
+            records = await session.scalars(select(FailureRecord).where(FailureRecord.task_run_id == task_run.id))
+            for record in records:
+                if isinstance(record.context, dict) and FAILURE_ANNOUNCED_KEY in record.context:
+                    record.context = {k: v for k, v in record.context.items() if k != FAILURE_ANNOUNCED_KEY}
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""
@@ -1263,8 +1284,13 @@ class WorkflowEngine:
                 record.gate_check_result = gate.reason
                 record.status = "gate_failed"
 
-    async def _record_failure(self, step_name: str, failure_type: str, message: str) -> None:
-        """Create a FailureRecord for dashboard observability."""
+    async def _record_failure(
+        self, step_name: str, failure_type: str, message: str, *, announced: bool = False
+    ) -> None:
+        """Create a FailureRecord for dashboard observability.
+
+        ``announced`` stores ``FAILURE_ANNOUNCED_KEY`` in the record's context: the engine sent the FAILED push.
+        """
         async with await get_session(self._ctx.project_dir) as session, session.begin():
             failure = FailureRecord(
                 task_run_id=self._task_run_id,
@@ -1276,6 +1302,7 @@ class WorkflowEngine:
                     "label": self._ctx.display_label,
                     "branch": self._ctx.branch_name,
                     "cost_usd": str(self._ctx.cost_usd),
+                    **({FAILURE_ANNOUNCED_KEY: True} if announced else {}),
                 },
             )
             session.add(failure)

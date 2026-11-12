@@ -109,14 +109,19 @@ def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str, *, head
     """
     try:
         from sova.config.loader import load_config
-        from sova.ipc.notifications import notify
+        from sova.ipc.notifications import NotificationKind, notify
 
         notify(
             load_config(agent.project_dir).notification,
             "SOVA",
             f"{agent.project_dir.name} | {reason}",
+            kind=NotificationKind.NEEDS_HUMAN,
             subtitle=f"{headline.capitalize()} {_issue_label(issue)}",
             group=f"sova-{issue}" if issue else "sova",
+            issue=issue or None,
+            pr_number=agent.pr_number,
+            run_id=agent.run_id,
+            project_dir=agent.project_dir,
         )
     except Exception:  # noqa: BLE001 (best-effort: config load and the OS notifier both fail in many ways)
         log.debug("notify.failed", run_id=agent.run_id, exc_info=True)

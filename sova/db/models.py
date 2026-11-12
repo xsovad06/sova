@@ -140,6 +140,10 @@ class StepExecution(Base):
     task_run: Mapped["TaskRun"] = relationship(back_populates="step_executions")
 
 
+# FailureRecord.context key set by the workflow engine when it sent the FAILED push for that failure itself.
+FAILURE_ANNOUNCED_KEY = "notified"
+
+
 class FailureRecord(Base):
     """Every failure with full context for observability."""
 

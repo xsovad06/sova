@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import ProjectConfig
@@ -624,6 +624,16 @@ class ExecutionContext:
     def notification_group(self) -> str:
         """Notification group key for macOS notification grouping."""
         return f"sova-{self.issue_number or self.run_label or 'run'}"
+
+    @property
+    def notification_item(self) -> dict[str, Any]:
+        """The ``notify()`` keywords that identify this run (webhook payload, ntfy link and token scope)."""
+        return {
+            "issue": self.issue_number or None,
+            "pr_number": self.pr_number,
+            "run_id": self.task_run_id,
+            "project_dir": self.project_dir,
+        }
 
     @property
     def repo(self) -> str:

@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import IntegrationConfig
+from sova.ipc.notifications import NotificationKind
 from sova.utils.logging import get_logger
 
 log = get_logger(component="merge_queue_monitor")
@@ -201,6 +202,8 @@ class MergeQueueMonitor:
         )
 
         self._notify(
+            pr_number=pr_number,
+            kind=NotificationKind.INFO,
             subtitle=f"PR #{pr_number} merged",
             message=f"{repo}: post-merge cleanup complete",
         )
@@ -225,6 +228,8 @@ class MergeQueueMonitor:
         )
 
         self._notify(
+            pr_number=pr_number,
+            kind=NotificationKind.INFO,
             subtitle=f"PR #{pr_number} ejected",
             message=f"{repo}: {state}",
         )
@@ -250,6 +255,8 @@ class MergeQueueMonitor:
         )
 
         self._notify(
+            pr_number=pr_number,
+            kind=NotificationKind.INFO,
             subtitle=f"PR #{pr_number} queue timeout",
             message=f"{repo}: exceeded {timeout}s",
         )
@@ -315,8 +322,8 @@ class MergeQueueMonitor:
             log.debug("merge_queue_monitor.merged_check_failed", pr=pr_number, exc_info=True)
             return False
 
-    def _notify(self, *, subtitle: str, message: str) -> None:
-        """Send desktop notification if configured."""
+    def _notify(self, *, pr_number: int, kind: NotificationKind, subtitle: str, message: str) -> None:
+        """Send a notification of *kind* (a ``NotificationKind``) on the configured channels."""
         if self.notification_config is None:
             return
         try:
@@ -326,8 +333,11 @@ class MergeQueueMonitor:
                 self.notification_config,
                 title="SOVA",
                 message=message,
+                kind=kind,
                 subtitle=subtitle,
                 group="sova-merge-queue",
+                pr_number=pr_number,
+                project_dir=self.project_dir,
             )
         except (RuntimeError, OSError):
             log.debug("merge_queue_monitor.notify_failed", exc_info=True)
