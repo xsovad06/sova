@@ -5,6 +5,7 @@ Separated from agent_lifecycle to isolate context/environment resolution logic.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -17,6 +18,7 @@ from sova.git.untracked_collisions import (
     set_aside_conflicting_specs,
 )
 from sova.git.worktree import ensure_worktree_usable, find_worktree_by_branch
+from sova.utils.gh import choose_pr_issue, github_title_or_branch_issue
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
 
@@ -378,13 +380,15 @@ async def _resolve_command_context(safe_args: dict, command: str, project_dir: P
 
 
 async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str:
-    """Extract a linked issue number from a PR body via gh CLI (best-effort).
+    """Resolve the issue a PR is for via gh CLI (best-effort).
 
-    Validates that the referenced number is actually an issue (not another PR)
-    by checking whether the GitHub Issues API returns a pull_request field.
+    The choice is made by :func:`sova.utils.gh.choose_pr_issue`, the same rules the dashboard
+    rows use, then by a GitHub-syntax title-or-branch fallback when the selector finds nothing, so
+    the run's recorded issue cannot disagree with them. Candidates are tried in
+    order and the first that is actually an issue (not another PR, checked against the GitHub
+    Issues API) is returned. When GitHub lists closing references only the primary is tried, and a
+    listed one is returned without the check. Any failure to fetch or parse the PR resolves to ``""``.
     """
-    import re
-
     try:
         pr_str = str(int(pr_number))
         result = await run_shell(
@@ -393,15 +397,34 @@ async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str
             "view",
             pr_str,
             "--json",
-            "body",
-            "--jq",
-            ".body",
+            "body,title,headRefName,closingIssuesReferences",
             cwd=project_dir,
             timeout=10,
         )
         if result.success and result.stdout:
-            for match in re.finditer(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", result.stdout, re.IGNORECASE):
-                candidate = match.group(1)
+            payload = json.loads(result.stdout)
+            if not isinstance(payload, dict):
+                return ""
+            refs = [
+                r["number"]
+                for r in payload.get("closingIssuesReferences") or []
+                if isinstance(r, dict) and r.get("number") is not None
+            ]
+            choice = choose_pr_issue(payload.get("body") or "", payload.get("headRefName") or "", refs)
+            candidates = choice.candidates
+            if refs and candidates:
+                # GitHub lists closing issues only (never PRs), so a listed primary needs no
+                # _is_issue() check, and a failed check must not fall back to another listed
+                # reference: the run would then disagree with the dashboard's primary.
+                if choice.primary in {str(n) for n in refs}:
+                    return candidates[0]
+                candidates = candidates[:1]
+            if not candidates:
+                # GitHub-syntax-only last resort (title "(#N)", then branch "issue-N"): a Jira key
+                # in the title or branch must never be read as a GitHub issue number.
+                fallback = github_title_or_branch_issue(payload.get("title") or "", payload.get("headRefName") or "")
+                candidates = (fallback,) if fallback is not None else ()
+            for candidate in candidates:
                 if await _is_issue(candidate, project_dir):
                     return candidate
                 log.debug("resolve_issue_from_pr.not_issue", pr=pr_number, ref=candidate)
