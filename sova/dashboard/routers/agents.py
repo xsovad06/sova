@@ -835,6 +835,24 @@ async def run_command(req: RunCommandRequest) -> dict:
     return result
 
 
+def _ws_slug_project_dir(websocket: WebSocket) -> Path | None:
+    """Return the project dir named by a ``/p/{slug}/api`` websocket path, or None when it names none.
+
+    An unknown or malformed slug returns None, so the caller falls back to the
+    default project exactly as an unprefixed socket does.
+    """
+    from sova.config.registry import get_project_path
+    from sova.dashboard.middleware import SAFE_SLUG_RE
+
+    slug = websocket.path_params.get("slug")
+    if not slug or not SAFE_SLUG_RE.match(slug):
+        return None
+    project_path = get_project_path(slug)
+    if project_path is None or not project_path.is_dir():
+        return None
+    return project_path
+
+
 @ws_router.websocket("/ws/agents/status")
 async def ws_agent_status(websocket: WebSocket) -> None:
     """Push real-time agent status updates over WebSocket.
@@ -863,11 +881,15 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     # Capture project_dir at connection time so the producer loop uses the
     # correct scope even in multi-project mode. The per-request contextvar is
     # set by ProjectContextMiddleware only for HTTP requests under /p/; it is
-    # never set for a websocket scope, so a single-project deployment falls
-    # back to the default project dir rather than registering under None while
-    # broadcasters key on the real path. The cwd is deliberately not a further
-    # fallback: it would key the connection under a path no broadcaster uses.
-    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    # never set for a websocket scope, so a /p/{slug}/api socket resolves its
+    # slug itself (otherwise it would subscribe to the default project's runs),
+    # and an unprefixed one falls back to the default project dir rather than
+    # registering under None while broadcasters key on the real path. The cwd
+    # is deliberately not a further fallback: it would key the connection under
+    # a path no broadcaster uses.
+    project_dir = _ws_slug_project_dir(websocket) or resolve_project_dir_or_none(
+        default_project_dir=get_default_project_dir()
+    )
     _ws_manager.connect(websocket, project_dir)
     try:
         # Keep connection alive: wait for client messages or disconnect.
