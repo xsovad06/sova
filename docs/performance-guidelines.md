@@ -28,6 +28,9 @@ All configurable timeouts cascade from SOVA config or env vars (`SOVA_` prefix).
 | External review poll | 30s | `external_reviews.poll_interval` | `sova/config/models.py` |
 | External review timeout | 15s | `external_reviews.timeout` | `sova/config/models.py` |
 | Agent graceful stop | 10s | hardcoded | `sova/ipc/control.py` |
+| MCP operator tools connect timeout | 3s | `CONNECT_TIMEOUT_S` | `sova/mcp/operator.py` |
+| MCP operator tools read timeout | 30s | `READ_TIMEOUT_S` | `sova/mcp/operator.py` |
+| MCP operator read tools overall deadline | 30s | `READ_TOOL_DEADLINE_S` | `sova/mcp/operator.py` |
 | Watch veto window | 30s | `watch.veto_seconds` | `sova/config/models.py` |
 
 ### Per-tier step timeouts
