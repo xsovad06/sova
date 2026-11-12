@@ -5,6 +5,11 @@
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Oversight</h2>
   <div class="flex items-center gap-3">
+    <span class="flex items-center gap-2">
+      <span class="flex" data-setting-switch="oversight.enabled" data-label="Oversight agent"
+            data-tooltip="Turn the oversight agent on or off. It starts or stops at once, without a restart."></span>
+      <span id="oversight-state-label" class="text-xs text-gray-400">Loading...</span>
+    </span>
     <a href="{{ prefix|default('') }}/settings#oversight"
        class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
     <button id="run-now-btn" onclick="triggerRunNow()"
@@ -13,11 +18,6 @@
       Run Now
     </button>
   </div>
-</div>
-
-<!-- Disabled Banner -->
-<div id="disabled-banner" class="hidden mb-4 px-4 py-3 rounded bg-accent-yellow/10 border border-accent-yellow/30 text-accent-yellow text-sm">
-  Oversight agent is disabled. <a href="{{ prefix|default('') }}/settings#oversight" class="underline hover:text-yellow-200">Enable it in Settings</a> to start monitoring.
 </div>
 
 <!-- Transient Messages -->
@@ -78,6 +78,14 @@ const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const POLL_MS = 15000;
 
+// The header switch (settingSwitch in app.js) saves oversight.enabled; the save starts or stops the agent itself.
+// "Starting..." is shown only this long after an enable save; an agent still not running after that is stopped.
+const STARTING_WINDOW_MS = 10000;
+let _enabledAt = 0;
+const _oversightControls = mountSettingControls(document, {
+  'oversight.enabled': { onSaved: (on) => { _enabledAt = on ? Date.now() : 0; loadStatus(); } },
+});
+
 function timeUntil(iso) {
   if (!iso) return 'N/A';
   const ms = new Date(iso).getTime() - Date.now();
@@ -106,18 +114,25 @@ function flash(msg, type) {
 // Status
 async function loadStatus() {
   try {
+    // A save that completes while this request is in flight makes its answer stale for the header switch.
+    const savesBefore = settingSaveCount();
     const res = await fetch(`${apiBase}/oversight/status`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = await res.json();
 
-    const banner = document.getElementById('disabled-banner');
     const btn = document.getElementById('run-now-btn');
+    const stateLabel = document.getElementById('oversight-state-label');
+    const enabledSwitch = _oversightControls['oversight.enabled'];
+    if (enabledSwitch && settingSaveCount() === savesBefore) enabledSwitch.sovaSetValue(!!d.enabled);
 
     if (!d.enabled) {
-      banner.classList.remove('hidden');
+      stateLabel.textContent = 'Off';
+      stateLabel.className = 'text-xs text-gray-400';
       btn.disabled = true;
     } else {
-      banner.classList.add('hidden');
+      const starting = !d.running && Date.now() - _enabledAt < STARTING_WINDOW_MS;
+      stateLabel.textContent = d.running ? 'Running' : (starting ? 'Starting...' : 'Not running');
+      stateLabel.className = d.running ? 'text-xs text-accent-green' : (starting ? 'text-xs text-accent-yellow' : 'text-xs text-accent-red');
       btn.disabled = !d.running;
     }
 

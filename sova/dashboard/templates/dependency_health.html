@@ -3,17 +3,32 @@
 {% block content %}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Dependency Health</h2>
-  <button type="button" onclick="refreshSnapshot()" id="refresh-btn"
-          class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
-    Rescan
-  </button>
+  <div class="flex items-center gap-3">
+    <span class="flex items-center gap-2">
+      <span class="flex" data-setting-switch="dependency_health.enabled" data-label="Dependency scanning"
+            data-tooltip="Scan this project's dependencies. Turning it on starts a scan."></span>
+      <span class="text-xs text-gray-400">Scanning</span>
+    </span>
+    <button type="button" onclick="refreshSnapshot()" id="refresh-btn"
+            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+      Rescan
+    </button>
+  </div>
 </div>
 
 <!-- Disabled state -->
 <div id="disabled-state" class="hidden mb-6">
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
-    <p class="text-gray-400 mb-1">Dependency health scanning is disabled.</p>
-    <p class="text-xs text-gray-600">Enable <code class="text-gray-400">dependency_health.enabled</code> in Settings to scan this project.</p>
+    <p class="text-gray-400 mb-1">Dependency health scanning is off.</p>
+    <p class="text-xs text-gray-500">Turn on Scanning above to scan this project.</p>
+  </div>
+</div>
+
+<!-- Scanning state -->
+<div id="loading-state" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
+    <p class="text-gray-400 mb-1">Scanning dependencies...</p>
+    <p class="text-xs text-gray-500">The results appear here when the scan finishes.</p>
   </div>
 </div>
 
@@ -75,9 +90,9 @@ function urgencyClass(urgency) {
   return 'bg-accent-green/20 text-accent-green';
 }
 
-// The three page states are mutually exclusive: show one, hide the rest.
+// The page states are mutually exclusive: show one, hide the rest.
 function showState(id) {
-  ['disabled-state', 'empty-state', 'content-section'].forEach(function(state) {
+  ['disabled-state', 'loading-state', 'empty-state', 'content-section'].forEach(function(state) {
     document.getElementById(state).classList.toggle('hidden', state !== id);
   });
 }
@@ -183,9 +198,22 @@ function renderSummary(snapshot) {
   }
 }
 
+// The header switch (settingSwitch in app.js) saves dependency_health.enabled, which every snapshot request reads:
+// switching it on starts a scan, switching it off shows the off state.
+var _scanControls = mountSettingControls(document, {
+  'dependency_health.enabled': {
+    onSaved: function(on) { if (on) refreshSnapshot(); else loadAll(); },
+  },
+});
+
 async function loadAll() {
   try {
+    // A save that completes while this request is in flight makes its answer stale for the header switch.
+    var savesBefore = settingSaveCount();
     var snapshot = await fetchAPI(apiUrl('/dependency-health/snapshot'));
+    var scanSwitch = _scanControls['dependency_health.enabled'];
+    if (scanSwitch && settingSaveCount() === savesBefore) scanSwitch.sovaSetValue(!!snapshot.enabled);
+    document.getElementById('refresh-btn').disabled = !snapshot.enabled || !!_scanInFlight;
     if (!snapshot.enabled) {
       showState('disabled-state');
       return;
@@ -206,19 +234,28 @@ async function loadAll() {
   }
 }
 
-async function refreshSnapshot() {
+// One scan at a time: the switch's onSaved and the Rescan button both start one, and the server has no lock.
+var _scanInFlight = null;
+
+function refreshSnapshot() {
+  if (_scanInFlight) return _scanInFlight;
   var btn = document.getElementById('refresh-btn');
   btn.disabled = true;
   btn.textContent = 'Scanning...';
-  try {
-    await fetchAPI(apiUrl('/dependency-health/refresh'), {method: 'POST'});
-    await loadAll();
-  } catch (err) {
-    console.error('Failed to refresh dependency health:', err);
-  } finally {
-    btn.disabled = false;
+  // The off panel must not keep claiming scanning is off while the scan the switch just started runs.
+  showState('loading-state');
+  _scanInFlight = (async function() {
+    try {
+      await fetchAPI(apiUrl('/dependency-health/refresh'), {method: 'POST'});
+    } catch (err) {
+      console.error('Failed to refresh dependency health:', err);
+      showToast('Scan failed: ' + (err && err.message ? err.message : err), 'error');
+    }
     btn.textContent = 'Rescan';
-  }
+    _scanInFlight = null;
+    await loadAll();  // disables Rescan again while scanning is off
+  })();
+  return _scanInFlight;
 }
 
 loadAll();
