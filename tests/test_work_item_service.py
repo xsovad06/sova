@@ -1727,7 +1727,8 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_running_agent_counted(self, _mock_sources) -> None:
-        mock_fetch, *_ = _mock_sources
+        mock_fetch, mock_pa, _ = _mock_sources
+        mock_pa.return_value = MagicMock(max_concurrent=3, agents={5: object()})
         queue = [{"issue": "42", "title": "Bug", "state": "in_progress", "labels": [], "priority": 1}]
         agents = {"agents": [{"issue": "42", "run_id": 5, "role": "developer", "elapsed_seconds": 60}], "completed": []}
         mock_fetch.return_value = (queue, [], [], agents)
@@ -1765,11 +1766,58 @@ class TestGetWorkItems:
         assert call_kwargs["slug"] == "my-project"
         mock_pa.assert_called_once_with("my-project")
 
+    @pytest.mark.asyncio
+    async def test_agents_running_counts_the_pool_like_the_limit_check(self, _mock_sources) -> None:
+        """agents_running is len(pool.agents): the number start_agent() checks against the limit and the
+        resource widget shows, so the Agents page's "N of M agents running" matches both (#1461)."""
+        mock_fetch, mock_pa, _ = _mock_sources
+        mock_pa.return_value = MagicMock(max_concurrent=4, agents={"run-1": object(), "run-2": object()})
+        mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert result["agents_running"] == 2
+        assert result["max_concurrent"] == 4
+
     @pytest.mark.asyncio()
-    async def test_no_project_agents_defaults_max_3(self, _mock_sources) -> None:
+    async def test_no_pool_reports_the_stored_limit_not_the_default(self, _mock_sources, monkeypatch) -> None:
+        """Before any agent starts there is no pool; the stepper seeds from max_concurrent, so it must be the stored
+        max_parallel_agents or one click on + would silently lower a limit of 6 to 4 (#1461)."""
         mock_fetch, mock_pa, _ = _mock_sources
         mock_pa.return_value = None
         mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _path: MagicMock(max_parallel_agents=6))
+
+        result = await get_work_items()
+
+        assert result["max_concurrent"] == 6
+        assert result["slots_available"] == 6
+
+    @pytest.mark.asyncio()
+    async def test_slots_available_follows_the_pool_count_shown_as_agents_running(self, _mock_sources) -> None:
+        """slots_available and agents_running agree: both use the pool's count, not the items in AGENT_RUNNING
+        (a CLI-spawned agent has no running item), so every view shows the same numbers (#1461)."""
+        mock_fetch, mock_pa, _ = _mock_sources
+        mock_pa.return_value = MagicMock(max_concurrent=4, agents={"run-1": object(), "run-2": object()})
+        mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
+
+        result = await get_work_items()
+
+        assert result["running_count"] == 0
+        assert result["agents_running"] == 2
+        assert result["slots_available"] == 2
+
+    @pytest.mark.asyncio()
+    async def test_no_project_agents_defaults_max_3(self, _mock_sources, monkeypatch) -> None:
+        """With no pool and no loadable config, the limit is 3."""
+        mock_fetch, mock_pa, _ = _mock_sources
+        mock_pa.return_value = None
+        mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
+
+        def _no_config(_path):
+            raise RuntimeError("no config")
+
+        monkeypatch.setattr("sova.config.loader.load_config", _no_config)
 
         result = await get_work_items()
 

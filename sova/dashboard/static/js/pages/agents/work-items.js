@@ -72,8 +72,33 @@ var _llmSuggestionFetching = new Set();
 // and not the other would filter, sort and suggest differently.
 var _PR_STAGE_STATES = new Set(_STATE_FILTER_GROUPS.pr_stage);
 
+var _agentLimitControl = null;
+
+// "N of [- M +] agents running": N is the pool's running count (what a start is checked against), and the stepper
+// saves max_parallel_agents. The stepper is built once and updated in place, so a poll never replaces it mid-save.
+// `limitIsStale`: a save completed while the poll was in flight, so its limit may predate the save and is not shown.
+function _renderAgentLimit(running, limit, limitIsStale) {
+  var count = document.getElementById('agent-limit-running');
+  if (count) count.textContent = running == null ? '--' : String(running);
+  if (_agentLimitControl && _agentLimitControl.sovaSetValue) {
+    if (!limitIsStale) _agentLimitControl.sovaSetValue(limit);
+    return;
+  }
+  var host = document.getElementById('agent-limit-control');
+  if (!host) return;
+  _agentLimitControl = settingStepper('max_parallel_agents', {
+    label: 'Agent limit',
+    value: limit,
+    min: 1,
+    step: 1,
+    tooltip: 'Agents allowed to run at once. The next start uses it; lowering it stops no running agent.',
+  });
+  host.appendChild(_agentLimitControl);
+}
+
 export async function loadWorkItems() {
   try {
+    var savesBefore = settingSaveCount();
     var res = await fetch(apiUrl('/agents/work-items'));
     if (!res.ok) return;
     var data = await res.json();
@@ -82,8 +107,7 @@ export async function loadWorkItems() {
     _jiraDisplayName = data.jira_display_name || '';
     _updateApiHealthBanner(data.api_health);
 
-    var slotsInfo = document.getElementById('slots-info');
-    slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots';
+    _renderAgentLimit(data.agents_running, data.max_concurrent, settingSaveCount() !== savesBefore);
 
     _runningAgents = {};
     _workItems.forEach(function(item) {

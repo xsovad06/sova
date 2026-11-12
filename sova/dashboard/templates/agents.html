@@ -60,7 +60,12 @@
         class="w-full bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 pl-8 focus:border-accent focus:outline-none">
       <svg class="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
     </div>
-    <span id="slots-info" class="text-xs text-gray-600 ml-auto"></span>
+    <div id="agent-limit" class="ml-auto flex items-center gap-2 text-xs text-gray-400">
+      <span id="agent-limit-running" class="text-sm font-semibold text-gray-200">--</span>
+      <span>of</span>
+      <span id="agent-limit-control"></span>
+      <span>agents running</span>
+    </div>
   </div>
   <!-- Task list -->
   <div id="task-grid" class="divide-y divide-gray-700/30">
