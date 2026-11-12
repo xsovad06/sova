@@ -254,7 +254,7 @@ class TestAgentsModulesRunUnderNode:
         result = json.loads(proc.stdout)
         assert result["failures"] == []
         assert result["bodyClick"] == 1, "actions.init() must attach exactly one delegated click listener"
-        assert len(result["polls"]) == 9
+        assert len(result["polls"]) == 8
 
 
 # Drives the log viewer through hide, show and reconnect with a fake EventSource, to prove that a line
@@ -321,6 +321,9 @@ const names = [...appSrc.matchAll(/^(?:async )?function (\w+)|^(?:var|let|const)
 for (const n of names) if (!(n in globalThis)) globalThis[n] = () => '';
 const start = appSrc.indexOf('function escapeHtml(');
 new Function(appSrc.slice(start, appSrc.indexOf('\n}\n', start) + 2) + '; globalThis.escapeHtml = escapeHtml;')();
+const renderStart = appSrc.indexOf('function renderIfChanged(');
+new Function(appSrc.slice(renderStart, appSrc.indexOf('\n}\n', renderStart) + 2)
+  + '; globalThis.renderIfChanged = renderIfChanged;')();
 globalThis.visibilityAwarePoll = () => ({ id: null });
 globalThis.createSovaStatusChannel = () => ({ stop() {} });
 globalThis.apiUrl = (p) => '/api' + p;
@@ -668,6 +671,55 @@ click('expand-tasks');
 click('expand-tasks');
 click('expand-suggested');
 out.allExpanded = shown();
+process.stdout.write(JSON.stringify(out));
+"""
+
+# The 30s work-items poll lands on an unchanged payload almost every time: the grid must not be rewritten then
+# (an open card menu survives), but every input that changes the markup, and the early-return views, must.
+_TASK_GRID_REWRITE_SCENARIO = r"""
+globalThis._priorityRankMap = () => ({ critical: 0, high: 1, medium: 2, low: 3 });
+const items = [
+  { issue_number: 1, title: 'T1', state: 'agent_running', issue_priority: 'medium', priority: 0, assignees: ['octocat'],
+    running_agent: { role: 'developer', run_id: 'r1', elapsed_seconds: 10 } },
+  { issue_number: 2, title: 'T2', state: 'triaged', issue_priority: 'low', priority: 0, assignees: [] },
+];
+let writes = 0;
+const grid = { html: '', get innerHTML() { return this.html; }, set innerHTML(v) { writes++; this.html = v; } };
+let onSearch = () => {};
+const search = { value: '', addEventListener(_, fn) { onSearch = fn; } };
+const baseGetElementById = doc.getElementById;
+doc.getElementById = (id) => (id === 'task-grid' ? grid : id === 'task-search' ? search : baseGetElementById(id));
+const clickHandlers = [];
+doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
+globalThis.fetch = () => Promise.resolve({
+  ok: true,
+  json: () => Promise.resolve({ items: JSON.parse(JSON.stringify(items)), slots_available: 1, max_concurrent: 2,
+    github_user: 'octocat' }),
+});
+(await load('actions')).init();
+const workItems = await load('work-items');
+workItems.init();
+await workItems.loadWorkItems();
+
+const afterFirstLoad = writes;
+// A running agent's elapsed_seconds moves on every fetch, but no card shows it: the grid must stay put.
+items[0].running_agent.elapsed_seconds = 40;
+await workItems.loadWorkItems();
+out.writesOnIdenticalReload = writes - afterFirstLoad;
+
+items[1].title = 'T2 renamed';
+await workItems.loadWorkItems();
+out.writesOnChangedData = writes - afterFirstLoad;
+
+const beforeFilter = writes;
+const type = (text) => { search.value = text; onSearch(); };
+type('zzz');
+out.noMatch = grid.html.includes('No matching issues');
+type('');
+out.restored = grid.html.includes('T1');
+type('zzz');
+out.noMatchAgain = grid.html.includes('No matching issues');
+out.writesOnFilterChanges = writes - beforeFilter;
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -1044,7 +1096,6 @@ class TestPollingUsesVisibilityAwarePoll:
             ("pr-tracker", "loadPrTracker", 30000),
             ("pr-tracker", "_syncCrQuota", 300000),
             ("kanban", "loadKanban", 5000),
-            ("live-status", "_tickElapsedTimers", 1000),
             ("live-status", "_pollDuringStatusOutage", 2000),
             ("live-status", "checkMemoryPressure", 5000),
             ("live-status", "checkInterrupted", 30000),
@@ -1982,6 +2033,15 @@ class TestLogViewerResumeAfterHiddenTab:
         assert set(result["mine"]) <= set(result["allExpanded"]), "every item Mine shows is reachable under All"
         assert sorted(result["allExpanded"]) == list(range(1, 15))
 
+    def test_task_grid_is_rewritten_only_when_something_it_renders_changed(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _TASK_GRID_REWRITE_SCENARIO)
+        assert result["writesOnIdenticalReload"] == 0, "an unchanged poll must leave the DOM (and any open menu) alone"
+        assert result["writesOnChangedData"] == 1
+        assert result["noMatch"] is True
+        assert result["restored"] is True
+        assert result["noMatchAgain"] is True, "the early-return view must refresh the key, not leave it stale"
+        assert result["writesOnFilterChanges"] == 3
+
     def test_modules_evaluate_when_storage_throws(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _THROWING_STORAGE_SCENARIO)
         assert result == {"work-items": "evaluated", "pr-tracker": "evaluated"}
@@ -1999,3 +2059,817 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["afterFirstLoad"] == ["octocat", 1]
         assert result["callsAfterSecondLoad"] == 1, "an unchanged user must not redraw the PR tracker on every poll"
         assert result["errorsLogged"] == 1
+
+
+class TestRenderIfChanged:
+    def _run(self, body: str) -> object:
+        _require_node("node is required to run renderIfChanged")
+        start = _APP_JS.index("function renderIfChanged(")
+        fn = _APP_JS[start : _APP_JS.index("\n}\n", start) + 2]
+        script = f"{fn}\nconst c = {{ innerHTML: '' }};\nlet hooks = 0;\n{body}"
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_writes_only_when_the_key_changes_and_runs_the_hook_after_each_write(self) -> None:
+        result = self._run(
+            """
+const r1 = renderIfChanged(c, '<a>', 'k1', () => { hooks++; });
+c.innerHTML = '<typed>';
+const r2 = renderIfChanged(c, '<a>', 'k1', () => { hooks++; });
+const r3 = renderIfChanged(c, '<b>', 'k2', () => { hooks++; });
+const r4 = renderIfChanged(c, '<c>', 'k3');
+console.log(JSON.stringify([r1, r2, r3, r4, c.innerHTML, hooks]));
+"""
+        )
+        assert result == [True, False, True, True, "<c>", 2], "an unchanged key leaves even a foreign edit in place"
+
+    def test_the_key_is_stored_per_container(self) -> None:
+        result = self._run(
+            """
+const other = { innerHTML: '' };
+renderIfChanged(c, '<a>', 'k');
+console.log(JSON.stringify([renderIfChanged(other, '<a>', 'k'), other.innerHTML]));
+"""
+        )
+        assert result == [True, "<a>"]
+
+
+class TestInitInteractivePipelineIsIdempotent:
+    def test_rewiring_the_same_container_leaves_one_click_handler(self) -> None:
+        _require_node("node is required to run initInteractivePipeline")
+        start = _APP_JS.index("function initInteractivePipeline(")
+        fn = _APP_JS[start : _APP_JS.index("\n}\n", start) + 2]
+        script = f"""
+const handlers = new Set();
+const seg = {{ classList: {{ add() {{}}, remove() {{}} }}, getAttribute: () => 'develop' }};
+const container = {{
+  addEventListener: (t, h) => handlers.add(h),
+  removeEventListener: (t, h) => handlers.delete(h),
+  querySelectorAll: () => [seg],
+}};
+const scrolled = [];
+const scrollToStep = (s) => scrolled.push(s);
+{fn}
+initInteractivePipeline(container);
+initInteractivePipeline(container);
+initInteractivePipeline(container);
+const click = {{ target: {{ closest: () => seg }} }};
+handlers.forEach((h) => h(click));
+console.log(JSON.stringify({{ handlers: handlers.size, scrolled }}));
+"""
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout) == {"handlers": 1, "scrolled": ["develop"]}
+
+
+class TestLiveRunDetailAndQueueRendering:
+    """Source guards for the pages that patch in place instead of rebuilding on every update."""
+
+    _RUN_DETAIL = (_TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
+    _QUEUE = (_TEMPLATES / "queue.html").read_text(encoding="utf-8")
+
+    @staticmethod
+    def _function(source: str, name: str) -> str:
+        start = source.index(f"function {name}(")
+        return source[start : source.index("\n}\n", start) + 2]
+
+    def test_the_elapsed_ticker_lives_in_app_js_and_runs_once_at_one_second(self) -> None:
+        assert "visibilityAwarePoll(tickElapsedTimers, 1000);" in _APP_JS
+        assert "tickElapsedTimers" not in _module_source("live-status").replace("`tickElapsedTimers()` in app.js", "")
+        assert "setInterval(" not in self._RUN_DETAIL
+
+    def test_patching_never_rebuilds_the_step_list_that_owns_the_output_stream(self) -> None:
+        defined = set(re.findall(r"function (\w+)\(", self._RUN_DETAIL))
+        reachable: set[str] = set()
+        pending = ["patchRunHeader"]
+        while pending:
+            name = pending.pop()
+            if name in reachable:
+                continue
+            reachable.add(name)
+            # Comments and the inline onclick markup of a row name functions without calling them here.
+            body = re.sub(r"//[^\n]*", "", self._function(self._RUN_DETAIL, name))
+            pending.extend(n for n in defined if n != name and re.search(rf"(?<![\w'\"]){n}\(", body))
+        patch_helpers = {"_syncStepRow", "_stepRowElement", "_insertStepRow", "_renderPipelineBar", "_renderRunInfo"}
+        assert patch_helpers <= reachable
+        # _refreshRun and _handleRunStatusMessage drive the patch path but reach renderRunDetail only for the one
+        # terminal render, so they are checked for a direct call.
+        for name in sorted(reachable | {"_refreshRun", "_handleRunStatusMessage", "_checkWaitingRun"}):
+            body = self._function(self._RUN_DETAIL, name)
+            assert "renderStepList(" not in body, name
+            assert "_closeOutputStream(" not in body, name
+        assert "renderStepList(steps, run)" in self._function(self._RUN_DETAIL, "renderRunDetail")
+
+    def test_run_detail_rides_the_shared_status_channel_and_resyncs_on_open(self) -> None:
+        start = self._function(self._RUN_DETAIL, "_startRunStatusChannel")
+        assert "createSovaStatusChannel({" in start
+        assert "onOpen: _refreshRun" in start
+        assert "onFallbackPoll: _refreshRun" in start
+        assert "new WebSocket" not in self._RUN_DETAIL
+
+    def test_only_a_run_seen_in_a_push_can_be_declared_finished_by_its_absence(self) -> None:
+        _require_node("node is required to run the run detail push handler")
+        handler = self._function(self._RUN_DETAIL, "_handleRunStatusMessage")
+        script = f"""
+let _RUN_ID = 7, _runSeenInPush = false, _pushedStatus = 'running', _pushedStep = 'develop', refreshes = 0;
+let _runUnavailableStreak = 0, _runUnavailableToasted = false;
+const _RUN_UNAVAILABLE_THRESHOLD = 3;
+const showToast = () => {{}};
+const els = {{ cost: {{ textContent: '' }}, duration: {{ innerHTML: 'x' }} }};
+globalThis.document = {{
+  getElementById: () => els.cost,
+  querySelector: () => els.duration,
+}};
+const liveElapsed = (s) => 'live:' + s;
+const _refreshRun = () => {{ refreshes++; }};
+const _runRefreshBackoff = () => false;
+{handler}
+const push = (runs) => _handleRunStatusMessage({{ type: 'status_update', runs }});
+const mine = (extra) => Object.assign({{ run_id: 7, status: 'running', current_step: 'develop', cost_usd: '1.5',
+  elapsed_seconds: 60 }}, extra);
+push([]);
+const absentFirst = refreshes;
+push([mine()]);
+const unchanged = refreshes;
+const duration = els.duration.innerHTML;
+const cost = els.cost.textContent;
+push([mine({{ current_step: 'validate' }})]);
+const stepMoved = refreshes;
+push([mine({{ current_step: 'validate', elapsed_seconds: null }})]);
+const nullElapsed = els.duration.innerHTML;
+push([]);
+const absentAfterSeen = refreshes;
+push([]);
+const absentAgain = refreshes;
+_handleRunStatusMessage({{ type: 'agent_finished', run_id: 8, status: 'done' }});
+const otherFinished = refreshes;
+_handleRunStatusMessage({{ type: 'agent_finished', run_id: 7, status: 'done' }});
+const mineFinished = refreshes;
+_handleRunStatusMessage({{ type: 'agent_finished', run_id: '7', status: 'done' }});
+const stringIdFinished = refreshes;
+push([mine({{ run_id: '7', current_step: 'assess' }})]);
+const stringIdPush = refreshes;
+console.log(JSON.stringify({{ stringIdFinished, stringIdPush, absentFirst, unchanged, duration, cost, stepMoved,
+  nullElapsed, absentAfterSeen,
+  absentAgain, otherFinished, mineFinished }}));
+"""
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout) == {
+            "absentFirst": 0,
+            "unchanged": 0,
+            "duration": "live:60",
+            "cost": "$1.5000",
+            "stepMoved": 1,
+            "nullElapsed": "",
+            "absentAfterSeen": 2,
+            "absentAgain": 2,
+            "otherFinished": 2,
+            "mineFinished": 3,
+            "stringIdFinished": 4,
+            "stringIdPush": 5,
+        }
+
+    def _run_node(self, script: str, *, module: bool = False) -> object:
+        _require_node("node is required to run the run detail helpers")
+        argv = ["node", "--input-type=module", "-e", script] if module else ["node", "-e", script]
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_mark_failed_is_offered_only_for_a_run_the_endpoint_can_still_fail(self) -> None:
+        """mark_run_failed() refuses every terminal status, the restartable ones included."""
+        apply = self._function(self._RUN_DETAIL, "_applyActionButtons")
+        terminal = self._terminal_decl()
+        is_live = self._function(self._RUN_DETAIL, "_isLive")
+        script = f"""
+const _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
+{terminal}
+{is_live}
+const btn = (id) => ({{ id, dataset: {{}}, hidden: true,
+  classList: {{ toggle(cls, on) {{ btn.last[id] = on; }} }} }});
+btn.last = {{}};
+const buttons = {{ 'btn-resume': btn('btn-resume'), 'btn-mark-failed': btn('btn-mark-failed') }};
+globalThis.document = {{ getElementById: (id) => buttons[id] }};
+{apply}
+const out = {{}};
+for (const status of ['running', 'developing', 'pending', 'failed', 'interrupted', 'paused', 'stopped', 'done']) {{
+  _applyActionButtons({{ status, issue_number: 1, role: 'developer', id: 2 }});
+  out[status] = {{ markFailedHidden: btn.last['btn-mark-failed'], resumeHidden: btn.last['btn-resume'] }};
+}}
+console.log(JSON.stringify(out));
+"""
+        out = self._run_node(script)
+        for status in ("running", "developing", "pending"):
+            assert out[status] == {"markFailedHidden": False, "resumeHidden": True}, status
+        for status in ("failed", "interrupted", "paused", "stopped"):
+            assert out[status] == {"markFailedHidden": True, "resumeHidden": False}, status
+        assert out["done"] == {"markFailedHidden": True, "resumeHidden": True}
+
+    def test_mark_failed_reports_the_error_body_of_a_run_that_already_finished(self) -> None:
+        mark = "async " + self._function(self._RUN_DETAIL, "markFailed").replace("{{ run_id }}", "7")
+        script = f"""
+const toasts = [];
+let reloads = 0;
+const sovaConfirm = async () => true;
+const apiUrl = (p) => p;
+const showToast = (msg, kind) => toasts.push([msg, kind]);
+const loadRunDetail = () => {{ reloads++; }};
+let refreshes = 0;
+const _refreshRun = () => {{ refreshes++; }};
+let _runStatusChannel = null;
+let body = {{ error: 'Run is already stopped' }};
+globalThis.fetch = async () => ({{ ok: true, json: async () => body }});
+{mark}
+await markFailed();
+body = {{ id: 7, status: 'failed' }};
+await markFailed();
+// A 204 or proxy-rewritten body is not JSON: the mark still went through, so the page still reloads.
+globalThis.fetch = async () => ({{ ok: true, json: async () => {{ throw new SyntaxError('no body'); }} }});
+await markFailed();
+_runStatusChannel = {{}};
+await markFailed();
+console.log(JSON.stringify({{ toasts, reloads, refreshes }}));
+"""
+        assert self._run_node(script, module=True) == {
+            "toasts": [["Error: Run is already stopped", "error"]],
+            "reloads": 3,
+            "refreshes": 1,
+        }
+
+    def test_live_patch_updates_the_run_info_only_when_the_branch_or_pr_changed(self) -> None:
+        render = self._function(self._RUN_DETAIL, "_renderRunInfo")
+        script = f"""
+const _isLive = (s) => s === 'running';
+const escapeHtml = (s) => String(s);
+const prLink = (n) => '<a>#' + n + '</a>';
+const info = {{
+  innerHTML: '', hidden: false, classList: {{ remove() {{ info.hidden = false; }}, add() {{ info.hidden = true; }} }},
+  querySelector() {{
+    const m = this.innerHTML.match(/data-field="duration">([^<]*)</);
+    return m ? {{ innerHTML: m[1] }} : null;
+  }},
+}};
+globalThis.document = {{ getElementById: () => info }};
+{render}
+const _renderInfoEmpty = () => _renderRunInfo({{ status: 'interrupted', branch_name: null, pr_number: null,
+  duration_formatted: '' }}, false);
+const run = {{ status: 'running', branch_name: 'feat/x', pr_number: null, duration_formatted: '' }};
+_renderRunInfo(run, false);
+const initial = info.innerHTML;
+info.innerHTML = info.innerHTML.replace('data-field="duration">', 'data-field="duration">3m');
+const ticked = info.innerHTML;
+_renderRunInfo(run, true);
+const unchanged = info.innerHTML === ticked;
+_renderRunInfo(Object.assign({{}}, run, {{ pr_number: 42 }}), true);
+const withPr = info.innerHTML;
+_renderRunInfo({{ status: 'done', branch_name: 'feat/x', pr_number: 42, duration_formatted: '9m' }}, false);
+const final = info.innerHTML;
+_renderInfoEmpty();
+console.log(JSON.stringify({{ initial, unchanged, withPr, final, emptied: info.innerHTML, hidden: info.hidden }}));
+"""
+        out = self._run_node(script)
+        assert "PR:" not in out["initial"]
+        assert out["unchanged"] is True
+        assert "PR: <a>#42</a>" in out["withPr"]
+        assert 'data-field="duration">3m<' in out["withPr"], "a live patch keeps the duration the push ticked in"
+        assert 'data-field="duration">9m<' in out["final"], "the full render takes the run's own duration"
+        assert out["emptied"] == "", "a terminal render with nothing to show drops the live duration slot"
+        assert out["hidden"] is True
+
+    def test_live_patch_adds_a_row_for_a_step_that_started_since_the_render(self) -> None:
+        patch_fn = self._function(self._RUN_DETAIL, "patchRunHeader")
+        insert = self._function(self._RUN_DETAIL, "_insertStepRow")
+        sync = self._function(self._RUN_DETAIL, "_syncStepRow")
+        element = self._function(self._RUN_DETAIL, "_stepRowElement")
+        script = f"""
+const order = [];
+const rows = {{}};
+const makeRow = (id) => {{
+  const row = {{ id, querySelector: () => null,
+    after(other) {{ order.splice(order.indexOf(id) + 1, 0, other.id); rows[other.id] = other; }} }};
+  return row;
+}};
+const controls = {{ style: {{ display: 'none' }} }};
+const list = {{
+  innerHTML: '<p>No steps recorded</p>',
+  querySelector: () => (order.length ? rows[order[0]] : null),
+  insertBefore(row) {{ order.unshift(row.id); rows[row.id] = row; }},
+}};
+globalThis.document = {{
+  getElementById: (id) => (id === 'step-list' ? list : id === 'step-list-controls' ? controls : rows[id] || null),
+  createElement: () => {{
+    const tpl = {{ content: {{}} }};
+    Object.defineProperty(tpl, 'innerHTML', {{ set(html) {{ tpl.content.firstElementChild = makeRow(html); }} }});
+    return tpl;
+  }},
+}};
+const safeStepId = (n) => n;
+const _stepRowHtml = (s, isTarget) => 'step-row-' + s.step_name + (isTarget ? ':target' : '');
+const _stepStatusClasses = () => ({{ dot: '', text: '' }});
+const formatDuration = () => '';
+const _setRunStatusAndCost = () => {{}};
+const _renderRunInfo = () => {{}};
+const _applyActionButtons = () => {{}};
+const _renderPipelineBar = () => {{}};
+{element}
+{insert}
+{sync}
+{patch_fn}
+const run = {{ status: 'running' }};
+patchRunHeader(run, [{{ step_name: 'sync', status: 'running' }}]);
+const first = {{ order: order.slice(), placeholder: list.innerHTML, controls: controls.style.display }};
+patchRunHeader(run, [{{ step_name: 'sync', status: 'done' }}, {{ step_name: 'develop', status: 'running' }}]);
+patchRunHeader(run, [{{ step_name: 'sync', status: 'done' }}, {{ step_name: 'assess', status: 'done' }},
+  {{ step_name: 'develop', status: 'running' }}]);
+console.log(JSON.stringify({{ first, order }}));
+"""
+        assert self._run_node(script) == {
+            "first": {"order": ["step-row-sync"], "placeholder": "", "controls": ""},
+            "order": ["step-row-sync", "step-row-assess", "step-row-develop"],
+        }
+
+    def test_queue_label_dropdown_skips_unchanged_labels_and_reapplies_the_search(self) -> None:
+        populate = self._function(self._QUEUE, "populateFilterDropdowns")
+        assert "renderIfChanged(labelItemsContainer, labelHtml," in populate
+        assert "activeFilters.labels" in populate[populate.index("renderIfChanged(") :]
+        assert "function() { filterLabelDropdown(); }" in populate
+        clear = self._function(self._QUEUE, "clearAllFilters")
+        assert "labelSearch.value = ''" in clear
+        assert "filterLabelDropdown();" in clear[clear.index("populateFilterDropdowns();") :]
+
+    def test_a_refresh_asked_for_mid_fetch_runs_after_it_instead_of_being_dropped(self) -> None:
+        _require_node("node is required to run the run detail refresh")
+        # _function() starts at "function", so the async keyword is restored for the awaits inside.
+        refresh = "async " + self._function(self._RUN_DETAIL, "_refreshRun").replace("{{ run_id }}", "7")
+        script = f"""
+let _runRefreshing = false, _runRefreshQueued = false, _runSeenInPush = false, _pushedStatus = null;
+let _pushedStep = null, _runStatusChannel = {{}};
+const _isLive = (s) => s === 'running';
+let _runQueuedFromAbsence = false, _runQueuedForce = false, _runRenderSeq = 0, _runRefreshFailures = 0;
+let _runRefreshRetryAt = 0;
+const _RUN_REFRESH_TOAST_AFTER = 3;
+const _runRefreshBackoff = () => false;
+const showToast = () => {{}};
+const statuses = ['running', 'done'];
+const rendered = [];
+let fetches = 0;
+const apiUrl = (p) => p;
+const fetchAPI = async () => {{
+  const status = statuses[fetches++];
+  await null;
+  return {{ run: {{ status }}, steps: [] }};
+}};
+const patchRunHeader = (run) => {{ rendered.push('patch:' + run.status); }};
+const renderRunDetail = (run) => {{ rendered.push('full:' + run.status); _runStatusChannel = null; _runRenderSeq++; }};
+{refresh}
+const first = _refreshRun();
+await _refreshRun();
+await first;
+await new Promise((r) => setTimeout(r, 0));
+console.log(JSON.stringify({{ fetches, rendered }}));
+"""
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30, check=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout) == {"fetches": 2, "rendered": ["patch:running", "full:done"]}
+
+    def _terminal_decl(self) -> str:
+        match = re.search(r"var _TERMINAL = \[[^\]]*\];", self._RUN_DETAIL)
+        assert match is not None
+        return match.group(0)
+
+    def _fn_src(self, source: str, name: str) -> str:
+        body = self._function(source, name).replace("{{ run_id }}", "7")
+        return ("async " if f"async function {name}(" in source else "") + body
+
+    def test_the_page_terminal_list_matches_the_server_terminal_list(self) -> None:
+        """One list decides liveness: a status the server pushes as live must not be terminal here."""
+        from sova.core.state import TASK_RUN_TERMINAL
+
+        match = re.search(r"var _TERMINAL = \[([^\]]*)\];", self._RUN_DETAIL)
+        assert match is not None
+        listed = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
+        assert listed == set(TASK_RUN_TERMINAL)
+        assert "_NON_TERMINAL" not in self._RUN_DETAIL
+
+    def test_the_run_detail_channel_uses_the_agents_page_stale_threshold(self) -> None:
+        assert "var _RUN_STALE_AFTER_MS = 20000;" in self._RUN_DETAIL
+        assert "staleAfterMs: _RUN_STALE_AFTER_MS" in self._function(self._RUN_DETAIL, "_startRunStatusChannel")
+
+    # A stub page for the run_detail script: every element is a permissive stub, so the real render, patch and
+    # refresh functions run end to end and only the spies below record what they did.
+    _RUN_PAGE = r"""
+const makeEl = () => ({ innerHTML: '', textContent: '', className: '', dataset: {}, style: {}, _hidden: null,
+  classList: { add() {}, remove() {}, toggle(cls, on) { this.owner._hidden = on; } },
+  querySelector: () => null, querySelectorAll: () => [], after() {}, insertBefore() {}, firstChild: null });
+const els = {};
+const getEl = (id) => {
+  if (id.startsWith('step-row-')) return null;
+  if (!els[id]) {
+    els[id] = makeEl();
+    els[id].classList.owner = els[id];
+  }
+  return els[id];
+};
+getEl('step-list').querySelector = () => ({});
+globalThis.document = { getElementById: getEl, querySelector: () => null,
+  createElement: () => ({ content: { firstElementChild: makeEl() } }) };
+console.error = (...a) => process.stderr.write(a.map((x) => (x && x.stack) || String(x)).join(' ') + '\n');
+__TERMINAL__
+const _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
+let _runStatusChannel = { stop() { stops++; } }, stops = 0;
+let _runRefreshing = false, _runRefreshQueued = false, _runQueuedFromAbsence = false, _runSeenInPush = false;
+let _runQueuedForce = false, _waitingChecking = false;
+const _WAITING = ['paused', 'awaiting_approval'];
+let _pushedStatus = null, _pushedStep = null, _runRenderSeq = 0, _runRefreshFailures = 0, _runRefreshRetryAt = 0;
+let _RUN_ID = 7;
+let _runUnavailableStreak = 0, _runUnavailableToasted = false;
+const _RUN_UNAVAILABLE_THRESHOLD = 3;
+const _RUN_REFRESH_TOAST_AFTER = 3;
+const toasts = [];
+const showToast = (m) => toasts.push(m);
+const spies = { renderStepList: 0, closeStream: 0 };
+const renderStepList = () => { spies.renderStepList++; };
+const _closeOutputStream = () => { spies.closeStream++; };
+const _startRunStatusChannel = () => {};
+const loadResources = () => {};
+const loadRunChain = () => {};
+const initInteractivePipeline = () => {};
+const issueOrPrLink = () => '';
+const roleColor = () => ({ bg: '', text: '' });
+const formatRole = (r) => r;
+const escapeHtml = (s) => String(s);
+const statusColor = () => '';
+const prLink = (n) => '#' + n;
+const liveElapsed = (s) => 'live:' + s;
+const formatDuration = () => '';
+const safeStepId = (n) => n;
+const _stepRowHtml = (s) => s.step_name;
+const apiUrl = (p) => p;
+const renderStepPipeline = (step) => 'bar:' + step;
+const renderIfChanged = (c, html, key, after) => {
+  if (c._renderKey === key) return false;
+  c._renderKey = key;
+  c.innerHTML = html;
+  if (after) after(c);
+  return true;
+};
+let nextPayload = null, gate = null, fetches = 0;
+const fetchAPI = async () => {
+  fetches++;
+  const payload = nextPayload;
+  if (gate) await gate;
+  if (payload instanceof Error) throw payload;
+  return payload;
+};
+const tick = () => new Promise((r) => setTimeout(r, 0));
+const run = (status, step) => ({ id: 7, status, current_step: step, role: 'developer', total_cost_usd: '1',
+  branch_name: 'feat/x', pr_number: null, duration_formatted: '' });
+__FUNCTIONS__
+"""
+
+    def _run_page_script(self, body: str) -> str:
+        names = (
+            "_isLive _renderRunInfo _setRunStatusAndCost _renderPipelineBar _applyActionButtons _stepStatusClasses "
+            "_stepRowElement _insertStepRow _syncStepRow patchRunHeader renderRunDetail _stopRunStatusChannel "
+            "_runRefreshBackoff _refreshRun _checkWaitingRun "
+            "_handleRunStatusMessage"
+        ).split()
+        funcs = "\n".join(self._fn_src(self._RUN_DETAIL, n) for n in names)
+        page = self._RUN_PAGE.replace("__TERMINAL__", self._terminal_decl()).replace("__FUNCTIONS__", funcs)
+        return page + body
+
+    def test_a_live_refresh_never_closes_the_output_stream_and_only_the_terminal_one_renders_the_step_list(
+        self,
+    ) -> None:
+        script = self._run_page_script(
+            """
+nextPayload = { run: run('running', 'develop'), steps: [{ step_name: 'develop', status: 'running' }] };
+await _refreshRun();
+nextPayload = { run: run('running', 'validate'), steps: [{ step_name: 'develop', status: 'done' },
+  { step_name: 'validate', status: 'running' }] };
+await _refreshRun();
+const live = { ...spies, stops, channel: _runStatusChannel !== null, status: els['detail-status'].textContent };
+nextPayload = { run: run('done', 'handoff'), steps: [{ step_name: 'develop', status: 'done' }] };
+await _refreshRun();
+console.log(JSON.stringify({ live, final: { ...spies, stops, channel: _runStatusChannel !== null } }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out["live"] == {"renderStepList": 0, "closeStream": 0, "stops": 0, "channel": True, "status": "running"}
+        assert out["final"] == {"renderStepList": 1, "closeStream": 0, "stops": 1, "channel": False}
+
+    def test_a_refresh_that_started_before_a_terminal_render_is_dropped(self) -> None:
+        script = self._run_page_script(
+            """
+let release;
+gate = new Promise((r) => { release = r; });
+nextPayload = { run: run('running', 'develop'), steps: [] };
+const stale = _refreshRun();
+renderRunDetail(run('failed', 'develop'), []);
+release();
+await stale;
+console.log(JSON.stringify({ status: els['detail-status'].textContent, markFailedHidden: els['btn-mark-failed']._hidden,
+  resumeHidden: els['btn-resume']._hidden, bar: els['pipeline-bar'].innerHTML, channel: _runStatusChannel !== null }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out == {
+            "status": "failed",
+            "markFailedHidden": True,
+            "resumeHidden": False,
+            "bar": "bar:develop",
+            "channel": False,
+        }
+
+    def test_refresh_failures_back_off_and_toast_once_and_keep_a_missed_absence_pending(self) -> None:
+        script = self._run_page_script(
+            """
+nextPayload = new Error('500');
+_runSeenInPush = true;
+const push = (runs) => _handleRunStatusMessage({ type: 'status_update', runs });
+push([]);
+await tick();
+const afterFirst = { fetches, seen: _runSeenInPush, failures: _runRefreshFailures };
+push([]);
+push([{ run_id: 7, status: 'running', current_step: 'validate', cost_usd: '1', elapsed_seconds: 5 }]);
+await tick();
+const inBackoff = { fetches, pushed: _pushedStatus };
+await _refreshRun();
+await _refreshRun(false, true);
+const unforced = fetches;
+const beforeToast = toasts.length;
+for (let i = 0; i < 4; i++) await _refreshRun(false, true);
+console.log(JSON.stringify({ afterFirst, inBackoff, unforced, beforeToast, toasts: toasts.length,
+  delayMs: _runRefreshRetryAt - Date.now() > 50000 && _runRefreshRetryAt - Date.now() <= 60000 }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out["afterFirst"] == {"fetches": 1, "seen": True, "failures": 1}
+        assert out["inBackoff"] == {"fetches": 1, "pushed": None}, "a push inside the backoff starts no fetch"
+        assert out["unforced"] == 2, (
+            "only a forced refresh fetches inside the backoff (the open, poll and tab return wait)"
+        )
+        assert out["beforeToast"] == 0, "two failures are not yet worth a toast"
+        assert out["toasts"] == 1
+        assert out["delayMs"] is True, "the wait is capped at 60s"
+
+    def test_a_sustained_status_unavailable_run_refreshes_over_rest_and_toasts_once(self) -> None:
+        script = self._run_page_script(
+            """
+nextPayload = { run: run('running', 'develop'), steps: [] };
+const unavailable = () => _handleRunStatusMessage({ type: 'status_unavailable' });
+unavailable();
+unavailable();
+await tick();
+const belowThreshold = { fetches, toasts: toasts.length };
+unavailable();
+await tick();
+unavailable();
+await tick();
+const sustained = { fetches, toasts: toasts.length, streak: _runUnavailableStreak };
+_handleRunStatusMessage({ type: 'agent_finished', run_id: 99, status: 'done' });
+const afterOtherFinished = _runUnavailableStreak;
+_handleRunStatusMessage({ type: 'status_update', runs: [{ run_id: 7, status: 'running', current_step: 'develop',
+  cost_usd: '1', elapsed_seconds: 5 }] });
+const recovered = { streak: _runUnavailableStreak, toasted: _runUnavailableToasted };
+nextPayload = new Error('500');
+for (let i = 0; i < 3; i++) unavailable();
+await tick();
+const failing = fetches;
+unavailable();
+unavailable();
+await tick();
+console.log(JSON.stringify({ belowThreshold, sustained, afterOtherFinished, recovered, failing, inBackoff: fetches }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out["belowThreshold"] == {"fetches": 0, "toasts": 0}
+        assert out["sustained"] == {"fetches": 2, "toasts": 1, "streak": 4}, "one toast, a refresh per further message"
+        assert out["afterOtherFinished"] == 4, "an agent_finished mid-outage does not end it"
+        assert out["recovered"] == {"streak": 0, "toasted": False}
+        assert out["inBackoff"] == out["failing"], "a failing REST refresh backs off instead of retrying on each push"
+
+    def test_a_queued_refresh_is_dropped_when_the_fetch_in_flight_failed(self) -> None:
+        script = self._run_page_script(
+            """
+let release;
+gate = new Promise((r) => { release = r; });
+nextPayload = new Error('500');
+const first = _refreshRun();
+const queued = _refreshRun(true);
+release();
+await first;
+await queued;
+await tick();
+console.log(JSON.stringify({ fetches, seen: _runSeenInPush, failures: _runRefreshFailures }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out == {"fetches": 1, "seen": True, "failures": 1}
+
+    def test_a_forced_refresh_queued_behind_a_failing_fetch_still_runs(self) -> None:
+        script = self._run_page_script(
+            """
+let release;
+gate = new Promise((r) => { release = r; });
+nextPayload = new Error('500');
+const first = _refreshRun();
+const queued = _refreshRun(false, true);
+release();
+gate = null;
+nextPayload = { run: run('running', 'validate'), steps: [] };
+await first;
+await queued;
+await tick();
+console.log(JSON.stringify({ fetches, status: els['detail-status'].textContent, queuedForce: _runQueuedForce }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out == {"fetches": 2, "status": "running", "queuedForce": False}
+
+    def test_a_waiting_run_that_goes_live_again_is_picked_up_and_reaches_running(self) -> None:
+        script = self._run_page_script(
+            """
+let started = 0;
+globalThis._startRunStatusChannel = () => { started++; };
+_runStatusChannel = null;
+renderRunDetail(run('awaiting_approval', 'review'), []);
+const waiting = { status: els['detail-status'].textContent, pushed: _pushedStatus };
+nextPayload = { run: run('awaiting_approval', 'review'), steps: [] };
+await _checkWaitingRun();
+const unchanged = { fetches, renders: spies.renderStepList };
+nextPayload = { run: run('running', 'develop'), steps: [] };
+await _checkWaitingRun();
+const resumed = { status: els['detail-status'].textContent, pushed: _pushedStatus, renders: spies.renderStepList };
+const before = fetches;
+await _checkWaitingRun();
+console.log(JSON.stringify({ waiting, unchanged, resumed, idleFetches: fetches - before }));
+"""
+        )
+        out = self._run_node(script, module=True)
+        assert out["waiting"] == {"status": "awaiting_approval", "pushed": "awaiting_approval"}
+        assert out["unchanged"] == {"fetches": 1, "renders": 1}, "an unchanged waiting status costs no render"
+        assert out["resumed"] == {"status": "running", "pushed": "running", "renders": 2}
+        assert out["idleFetches"] == 0, "once the run is live the waiting check does nothing"
+
+    def test_the_waiting_check_rides_visibility_aware_poll_and_the_waiting_list_is_not_live(self) -> None:
+        assert "visibilityAwarePoll(_checkWaitingRun, _WAITING_POLL_MS);" in self._RUN_DETAIL
+        match = re.search(r"var _WAITING = \[([^\]]*)\];", self._RUN_DETAIL)
+        assert match is not None
+        waiting = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
+        assert waiting == {"paused", "awaiting_approval"}
+        assert waiting <= set(re.findall(r"'(\w+)'", self._terminal_decl()))
+
+    def test_a_live_patch_rebuilds_a_changed_step_row_and_keeps_the_output_embed(self) -> None:
+        sync = self._function(self._RUN_DETAIL, "_syncStepRow")
+        element = self._function(self._RUN_DETAIL, "_stepRowElement")
+        script = f"""
+function node(label) {{ return {{ label, parentNode: null, remove() {{ if (this.parentNode) this.parentNode.childNodes =
+  this.parentNode.childNodes.filter((n) => n !== this); this.parentNode = null; }} }}; }}
+function parent(children) {{
+  const p = {{ childNodes: children,
+    insertBefore(n, ref) {{ n.parentNode = p; p.childNodes.splice(p.childNodes.indexOf(ref), 0, n); }},
+    appendChild(n) {{ n.parentNode = p; p.childNodes.push(n); }} }};
+  children.forEach((c) => (c.parentNode = p));
+  return p;
+}}
+const embedWrap = node('embed');
+let removed = 0;
+const origRemove = embedWrap.remove; embedWrap.remove = () => {{ removed++; origRemove.call(embedWrap); }};
+const inner = parent([node('old-metrics'), embedWrap]);
+const body = {{ firstElementChild: inner, hasEmbed: false,
+  replaceChildren(...nodes) {{ body.replaced = nodes.map((n) => n.label || n); }},
+  querySelector: (sel) => (sel === '#inline-output-content' && body.hasEmbed ? {{ parentNode: embedWrap }} : null) }};
+const header = {{ innerHTML: 'old header', replaceChildren(...nodes) {{ header.innerHTML = nodes.join(''); }} }};
+const row = {{ querySelector: (sel) => (sel === '.sova-step-row-header' ? header : body) }};
+let builds = 0;
+const _stepRowHtml = (s) => {{ builds++; return s.status; }};
+globalThis.document = {{ createElement: () => {{
+  const tpl = {{ content: {{}} }};
+  Object.defineProperty(tpl, 'innerHTML', {{ set(html) {{
+    tpl.content.firstElementChild = {{ querySelector: (sel) => (sel === '.sova-step-row-header'
+      ? {{ childNodes: ['header:' + html] }}
+      : {{ childNodes: [node('new:' + html)], firstElementChild: {{ childNodes: [node('new:' + html)] }} }}) }};
+  }} }});
+  return tpl;
+}} }};
+{element}
+{sync}
+_syncStepRow(row, {{ step_name: 'develop', status: 'failed', error_message: 'boom' }});
+const changed = {{ header: header.innerHTML, builds, replaced: body.replaced }};
+_syncStepRow(row, {{ step_name: 'develop', status: 'failed', error_message: 'boom' }});
+const unchanged = builds;
+body.hasEmbed = true;
+_syncStepRow(row, {{ step_name: 'develop', status: 'done' }});
+console.log(JSON.stringify({{ changed, unchanged, header: header.innerHTML, replaced: body.replaced,
+  children: inner.childNodes.map((n) => n.label), embedRemoved: removed,
+  embedStillThere: inner.childNodes.includes(embedWrap) }}));
+"""
+        out = self._run_node(script)
+        assert out["changed"] == {"header": "header:failed", "builds": 1, "replaced": ["new:failed"]}
+        assert out["unchanged"] == 1, "a row whose data did not change is left alone"
+        assert out["header"] == "header:done"
+        assert out["replaced"] == ["new:failed"], "a row holding the embed is not rebuilt through replaceChildren"
+        assert out["children"] == ["new:done", "embed"], "the siblings are swapped around the embed"
+        assert out["embedRemoved"] == 0, "the embed is never detached, so its scroll position survives"
+        assert out["embedStillThere"] is True
+
+    def test_the_first_render_seeds_the_step_row_keys_so_the_first_patch_leaves_rows_alone(self) -> None:
+        render = self._function(self._RUN_DETAIL, "renderRunDetail")
+        assert "_stepKey = JSON.stringify(s)" in render
+        assert render.index("renderStepList(steps, run);") < render.index("_stepKey = JSON.stringify(s)")
+
+    def test_the_output_stream_keeps_its_own_finished_list(self) -> None:
+        match = re.search(r"var _OUTPUT_STREAM_DONE = \[([^\]]*)\];", self._RUN_DETAIL)
+        assert match is not None
+        listed = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
+        assert listed == {"done", "failed", "rejected", "interrupted", "stopped"}, "paused runs still stream (#1052)"
+        for name in ("tryLoadOutput", "_pollOutput"):
+            assert "_TERMINAL" not in self._function(self._RUN_DETAIL, name), name
+        visibility = self._RUN_DETAIL[self._RUN_DETAIL.index("addEventListener('visibilitychange'") :]
+        assert "_TERMINAL" not in visibility
+
+    def test_a_rendered_live_timer_registers_the_shared_ticker_once(self) -> None:
+        _require_node("node is required to run the elapsed ticker")
+        parts = []
+        for name in ("liveElapsed", "tickElapsedTimers", "startElapsedTicker"):
+            start = _APP_JS.index(f"function {name}(")
+            parts.append(_APP_JS[start : _APP_JS.index("\n}\n", start) + 2])
+        script = f"""
+let polls = [];
+const visibilityAwarePoll = (fn, ms) => polls.push([fn.name, ms]);
+const formatElapsed = (s) => s + 's';
+const nodes = [{{ textContent: '', getAttribute: () => String(Date.now() - 5000) }}];
+globalThis.document = {{ querySelectorAll: () => nodes }};
+var _elapsedTickerStarted = false;
+{chr(10).join(parts)}
+const none = liveElapsed(null);
+const afterNull = polls.length;
+const html = liveElapsed(5);
+liveElapsed(9);
+tickElapsedTimers();
+console.log(JSON.stringify({{ none, afterNull, polls, html: html.includes('sova-status-elapsed'),
+  tick: nodes[0].textContent }}));
+"""
+        out = self._run_node(script)
+        assert out["none"] == "0s"
+        assert out["afterNull"] == 0, "a static zero renders no timer, so it needs no ticker"
+        assert out["polls"] == [["tickElapsedTimers", 1000]], "every timer shares the one ticker"
+        assert out["html"] is True
+        assert out["tick"] == "5s"
+
+    def test_queue_label_dropdown_leaves_an_unchanged_set_alone_and_reapplies_the_search_on_a_rebuild(self) -> None:
+        _require_node("node is required to run the queue label dropdown")
+        populate = self._function(self._QUEUE, "populateFilterDropdowns")
+        filt = self._function(self._QUEUE, "filterLabelDropdown")
+        render = self._function(_APP_JS, "renderIfChanged")
+        script = f"""
+let writes = 0;
+const container = {{ _html: '',
+  get innerHTML() {{ return this._html; }},
+  set innerHTML(v) {{ writes++; this._html = v; }} }};
+const search = {{ value: '' }};
+const plain = {{ innerHTML: '' }};
+const optionEls = () => [...container._html.matchAll(/data-label="([^"]*)"/g)].map((m) => ({{
+  style: {{}}, getAttribute: () => m[1] }}));
+globalThis.document = {{
+  getElementById: (id) => (id === 'label-dropdown-items' ? container : id === 'label-dropdown-search' ? search : plain),
+  querySelectorAll: () => (lastOptions = optionEls()),
+}};
+let lastOptions = [];
+const escapeHtml = (s) => String(s);
+const stateGroupOrder = [];
+let activeFilters = {{ labels: [] }};
+let queueData = [{{ state: 's', labels: ['bug', 'docs', 'agent:ready'] }}];
+{render}
+{filt}
+{populate}
+populateFilterDropdowns();
+const first = writes;
+populateFilterDropdowns();
+const unchanged = writes === first;
+search.value = 'do';
+populateFilterDropdowns();
+const stillUnchanged = writes === first;
+activeFilters = {{ labels: ['bug'] }};
+queueData = [{{ state: 's', labels: ['bug', 'docs', 'ui'] }}];
+populateFilterDropdowns();
+const display = lastOptions.map((o) => o.style.display);
+const checkedBug = /value="bug"[^>]*checked/.test(container._html);
+console.log(JSON.stringify({{ unchanged, stillUnchanged, rebuilt: writes === first + 1, display, checkedBug }}));
+"""
+        out = self._run_node(script)
+        assert out["unchanged"] is True
+        assert out["stillUnchanged"] is True, "typing in the search survives a poll with the same labels"
+        assert out["rebuilt"] is True
+        assert out["display"] == ["none", "", "none"], "bug and ui are hidden by the search 'do', docs stays"
+        assert out["checkedBug"] is True
+
+    def test_task_grid_is_only_ever_written_through_the_helper(self) -> None:
+        source = _module_source("work-items")
+        assert "getElementById('task-grid').innerHTML" not in source
+        assert "grid.innerHTML" not in source

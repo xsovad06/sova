@@ -40,7 +40,7 @@ var _wsOutageFallbackActive = false;
 // a run this browser session has not yet received one for (e.g. right after
 // a page load, before the first WebSocket message arrives) reports null
 // rather than a fabricated "Step: 0s". The shared elapsed-timer interval
-// (the `.sova-status-elapsed` ticker, `_tickElapsedTimers()` below) does the
+// (the `.sova-status-elapsed` ticker, `tickElapsedTimers()` in app.js) does the
 // ticking once a baseline exists.
 // Drop the baselines of runs a server payload no longer reports. The one place another module may
 // change _stepStartTimes: it stays private here so no importer mutates it behind this module's back.
@@ -485,19 +485,6 @@ export function _updateApiHealthBanner(health) {
   '</div>';
 }
 
-// Shared 1s tick that keeps every .sova-status-elapsed timer on the page current
-function _tickElapsedTimers() {
-  var els = document.querySelectorAll('.sova-status-elapsed');
-  if (els.length === 0) return;
-  var now = Date.now();
-  els.forEach(function(el) {
-    var start = parseInt(el.getAttribute('data-start'), 10);
-    if (!start) return;
-    var secs = Math.max(0, Math.round((now - start) / 1000));
-    el.textContent = formatElapsed(secs);
-  });
-}
-
 // Repeating REST refresh for as long as the status channel reports a sustained outage
 function _pollDuringStatusOutage() {
   if (!_wsOutageFallbackActive) return;
@@ -511,7 +498,6 @@ export function init() {
     'dismiss-memory-pressure': function() { dismissMemoryPressure(); },
   });
 
-  visibilityAwarePoll(_tickElapsedTimers, 1000);
   visibilityAwarePoll(_pollDuringStatusOutage, _WS_FALLBACK_POLL_MS);
   visibilityAwarePoll(checkMemoryPressure, 5000);
   // Fires at once on page load and on every tab return, not only from the status channel's onOpen: when the

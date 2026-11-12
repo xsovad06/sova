@@ -398,10 +398,48 @@ function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSe
   '</span>';
 }
 
+var _elapsedTickerStarted = false;
+
 function liveElapsed(elapsedSeconds) {
   if (elapsedSeconds == null) return formatElapsed(0);
+  startElapsedTicker();
   var startTs = Date.now() - (elapsedSeconds * 1000);
   return '<span class="sova-status-elapsed" data-start="' + startTs + '">' + formatElapsed(elapsedSeconds) + '</span>';
+}
+
+/* Shared 1s tick that keeps every .sova-status-elapsed timer on the page current. liveElapsed() starts it, so every
+   page that renders a timer gets it without starting a second ticker. */
+function tickElapsedTimers() {
+  var els = document.querySelectorAll('.sova-status-elapsed');
+  if (els.length === 0) return;
+  var now = Date.now();
+  els.forEach(function(el) {
+    var start = parseInt(el.getAttribute('data-start'), 10);
+    if (!start) return;
+    var secs = Math.max(0, Math.round((now - start) / 1000));
+    el.textContent = formatElapsed(secs);
+  });
+}
+
+/* Registered the first time a page renders a timer (not at load), so a page without one runs no 1s query, and
+   once, so every later liveElapsed() call shares the one ticker. */
+function startElapsedTicker() {
+  if (_elapsedTickerStarted) return;
+  _elapsedTickerStarted = true;
+  visibilityAwarePoll(tickElapsedTimers, 1000);
+}
+
+/* Writes html into container only when key differs from the key of the last write, so a poll that returns the
+   same data leaves the DOM alone (focus, caret, scroll, open menus and in-progress selections survive). key is
+   any string covering every input that changes html. afterRender(container), when given, runs after each real
+   write, for state the markup cannot carry (a client-side filter over the rebuilt nodes). Returns true when the
+   DOM was written. The key lives on the container, so one helper serves any container. */
+function renderIfChanged(container, html, key, afterRender) {
+  if (container._renderKey === key) return false;
+  container._renderKey = key;
+  container.innerHTML = html;
+  if (afterRender) afterRender(container);
+  return true;
 }
 
 /* ============================================================
