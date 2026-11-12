@@ -681,6 +681,9 @@ class TestBudgetExhaustedNotification:
         mock_notify.assert_not_called()
 
 
+# _wait_and_finalize() opens a per-project engine for tmp_path; reset_db_rows disposes it at teardown, or its unclosed
+# connection warns on whichever test runs when it is collected (conftest.py, _dispose_other_engines()).
+@pytest.mark.usefixtures("reset_db_rows")
 class TestFinalizeNotificationKind:
     async def _finalize(
         self,
