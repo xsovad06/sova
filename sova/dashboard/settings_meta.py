@@ -1166,6 +1166,39 @@ _REGISTRY: list[SettingMeta] = [
         "server",
         "secret",
     ),
+    SettingMeta(
+        "notification.ntfy_url",
+        "ntfy server URL",
+        "Base URL of a self-hosted ntfy server (e.g. https://ntfy.example.com); empty disables ntfy",
+        "server",
+    ),
+    SettingMeta(
+        "notification.ntfy_topic",
+        "ntfy topic",
+        "ntfy topic to publish to; empty disables ntfy",
+        "server",
+    ),
+    SettingMeta(
+        "notification.ntfy_events",
+        "ntfy events",
+        "Notification kinds sent to ntfy (needs_human, failed, finished, info); other channels get every event",
+        "server",
+        "list",
+    ),
+    SettingMeta(
+        "notification.ntfy_token",
+        "ntfy access token",
+        "Bearer token for an ntfy server that requires authentication "
+        "(env SOVA_NOTIFICATION_NTFY_TOKEN overrides the stored token)",
+        "server",
+        "secret",
+    ),
+    SettingMeta(
+        "notification.link_base_url",
+        "Notification link base URL",
+        "Dashboard base URL (e.g. https://sova.example.com) used to link a notification to its run or the Agents page",
+        "server",
+    ),
     # Server
     SettingMeta(
         "server.host",

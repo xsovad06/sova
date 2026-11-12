@@ -516,7 +516,7 @@ curl http://127.0.0.1:8111/api/auth/status
 
 An API key entered on the Connections page goes through the same OS-keyring-backed storage used by the CLI steps above (`sova/llm/keyring_store.py`), via `POST /api/settings/config` with `key: "llm.api_key"` and the card's `provider` for keyring scoping. There is no separate credentials database table and no audit log of auth events.
 
-**The Claude Code credential is not SOVA's to store.** `llm.provider = "claude-code"` has no `llm.api_key`: the `claude` CLI owns its own OAuth credential in the OS keychain and refreshes it itself. `RESOLVED_SECRET_KEYS` (`sova/llm/keyring_store.py`) contains only `llm.api_key`, so nothing in SOVA's keyring namespace corresponds to a Claude Code login. The reconnect endpoints spawn `claude auth login` and observe only its exit code; SOVA never reads, copies, or persists the resulting token, and re-derives the login state afterwards by re-running the `claude auth status --json` probe.
+**The Claude Code credential is not SOVA's to store.** `llm.provider = "claude-code"` has no `llm.api_key`: the `claude` CLI owns its own OAuth credential in the OS keychain and refreshes it itself. `RESOLVED_SECRET_KEYS` (`sova/llm/keyring_store.py`) contains only `llm.api_key` and the ntfy notification token, so nothing in SOVA's keyring namespace corresponds to a Claude Code login. The reconnect endpoints spawn `claude auth login` and observe only its exit code; SOVA never reads, copies, or persists the resulting token, and re-derives the login state afterwards by re-running the `claude auth status --json` probe.
 
 ## Summary
 
