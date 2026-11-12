@@ -700,13 +700,17 @@ function populateFilterDropdowns() {
 
   var labelKeys = Object.keys(labelsInData).sort();
   var labelItemsContainer = document.getElementById('label-dropdown-items');
-  labelItemsContainer.innerHTML = labelKeys.map(function(l) {
+  var labelHtml = labelKeys.map(function(l) {
     var checked = activeFilters.labels.indexOf(l) !== -1 ? ' checked' : '';
     return '<label class="filter-label-option flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700/30 cursor-pointer text-sm text-gray-300" data-label="' + escapeHtml(l.toLowerCase()) + '">' +
       '<input type="checkbox" value="' + escapeHtml(l) + '" onchange="onFilterCheckbox(\x27labels\x27, this)"' + checked +
       ' class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">' +
       escapeHtml(l) + '</label>';
   }).join('');
+  // The 15s poll lands here with the same labels almost every time: leave the DOM alone then, so a user typing
+  // in the label search keeps focus and caret. A rebuild re-applies the search text to the new options.
+  renderIfChanged(labelItemsContainer, labelHtml, JSON.stringify([labelKeys, activeFilters.labels]),
+    function() { filterLabelDropdown(); });
 }
 
 function onFilterCheckbox(filterKey, checkbox) {
@@ -759,9 +763,13 @@ function clearAllFilters() {
   activeFilters = { search: '', states: [], milestones: [], labels: [] };
   var input = document.getElementById('filter-search');
   if (input) input.value = '';
+  var labelSearch = document.getElementById('label-dropdown-search');
+  if (labelSearch) labelSearch.value = '';
   persistSearchToUrl();
   selectedItems = {};
   populateFilterDropdowns();
+  // The label options are rebuilt only when their markup changed, so show every one again for the cleared search.
+  filterLabelDropdown();
   updateFilterCounts();
   updateSelectionUI();
   renderFilteredQueue();

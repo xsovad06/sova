@@ -116,7 +116,17 @@
 
 {% block scripts %}
 <script>
-var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted', 'stopped'];
+// The one list of statuses a run no longer progresses in. It mirrors sova/core/state.py TASK_RUN_TERMINAL, the list
+// the status push and mark_run_failed() use (tests/test_dashboard_agents_modules.py checks they match), so "live" is
+// decided the same way here and on the server: a status outside it is live, whatever its name.
+var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted', 'paused', 'awaiting_approval', 'stopped'];
+// The output stream's own list, kept as it was before the page went live (#1052 owns the stream): a paused or
+// awaiting_approval run still opens and reconnects the stream, which a widened _TERMINAL would have changed.
+var _OUTPUT_STREAM_DONE = ['done', 'failed', 'rejected', 'interrupted', 'stopped'];
+// Statuses the push stops listing but a run can leave under the same run id (a resume, an approval). The status
+// channel is closed for them, so a slow REST check (_checkWaitingRun) notices the run going live again.
+var _WAITING = ['paused', 'awaiting_approval'];
+var _WAITING_POLL_MS = 10000;
 var _outputCursor = 0;
 var _outputPollTimer = null;
 var _outputTargetStep = null;
@@ -127,105 +137,478 @@ var _OUTPUT_BACKOFF_MAX = 5000;
 var _outputActiveRun = null;
 var _outputActiveTarget = null;
 var _outputBuffer = '';
+var _RUN_ID = parseInt('{{ run_id }}', 10);
+var _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
+var _runStatusChannel = null;
+// The status the last full render or the last push carried, so a push only costs a refetch when it moved.
+var _pushedStatus = null;
+var _pushedStep = null;
+// A push lists only non-terminal runs, so this run's absence means "finished" only after it was listed once.
+var _runSeenInPush = false;
+var _runRefreshing = false;
+// A refresh asked for while one is in flight runs once it lands: that fetch may predate the change.
+var _runRefreshQueued = false;
+var _runQueuedFromAbsence = false;
+// A forced refresh (Mark as Failed) that was queued stays forced, even when the fetch in flight fails.
+var _runQueuedForce = false;
+var _waitingChecking = false;
+// Bumped by every full render. A refresh that started before one is stale (the render is newer) and is dropped.
+var _runRenderSeq = 0;
+// Consecutive failed refreshes and the time before which a push does not start another (see _runRefreshBackoff()).
+var _runRefreshFailures = 0;
+var _runRefreshRetryAt = 0;
+var _RUN_REFRESH_TOAST_AFTER = 3;
+// Consecutive status_unavailable pushes: the socket stays open (so the stale watchdog never fires) while the
+// server's status fetch keeps failing, so a sustained run of them must refresh over REST, as the Agents page does.
+var _runUnavailableStreak = 0;
+var _runUnavailableToasted = false;
+var _RUN_UNAVAILABLE_THRESHOLD = 3;
+var _RUN_STALE_AFTER_MS = 20000;
+
+function _isLive(status) {
+  return _TERMINAL.indexOf(status) === -1;
+}
 
 function safeStepId(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 async function loadRunDetail() {
+  var seq = _runRenderSeq;
   try {
     var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
-    var run = data.run;
-    var steps = data.steps;
-
-    document.getElementById('detail-issue').innerHTML = issueOrPrLink(run.issue_number, run.pr_number);
-
-    var colors = roleColor(run.role);
-    var roleEl = document.getElementById('detail-role');
-    var displayRole = formatRole(run.role, run.pipeline_variant);
-    roleEl.innerHTML = '<span class="px-2 py-1 rounded text-base ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(displayRole) + '</span>';
-
-    var statusEl = document.getElementById('detail-status');
-    statusEl.textContent = run.status;
-    statusEl.className = 'text-xl font-bold ' + statusColor(run.status);
-
-    document.getElementById('detail-cost').textContent = '$' + parseFloat(run.total_cost_usd || 0).toFixed(4);
-
-    var infoEl = document.getElementById('run-info');
-    var infoParts = [];
-    if (run.branch_name) infoParts.push('Branch: <span class="text-gray-300">' + escapeHtml(run.branch_name) + '</span>');
-    if (run.pr_number) infoParts.push('PR: ' + prLink(run.pr_number));
-    if (run.duration_formatted) infoParts.push('Duration: <span class="text-gray-300">' + escapeHtml(run.duration_formatted) + '</span>');
-    if (infoParts.length > 0) {
-      infoEl.classList.remove('hidden');
-      infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
-    }
-
-    if (run.confidence_score !== null && run.confidence_score !== undefined) {
-      var score = run.confidence_score;
-      var scoreColor = score >= 80 ? 'text-accent-green' : (score >= 60 ? 'text-accent-yellow' : 'text-accent-red');
-      var scoreEl = document.getElementById('detail-confidence');
-      scoreEl.textContent = score + '/100';
-      scoreEl.className = 'text-xl font-bold ' + scoreColor;
-      var confidenceDetails = run.confidence_details || {};
-      document.getElementById('detail-confidence-summary').textContent = confidenceDetails.summary || '';
-      document.getElementById('confidence-section').classList.remove('hidden');
-    }
-
-    var pipelineContainer = document.getElementById('pipeline-bar');
-    pipelineContainer.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant, {interactive: true, stepData: steps});
-    initInteractivePipeline(pipelineContainer);
-
-    var chainEl = document.getElementById('resume-chain');
-    if (run.resumed_from_id) {
-      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
-      chainEl.classList.remove('hidden');
-      chainEl.innerHTML = '<div class="text-xs text-gray-500 flex items-center gap-2">' +
-        '<span class="text-accent-purple">Resumed from</span>' +
-        '<a href="' + prefix + '/work/' + run.resumed_from_id + '" class="text-accent hover:underline">Run #' + run.resumed_from_id + '</a>' +
-      '</div>';
-    }
-
-    var restartable = ['failed', 'interrupted', 'paused', 'stopped'];
-    var nonTerminal = ['running', 'developing', 'pending'];
-    document.getElementById('actions-section').classList.remove('hidden');
-    if (restartable.indexOf(run.status) !== -1) {
-      var resumeBtn = document.getElementById('btn-resume');
-      resumeBtn.classList.remove('hidden');
-      resumeBtn.dataset.issue = run.issue_number;
-      resumeBtn.dataset.role = run.role;
-      resumeBtn.dataset.runId = run.id;
-    }
-    if (nonTerminal.indexOf(run.status) !== -1 || restartable.indexOf(run.status) !== -1) {
-      document.getElementById('btn-mark-failed').classList.remove('hidden');
-    }
-
-    // Run-level error banner
-    if (run.error_message) {
-      var banner = document.getElementById('run-error-banner');
-      banner.classList.remove('hidden');
-      document.getElementById('run-error-text').textContent = run.error_message;
-      if (run.error_message.indexOf('sova commands update') !== -1) {
-        document.getElementById('sync-commands-action').classList.remove('hidden');
-      }
-    }
-
-    // Render step list
-    renderStepList(steps, run);
-
-    // Load resources
-    loadResources();
-
-    // Load run chain
-    loadRunChain(run.issue_number, run.id);
+    // A full render that landed while this fetched is newer than this result.
+    if (seq !== _runRenderSeq) return;
+    renderRunDetail(data.run, data.steps);
   } catch (e) {
     console.error('Failed to load run detail:', e);
   }
 }
 
+// Full render: the skeleton on load, and once more when the run reaches a terminal state (actions, error banner,
+// confidence and resume chain only make sense then). Live updates go through patchRunHeader() instead.
+function renderRunDetail(run, steps) {
+  _runRenderSeq++;
+  document.getElementById('detail-issue').innerHTML = issueOrPrLink(run.issue_number, run.pr_number);
+
+  var colors = roleColor(run.role);
+  var roleEl = document.getElementById('detail-role');
+  var displayRole = formatRole(run.role, run.pipeline_variant);
+  roleEl.innerHTML = '<span class="px-2 py-1 rounded text-base ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(displayRole) + '</span>';
+
+  _setRunStatusAndCost(run.status, run.total_cost_usd);
+  _renderRunInfo(run, false);
+
+  if (run.confidence_score !== null && run.confidence_score !== undefined) {
+    var score = run.confidence_score;
+    var scoreColor = score >= 80 ? 'text-accent-green' : (score >= 60 ? 'text-accent-yellow' : 'text-accent-red');
+    var scoreEl = document.getElementById('detail-confidence');
+    scoreEl.textContent = score + '/100';
+    scoreEl.className = 'text-xl font-bold ' + scoreColor;
+    var confidenceDetails = run.confidence_details || {};
+    document.getElementById('detail-confidence-summary').textContent = confidenceDetails.summary || '';
+    document.getElementById('confidence-section').classList.remove('hidden');
+  }
+
+  _renderPipelineBar(run, steps);
+
+  var chainEl = document.getElementById('resume-chain');
+  if (run.resumed_from_id) {
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    chainEl.classList.remove('hidden');
+    chainEl.innerHTML = '<div class="text-xs text-gray-500 flex items-center gap-2">' +
+      '<span class="text-accent-purple">Resumed from</span>' +
+      '<a href="' + prefix + '/work/' + run.resumed_from_id + '" class="text-accent hover:underline">Run #' + run.resumed_from_id + '</a>' +
+    '</div>';
+  }
+
+  document.getElementById('actions-section').classList.remove('hidden');
+  _applyActionButtons(run);
+
+  // Run-level error banner
+  if (run.error_message) {
+    var banner = document.getElementById('run-error-banner');
+    banner.classList.remove('hidden');
+    document.getElementById('run-error-text').textContent = run.error_message;
+    if (run.error_message.indexOf('sova commands update') !== -1) {
+      document.getElementById('sync-commands-action').classList.remove('hidden');
+    }
+  }
+
+  // Render step list
+  renderStepList(steps, run);
+  // Seed each row's change key so the first live patch (the onOpen resync) leaves unchanged rows, and the
+  // output embed inside them, alone.
+  steps.forEach(function(s) {
+    var stepRow = document.getElementById('step-row-' + safeStepId(s.step_name));
+    if (stepRow) stepRow._stepKey = JSON.stringify(s);
+  });
+
+  // Load resources
+  loadResources();
+
+  // Load run chain
+  loadRunChain(run.issue_number, run.id);
+
+  _pushedStatus = run.status;
+  _pushedStep = run.current_step;
+  if (_isLive(run.status)) {
+    _startRunStatusChannel();
+  } else {
+    _stopRunStatusChannel();
+  }
+}
+
+// The branch, PR and duration line. A live patch rebuilds it only when the branch or PR changed (a PR created
+// mid-run), and keeps the duration the last push ticked into it rather than blanking it until the next push.
+function _renderRunInfo(run, livePatch) {
+  var infoEl = document.getElementById('run-info');
+  var key = (run.branch_name || '') + '|' + (run.pr_number || '');
+  if (livePatch && infoEl._infoKey === key) return;
+  infoEl._infoKey = key;
+  var durationEl = infoEl.querySelector('[data-field="duration"]');
+  var duration = livePatch && durationEl ? durationEl.innerHTML : escapeHtml(run.duration_formatted || '');
+  var infoParts = [];
+  if (run.branch_name) infoParts.push('Branch: <span class="text-gray-300">' + escapeHtml(run.branch_name) + '</span>');
+  if (run.pr_number) infoParts.push('PR: ' + prLink(run.pr_number));
+  // A live run always gets the duration slot, so _handleRunStatusMessage() has an element to tick into.
+  if (duration || _isLive(run.status)) {
+    infoParts.push('Duration: <span class="text-gray-300" data-field="duration">' + duration + '</span>');
+  }
+  if (infoParts.length > 0) {
+    infoEl.classList.remove('hidden');
+    infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
+  } else {
+    // Nothing to show (a triage run, an interrupted run with no end time): drop the live render's ticking slot.
+    infoEl.innerHTML = '';
+    infoEl.classList.add('hidden');
+  }
+}
+
+function _setRunStatusAndCost(status, cost) {
+  var statusEl = document.getElementById('detail-status');
+  statusEl.textContent = status;
+  statusEl.className = 'text-xl font-bold ' + statusColor(status);
+  document.getElementById('detail-cost').textContent = '$' + parseFloat(cost || 0).toFixed(4);
+}
+
+function _renderPipelineBar(run, steps) {
+  var html = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant, {interactive: true, stepData: steps});
+  // The html is its own key: an identical bar is left alone, a changed one is rebuilt and re-wired.
+  renderIfChanged(document.getElementById('pipeline-bar'), html, html, initInteractivePipeline);
+}
+
+function _applyActionButtons(run) {
+  var restartable = _RESTARTABLE.indexOf(run.status) !== -1;
+  var resumeBtn = document.getElementById('btn-resume');
+  resumeBtn.classList.toggle('hidden', !restartable);
+  if (restartable) {
+    resumeBtn.dataset.issue = run.issue_number;
+    resumeBtn.dataset.role = run.role;
+    resumeBtn.dataset.runId = run.id;
+  }
+  // mark_run_failed() refuses every terminal status (restartable ones included), so only a live run offers it.
+  document.getElementById('btn-mark-failed').classList.toggle('hidden', !_isLive(run.status));
+}
+
+// Step-row status colors, read by _stepRowHtml() so a patched row matches a rendered one.
+function _stepStatusClasses(status) {
+  if (status === 'done' || status === 'passed') return {dot: 'bg-accent-green', text: 'text-accent-green'};
+  if (status === 'failed') return {dot: 'bg-accent-red', text: 'text-accent-red'};
+  if (status === 'running' || status === 'in_progress') return {dot: 'bg-accent', text: 'text-accent'};
+  if (status === 'gate_failed') return {dot: 'bg-accent-yellow', text: 'text-accent-yellow'};
+  return {dot: 'bg-gray-500', text: 'text-gray-500'};
+}
+
+// The detached row element for a step, without the output embed.
+function _stepRowElement(s) {
+  var tpl = document.createElement('template');
+  tpl.innerHTML = _stepRowHtml(s, false);
+  return tpl.content.firstElementChild;
+}
+
+// Inserts the row of a step that started after the last render, right after the row before it. It never carries
+// the output embed: the output stream stays on the row it was opened for until the terminal full render.
+function _insertStepRow(s, prevRow) {
+  var list = document.getElementById('step-list');
+  if (!list.querySelector('.sova-step-row')) {
+    // The first step of a run that rendered with none: drop the "No steps recorded" placeholder.
+    list.innerHTML = '';
+    document.getElementById('step-list-controls').style.display = '';
+  }
+  var row = _stepRowElement(s);
+  if (prevRow) prevRow.after(row);
+  else list.insertBefore(row, list.firstChild);
+  return row;
+}
+
+// Brings a step row already on the page up to date from fresh step data: the header (dot, duration, cost, status,
+// error) and the body (metrics, output summary, gate result, error). The body is rebuilt in place, so its
+// expanded state survives, and the agent output embed is left in place so the stream keeps writing to it and its
+// scroll position survives.
+// A row whose data has not changed is left alone, so the cost is one rebuild per step transition.
+function _syncStepRow(row, s) {
+  var key = JSON.stringify(s);
+  if (row._stepKey === key) return;
+  row._stepKey = key;
+  var fresh = _stepRowElement(s);
+  var header = row.querySelector('.sova-step-row-header');
+  var freshHeader = fresh.querySelector('.sova-step-row-header');
+  if (header && freshHeader) header.replaceChildren(...freshHeader.childNodes);
+  var body = row.querySelector('.sova-step-row-body');
+  var freshBody = fresh.querySelector('.sova-step-row-body');
+  if (!body || !freshBody) return;
+  var embed = body.querySelector('#inline-output-content');
+  var embedWrap = embed ? embed.parentNode : null;
+  var inner = body.firstElementChild;
+  var freshInner = freshBody.firstElementChild;
+  if (embedWrap && inner && freshInner && embedWrap.parentNode === inner) {
+    // Never detach the embed: a browser resets a removed element's scroll position, which would stop the
+    // stick-to-bottom output from following the stream. Swap only the siblings around it.
+    Array.from(inner.childNodes).forEach(function(node) { if (node !== embedWrap) node.remove(); });
+    Array.from(freshInner.childNodes).forEach(function(node) { inner.insertBefore(node, embedWrap); });
+    return;
+  }
+  body.replaceChildren(...freshBody.childNodes);
+  if (embedWrap && body.firstElementChild) body.firstElementChild.appendChild(embedWrap);
+}
+
+// Updates the header fields, the pipeline bar and the step rows already on the page, and adds a row for a step
+// that started since. It never calls renderStepList(), which closes and restarts the output stream. A page opened
+// before the first step keeps its output in the fallback area, since a row inserted here carries no embed (#1052).
+function patchRunHeader(run, steps) {
+  _setRunStatusAndCost(run.status, run.total_cost_usd);
+  _renderRunInfo(run, true);
+  _applyActionButtons(run);
+  _renderPipelineBar(run, steps);
+  var prevRow = null;
+  steps.forEach(function(s) {
+    var row = document.getElementById('step-row-' + safeStepId(s.step_name));
+    if (!row) {
+      prevRow = _insertStepRow(s, prevRow);
+      return;
+    }
+    prevRow = row;
+    _syncStepRow(row, s);
+  });
+}
+
+// True while a push must not start a refresh: after n consecutive failures it waits min(2^n * 2s, 60s), so a
+// persistent REST failure (a pruned run, a locked database) is not retried on every 2s push.
+function _runRefreshBackoff() {
+  return Date.now() < _runRefreshRetryAt;
+}
+
+// Refetches the run and patches it, or does the one full render when it is no longer live. fromAbsence marks a
+// refresh that the run's absence from a push started, whose failure must leave that absence retryable. Every caller
+// waits out the failure backoff (the socket open, the fallback poll, a tab return included), except force === true,
+// which only a user action (Mark as Failed) passes. The channel callbacks pass no such flag.
+async function _refreshRun(fromAbsence, force) {
+  if (force !== true && _runRefreshBackoff()) return;
+  if (_runRefreshing) {
+    _runRefreshQueued = true;
+    if (fromAbsence === true) _runQueuedFromAbsence = true;
+    if (force === true) _runQueuedForce = true;
+    return;
+  }
+  _runRefreshing = true;
+  var seq = _runRenderSeq;
+  var failed = false;
+  try {
+    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    _runRefreshFailures = 0;
+    _runRefreshRetryAt = 0;
+    // A terminal render that landed while this fetched (a Mark as Failed reload) is newer than this result, and
+    // it stopped the channel: patching now would put the live state back on a finished page.
+    if (seq === _runRenderSeq && _runStatusChannel) {
+      if (!_isLive(data.run.status)) {
+        renderRunDetail(data.run, data.steps);
+      } else {
+        patchRunHeader(data.run, data.steps);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to refresh run detail:', e);
+    failed = true;
+    _runRefreshFailures++;
+    _runRefreshRetryAt = Date.now() + Math.min(Math.pow(2, _runRefreshFailures) * 2000, 60000);
+    if (_runRefreshFailures === _RUN_REFRESH_TOAST_AFTER) {
+      showToast('Live updates for this run are failing. The page may be out of date.', 'error');
+    }
+    // Forget what the push carried, so the next push after the backoff retries instead of treating the lost patch
+    // as applied. An absence that started this refresh stays pending only if the run was listed before it.
+    _pushedStatus = null;
+    _pushedStep = null;
+    if (fromAbsence === true) _runSeenInPush = true;
+  } finally {
+    _runRefreshing = false;
+  }
+  if (_runRefreshQueued) {
+    var queuedFromAbsence = _runQueuedFromAbsence;
+    var queuedForce = _runQueuedForce;
+    _runRefreshQueued = false;
+    _runQueuedFromAbsence = false;
+    _runQueuedForce = false;
+    // Only a run still live needs it: the terminal render already fetched after the change and stopped the channel.
+    // After a failed fetch an unforced one is dropped (the backoff would refuse it anyway), keeping a queued absence
+    // retryable; a forced one (the user's Mark as Failed) still runs, since the backoff does not apply to it.
+    if (!_runStatusChannel) return;
+    if (failed && !queuedForce) {
+      if (queuedFromAbsence) _runSeenInPush = true;
+    } else {
+      _refreshRun(queuedFromAbsence, queuedForce);
+    }
+  }
+}
+
+// A run parked in a waiting status is in no push, so this slow REST check is what notices it going live again (or
+// ending). Any change of status is one full render, which restarts the status channel when the run is live.
+async function _checkWaitingRun() {
+  if (_WAITING.indexOf(_pushedStatus) === -1 || _waitingChecking || _runRefreshing) return;
+  _waitingChecking = true;
+  var seq = _runRenderSeq;
+  try {
+    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    if (seq === _runRenderSeq && data.run.status !== _pushedStatus) renderRunDetail(data.run, data.steps);
+  } catch (e) {
+    console.error('Failed to check the waiting run:', e);
+  } finally {
+    _waitingChecking = false;
+  }
+}
+
+function _handleRunStatusMessage(msg) {
+  // The one-shot exit event names the run outright; the absence check below covers runs the dashboard did not spawn.
+  if (msg && msg.type === 'agent_finished' && Number(msg.run_id) === _RUN_ID) {
+    _refreshRun();
+    return;
+  }
+  if (msg && msg.type === 'status_unavailable') {
+    // The producer's own fetch-failure signal. The socket stays open and keeps receiving these, so the stale
+    // watchdog and the fallback poll never engage: after a few in a row, refresh over REST on each further one.
+    _runUnavailableStreak++;
+    if (_runUnavailableStreak >= _RUN_UNAVAILABLE_THRESHOLD) {
+      if (!_runUnavailableToasted) {
+        _runUnavailableToasted = true;
+        showToast('Real-time run status unavailable: falling back to periodic refresh', 'warning');
+      }
+      if (!_runRefreshBackoff()) _refreshRun();
+    }
+    return;
+  }
+  if (!msg || msg.type !== 'status_update' || !Array.isArray(msg.runs)) return;
+  // Only a status_update means the producer recovered, so an agent_finished mid-outage does not reset the streak.
+  _runUnavailableStreak = 0;
+  _runUnavailableToasted = false;
+  // Compared as numbers: a run_id the server serializes as a string must not silently stop live updates.
+  var run = msg.runs.find(function(r) { return Number(r.run_id) === _RUN_ID; });
+  if (!run) {
+    if (_runSeenInPush && !_runRefreshBackoff()) {
+      _runSeenInPush = false;
+      _refreshRun(true);
+    }
+    return;
+  }
+  _runSeenInPush = true;
+  document.getElementById('detail-cost').textContent = '$' + parseFloat(run.cost_usd || 0).toFixed(4);
+  var durationEl = document.querySelector('#run-info [data-field="duration"]');
+  if (durationEl) durationEl.innerHTML = run.elapsed_seconds != null ? liveElapsed(run.elapsed_seconds) : '';
+  if ((run.status !== _pushedStatus || run.current_step !== _pushedStep) && !_runRefreshBackoff()) {
+    _pushedStatus = run.status;
+    _pushedStep = run.current_step;
+    _refreshRun();
+  }
+}
+
+function _startRunStatusChannel() {
+  if (_runStatusChannel) return;
+  _runStatusChannel = createSovaStatusChannel({
+    wsPath: apiUrl('/ws/agents/status'),
+    onMessage: _handleRunStatusMessage,
+    // The run may have finished before the socket opened or while it was down, which no push narrates.
+    onOpen: _refreshRun,
+    onFallbackPoll: _refreshRun,
+    pollIntervalMs: 5000,
+    // The server broadcasts every 2s, so 20s of silence is a dead socket (same threshold as the Agents page).
+    staleAfterMs: _RUN_STALE_AFTER_MS
+  });
+}
+
+function _stopRunStatusChannel() {
+  if (!_runStatusChannel) return;
+  _runStatusChannel.stop();
+  _runStatusChannel = null;
+}
+
 function _closeOutputStream() {
   if (_outputPollTimer) { clearTimeout(_outputPollTimer); _outputPollTimer = null; }
   if (_outputEventSource) { _outputEventSource.close(); _outputEventSource = null; }
+}
+
+// One step row: the header line and its collapsed body, with the agent output embed when isOutputTarget.
+function _stepRowHtml(s, isOutputTarget) {
+  var statusClasses = _stepStatusClasses(s.status);
+  var dotCls = statusClasses.dot;
+  var statusCls = statusClasses.text;
+  var label = STEP_LABELS[s.step_name] || s.step_name;
+  var dur = s.duration_formatted || formatDuration(s.duration_ms) || '--';
+  var cost = s.cost_usd != null ? '$' + parseFloat(s.cost_usd).toFixed(4) : '--';
+
+  // Header row
+  var sid = safeStepId(s.step_name);
+  var row = '<div class="sova-step-row" id="step-row-' + sid + '">' +
+    '<button type="button" class="sova-step-row-header" onclick="toggleStep(\'' + escapeJsStr(s.step_name) + '\')">' +
+      '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + dotCls + '"></span>' +
+      '<span class="text-sm font-medium w-40 text-left truncate">' + escapeHtml(label) + '</span>' +
+      '<span class="text-xs text-gray-500 w-20">' + escapeHtml(dur) + '</span>' +
+      '<span class="text-xs text-accent-green w-20">' + escapeHtml(cost) + '</span>' +
+      '<span class="text-xs font-medium ' + statusCls + ' w-16">' + escapeHtml(s.status) + '</span>' +
+      (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-[200px]">' + escapeHtml(s.error_message) + '</span>' : '') +
+      '<svg class="sova-step-chevron w-4 h-4 text-gray-600 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>' +
+    '</button>';
+
+  // Body (hidden by default)
+  row += '<div class="sova-step-row-body">' +
+    '<div class="px-4 py-3">';
+
+  // Metrics row
+  var metrics = [];
+  if (s.duration_formatted || s.duration_ms) metrics.push('<span class="text-gray-500">Duration:</span> <span class="text-gray-300">' + escapeHtml(dur) + '</span>');
+  if (s.cost_usd != null) metrics.push('<span class="text-gray-500">Cost:</span> <span class="text-accent-green">' + escapeHtml(cost) + '</span>');
+  if (s.retry_count > 0) metrics.push('<span class="text-gray-500">Retries:</span> <span class="text-accent-yellow">' + s.retry_count + '</span>');
+  if (metrics.length > 0) row += '<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3">' + metrics.join('') + '</div>';
+
+  // Output summary
+  if (s.output_summary) {
+    row += '<div class="text-xs text-gray-400 bg-surface-hover rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap mb-2">' + escapeHtml(s.output_summary) + '</div>';
+  }
+
+  // Gate check result
+  if (s.gate_check_result) {
+    var gateText;
+    try { gateText = typeof s.gate_check_result === 'string' ? s.gate_check_result : JSON.stringify(s.gate_check_result); }
+    catch (e) { gateText = String(s.gate_check_result); }
+    row += '<div class="text-xs text-accent-yellow bg-accent-yellow/5 rounded p-2 max-h-24 overflow-y-auto mb-2"><span class="text-gray-500">Gate:</span> ' + escapeHtml(gateText) + '</div>';
+  }
+
+  // Error message
+  if (s.error_message) {
+    row += '<div class="text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto mb-2">' + escapeHtml(s.error_message) + '</div>';
+    if (s.error_message.indexOf('sova commands update') !== -1) {
+      row += '<div class="mt-2 flex items-center gap-3"><button type="button" onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Sync Commands</button><span class="text-xs text-gray-500 sync-commands-status"></span></div>';
+    }
+  }
+
+  // Raw output embed (only on target step)
+  if (isOutputTarget) {
+    row += '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
+      '<div class="text-xs text-gray-500 uppercase mb-2">Agent Output</div>' +
+      '<div class="font-mono text-xs text-gray-300 max-h-[400px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] rounded p-3" id="inline-output-content">Loading...</div>' +
+    '</div>';
+  }
+
+  row += '</div></div></div>';
+  return row;
 }
 
 function renderStepList(steps, run) {
@@ -259,77 +642,7 @@ function renderStepList(steps, run) {
   }
 
   var html = steps.map(function(s) {
-    var stepDone = s.status === 'done' || s.status === 'passed';
-    var dotCls = stepDone ? 'bg-accent-green' :
-                 s.status === 'failed' ? 'bg-accent-red' :
-                 s.status === 'running' || s.status === 'in_progress' ? 'bg-accent' :
-                 s.status === 'gate_failed' ? 'bg-accent-yellow' :
-                 'bg-gray-500';
-    var statusCls = stepDone ? 'text-accent-green' :
-                    s.status === 'failed' ? 'text-accent-red' :
-                    s.status === 'running' || s.status === 'in_progress' ? 'text-accent' :
-                    s.status === 'gate_failed' ? 'text-accent-yellow' :
-                    'text-gray-500';
-    var label = STEP_LABELS[s.step_name] || s.step_name;
-    var dur = s.duration_formatted || formatDuration(s.duration_ms) || '--';
-    var cost = s.cost_usd != null ? '$' + parseFloat(s.cost_usd).toFixed(4) : '--';
-    var isOutputTarget = s.step_name === _outputTargetStep;
-
-    // Header row
-    var sid = safeStepId(s.step_name);
-    var row = '<div class="sova-step-row" id="step-row-' + sid + '">' +
-      '<button type="button" class="sova-step-row-header" onclick="toggleStep(\'' + escapeJsStr(s.step_name) + '\')">' +
-        '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + dotCls + '"></span>' +
-        '<span class="text-sm font-medium w-40 text-left truncate">' + escapeHtml(label) + '</span>' +
-        '<span class="text-xs text-gray-500 w-20">' + escapeHtml(dur) + '</span>' +
-        '<span class="text-xs text-accent-green w-20">' + escapeHtml(cost) + '</span>' +
-        '<span class="text-xs font-medium ' + statusCls + ' w-16">' + escapeHtml(s.status) + '</span>' +
-        (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-[200px]">' + escapeHtml(s.error_message) + '</span>' : '') +
-        '<svg class="sova-step-chevron w-4 h-4 text-gray-600 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>' +
-      '</button>';
-
-    // Body (hidden by default)
-    row += '<div class="sova-step-row-body">' +
-      '<div class="px-4 py-3">';
-
-    // Metrics row
-    var metrics = [];
-    if (s.duration_formatted || s.duration_ms) metrics.push('<span class="text-gray-500">Duration:</span> <span class="text-gray-300">' + escapeHtml(dur) + '</span>');
-    if (s.cost_usd != null) metrics.push('<span class="text-gray-500">Cost:</span> <span class="text-accent-green">' + escapeHtml(cost) + '</span>');
-    if (s.retry_count > 0) metrics.push('<span class="text-gray-500">Retries:</span> <span class="text-accent-yellow">' + s.retry_count + '</span>');
-    if (metrics.length > 0) row += '<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3">' + metrics.join('') + '</div>';
-
-    // Output summary
-    if (s.output_summary) {
-      row += '<div class="text-xs text-gray-400 bg-surface-hover rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap mb-2">' + escapeHtml(s.output_summary) + '</div>';
-    }
-
-    // Gate check result
-    if (s.gate_check_result) {
-      var gateText;
-      try { gateText = typeof s.gate_check_result === 'string' ? s.gate_check_result : JSON.stringify(s.gate_check_result); }
-      catch (e) { gateText = String(s.gate_check_result); }
-      row += '<div class="text-xs text-accent-yellow bg-accent-yellow/5 rounded p-2 max-h-24 overflow-y-auto mb-2"><span class="text-gray-500">Gate:</span> ' + escapeHtml(gateText) + '</div>';
-    }
-
-    // Error message
-    if (s.error_message) {
-      row += '<div class="text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto mb-2">' + escapeHtml(s.error_message) + '</div>';
-      if (s.error_message.indexOf('sova commands update') !== -1) {
-        row += '<div class="mt-2 flex items-center gap-3"><button type="button" onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Sync Commands</button><span class="text-xs text-gray-500 sync-commands-status"></span></div>';
-      }
-    }
-
-    // Raw output embed (only on target step)
-    if (isOutputTarget) {
-      row += '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
-        '<div class="text-xs text-gray-500 uppercase mb-2">Agent Output</div>' +
-        '<div class="font-mono text-xs text-gray-300 max-h-[400px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] rounded p-3" id="inline-output-content">Loading...</div>' +
-      '</div>';
-    }
-
-    row += '</div></div></div>';
-    return row;
+    return _stepRowHtml(s, s.step_name === _outputTargetStep);
   }).join('');
 
   document.getElementById('step-list').innerHTML = html;
@@ -402,7 +715,7 @@ function tryLoadOutput(run, targetId) {
   _outputActiveRun = run;
   _outputActiveTarget = targetId;
 
-  if (!_TERMINAL.includes(run.status)) {
+  if (_OUTPUT_STREAM_DONE.indexOf(run.status) === -1) {
     _connectOutputSSE(run, targetId);
   } else {
     _pollOutput(run, targetId);
@@ -470,7 +783,7 @@ async function _pollOutput(run, targetId) {
     _outputBackoffMs = Math.min(_outputBackoffMs * 1.5, _OUTPUT_BACKOFF_MAX);
   }
 
-  if (!_TERMINAL.includes(run.status)) {
+  if (_OUTPUT_STREAM_DONE.indexOf(run.status) === -1) {
     _outputPollTimer = setTimeout(function() { _pollOutput(run, targetId); }, _outputBackoffMs);
   }
 }
@@ -541,11 +854,17 @@ async function markFailed() {
       body: JSON.stringify({reason: 'Manually abandoned via dashboard'}),
     });
     if (!res.ok) {
-      var err = await res.json();
-      showToast('Error: ' + (err.detail || res.status), 'error');
+      var err = await res.json().catch(function() { return null; });
+      showToast('Error: ' + ((err && err.detail) || res.status), 'error');
       return;
     }
-    loadRunDetail();
+    // A run that finished before the click comes back as HTTP 200 with an error body, not a failed run.
+    // An empty or non-JSON success body still means the mark went through, so the reload below always runs.
+    var result = await res.json().catch(function() { return null; });
+    if (result && result.error) showToast('Error: ' + result.error, 'error');
+    // A live page reloads through the guarded refresh, so it never races the one a push started.
+    if (_runStatusChannel) _refreshRun(false, true);
+    else loadRunDetail();
   } catch (e) {
     showToast('Failed to mark run: ' + e.message, 'error');
   }
@@ -699,11 +1018,17 @@ function drawResourceChart(samples) {
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
     _closeOutputStream();
-  } else if (_outputActiveRun && !_TERMINAL.includes(_outputActiveRun.status)) {
+    return;
+  }
+  if (_runStatusChannel) _refreshRun();
+  if (_outputActiveRun && _OUTPUT_STREAM_DONE.indexOf(_outputActiveRun.status) === -1) {
     _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
     _connectOutputSSE(_outputActiveRun, _outputActiveTarget);
   }
 });
+
+// Registered once: it does nothing unless the page shows a waiting run (see _checkWaitingRun()).
+visibilityAwarePoll(_checkWaitingRun, _WAITING_POLL_MS);
 
 loadRunDetail();
 </script>

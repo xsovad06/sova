@@ -124,8 +124,7 @@ export async function loadWorkItems() {
 
     renderTaskCards();
   } catch (e) {
-    document.getElementById('task-grid').innerHTML =
-      '<p class="text-accent-red text-sm py-6 text-center">Failed to load tasks</p>';
+    _writeTaskGrid('<p class="text-accent-red text-sm py-6 text-center">Failed to load tasks</p>');
   }
 }
 
@@ -612,9 +611,15 @@ function renderTaskCard(item) {
   return '<div class="' + rowCls + '">' + mainRow + expandedRow + llmRow + '</div>';
 }
 
+// Writes the task grid only when its markup changed, so a refresh that renders the same cards leaves an open
+// card menu alone. The html is its own key: the payload carries fields no card shows (a running agent's
+// elapsed_seconds moves on every fetch), so a key built from the data would rebuild the grid on every poll.
+// A rebuild drops the old menu element, so its open flag goes with it.
+function _writeTaskGrid(html) {
+  renderIfChanged(document.getElementById('task-grid'), html, html, function() { _cardMenuOpen = false; });
+}
+
 function renderTaskCards() {
-  _cardMenuOpen = false;
-  var grid = document.getElementById('task-grid');
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
 
   var filtered = _applyTaskFilters(_workItems);
@@ -623,12 +628,14 @@ function renderTaskCards() {
 
   // A filtered view lists every match uncapped. The unfiltered "All" view caps each block behind a Show more
   // control instead, so "never fewer than Mine" means reachable: every item Mine shows is one expansion away.
+  // Every exit goes through _writeTaskGrid, including the early ones: a path that wrote the grid directly
+  // would leave the stored key stale and a later identical render would be wrongly skipped.
   if (hasActiveFilter) {
     if (!filtered.length) {
-      grid.innerHTML = '<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>';
+      _writeTaskGrid('<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>');
       return;
     }
-    grid.innerHTML = filtered.slice().sort(_sortWorkItems).map(renderTaskCard).join('');
+    _writeTaskGrid(filtered.slice().sort(_sortWorkItems).map(renderTaskCard).join(''));
     return;
   }
 
@@ -637,8 +644,8 @@ function renderTaskCards() {
   var hasSuggested = _suggested.length > 0;
 
   if (!hasHistory && !hasSuggested) {
-    grid.innerHTML = '<p class="text-gray-500 text-sm py-6 text-center">' +
-      'No tasks available. <a href="' + prefix + '/queue" class="text-accent hover:underline">Visit the Priority Queue</a> to triage new issues.</p>';
+    _writeTaskGrid('<p class="text-gray-500 text-sm py-6 text-center">' +
+      'No tasks available. <a href="' + prefix + '/queue" class="text-accent hover:underline">Visit the Priority Queue</a> to triage new issues.</p>');
     return;
   }
 
@@ -697,7 +704,7 @@ function renderTaskCards() {
     }
   }
 
-  grid.innerHTML = html;
+  _writeTaskGrid(html);
   fetchLlmSuggestions();
 }
 

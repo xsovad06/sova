@@ -160,7 +160,7 @@ function renderCompletedCard(agent) {
   // liveElapsed, not a static string: with no data-field for _refreshCardMetrics
   // to patch, a static "Ns ago" froze the moment an active run's cost churn
   // stopped forcing the whole grid to re-render on every tick. The shared 1s
-  // .sova-status-elapsed ticker (_tickElapsedTimers() in live-status.js) drives it instead.
+  // .sova-status-elapsed ticker (tickElapsedTimers() in app.js) drives it instead.
   var agoText = liveElapsed(agent.completed_seconds_ago) + ' ago';
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
