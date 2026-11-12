@@ -21025,3 +21025,13 @@ class TestHealthChecksAPI:
         data = resp.json()
         assert len(data["checks"]) == 1
         assert data["checks"][0]["passed"] is False
+
+    async def test_project_endpoint_reports_the_served_project_dir(self, client: AsyncClient) -> None:
+        # The MCP operator client (sova/mcp/operator.py) reads this key to confirm it reached the project it
+        # means before sending a project-scoped call; renaming or dropping it breaks that check.
+        resp = await client.get("/api/health/project")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert list(data) == ["project_dir"]
+        assert Path(data["project_dir"]).is_absolute()
