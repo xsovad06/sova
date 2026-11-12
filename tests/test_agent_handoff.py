@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sova.dashboard.services.work_verdict import _NO_REVIEW
+from sova.dashboard.services.work_verdict import _NO_REVIEW, UNRESOLVED_KEY
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.ipc.handoff import DashboardHandoff, handoff_filename, write_handoff_file
@@ -365,8 +365,17 @@ class TestAutoHandoffIssueMismatch:
 
 
 class TestAutoHandoffCircuitBreaker:
-    async def test_blocks_after_max_cycles(self, tmp_path: Path) -> None:
-        """Circuit breaker should block auto address-review after max cycles."""
+    @pytest.mark.parametrize(
+        ("verdict", "headline"),
+        [
+            ({"has_sova_review": True, "verdict": "revise", "address_cycles": 2}, "address-review budget exhausted"),
+            # An unreadable history is a hold for the user, and the alert must not call it exhausted.
+            ({**_NO_REVIEW, UNRESOLVED_KEY: True}, "address-review budget unverifiable"),
+        ],
+        ids=["exhausted", "unverifiable"],
+    )
+    async def test_blocks_after_max_cycles(self, tmp_path: Path, verdict: dict, headline: str) -> None:
+        """Circuit breaker should block auto address-review after max cycles, or on an unknown count."""
         from unittest.mock import AsyncMock, MagicMock
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -408,7 +417,7 @@ class TestAutoHandoffCircuitBreaker:
             patch(
                 "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
-                return_value={"has_sova_review": True, "verdict": "revise", "address_cycles": 2},
+                return_value=verdict,
             ),
             patch("sova.dashboard.services.agent_handoff.emit_safe", mock_emit),
             patch("sova.dashboard.services.agent_handoff._notify_budget_exhausted", mock_notify),
@@ -417,10 +426,10 @@ class TestAutoHandoffCircuitBreaker:
 
         # Agent should NOT be spawned
         mock_start.assert_not_awaited()
-        # No manual-only handoff is written anymore: resolve_next_action()'s
-        # review_budget_exhausted rule resolves the over-budget PR to
-        # PR_REVIEW_EXHAUSTED with an Integrate action on its own, so the
-        # breaker only clears the stale handoff and reports the exhaustion.
+        # No manual-only handoff is written anymore: resolve_next_action() resolves
+        # the over-budget PR to PR_REVIEW_EXHAUSTED with Integrate, and an unreadable
+        # history to a user hold, on its own, so the breaker only clears the stale
+        # handoff and reports why it stopped.
         _assert_cleared(tmp_path, handoff)
         control_dir = tmp_path / ".claude" / "agent-control"
         assert sorted(p.name for p in control_dir.glob("handoff*.json")) == ["handoff-999.json"], (
@@ -428,9 +437,10 @@ class TestAutoHandoffCircuitBreaker:
         )
         assert _read_handoff_json(tmp_path, "999") == bystander.model_dump()
         mock_emit.assert_called_once()
-        assert "budget exhausted" in mock_emit.call_args[0][0]
+        assert mock_emit.call_args[0][0] == f"#115: {headline}"
         mock_notify.assert_called_once()
         assert mock_notify.call_args[0][1] == "115"
+        assert mock_notify.call_args.kwargs["headline"] == headline
 
     async def test_allows_under_limit(self, tmp_path: Path) -> None:
         """Circuit breaker should allow address-review when under the limit."""
@@ -501,6 +511,30 @@ class TestAutoHandoffCircuitBreaker:
 
         assert reason is not None
         assert "unverifiable" in reason
+
+    async def test_truncated_history_reads_as_exhausted_not_an_outage(self, tmp_path: Path) -> None:
+        """A history past the window never clears on a retry, so the reason must not blame GitHub."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_handoff import _check_address_review_circuit_breaker
+        from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
+
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 3
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_sova_verdict",
+                new_callable=AsyncMock,
+                return_value={**_NO_REVIEW, UNRESOLVED_KEY: True, TRUNCATED_KEY: True},
+            ),
+        ):
+            reason = await _check_address_review_circuit_breaker("118", 132, "developer", tmp_path)
+
+        assert reason is not None
+        assert "exhausted" in reason
+        assert "unverifiable" not in reason
+        assert "GitHub" not in reason
 
     async def test_skips_when_pr_number_is_none(self, tmp_path: Path) -> None:
         """Circuit breaker should not fire when pr_number is None."""

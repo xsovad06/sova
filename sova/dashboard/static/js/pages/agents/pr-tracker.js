@@ -52,7 +52,7 @@ function renderPrSummary(prs) {
       var age = pr.age_seconds || 0;
       var st = pr.computed_state;
       if (st === 'awaiting_review') awaitingReview++;
-      else if (st === 'changes_requested') changesRequested++;
+      else if (st === 'changes_requested' || st === 'sova_changes') changesRequested++;
       else if (st === 'approved_ci_green') approved++;
       if (pr.ci_status === 'failed') ciFailing++;
       totalAge += age;
@@ -106,6 +106,7 @@ var _PR_GROUPS = [
     defaultExpanded: true,
     matchFn: function(pr) {
       return pr.computed_state === 'changes_requested' ||
+        pr.computed_state === 'sova_changes' ||
         pr.mergeable === 'CONFLICTING' ||
         (pr.ci_status === 'failed' && (pr.age_seconds || 0) >= _NEEDS_ATTENTION_CI_AGE);
     }

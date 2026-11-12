@@ -75,6 +75,11 @@ _NO_REVIEW: dict = {
 # ignoring the flag; see _check_address_review_circuit_breaker().
 UNRESOLVED_KEY = "history_unavailable"
 
+# Set alongside UNRESOLVED_KEY when the history was fetched but is longer than the last-100 window. Unlike an
+# outage this never clears on a retry (a re-review only adds review 101+), and a PR that long is far past any
+# address-review budget, so callers treat it as exhausted rather than hold it for a retry.
+TRUNCATED_KEY = "history_truncated"
+
 
 def _unresolved() -> dict:
     """Return a no-review verdict marked as "could not be looked up"."""
@@ -319,7 +324,7 @@ async def resolve_sova_verdict(
         # "could not be looked up" case rather than report a count known to
         # be too low.
         log.debug("work_items.review_history_truncated", issue=issue_number, pr=pr_number)
-        return _unresolved()
+        return {**_unresolved(), TRUNCATED_KEY: True}
     verdict = parse_review_history(reviews, trusted_login=trusted_login)
 
     if use_cache:

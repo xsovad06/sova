@@ -117,6 +117,7 @@ _PR_STATE_WORK_ITEM: dict[str, WorkItemState] = {
     "ci_running": WorkItemState.PR_CI_RUNNING,
     "ci_failed": WorkItemState.PR_CI_FAILED,
     "changes_requested": WorkItemState.PR_EXTERNAL_CHANGES,
+    "sova_changes": WorkItemState.PR_SOVA_CHANGES,
     "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
     "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
     "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
@@ -317,6 +318,9 @@ class PRFacts:
     # to 0) in this case, so review_budget_exhausted must fail closed on this flag the same
     # way agent_handoff.py's circuit breaker already does, rather than reading "0 cycles".
     review_history_unresolved: bool = False
+    # True when the history was fetched but is longer than the last-100 window (implies review_history_unresolved).
+    # Permanent, unlike an outage: a retry cannot clear it, so the resolver treats the budget as exhausted.
+    review_history_truncated: bool = False
     # True when the verdict's only blocking finding is the incomplete-review cap (part of the diff was never
     # reviewed): an address cycle cannot fix that, so a standing verdict routes to a manual re-review instead.
     sova_review_incomplete: bool = False
@@ -475,9 +479,18 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     # the PR cycling through address_review/address_pr. This outranks every
     # verdict- and thread-based rule below, including a standing revise/block
     # verdict, so the loop actually stops rather than spawning one more cycle.
+    # An unreadable review history makes the cycle count unknown, not exhausted: hold the PR for the user
+    # (action_id None parks the supervisor at CHECKPOINT_NEEDED, and the dashboard offers a manual re-review)
+    # rather than route to Integrate, which would auto-merge on a verdict nobody could read.
+    chain.append("review_history_unresolved")
+    # A truncated history (more than 100 reviews) is the exception: it never clears on a retry and is far past any
+    # budget, so it falls through to the exhausted route below instead of holding the PR forever.
+    if facts.max_address_cycles > 0 and facts.review_history_unresolved and not facts.review_history_truncated:
+        return resolved(WorkItemState.PR_AWAITING_REVIEW, None)
+
     chain.append("review_budget_exhausted")
     if facts.max_address_cycles > 0 and (
-        facts.review_history_unresolved or facts.address_cycles >= facts.max_address_cycles
+        facts.review_history_truncated or facts.address_cycles >= facts.max_address_cycles
     ):
         return resolved(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate")
 
@@ -578,11 +591,21 @@ def _fact_ci_running(facts: PRFacts) -> str:
     return f"CI is not pending or running (status: {facts.ci_status})"
 
 
+def _fact_review_history_unresolved(facts: PRFacts) -> str:
+    if facts.max_address_cycles <= 0:
+        return "address-review budget is unlimited"
+    if facts.review_history_truncated:
+        return "address-review history is longer than the 100-review window: treated as exhausted, not held"
+    if facts.review_history_unresolved:
+        return "address-review history is unresolved (GitHub unreachable): holding for the user, retry the review"
+    return "address-review history is resolved"
+
+
 def _fact_review_budget_exhausted(facts: PRFacts) -> str:
     if facts.max_address_cycles <= 0:
         return "address-review budget is unlimited"
-    if facts.review_history_unresolved:
-        return "address-review history is unresolved (GitHub unreachable); failing closed"
+    if facts.review_history_truncated:
+        return "address-review history is longer than the 100-review window: budget treated as exhausted"
     if facts.address_cycles >= facts.max_address_cycles:
         return f"address-review budget exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
     return f"address-review budget not exhausted ({facts.address_cycles}/{facts.max_address_cycles} cycles)"
@@ -657,6 +680,7 @@ _RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
     "draft": _fact_draft,
     "ci_failed": _fact_ci_failed,
     "ci_running": _fact_ci_running,
+    "review_history_unresolved": _fact_review_history_unresolved,
     "review_budget_exhausted": _fact_review_budget_exhausted,
     "sova_standing_changes": _fact_sova_standing_changes,
     "sova_verdict_stale": _fact_sova_verdict_stale,
@@ -708,7 +732,7 @@ def _build_pr_facts(
     max_address_cycles: int = 0,
 ) -> PRFacts:
     """Translate raw pr_data/sova_verdict dicts into a PRFacts snapshot."""
-    from sova.dashboard.services.work_verdict import UNRESOLVED_KEY
+    from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
 
     verdict = sova_verdict or {}
     has_review = verdict.get("has_sova_review", False)
@@ -736,6 +760,7 @@ def _build_pr_facts(
         address_cycles=verdict.get("address_cycles", 0),
         max_address_cycles=max_address_cycles,
         review_history_unresolved=bool(verdict.get(UNRESOLVED_KEY, False)),
+        review_history_truncated=bool(verdict.get(TRUNCATED_KEY, False)),
         sova_review_incomplete=bool(verdict.get("review_incomplete", False)) if has_review else False,
     )
 

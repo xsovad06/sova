@@ -32,6 +32,7 @@ _PR_STATE_MAP: dict[str, str] = {
     ComputedPRState.APPROVED: "approved_ci_green",
     ComputedPRState.CONFLICTED: "conflicted",
     ComputedPRState.CHANGES_REQUESTED: "changes_requested",
+    ComputedPRState.SOVA_CHANGES: "changes_requested",
     ComputedPRState.REVIEW_ADDRESSED: "awaiting_review",
     ComputedPRState.CI_RUNNING: "ci_running",
     ComputedPRState.CI_FAILED: "ci_failed",
