@@ -4,14 +4,11 @@
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Supervisor</h2>
   <div class="flex items-center gap-3">
-    <label class="flex items-center gap-2 cursor-pointer select-none" title="Enable or disable the supervisor daemon">
-      <div class="relative">
-        <input type="checkbox" id="supervisor-toggle" class="sr-only peer" onchange="toggleSupervisor(this.checked)">
-        <div class="w-9 h-5 bg-gray-600 peer-checked:bg-accent-green peer-focus-visible:ring-2 peer-focus-visible:ring-accent-green/50 rounded-full transition-colors duration-200"></div>
-        <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform duration-200 peer-checked:translate-x-4 pointer-events-none"></div>
-      </div>
+    <span class="flex items-center gap-2">
+      <span id="supervisor-switch" class="flex" data-setting-switch="supervisor.enabled" data-label="Supervisor"
+            data-tooltip="Turn the supervisor on or off. It starts or stops at once, without a restart."></span>
       <span id="supervisor-toggle-label" class="text-xs text-gray-400">Loading...</span>
-    </label>
+    </span>
     <a href="{{ prefix|default('') }}/settings#supervisor"
        class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
     <button id="poll-btn" onclick="triggerPoll()"
@@ -19,6 +16,41 @@
             class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
       Poll Now
     </button>
+  </div>
+</div>
+
+<!-- What the supervisor may do: its 13 switches, saved one by one (settingSwitch in app.js) -->
+{% set supervisor_switch_columns = [
+  [("Steps it may start", ["supervisor.auto_triage", "supervisor.auto_research", "supervisor.auto_develop",
+                           "supervisor.auto_review", "supervisor.auto_address_review", "supervisor.auto_integrate",
+                           "supervisor.auto_rebase", "supervisor.auto_queue"])],
+  [("Guards", ["supervisor.require_approval", "supervisor.respect_dependencies", "supervisor.respect_ownership",
+               "supervisor.file_overlap_gate"]),
+   ("Planning", ["supervisor.llm_planning"])],
+] %}
+<div id="supervisor-switches" class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
+  <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+    <h3 class="text-sm font-medium text-gray-300">What the supervisor may do</h3>
+    <span id="supervisor-off-note" class="hidden text-xs text-accent-yellow">The supervisor is off, so these act only once it is on.</span>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-4">
+    {% for column in supervisor_switch_columns %}
+    <div class="{{ 'lg:col-span-2' if loop.first else '' }} space-y-4">
+      {% for title, keys in column %}
+      <div>
+        <div class="text-xs uppercase tracking-wider text-gray-500 mb-1">{{ title }}</div>
+        <div class="grid grid-cols-1 {{ 'sm:grid-cols-2' if keys|length > 4 else '' }} gap-x-8">
+          {% for key in keys %}{% set meta = setting_meta(key) %}
+          <div class="flex items-center justify-between gap-3 py-1.5 border-b border-gray-700/20">
+            <span class="text-sm text-gray-300" data-tooltip="{{ meta.description }}" data-tooltip-wide>{{ meta.label }}</span>
+            <span class="flex" data-setting-switch="{{ key }}" data-label="{{ meta.label }}"></span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
   </div>
 </div>
 
@@ -277,103 +309,51 @@ function _updateHideDoneBtn() {
   if (btn) btn.textContent = _hideDone ? 'Show Done' : 'Hide Done';
 }
 
-// Toggle / enable / disable
-let _toggleBusy = false;
-
-async function toggleSupervisor(enabled) {
-  if (_toggleBusy) { return; }
-  _toggleBusy = true;
-  const toggle = document.getElementById('supervisor-toggle');
-  toggle.disabled = true;
-  try {
-    if (enabled) {
-      await enableSupervisor();
-    } else {
-      await disableSupervisor();
-    }
-  } catch (e) {
-    console.error('toggleSupervisor failed:', e);
-    await loadStatus();
-  } finally {
-    toggle.disabled = false;
-    _toggleBusy = false;
-  }
-}
-
+// Supervisor on/off and its switches (settingSwitch in app.js). Saving supervisor.enabled starts or stops the daemon
+// itself (_reload_daemon_config), so the page only refreshes its status, then polls briefly until a started daemon
+// reports running.
 let _confirmPoll = null;
 
-async function enableSupervisor() {
-  // 1. Save config
-  const r = await fetch(`${apiBase}/settings/config`, {
-    method: 'POST',
-    headers: jsonCsrfHeaders(),
-    body: JSON.stringify({ key: 'supervisor.enabled', value: 'true' }),
-  });
-  const rBody = await r.json().catch(() => ({}));
-  if (!r.ok || rBody.error) {
-    const msg = rBody.error || rBody.detail || `HTTP ${r.status}`;
-    showToast(`Failed to enable supervisor: ${msg}`, 'error');
-    await loadStatus();
-    return;
-  }
-  // 2. Start daemon (no server restart needed)
-  const s = await fetch(`${apiBase}/supervisor/start`, { method: 'POST' });
-  if (!s.ok) {
-    const sBody = await s.json().catch(() => ({}));
-    showToast(`Supervisor config saved but daemon failed to start: ${sBody.error || sBody.detail || `HTTP ${s.status}`}`, 'error');
-    await loadStatus();
-    return;
-  }
-  // 3. Refresh status, then poll briefly until daemon is confirmed running
-  await loadStatus();
+function _stopConfirmPoll() {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
+}
+
+function _confirmRunning() {
+  _stopConfirmPoll();
   let attempts = 0;
   _confirmPoll = setInterval(async () => {
     attempts++;
     const res = await fetch(`${apiBase}/supervisor/status`).catch(() => null);
-    if (res && res.ok) {
-      const data = await res.json().catch(() => ({}));
-      if (data.running || attempts >= 5) {
-        clearInterval(_confirmPoll);
-        _confirmPoll = null;
-        await loadStatus();
-      }
-    } else if (attempts >= 5) {
-      clearInterval(_confirmPoll);
-      _confirmPoll = null;
+    const data = res && res.ok ? await res.json().catch(() => ({})) : {};
+    if (data.running || attempts >= 5) {
+      _stopConfirmPoll();
       await loadStatus();
     }
   }, 3000);
 }
 
-async function disableSupervisor() {
-  if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
-  const r = await fetch(`${apiBase}/settings/config`, {
-    method: 'POST',
-    headers: jsonCsrfHeaders(),
-    body: JSON.stringify({ key: 'supervisor.enabled', value: 'false' }),
-  });
-  const rBody = await r.json().catch(() => ({}));
-  if (!r.ok || rBody.error) {
-    const msg = rBody.error || rBody.detail || `HTTP ${r.status}`;
-    showToast(`Failed to disable supervisor: ${msg}`, 'error');
-    throw new Error(msg);
-  }
-  // Stop the running daemon so it doesn't keep polling with a stale config.
-  await fetch(`${apiBase}/supervisor/stop`, { method: 'POST' }).catch(() => null);
-  await loadStatus();
-}
+const _supervisorControls = mountSettingControls(document, {
+  'supervisor.enabled': {
+    onValue: (on) => document.getElementById('supervisor-off-note').classList.toggle('hidden', on),
+    onSaved: async (on) => {
+      if (on) _confirmRunning(); else _stopConfirmPoll();
+      await loadStatus();
+    },
+  },
+});
 
 // Status
 async function loadStatus() {
   try {
+    // A save that completes while this request is in flight makes its answer stale for the header switch.
+    const savesBefore = settingSaveCount();
     const res = await fetch(`${apiBase}/supervisor/status`);
     const data = await res.json();
-    const toggle = document.getElementById('supervisor-toggle');
     const label = document.getElementById('supervisor-toggle-label');
     const pollBtn = document.getElementById('poll-btn');
 
-    toggle.checked = !!data.enabled;
+    const enabledSwitch = _supervisorControls['supervisor.enabled'];
+    if (enabledSwitch && settingSaveCount() === savesBefore) enabledSwitch.sovaSetValue(!!data.enabled);
 
     if (!data.enabled) {
       label.textContent = 'Disabled';
