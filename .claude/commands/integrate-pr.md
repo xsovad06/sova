@@ -77,7 +77,24 @@ sova linked-issues <PR_NUMBER>
 
 It prints `{"closes": [...], "part_of": [...]}`: the issues a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms), then the `Part of #N` issues the PR only partly finishes. `<ISSUE_NUMBER>` is the first `closes` entry, else the first `part_of` entry. A bare `#N` in the body or the title is a mention, not a link. On a Jira project it is the ticket key the PR title starts with (`[PROJ-123]`). `<ISSUE_NUMBER>` never decides which issues get closed: Phase 6 does, from the merged PR's body.
 
-Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval.
+Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval, except against a standing SOVA REVISE or BLOCK verdict (Phase 1b).
+
+### Phase 1b: SOVA Verdict Gate (hard-blocking)
+
+SOVA posts its review as a COMMENT, which GitHub never counts as a block, so `reviewDecision` and green checks say nothing about a REVISE or BLOCK verdict. This gate asks the same resolver the dashboard and the PR monitor use (GitHub's latest `sova-review` marker for the current head, else the local reviewer handoff naming the same PR and head), so a verdict whose post failed still stops the merge. It runs before Phase 2, whose push would change the head and make the verdict read as stale (`none`):
+
+```bash
+HEAD=$(gh pr view <PR_NUMBER> --json headRefOid --jq .headRefOid) || HEAD=unknown
+VERDICT=$(sova pr-verdict <PR_NUMBER>) || VERDICT=unknown
+echo "SOVA_VERDICT $VERDICT head=$HEAD"
+```
+
+`sova pr-verdict` prints one word (`approve`, `revise`, `block`, `none` or `unknown`) and reads the primary checkout's handoff files itself, from any worktree.
+
+- **`approve` or `none`**: continue to Phase 2.
+- **`revise` or `block`**: STOP. Report the verdict: the head has not passed SOVA review, and the remedy is `/address-pr` (or a re-review once the findings are fixed).
+- **`unknown`** (GitHub unreachable, or the lookup failed): STOP and ask. Do not merge on a verdict nobody could read.
+- **Override**: only an explicit `--override-sova-verdict` in `$ARGUMENTS` continues past `revise`, `block` or `unknown`. Print `OVERRIDE: merging PR <PR_NUMBER> over SOVA verdict <verdict> on head <HEAD>` first, and repeat it in the Phase 7 report. A bare invocation, or the user's invoking the command, never bypasses this gate.
 
 ### Phase 2: Assess Mergeability (push only when the PR cannot merge as it stands)
 
