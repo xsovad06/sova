@@ -301,8 +301,10 @@ def _check_keyring_secrets(project_dir: Path) -> list[DiagnosticCheck]:
             # (see scoped_secret_name()), not the bare key: a bare-key lookup
             # here would only ever find the legacy unscoped entry, reporting
             # a mismatch for every secret resolved through the scoped path
-            # even though it resolves correctly.
-            scoped = keyring_store.scoped_secret_name(key, project_dir, cfg.llm.provider)
+            # even though it resolves correctly. A key with a fixed scope (the
+            # ntfy token) does not depend on the LLM provider.
+            scope = keyring_store.fixed_scope(key) or cfg.llm.provider
+            scoped = keyring_store.scoped_secret_name(key, project_dir, scope)
             if keyring_store.get_secret(scoped) or keyring_store.get_secret(key):
                 continue
             checks.append(

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Annotated, ClassVar, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _VALID_TASK_STATES = frozenset(
     {
@@ -632,6 +633,50 @@ class NotificationConfig(BaseSettings):
 
     webhook_url: str = ""
     webhook_headers: str = Field("", repr=False)
+
+    # Self-hosted ntfy server (JSON publish to the server root). Skipped when url or topic is empty.
+    ntfy_url: str = ""
+    ntfy_topic: str = ""
+    # Plain kind strings (see NotificationKind): the per-kind filter applies to ntfy only.
+    # NoDecode: pydantic-settings must not JSON-decode the env value, so SOVA_NOTIFICATION_NTFY_EVENTS accepts
+    # comma-separated text as well as a JSON array (see _split_ntfy_events).
+    ntfy_events: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["needs_human", "failed"])
+    # Bearer token. Read through keyring_store.resolve_ntfy_token() at send time, never logged.
+    ntfy_token: str = Field("", repr=False)
+    # Dashboard base URL used to build the notification click/url link.
+    link_base_url: str = ""
+
+    @field_validator("ntfy_events", mode="before")
+    @classmethod
+    def _split_ntfy_events(cls, v: object) -> list[str]:
+        """Normalize to a list of lowercase, stripped kind strings; never raise and never return a non-list.
+
+        Accepts comma-separated text, a JSON array string (an env override arrives as text), or a real list
+        (TOML or DB). Malformed text such as ``[needs_human`` falls back to comma splitting, non-string
+        elements are coerced with ``str()``, and empty entries are dropped. An unknown kind is not rejected
+        here: notify() ignores it with a warning (a stored value must never make load_config() raise).
+        """
+        items: list[object]
+        if isinstance(v, str):
+            text = v.strip()
+            parsed: object = None
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                    text = text.strip("[]")
+            if isinstance(parsed, list):
+                items = parsed
+            else:
+                items = [part.strip(" \t'\"") for part in text.split(",")]
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            items = list(v)
+        elif v is None:
+            items = []
+        else:
+            items = [v]
+        return [entry for entry in (str(item).strip().lower() for item in items) if entry]
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_NOTIFICATION_")
 

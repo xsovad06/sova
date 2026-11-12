@@ -13,14 +13,15 @@ keyring by the settings layer (``sova/dashboard/services/settings_service.py``):
 every ``value_type="secret"`` setting is masked on display, but moving a
 setting's storage here is only safe once its one read site calls
 ``resolve_secret()`` instead of reading the config field directly (see
-``sova/llm/provider.py:create_provider``'s anthropic branch for the only
-current example). Adding a new name to this set without updating its
-consumption site would silently replace a working credential with the
+``sova/llm/provider.py:create_provider``'s anthropic branch, and
+``sova/ipc/notifications.py:send_ntfy_notification`` for the ntfy token). Adding a new name to this set without
+updating its consumption site would silently replace a working credential with the
 literal ``SENTINEL`` string.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from sova.utils.logging import get_logger
@@ -46,7 +47,14 @@ SERVICE_NAME = "sova"
 # API key, token, or password a user might type.
 SENTINEL = "keyring:stored"
 
-RESOLVED_SECRET_KEYS = frozenset({"llm.api_key"})
+NTFY_TOKEN_KEY = "notification.ntfy_token"
+# Fixed scope segment for NTFY_TOKEN_KEY: unlike llm.api_key it does not depend on the active LLM provider.
+NTFY_SCOPE = "ntfy"
+
+RESOLVED_SECRET_KEYS = frozenset({"llm.api_key", NTFY_TOKEN_KEY})
+
+# Keys whose keyring scope segment is fixed; every other key is scoped by the LLM provider.
+_FIXED_SCOPES: dict[str, str] = {NTFY_TOKEN_KEY: NTFY_SCOPE}
 
 _backend_usable: bool | None = None
 
@@ -160,6 +168,26 @@ def resolve_secret(name: str, db_value: str | None, *, legacy_name: str | None =
     if db_value and db_value != SENTINEL:
         return db_value
     return ""
+
+
+def fixed_scope(name: str) -> str | None:
+    """Return *name*'s fixed keyring scope segment, or ``None`` when it is scoped by the LLM provider."""
+    return _FIXED_SCOPES.get(name)
+
+
+NTFY_TOKEN_ENV = "SOVA_NOTIFICATION_NTFY_TOKEN"
+
+
+def resolve_ntfy_token(db_value: str | None, project_dir: str | Path) -> str:
+    """Resolve the ntfy bearer token for *project_dir*: the environment variable, then keyring, then the database.
+
+    The environment variable is read here, ahead of the keyring, because it is an explicit operator override
+    (for example rotating a token that the keyring still holds in its old form).
+    """
+    env_value = os.environ.get(NTFY_TOKEN_ENV, "").strip()
+    if env_value:
+        return env_value
+    return resolve_secret(scoped_secret_name(NTFY_TOKEN_KEY, project_dir, NTFY_SCOPE), db_value)
 
 
 def migrate_plaintext_to_keyring(name: str, value: str) -> bool:

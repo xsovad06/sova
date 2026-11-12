@@ -341,6 +341,13 @@ def _active_llm_provider(project_dir: Path | None) -> str | None:
         return None
 
 
+def _keyring_scope(project_dir: Path | None, key: str, provider: str) -> str | None:
+    """Return the scope segment for *key*'s keyring entry (``None`` when it cannot be resolved)."""
+    from sova.llm import keyring_store
+
+    return keyring_store.fixed_scope(key) or provider or _active_llm_provider(project_dir)
+
+
 async def _save_secret(
     project_dir: Path | None, key: str, value: str, *, provider: str = ""
 ) -> tuple[bool, str | None]:
@@ -386,7 +393,7 @@ async def _save_secret(
         return await _save_setting_to_db(project_dir, key, value), None
 
     resolved_dir = project_dir if project_dir is not None else Path.cwd()
-    resolved_provider = provider or _active_llm_provider(project_dir)
+    resolved_provider = _keyring_scope(project_dir, key, provider)
     if not resolved_provider:
         return False, "Could not determine the active LLM provider; the key was not saved"
     scoped_name = keyring_store.scoped_secret_name(key, resolved_dir, resolved_provider)
@@ -394,7 +401,8 @@ async def _save_secret(
     # active when it was written, so it is only deleted here (never for an
     # arbitrary other provider's clear) when the resolved provider is also
     # the currently-active one.
-    legacy_owned = resolved_provider == _active_llm_provider(project_dir)
+    # Only llm.api_key ever had a legacy unscoped entry.
+    legacy_owned = keyring_store.fixed_scope(key) is None and resolved_provider == _active_llm_provider(project_dir)
 
     if not value:
         deleted = keyring_store.delete_secret(scoped_name)
@@ -443,7 +451,7 @@ async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
         return {"error": "OS keyring is not available on this machine"}
 
     resolved_dir = project_dir if project_dir is not None else Path.cwd()
-    provider = _active_llm_provider(project_dir)
+    provider = _keyring_scope(project_dir, key, "")
     if not provider:
         return {"error": "Could not determine the active LLM provider; the key was not migrated"}
     scoped_name = keyring_store.scoped_secret_name(key, resolved_dir, provider)
