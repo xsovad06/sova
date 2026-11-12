@@ -238,6 +238,43 @@ def test_a_spending_limit_of_zero_is_refused_with_a_message(tmp_path) -> None:
     assert _validate_config_consistency(tmp_path, "agent.max_issue_budget", Decimal("5")) is None
 
 
+class TestSingleProjectResolution:
+    """In single-project mode (`sova dashboard --project X`) a request carries no project context. The config read
+    and the save must both fall back to the startup project, not the server's working directory: otherwise a
+    control's read-back after a save shows the defaults of whatever directory the server started in."""
+
+    @pytest.mark.parametrize(
+        ("method", "path", "body"),
+        [
+            ("get", "/api/settings/config", None),
+            ("get", "/api/settings/config/grouped", None),
+            ("post", "/api/settings/config", {"key": "max_parallel_agents", "value": 3}),
+        ],
+    )
+    async def test_uses_the_startup_project_without_a_request_project(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch, tmp_path, method: str, path: str, body: object
+    ) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        startup_project = tmp_path / "startup-project"
+        seen: list[object] = []
+        service = MagicMock(
+            get_config=MagicMock(side_effect=lambda project_dir, **_: seen.append(project_dir) or {}),
+            _get_raw_config=MagicMock(side_effect=lambda project_dir: seen.append(project_dir) or {}),
+            get_secret_locations=MagicMock(return_value={}),
+            update_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"error": "x"}),
+        )
+        monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", service)
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: None, raising=False)
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_default_project_dir", lambda: startup_project)
+
+        resp = await (client.post(path, json=body) if method == "post" else client.get(path))
+
+        assert resp.status_code == 200
+        assert seen, "the endpoint never reached settings_service"
+        assert all(p == startup_project for p in seen), seen
+
+
 class TestStatusPollsDoNotOverwriteASave:
     """A status poll that starts before a save and answers after it carries the pre-save value. The header switch
     must skip that answer (as the Agents page's limit does), or it flips back until the next poll."""

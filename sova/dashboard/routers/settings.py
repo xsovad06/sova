@@ -134,11 +134,19 @@ class SecretKeyRequest(BaseModel):
     key: str
 
 
+def _settings_project_dir() -> Path | None:
+    """The project every route in this router acts on: the request's project in multi-project mode, else the startup
+    project in single-project mode. In single-project mode this is the startup project, never ``None``, which
+    ``load_config()`` reads as the server's working directory while a save goes to the startup project's database:
+    a control's read-back would show defaults. It is ``None`` only in multi-project mode with no project selected."""
+    return resolve_project_dir_or_none(get_project_dir(), default_project_dir=get_default_project_dir())
+
+
 @router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
 async def get_config() -> dict:
     """Get the current project configuration (flat, for backward compat)."""
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         return {"config": settings_service.get_config(project_dir)}
     except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
         log.warning("settings.config.get.error", exc_info=True)
@@ -155,7 +163,7 @@ async def get_config_grouped() -> dict:
     from sova.llm import keyring_store
 
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         raw = settings_service._get_raw_config(project_dir)
         flat = settings_service.get_config(project_dir, raw=raw)
         locations = settings_service.get_secret_locations(project_dir, raw=raw)
@@ -179,7 +187,7 @@ async def migrate_secret_to_keyring(req: SecretKeyRequest) -> dict:
     button; never run automatically.
     """
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         return await settings_service.migrate_secret_to_keyring(project_dir, req.key)
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.config.migrate_secret.error", exc_info=True)
@@ -208,7 +216,7 @@ async def _check_component_availability(
     from sova.config.loader import load_config
 
     try:
-        cfg = load_config(get_project_dir())
+        cfg = load_config(_settings_project_dir())
     except Exception as exc:  # noqa: BLE001 (report config errors inline, not as 500)
         log.warning(f"{log_prefix}.config_error", exc_info=True)
         return {"ok": False, result_key: None, "detail": f"Failed to load configuration: {exc}"}
@@ -286,7 +294,7 @@ async def llm_cost_projection() -> dict:
     from sova.db.session import get_session
 
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         async with await get_session(project_dir=project_dir) as session:
             projection = await cost_service.get_monthly_projection(session)
     except Exception as exc:  # noqa: BLE001 (never 500 a widget)
@@ -471,7 +479,7 @@ async def _apply_config_update(project_dir: Path, key: str, result: dict) -> Non
 async def update_config(req: ConfigUpdateRequest) -> dict:
     """Update a single configuration key."""
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         value_str = _config_value_to_str(req.value)
         result = await settings_service.update_config(project_dir, key=req.key, value=value_str, provider=req.provider)
         if result.get("unreadable_database"):
@@ -560,7 +568,7 @@ async def installation_diff() -> dict[str, object]:
     from sova.config.loader import load_config
     from sova.dashboard.services.settings_service import build_installation_diff
 
-    project_dir = get_project_dir()
+    project_dir = _settings_project_dir()
     if not project_dir or not project_dir.is_dir():
         raise HTTPException(status_code=400, detail="No active project")
 
@@ -585,7 +593,7 @@ async def installation_diff() -> dict[str, object]:
 async def list_invariants() -> dict:
     """List invariant scripts."""
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         return {"invariants": settings_service.list_invariants(project_dir)}
     except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.invariants.error", exc_info=True)
@@ -596,7 +604,7 @@ async def list_invariants() -> dict:
 async def list_personas() -> dict:
     """List available personas and detected persona."""
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         return {
             "personas": settings_service.list_personas(project_dir),
             "detected": settings_service.get_detected_persona(project_dir),
@@ -612,7 +620,7 @@ async def get_operations_persona():
     try:
         from sova.config.loader import load_config
 
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         cfg = load_config(project_dir)
 
         from sova.oversight.persona import get_persona_info
@@ -638,7 +646,7 @@ async def open_persona_in_editor():
     from sova.oversight.persona import ensure_persona_exists, get_open_command
 
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         cfg = load_config(project_dir)
     except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.persona.open.config_error", exc_info=True)
@@ -781,7 +789,7 @@ async def audit_labels() -> dict:
     from sova.config.loader import load_config
 
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         cfg = load_config(project_dir)
         _validate_github_config(cfg)
 
@@ -810,7 +818,7 @@ async def create_missing_labels() -> dict:
     from sova.utils.gh import resolve_gh_env
 
     try:
-        project_dir = get_project_dir()
+        project_dir = _settings_project_dir()
         cfg = load_config(project_dir)
         _validate_github_config(cfg)
 
