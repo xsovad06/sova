@@ -21,6 +21,7 @@ from sova.dashboard.services.merge_queue_monitor import (
 from sova.db.models import MergeQueueEntry
 from sova.db.session import get_session
 from sova.git.merge import MergeQueueStatus, _PartOfResult
+from sova.ipc.notifications import NotificationKind
 from sova.utils.shell import ShellResult
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -490,11 +491,12 @@ class TestHandleEjected:
 
         with (
             patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
-            patch.object(monitor, "_notify"),
+            patch.object(monitor, "_notify") as mock_notify,
         ):
             await monitor._handle_ejected(entry, "UNMERGEABLE")
 
         mock_emit.assert_called_once()
+        assert mock_notify.call_args.kwargs["kind"] is NotificationKind.INFO
         args = mock_emit.call_args
         assert "UNMERGEABLE" in args[0][0]
 
@@ -522,11 +524,12 @@ class TestHandleTimeout:
 
         with (
             patch("sova.dashboard.services.feed_service.emit_safe") as mock_emit,
-            patch.object(monitor, "_notify"),
+            patch.object(monitor, "_notify") as mock_notify,
         ):
             await monitor._handle_timeout(entry)
 
         mock_emit.assert_called_once()
+        assert mock_notify.call_args.kwargs["kind"] is NotificationKind.INFO
 
         remaining = await _load_queued_entries(project_dir)
         assert len(remaining) == 0
@@ -633,13 +636,15 @@ class TestNotify:
         monitor = _make_monitor(project_dir)
 
         with patch("sova.ipc.notifications.notify") as mock_notify:
-            monitor._notify(subtitle="Test", message="Hello")
+            monitor._notify(pr_number=7, kind=NotificationKind.FAILED, subtitle="Test", message="Hello")
 
         mock_notify.assert_called_once()
+        assert mock_notify.call_args.kwargs["kind"] is NotificationKind.FAILED
+        assert mock_notify.call_args.kwargs["pr_number"] == 7
 
     def test_noop_when_no_config(self, project_dir: Path) -> None:
         monitor = _make_monitor(project_dir, notification_config=None)
-        monitor._notify(subtitle="Test", message="Hello")
+        monitor._notify(pr_number=7, kind=NotificationKind.INFO, subtitle="Test", message="Hello")
 
 
 # ---------------------------------------------------------------------------

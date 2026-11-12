@@ -41,6 +41,7 @@ from sova.core.workflow import WorkflowEngine
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.models import LLMResult
+from sova.roles._review_format import format_review_body
 from sova.utils.shell import ShellResult
 
 
@@ -206,8 +207,6 @@ class TestThreadIdsForComments:
 class TestHydrationRecordsCommentId:
     @pytest.mark.asyncio
     async def test_hydrated_finding_carries_the_inline_comment_id(self, tmp_path: Path) -> None:
-        from sova.roles._review_format import format_review_body
-
         body = format_review_body(
             [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash on empty input"}],
             "summary",

@@ -128,6 +128,26 @@ def test_no_checks_when_scoped_entry_resolves_but_bare_entry_does_not(tmp_path: 
     assert checks == []
 
 
+def test_ntfy_token_looked_up_under_its_fixed_scope(tmp_path: Path) -> None:
+    """The ntfy token is stored under the fixed "ntfy" scope, not the LLM provider's."""
+    scoped_name = keyring_store.scoped_secret_name(keyring_store.NTFY_TOKEN_KEY, tmp_path, keyring_store.NTFY_SCOPE)
+
+    def fake_get_secret(name: str) -> str | None:
+        return "tk-real" if name == scoped_name else None
+
+    with (
+        patch.object(
+            settings_service, "_get_raw_config", return_value={keyring_store.NTFY_TOKEN_KEY: keyring_store.SENTINEL}
+        ),
+        patch("sova.config.loader.load_config") as mock_load_config,
+        patch.object(keyring_store, "get_secret", side_effect=fake_get_secret),
+    ):
+        mock_load_config.return_value.llm.provider = "anthropic"
+        checks = _check_keyring_secrets(tmp_path)
+
+    assert checks == []
+
+
 def test_plaintext_value_not_reported(tmp_path: Path) -> None:
     """A plaintext-stored secret (not the sentinel) is normal and not flagged."""
     with patch.object(settings_service, "_get_raw_config", return_value={"llm.api_key": "sk-ant-plaintext"}):

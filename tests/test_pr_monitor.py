@@ -125,7 +125,19 @@ class TestFirstCycleSuppression:
         call_kwargs = mock_notify.call_args.kwargs
         assert call_kwargs["subtitle"] == "PR #1 Approved"
         assert call_kwargs["group"] == "sova-pr-1"
+        assert call_kwargs["kind"] == "info"
+        assert call_kwargs["pr_number"] == 1
         assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED
+
+    @pytest.mark.asyncio
+    async def test_ready_to_merge_is_sent_as_needs_human(self, tmp_path: Path) -> None:
+        monitor = _make_monitor(tmp_path)
+        snapshot = PRSnapshot(number=2, computed_state=ComputedPRState.APPROVED_CI_GREEN, title="T")
+
+        with patch("sova.ipc.notifications.notify") as mock_notify:
+            monitor._maybe_notify(snapshot)
+
+        assert mock_notify.call_args.kwargs["kind"] == "needs_human"
 
 
 # ---------------------------------------------------------------------------
