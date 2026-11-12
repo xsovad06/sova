@@ -43,6 +43,14 @@ class TestCreateServer:
             "sova_address_review",
             "sova_create_pr",
             "sova_read_project",
+            "sova_status",
+            "sova_pending",
+            "sova_start_run",
+            "sova_stop_run",
+            "sova_resume_run",
+            "sova_handoff_dismiss",
+            "sova_handoff_action",
+            "sova_plan_decision",
         }
         assert expected == tool_names
 

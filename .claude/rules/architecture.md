@@ -71,6 +71,7 @@ Deep-dive per-module notes (what each `sova/` subpackage does, and the non-obvio
 - `sova/commands/`
 - `sova/config/`
 - `sova/db/`
+- `sova/mcp/`
 - `sova/supervisor/`
 - Supervisor API caching layer
 - `.claude/benchmark/`

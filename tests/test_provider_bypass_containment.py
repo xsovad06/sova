@@ -39,7 +39,8 @@ SOVA_ROOT = REPO_ROOT / "sova"
 # Modules outside sova/llm/ known to need a direct HTTP/SDK client for
 # something other than an LLM call: Jira REST API, push notifications,
 # dependency registry lookups, the setup wizard's connection checks,
-# fire-and-forget telemetry reporting to SOVA's own endpoint, and the
+# fire-and-forget telemetry reporting to SOVA's own endpoint, the MCP operator
+# tools' loopback client of the running SOVA server, and the
 # awareness subsystem's Google OAuth flow (Gmail/GCal, unrelated to any LLM
 # provider's ADC usage). Any new import of one of these identifiers outside
 # sova/llm/ must be added here deliberately, after confirming it is not a
@@ -53,6 +54,7 @@ _ALLOWED_HTTP_IMPORT_USERS: dict[str, frozenset[Path]] = {
             SOVA_ROOT / "dashboard" / "services" / "setup_service.py",
             SOVA_ROOT / "dashboard" / "services" / "telemetry_push.py",
             SOVA_ROOT / "ipc" / "notifications.py",
+            SOVA_ROOT / "mcp" / "operator.py",
         }
     ),
     "google.auth": frozenset({SOVA_ROOT / "awareness" / "auth" / "google_oauth.py"}),
