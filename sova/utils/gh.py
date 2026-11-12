@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -299,6 +300,8 @@ CLOSES_RE = re.compile(rf"{CLOSING_REFERENCE_PREFIX}#(\d+)", re.IGNORECASE)
 # The issue number SOVA's own branches carry (``feat/issue-1354``); shared by the dashboard resolver and
 # resolve_linked_issue() so both break a multi-issue tie the same way.
 BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
+# A GitHub issue in a PR title: ``(#N)`` or ``[#N]``. Jira keys (``[PROJ-N]``) are not matched.
+TITLE_ISSUE_RE = re.compile(r"[(\[]#(\d+)[)\]]")
 
 
 def closing_pattern_for(issue_num: str) -> re.Pattern[str]:
@@ -369,6 +372,94 @@ def parse_issue_links(body: str) -> IssueLinks:
         if number not in closes
     )
     return IssueLinks(closes=closes, part_of=part_of)
+
+
+@dataclass(frozen=True)
+class PrIssueChoice:
+    """The issues one PR resolves to, best candidate first, and which signal picked the first.
+
+    ``signal`` is ``"section"`` (the ``## Issue`` section decided it), ``"branch"`` (the branch's
+    ``issue-N`` did), ``"body"`` (a closing or "Part of" reference outside that section) or
+    ``"none"`` (nothing decided it: the first GitHub reference, or no candidate at all).
+    """
+
+    candidates: tuple[str, ...]
+    signal: str
+
+    @property
+    def primary(self) -> str | None:
+        return self.candidates[0] if self.candidates else None
+
+
+def choose_pr_issue(body: str, branch: str, closing_refs: Iterable[int | str] = ()) -> PrIssueChoice:
+    """Resolve the issue a PR is for from its *body*, *branch* and GitHub's *closing_refs*.
+
+    The one rule set behind the dashboard rows and the run's recorded issue. resolve_linked_issue()
+    shares it but passes no *closing_refs* (it never fetches closingIssuesReferences), so it applies
+    only the no-reference rules below. Code spans and fenced blocks never name an issue
+    (parse_issue_links()).
+
+    With GitHub closing references, the first rule that applies wins:
+
+    1. The ``## Issue`` section names the branch's ``issue-N``: N, even when GitHub lists another
+       issue (a stray closing phrase elsewhere in the body made it list that one).
+    2. The section names a listed reference: that one, so a stacked PR that states its closing
+       issue in the section keeps it.
+    3. The branch encodes ``issue-N``: N, even when GitHub lists only other issues.
+    4. Otherwise the first listed reference.
+
+    When the winner is not among the listed references (rules 1 and 3 can pick one GitHub does not
+    list), the listed references are dropped from ``candidates`` rather than kept as fallbacks.
+
+    Without references the ``## Issue`` section is read first (closing before "Part of"), then the
+    body's closing references, then its "Part of" references; the branch's issue breaks a tie inside
+    the scope that is read. Every other candidate follows, so a caller that must reject one (a PR
+    number) can try the next. A branch with no ``issue-N`` leaves the order to the body.
+    """
+    branch_match = BRANCH_ISSUE_RE.search(branch or "")
+    branch_issue = branch_match.group(1) if branch_match else None
+    section_links = parse_issue_links(extract_section(body or "", "Issue"))
+    section_issues = section_links.closes + section_links.part_of
+
+    refs = tuple(dict.fromkeys(str(n) for n in closing_refs))
+    if refs:
+        listed_in_section = [n for n in refs if n in section_issues]
+        if branch_issue in section_issues:
+            chosen, signal = branch_issue, "section"
+        elif listed_in_section:
+            chosen, signal = listed_in_section[0], "section"
+        elif branch_issue is not None:
+            chosen, signal = branch_issue, "branch"
+        else:
+            chosen, signal = refs[0], "none"
+        if chosen not in refs:
+            # The branch or section overrode every listed reference: they are strays, so no caller
+            # may fall back to one of them (it would file the work under the issue just rejected).
+            return PrIssueChoice((chosen,), signal)
+        return PrIssueChoice((chosen, *(n for n in refs if n != chosen)), signal)
+
+    body_links = parse_issue_links(body or "")
+    scopes = (("section", section_issues), ("body", body_links.closes), ("body", body_links.part_of))
+    winning = next(((name, scope) for name, scope in scopes if scope), None)
+    if winning is None:
+        return PrIssueChoice((), "none")
+    signal, scope = winning
+    first = branch_issue if branch_issue in scope else scope[0]
+    ordered = dict.fromkeys((first, *(n for _, group in scopes for n in group)))
+    return PrIssueChoice(tuple(ordered), signal)
+
+
+def github_title_or_branch_issue(title: str, branch: str) -> str | None:
+    """Last-resort issue for a PR from GitHub syntax only: title ``(#N)``, then branch ``issue-N``.
+
+    Jira keys in the title or branch are deliberately not read, so a Jira-backed PR never has its
+    ``PROJ-42`` mistaken for GitHub issue 42. The dashboard reader layers its Jira fallbacks on top.
+    """
+    for pattern, text in ((TITLE_ISSUE_RE, title or ""), (BRANCH_ISSUE_RE, branch or "")):
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return None
 
 
 # The label render_closing_block() (sova/core/steps/_pr_body.py) writes above the unmet criteria, shared so
@@ -459,17 +550,10 @@ async def resolve_linked_issue(
         log.warning("gh.pr_body_parse_failed", pr=pr_number)
         raise RuntimeError(f"Failed to parse PR #{pr_number} body: {result.stdout[:200]}") from exc
 
-    branch_match = BRANCH_ISSUE_RE.search(branch)
-    branch_issue = branch_match.group(1) if branch_match else None
-    section_links = parse_issue_links(extract_section(body, "Issue"))
-    body_links = parse_issue_links(body)
-    # The PR's own "## Issue" section is the authoritative decision, so it is read to the end before
-    # the rest of the body: a stray closing phrase elsewhere must not beat a "Part of" written there.
-    for candidates in (section_links.closes + section_links.part_of, body_links.closes, body_links.part_of):
-        if candidates:
-            issue_num = branch_issue if branch_issue in candidates else candidates[0]
-            log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)
-            return issue_num
+    issue_num = choose_pr_issue(body, branch).primary
+    if issue_num is not None:
+        log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)
+        return issue_num
 
     log.warning("gh.no_linked_issue", pr=pr_number)
     return None
