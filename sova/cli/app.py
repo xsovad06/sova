@@ -22,7 +22,15 @@ from sova.cli.commands.harden import harden
 from sova.cli.commands.mcp import app as mcp_app
 from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.migrate import migrate_config
-from sova.cli.commands.pr import address_pr, learn_from_pr, linked_issues, maintain_pr, pr_verdict, review_pr
+from sova.cli.commands.pr import (
+    address_pr,
+    learn_from_pr,
+    linked_issues,
+    maintain_pr,
+    pr_verdict,
+    refresh_pr_body,
+    review_pr,
+)
 from sova.cli.commands.project import install, setup, uninstall
 from sova.cli.commands.run import parallel, run_issue, watch
 from sova.cli.commands.server import app as server_app
@@ -58,6 +66,7 @@ app.command(name="review-pr")(review_pr)
 app.command(name="learn-from-pr")(learn_from_pr)
 app.command(name="linked-issues")(linked_issues)
 app.command(name="pr-verdict")(pr_verdict)
+app.command(name="refresh-pr-body")(refresh_pr_body)
 
 # Configuration
 app.add_typer(config_app, name="config")
