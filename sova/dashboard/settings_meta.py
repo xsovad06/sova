@@ -1789,10 +1789,9 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.enabled",
         "Enabled",
-        "Enable the dependency-aware task progression engine",
+        "Enable the dependency-aware task progression engine; saving starts or stops it at once",
         "supervisor",
         "boolean",
-        requires_restart=True,
     ),
     SettingMeta(
         "supervisor.auto_triage",
