@@ -454,6 +454,9 @@ export function init() {
     document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
   }
 
+  // The quota widget's switch (settingSwitch in app.js) saves external_reviews.coderabbit.trigger_review.
+  mountSettingControls(document.getElementById('cr-quota-widget'));
+
   visibilityAwarePoll(loadPrTracker, 30000);
   visibilityAwarePoll(_syncCrQuota, 300000);
 }

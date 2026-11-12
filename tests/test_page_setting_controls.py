@@ -90,6 +90,26 @@ class TestAgentsPage:
         assert 'id="slots-info"' not in html
 
 
+class TestCostsPage:
+    async def test_header_has_the_per_issue_spending_limit_in_5_usd_steps(self, client: AsyncClient) -> None:
+        html = (await client.get("/costs")).text
+
+        tag = _stepper(html, "agent.max_issue_budget")
+        assert 'data-min="5"' in tag
+        assert 'data-step="5"' in tag
+        assert 'data-prefix="$"' in tag
+        assert "mountSettingControls(document)" in html
+
+
+class TestCodeRabbitSwitch:
+    async def test_quota_widget_has_the_review_trigger_switch(self, client: AsyncClient) -> None:
+        html = (await client.get("/agents")).text
+
+        widget = html[html.index('id="cr-quota-widget"') :]
+        widget = widget[: widget.index("<!-- Handoff actions")]
+        assert _switch_keys(widget) == ["external_reviews.coderabbit.trigger_review"]
+
+
 class TestOversightPage:
     async def test_header_switch_replaces_the_disabled_banner(self, client: AsyncClient) -> None:
         html = (await client.get("/oversight")).text
