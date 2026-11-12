@@ -1,4 +1,4 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, learn-from-pr."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, learn-from-pr."""
 
 from __future__ import annotations
 
@@ -177,6 +177,58 @@ def linked_issues(
     it open, and a bare #N is a mention, not a link.
     """
     asyncio.run(_linked_issues(pr=pr, apply=apply, mark_in_review=mark_in_review, project_dir=project))
+
+
+def pr_verdict(
+    pr: Annotated[int, typer.Argument(help="PR number.")],
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Print SOVA's verdict for a PR's current head: approve, revise, block, none or unknown.
+
+    The same answer the dashboard and the PR monitor use: GitHub's latest sova-review marker for the
+    current head, else the local reviewer handoff naming the same PR and head (a verdict whose post
+    failed). Always prints exactly one word on stdout and exits 0; "unknown" means the verdict could
+    not be read (GitHub unreachable, no repo configured, or the head could not be resolved).
+    """
+    typer.echo(asyncio.run(_pr_verdict(pr=pr, project_dir=project)))
+
+
+async def _pr_verdict(*, pr: int, project_dir: Path | None) -> str:
+    """The verdict word for *pr*; any failure to read it prints its reason on stderr and returns "unknown"."""
+    try:
+        return await _read_pr_verdict(pr=pr, project_dir=project_dir)
+    except (RuntimeError, OSError, ValueError) as exc:
+        # gh failures surface as RuntimeError; VERDICT=$(sova pr-verdict N) needs the word, not a traceback.
+        console.print(f"[red]Could not read the verdict of PR #{pr}: {exc}[/red]")
+        return "unknown"
+
+
+async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
+    from sova.config.loader import load_config
+    from sova.dashboard.services.pr_service import resolve_head_verdict
+    from sova.git.pr import get_pr_head_sha, get_pr_review_data
+    from sova.git.worktree import get_primary_worktree_root
+    from sova.ipc.handoff import read_all_handoff_files
+    from sova.utils.gh import get_active_gh_user
+
+    # A linked worktree has no sova.db and its handoff files live in the primary checkout.
+    root = project_dir or await get_primary_worktree_root()
+    config = load_config(root)
+    if not config.github_repo:
+        console.print("[red]No github_repo configured: cannot read the PR verdict.[/red]")
+        return "unknown"
+    head_sha = await get_pr_head_sha(pr, repo=config.github_repo, github_user=config.github_user)
+    if not head_sha:
+        console.print(f"[red]Could not read the head commit of PR #{pr}.[/red]")
+        return "unknown"
+    data = await get_pr_review_data([pr], repo=config.github_repo, github_user=config.github_user)
+    return resolve_head_verdict(
+        data.get(pr),
+        pr_number=pr,
+        head_sha=head_sha,
+        trusted_login=config.github_user or await get_active_gh_user() or "",
+        handoffs=read_all_handoff_files(root),
+    )
 
 
 async def _pr_state(pr: int, repo: str, env: dict[str, str] | None) -> str:

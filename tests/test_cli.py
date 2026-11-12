@@ -2279,3 +2279,79 @@ class TestDbCommand:
 
         assert result.exit_code == 0
         assert calls == ["acquire", "release"]
+
+
+class TestPrVerdictCommand:
+    """`sova pr-verdict` prints the head verdict /integrate-pr gates on."""
+
+    def _invoke(self, *, head: str, review_data: object, handoffs: list | None = None, repo: str = "o/r"):
+        from sova.cli.app import app
+
+        cfg = MagicMock(github_repo=repo, github_user="sova-bot")
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.git.pr.get_pr_head_sha", new_callable=AsyncMock, return_value=head),
+            patch("sova.git.pr.get_pr_review_data", new_callable=AsyncMock, return_value={7: review_data}),
+            patch("sova.ipc.handoff.read_all_handoff_files", return_value=handoffs or []),
+        ):
+            return runner.invoke(app, ["pr-verdict", "7", "--project", "."])
+
+    def test_prints_github_marker_verdict(self) -> None:
+        history = [
+            {
+                "state": "COMMENTED",
+                "body": "<!-- sova-review: revise sha=abc1234 -->",
+                "submitted_at": "1",
+                "author": "sova-bot",
+            }
+        ]
+        result = self._invoke(
+            head="abc1234", review_data=MagicMock(review_history=history, review_history_truncated=False)
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "revise"
+
+    def test_local_handoff_covers_a_failed_post(self) -> None:
+        from sova.ipc.handoff import DashboardHandoff
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            pr_number=7,
+            summary="review",
+            details={"verdict": "block", "review_head_sha": "abc1234"},
+        )
+        result = self._invoke(
+            head="abc1234", review_data=MagicMock(review_history=[], review_history_truncated=False), handoffs=[handoff]
+        )
+
+        assert result.stdout.strip() == "block"
+
+    def test_unreadable_head_prints_unknown(self) -> None:
+        result = self._invoke(head="", review_data=None)
+
+        assert result.exit_code == 0
+        assert result.stdout == "unknown\n"
+
+    def test_gh_failure_prints_unknown_and_exits_zero(self) -> None:
+        from sova.cli.app import app
+
+        cfg = MagicMock(github_repo="o/r", github_user="sova-bot")
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch(
+                "sova.git.pr.get_pr_head_sha",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh pr view failed: network unreachable"),
+            ),
+        ):
+            result = runner.invoke(app, ["pr-verdict", "7", "--project", "."])
+
+        assert result.exit_code == 0
+        assert result.stdout == "unknown\n"
+
+    def test_no_repo_prints_unknown(self) -> None:
+        result = self._invoke(head="abc1234", review_data=None, repo="")
+
+        assert result.stdout == "unknown\n"
