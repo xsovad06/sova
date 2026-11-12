@@ -43,7 +43,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # Issue #1321 raised this by 6,000 for the required-check name lookup in Phase 4 (fast path and poll):
     # the rulesets (every page), the matching against the registered checks, the required-only verdict, and
     # the union with the names `gh pr checks --required` reports (classic protection).
-    "integrate-pr.md": 64_500,
+    # Phase 1b (SOVA verdict gate) added 2,400: a COMMENT review is never a GitHub block, so the merge path
+    # asks the shared resolver for a standing REVISE or BLOCK on the head (issue #1436).
+    "integrate-pr.md": 67_000,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     "pr.md": 36_000,
