@@ -1189,8 +1189,7 @@ def _interpret_codex_auth_probe(text: str | None) -> tuple[bool | None, str]:
     ``codex login status`` has no documented machine-readable contract, so
     text is scanned defensively rather than assumed to be JSON. A JSON
     payload is still attempted first in case a future CLI version emits one;
-    a bare scalar (valid JSON, but not an object, the same trap documented
-    for ``_parse_log_file()``) carries no fields to read and falls through to
+    a bare scalar (valid JSON, but not an object) carries no fields to read and falls through to
     the plain-text scan below, matching ``_extract_auth_detail()`` in
     ``doctor.py`` for ``gh auth status``.
     """

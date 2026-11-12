@@ -29,7 +29,7 @@ sova/
     core/                          # Workflow engine, 29 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer)
     adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
-    dashboard/                     # FastAPI web UI (33 routers, 48 services, 29 templates)
+    dashboard/                     # FastAPI web UI (32 routers, 48 services, 27 templates)
     scheduler/                     # Watch loop, server daemon
     llm/                           # Claude CLI async wrapper, cost tracking
     mcp/                           # MCP server for tool integration
@@ -142,7 +142,7 @@ Developer -> Reviewer -> Developer runs autonomously via `HandoffAction.auto_exe
 
 FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 
-### Pages (14 active)
+### Pages (12 active)
 - **Home**: project list (command center) for multi-project installations
 - **Agents**: multi-agent control panel (start/stop, status, handoff actions, task browser, cost/completion stats)
 - **Work**: issue-centric view linking issues to their TaskRuns and lifecycle
@@ -150,8 +150,6 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 - **Lifecycle**: issue lifecycle rail (development -> post_pr -> review -> address_review -> integrate -> post_merge)
 - **Costs**: per-task and per-model cost tracking
 - **Queue**: batch operations (triage/harden multiple issues), progress bar
-- **Logs**: real-time agent output streaming
-- **Memory**: knowledge base browser (memories, patterns, extractions)
 - **Settings**: runtime configuration management
 - **Setup**: project onboarding wizard with directory browser
 - **Roles**: role management and custom role configuration
@@ -159,7 +157,7 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 - **Style Guide**: design system reference with live component examples
 
 ### API
-33 routers under `/api` and 48 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more. See `docs/ARCHITECTURE.md`'s Project Structure for the full per-module list.
+32 routers under `/api` and 48 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more. See `docs/ARCHITECTURE.md`'s Project Structure for the full per-module list.
 
 ## Task Source Abstraction
 

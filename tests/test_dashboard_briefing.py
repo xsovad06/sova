@@ -341,3 +341,11 @@ async def test_nav_shows_briefing_link_when_awareness_enabled(client: AsyncClien
         resp = await client.get("/agents")
     assert resp.status_code == 200
     assert 'href="/briefing"' in resp.text
+
+
+@pytest.mark.asyncio
+async def test_briefing_is_first_entry_of_the_more_group(client: AsyncClient) -> None:
+    with patch("sova.dashboard.services.awareness_service.load_config", return_value=_mock_enabled_config()):
+        resp = await client.get("/agents")
+    group = resp.text[resp.text.index('id="sidebar-more-group"') :]
+    assert group.index('href="/briefing"') < group.index('href="/roles"')

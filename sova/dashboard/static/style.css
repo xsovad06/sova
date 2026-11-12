@@ -431,6 +431,21 @@
   transition: margin-left 300ms ease;
 }
 
+/* Leave room below the page content for the floating owl button and resource widget, so they never
+   cover the last row. The element selector outranks Tailwind's p-8; min-h-screen includes the padding
+   (border-box), so a short page that fits the viewport does not gain a scrollbar. */
+main.sidebar-main {
+  padding-bottom: 6rem;
+}
+
+.sidebar-more-chevron {
+  transition: transform 200ms ease;
+}
+
+#sidebar-more-toggle[aria-expanded="true"] .sidebar-more-chevron {
+  transform: rotate(180deg);
+}
+
 .sidebar-batch-bar {
   left: var(--sidebar-width);
   transition: left 300ms ease;

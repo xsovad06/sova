@@ -55,23 +55,26 @@
       </a>
     </div>
     <div class="sidebar-nav-scroll flex-1 py-2">
-      {% set nav_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
+      {% set nav_items = [
         ("agents", prefix + "/agents", "Agents", "agents"),
         ("queue", prefix + "/queue", "Queue", "queue"),
-        ("specs", prefix + "/specs", "Specs", "document-text"),
+        ("supervisor", prefix + "/supervisor", "Supervisor", "supervisor"),
+        ("oversight", prefix + "/oversight", "Oversight", "oversight"),
         ("costs", prefix + "/costs", "Costs", "costs"),
+      ] %}
+      {% set more_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
+        ("specs", prefix + "/specs", "Specs", "document-text"),
         ("pr-metrics", prefix + "/pr-metrics", "PR Metrics", "chart-bar"),
         ("reliability", prefix + "/reliability", "Reliability", "chart-bar"),
-        ("logs", prefix + "/logs", "Logs", "logs"),
-        ("memory", prefix + "/memory", "Memory", "memory"),
         ("roles", prefix + "/roles", "Roles", "roles"),
         ("commands", prefix + "/commands", "Commands", "commands"),
         ("dependency-health", prefix + "/dependency-health", "Dependencies", "shield"),
-        ("supervisor", prefix + "/supervisor", "Supervisor", "supervisor"),
         ("fleet", prefix + "/fleet", "Fleet", "fleet"),
-        ("oversight", prefix + "/oversight", "Oversight", "oversight"),
+        ("connections", prefix + "/connections", "Connections", "link"),
+        ("setup", "/setup", "Add Project", "plus-circle"),
       ] %}
-      {% for id, href, label, icon_name in nav_items %}
+      {% set more_active = page in (more_items | map(attribute=0) | list) %}
+      {% macro nav_link(id, href, label, icon_name) %}
       <a href="{{ href }}"
          aria-label="{{ label }}"
          data-tooltip="{{ label }}"
@@ -80,34 +83,32 @@
         <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon(icon_name, "w-[18px] h-[18px]") }}</span>
         <span class="sidebar-label">{{ label }}</span>
       </a>
+      {% endmacro %}
+      {% for id, href, label, icon_name in nav_items %}
+      {{ nav_link(id, href, label, icon_name) }}
       {% endfor %}
+
+      <!-- More: collapsed group, open on a child page (server-rendered) or by the remembered preference (app.js) -->
+      <button type="button" id="sidebar-more-toggle"
+              aria-label="More"
+              aria-expanded="{{ 'true' if more_active else 'false' }}"
+              aria-controls="sidebar-more-group"
+              data-tooltip="More"
+              data-active-child="{{ 'true' if more_active else 'false' }}"
+              class="sidebar-nav-link flex items-center w-full px-5 py-3 text-sm text-gray-400 hover:bg-sidebar-hover hover:text-gray-200 transition-colors">
+        <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("ellipsis", "w-[18px] h-[18px]") }}</span>
+        <span class="sidebar-label">More</span>
+        <svg class="sidebar-more-chevron sidebar-hide ml-auto w-3 h-3 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+      </button>
+      <div id="sidebar-more-group" class="{{ '' if more_active else 'hidden' }}">
+        {% for id, href, label, icon_name in more_items %}
+        {{ nav_link(id, href, label, icon_name) }}
+        {% endfor %}
+      </div>
 
       <div class="sidebar-divider border-t border-gray-700/30 my-2 mx-5"></div>
 
-      <a href="/setup"
-         aria-label="Add Project"
-         data-tooltip="Add Project"
-         class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
-                {{ 'bg-sidebar-active text-white' if page == 'setup' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
-        <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("plus-circle", "w-[18px] h-[18px]") }}</span>
-        <span class="sidebar-label">Add Project</span>
-      </a>
-      <a href="{{ prefix }}/connections"
-         aria-label="Connections"
-         data-tooltip="Connections"
-         class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
-                {{ 'bg-sidebar-active text-white' if page == 'connections' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
-        <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("link", "w-[18px] h-[18px]") }}</span>
-        <span class="sidebar-label">Connections</span>
-      </a>
-      <a href="{{ prefix }}/settings"
-         aria-label="Settings"
-         data-tooltip="Settings"
-         class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
-                {{ 'bg-sidebar-active text-white' if page == 'settings' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
-        <span class="sidebar-icon-wrap w-6 mr-3 flex items-center justify-center shrink-0">{{ icon("settings", "w-[18px] h-[18px]") }}</span>
-        <span class="sidebar-label">Settings</span>
-      </a>
+      {{ nav_link("settings", prefix + "/settings", "Settings", "settings") }}
     </div>
     <!-- Collapse toggle -->
     <div class="shrink-0 border-t border-gray-700/50">
@@ -218,7 +219,7 @@
   </button>
 
   <!-- Main content -->
-  <main id="main-content" class="sidebar-main flex-1 p-8 min-h-screen">
+  <main id="main-content" class="sidebar-main flex-1 min-w-0 p-8 min-h-screen">
     <!-- Connectivity banner. Deliberately has no Dismiss control, unlike the
          notification banner below: it clears itself the moment the connection
          is back, and dismissing it would hide why spawn buttons are disabled. -->

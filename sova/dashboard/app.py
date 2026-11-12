@@ -56,7 +56,6 @@ from sova.dashboard.routers import (
     handoff,
     health,
     lifecycle,
-    logs,
     mcp,
     memory,
     models,
@@ -1299,6 +1298,14 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_tasks_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
+    @app.get("/p/{slug}/logs")
+    async def project_logs_redirect(slug: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+
+    @app.get("/p/{slug}/memory")
+    async def project_memory_redirect(slug: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+
     @app.get("/p/{slug}/runs")
     async def project_runs_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
@@ -1320,10 +1327,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_specs(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "specs.html", "specs"))
 
-    @app.get("/p/{slug}/logs")
-    async def project_logs(request: Request, slug: str) -> Response:
-        return _with_csrf_cookie(request, _project_page(request, templates, slug, "logs.html", "logs"))
-
     @app.get("/p/{slug}/settings")
     async def project_settings(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "settings.html", "settings"))
@@ -1331,10 +1334,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}/connections")
     async def project_connections(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "connections.html", "connections"))
-
-    @app.get("/p/{slug}/memory")
-    async def project_memory(request: Request, slug: str) -> Response:
-        return _with_csrf_cookie(request, _project_page(request, templates, slug, "memory.html", "memory"))
 
     @app.get("/p/{slug}/lifecycle/{issue_number}")
     async def project_lifecycle(request: Request, slug: str, issue_number: int) -> Response:
@@ -1485,6 +1484,14 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def tasks_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
+    @app.get("/logs")
+    async def logs_redirect() -> RedirectResponse:
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+
+    @app.get("/memory")
+    async def memory_redirect() -> RedirectResponse:
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+
     @app.get("/runs")
     async def runs_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
@@ -1512,10 +1519,6 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def specs_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "specs.html", {"page": "specs"}))
 
-    @app.get("/logs")
-    async def logs_page(request: Request) -> Response:
-        return _with_csrf_cookie(request, templates.TemplateResponse(request, "logs.html", {"page": "logs"}))
-
     @app.get("/settings")
     async def settings_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "settings.html", {"page": "settings"}))
@@ -1524,10 +1527,6 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def connections_page(request: Request) -> Response:
         page = templates.TemplateResponse(request, "connections.html", {"page": "connections"})
         return _with_csrf_cookie(request, page)
-
-    @app.get("/memory")
-    async def memory_page(request: Request) -> Response:
-        return _with_csrf_cookie(request, templates.TemplateResponse(request, "memory.html", {"page": "memory"}))
 
     @app.get("/lifecycle/{issue_number}")
     async def lifecycle_page(request: Request, issue_number: int) -> Response:
@@ -1622,7 +1621,6 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(health.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(logs.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(tasks.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(queue.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(settings.router, prefix=prefix, dependencies=csrf_dep)
