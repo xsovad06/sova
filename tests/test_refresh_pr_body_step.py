@@ -684,3 +684,127 @@ class TestRefreshPrBodyStepIssueSectionMismatch:
 
         assert result.summary == "Refreshed PR #99 body"
         update.assert_awaited_once()
+
+
+class TestRefreshPrBodyStepClosingOnly:
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_rewrites_only_the_issue_section(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        from sova.core.steps._pr_body import UNPARSEABLE_NOTE, VERDICT_MARKER
+
+        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
+        mock_invoke.return_value = LLMResult(
+            text=f"## Summary\n- llm summary\n\n{VERDICT_MARKER}\n- [met] Works",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+        mock_get_body.return_value = (
+            "## Summary\nhand-edited summary\n\n"
+            f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n\nNot done in this PR:\n- Works (unverified)\n"
+        )
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Fix", body="## Acceptance Criteria\n- Works\n")
+
+        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
+
+        assert result.success
+        new_body = mock_update_body.call_args.kwargs["body"]
+        assert "hand-edited summary" in new_body
+        assert "llm summary" not in new_body
+        assert "Closes #42" in new_body
+        assert UNPARSEABLE_NOTE not in new_body
+        # Only the verdicts are asked for: no Summary, Review guidance or Test plan is paid for.
+        assert "## Review guidance" not in mock_invoke.call_args.args[0]
+
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_headingless_verdict_only_answer_is_applied(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        """The verdict-only prompt asks for no headings: exactly that answer must still update the body."""
+        from sova.core.steps._pr_body import UNPARSEABLE_NOTE, VERDICT_MARKER
+
+        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
+        mock_invoke.return_value = LLMResult(
+            text=f"{VERDICT_MARKER}\n- [met] Works", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_get_body.return_value = (
+            "## Summary\nhand-edited summary\n\n"
+            f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n\nNot done in this PR:\n- Works (unverified)\n"
+        )
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Fix", body="## Acceptance Criteria\n- Works\n")
+
+        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
+
+        assert result.summary == "Refreshed PR #99 body"
+        mock_update_body.assert_awaited_once()
+        new_body = mock_update_body.call_args.kwargs["body"]
+        assert "Closes #42" in new_body
+        assert "hand-edited summary" in new_body
+        assert UNPARSEABLE_NOTE not in new_body
+
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_unresolved_issue_skips_the_call_and_leaves_the_decision(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        from sova.core.steps._pr_body import UNPARSEABLE_NOTE
+
+        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
+        mock_get_body.return_value = f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n"
+        adapter = _mock_adapter()
+        adapter.get_task.side_effect = RuntimeError("tracker down")
+
+        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
+
+        assert result.success
+        assert "issue body unavailable" in result.summary
+        mock_invoke.assert_not_called()
+        mock_update_body.assert_not_awaited()
+
+
+class TestRefreshPrBodyStepNonFatalFailures:
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_execute_llm_failure_skips_the_refresh(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
+        mock_invoke.side_effect = RuntimeError("provider down")
+        mock_get_body.return_value = "## Summary\nold\n"
+
+        result = await RefreshPrBodyStep().execute(_make_ctx(tmp_path))
+
+        assert result.success
+        assert "non-fatal" in result.summary
+        assert "provider down" in result.summary
+        mock_update_body.assert_not_awaited()
+
+    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
+    @patch("sova.core.steps.refresh_pr_body.invoke")
+    @patch("sova.core.steps.refresh_pr_body.run")
+    async def test_execute_update_failure_skips_the_refresh(
+        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    ) -> None:
+        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- new", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_get_body.return_value = "## Summary\nold\n"
+        mock_update_body.side_effect = RuntimeError("gh auth")
+
+        result = await RefreshPrBodyStep().execute(_make_ctx(tmp_path))
+
+        assert result.success
+        assert result.summary == "PR body refresh skipped (non-fatal): could not update PR body"
+        mock_update_body.assert_awaited_once()
