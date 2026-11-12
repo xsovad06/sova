@@ -587,6 +587,9 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
    a single unbounded nowrap line */
 [data-tooltip][data-tooltip-wide]::after {
   white-space: normal;
+  /* Natural width up to the cap: without it, a tooltip anchored with right: 100% (pos left) on a small element
+     shrinks to one word per line. */
+  width: max-content;
   max-width: 320px;
   text-align: left;
 }
@@ -681,6 +684,55 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 .sova-toggle input:focus-visible + .sova-toggle-track {
   outline: 2px solid var(--ctp-blue);
   outline-offset: 2px;
+}
+
+.sova-toggle input:disabled + .sova-toggle-track {
+  cursor: not-allowed;
+}
+
+/* Setting controls (settingSwitch / settingStepper in app.js): dimmed while a save is in flight */
+.sova-setting-pending {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.sova-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  background: var(--color-surface);
+  transition: opacity 150ms ease;
+}
+
+.sova-stepper-btn {
+  width: 1.75rem;
+  height: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--ctp-subtext1);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.sova-stepper-btn:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+.sova-stepper-btn:last-child { border-radius: 0 0.375rem 0.375rem 0; }
+.sova-stepper-btn:hover:not(:disabled) { background: var(--color-surface-hover); color: var(--ctp-text); }
+.sova-stepper-btn:focus-visible { outline: 2px solid var(--ctp-blue); outline-offset: -2px; }
+.sova-stepper-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.sova-stepper-value {
+  min-width: 2.25rem;
+  padding: 0 0.25rem;
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ctp-text);
 }
 
 /* ============================================================

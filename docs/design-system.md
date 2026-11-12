@@ -128,6 +128,27 @@ All component classes are defined in `sova/dashboard/static/style.css`.
 <input type="text" class="sova-input" placeholder="...">
 ```
 
+### Setting Controls
+
+A page changes a setting with one of two controls from `app.js`, never with its own save code or a second endpoint. Each binds to one setting key and saves through `POST /settings/config`:
+
+- `settingSwitch(key, opts)`: an on/off switch (`.sova-toggle`) for a boolean setting.
+- `settingStepper(key, {min, max, step, format})`: a number with minus and plus buttons (`.sova-stepper`). The button that would cross `min` or `max` is disabled.
+
+Both show a pending state (`.sova-setting-pending`) while the save runs, read the stored value back, and on failure return to the stored value and show the server's message, whether it arrives as an HTTP error's `detail` or a 200 answer's `error`. A save answered with `restart_required` shows "Restart required". Every control for the same key still on the page shows the new value after a save (one no longer in the document is dropped), and `sovaSetValue(v)` on the returned element updates it from a poll (held while a save is in flight: a failed save then returns to the held value, not the pre-click one). A poll that overlaps a save compares `settingSaveCount()` before and after its fetch and drops its value for the setting when it changed. When the config cannot be loaded (an HTTP error, or a 200 answer carrying `_error`), the control stays focusable with the failure in its accessible name and tooltip, and activating it (the switch, or the stepper's plus button) tries the load again.
+
+In a template, declare a placeholder and let `mountSettingControls(root, overrides)` build it, with the label and tooltip taken from the settings registry through the `setting_meta(key)` Jinja global:
+
+```html
+{% set meta = setting_meta("supervisor.auto_triage") %}
+<span class="flex" data-setting-switch="supervisor.auto_triage" data-label="{{ meta.label }}"
+      data-tooltip="{{ meta.description }}"></span>
+<span class="flex" data-setting-stepper="agent.max_issue_budget" data-label="Per-issue spending limit"
+      data-min="5" data-step="5" data-prefix="$"></span>
+```
+
+`overrides` maps a key to extra options such as `onSaved(value)` or `onValue(value)`. A control's tooltip moves from the placeholder onto the control, wraps (`data-tooltip-wide`) and opens to the left unless `data-tooltip-pos` says otherwise: controls sit at the right edge of a row or header, where a centered single-line tooltip's hidden box would widen the page. `data-tooltip-wide` tooltips take their natural width up to 320px. A control belongs on a page only for an on/off switch or a number the user changes regularly; everything else stays in Settings.
+
 ### Tables
 
 ```html
@@ -215,7 +236,7 @@ Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. W
 
 Tooltips are hidden on `disabled` or `aria-disabled="true"` elements.
 
-### Styling
+### Tooltip Styling
 
 Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-text` color, `0.75rem` font, 150ms fade transition. Defined in `style.css` Section 6.
 
@@ -235,7 +256,7 @@ var ok = await sovaConfirm('Delete this item?', {
 if (!ok) return;
 ```
 
-### Styling
+### Confirmation Dialog Styling
 
 - Backdrop: `z-200`, `bg-black/50`, 150ms fade
 - Dialog: `--color-surface-card` background, `--ctp-surface1` border, 150ms scale transition

@@ -722,6 +722,350 @@ function initWidgetToggle(toggleId, panelId, storageKey) {
 }
 
 /* ============================================================
+   6b. SETTING CONTROLS (settingSwitch, settingStepper)
+   ============================================================ */
+
+/* One on/off switch or one number, bound to a setting key and saved through
+   POST /settings/config, so a page can change a setting without opening
+   Settings. Both controls show a pending state while the save runs, read the
+   stored value back afterwards, and on failure return to the stored value and
+   show the server's message, whether it came as an HTTP error's `detail` or as
+   a 200 answer's `error`. Options shared by both:
+     label     accessible name, also used in messages
+     value     the current value; omitted, the control loads it itself
+     tooltip   data-tooltip text (wraps; opens to the left unless tooltipPos says otherwise)
+     onSaved   called with the stored value after a successful save
+     onError   called with the message after a failed save (also toasted)
+     onValue   called with the shown value whenever it changes */
+
+var _settingValues = null;
+var _settingControls = {};  // key -> every control on the page bound to it
+var _settingSaves = 0;      // saves completed on this page
+
+/* How many saves have completed. A poll that reads a setting remembers it before the fetch and drops its
+   value for that setting when it changed, since the response may predate the save. */
+function settingSaveCount() { return _settingSaves; }
+
+function _registerSettingControl(key, root) {
+  (_settingControls[key] = _settingControls[key] || []).push(root);
+}
+
+/* The flat project config (GET /settings/config), shared by every control on
+   the page. `force` re-reads it, as each save does to read its value back. */
+function loadSettingValues(force) {
+  if (!_settingValues || force) {
+    _settingValues = fetch(apiUrl('/settings/config')).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function (body) {
+      // GET /settings/config answers 200 with {config: {_error}} when the config cannot be loaded: that is a
+      // failed load, never a set of values to cache.
+      var cfg = body.config || {};
+      if (cfg._error) throw new Error(String(cfg._error));
+      return cfg;
+    });
+    _settingValues.catch(function () { _settingValues = null; });
+  }
+  return _settingValues;
+}
+
+/* Saves one key. Resolves to {ok: true, value, restartRequired, lifecycleError}
+   with the value as stored, or {ok: false, message}; never rejects. */
+async function saveSetting(key, value) {
+  var res;
+  try {
+    res = await fetch(apiUrl('/settings/config'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: JSON.stringify({key: key, value: value}),
+    });
+  } catch (_e) {
+    return {ok: false, message: 'Could not reach the dashboard to save ' + key};
+  }
+  if (!res.ok) return {ok: false, message: await getErrorDetail(res, 'Could not save ' + key)};
+  var body = await res.json().catch(function () { return {}; });
+  if (body.error) return {ok: false, message: String(body.error)};
+  var stored = value;
+  try {
+    var cfg = await loadSettingValues(true);
+    if (Object.prototype.hasOwnProperty.call(cfg, key)) stored = cfg[key];
+  } catch (_e) { /* the save succeeded; show the value that was sent */ }
+  _settingSaves++;
+  return {
+    ok: true,
+    value: stored,
+    restartRequired: !!body.restart_required,
+    lifecycleError: body.lifecycle_error ? String(body.lifecycle_error) : '',
+  };
+}
+
+/* Controls sit at the right edge of a row or header, so their tooltip wraps and opens to the left by default:
+   a centered nowrap tooltip's hidden box would reach past the edge and widen the page. */
+function _settingTooltip(root, opts) {
+  if (!opts.tooltip) return;
+  root.setAttribute('data-tooltip', opts.tooltip);
+  root.setAttribute('data-tooltip-wide', '');
+  root.setAttribute('data-tooltip-pos', opts.tooltipPos || 'left');
+}
+
+/* Puts back the tooltip the control was built with, after a failed load replaced it with the failure. */
+function _settingTooltipReset(root, opts) {
+  if (opts.tooltip) {
+    _settingTooltip(root, opts);
+    return;
+  }
+  ['data-tooltip', 'data-tooltip-wide', 'data-tooltip-pos'].forEach(function (a) { root.removeAttribute(a); });
+}
+
+function _settingPending(root, controls, pending) {
+  root.classList.toggle('sova-setting-pending', pending);
+  if (pending) root.setAttribute('aria-busy', 'true');
+  else root.removeAttribute('aria-busy');
+  controls.forEach(function (c) { c.disabled = pending; });
+}
+
+function _settingReport(key, result, opts) {
+  if (!result.ok) {
+    showToast(result.message, 'error');
+    if (opts.onError) opts.onError(result.message);
+    return;
+  }
+  if (result.lifecycleError) showToast(result.lifecycleError, 'warning');
+  if (result.restartRequired) showToast((opts.label || key) + ' saved. Restart required: restart the server to apply it.', 'warning');
+  // Another control for the same key (the Settings Overview repeats rows) shows the new value too. A control no
+  // longer on the page (a re-rendered row) is dropped from the registry instead.
+  var live = (_settingControls[key] || []).filter(function (c) { return c.isConnected !== false; });
+  _settingControls[key] = live;
+  live.forEach(function (c) { if (c !== opts._root) c.sovaSetValue(result.value); });
+  if (opts.onSaved) opts.onSaved(result.value);
+}
+
+/* An on/off switch (.sova-toggle) for a boolean setting. Returns the <label>;
+   its sovaSetValue(v) updates the shown value from outside (e.g. a poll). */
+function settingSwitch(key, opts) {
+  opts = opts || {};
+  var root = document.createElement('label');
+  root.className = 'sova-toggle sova-setting-switch';
+  root.dataset.settingKey = key;
+  _settingTooltip(root, opts);
+  var input = document.createElement('input');
+  input.type = 'checkbox';
+  input.setAttribute('aria-label', opts.label || key);
+  var track = document.createElement('span');
+  track.className = 'sova-toggle-track';
+  root.appendChild(input);
+  root.appendChild(track);
+
+  var stored = false;
+  var deferred = null;  // a value another control or a poll reported while this one was saving
+  var loadFailed = false;
+  var label = opts.label || key;
+  function show(v) {
+    stored = v === true || v === 'true';
+    input.checked = stored;
+    if (opts.onValue) opts.onValue(stored);
+  }
+  root.sovaSetValue = function (v) {
+    if (root.classList.contains('sova-setting-pending')) deferred = {value: v};
+    else show(v);
+  };
+  _registerSettingControl(key, root);
+  opts = Object.assign({}, opts, {_root: root});
+
+  // A failed load leaves the switch focusable (aria-disabled, not disabled) with the failure in its accessible
+  // name, so a keyboard user hears it; activating it tries the load again.
+  function load(force) {
+    input.disabled = true;
+    loadSettingValues(force).then(function (cfg) {
+      if (loadFailed) _settingTooltipReset(root, opts);
+      loadFailed = false;
+      input.removeAttribute('aria-disabled');
+      input.setAttribute('aria-label', label);
+      show(cfg[key]);
+      input.disabled = false;
+    }, function () {
+      loadFailed = true;
+      input.disabled = false;
+      input.setAttribute('aria-disabled', 'true');
+      input.setAttribute('aria-label', label + ': could not load ' + key + '. Activate to try again.');
+      input.checked = false;
+      _settingTooltip(root, {tooltip: 'Could not load ' + key + '. Click to try again.', tooltipPos: opts.tooltipPos});
+    });
+  }
+
+  if (opts.value !== undefined) {
+    show(opts.value);
+  } else {
+    load(false);
+  }
+
+  input.addEventListener('change', async function () {
+    if (loadFailed) {
+      input.checked = false;
+      load(true);
+      return;
+    }
+    var wanted = input.checked;
+    deferred = null;
+    _settingPending(root, [input], true);
+    var result = await saveSetting(key, wanted);
+    _settingPending(root, [input], false);
+    if (result.ok) show(result.value);
+    else if (deferred) show(deferred.value);
+    else input.checked = stored;
+    deferred = null;
+    _settingReport(key, result, opts);
+  });
+  return root;
+}
+
+/* A number with minus and plus buttons for a numeric setting. Extra options:
+     min, max  bounds; the button that would cross one is disabled
+     step      change per click (default 1)
+     format    turns the value into the shown text (default String)
+   Accepts the value as a number or a numeric string (a Decimal setting such as
+   agent.max_issue_budget arrives as '75'). Returns the wrapper element; its
+   sovaSetValue(v) updates the shown value from outside. */
+function settingStepper(key, opts) {
+  opts = opts || {};
+  var step = opts.step || 1;
+  var format = opts.format || function (v) { return String(v); };
+  var root = document.createElement('div');
+  root.className = 'sova-stepper';
+  root.dataset.settingKey = key;
+  root.setAttribute('role', 'group');
+  root.setAttribute('aria-label', opts.label || key);
+  _settingTooltip(root, opts);
+  var minus = document.createElement('button');
+  minus.type = 'button';
+  minus.className = 'sova-stepper-btn';
+  minus.setAttribute('aria-label', 'Decrease ' + (opts.label || key));
+  minus.textContent = '−';
+  var output = document.createElement('output');
+  output.className = 'sova-stepper-value';
+  output.setAttribute('aria-live', 'polite');
+  var plus = document.createElement('button');
+  plus.type = 'button';
+  plus.className = 'sova-stepper-btn';
+  plus.setAttribute('aria-label', 'Increase ' + (opts.label || key));
+  plus.textContent = '+';
+  root.appendChild(minus);
+  root.appendChild(output);
+  root.appendChild(plus);
+
+  var stored = null;
+  var deferred = null;  // a value another control or a poll reported while this one was saving
+  var loadFailed = false;
+  var label = opts.label || key;
+  function canMove(delta) {
+    if (stored === null) return false;
+    var next = stored + delta;
+    if (opts.min !== undefined && next < opts.min) return false;
+    if (opts.max !== undefined && next > opts.max) return false;
+    return true;
+  }
+  function syncButtons() {
+    minus.disabled = !canMove(-step);
+    // After a failed load the plus button stays focusable and retries the load.
+    plus.disabled = loadFailed ? false : !canMove(step);
+  }
+  function show(v) {
+    var n = Number(v);
+    stored = (v === null || v === undefined || v === '' || isNaN(n)) ? null : n;
+    output.textContent = stored === null ? '--' : format(stored);
+    syncButtons();
+    if (opts.onValue && stored !== null) opts.onValue(stored);
+  }
+  root.sovaSetValue = function (v) {
+    if (root.classList.contains('sova-setting-pending')) deferred = {value: v};
+    else show(v);
+  };
+  _registerSettingControl(key, root);
+  opts = Object.assign({}, opts, {_root: root});
+
+  // A failed load shows '--' and makes the plus button a retry whose accessible name says what failed.
+  function load(force) {
+    loadSettingValues(force).then(function (cfg) {
+      if (loadFailed) _settingTooltipReset(root, opts);
+      loadFailed = false;
+      plus.setAttribute('aria-label', 'Increase ' + label);
+      show(cfg[key]);
+    }, function () {
+      loadFailed = true;
+      plus.setAttribute('aria-label', label + ': could not load ' + key + '. Activate to try again.');
+      _settingTooltip(root, {tooltip: 'Could not load ' + key + '. Click + to try again.', tooltipPos: opts.tooltipPos});
+      syncButtons();
+    });
+  }
+
+  if (opts.value !== undefined) {
+    show(opts.value);
+  } else {
+    show(null);
+    load(false);
+  }
+
+  async function move(delta) {
+    if (loadFailed) {
+      load(true);
+      return;
+    }
+    if (!canMove(delta)) return;
+    var wanted = stored + delta;
+    output.textContent = format(wanted);
+    deferred = null;
+    _settingPending(root, [minus, plus], true);
+    var result = await saveSetting(key, wanted);
+    _settingPending(root, [minus, plus], false);
+    // A failed save returns to what the server last reported: the value shown before the click, unless a
+    // sibling control or a poll reported a newer one while this save was in flight.
+    show(result.ok ? result.value : (deferred ? deferred.value : stored));
+    deferred = null;
+    _settingReport(key, result, opts);
+  }
+  minus.addEventListener('click', function () { return move(-step); });
+  plus.addEventListener('click', function () { return move(step); });
+  return root;
+}
+
+/* Turns placeholders in `root` into controls, so a template can declare them:
+     <span data-setting-switch="supervisor.auto_triage" data-label="Auto-triage" data-tooltip="..."
+           data-tooltip-pos="bottom"></span>
+     <span data-setting-stepper="agent.max_issue_budget" data-label="..." data-min="5" data-step="5"
+           data-max="..." data-prefix="$"></span>
+   `overrides` maps a key to extra options (value, onSaved, onValue, ...). A
+   placeholder is mounted once, however often this runs. Returns {key: control}
+   for the controls it created. */
+function mountSettingControls(root, overrides) {
+  root = root || document;
+  overrides = overrides || {};
+  var made = {};
+  Array.prototype.forEach.call(root.querySelectorAll('[data-setting-switch], [data-setting-stepper]'), function (host) {
+    var d = host.dataset;
+    if (d.settingMounted) return;
+    var key = d.settingSwitch || d.settingStepper;
+    var opts = {label: d.label || key};
+    if (d.tooltip) opts.tooltip = d.tooltip;
+    if (d.tooltipPos) opts.tooltipPos = d.tooltipPos;
+    // The tooltip moves onto the control: left on the placeholder too, both would show at once.
+    host.removeAttribute('data-tooltip');
+    host.removeAttribute('data-tooltip-pos');
+    if (d.settingStepper) {
+      if (d.min !== undefined) opts.min = Number(d.min);
+      if (d.max !== undefined) opts.max = Number(d.max);
+      if (d.step !== undefined) opts.step = Number(d.step);
+      if (d.prefix) { var prefix = d.prefix; opts.format = function (v) { return prefix + v; }; }
+    }
+    opts = Object.assign(opts, overrides[key] || {});
+    var control = d.settingSwitch ? settingSwitch(key, opts) : settingStepper(key, opts);
+    host.appendChild(control);
+    d.settingMounted = '1';
+    made[key] = control;
+  });
+  return made;
+}
+
+/* ============================================================
    7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
