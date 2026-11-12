@@ -76,7 +76,7 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
-def _format_host(host: str) -> str:
+def format_host(host: str) -> str:
     """Bracket an IPv6 literal for use in an Origin string (`::1` -> `[::1]`).
 
     Already-bracketed input is normalized rather than double-bracketed.
@@ -115,7 +115,7 @@ def build_allowed_origins(host: str, port: int) -> frozenset[str]:
     configured host is accepted.
     """
     hosts = (_LOOPBACK_HOSTS | {host}) if is_loopback_host(host) else {host}
-    return frozenset(f"{scheme}://{_format_host(h)}:{port}" for h in hosts for scheme in _SCHEMES)
+    return frozenset(f"{scheme}://{format_host(h)}:{port}" for h in hosts for scheme in _SCHEMES)
 
 
 def build_allowed_hosts(host: str) -> list[str]:
