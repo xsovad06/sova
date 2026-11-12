@@ -15,7 +15,7 @@ from starlette.responses import Response
 from sova.config.context import clear_project_context, set_project_context
 from sova.config.registry import get_project_path
 
-_SAFE_SLUG_RE = re.compile(r"^[a-z0-9-]+$")
+SAFE_SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 
 
 class ProjectContextMiddleware(BaseHTTPMiddleware):
@@ -28,7 +28,7 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
             parts = path.split("/", 3)
             if len(parts) >= 3:
                 slug = parts[2]
-                if _SAFE_SLUG_RE.match(slug):
+                if SAFE_SLUG_RE.match(slug):
                     project_path = get_project_path(slug)
                     if project_path and project_path.is_dir():
                         set_project_context(project_path, slug)

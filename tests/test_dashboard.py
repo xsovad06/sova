@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -17404,6 +17404,64 @@ class TestWebSocketAgentStatus:
         assert sent[0]["run_id"] == 9001
         assert sent[0]["status"] == "done"
         assert sent[1] == {"type": "graph_invalidated"}
+
+    @staticmethod
+    def _slug_socket(slug: str | None) -> MagicMock:
+        ws = MagicMock()
+        ws.path_params = {} if slug is None else {"slug": slug}
+        return ws
+
+    def test_ws_slug_project_dir_resolves_a_registered_slug(self, tmp_path: Path) -> None:
+        from sova.dashboard.routers.agents import _ws_slug_project_dir
+
+        with patch("sova.config.registry.get_project_path", return_value=tmp_path) as lookup:
+            assert _ws_slug_project_dir(self._slug_socket("proj-a")) == tmp_path
+        lookup.assert_called_once_with("proj-a")
+
+    @pytest.mark.parametrize("slug", [None, "", "../etc", "Bad_Slug"])
+    def test_ws_slug_project_dir_ignores_a_missing_or_unsafe_slug(self, slug: str | None) -> None:
+        from sova.dashboard.routers.agents import _ws_slug_project_dir
+
+        with patch("sova.config.registry.get_project_path") as lookup:
+            assert _ws_slug_project_dir(self._slug_socket(slug)) is None
+        lookup.assert_not_called()
+
+    def test_ws_slug_project_dir_ignores_an_unknown_slug(self) -> None:
+        from sova.dashboard.routers.agents import _ws_slug_project_dir
+
+        with patch("sova.config.registry.get_project_path", return_value=None):
+            assert _ws_slug_project_dir(self._slug_socket("nope")) is None
+
+    def test_ws_slug_project_dir_ignores_a_slug_whose_dir_is_gone(self, tmp_path: Path) -> None:
+        from sova.dashboard.routers.agents import _ws_slug_project_dir
+
+        with patch("sova.config.registry.get_project_path", return_value=tmp_path / "deleted"):
+            assert _ws_slug_project_dir(self._slug_socket("gone")) is None
+
+    @pytest.mark.parametrize("slug_resolves", [True, False])
+    async def test_ws_agent_status_registers_under_the_slug_project(self, tmp_path: Path, slug_resolves: bool) -> None:
+        """A /p/{slug}/api socket subscribes to its own project, not the default one the run-detail page never sees."""
+        from fastapi import WebSocketDisconnect
+
+        from sova.dashboard.routers import agents as agents_router
+
+        slug_dir = tmp_path / "slug-project"
+        slug_dir.mkdir()
+        default_dir = tmp_path / "default-project"
+        ws = self._slug_socket("proj-a")
+        ws.accept = AsyncMock()
+        ws.receive_text = AsyncMock(side_effect=WebSocketDisconnect())
+        mgr = MagicMock()
+        with (
+            patch.object(agents_router, "validate_websocket_origin", return_value=True),
+            patch.object(agents_router, "_ws_manager", mgr),
+            patch("sova.config.registry.get_project_path", return_value=slug_dir if slug_resolves else None),
+            patch("sova.config.context.resolve_project_dir_or_none", return_value=default_dir),
+        ):
+            await agents_router.ws_agent_status(ws)
+        expected = slug_dir if slug_resolves else default_dir
+        mgr.connect.assert_called_once_with(ws, expected)
+        mgr.disconnect.assert_called_once_with(ws, expected)
 
 
 # ---------------------------------------------------------------------------
