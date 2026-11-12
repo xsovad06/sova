@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -28,7 +28,9 @@ from sova.dashboard.services.pr_service import (
     get_unresolved_thread_count,
     list_open_prs_with_state,
     parse_linked_issue,
+    resolve_head_verdict,
 )
+from sova.ipc.handoff import DashboardHandoff
 
 
 def _state(**kwargs: object) -> str:
@@ -127,6 +129,32 @@ class TestComputePrState:
                 {"review_decision": "APPROVED", "ci_status": "pending", "mergeable": "MERGEABLE"},
                 ComputedPRState.CI_RUNNING,
                 id="ci-running-beats-approved",
+            ),
+            # A standing SOVA revise or block for the head keeps the PR out of every approved state; any
+            # other verdict (approve, none, unknown) leaves the GitHub signals in charge.
+            *[
+                pytest.param(
+                    {
+                        "review_decision": "APPROVED",
+                        "ci_status": "passed",
+                        "mergeable": "MERGEABLE",
+                        "sova_verdict": verdict,
+                    },
+                    expected,
+                    id=f"sova-{verdict}-on-green-pr",
+                )
+                for verdict, expected in [
+                    ("revise", ComputedPRState.SOVA_CHANGES),
+                    ("block", ComputedPRState.SOVA_CHANGES),
+                    ("approve", ComputedPRState.APPROVED_CI_GREEN),
+                    ("none", ComputedPRState.APPROVED_CI_GREEN),
+                    ("unknown", ComputedPRState.APPROVED_CI_GREEN),
+                ]
+            ],
+            pytest.param(
+                {"ci_status": "failed", "sova_verdict": "revise"},
+                ComputedPRState.CI_FAILED,
+                id="ci-failed-beats-sova-revise",
             ),
             pytest.param(
                 {
@@ -1648,6 +1676,27 @@ class TestListOpenPrsWithState:
         assert result[0]["_thread_counts"] is None
 
     @pytest.mark.asyncio
+    async def test_local_handoff_verdict_reaches_pr_state_when_github_has_none(self, monkeypatch, tmp_path) -> None:
+        """A revise only the local handoff recorded (its post failed) keeps the listed PR out of approved."""
+        from sova.ipc.handoff import write_handoff_file
+
+        monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock(github_repo="owner/verdict-wiring", github_user="sova-bot")
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        write_handoff_file(tmp_path, _handoff("revise", _HEAD, pr=10))
+        raw_prs = [{"number": 10, "headRefOid": _HEAD}]
+        monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
+        monkeypatch.setattr("sova.git.pr.get_pr_review_data", AsyncMock(return_value={10: _review_data([])}))
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service._enrich_pr",
+            lambda pr, now: {**pr, "computed_state": "test"},
+        )
+
+        result = await list_open_prs_with_state()
+
+        assert result[0]["_sova_verdict"] == "revise"
+
+    @pytest.mark.asyncio
     async def test_executes_without_exception_when_enriching_prs(self, monkeypatch, tmp_path) -> None:
         """Test lines 503-505: background task setup doesn't raise exceptions."""
         from unittest.mock import MagicMock
@@ -1855,3 +1904,120 @@ class TestInvalidatePrCache:
         # The invalidation fired after the fetch had already started, so the
         # result must not have been cached.
         assert ("owner/repo", "testuser") not in pr_service._pr_cache
+
+
+_HEAD = "a" * 40
+_OLD_HEAD = "b" * 40
+
+
+def _marker_review(verdict: str, sha: str, at: str, *, author: str = "sova-bot") -> dict:
+    return {
+        "state": "COMMENTED",
+        "body": f"<!-- sova-review: {verdict} sha={sha} -->",
+        "submitted_at": at,
+        "author": author,
+    }
+
+
+def _review_data(history: list[dict], *, truncated: bool = False) -> MagicMock:
+    return MagicMock(review_history=history, review_history_truncated=truncated)
+
+
+def _handoff(verdict: str, sha: str | None, *, pr: int = 7) -> DashboardHandoff:
+    return DashboardHandoff(
+        source="reviewer",
+        status="awaiting_action",
+        pr_number=pr,
+        summary="review",
+        details={"verdict": verdict, "review_head_sha": sha},
+    )
+
+
+class TestResolveHeadVerdict:
+    def _resolve(self, review_data: object, handoffs: list[DashboardHandoff] | None = None, head: str = _HEAD) -> str:
+        return resolve_head_verdict(
+            review_data,  # type: ignore[arg-type]
+            pr_number=7,
+            head_sha=head,
+            trusted_login="sova-bot",
+            handoffs=handoffs or [],
+        )
+
+    @pytest.mark.parametrize(
+        ("history", "expected"),
+        [
+            pytest.param([_marker_review("revise", _HEAD, "2026-01-01")], "revise", id="revise-on-head"),
+            pytest.param([_marker_review("block", _HEAD, "2026-01-01")], "block", id="block-on-head"),
+            pytest.param([_marker_review("approve", _HEAD, "2026-01-01")], "approve", id="approve-on-head"),
+            pytest.param([], "none", id="no-review"),
+            pytest.param([_marker_review("revise", _OLD_HEAD, "2026-01-01")], "none", id="revise-on-older-head"),
+            pytest.param(
+                [
+                    _marker_review("revise", _OLD_HEAD, "2026-01-01"),
+                    _marker_review("approve", _HEAD, "2026-01-02"),
+                ],
+                "approve",
+                id="newer-approve-beats-older-revise",
+            ),
+            pytest.param(
+                [_marker_review("revise", _HEAD, "2026-01-01", author="stranger")],
+                "none",
+                id="forged-marker-from-another-login-ignored",
+            ),
+            pytest.param(
+                [
+                    _marker_review("revise", _HEAD, "2026-01-01"),
+                    {
+                        "state": "COMMENTED",
+                        "body": "<!-- sova-addressed: sha=" + _HEAD + " -->",
+                        "submitted_at": "2026-01-02",
+                        "author": "sova-bot",
+                    },
+                ],
+                "none",
+                id="addressed-revise-awaits-re-review",
+            ),
+        ],
+    )
+    def test_github_marker(self, history: list[dict], expected: str) -> None:
+        assert self._resolve(_review_data(history)) == expected
+
+    def test_truncated_history_without_marker_is_unknown(self) -> None:
+        assert self._resolve(_review_data([], truncated=True)) == "unknown"
+
+    def test_unreachable_github_is_unknown(self) -> None:
+        assert self._resolve(None) == "unknown"
+
+    @pytest.mark.parametrize(
+        ("review_data", "handoff", "expected"),
+        [
+            pytest.param(_review_data([]), _handoff("revise", _HEAD), "revise", id="no-marker-local-revise"),
+            pytest.param(None, _handoff("block", _HEAD), "block", id="github-down-local-block"),
+            pytest.param(None, _handoff("approve", _HEAD), "unknown", id="github-down-local-approve-is-not-a-block"),
+            pytest.param(_review_data([]), _handoff("revise", _OLD_HEAD), "none", id="local-handoff-other-head"),
+            pytest.param(_review_data([]), _handoff("revise", _HEAD, pr=8), "none", id="local-handoff-other-pr"),
+            pytest.param(_review_data([]), _handoff("revise", None), "none", id="local-handoff-without-head"),
+            pytest.param(
+                _review_data([_marker_review("approve", _HEAD, "2026-01-01")]),
+                _handoff("revise", _HEAD),
+                "approve",
+                id="github-marker-for-head-wins-over-local",
+            ),
+        ],
+    )
+    def test_local_handoff_fallback(self, review_data: object, handoff: DashboardHandoff, expected: str) -> None:
+        assert self._resolve(review_data, [handoff]) == expected
+
+    @pytest.mark.parametrize("order", ["older-first", "newer-first"])
+    def test_newest_matching_handoff_decides_whatever_the_order(self, order: str) -> None:
+        older = _handoff("revise", _HEAD).model_copy(update={"created_at": "2026-01-01T00:00:00Z"})
+        newer = _handoff("approve", _HEAD).model_copy(update={"created_at": "2026-01-02T00:00:00Z"})
+        handoffs = [older, newer] if order == "older-first" else [newer, older]
+
+        assert self._resolve(_review_data([]), handoffs) == "none"
+
+        newer_revise = _handoff("revise", _HEAD).model_copy(update={"created_at": "2026-01-03T00:00:00Z"})
+        assert self._resolve(_review_data([]), [*handoffs, newer_revise]) == "revise"
+
+    def test_abbreviated_marker_sha_matches_full_head(self) -> None:
+        assert self._resolve(_review_data([_marker_review("revise", _HEAD[:7], "2026-01-01")])) == "revise"

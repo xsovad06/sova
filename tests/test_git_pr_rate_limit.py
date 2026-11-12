@@ -79,6 +79,20 @@ class TestListOpenPrsTracking:
         assert tracker.should_skip()
 
     @pytest.mark.asyncio
+    async def test_list_open_prs_requests_head_sha(self) -> None:
+        """The verdict resolver anchors a marker to headRefOid, so the listing must ask for it."""
+        from sova.git.pr import list_open_prs
+
+        success = ShellResult(returncode=0, stdout="[]", stderr="")
+        mock_run = AsyncMock(return_value=success)
+        with patch("sova.git.pr.run", mock_run):
+            with patch("sova.git.pr.resolve_gh_env", new_callable=AsyncMock, return_value={}):
+                await list_open_prs(repo="owner/repo", github_user="testuser")
+
+        cmd = list(mock_run.call_args.args)
+        assert "headRefOid" in cmd[cmd.index("--json") + 1].split(",")
+
+    @pytest.mark.asyncio
     async def test_list_open_prs_tracks_success(self) -> None:
         from sova.git.pr import list_open_prs
 

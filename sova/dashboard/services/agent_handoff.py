@@ -18,6 +18,10 @@ if TYPE_CHECKING:
 
 log = get_logger(component="dashboard.control.handoff")
 
+# Leads the breaker's reason when the cycle count could not be read: the alert must say "unverifiable", not
+# "exhausted", since the resolver holds that PR for the user instead of routing it to Integrate.
+_BUDGET_UNVERIFIABLE_PREFIX = "Address-review budget unverifiable"
+
 
 async def _check_address_review_circuit_breaker(
     issue: str, pr_number: int | None, role: str | None, project_dir: Path
@@ -28,7 +32,8 @@ async def _check_address_review_circuit_breaker(
     needs a manual-only handoff written: resolve_next_action()'s
     review_budget_exhausted rule already resolves an over-budget PR to
     PR_REVIEW_EXHAUSTED with an Integrate action the dashboard renders
-    directly, so the caller only has to stop auto-spawning the next cycle.
+    directly (an unreadable history resolves to a user hold instead, never
+    Integrate), so the caller only has to stop auto-spawning the next cycle.
     The verdict cache is invalidated before resolving, not after, so this
     call's own ``address_cycles`` reflects this run's just-completed cycle
     (already posted as a ``sova-addressed`` marker on GitHub by this point)
@@ -45,7 +50,12 @@ async def _check_address_review_circuit_breaker(
         return None
 
     from sova.config.loader import load_config
-    from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, invalidate_verdict, resolve_verdict_for_pr
+    from sova.dashboard.services.work_verdict import (
+        TRUNCATED_KEY,
+        UNRESOLVED_KEY,
+        invalidate_verdict,
+        resolve_verdict_for_pr,
+    )
 
     cfg = load_config(project_dir)
     max_cycles = cfg.pipeline.max_address_review_cycles
@@ -55,12 +65,21 @@ async def _check_address_review_circuit_breaker(
     invalidate_verdict(project_dir, pr_number)
     verdict = await resolve_verdict_for_pr(issue, pr_number=pr_number, project_dir=project_dir, config=cfg)
 
+    if verdict.get(TRUNCATED_KEY):
+        # More reviews than the history window holds: permanent, and far past any budget, so report it as
+        # exhausted (the resolver routes it to Integrate) rather than as a transient outage to retry.
+        return (
+            f"Address-review budget exhausted: PR #{pr_number} on issue #{issue} has more reviews than the "
+            f"history window holds, so the completed-cycle count cannot be read (max allowed: {max_cycles}). "
+            f"Routed to Integrate for a manual decision."
+        )
+
     if verdict.get(UNRESOLVED_KEY):
         return (
-            f"Address-review budget unverifiable: GitHub did not return the review "
+            f"{_BUDGET_UNVERIFIABLE_PREFIX}: GitHub did not return the review "
             f"history for PR #{pr_number} on issue #{issue}, so the completed-cycle "
-            f"count is unknown (max allowed: {max_cycles}). Routed to Integrate for a "
-            f"manual decision rather than risking an uncapped review loop."
+            f"count is unknown (max allowed: {max_cycles}). Held for the user: retry the "
+            f"review once GitHub is reachable, rather than risking an uncapped review loop."
         )
 
     count = verdict.get("address_cycles", 0)
@@ -79,8 +98,8 @@ def _issue_label(issue: str) -> str:
     return f"#{issue}" if issue else "Agent"
 
 
-def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str) -> None:
-    """Announce an exhausted address-review budget on every configured channel.
+def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str, *, headline: str) -> None:
+    """Announce an exhausted (or unverifiable) address-review budget on every configured channel.
 
     Routed through notify() rather than send_desktop_notification() so the
     operator's notification config (desktop toggle, Slack, email, webhook) is
@@ -96,7 +115,7 @@ def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str) -> None
             load_config(agent.project_dir).notification,
             "SOVA",
             f"{agent.project_dir.name} | {reason}",
-            subtitle=f"Address-review budget exhausted {_issue_label(issue)}",
+            subtitle=f"{headline.capitalize()} {_issue_label(issue)}",
             group=f"sova-{issue}" if issue else "sova",
         )
     except Exception:  # noqa: BLE001 (best-effort: config load and the OS notifier both fail in many ways)
@@ -214,19 +233,20 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                         pr_number=pr_num,
                         reason=reason,
                     )
-                    # No manual-only handoff needed: resolve_next_action()'s
-                    # review_budget_exhausted rule already resolves this PR to
-                    # PR_REVIEW_EXHAUSTED with an Integrate action, so clearing
-                    # the stale handoff is enough for the dashboard to pick up
-                    # the right next action on its next poll.
+                    # No manual-only handoff needed: resolve_next_action() already resolves
+                    # an over-budget PR to PR_REVIEW_EXHAUSTED with Integrate, and an
+                    # unreadable history to a user hold, so clearing the stale handoff is
+                    # enough for the dashboard to pick up the right next action on its next poll.
+                    unverifiable = reason.startswith(_BUDGET_UNVERIFIABLE_PREFIX)
+                    headline = f"address-review budget {'unverifiable' if unverifiable else 'exhausted'}"
                     emit_safe(
-                        f"{_issue_label(target_issue)}: address-review budget exhausted",
+                        f"{_issue_label(target_issue)}: {headline}",
                         severity=FeedEventSeverity.warning,
                         detail=reason,
                         category="handoff",
                         metadata={"issue": target_issue, "pr_number": pr_num, "run_id": agent.run_id},
                     )
-                    _notify_budget_exhausted(agent, target_issue, reason)
+                    _notify_budget_exhausted(agent, target_issue, reason, headline=headline)
                     handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
                     return
 

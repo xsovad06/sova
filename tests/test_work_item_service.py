@@ -746,6 +746,7 @@ def _facts(**overrides: object) -> PRFacts:
         "address_cycles": 0,
         "max_address_cycles": 0,
         "review_history_unresolved": False,
+        "review_history_truncated": False,
     }
     defaults.update(overrides)
     return PRFacts(**defaults)
@@ -801,12 +802,24 @@ class TestResolveNextAction:
                 "address_review",
             ),
             (
-                "review_history_unresolved_fails_closed",
+                "review_history_unresolved_holds_for_user_not_integrate",
                 _facts(
                     sova_verdict="revise",
                     address_cycles=0,
                     max_address_cycles=3,
                     review_history_unresolved=True,
+                ),
+                WorkItemState.PR_AWAITING_REVIEW,
+                None,
+            ),
+            (
+                "review_history_truncated_is_exhausted_not_held",
+                _facts(
+                    sova_verdict="revise",
+                    address_cycles=0,
+                    max_address_cycles=3,
+                    review_history_unresolved=True,
+                    review_history_truncated=True,
                 ),
                 WorkItemState.PR_REVIEW_EXHAUSTED,
                 "integrate",
@@ -1028,7 +1041,7 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         assert resolution.state == WorkItemState.PR_READY_TO_MERGE
         assert resolution.reason_chain[-1] == "ready_to_merge"
-        assert len(resolution.reason_chain) == 14
+        assert len(resolution.reason_chain) == 15
 
     def test_resolution_is_frozen(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -1082,6 +1095,8 @@ class TestDescribeReasonChain:
             "draft",
             "ci_failed",
             "ci_running",
+            "review_history_unresolved",
+            "review_budget_exhausted",
             "sova_standing_changes",
             "sova_verdict_stale",
             "sova_verdict_addressed",
@@ -1208,6 +1223,44 @@ class TestDescribeReasonChain:
         sentence = describe_reason_chain(("ready_to_merge",), _facts())[0]
         assert "ready to merge" in sentence
         assert "not ready" not in sentence
+
+    def test_review_history_unresolved_renderer_unlimited_budget(self) -> None:
+        """With the budget disabled (0), the unresolved-history rule never fires, so it reads as unlimited."""
+        sentence = describe_reason_chain(
+            ("review_history_unresolved",), _facts(max_address_cycles=0, review_history_unresolved=True)
+        )[0]
+        assert sentence == "address-review budget is unlimited"
+
+    def test_review_history_unresolved_renderer_holds_for_user(self) -> None:
+        sentence = describe_reason_chain(
+            ("review_history_unresolved",), _facts(max_address_cycles=3, review_history_unresolved=True)
+        )[0]
+        assert "unresolved" in sentence
+        assert "holding for the user" in sentence
+
+    def test_truncated_history_renderers_do_not_blame_github(self) -> None:
+        facts = _facts(
+            max_address_cycles=3, address_cycles=0, review_history_unresolved=True, review_history_truncated=True
+        )
+        unresolved = describe_reason_chain(("review_history_unresolved",), facts)[0]
+        exhausted = describe_reason_chain(("review_budget_exhausted",), facts)[0]
+        assert "unreachable" not in unresolved
+        assert "100-review window" in unresolved
+        assert "exhausted" in exhausted
+
+    def test_review_history_unresolved_renderer_resolved_history(self) -> None:
+        sentence = describe_reason_chain(
+            ("review_history_unresolved",), _facts(max_address_cycles=3, review_history_unresolved=False)
+        )[0]
+        assert sentence == "address-review history is resolved"
+
+    def test_review_budget_exhausted_renderer_no_longer_reports_unresolved_history(self) -> None:
+        """Unresolved history moved to its own rule: the budget sentence only reports the cycle count."""
+        sentence = describe_reason_chain(
+            ("review_budget_exhausted",),
+            _facts(max_address_cycles=3, address_cycles=1, review_history_unresolved=True),
+        )[0]
+        assert sentence == "address-review budget not exhausted (1/3 cycles)"
 
 
 class TestComputeWorkItemResolution:
@@ -2273,7 +2326,12 @@ class TestResolveSovaVerdict:
     @pytest.mark.asyncio
     async def test_truncated_history_fails_closed(self, monkeypatch) -> None:
         """A last-30 window that missed older reviews must not report an undercount."""
-        from sova.dashboard.services.work_verdict import UNRESOLVED_KEY, clear_verdict_cache, resolve_sova_verdict
+        from sova.dashboard.services.work_verdict import (
+            TRUNCATED_KEY,
+            UNRESOLVED_KEY,
+            clear_verdict_cache,
+            resolve_sova_verdict,
+        )
         from sova.git.pr import PRReviewData
 
         clear_verdict_cache()
@@ -2301,6 +2359,7 @@ class TestResolveSovaVerdict:
 
         result = await resolve_sova_verdict("42", pr_number=1, adapter=adapter, use_cache=False)
         assert result[UNRESOLVED_KEY] is True
+        assert result[TRUNCATED_KEY] is True
 
     @pytest.mark.asyncio
     async def test_unresolved_verdict_is_not_cached(self, monkeypatch) -> None:
@@ -2654,6 +2713,18 @@ class TestBuildPrFactsMergeState:
             external_reviews_enabled=False,
         )
         assert facts.review_history_unresolved is True
+        assert facts.review_history_truncated is False
+
+    def test_truncated_verdict_sets_review_history_truncated(self) -> None:
+        from sova.dashboard.services.work_state import _build_pr_facts
+        from sova.dashboard.services.work_verdict import TRUNCATED_KEY, UNRESOLVED_KEY
+
+        facts = _build_pr_facts(
+            {"state": "OPEN", "ci_status": "passed", "mergeable": "MERGEABLE"},
+            {"has_sova_review": False, "address_cycles": 0, UNRESOLVED_KEY: True, TRUNCATED_KEY: True},
+            external_reviews_enabled=False,
+        )
+        assert facts.review_history_truncated is True
 
     def test_resolved_verdict_leaves_review_history_unresolved_false(self) -> None:
         from sova.dashboard.services.work_state import _build_pr_facts

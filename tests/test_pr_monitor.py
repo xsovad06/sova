@@ -163,6 +163,35 @@ class TestStateTransitionNotifications:
         assert monitor._last_state[1].computed_state == ComputedPRState.APPROVED
 
     @pytest.mark.asyncio
+    async def test_sova_changes_state_sends_no_notification_and_does_not_repeat(self, tmp_path: Path) -> None:
+        """A PR in SOVA_CHANGES (a revise on its head) sends no notification, on entry or on re-poll."""
+        monitor = _make_monitor(tmp_path)
+        monitor._initialized = True
+        monitor._last_state = {
+            1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
+        }
+
+        prs = [_make_pr(1, ComputedPRState.SOVA_CHANGES)]
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=prs,
+            ),
+            patch(
+                "sova.supervisor.pr_monitor._is_coderabbit_rate_limited",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch("sova.ipc.notifications.notify") as mock_notify,
+        ):
+            await monitor._poll_cycle()
+            await monitor._poll_cycle()
+
+        mock_notify.assert_not_called()
+        assert monitor._last_state[1].computed_state == ComputedPRState.SOVA_CHANGES
+
+    @pytest.mark.asyncio
     async def test_ci_failure_notification(self, tmp_path: Path) -> None:
         monitor = _make_monitor(tmp_path)
         monitor._initialized = True

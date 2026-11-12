@@ -14,15 +14,18 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.work_state import state_color, state_label
+from sova.dashboard.services.work_verdict import parse_review_history
 from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state
 from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
 from sova.utils.gh import CLOSES_RE as _CLOSING_KEYWORD_RE
-from sova.utils.gh import parse_issue_links
+from sova.utils.gh import get_active_gh_user, parse_issue_links
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
+    from sova.git.pr import PRReviewData
+    from sova.ipc.handoff import DashboardHandoff
 
 log = get_logger(component="dashboard.pr_service")
 
@@ -70,6 +73,7 @@ _COMPUTED_TO_EVENT: dict[str, str] = {
     "approved_ci_green": "approved",
     "ci_failed": "ci_failed",
     "changes_requested": "reviewed",
+    "sova_changes": "reviewed",
     "review_addressed": "reviewed",
 }
 
@@ -94,6 +98,8 @@ class ComputedPRState(StrEnum):
     CI_RUNNING = "ci_running"
     CI_FAILED = "ci_failed"
     CHANGES_REQUESTED = "changes_requested"
+    # SOVA's own review said revise or block for the current head; no notification, never an approved state
+    SOVA_CHANGES = "sova_changes"
     APPROVED_CI_GREEN = "approved_ci_green"
     APPROVED = "approved"
     REVIEW_ADDRESSED = "review_addressed"
@@ -354,6 +360,70 @@ _MERGE_STATES_BLOCKED_BY_GITHUB = frozenset({"BLOCKED"})
 _MERGE_STATES_UNMERGEABLE = _MERGE_STATES_BLOCKED_BY_GITHUB | {"DIRTY"}
 
 
+# Verdicts that stand against a PR head. "none" (no marker for this head) and "unknown" (GitHub could not
+# be read) never block on their own: the merge gate is /integrate-pr, which stops and asks on "unknown".
+_BLOCKING_SOVA_VERDICTS = frozenset({"revise", "block"})
+
+
+def _same_commit(a: str, b: str) -> bool:
+    """True when two SHAs name one commit (a marker may carry an abbreviated sha)."""
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+def _github_head_verdict(review_data: PRReviewData | None, head_sha: str, trusted_login: str) -> str:
+    """The latest SOVA verdict GitHub holds for ``head_sha``: approve, revise, block, none or unknown.
+
+    A marker anchored to an older head, or one an address cycle superseded, is "none": the re-review
+    of the new head produces the verdict that counts. "unknown" means GitHub could not answer.
+    """
+    if review_data is None or not trusted_login:
+        return "unknown"
+    parsed = parse_review_history(review_data.review_history, trusted_login=trusted_login)
+    if not parsed["has_sova_review"]:
+        # A truncated window may have cut the marker off, so an absent one proves nothing.
+        return "unknown" if review_data.review_history_truncated else "none"
+    marker_sha = parsed["review_head_sha"]
+    if parsed["verdict"] == "addressed" or (marker_sha and head_sha and not _same_commit(marker_sha, head_sha)):
+        return "none"
+    return parsed["verdict"]
+
+
+def _local_head_verdict(handoffs: list[DashboardHandoff], pr_number: int, head_sha: str) -> str | None:
+    """A revise or block verdict the local reviewer handoff recorded for this PR and head, else None.
+
+    A handoff naming another PR, or a head other than the current one, is ignored, so a stale handoff
+    cannot block a later head. When several handoffs name this PR and head, the newest by ``created_at``
+    decides (a later approving handoff supersedes an earlier revise), whatever order the caller passes.
+    """
+    for handoff in sorted(handoffs, key=lambda h: h.created_at, reverse=True):
+        details = handoff.details
+        if handoff.pr_number != pr_number or not _same_commit(str(details.get("review_head_sha") or ""), head_sha):
+            continue
+        verdict = details.get("verdict")
+        return verdict if verdict in _BLOCKING_SOVA_VERDICTS else None
+    return None
+
+
+def resolve_head_verdict(
+    review_data: PRReviewData | None,
+    *,
+    pr_number: int,
+    head_sha: str,
+    trusted_login: str,
+    handoffs: list[DashboardHandoff],
+) -> str:
+    """SOVA's verdict for the current PR head: approve, revise, block, none or unknown.
+
+    GitHub wins when it holds a marker for this head. Otherwise (none, or unreachable) a local reviewer
+    handoff for the same PR and head can still say revise or block, which covers a verdict whose post
+    failed. One answer feeds compute_pr_state() and so the dashboard and the PR monitor alike.
+    """
+    github = _github_head_verdict(review_data, head_sha, trusted_login)
+    if github not in ("none", "unknown"):
+        return github
+    return _local_head_verdict(handoffs, pr_number, head_sha) or github
+
+
 def compute_pr_state(
     *,
     is_draft: bool,
@@ -364,8 +434,13 @@ def compute_pr_state(
     latest_reviews: list[dict] | None = None,
     all_threads_resolved: bool | None = False,
     superseded_by_new_commit: bool = False,
+    sova_verdict: str | None = None,
 ) -> str:
-    """Derive a single computed state from PR signals."""
+    """Derive a single computed state from PR signals.
+
+    ``sova_verdict`` is resolve_head_verdict()'s answer: a revise or block for the current head keeps
+    the PR out of every approved state.
+    """
     if is_draft:
         return ComputedPRState.DRAFT
     if mergeable == "CONFLICTING" or merge_state == "DIRTY":
@@ -374,6 +449,8 @@ def compute_pr_state(
         return ComputedPRState.CI_RUNNING
     if ci_status == "failed":
         return ComputedPRState.CI_FAILED
+    if sova_verdict in _BLOCKING_SOVA_VERDICTS:
+        return ComputedPRState.SOVA_CHANGES
     github_blocked = merge_state in _MERGE_STATES_UNMERGEABLE
     if review_decision == "CHANGES_REQUESTED":
         if latest_reviews:
@@ -495,6 +572,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         latest_reviews=latest_reviews,
         all_threads_resolved=all_threads_resolved,
         superseded_by_new_commit=superseded_by_new_commit,
+        sova_verdict=raw.get("_sova_verdict"),
     )
 
     author = raw.get("author") or {}
@@ -566,6 +644,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.git.pr import PRLookupError, get_pr_review_data, list_open_prs
+    from sova.ipc.handoff import read_all_handoff_files
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
@@ -610,6 +689,8 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     except (RuntimeError, OSError):
         log.warning("pr_service.thread_counts_failed", exc_info=True)
         review_data = {}
+    trusted_login = cfg.github_user or await get_active_gh_user() or ""
+    handoffs = read_all_handoff_files(project_dir)
     for pr in raw_prs:
         rd = review_data.get(pr["number"])
         if rd is None:
@@ -618,6 +699,13 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
         else:
             pr["_thread_counts"] = (rd.thread_total, rd.thread_resolved)
             pr["_superseded_by_new_commit"] = rd.bot_cr_superseded
+        pr["_sova_verdict"] = resolve_head_verdict(
+            rd,
+            pr_number=pr["number"],
+            head_sha=pr.get("headRefOid") or "",
+            trusted_login=trusted_login,
+            handoffs=handoffs,
+        )
 
     wall_now = time.time()
     result = [_enrich_pr(pr, wall_now) for pr in raw_prs]
