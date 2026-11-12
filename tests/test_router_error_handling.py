@@ -166,20 +166,6 @@ class TestQuotaRouterErrors:
         assert "github_repo" in resp.json()["detail"]
 
 
-class TestLogsRouterErrors:
-    async def test_logs_validates_limit(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/logs?limit=0")
-        assert resp.status_code == 422
-
-    async def test_logs_validates_limit_upper(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/logs?limit=1001")
-        assert resp.status_code == 422
-
-    async def test_logs_validates_offset_negative(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/logs?offset=-1")
-        assert resp.status_code == 422
-
-
 class TestAgentsRouterErrors:
     async def test_run_command_error_dict_returns_409(self, client: AsyncClient) -> None:
         from sova.dashboard.services import control_service as cs

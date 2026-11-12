@@ -1518,6 +1518,32 @@ function initSidebarTooltips() {
   });
 }
 
+/* The "More" nav group. The server renders it open when the current page is one of its children;
+   otherwise the remembered preference (written only by an explicit toggle) decides. Any stored value
+   other than '1' counts as collapsed. */
+var SIDEBAR_MORE_KEY = 'sova.sidebar.moreOpen';
+
+function setSidebarMoreOpen(open) {
+  var btn = document.getElementById('sidebar-more-toggle');
+  var group = document.getElementById('sidebar-more-group');
+  if (!btn || !group) return;
+  group.classList.toggle('hidden', !open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function initSidebarMore() {
+  var btn = document.getElementById('sidebar-more-toggle');
+  if (!btn) return;
+  if (btn.dataset.activeChild !== 'true') {
+    setSidebarMoreOpen(safeStorageGet(SIDEBAR_MORE_KEY) === '1');
+  }
+  btn.addEventListener('click', function () {
+    var open = btn.getAttribute('aria-expanded') !== 'true';
+    setSidebarMoreOpen(open);
+    safeStorageSet(SIDEBAR_MORE_KEY, open ? '1' : '0');
+  });
+}
+
 function toggleSidebar() {
   var isCollapsed = document.body.dataset.sidebarCollapsed === 'true';
   var btn = document.getElementById('sidebar-toggle');
@@ -1542,6 +1568,7 @@ initColors();
 _initGithubRepo();
 initSidebarCollapse();
 initSidebarTooltips();
+initSidebarMore();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();

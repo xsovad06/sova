@@ -131,8 +131,6 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | **Lifecycle** | Issue lifecycle rail (development through post-merge) |
 | **Costs** | Per-task and per-model cost tracking and aggregation |
 | **Queue** | Batch triage/harden operations with progress tracking |
-| **Logs** | Real-time agent output streaming |
-| **Memory** | Browse and search the knowledge base (memories, patterns, extractions) |
 | **Roles** | View and edit custom workflow roles (DAG-based) |
 | **Settings** | Runtime configuration management |
 | **Setup** | Project onboarding wizard with directory browser |

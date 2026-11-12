@@ -337,6 +337,8 @@ class TestDashboardHealth:
             pytest.param("/control", 301, id="control"),
             pytest.param("/runs", 301, id="runs"),
             pytest.param("/tasks", 301, id="tasks"),
+            pytest.param("/logs", 301, id="logs"),
+            pytest.param("/memory", 301, id="memory"),
         ],
     )
     async def test_redirects_to_agents(self, client: AsyncClient, path: str, status: int) -> None:
@@ -350,13 +352,46 @@ class TestDashboardHealth:
             pytest.param("/agents", "Agents", id="agents"),
             pytest.param("/work/1", "Run #1", id="work-detail-with-agents-sidebar"),
             pytest.param("/costs", "Cost", id="costs"),
-            pytest.param("/memory", "Memory", id="memory"),
         ],
     )
     async def test_page_loads(self, client: AsyncClient, path: str, expected: str) -> None:
         resp = await client.get(path)
         assert resp.status_code == 200
         assert expected in resp.text
+
+    @pytest.mark.parametrize(
+        ("path", "more_open", "highlighted"),
+        [
+            pytest.param("/agents", False, "/agents", id="visible-page-leaves-more-collapsed"),
+            pytest.param("/supervisor", False, "/supervisor", id="supervisor-stays-visible"),
+            pytest.param("/specs", True, "/specs", id="child-page-opens-more"),
+            pytest.param("/connections", True, "/connections", id="connections-lives-in-more"),
+            pytest.param("/settings", False, "/settings", id="settings-stays-visible"),
+        ],
+    )
+    async def test_sidebar_more_group(self, client: AsyncClient, path: str, more_open: bool, highlighted: str) -> None:
+        html = (await client.get(path)).text
+        nav = html[html.index('class="sidebar-nav-scroll') :]
+        visible, toggle = nav.split('id="sidebar-more-toggle"', 1)
+        assert ('aria-expanded="true"' in toggle.split(">", 1)[0]) is more_open
+        group = toggle[toggle.index('id="sidebar-more-group"') :]
+        group_tag, group_body = group.split(">", 1)
+        assert ("hidden" in group_tag) is (not more_open)
+        more, after = group_body.split('<div class="sidebar-divider', 1)
+        visible_pages = ["/agents", "/queue", "/supervisor", "/oversight", "/costs"]
+        assert all(f'href="{href}"' in visible for href in visible_pages)
+        more_pages = ["/specs", "/pr-metrics", "/reliability", "/roles", "/commands", "/dependency-health", "/fleet"]
+        assert all(f'href="{href}"' in more for href in [*more_pages, "/connections", "/setup"])
+        assert not any(f'href="{href}"' in visible for href in more_pages)
+        assert 'href="/settings"' in after.split("</nav>", 1)[0]
+        active = [seg for seg in html.split("<a ")[1:] if "bg-sidebar-active" in seg.split(">", 1)[0]]
+        assert [seg.split('"')[1] for seg in active] == [highlighted]
+
+    async def test_sidebar_has_retired_pages_removed(self, client: AsyncClient) -> None:
+        html = (await client.get("/agents")).text
+        assert 'href="/logs"' not in html
+        assert 'href="/memory"' not in html
+        assert (await client.get("/api/logs")).status_code == 404
 
     async def test_lifecycle_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
         resp = await client.get("/lifecycle/42")
@@ -4097,6 +4132,8 @@ class TestMultiProject:
             pytest.param("/p/alpha/work", 301, id="work"),
             pytest.param("/p/alpha/tasks", 301, id="tasks"),
             pytest.param("/p/alpha/runs", 301, id="runs"),
+            pytest.param("/p/alpha/logs", 301, id="logs"),
+            pytest.param("/p/alpha/memory", 301, id="memory"),
         ],
     )
     async def test_project_redirects_to_agents(self, multi_client: AsyncClient, path: str, status: int) -> None:
@@ -6341,135 +6378,6 @@ class TestStepPassedStatus:
         data = resp.json()
         task = next(t for t in data["tasks"] if t["issue_number"] == "201")
         assert task["steps_completed"] == 3
-
-
-class TestLogsAPI:
-    """Tests for the logs API endpoints."""
-
-    async def test_logs_empty(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
-        resp = await client.get("/api/logs")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["entries"] == []
-        assert data["total"] == 0
-
-    async def test_logs_with_data(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        # Write a test log file
-        log_dir = tmp_path / ".claude"
-        log_dir.mkdir()
-        log_file = log_dir / "sova.log"
-        import json
-
-        lines = [
-            json.dumps(
-                {
-                    "level": "INFO",
-                    "message": "Agent started",
-                    "component": "core",
-                    "timestamp": "2026-01-01T10:00:00",
-                }
-            ),
-            json.dumps(
-                {
-                    "level": "ERROR",
-                    "message": "Test failed",
-                    "component": "runner",
-                    "timestamp": "2026-01-01T10:01:00",
-                }
-            ),
-            json.dumps(
-                {
-                    "level": "INFO",
-                    "message": "Agent completed",
-                    "component": "core",
-                    "timestamp": "2026-01-01T10:02:00",
-                }
-            ),
-        ]
-        log_file.write_text("\n".join(lines) + "\n")
-
-        # Patch get_project_dir to return tmp_path
-        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
-
-        resp = await client.get("/api/logs")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 3
-        assert len(data["entries"]) == 3
-        # Most recent first
-        assert data["entries"][0]["message"] == "Agent completed"
-
-    async def test_logs_filter_level(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        import json
-
-        log_dir = tmp_path / ".claude"
-        log_dir.mkdir()
-        log_file = log_dir / "sova.log"
-        lines = [
-            json.dumps({"level": "INFO", "message": "ok", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
-            json.dumps({"level": "ERROR", "message": "bad", "component": "core", "timestamp": "2026-01-01T10:01:00"}),
-        ]
-        log_file.write_text("\n".join(lines) + "\n")
-
-        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
-
-        resp = await client.get("/api/logs?level=ERROR")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 1
-        assert data["entries"][0]["message"] == "bad"
-
-    async def test_logs_components(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        import json
-
-        log_dir = tmp_path / ".claude"
-        log_dir.mkdir()
-        log_file = log_dir / "sova.log"
-        lines = [
-            json.dumps({"level": "INFO", "message": "x", "component": "core"}),
-            json.dumps({"level": "INFO", "message": "y", "component": "runner"}),
-        ]
-        log_file.write_text("\n".join(lines) + "\n")
-
-        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
-
-        resp = await client.get("/api/logs/components")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "core" in data["components"]
-        assert "runner" in data["components"]
-
-    async def test_logs_page_renders(self, client: AsyncClient) -> None:
-        resp = await client.get("/logs")
-        assert resp.status_code == 200
-        assert b"Logs" in resp.content
-
-    async def test_logs_with_non_dict_json_line(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        """A traceback fragment that happens to parse as a JSON scalar (not an object)
-        must be treated as plain text, not crash the parser."""
-        import json
-
-        log_dir = tmp_path / ".claude"
-        log_dir.mkdir()
-        log_file = log_dir / "sova.log"
-        lines = [
-            json.dumps({"level": "INFO", "message": "ok", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
-            '"no active connection"',
-            "42",
-            "true",
-        ]
-        log_file.write_text("\n".join(lines) + "\n")
-
-        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
-
-        resp = await client.get("/api/logs")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 4
-        messages = {e["message"] for e in data["entries"]}
-        assert "ok" in messages
-        assert '"no active connection"' in messages
 
 
 class TestSettingsAPI:

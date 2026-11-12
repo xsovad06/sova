@@ -6,7 +6,7 @@ API contract patterns, request/response models, and integration conventions used
 
 ### Router Organization
 
-33 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
+32 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
 
 | Router | Purpose |
 |--------|---------|
@@ -23,7 +23,6 @@ API contract patterns, request/response models, and integration conventions used
 | handoff | Read, execute, and clear agent handoff actions |
 | health | Read-only diagnostic checks for the settings page panel |
 | lifecycle | Issue lifecycle tracking and phase control |
-| logs | Filterable log viewer |
 | mcp | HTTP+SSE endpoint for agent self-inspection tools |
 | memory | Agent memory entries from the database |
 | models | Read-only LLM/runtime model enumeration |

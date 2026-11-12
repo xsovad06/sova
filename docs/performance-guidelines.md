@@ -81,9 +81,8 @@ Used by dashboard services that read project files. Check `stat().st_mtime` befo
 | Cache | File | Key Type | Invalidation |
 |-------|------|----------|--------------|
 | Handoff files | `handoff_service.py` | `{project_dir}:{issue}` | mtime comparison |
-| Log files | `log_service.py` | file path | `os.path.getmtime()` |
 
-Tests MUST monkeypatch `get_project_dir` to `tmp_path` and may need to clear `_handoff_caches` / `_log_cache` between test cases.
+Tests MUST monkeypatch `get_project_dir` to `tmp_path` and may need to clear `_handoff_caches` between test cases.
 
 ### TTL caches
 
@@ -150,10 +149,10 @@ When polled state disappears, the JS handler must actively clear `innerHTML` or 
 File reads in async endpoint handlers must be offloaded via `asyncio.to_thread()`:
 
 ```python
-all_entries = await asyncio.to_thread(_parse_log_file, log_path)
+entries = await asyncio.to_thread(parse_large_file, path)
 ```
 
-Current offloading sites: `log_service.py` (log file parsing). Small JSON reads (`handoff_service.py`, `settings_service.py`) are fast enough to run inline.
+No service currently needs this: small JSON reads (`handoff_service.py`, `settings_service.py`) are fast enough to run inline, but offload any larger parse.
 
 ## Subprocess Streaming
 

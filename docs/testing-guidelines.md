@@ -211,7 +211,7 @@ Call `create_app()` yourself only when the test needs an app built differently: 
 
 ### File-backed service isolation
 
-Services with mtime caches (`handoff_service`, `log_service`) need monkeypatching:
+Services with mtime caches (`handoff_service`) need monkeypatching:
 
 ```python
 monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
