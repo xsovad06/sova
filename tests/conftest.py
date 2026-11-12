@@ -194,6 +194,12 @@ def _configure_test_logging() -> None:
     configure_test_logging()
 
 
+@pytest.fixture(autouse=True)
+def _no_review_post_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A review post that fails every method retries once; skip the real pause so failure-path tests stay fast."""
+    monkeypatch.setattr("sova.roles.reviewer._POST_RETRY_DELAY_SECONDS", 0)
+
+
 async def drain_feed_persist() -> None:
     """Await any in-flight feed-persistence tasks.
 
