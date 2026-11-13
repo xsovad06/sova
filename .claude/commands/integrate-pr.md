@@ -926,6 +926,12 @@ It acts on each issue the body links and prints one line per issue:
 
 A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead: closing a `Part of` issue is the bug this step exists to prevent.
 
+Then record which recorded rules the PR's review findings repeat (read by `sova retro report`). A failure is reported and never stops cleanup:
+
+```bash
+sova retro record <PR_NUMBER> || echo "FAILED: sova retro record <PR_NUMBER>" >&2
+```
+
 **Jira projects** (`task_source.type = "jira"`):
 
 The Jira connection settings resolve through the config loader as `cfg.task_source.jira_base_url`, `jira_email`, `jira_api_token`, and `jira_project_key`. Read them inside the script that calls Jira; never print `jira_api_token` to the terminal or into a log. Use the Jira REST API to transition the issue:
@@ -968,6 +974,7 @@ Output a concise summary covering:
 - CI status (passed, retried, or skipped because nothing was re-pushed)
 - Branches cleaned up (local + remote), and any worktree or branch kept and why
 - Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue; whether Phase 5 re-judged the closing decision
+- Review retro: the line `sova retro record` printed, or its failure
 - Documentation and knowledge: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
 - **Manual post-merge actions** (omit if none apply), derived from `gh pr diff <PR_NUMBER> --name-only`:
