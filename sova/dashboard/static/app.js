@@ -1639,15 +1639,17 @@ function _initGithubRepo() {
   }).catch(function() {});
 }
 
-function prLink(prNumber) {
+// opts.bare drops the "PR " prefix, for a column whose header already says PR.
+function prLink(prNumber, opts) {
   if (!prNumber) return '--';
   var safe = escapeHtml(String(prNumber));
+  var text = (opts && opts.bare ? '#' : 'PR #') + safe;
   var repo = window.SOVA_GITHUB_REPO;
   if (repo) {
     return '<a href="https://github.com/' + escapeHtml(repo) + '/pull/' + safe + '" target="_blank" rel="noopener" ' +
-      'class="text-accent-lavender hover:underline" onclick="event.stopPropagation()">PR #' + safe + '</a>';
+      'class="text-accent-lavender hover:underline" onclick="event.stopPropagation()">' + text + '</a>';
   }
-  return 'PR #' + safe;
+  return text;
 }
 
 function issueLink(issueNumber, url) {
@@ -2030,13 +2032,20 @@ function runActionFor(role, pipelineVariant) {
     var a = table.actions[key];
     return { key: key, label: a.label, running: a.running, color: a.color };
   }
+  // An unlisted command or role named after a registered action takes that action's name and colour.
+  var named = function(name, label) {
+    if (table && own(table.actions, name)) {
+      var reg = table.actions[name];
+      return { key: name, label: reg.label, running: reg.running, color: reg.color };
+    }
+    return { key: name, label: label, running: 'Running', color: 'gray' };
+  };
   if (normalized.indexOf('command:') === 0 && normalized !== 'command:') {
     var name = normalized.slice('command:'.length);
     // With the table loaded, an unlisted command reads like the server names it ("Health audit").
-    var label = table ? name.charAt(0).toUpperCase() + name.slice(1).toLowerCase().replace(/-/g, ' ') : name;
-    return { key: name, label: label, running: 'Running', color: 'gray' };
+    return named(name, table ? name.charAt(0).toUpperCase() + name.slice(1).toLowerCase().replace(/-/g, ' ') : name);
   }
-  return { key: role, label: role, running: 'Running', color: 'gray' };
+  return named(role, role);
 }
 
 function formatRole(role, pipelineVariant) {
@@ -2152,7 +2161,10 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   if (pipelineVariant === 'command') {
     var label = '';
     if (!compact) {
-      label = '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(runActionFor(role, pipelineVariant).running) + '</div>';
+      var runAction = runActionFor(role, pipelineVariant);
+      // An action outside the table runs as the generic "Running": name the command instead.
+      label = '<div class="text-xs text-gray-400 mt-1">' +
+        escapeHtml(runAction.running === 'Running' ? runAction.label : runAction.running) + '</div>';
     }
     return '<div class="flex gap-0.5"><div class="flex-1 ' + (compact ? 'h-1.5' : 'h-2.5') + ' rounded animate-pulse" style="background:' + colors.hex + ';opacity:0.7"></div></div>' + label;
   }

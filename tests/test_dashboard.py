@@ -3749,21 +3749,18 @@ class TestHandoffAPI:
         for status in TASK_RUN_TERMINAL:
             assert f'<option value="{status}">' in resp.text
 
-    async def test_agents_page_status_filter_wired_into_history_query(self, client: AsyncClient) -> None:
-        """Source-level check that loadHistory() actually appends both filters to
-        /work/history, since the markup/function-name assertions above don't catch a
-        refactor that leaves the dropdown rendered but inert (no JS test harness here;
-        same pattern as tests/test_llm_suggestion_service.py).
-        """
+    async def test_agents_page_history_filters_are_rendered(self, client: AsyncClient) -> None:
+        """The filter bar's controls; tests/test_dashboard_run_history.py drives them under Node and checks
+        each one reaches the /work/history query."""
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = agents_page_source().find("async function loadHistory()")
-        assert idx != -1, "loadHistory() not found in agents.html"
-        body = agents_page_source()[idx : idx + 800]
-        assert "getElementById('filter-status')" in body
-        assert "getElementById('filter-role')" in body
-        assert "&role=" in body
-        assert "&status=" in body
+        for element_id in ("filter-action", "filter-number", "history-from", "history-to", "history-clear"):
+            assert f'id="{element_id}"' in resp.text, element_id
+        for preset in ("today", "7d", "30d", "all", "custom"):
+            assert f'id="history-range-{preset}"' in resp.text, preset
+        seven_days = resp.text[resp.text.index('id="history-range-7d"') :]
+        assert 'aria-pressed="true"' in seven_days[: seven_days.index(">")], "Last 7 days is the default range"
+        assert 'id="filter-role"' not in resp.text
 
     async def test_agents_page_history_rerun_button_carries_run_id(self, client: AsyncClient) -> None:
         """The history re-run button must thread data-run-id through so the delegated
@@ -3771,9 +3768,9 @@ class TestHandoffAPI:
         banner's own re-run button (source-level check, same pattern as above)."""
         resp = await client.get("/agents")
         assert resp.status_code == 200
-        idx = agents_page_source().find("function renderHistoryTable")
-        assert idx != -1, "renderHistoryTable() not found in agents.html"
-        body = agents_page_source()[idx : idx + 2000]
+        idx = agents_page_source().find("function _rerunButton(")
+        assert idx != -1, "_rerunButton() not found in the history module"
+        body = agents_page_source()[idx : idx + 800]
         assert "data-run-id=" in body
 
     async def test_agents_page_has_stat_row(self, client: AsyncClient) -> None:

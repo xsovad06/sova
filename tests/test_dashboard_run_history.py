@@ -17,11 +17,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.dashboard.services import work_service
 from sova.dashboard.services.work_service import get_work_history
-from sova.dashboard.services.work_state import RUN_ACTIONS, run_action, run_actions_payload
+from sova.dashboard.services.work_state import RUN_ACTIONS, VARIANT_ACTIONS, run_action, run_actions_payload
 from sova.db.models import StepExecution, TaskRun
 from sova.db.session import get_session
-from tests.conftest import DASHBOARD_DIR
+from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
@@ -59,6 +60,10 @@ _TABLE = [
     ("command:health-audit", "command", "health-audit", "Health audit", "gray", "Running"),
     ("command:/health-audit --deep", "command", "health-audit", "Health audit", "gray", "Running"),
     ("custom", None, "custom", "custom", "gray", "Running"),
+    # An unlisted command named after a registered action takes that action's name and colour.
+    ("command:develop", "command", "develop", "Develop", "blue", "Developing"),
+    ("command:/develop 12", "command", "develop", "Develop", "blue", "Developing"),
+    ("command:review", "command", "review", "Review", "green", "Reviewing"),
 ]
 
 
@@ -76,6 +81,18 @@ class TestRunActionTable:
 
     def test_every_colour_is_a_token_the_page_maps(self) -> None:
         assert {a.color for a in RUN_ACTIONS.values()} <= {"blue", "green", "mauve", "yellow", "teal", "gray"}
+
+    def test_a_key_has_one_label_and_colour_whatever_role_names_it(self) -> None:
+        roles = [r for r, *_ in _TABLE] + [f"command:{k}" for k in RUN_ACTIONS] + list(RUN_ACTIONS)
+        for role in roles:
+            for variant in (None, "command", "address_review", "developer"):
+                action = run_action(role, variant)
+                if action.key in RUN_ACTIONS:
+                    assert action == RUN_ACTIONS[action.key], (role, variant)
+
+    def test_every_variant_has_a_sql_twin_for_the_action_filter(self) -> None:
+        variants = {v for by_variant in VARIANT_ACTIONS.values() for v in by_variant}
+        assert variants <= work_service._VARIANT_CLAUSES.keys()
 
     def test_the_payload_carries_the_whole_table(self) -> None:
         payload = run_actions_payload()
@@ -184,8 +201,8 @@ class TestHistoryRows:
         assert runs["running"].id not in by_id
 
     async def test_rows_are_newest_first_by_start_time(self, session: AsyncSession, runs: dict) -> None:
-        # The reviewer run started after the develop run but ended at the same offset, and the stopped
-        # address-pr run started last: ordering by end time would not give this sequence.
+        # Develop ends last (T0 + 20h) but started first, so ordering by end time would put it at the top; the
+        # stopped address-pr run started last and must lead.
         async with session.begin():
             runs["develop"].ended_at = T0 + timedelta(hours=20)
         result = await get_work_history(session, limit=50)
@@ -252,6 +269,24 @@ class TestHistoryFilters:
         assert {t["id"] for t in result["tasks"]} == {command.id, developer.id}
         assert all(t["action"] == "develop" for t in result["tasks"])
 
+    async def test_action_filter_and_row_action_agree_for_every_kind_of_run(
+        self, session: AsyncSession, runs: dict
+    ) -> None:
+        """Every key a row reports, "auto" included, selects exactly the rows that report it, in one colour."""
+        async with session.begin():
+            await _add_run(session, role="", hours=10, issue="40")
+            await _add_run(session, role="command:develop", hours=11, issue="41")
+            await _add_run(session, role="command:/review 12", hours=12, issue="42")
+        rows = (await get_work_history(session, limit=100))["tasks"]
+        assert {"auto", "develop", "review"} <= {t["action"] for t in rows}
+        by_key: dict[str, set[int]] = {}
+        for t in rows:
+            by_key.setdefault(t["action"], set()).add(t["id"])
+        for key, ids in by_key.items():
+            assert len({(t["action_label"], t["action_color"]) for t in rows if t["action"] == key}) == 1, key
+            filtered = await get_work_history(session, action=key, limit=100)
+            assert {t["id"] for t in filtered["tasks"]} == ids, key
+
     @pytest.mark.parametrize("number", ["11", "#11", " 11 "])
     async def test_number_matches_the_issue_or_the_pr(self, session: AsyncSession, runs: dict, number: str) -> None:
         result = await get_work_history(session, number=number, limit=50)
@@ -262,10 +297,11 @@ class TestHistoryFilters:
         result = await get_work_history(session, number="524", limit=50)
         assert [t["id"] for t in result["tasks"]] == [runs["legacy_integrate"].id]
 
-    async def test_number_matches_a_tracker_key(self, session: AsyncSession) -> None:
+    @pytest.mark.parametrize("number", ["RHCLOUD-42", "rhcloud-42", "RhCloud-42"])
+    async def test_number_matches_a_tracker_key(self, session: AsyncSession, number: str) -> None:
         async with session.begin():
             run = await _add_run(session, role="developer", issue="RHCLOUD-42")
-        result = await get_work_history(session, number="RHCLOUD-42", limit=50)
+        result = await get_work_history(session, number=number, limit=50)
         assert [t["id"] for t in result["tasks"]] == [run.id]
 
     @pytest.mark.parametrize("number", ["²", "9" * 30, "#", "   "])
@@ -317,6 +353,10 @@ class TestHistoryEndpoint:
         assert data["total"] == 1
         assert data["failed_total"] == 0
         assert data["total_cost_usd"] == "0.500000"
+
+    async def test_the_role_parameter_still_filters_for_other_callers(self, client: AsyncClient, runs: dict) -> None:
+        data = (await client.get("/api/work/history", params={"role": "reviewer"})).json()
+        assert [t["id"] for t in data["tasks"]] == [runs["review"].id]
 
     async def test_default_page_is_twenty_five_rows(self, client: AsyncClient, session: AsyncSession) -> None:
         async with session.begin():
@@ -426,3 +466,357 @@ class TestPageResolvesRunActionsFromTheTable:
         assert "ROLE_COLORS" not in _APP_JS
         assert "_commandToRole" not in _APP_JS
         assert "address pr" not in _APP_JS
+
+
+_HISTORY_HARNESS = r"""
+import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const staticDir = process.env.STATIC_DIR;
+// Freeze "now" in 2026 so the year shown on a timestamp (only when it is not the current year) never depends on
+// the calendar year the suite runs in.
+const RealDate = Date;
+const FROZEN_NOW = new RealDate(2026, 10, 12, 18, 0, 0).getTime();
+globalThis.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : [FROZEN_NOW])); }
+  static now() { return FROZEN_NOW; }
+};
+const els = new Map();
+function el(id) {
+  if (!els.has(id)) {
+    const listeners = {};
+    const classes = new Set();
+    const attrs = {};
+    els.set(id, {
+      id, innerHTML: '', textContent: '', value: '', disabled: false, attrs,
+      classList: {
+        add: (...c) => c.forEach((x) => classes.add(x)), remove: (...c) => c.forEach((x) => classes.delete(x)),
+        toggle: (c, on) => {
+          const want = on === undefined ? !classes.has(c) : on;
+          if (want) classes.add(c); else classes.delete(c);
+        },
+        contains: (c) => classes.has(c),
+      },
+      setAttribute: (k, v) => { attrs[k] = String(v); }, getAttribute: (k) => attrs[k] ?? null,
+      addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
+      fire: (type) => (listeners[type] || []).forEach((fn) => fn({ target: els.get(id) })),
+    });
+  }
+  return els.get(id);
+}
+const bodyListeners = [];
+globalThis.window = globalThis;
+globalThis.document = {
+  hidden: false,
+  getElementById: (id) => el(id),
+  querySelector: () => null, querySelectorAll: () => [], createElement: () => el('__created'),
+  addEventListener() {}, removeEventListener() {},
+  body: { addEventListener: (type, fn) => bodyListeners.push(fn) },
+};
+globalThis.addEventListener = () => {};
+globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+
+const appSrc = fs.readFileSync(path.join(staticDir, 'app.js'), 'utf8');
+const grab = (name) => {
+  const s = appSrc.indexOf('function ' + name + '(');
+  return appSrc.slice(s, appSrc.indexOf('\n}\n', s) + 2);
+};
+new Function(grab('escapeHtml') + grab('renderIfChanged')
+  + '; globalThis.escapeHtml = escapeHtml; globalThis.renderIfChanged = renderIfChanged;')();
+const bar = '/* ============================================================\n   13. ';
+const start = appSrc.indexOf(bar + 'RUN ACTIONS');
+const end = appSrc.indexOf(bar + 'STEP PIPELINE BAR', start);
+window.SOVA_COLORS = {};
+window.SOVA_RUN_ACTIONS = JSON.parse(process.env.RUN_ACTIONS);
+(0, eval)(appSrc.slice(start, end) + '; globalThis.runActionColors = runActionColors;');
+globalThis.statusDot = (s) => 'dot-' + s;
+globalThis.issueLink = (n) => '<a class="issue">#' + n + '</a>';
+globalThis.prLink = (n) => (n ? '<a class="pr">PR #' + n + '</a>' : '--');
+globalThis.apiUrl = (p) => '/api' + p;
+globalThis.showToast = () => {};
+const polls = [];
+const pollFns = [];
+globalThis.visibilityAwarePoll = (fn, ms) => { polls.push(ms); pollFns.push(fn); fn(); return { id: null }; };
+const pending = [];
+const urls = [];
+globalThis.fetchAPI = (url) => new Promise((resolve) => { urls.push(url); pending.push({ url, resolve }); });
+const tick = () => new Promise((r) => setTimeout(r, 0));
+async function respond(data) { const p = pending.shift(); p.resolve(data); await tick(); await tick(); return p.url; }
+function click(action, args) {
+  const attrs = { 'data-action': action, 'data-args': args ? JSON.stringify(args) : null };
+  const node = { getAttribute: (n) => attrs[n] ?? null };
+  bodyListeners.forEach((fn) => fn({ target: { closest: () => node }, stopPropagation() {} }));
+}
+const q = (url) => Object.fromEntries(new URL('http://x' + url).searchParams);
+const localMidnight = (days) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+};
+
+const dir = path.join(staticDir, 'js', 'pages', 'agents');
+const actions = await import(pathToFileURL(path.join(dir, 'actions.js')).href);
+const history = await import(pathToFileURL(path.join(dir, 'history.js')).href);
+actions.init();
+history.init();
+
+const page = (over) => Object.assign({ total: 60, failed_total: 4, total_cost_usd: '412.5', tasks: [
+  { id: 9, issue_number: '1452', pr_number: 1457, role: 'developer', action: 'address-review',
+    action_label: 'Address review', action_color: 'blue', status: 'done', total_cost_usd: '1234.834787',
+    duration_formatted: '11m 11s', error_message: null,
+    started_at: '2026-11-12T15:29:13+00:00', ended_at: '2026-11-12T15:40:24+00:00' },
+  { id: 8, issue_number: null, pr_number: 1451, role: 'command:integrate-pr', action: 'integrate',
+    action_label: 'Integrate',
+    action_color: 'teal', status: 'done', total_cost_usd: '0.003', duration_formatted: '3m 37s', error_message: null,
+    started_at: '2025-12-31T09:00:00+00:00', ended_at: '2025-12-31T09:03:37+00:00' },
+  { id: 7, issue_number: '1453', pr_number: null, role: 'developer', action: 'develop', action_label: 'Develop',
+    action_color: 'blue', status: 'failed', total_cost_usd: '0', duration_formatted: null,
+    error_message: 'Timed out <after> 1500s', started_at: '2026-11-12T10:00:00+00:00', ended_at: null },
+] }, over || {});
+
+const out = {};
+out.polls = polls;
+out.first = q(await respond(page()));
+out.since7 = localMidnight(-6);
+const table = el('history-table').innerHTML;
+out.table = table;
+out.failedCount = el('tab-failed-count').textContent;
+out.totals = el('history-totals').innerHTML;
+out.pageInfo = el('history-page-info').textContent;
+out.actionOptions = el('filter-action').innerHTML;
+
+click('history-next');
+out.next = q(await respond(page({ tasks: page().tasks.slice(0, 1) })));
+// Changing a filter drops the old total: Next must not advance on it while the new result is pending.
+el('filter-action').value = 'integrate'; el('filter-action').fire('change');
+out.pagerDisabledWhileLoading = el('history-next').disabled && el('history-prev').disabled;
+click('history-next');
+out.requestsAfterNextWhileLoading = pending.length;
+await respond(page({ total: 1, tasks: page().tasks.slice(0, 1) }));
+el('filter-action').value = ''; el('filter-action').fire('change');
+await respond(page());
+click('history-next');
+await respond(page({ tasks: page().tasks.slice(0, 1) }));
+const tableOnPage2 = el('history-table').innerHTML;
+history.refreshHistoryAfterRun();
+await new Promise((r) => setTimeout(r, 400));
+out.checkNew = q(await respond(page({ total: 61, tasks: page().tasks.slice(0, 1) })));
+out.newRunsHidden = el('history-new-runs').classList.contains('hidden');
+out.newRunsText = el('history-new-runs-btn').textContent;
+out.page2Unchanged = el('history-table').innerHTML === tableOnPage2;
+// The 60 s poll on a later page takes the same probe path: it must not re-fetch the page and shift its rows.
+pollFns[0]();
+out.pollOnPage2 = q(await respond(page({ total: 61, tasks: page().tasks.slice(0, 1) })));
+out.pollPage2Unchanged = el('history-table').innerHTML === tableOnPage2;
+out.pollNewRunsVisible = !el('history-new-runs').classList.contains('hidden');
+click('history-first-page');
+out.backToFirst = q(await respond(page({ total: 61 })));
+out.newRunsHiddenAfter = el('history-new-runs').classList.contains('hidden');
+
+history.refreshHistoryAfterRun();
+await new Promise((r) => setTimeout(r, 400));
+out.refreshPage1 = q(await respond(page({ total: 61 })));
+
+click('switch-tab', ['failed']);
+out.failedTab = q(await respond(page({ total: 4, tasks: page().tasks.slice(2) })));
+out.statusHiddenOnFailed = el('filter-status').classList.contains('hidden');
+out.failedTable = el('history-table').innerHTML;
+out.failedTotals = el('history-totals').innerHTML;
+click('switch-tab', ['history']);
+await respond(page());
+
+el('filter-action').value = 'integrate'; el('filter-action').fire('change');
+out.action = q(await respond(page()));
+el('filter-number').value = ' #11 '; el('filter-number').fire('input');
+await new Promise((r) => setTimeout(r, 400));
+out.number = q(await respond(page()));
+out.clearShown = !el('history-clear').classList.contains('hidden');
+
+click('history-range', ['today']);
+out.today = q(await respond(page()));
+out.todayStart = localMidnight(0);
+out.todayPressed = el('history-range-today').getAttribute('aria-pressed');
+click('history-range', ['all']);
+out.all = q(await respond(page()));
+click('history-range', ['custom']);
+out.customShown = !el('history-custom-range').classList.contains('hidden');
+await respond(page());
+el('history-from').value = '2026-11-02'; el('history-from').fire('change');
+await respond(page());
+el('history-to').value = '2026-11-04'; el('history-to').fire('change');
+out.custom = q(await respond(page()));
+out.customSince = new Date(2026, 10, 2).toISOString();
+out.customUntil = new Date(2026, 10, 5).toISOString();
+
+// A slow answer for an old filter must not overwrite the table the newer filter drew.
+el('filter-action').value = 'review'; el('filter-action').fire('change');
+el('filter-action').value = 'triage'; el('filter-action').fire('change');
+const stale = pending.shift();
+const relabel = (label, key) => [Object.assign({}, page().tasks[0], { action_label: label, action: key })];
+await respond(page({ total: 1, tasks: relabel('Triage', 'triage') }));
+stale.resolve(page({ total: 2, tasks: relabel('Review', 'review') }));
+await tick(); await tick();
+const shown = el('history-table').innerHTML;
+out.staleDropped = shown.includes('Triage') && !shown.includes('>Review<');
+
+click('history-clear');
+out.cleared = q(await respond(page()));
+out.actionAfterClear = el('filter-action').value;
+out.pending = pending.length;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def history_page(tmp_path_factory: pytest.TempPathFactory) -> dict:
+    """The history.js harness run once: what the page requested and rendered."""
+    _require_node()
+    env = {
+        "STATIC_DIR": str(_STATIC),
+        "RUN_ACTIONS": json.dumps(run_actions_payload()),
+        "TZ": "Europe/Prague",
+        "LC_ALL": "en_US.UTF-8",
+    }
+    return _run_node(tmp_path_factory.mktemp("history"), _HISTORY_HARNESS, env=env)  # type: ignore[return-value]
+
+
+class TestHistoryTableInTheBrowser:
+    def test_first_load_asks_for_the_last_seven_days_twenty_five_rows(self, history_page: dict) -> None:
+        assert history_page["first"] == {"limit": "25", "offset": "0", "since": history_page["since7"]}
+        assert history_page["polls"] == [60000]
+
+    def test_columns_and_no_steps(self, history_page: dict) -> None:
+        table = history_page["table"]
+        headers = re.findall(r"<th[^>]*>([^<]*)</th>", table)
+        assert headers == ["When", "Issue", "Action", "Status", "PR", "Duration", "Cost", ""]
+        assert "Steps" not in table
+
+    def test_when_shows_local_time_and_hovering_shows_start_and_end(self, history_page: dict) -> None:
+        table = history_page["table"]
+        assert "Nov 12, 16:29" in table
+        assert "Dec 31, 2025, 10:00" in table
+        tip = re.search(r'data-tooltip="(Started[^"]*)"', table)
+        assert tip
+        assert "Ended" in tip.group(1)
+        assert "16:40:24" in tip.group(1)
+        assert "data-tooltip-multiline" in table
+        assert "Ended: still running" not in table
+        assert "Ended: not recorded" in table
+
+    def test_costs_have_two_decimals_and_sub_cent_reads_less_than_a_cent(self, history_page: dict) -> None:
+        table = history_page["table"]
+        assert "$1,234.83" in table
+        assert "&lt;$0.01" in table
+        assert "$0.00" in table
+        assert "1234.83" not in table
+
+    def test_action_is_a_pill_in_its_colour_and_status_is_a_dot(self, history_page: dict) -> None:
+        table = history_page["table"]
+        assert 'text-accent-teal">Integrate</a>' in table
+        assert 'text-accent">Address review</a>' in table
+        assert "dot-done" in table
+        assert '<a href="/work/9" data-action="stop"' in table
+        assert re.search(r'text-accent-red[^"]*">Failed<', table)
+
+    def test_the_failed_error_row_wraps_a_long_unbroken_token_inside_the_table(self) -> None:
+        """`break-words` does not lower an auto-layout cell's min-content width; `anywhere` does."""
+        source = (_STATIC / "js" / "pages" / "agents" / "history.js").read_text(encoding="utf-8")
+        assert "[overflow-wrap:anywhere]" in source
+        assert "break-words" not in source
+        css = (_STATIC / "tailwind.min.css").read_text(encoding="utf-8")
+        assert "overflow-wrap:anywhere" in css
+
+    def test_history_shows_the_error_on_hover_escaped(self, history_page: dict) -> None:
+        assert 'data-tooltip="Timed out &lt;after&gt; 1500s"' in history_page["table"]
+
+    def test_rerun_only_on_the_failed_row(self, history_page: dict) -> None:
+        assert history_page["table"].count('data-action="rerun"') == 1
+
+    def test_totals_failed_count_and_pager_on_first_load(self, history_page: dict) -> None:
+        assert history_page["failedCount"] == "(4)"
+        assert "60" in history_page["totals"]
+        assert "$412.50" in history_page["totals"]
+        assert history_page["pageInfo"] == "1 to 3 of 60"
+
+    def test_action_filter_options_come_from_the_table(self, history_page: dict) -> None:
+        for action in RUN_ACTIONS.values():
+            assert f'<option value="{action.key}">{action.label}</option>' in history_page["actionOptions"]
+
+    def test_a_later_page_does_not_move_when_a_run_finishes(self, history_page: dict) -> None:
+        assert history_page["next"]["offset"] == "25"
+
+    def test_changing_a_filter_disables_the_pager_until_the_new_total_arrives(self, history_page: dict) -> None:
+        assert history_page["pagerDisabledWhileLoading"] is True
+        assert history_page["requestsAfterNextWhileLoading"] == 1
+        assert history_page["checkNew"]["limit"] == "1"
+        assert history_page["checkNew"]["offset"] == "0"
+        assert history_page["page2Unchanged"] is True
+        assert history_page["pollOnPage2"]["limit"] == "1"
+        assert history_page["pollOnPage2"]["offset"] == "0"
+        assert history_page["pollPage2Unchanged"] is True
+        assert history_page["pollNewRunsVisible"] is True
+        assert history_page["newRunsHidden"] is False
+        assert history_page["newRunsText"] == "1 run finished since this page loaded, back to page 1"
+        assert history_page["backToFirst"]["offset"] == "0"
+        assert history_page["newRunsHiddenAfter"] is True
+
+    def test_page_one_refreshes_when_a_run_finishes(self, history_page: dict) -> None:
+        assert history_page["refreshPage1"]["offset"] == "0"
+        assert history_page["refreshPage1"]["limit"] == "25"
+
+    def test_failed_tab_uses_the_same_filters_and_prints_errors(self, history_page: dict) -> None:
+        assert history_page["failedTab"]["status"] == "failed"
+        assert history_page["failedTab"]["since"] == history_page["since7"]
+        assert history_page["statusHiddenOnFailed"] is True
+        failed_table = history_page["failedTable"]
+        assert "Timed out &lt;after&gt; 1500s" in failed_table
+        assert "<after>" not in failed_table
+        assert "failed runs" in history_page["failedTotals"]
+
+    def test_filters_reach_the_query(self, history_page: dict) -> None:
+        assert history_page["action"]["action"] == "integrate"
+        assert history_page["action"]["offset"] == "0"
+        assert history_page["number"]["number"] == "11"
+        assert history_page["clearShown"] is True
+
+    def test_date_presets_and_custom_range_use_local_midnights(self, history_page: dict) -> None:
+        assert history_page["today"]["since"] == history_page["todayStart"]
+        assert history_page["todayPressed"] == "true"
+        assert "since" not in history_page["all"]
+        assert history_page["customShown"] is True
+        assert history_page["custom"]["since"] == history_page["customSince"]
+        assert history_page["custom"]["until"] == history_page["customUntil"]
+
+    def test_a_stale_answer_is_dropped(self, history_page: dict) -> None:
+        assert history_page["staleDropped"] is True
+
+    def test_clear_filters_returns_to_the_last_seven_days(self, history_page: dict) -> None:
+        assert history_page["cleared"] == {"limit": "25", "offset": "0", "since": history_page["since7"]}
+        assert history_page["actionAfterClear"] == ""
+        assert history_page["pending"] == 0
+
+
+class TestHistoryMarkup:
+    async def test_new_runs_button_hides_through_a_wrapper(self, client: AsyncClient) -> None:
+        """.sova-btn sets display: inline-flex, which beats Tailwind's .hidden on the same element, so the
+        empty button showed as a blank pill; the class that hides it sits on a wrapper."""
+        html = (await client.get("/agents")).text
+        wrapper = html[html.index('id="history-new-runs"') :]
+        assert 'class="hidden"' in wrapper[: wrapper.index(">")]
+        button = html[html.index('id="history-new-runs-btn"') :]
+        assert "hidden" not in button[: button.index(">")]
+
+
+class TestHistoryWiring:
+    def test_a_finished_run_refreshes_the_history(self) -> None:
+        source = (AGENTS_PAGE_JS_DIR / "live-status.js").read_text(encoding="utf-8")
+        assert "import { refreshHistoryAfterRun } from './history.js';" in source
+        branch = source[source.index("if (msg.type === 'agent_finished') {") :]
+        branch = branch[: branch.index("    return;\n  }")]
+        assert "refreshHistoryAfterRun();" in branch
+
+    def test_multiline_tooltip_variant_exists(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        assert re.search(r"\[data-tooltip\]\[data-tooltip-multiline\]::after\s*\{[^}]*white-space:\s*pre", css)

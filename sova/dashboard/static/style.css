@@ -100,6 +100,9 @@
    2. BASE OVERRIDES
    ============================================================ */
 
+/* Native date pickers follow the dark theme (calendar popup and icon) */
+input[type="date"] { color-scheme: dark; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--ctp-mantle); }
@@ -591,6 +594,12 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
      shrinks to one word per line. */
   width: max-content;
   max-width: 320px;
+  text-align: left;
+}
+
+/* Multi-line variant: keeps the newlines in the text (start and end time of a run, one per line) */
+[data-tooltip][data-tooltip-multiline]::after {
+  white-space: pre;
   text-align: left;
 }
 

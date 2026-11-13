@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Agents - SOVA{% endblock %}
+{% from "_icons.html" import icon %}
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-2xl font-semibold">Agents</h2>
@@ -166,58 +167,69 @@
   <div id="log-content" class="p-4 font-mono text-xs text-gray-300 max-h-[500px] overflow-y-auto whitespace-pre-wrap"></div>
 </div>
 
-<!-- History Section -->
+<!-- Run history: one filter bar, pager and table serve both tabs (static/js/pages/agents/history.js) -->
 <div class="border-t border-gray-700/30 pt-6">
   <div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
     <button type="button" data-action="switch-tab" data-args='["history"]' id="tab-history"
       class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white"
-      aria-label="Completed run history"
-      data-tooltip="Completed run history" data-tooltip-pos="bottom">
+      aria-label="Finished run history"
+      data-tooltip="Finished run history" data-tooltip-pos="bottom">
       History
     </button>
     <button type="button" data-action="switch-tab" data-args='["failed"]' id="tab-failed"
       class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
       aria-label="Failed runs only"
       data-tooltip="Failed runs only" data-tooltip-pos="bottom">
-      Failed <span id="tab-failed-count" class="text-xs text-gray-500 ml-1"></span>
+      Failed <span id="tab-failed-count" class="text-xs text-accent-red ml-1"></span>
     </button>
   </div>
 
-  <div id="panel-history">
-    <div class="flex items-center gap-3 mb-4">
-      <select id="filter-role" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
-        <option value="">All roles</option>
-        <option value="developer">Developer</option>
-        <option value="triage">Triage</option>
-        <option value="researcher">Researcher</option>
-        <option value="reviewer">Reviewer</option>
-        <option value="auto">Auto</option>
-      </select>
-      <select id="filter-status" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
-        <option value="">All statuses</option>
-        {% for value, label in status_options %}
-        <option value="{{ value }}">{{ label }}</option>
-        {% endfor %}
-      </select>
-      <div id="history-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
-        <button type="button" data-action="history-prev" id="history-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
-        <span id="history-page-info"></span>
-        <button type="button" data-action="history-next" id="history-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
-      </div>
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3">
+    <div class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Date range">
+      {% for value, label in [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days"), ("all", "All time"), ("custom", "Custom")] %}
+      <button type="button" id="history-range-{{ value }}" data-action="history-range" data-args='["{{ value }}"]'
+        aria-pressed="{{ 'true' if value == '7d' else 'false' }}"
+        class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors aria-pressed:bg-gray-700 aria-pressed:text-white">{{ label }}</button>
+      {% endfor %}
     </div>
-    <div id="history-table"></div>
+    <span id="history-custom-range" class="hidden inline-flex items-center gap-1.5 text-xs text-gray-500">
+      <label for="history-from">From</label>
+      <input type="date" id="history-from" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+      <label for="history-to">to</label>
+      <input type="date" id="history-to" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+    </span>
+    <select id="filter-action" aria-label="Action" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+      <option value="">All actions</option>
+    </select>
+    <select id="filter-status" aria-label="Status" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+      <option value="">All statuses</option>
+      {% for value, label in status_options %}
+      <option value="{{ value }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" id="filter-number" autocomplete="off" placeholder="Issue or PR number" aria-label="Issue or PR number"
+      class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none w-40">
+    <button type="button" id="history-clear" data-action="history-clear"
+      class="hidden ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">
+      {{ icon("close", "w-3.5 h-3.5") }} Clear filters
+    </button>
   </div>
 
-  <div id="panel-failed" class="hidden">
-    <div class="flex items-center gap-3 mb-4">
-      <div id="failed-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
-        <button type="button" data-action="failed-prev" id="failed-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
-        <span id="failed-page-info"></span>
-        <button type="button" data-action="failed-next" id="failed-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
-      </div>
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
+    <span id="history-totals" class="text-sm text-gray-300 tabular-nums"></span>
+    <!-- The wrapper carries `hidden`: .sova-btn sets its own display, which would override it on the button. -->
+    <span id="history-new-runs" class="hidden">
+      <button type="button" id="history-new-runs-btn" data-action="history-first-page" class="sova-btn sova-btn-primary"></button>
+    </span>
+    <div id="history-pager" class="hidden flex items-center gap-1 ml-auto text-xs text-gray-500 tabular-nums">
+      <button type="button" data-action="history-prev" id="history-prev" aria-label="Previous page"
+        class="p-1.5 rounded hover:bg-surface-hover hover:text-gray-200 disabled:opacity-30 transition-colors" disabled>{{ icon("chevron-left", "w-4 h-4") }}</button>
+      <span id="history-page-info" class="px-1.5"></span>
+      <button type="button" data-action="history-next" id="history-next" aria-label="Next page"
+        class="p-1.5 rounded hover:bg-surface-hover hover:text-gray-200 disabled:opacity-30 transition-colors" disabled>{{ icon("chevron-right", "w-4 h-4") }}</button>
     </div>
-    <div id="failed-table"></div>
   </div>
+  <div id="history-table"></div>
 </div>
 
 <!-- Pre-launch modal -->

@@ -229,6 +229,16 @@ Control position with `data-tooltip-pos` (default: `top`):
 <button data-tooltip="Filter" data-tooltip-pos="bottom">ALL</button>
 ```
 
+### Long and Multi-line Text
+
+`data-tooltip-wide` wraps long text (an error message) at 320px. `data-tooltip-multiline` keeps the newlines in the text, one fact per line, such as a run's start and end time in the run history:
+
+```html
+<span data-tooltip="Started: ...&#10;Ended: ..." data-tooltip-pos="right" data-tooltip-multiline>Nov 12, 16:29</span>
+```
+
+Never put a tooltip on an element that clips its own overflow (`truncate`): the `::after` is clipped with it.
+
 ### Sidebar Behavior
 
 Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS. Any `[data-tooltip]` inside `.sidebar` follows this rule. Inside `.sidebar` they are `position: fixed` (to the right of the collapsed sidebar, centred on the hovered element) rather than absolute, because the nav link list scrolls on short viewports and would clip an absolute one; `data-tooltip-pos` has no effect there.

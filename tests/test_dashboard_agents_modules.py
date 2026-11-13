@@ -254,7 +254,7 @@ class TestAgentsModulesRunUnderNode:
         result = json.loads(proc.stdout)
         assert result["failures"] == []
         assert result["bodyClick"] == 1, "actions.init() must attach exactly one delegated click listener"
-        assert len(result["polls"]) == 8
+        assert len(result["polls"]) == 9
 
 
 # Drives the log viewer through hide, show and reconnect with a fake EventSource, to prove that a line
@@ -1096,6 +1096,24 @@ class TestDelegatedActions:
         missing = self._emitted_actions() - self._registered_actions()
         assert not missing, f"data-action names with no registered handler: {sorted(missing)}"
 
+    def test_history_rows_emit_only_actions_their_module_or_actions_js_owns(self) -> None:
+        """A control inside a history row wins the click over the row's `navigate`, so every action it names must be
+        one history.js registers itself or the generic `stop`/`navigate` pair actions.js owns (never a card handler).
+        The one deliberate exception is `rerun`, registered by launch-modal.js: it reads `data-run-id` and stops
+        propagation, so it is safe inside a row, and the assertion below pins that owner."""
+        history = _module_source("history")
+        emitted = set(re.findall(r"actionAttrs\('([\w-]+)'", history)) | set(
+            re.findall(r'data-action="([\w-]+)"', history)
+        )
+        owned: set[str] = set()
+        for block in re.findall(r"registerActions\(\{(.*?)\n  \}\);", history, re.DOTALL):
+            owned.update(re.findall(r"^    '([\w-]+)':", block, re.MULTILINE))
+        owned |= {"stop", "navigate"}
+        assert emitted <= owned | {"rerun"}, sorted(emitted - owned)
+        assert "'rerun':" in _module_source("launch-modal")
+        actions = _module_source("actions")
+        assert "'stop': function(el, e) { e.stopPropagation(); }" in actions
+
     def test_no_handler_is_registered_twice(self) -> None:
         names: list[str] = []
         for source in _all_page_sources().values():
@@ -1172,6 +1190,12 @@ class TestPollingUsesVisibilityAwarePoll:
             ("live-status", "_workItemsRefreshTimer = setTimeout(function() {"),
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
+            ("history", "_refreshTimer = setTimeout(function() {"),
+            (
+                "history",
+                "_numberTimer = setTimeout(function() { _numberTimer = null; "
+                "_state.number = typed; _reload(); }, 300);",
+            ),
         }
         assert "pollLogs() below" in _module_source("log-viewer")
 
@@ -1746,7 +1770,7 @@ class TestAgentsModuleResponsibilities:
             ("agent-cards", ["loadAgents", "renderAgentCard", "renderCompletedCard", "executeHandoffAction"]),
             ("agent-cards", ["triggerRebase", "stopAgent", "resumeFromApproval", "enhancePlannerCards"]),
             ("launch-modal", ["quickStart", "quickStartRole", "rerunAgent", "showLaunchModal"]),
-            ("history", ["loadHistory", "loadFailed", "renderHistoryTable", "switchTab"]),
+            ("history", ["loadHistory", "renderHistoryTable", "switchTab", "refreshHistoryAfterRun"]),
         ],
     )
     def test_agent_cards_and_history_own_their_functions(self, module: str, names: list[str]) -> None:
@@ -1780,12 +1804,13 @@ class TestAgentsModuleResponsibilities:
         assert body.count("fetchLlmSuggestions()") == 1
 
     def test_history_tab_return_refreshes_the_visible_list(self) -> None:
+        """One visibility-aware poll refreshes whichever tab is shown, since both tabs share one table; a
+        separate visibilitychange handler would refresh it twice."""
         source = _module_source("history")
+        assert "visibilityAwarePoll(_refreshHistory, _POLL_MS);" in source
+        assert "document.addEventListener('visibilitychange'" not in source
         switch = source[source.index("function switchTab(") :]
-        assert "_activeTab = tab;" in switch[: switch.index("\n}\n")]
-        handler = source[source.index("document.addEventListener('visibilitychange'") :]
-        assert "if (_activeTab === 'failed') loadFailed();" in handler
-        assert "else loadHistory();" in handler
+        assert "_state.tab = " in switch[: switch.index("\n}\n")]
 
     def test_pr_stage_states_are_listed_once_and_cover_every_python_pr_state(self) -> None:
         """A PR work item state added in work_state.py must reach the PR-stage filter, sort tier and suggestions."""
