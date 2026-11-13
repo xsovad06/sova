@@ -62,7 +62,8 @@ class TestPageStructure:
         assert links == list(SECTIONS)
         for section_id in SECTIONS:
             assert SECTION_LABELS[section_id] in settings_html
-        assert sorted(re.findall(r'data-group-link="([^"]+)"', settings_html)) == sorted(GROUP_ORDER)
+        # Every group, plus the Models view, which is not a settings group.
+        assert sorted(re.findall(r'data-group-link="([^"]+)"', settings_html)) == sorted([*GROUP_ORDER, "models"])
 
     async def test_every_group_has_a_shell_in_its_section(self, settings_html: str) -> None:
         for section_id, group_ids in SECTIONS.items():
@@ -134,6 +135,33 @@ class TestAnchors:
         assert "state.sectionForGroup(" in body
         assert "scrollToEl($('group-' + gid))" in body
         assert "window.addEventListener('hashchange', route)" in page_source
+
+
+class TestModelsView:
+    """The Models view, "Which model runs where", opens at #models, first in Models and agents (#1463)."""
+
+    async def test_sits_first_in_models_and_agents(self, settings_html: str) -> None:
+        section = settings_html[settings_html.index('id="section-models-and-agents"') :]
+        section = section[: section.index("</section>")]
+        assert section.index('id="group-models"') < section.index('id="group-llm"')
+        assert 'data-part="models-view"' in section
+        assert 'href="#models"' in section
+
+    async def test_the_section_list_links_to_it(self, settings_html: str) -> None:
+        nav = settings_html[settings_html.index('data-section-sub="models-and-agents"') :]
+        assert nav.index('data-group-link="models"') < nav.index('data-group-link="llm"')
+
+    def test_a_hash_naming_a_view_opens_the_section_holding_it(self, page_source: str) -> None:
+        assert "const view = $('group-' + hash);" in page_source
+        assert "view.closest('[data-section]')" in page_source
+
+    def test_the_page_loads_the_view_when_its_section_opens(self, page_source: str) -> None:
+        assert "import * as models from './models.js';" in page_source
+        assert '[data-part="models-view"]' in page_source
+
+    def test_the_routing_row_links_to_the_view(self, rows_source: str) -> None:
+        assert "s.key === 'llm.routing'" in rows_source
+        assert 'href="#models"' in rows_source
 
 
 class TestEditability:

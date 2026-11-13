@@ -527,7 +527,7 @@ function showToast(message, type, duration, action) {
   toast.innerHTML =
     '<div style="flex:1;min-width:0">' +
       '<p class="text-sm text-gray-200">' + escapeHtml(message) + '</p>' +
-      '<p class="text-xs text-gray-500 mt-0.5">' + new Date().toLocaleTimeString() + '</p>' +
+      '<p class="text-xs text-gray-500 mt-0.5">' + escapeHtml(new Date().toLocaleTimeString()) + '</p>' +
     '</div>' +
     '<button onclick="this.parentElement.remove()" class="text-gray-500 hover:text-gray-300 text-sm shrink-0 ml-2" aria-label="Dismiss">&times;</button>';
 

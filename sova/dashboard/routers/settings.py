@@ -533,6 +533,152 @@ async def reset_config(req: ConfigResetRequest) -> dict:
         raise HTTPException(status_code=500, detail="Failed to reset the setting") from exc
 
 
+async def _llm_catalog(project_dir: Path) -> list[str] | None:
+    """The LLM-layer model IDs ``GET /models/available`` lists, or None when there is no real list (the curated
+    fallback stands in for an unreachable provider, so it does not name this deployment's models)."""
+    from sova.dashboard.services import models_service
+
+    try:
+        data = await models_service.get_available_models(project_dir, layer="llm")
+    except Exception:  # noqa: BLE001 (no list means Pin leaves an ambiguous short name alone)
+        log.debug("settings.models.catalog_unavailable", exc_info=True)
+        return None
+    if data.get("source") == "curated":
+        return None
+    return [m["id"] for m in data.get("models", []) if isinstance(m, dict) and m.get("id")]
+
+
+async def _catalog_if_needed(short_names: list[dict], project_dir: Path | None) -> list[str] | None:
+    """The model list, fetched only when one of *short_names* (``short_name_settings()`` without a list) is left
+    unresolved by ``resolve_alias()``: enumerating can take seconds, and on the usual first-party setup every short
+    name resolves without it."""
+    if all(item["pin_to"] is not None or item["env_var"] for item in short_names):
+        return None
+    return await _llm_catalog(project_dir or Path.cwd())
+
+
+def _runtime_honours_model(cfg: ProjectConfig) -> bool:
+    """Whether the configured agent runtime runs the model a step passes (Codex does not)."""
+    from sova.ipc.runtime import create_runtime
+
+    try:
+        return create_runtime(cfg.agent.runtime, codex=cfg.codex).honours_model_override
+    except Exception:  # noqa: BLE001 (an unbuildable runtime is reported elsewhere; assume the default behavior)
+        return True
+
+
+@router.get("/settings/models/map", responses={500: {"description": "Failed to build the model map"}})
+async def get_model_map() -> dict:
+    """Which model each role and step runs on and why, with fallbacks, and the settings stored as a short name
+    (Settings, Models view)."""
+    from sova.config.loader import load_config
+    from sova.dashboard.services.model_map_service import build_model_map, short_name_settings
+
+    try:
+        project_dir = _settings_project_dir()
+        cfg = load_config(project_dir)
+        honours = _runtime_honours_model(cfg)
+        payload = build_model_map(cfg, runtime_honours_model=honours)
+        payload["runtime"] = {"name": cfg.agent.runtime, "honours_model": honours}
+        short_names = short_name_settings(cfg)
+        catalog = await _catalog_if_needed(short_names, project_dir)
+        payload["short_names"] = short_names if catalog is None else short_name_settings(cfg, catalog)
+        return payload
+    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
+        log.warning("settings.models.map.error", exc_info=True)
+        raise HTTPException(status_code=500, detail=_extract_validation_detail(exc)) from None
+
+
+class StepModelRequest(BaseModel):
+    step: str
+    # Empty deletes the step's row, so it uses its role's model again.
+    model: str = ""
+
+
+@router.post(
+    "/settings/models/step",
+    responses={
+        404: {"description": "Not a task type or an issue size"},
+        409: {"description": "A SOVA_ environment variable sets llm.routing"},
+        422: {"description": "The step's model was not saved"},
+        503: {"description": "The database could not be written or read back; retry"},
+        500: {"description": "Failed to save the step's model"},
+    },
+    dependencies=[Depends(require_same_origin_csrf)],
+)
+async def set_step_model(req: StepModelRequest) -> dict:
+    """Set the model one step runs on (writes ``llm.routing.<step>``), or with an empty model delete that row."""
+    try:
+        project_dir = _settings_project_dir()
+        result = await settings_service.set_step_model(project_dir, step=req.step, model=req.model)
+        _raise_for_write_error(result)
+        await _apply_config_update(project_dir, "llm.routing", result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("settings.models.step.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save the step's model") from exc
+
+
+class PinRequest(BaseModel):
+    # The settings to pin; None pins every setting stored as a short name (Pin all).
+    keys: list[str] | None = None
+
+
+@router.post(
+    "/settings/models/pin",
+    responses={
+        422: {"description": "Nothing was pinned"},
+        503: {"description": "The database could not be written or read back; retry"},
+        500: {"description": "Failed to pin"},
+    },
+    dependencies=[Depends(require_same_origin_csrf)],
+)
+async def pin_short_names(req: PinRequest) -> dict:
+    """Replace settings stored as a short model name with the exact ID each runs as today (Pin, Pin all)."""
+    try:
+        project_dir = _settings_project_dir()
+        from sova.config.loader import load_config
+
+        try:
+            cfg = load_config(project_dir)
+        except Exception:  # noqa: BLE001 (pin_short_names() reports an unloadable config as a 422 below)
+            cfg = None
+        catalog = None
+        if cfg is not None:
+            from sova.dashboard.services.model_map_service import short_name_settings
+
+            catalog = await _catalog_if_needed(short_name_settings(cfg), project_dir)
+        result = await settings_service.pin_short_names(project_dir, keys=req.keys, catalog=catalog)
+        _raise_for_write_error(result)
+        reloaded: set[str] = set()
+        for key in result.get("pinned", {}):
+            setting = "llm.routing" if key.startswith("llm.routing.") else key
+            target = _match_reload_target(setting) or setting
+            if target not in reloaded:
+                reloaded.add(target)
+                await _apply_config_update(project_dir, setting, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("settings.models.pin.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to pin the model names") from exc
+
+
+def _raise_for_write_error(result: dict) -> None:
+    """Answer a refused write with a client error carrying its message as ``detail``."""
+    if result.get("unknown"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    if result.get("env_var"):
+        raise HTTPException(status_code=409, detail=result["error"])
+    if result.get("unavailable") or result.get("unreadable_database"):
+        raise HTTPException(status_code=503, detail=result["error"])
+    if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+
+
 @router.get(
     "/settings/installation/status",
     responses={500: {"description": "Failed to check installation status"}},

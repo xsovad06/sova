@@ -198,3 +198,88 @@ class TestResetFailureStatuses:
 
         assert res.status_code == 422
         assert res.json()["detail"].startswith("Not reset:")
+
+
+class TestModelsView:
+    """The Models view's routes: the model map, writing and deleting a step's row, and Pin (#1463)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_model_enumeration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Short names resolve without the model list here; never enumerate the provider's models in a test."""
+
+        async def no_catalog(_project_dir: Path) -> None:
+            raise AssertionError("the model list was fetched although every short name resolves")
+
+        monkeypatch.setattr("sova.dashboard.routers.settings._llm_catalog", no_catalog)
+        for name in ("CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK"):
+            monkeypatch.delenv(name, raising=False)
+
+    async def test_the_map_shows_each_step_and_the_short_names(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+        await _save(client, "roles.researcher_model", "claude-opus-5-5")
+
+        res = await client.get("/api/settings/models/map")
+
+        assert res.status_code == 200, res.text
+        payload = res.json()
+        steps = {s["step"]: s for role in payload["roles"] for s in role["steps"]}
+        assert (steps["research"]["model"], steps["research"]["source"]) == ("claude-opus-5-5", "role")
+        assert {item["key"] for item in payload["short_names"]} >= {"roles.reviewer_model", "agent.model"}
+        assert payload["runtime"] == {"name": "claude-code", "honours_model": True}
+
+    async def test_choosing_and_clearing_a_step_model(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+        headers = _csrf_request_headers(client)
+
+        res = await client.post(
+            "/api/settings/models/step", json={"step": "review", "model": "claude-opus-5-5"}, headers=headers
+        )
+        assert res.status_code == 200, res.text
+        routing = _setting((await client.get("/api/settings/config/grouped")).json(), "llm.routing")
+        assert (routing["value"], routing["stored_rows"]) == ({"review": "claude-opus-5-5"}, 1)
+
+        res = await client.post("/api/settings/models/step", json={"step": "review", "model": ""}, headers=headers)
+        assert res.status_code == 200, res.text
+        routing = _setting((await client.get("/api/settings/config/grouped")).json(), "llm.routing")
+        assert (routing["value"], routing["stored"]) == ({}, False)
+
+    async def test_an_unknown_step_is_a_404_with_detail(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+        res = await client.post(
+            "/api/settings/models/step", json={"step": "deploy", "model": "x"}, headers=_csrf_request_headers(client)
+        )
+        assert res.status_code == 404
+        assert "deploy" in res.json()["detail"]
+
+    async def test_a_database_failure_is_a_503_a_client_may_retry(self, startup: tuple[AsyncClient, Path]) -> None:
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        client, _project = startup
+        with patch("sova.config.db_loader.save_setting", side_effect=SQLAlchemyError("down")):
+            res = await client.post(
+                "/api/settings/models/step",
+                json={"step": "review", "model": "claude-opus-5-5"},
+                headers=_csrf_request_headers(client),
+            )
+
+        assert res.status_code == 503
+        assert "Failed to save the step's model" in res.json()["detail"]
+
+    async def test_writes_need_the_csrf_guard(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+        for path, body in (
+            ("/api/settings/models/step", {"step": "review", "model": "x"}),
+            ("/api/settings/models/pin", {}),
+        ):
+            assert (await client.post(path, json=body, headers={"Origin": "http://evil.example"})).status_code == 403
+
+    async def test_pin_all_pins_every_short_name(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+
+        res = await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))
+
+        assert res.status_code == 200, res.text
+        assert res.json()["pinned"]["roles.reviewer_model"] == "claude-sonnet-5-5"
+        assert (await client.get("/api/settings/models/map")).json()["short_names"] == []

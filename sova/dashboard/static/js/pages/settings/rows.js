@@ -18,7 +18,7 @@ const STEPPERS = {
 };
 
 const LIST_HINT = 'Comma-separated, e.g. gmail, gcal';
-const CUSTOM_MODEL = '__custom__';
+export const CUSTOM_MODEL = '__custom__';
 
 // Called after a key's rows re-render, so the page can update its counts and anything that depends on the key.
 const hooks = { afterRender: () => {} };
@@ -68,6 +68,21 @@ function inputText(s) {
   return String(s.value);
 }
 
+// Settings whose value in effect is a short model name (sonnet), from the Models view's payload (models.js).
+const shortNames = new Map();
+
+/* Records which settings hold a short model name and updates their badges, without re-rendering any row. */
+export function setShortNames(items) {
+  const before = new Set(shortNames.keys());
+  shortNames.clear();
+  (items || []).forEach((item) => shortNames.set(item.key, item));
+  new Set([...before, ...shortNames.keys()]).forEach((key) => {
+    const s = setting(key);
+    if (!s) return;
+    elementsFor(key).forEach((el) => { if (el.dataset.ctx === 'row') renderRow(el, s, false); });
+  });
+}
+
 export function badgesHtml(s) {
   const pills = [];
   if (s.env_var) {
@@ -78,6 +93,11 @@ export function badgesHtml(s) {
       : '<span class="sova-setting-pill sova-setting-pill-changed" data-tooltip="Stored for this project">Changed</span>');
   }
   if (s.requires_restart) pills.push('<span class="sova-setting-pill" data-tooltip="Takes effect after the server restarts">Restart</span>');
+  if (shortNames.has(s.key)) {
+    pills.push('<a class="sova-setting-pill sova-setting-pill-short" href="#models" data-tooltip="' +
+      attr('Holds a short model name. A new release can move it to a model your account lacks. Pin it in Which model runs where.') +
+      '">Short name</a>');
+  }
   return pills.join('');
 }
 
@@ -98,7 +118,8 @@ function metaHtml(s) {
     parts.push('<span>Default: <code>' + escapeHtml(formatValue(s.default, s)) + '</code>' + rows + '</span>' +
       '<button type="button" class="sova-setting-link" data-act="reset">Reset to default</button>');
   }
-  if (s.value_type === 'object') parts.push('<span>Read-only here.</span>');
+  if (s.key === 'llm.routing') parts.push('<a class="sova-setting-link" href="#models">Set each step in Which model runs where</a>');
+  else if (s.value_type === 'object') parts.push('<span>Read-only here.</span>');
   return parts.join('');
 }
 
@@ -402,7 +423,9 @@ async function moveSecretToKeychain(key) {
 
 /* --- Model fields: a grouped dropdown once the model list is known ---------------------------------------- */
 
-function fetchModelOptions(source) {
+/* The model list for a layer ("llm" or "runtime") from GET /models/available, grouped by family; resolves to null
+   when there is no real list (a failure, or the curated stand-in for an unreachable provider). */
+export function fetchModelOptions(source) {
   if (!modelOptions[source]) {
     modelOptions[source] = fetchAPI(apiUrl('/models/available?layer=' + encodeURIComponent(source)))
       .then((data) => {
@@ -418,18 +441,29 @@ function fetchModelOptions(source) {
   return modelOptions[source];
 }
 
+/* Forgets a layer's model list, so the next fetchModelOptions() asks the server again. */
+export function forgetModelOptions(source) { delete modelOptions[source]; }
+
 function modelSelect(s, byFamily) {
+  const current = s.value ? String(s.value) : '';
+  return buildModelSelect({
+    current, byFamily, label: s.label, firstLabel: current ? 'Not set (clear)' : 'Not set', dataset: { act: 'model-select' },
+  });
+}
+
+/* A model dropdown: a first option (value ""), the models grouped by family, the stored value when the list lacks
+   it, and "Custom model ID..." (CUSTOM_MODEL). Shared by the rows and the Models view. */
+export function buildModelSelect({ current, byFamily, label, firstLabel, dataset }) {
   const select = document.createElement('select');
   select.className = 'sova-input';
-  select.dataset.act = 'model-select';
-  select.setAttribute('aria-label', s.label);
-  const current = s.value ? String(s.value) : '';
+  Object.entries(dataset || {}).forEach(([k, v]) => { select.dataset[k] = v; });
+  select.setAttribute('aria-label', label);
   const none = document.createElement('option');
   none.value = '';
-  none.textContent = current ? 'Not set (clear)' : 'Not set';
+  none.textContent = firstLabel;
   if (!current) none.selected = true;
   select.appendChild(none);
-  const matched = appendModelOptgroups(select, byFamily, current);
+  const matched = byFamily ? appendModelOptgroups(select, byFamily, current) : false;
   if (current && !matched) {
     const group = document.createElement('optgroup');
     group.label = 'Stored value';

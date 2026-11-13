@@ -328,6 +328,21 @@ async def _delete_all_rows() -> None:
 
 
 @pytest.fixture
+async def _dispose_project_engines(tmp_path: Path) -> AsyncIterator[None]:
+    """Dispose the engines get_session(project_dir=tmp_path) opened, so no connection leaks into a later test.
+
+    For a test that writes to a tmp_path project database and reads it back through load_config(): reset_db_rows
+    does not fit there, since the sync config loader never reads the shared engine it pins.
+    """
+    yield
+    from sova.db import session as db_session
+
+    for url in [u for u in db_session._engines if str(tmp_path) in str(u)]:
+        engine, _factory = db_session._engines.pop(url)
+        await engine.dispose()
+
+
+@pytest.fixture
 async def reset_db_rows(_shared_test_db_engine: tuple, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
     """Delete every row from every table so each test starts with an empty, migrated schema.
 

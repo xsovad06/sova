@@ -22,10 +22,12 @@ Model routing is config-driven via three mechanisms: task-type-specific override
 
 **Alias resolution is backend-aware, not just provider-aware (#1033).** `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` silently redirect the CLI to a deployment that rejects a bare tier name and needs a fully-qualified, dialect-specific ID. `sova/llm/backends.py` adds `detect_backend()`, `backend_can_serve()`, and `tier_candidates_for()`; `sova/llm/client.py:resolve_alias()` is the one choke point `select_model()`, `create_provider()`, and `llm_suggestion_service.py` all share, falling through to a servable candidate when the resolved one is unservable for the backend detected from the spawned CLI child's actual (scrubbed) environment. `llm.resolve_tier_aliases=false` restores byte-identical passthrough. See section 2.7 below for the full design.
 
+**Fallbacks are per role, and the Settings page shows which model each step runs on (#1463).** `roles.{triage,researcher,developer,reviewer,planner}_fallback_models` (`list[str] | None`) give a role its own fallback chain: `None` uses `agent.fallback_models`, `[]` means none. `ProjectConfig.fallback_models_for(role)` is the one rule, read by both chain walks. The Settings page's Models view (`/settings#models`) is built server side by `model_map_service.build_model_map()`, and writes `llm.routing.<step>` one row at a time. See section 2.13 below for the full design.
+
 **Configured model diagnostics (#923).** `sova doctor` and the dashboard health panel warn when a configured
 model ID is absent from a discovered catalog. The fields come from `configured_model_fields()`
 (`sova/utils/diagnostics.py`), the same enumeration the openai-only check filters. Fields `llm.provider` serves
-(`llm.*`, routing and alias targets, role models, `agent.model`/`agent.fallback_models`, oversight, confidence,
+(`llm.*`, routing and alias targets, role models, `agent.model`, `agent.fallback_models` and the role fallback lists, oversight, confidence,
 review-panel dimension models) are resolved through `resolve_alias()` and then the provider's own `normalize_model_name()` (so a bare tier such
 as `sonnet` behind an alias, or with `llm.resolve_tier_aliases = false`, is checked as the ID the provider sends) and
 compared with the provider's catalog;
@@ -745,6 +747,70 @@ exhausted) reported `cost_usd=0`, and `WorkflowEngine`'s `provider_cost = max(re
 routed.cost_usd, 0)` subtraction floored the dev-model attempt's real spend to `$0` whenever a
 routed attempt 1 preceded it (issue #780 review).
 
+### 2.13 Fallbacks per role and the Models view (#1463)
+
+**Fallbacks per role.** `RolesConfig` has `triage_fallback_models`, `researcher_fallback_models`,
+`developer_fallback_models`, `reviewer_fallback_models` and `planner_fallback_models`, each
+`list[str] | None`. `ProjectConfig.fallback_models_for(role)` returns the role's own list when it is
+set (an empty list included, which means no fallbacks) and `agent.fallback_models` otherwise, also for
+a role with no field (`custom`) and for no role at all. `"planner"` covers both the supervisor planner
+and the Planner role, which share `llm.routing.planner`.
+
+Both chain walks read it. The engine's (`WorkflowEngine._execute_with_retries()`,
+`_has_fallback_models()`, `_advance_fallback()`) and the CLI `--fallback-model` hint
+(`ExecutionContext.get_cli_fallback_model()`) use `ctx.fallback_chain`, from `ctx.role`. The client's
+`_build_candidate_chain()` cannot see a context, and the role reaches it through a context variable:
+`running_role(role)` (`sova/llm/client.py`) marks the calls made inside one role's run, and
+`current_role()` reads it. The scope is set once where each role runs: `WorkflowEngine.run()` (every
+pipeline, with `ctx.role`), and `@runs_as_role(...)` on `TriageRole.assess_task_with_llm()`,
+`assess_tasks_batch()` and `_assess_and_enrich()` (the batch and CLI paths call these directly, not
+`execute()`), `ReviewerRole.execute()` (panel review included), `PlannerRole.execute()` and
+`SupervisorPlanner._call_llm()`. Explicit threading would have touched every LLM call site, the
+commit-message and PR-body helpers included, and a forgotten one would fail silently. A role's run is
+a synchronous scope, not deferred work (AGENTS.md, "Pass context explicitly into deferred work"): a
+task created inside it is that role's work, and anything outside every scope (a `sova harden`, a
+dashboard spawn, a scheduler loop) reads `None` and walks `agent.fallback_models`, never another
+role's list.
+
+**The Models view.** `/settings#models`, first in Models and agents, shows the default model and
+fallbacks, one block per role with its model, its fallbacks and its steps, the writing tasks, the
+issue-size models and the oversight and confidence models. Which model a step runs on, and why, comes
+from `sova/dashboard/services/model_map_service.py:build_model_map()` (`GET
+/api/settings/models/map`), which calls the resolvers the steps call (`route_model()`,
+`route_task_type()`, `select_model()`, `resolve_bare_tier_for_provider()`) with each call site's
+precedence, recorded per step in its step table:
+
+- A code-editing step (`requires_tools`) runs the developer runtime pin first, when the runtime
+  honours a model override (not Codex), then its route, then the developer model.
+- A route (`llm.routing.<step>`) outranks the model the step passes. `validate` and `monitor_ci` use
+  it on fix attempt 1 only (section 2.12).
+- The developer model is `roles.developer_model`, else the issue-size route, else the built-in tier
+  pinned to `agent.model`'s family, and only in a developer-pipeline run: `AssessStep` is the only
+  place it is resolved, so an address-review run passes `agent.model`. `rebase` always passes
+  `agent.model`.
+- `triage` with no triage model, and `harden` and `generate_tasks` with no route, pass no model, which
+  means the provider's own default, not `agent.model`.
+- `extraction` falls back to the built-in short name `haiku`; `review` and the supervisor planner to
+  `sonnet`.
+
+Each step also lists the fallbacks its role walks, minus the model already tried first. A step's
+dropdown writes exactly one `llm.routing.<step>` row, and "Use the role model" deletes it
+(`settings_service.set_step_model()`, `clear_step_model()`, `POST /api/settings/models/step`; the
+names are task types in `TASK_TYPE_KEYS` and the issue sizes). An older whole-table `llm.routing` row
+is split into per-step rows on the first write, since it would otherwise replace them when the config
+is assembled. #1323's `sova config set llm.routing...` forms reuse these two functions.
+
+**Short model names and Pin.** `model_map_service.short_name_settings()` lists every LLM-layer model
+setting whose value in effect is a short name (`sonnet`, `opus`, `haiku`, `fable`, `fast`, `smart`,
+`cheap`; a default counts), every list setting holding one, and every routing row holding one, with
+the exact ID Pin would write: for a routing row the `agent.model` family pin first (as
+`route_task_type()` applies it), then `select_model()` (`resolve_alias()`), else the single model of
+that family in `GET /api/models/available?layer=llm`. Several or none is ambiguous, and Pin leaves the
+setting alone and says so; a value a `SOVA_` variable sets is never written. `POST
+/api/settings/models/pin` (`settings_service.pin_short_names()`) pins the given keys ("Pin") or all of
+them ("Pin all"). The model list is fetched only when `resolve_alias()` leaves a short name
+unresolved, since enumerating can take seconds.
+
 ---
 
 ## 3. Answers to the eight investigation questions
@@ -838,7 +904,7 @@ Shipped so far (PR8): `select_model` exists and applies the `llm.model_aliases` 
 is already wired into every model-selection surface, not just the primary `model=` argument.
 Concretely: `invoke()`, `invoke_streaming()` and `invoke_command()` alias the resolved primary
 before the provider call; `invoke_batch()` aliases each `BatchRequest.model`; and
-`_build_candidate_chain()` aliases every `agent.fallback_models` entry (not only the primary), so
+`_build_candidate_chain()` aliases every fallback entry (the running role's list, else `agent.fallback_models`; not only the primary), so
 a fallback hop never reaches the provider unmapped. `create_provider()` in `sova/llm/provider.py`
 also resolves `llm.model`/`llm.fallback_model` through the same map (via the shared
 `sova/llm/client.py:resolve_alias` helper) before constructing a `LiteLLMProvider` or
@@ -872,7 +938,7 @@ engine just fell back *from*.
 ### Q5. Fallback: SOVA-orchestrated or provider-delegated?
 
 **Hybrid, but SOVA is the source of truth.** One client-owned fallback loop builds the chain
-once (`[resolved primary] + agent.fallback_models`, alias-resolved and de-duped), walks it on
+once (`[resolved primary] + ProjectConfig.fallback_models_for(role)`, the running role's own list or else `agent.fallback_models`, alias-resolved and de-duped; section 2.13), walks it on
 fallback-eligible error *categories*, records unavailable models in the cache, and re-raises a
 terminal error only on exhaustion. The category comes from the exception's type once providers
 raise the typed hierarchy, and from its message until then, so the loop is not dead while the
@@ -905,8 +971,8 @@ mitigation is the availability cache's TTL: keep it short enough that a dead mod
 across steps for long, and long enough to avoid re-probing a model that is actually still down.
 
 **Audit note (#924): `_advance_fallback` is a rollback path, not a provider bypass.**
-`WorkflowEngine._advance_fallback()` (`sova/core/workflow.py:750-761`) only walks
-`agent.fallback_models` and returns the next model-name string; it never invokes a provider
+`WorkflowEngine._advance_fallback()` (`sova/core/workflow.py`) only walks
+`ctx.fallback_chain` (the run's role list, else `agent.fallback_models`) and returns the next model-name string; it never invokes a provider
 itself, so it does not join the inventory of direct-API bypasses that issue audited. It is
 reachable only when `WorkflowEngine._has_fallback_models()` (`sova/core/workflow.py:731-748`)
 returns `True`, which requires `llm.engine_owned_fallback=True`

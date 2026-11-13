@@ -4,11 +4,12 @@
    Sections and their groups are rendered by settings.html from settings_meta.SECTIONS; this module fills each
    group with its rows from GET /settings/config/grouped, shows one section at a time, and follows the URL hash:
    `#<section>` opens a section and `#<group id>` (e.g. #supervisor, #task_source) opens the section holding that
-   group and scrolls to it. */
+   group and scrolls to it, and `#models` opens Models and agents at the Models view (models.js). */
 
 import * as state from './state.js';
 import * as rows from './rows.js';
 import * as widgets from './widgets.js';
+import * as models from './models.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -64,6 +65,7 @@ function updateSupervisorCard() {
 
 function afterKeyRendered(key) {
   updateCounts();
+  if (models.isLoaded() && models.affects(key)) models.scheduleRefresh();
   if (key === 'llm.provider' || key === 'agent.runtime') applyVisibility();
   if (key === 'supervisor.enabled' || key === 'oversight.enabled') updateSupervisorCard();
 }
@@ -164,7 +166,10 @@ function showSection(id) {
   document.querySelectorAll('[data-section]').forEach((el) => { el.hidden = el.dataset.section !== id; });
   $('settings-results').hidden = true;
   const sec = $('section-' + id);
-  if (sec) widgets.loadWidgets(sec);
+  if (sec) {
+    widgets.loadWidgets(sec);
+    if (sec.querySelector('[data-part="models-view"]') && !models.isLoaded()) models.load();
+  }
   updateNav();
 }
 
@@ -227,6 +232,16 @@ function route() {
     scrollToEl($('group-' + gid));
     return;
   }
+  // A view that is not a settings group (#models) sits in a section of its own choosing.
+  const view = $('group-' + hash);
+  const viewSection = view && view.closest('[data-section]');
+  if (viewSection) {
+    clearFilters();
+    showSection(viewSection.dataset.section);
+    updateCounts();
+    scrollToEl(view);
+    return;
+  }
   if (!state.filtering()) showSection(state.view.section);
 }
 
@@ -257,6 +272,7 @@ function onClick(e) {
     return;
   }
   if (widgets.handleClick(e.target)) return;
+  if (models.handleClick(e.target)) return;
   rows.handleClick(e.target);
 }
 
@@ -282,12 +298,13 @@ function onKeydown(e) {
     refreshView();
     return;
   }
+  if (models.handleKeydown(e)) return;
   rows.handleKeydown(e);
 }
 
 function bindEvents() {
   document.addEventListener('click', onClick);
-  document.addEventListener('change', (e) => rows.handleChange(e.target));
+  document.addEventListener('change', (e) => { if (!models.handleChange(e.target)) rows.handleChange(e.target); });
   document.addEventListener('input', (e) => { if (e.target.id !== 'settings-search') rows.handleInput(e.target); });
   document.addEventListener('keydown', onKeydown);
   $('settings-search').addEventListener('input', onSearchInput);
