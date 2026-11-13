@@ -253,6 +253,33 @@ class TestListSettingRoundTrip:
         assert db_value == ["gmail", "gcal"]
 
 
+class TestIntListSetting:
+    """``dashboard.hidden_issues`` is a list[int]: its entries are cast, and anything else is refused up front."""
+
+    @pytest.mark.parametrize("value", ["12, 7", "[12, 7]", '["12", "7"]'])
+    async def test_issue_numbers_round_trip_as_ints(self, tmp_path, value: str) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="dashboard.hidden_issues", value=value)
+
+        assert result.get("status") == "ok"
+        assert load_config(tmp_path).dashboard.hidden_issues == [12, 7]
+
+    @pytest.mark.parametrize(("value", "bad"), [("12, abc", "abc"), ("0", "0"), ("-3", "-3"), ("1.5", "1.5")])
+    def test_an_entry_that_is_not_a_positive_whole_number_is_rejected(self, value: str, bad: str) -> None:
+        error = _validate_value_type("dashboard.hidden_issues", value)
+
+        assert error == f"'dashboard.hidden_issues' expects positive whole numbers, got '{bad}'"
+
+    def test_a_string_list_setting_keeps_its_entries_as_strings(self) -> None:
+        assert _cast_value("12, a", "list") == ["12", "a"]
+        assert _validate_value_type("dashboard.setup_roots", "12, a") is None
+
+    def test_an_int_list_entry_that_is_not_a_number_is_left_for_validation(self) -> None:
+        assert _cast_value("3, x", "list", "int") == [3, "x"]
+
+
 class TestCrossFieldValidation:
     """A save must never persist a value that makes load_config() raise.
 

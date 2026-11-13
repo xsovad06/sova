@@ -170,7 +170,7 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     if validation_error:
         return {"error": validation_error}
 
-    cast = _cast_value(value, meta.value_type)
+    cast = _cast_value(value, meta.value_type, meta.item_type)
 
     unreadable = _unreadable_database_error(project_dir)
     if unreadable:
@@ -244,7 +244,7 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
         validation_error = _validate_value_type(key, value)
         if validation_error:
             return {"error": validation_error}
-        casted[key] = _cast_value(value, meta.value_type)
+        casted[key] = _cast_value(value, meta.value_type, meta.item_type)
 
     unreadable = _unreadable_database_error(project_dir)
     if unreadable:
@@ -590,6 +590,10 @@ def _validate_value_type(key: str, value: str) -> str | None:
     elif meta.value_type == "boolean":
         if value.lower() not in ("true", "false"):
             return f"'{key}' expects true or false, got '{value}'"
+    elif meta.value_type == "list" and meta.item_type == "int":
+        bad = [item for item in _cast_list(value) if not _is_positive_int_text(item)]
+        if bad:
+            return f"'{key}' expects positive whole numbers, got '{bad[0]}'"
 
     return None
 
@@ -643,15 +647,24 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
     return None
 
 
-def _cast_value(value: str, value_type: str = "string") -> object:
+def _is_positive_int_text(item: str) -> bool:
+    return item.isascii() and item.isdigit() and int(item) > 0
+
+
+def _cast_value(value: str, value_type: str = "string", item_type: str = "string") -> object:
     """Try to cast a string value to the appropriate type.
 
     List-typed settings must never be stored as a bare string: the config
     models declare them as list[str], so a string value makes load_config()
-    raise a ValidationError and every command for that project fails.
+    raise a ValidationError and every command for that project fails. A list
+    whose ``item_type`` is ``int`` (``dashboard.hidden_issues``, a list[int])
+    casts each entry, since ``_cast_list()`` yields strings.
     """
     if value_type == "list":
-        return _cast_list(value)
+        items = _cast_list(value)
+        if item_type == "int":
+            return [int(item) if _is_positive_int_text(item) else item for item in items]
+        return items
     if value_type == "secret":
         # A secret must never be coerced to bool/int/float just because it
         # happens to look like one (an all-digit token, a "true"-shaped value).

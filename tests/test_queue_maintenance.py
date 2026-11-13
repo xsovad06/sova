@@ -18,7 +18,13 @@ from sova.supervisor.queue_maintenance import (
     _prune_unsuitable,
     apply_planner_queue_changes,
     maintain_queue,
+    prune_closed,
 )
+
+
+def _echo_save() -> AsyncMock:
+    """A ``save_task_queue`` stand-in that reports saving exactly the queue it was given."""
+    return AsyncMock(side_effect=lambda _project_dir, queue, **_kwargs: list(queue))
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +107,21 @@ class TestPruneDone:
         task_map = {30: TaskState.RESEARCHED, 10: TaskState.TRIAGED, 20: TaskState.IN_PROGRESS}
         result = _prune_done([30, 10, 20], task_map)
         assert result == [30, 10, 20]
+
+
+class TestPruneClosed:
+    def test_removes_closed_and_missing_but_not_human_only(self) -> None:
+        task_map = {10: TaskState.DONE, 20: TaskState.HUMAN_ONLY, 30: TaskState.RESEARCHED}
+        # 40 is absent from the map: no longer on the tracker
+        assert prune_closed([30, 10, 20, 40], task_map) == [30, 20]
+
+    def test_malformed_entry_is_dropped_without_crashing(self) -> None:
+        task_map = {10: TaskState.RESEARCHED}
+        assert prune_closed([10, "10", None, [1], True], task_map) == [10]  # type: ignore[list-item]
+
+    def test_prune_done_is_prune_closed_plus_human_only(self) -> None:
+        task_map = {10: TaskState.DONE, 20: TaskState.HUMAN_ONLY, 30: TaskState.RESEARCHED}
+        assert _prune_done([10, 20, 30], task_map) == [30]
 
 
 class TestPruneUnsuitable:
@@ -503,7 +524,7 @@ class TestMaintainQueueDependencyData:
 
         with (
             patch("sova.supervisor.queue_maintenance._discover_ready", side_effect=_spy),
-            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+            patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save),
         ):
             result = await maintain_queue(adapter, config, tmp_path)
 
@@ -527,7 +548,7 @@ class TestMaintainQueueDependencyData:
                 new_callable=AsyncMock,
                 side_effect=AdapterError("rate limited"),
             ),
-            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+            patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save),
         ):
             result = await maintain_queue(adapter, config, tmp_path)
 
@@ -552,7 +573,7 @@ class TestMaintainQueueRespectDependencies:
 
         with (
             patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
-            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+            patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save),
         ):
             result = await maintain_queue(adapter, config, tmp_path)
 
@@ -568,7 +589,7 @@ class TestMaintainQueueRespectDependencies:
         adapter.list_tasks.return_value = [blocker, blocked]
         config = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10, respect_dependencies=True)
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.added == ()
@@ -614,7 +635,7 @@ class TestMaintainQueueCostControlGates:
 
         with (
             patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
-            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+            patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save),
         ):
             await maintain_queue(adapter, cfg, tmp_path)
 
@@ -626,7 +647,7 @@ class TestMaintainQueueCostControlGates:
 
         with (
             patch("sova.supervisor.queue_maintenance.build_dependency_graph", new_callable=AsyncMock) as mock_build,
-            patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock),
+            patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save),
         ):
             await maintain_queue(adapter, cfg, tmp_path)
 
@@ -648,7 +669,7 @@ class TestMaintainQueueCostControlGates:
         def exploding_factory():
             raise AssertionError("session_factory must not be called when there is nothing to resolve")
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             await maintain_queue(adapter, cfg, tmp_path, session_factory=exploding_factory, project_slug="test/repo")
 
 
@@ -679,7 +700,7 @@ class TestMaintainQueueLocalAssessment:
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = [Task(id="40", title="x", state=TaskState.RESEARCHED, labels=[])]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(
                 adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
             )
@@ -692,7 +713,7 @@ class TestMaintainQueueLocalAssessment:
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = [Task(id="40", title="x", state=TaskState.RESEARCHED, labels=[])]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(
                 adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
             )
@@ -720,7 +741,7 @@ class TestMaintainQueueLocalAssessment:
             Task(id="40", title="x", state=TaskState.RESEARCHED, labels=["agent:researched"])
         ]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(
                 adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
             )
@@ -748,7 +769,7 @@ class TestMaintainQueueLocalAssessment:
             Task(id="20", title="y", state=TaskState.RESEARCHED, labels=[]),
         ]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(
                 adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo"
             )
@@ -764,7 +785,7 @@ class TestMaintainQueuePrunesPreExistingUnsuitable:
         cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
         adapter.list_tasks.return_value = [Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["type: epic"])]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert 10 in result.removed
@@ -778,7 +799,7 @@ class TestMaintainQueuePrunesPreExistingUnsuitable:
             Task(id="10", title="x", state=TaskState.RESEARCHED, labels=["agent:interactive-recommended"])
         ]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert 10 in result.removed
@@ -790,7 +811,7 @@ class TestMaintainQueuePrunesPreExistingUnsuitable:
         cfg = SupervisorConfig(enabled=True, task_queue=[10], max_queue_size=10)
         adapter.list_tasks.return_value = [Task(id="10", title="x", state=TaskState.IN_PROGRESS, labels=["type: epic"])]
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert 10 in result.current
@@ -810,7 +831,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is True
@@ -822,6 +843,20 @@ class TestMaintainQueue:
         assert 10 not in result.current
         mock_save.assert_called_once()
 
+    async def test_save_is_rebased_on_the_queue_it_started_from(
+        self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path
+    ) -> None:
+        adapter.list_tasks.return_value = _make_tasks({10: TaskState.DONE, 20: TaskState.IN_PROGRESS})
+        previous = tuple(config.task_queue)
+        rebased = AsyncMock(return_value=[20, 99])  # 99: another writer's entry the stored queue gained meanwhile
+
+        with patch("sova.config.db_loader.save_task_queue", rebased):
+            result = await maintain_queue(adapter, config, tmp_path)
+
+        assert rebased.await_args.kwargs["based_on"] == previous
+        assert result.current == (20, 99)
+        assert config.task_queue == [20, 99]
+
     async def test_no_changes(self, adapter: AsyncMock, config: SupervisorConfig, tmp_path: Path) -> None:
         adapter.list_tasks.return_value = _make_tasks(
             {
@@ -831,7 +866,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await maintain_queue(adapter, config, tmp_path)
 
         assert result.changed is False
@@ -848,7 +883,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.removed == (10, 20)
@@ -889,7 +924,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.added == (5,)
@@ -907,7 +942,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert len(result.current) == 3
@@ -922,7 +957,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             await maintain_queue(adapter, cfg, tmp_path)
 
         assert cfg.task_queue == [20]
@@ -935,7 +970,7 @@ class TestMaintainQueue:
             }
         )
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert 10 not in result.current
@@ -947,7 +982,7 @@ class TestMaintainQueue:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
@@ -961,7 +996,7 @@ class TestMaintainQueue:
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
@@ -970,10 +1005,21 @@ class TestMaintainQueue:
 
 
 class TestApplyPlannerQueueChanges:
+    async def test_save_is_rebased_on_the_queue_it_started_from(self, tmp_path: Path) -> None:
+        cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
+        rebased = AsyncMock(return_value=[10, 30, 77])
+
+        with patch("sova.config.db_loader.save_task_queue", rebased):
+            result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20])
+
+        assert rebased.await_args.kwargs["based_on"] == [10, 20, 30]
+        assert result == [10, 30, 77]
+        assert cfg.task_queue == [10, 30, 77]
+
     async def test_removals(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20])
 
         assert result == [10, 30]
@@ -982,7 +1028,7 @@ class TestApplyPlannerQueueChanges:
     async def test_reorder_full(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10, 20])
 
         assert result == [30, 10, 20]
@@ -990,7 +1036,7 @@ class TestApplyPlannerQueueChanges:
     async def test_reorder_partial(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10])
 
         assert result == [30, 10, 20, 40]
@@ -998,7 +1044,7 @@ class TestApplyPlannerQueueChanges:
     async def test_removals_and_reorder(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20], reorder=[40, 10, 30])
 
         assert result == [40, 10, 30]
@@ -1006,7 +1052,7 @@ class TestApplyPlannerQueueChanges:
     async def test_no_changes(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await apply_planner_queue_changes(cfg, tmp_path)
 
         assert result == [10, 20]
@@ -1015,7 +1061,7 @@ class TestApplyPlannerQueueChanges:
     async def test_removal_of_nonexistent_issue(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await apply_planner_queue_changes(cfg, tmp_path, removals=[99])
 
         assert result == [10, 20]
@@ -1024,7 +1070,7 @@ class TestApplyPlannerQueueChanges:
     async def test_reorder_with_extra_issues_ignored(self, tmp_path: Path) -> None:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[99, 10, 20])
 
         assert result == [10, 20]
@@ -1034,7 +1080,7 @@ class TestApplyPlannerQueueChanges:
         """Reorder list is normalized by removing planned removals before validation."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30, 40])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, removals=[20], reorder=[40, 20, 30, 10])
 
         assert result == [40, 30, 10]
@@ -1043,7 +1089,7 @@ class TestApplyPlannerQueueChanges:
         """Duplicate values in reorder list are deduplicated (first occurrence wins)."""
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20, 30])
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await apply_planner_queue_changes(cfg, tmp_path, reorder=[30, 10, 30, 20])
 
         assert result == [30, 10, 20]
@@ -1099,7 +1145,7 @@ class TestMaintainQueueEmptyListGuard:
         cfg = SupervisorConfig(enabled=True, task_queue=[], max_queue_size=10)
         adapter.list_tasks.return_value = []
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock) as mock_save:
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save) as mock_save:
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is False
@@ -1111,7 +1157,7 @@ class TestMaintainQueueEmptyListGuard:
         cfg = SupervisorConfig(enabled=True, task_queue=[10, 20], max_queue_size=10)
         adapter.list_tasks.return_value = _make_tasks({10: TaskState.DONE, 20: TaskState.DONE})
 
-        with patch("sova.config.db_loader.save_task_queue", new_callable=AsyncMock):
+        with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
             result = await maintain_queue(adapter, cfg, tmp_path)
 
         assert result.changed is True

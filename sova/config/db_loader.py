@@ -9,12 +9,14 @@ Priority chain: env vars > DB > TOML > defaults.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import importlib.util
 import json
 import os
 import threading
 import time
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -105,21 +107,117 @@ def _set_nested(d: dict[str, Any], dotted_key: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
-async def save_task_queue(project_dir: Path | None, queue: list[int]) -> None:
-    """Persist the supervisor task_queue to the DB.
+TASK_QUEUE_KEY = "supervisor.task_queue"
+HIDDEN_ISSUES_KEY = "dashboard.hidden_issues"
 
-    Shared by the dashboard API and the daemon's queue maintenance.
-    Raises on failure so callers can handle rollback or HTTP errors.
+# Compare-and-swap rounds a merged queue write gets before giving up: each lost round means another writer
+# saved the queue in between, so running out takes a sustained burst of writes from other processes.
+_QUEUE_SWAP_ATTEMPTS = 8
+
+
+class TaskQueueConflictError(RuntimeError):
+    """Raised when every compare-and-swap round lost to a concurrent queue write; nothing was saved."""
+
+
+def merge_task_queue(stored: Sequence[Any], based_on: Sequence[Any], queue: Sequence[Any]) -> list[Any]:
+    """Rebase a writer's ``queue`` (computed from ``based_on``) onto the queue now ``stored``.
+
+    The writer's order and its own removals and additions win. An entry another writer removed since
+    ``based_on`` stays removed, and an entry another writer added since then is kept, after the writer's own.
+    """
+    merged = [entry for entry in queue if entry in stored or entry not in based_on]
+    merged += [entry for entry in stored if entry not in based_on and entry not in queue]
+    return merged
+
+
+async def _swap_task_queue(project_dir: Path | None, rebuild: Callable[[Any], list[Any] | None]) -> list[Any] | None:
+    """Save ``rebuild(stored)`` over the stored queue only if nobody wrote it since it was read; retry otherwise.
+
+    The write is a conditional UPDATE matching the exact stored text (or an INSERT that the unique key rejects
+    when another writer created the row first), so a writer in another process (the CLI's post-merge prune, the
+    daemon, a second dashboard) can never be overwritten from a stale read: the losing writer re-reads and
+    rebuilds. ``rebuild`` gets the decoded stored value (``None`` when unset or unreadable) and returns the new
+    queue, or ``None`` to write nothing. Returns what was saved, or ``None`` when nothing was. Raises
+    ``TaskQueueConflictError`` after ``_QUEUE_SWAP_ATTEMPTS`` lost rounds, and on a persistence failure.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+    from sqlalchemy.exc import IntegrityError
+
+    from sova.config.loader import invalidate_config_cache
+    from sova.db.session import get_session
+
+    for _attempt in range(_QUEUE_SWAP_ATTEMPTS):
+        async with await get_session(project_dir=project_dir) as session:
+            result = await session.execute(select(ProjectSetting.value).where(ProjectSetting.key == TASK_QUEUE_KEY))
+            raw = result.scalar_one_or_none()
+        try:
+            stored = json.loads(raw) if raw is not None else None
+        except (json.JSONDecodeError, TypeError):
+            stored = None
+        updated = rebuild(stored)
+        if updated is None:
+            return None
+        new_raw = json.dumps(updated)
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            if raw is None:
+                try:
+                    async with session.begin_nested():
+                        session.add(ProjectSetting(key=TASK_QUEUE_KEY, value=new_raw))
+                        await session.flush()
+                    swapped = True
+                except IntegrityError:
+                    swapped = False
+            else:
+                statement = (
+                    update(ProjectSetting)
+                    .where(ProjectSetting.key == TASK_QUEUE_KEY, ProjectSetting.value == raw)
+                    .values(value=new_raw, updated_at=datetime.now(timezone.utc))
+                    .execution_options(synchronize_session=False)
+                )
+                swapped = (await session.execute(statement)).rowcount == 1
+        if swapped:
+            invalidate_config_cache(project_dir or Path.cwd())
+            return updated
+        logger.info("db_loader.task_queue_swap_lost", attempt=_attempt + 1)
+    raise TaskQueueConflictError(f"supervisor.task_queue changed concurrently {_QUEUE_SWAP_ATTEMPTS} times")
+
+
+async def save_task_queue(
+    project_dir: Path | None, queue: list[int], *, based_on: Sequence[int] | None = None
+) -> list[int]:
+    """Persist the supervisor task_queue to the DB and return what was saved.
+
+    Without ``based_on`` the stored queue is replaced outright (a deliberate full replace, such as the
+    dashboard's reorder or clear). With ``based_on``, the queue the caller read before computing ``queue``,
+    the write is rebased onto whatever is stored now (``merge_task_queue()``) and saved by compare-and-swap,
+    so a concurrent writer's change, in this process or another, is kept rather than overwritten. Shared by
+    the dashboard API and the daemon's queue maintenance. Raises on failure so callers can handle rollback or
+    HTTP errors.
     """
     from sova.db.session import get_session
 
-    async with await get_session(project_dir=project_dir) as session:
-        async with session.begin():
-            await save_setting(session, "supervisor.task_queue", queue)
+    if based_on is not None:
+
+        def rebuild(stored: Any) -> list[Any]:
+            if stored is None:
+                # No stored queue (never saved, or unreadable) means no other writer removed anything: merging
+                # against [] would read every based_on entry as a removal and save an empty queue.
+                return list(queue)
+            current = stored if isinstance(stored, list) else []
+            return merge_task_queue(current, list(based_on), list(queue))
+
+        saved = await _swap_task_queue(project_dir, rebuild)
+        return saved if saved is not None else list(queue)
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        await save_setting(session, TASK_QUEUE_KEY, queue)
 
     from sova.config.loader import invalidate_config_cache
 
     invalidate_config_cache(project_dir or Path.cwd())
+    return list(queue)
 
 
 async def load_task_queue(project_dir: Path | None) -> list[int]:
@@ -133,13 +231,93 @@ async def load_task_queue(project_dir: Path | None) -> list[int]:
     from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session:
-        queue = await get_setting(session, "supervisor.task_queue")
+        queue = await get_setting(session, TASK_QUEUE_KEY)
     if not isinstance(queue, list):
         return []
     if not all(type(x) is int and x > 0 for x in queue):
         logger.warning("db_loader.task_queue_corrupted", queue=repr(queue))
         return []
     return queue
+
+
+# Serializes the supervisor routes' read-modify-write of `supervisor.task_queue` in this process, so two route
+# calls do not race each other. Writers that can run in another process (the CLI's post-merge prune, the
+# daemon's maintenance) do not rely on it: they save through the compare-and-swap path (`_swap_task_queue()`),
+# which needs no lock, so it is safe to call while holding this one.
+task_queue_lock = asyncio.Lock()
+_hidden_issues_lock = asyncio.Lock()
+
+
+async def remove_from_task_queue(project_dir: Path | None, issue_ids: Collection[int]) -> list[int]:
+    """Drop `issue_ids` from the stored `supervisor.task_queue`, keeping the order of the rest.
+
+    Rebuilt from the stored queue and saved by compare-and-swap (``_swap_task_queue()``), so a caller with a
+    stale view, in this process or another, can neither re-add an entry nor overwrite a concurrent edit, and
+    a read that removes nothing never writes. An entry that is not an int is left alone rather than failing
+    the prune. Returns the ids removed. Raises on a persistence failure.
+    """
+    wanted = {i for i in issue_ids if type(i) is int}
+    if not wanted:
+        return []
+    removed: list[int] = []
+
+    def rebuild(stored: Any) -> list[Any] | None:
+        if not isinstance(stored, list):
+            return None
+        removed[:] = [entry for entry in stored if type(entry) is int and entry in wanted]
+        if not removed:
+            return None
+        return [entry for entry in stored if not (type(entry) is int and entry in wanted)]
+
+    kept = await _swap_task_queue(project_dir, rebuild)
+    if kept is None:
+        return []
+    logger.info("db_loader.task_queue_pruned", removed=removed, queue_size=len(kept))
+    return removed
+
+
+def _positive_ids(stored: Any) -> list[int]:
+    if not isinstance(stored, list):
+        return []
+    return list(dict.fromkeys(i for i in stored if type(i) is int and i > 0))
+
+
+async def load_hidden_issues(project_dir: Path | None) -> list[int]:
+    """The effective ``dashboard.hidden_issues`` (env, then DB, then TOML, then default), positive ints only.
+
+    Read through ``load_config()`` rather than the DB alone, so a list set in ``sova.toml`` or by an environment
+    override hides issues too. The load is synchronous (TOML and DB reads on a cache miss), so it runs in a thread.
+    """
+    from sova.config.loader import load_config
+
+    config = await asyncio.to_thread(load_config, project_dir)
+    return _positive_ids(config.dashboard.hidden_issues)
+
+
+async def set_issue_hidden(project_dir: Path | None, issue_number: int, *, hidden: bool) -> list[int]:
+    """Add or remove one issue in `dashboard.hidden_issues` and return the new list.
+
+    Idempotent: hiding a hidden issue or unhiding a visible one changes and saves nothing. The current list is
+    read and written in one transaction, and a failed read raises rather than reading as an empty list, so a
+    database error can never replace the stored list with only this issue. Raises on a persistence failure.
+    """
+    from sova.config.loader import invalidate_config_cache
+    from sova.db.session import get_session
+
+    async with _hidden_issues_lock:
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            result = await session.execute(select(ProjectSetting.value).where(ProjectSetting.key == HIDDEN_ISSUES_KEY))
+            raw = result.scalar_one_or_none()
+            try:
+                current = _positive_ids(json.loads(raw)) if raw is not None else []
+            except (json.JSONDecodeError, TypeError):
+                current = []  # an unreadable value holds no issue to keep
+            if (issue_number in current) == hidden:
+                return current
+            updated = [*current, issue_number] if hidden else [i for i in current if i != issue_number]
+            await save_setting(session, HIDDEN_ISSUES_KEY, updated)
+        invalidate_config_cache(project_dir or Path.cwd())
+    return updated
 
 
 async def save_config_to_db(session: AsyncSession, config: dict[str, Any]) -> None:

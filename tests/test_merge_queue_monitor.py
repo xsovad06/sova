@@ -991,6 +991,7 @@ class TestTransitionIssueState:
             repo="owner/repo",
             github_user="user1",
             adapter=mock_adapter,
+            project_dir=project_dir,
         )
 
     @staticmethod

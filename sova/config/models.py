@@ -919,6 +919,20 @@ class DashboardConfig(BaseSettings):
     # Directories the setup wizard may browse, scan, install into and configure. `~` is expanded.
     # The project the dashboard was started with is always allowed in addition to these.
     setup_roots: list[str] = Field(default_factory=lambda: ["~"])
+    # Issue numbers the Work board leaves out of "Up next". Display only: hiding changes no label, tracker
+    # state, queue entry or supervisor decision.
+    hidden_issues: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})
+
+    @field_validator("hidden_issues", mode="before")
+    @classmethod
+    def _validate_hidden_issues_items(cls, v: list[int]) -> list[int]:
+        if not isinstance(v, list):
+            return v
+        for item in v:
+            if type(item) is not int or item <= 0:
+                msg = f"hidden_issues items must be positive integers, got {item!r}"
+                raise ValueError(msg)
+        return v
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 

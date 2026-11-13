@@ -190,6 +190,8 @@ _GRAPH_FAILURE_BACKOFF_SECONDS = 30.0
 _graph_builds: dict[str, asyncio.Task[DependencyGraph]] = {}  # project -> the build in flight, shared by every caller
 _graph_failures: dict[str, tuple[float, BaseException]] = {}  # project -> (monotonic time, error) of its last failure
 _last_graphs: dict[str, DependencyGraph] = {}  # project -> the graph of its last build, until a build fails
+# Builds forget_graph() retired while still running: no longer shared or cached from, but still cancelled at shutdown.
+_retired_graph_builds: set[asyncio.Task[DependencyGraph]] = set()
 
 
 def reset_graph_load_state() -> None:
@@ -197,16 +199,33 @@ def reset_graph_load_state() -> None:
     _graph_builds.clear()
     _graph_failures.clear()
     _last_graphs.clear()
+    _retired_graph_builds.clear()
+
+
+def forget_graph(project_dir: Path | None) -> None:
+    """Drop the project's shared build, last graph and recorded failure, so the next ranking fetches afresh.
+
+    For a change that makes the graph stale before its cache expires (an issue's priority). A build in
+    flight is not cancelled, since other callers still wait on it, but nothing it fetches is kept. It stays
+    tracked in ``_retired_graph_builds`` until it finishes, so ``cancel_graph_builds()`` still stops it.
+    """
+    key = str(project_dir)
+    retired = _graph_builds.pop(key, None)
+    if retired is not None and not retired.done():
+        _retired_graph_builds.add(retired)
+    _graph_failures.pop(key, None)
+    _last_graphs.pop(key, None)
 
 
 async def cancel_graph_builds() -> None:
-    """Cancel every graph build in flight, so none outlives the lifespan shutdown."""
-    builds = list(_graph_builds.values())
+    """Cancel every graph build in flight, retired ones included, so none outlives the lifespan shutdown."""
+    builds = [*_graph_builds.values(), *_retired_graph_builds]
     for build in builds:
         build.cancel()
     if builds:
         await asyncio.gather(*builds, return_exceptions=True)
     _graph_builds.clear()
+    _retired_graph_builds.clear()
 
 
 async def _build_graph_bounded(project_dir: Path | None) -> DependencyGraph:
@@ -221,11 +240,15 @@ def _on_graph_build_done(key: str, build: asyncio.Task[DependencyGraph]) -> None
     retrieved, so a build whose waiters all timed out and walked away does not log
     "Task exception was never retrieved".
     """
-    if _graph_builds.get(key) is build:
+    is_current = _graph_builds.get(key) is build
+    if is_current:
         del _graph_builds[key]
+    _retired_graph_builds.discard(build)
     if build.cancelled():
         return
     failure = build.exception()
+    if not is_current:
+        return  # forget_graph() replaced it: what it fetched predates the change that caused that
     if failure is not None:
         _graph_failures[key] = (time.monotonic(), failure)
         _last_graphs.pop(key, None)

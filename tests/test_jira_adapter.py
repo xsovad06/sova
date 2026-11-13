@@ -10,7 +10,7 @@ import pytest
 import respx
 from httpx import Response
 
-from sova.adapters.base import TaskFilters, TaskState
+from sova.adapters.base import PriorityUnavailableError, TaskFilters, TaskState
 from sova.adapters.jira import (
     _DEFAULT_TRANSITIONS,
     _JIRA_STATUS_TO_STATE,
@@ -1899,6 +1899,101 @@ class TestSetMilestone:
         )
         with pytest.raises(RuntimeError, match="Failed to set milestone"):
             await adapter.set_milestone("42", "Phase 1: Now")
+
+
+class TestSetPriority:
+    _PRIORITIES = [{"id": "1", "name": "Highest"}, {"id": "2", "name": "High"}, {"id": "3", "name": "Low"}]
+    _URL = "https://test.atlassian.net/rest/api/3"
+    _EDITMETA = f"{_URL}/issue/TEST-42/editmeta"
+
+    @classmethod
+    def _editmeta(cls, allowed: list[dict]) -> Response:
+        return Response(200, json={"fields": {"priority": {"allowedValues": allowed}}})
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        ("level", "expected"),
+        [
+            (Priority.CRITICAL, "Highest"),
+            (Priority.HIGH, "High"),
+            (Priority.LOW, "Low"),
+        ],
+    )
+    async def test_sets_the_instances_own_name(self, level: Priority, expected: str) -> None:
+        respx.get(self._EDITMETA).mock(return_value=self._editmeta(self._PRIORITIES))
+        route = respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(204))
+
+        await _adapter().set_priority("42", level)
+
+        assert json.loads(route.calls[0].request.content) == {"fields": {"priority": {"name": expected}}}
+
+    @respx.mock
+    @pytest.mark.parametrize("level", [Priority.BLOCKER, Priority.UNDEFINED])
+    async def test_a_level_the_project_lacks_raises_and_changes_nothing(self, level: Priority) -> None:
+        respx.get(self._EDITMETA).mock(return_value=self._editmeta(self._PRIORITIES))
+        route = respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(204))
+        adapter = _adapter()
+
+        with pytest.raises(PriorityUnavailableError, match="Highest"):
+            await adapter.set_priority("42", level)
+
+        assert not route.called
+
+    @respx.mock
+    async def test_the_name_spelled_like_the_level_wins_over_an_alias(self) -> None:
+        respx.get(self._EDITMETA).mock(return_value=self._editmeta([{"name": "Major"}, {"name": "High"}]))
+        route = respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(204))
+
+        await _adapter().set_priority("42", Priority.HIGH)
+
+        assert json.loads(route.calls[0].request.content)["fields"]["priority"]["name"] == "High"
+
+    @respx.mock
+    async def test_only_the_projects_allowed_names_are_considered(self) -> None:
+        # The instance-wide list has High, but this project's scheme allows only its alias Major.
+        respx.get(f"{self._URL}/priority").mock(return_value=Response(200, json=[{"name": "High"}, {"name": "Major"}]))
+        respx.get(self._EDITMETA).mock(return_value=self._editmeta([{"name": "Major"}, {"name": "Low"}]))
+        route = respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(204))
+
+        await _adapter().set_priority("42", Priority.HIGH)
+
+        assert json.loads(route.calls[0].request.content)["fields"]["priority"]["name"] == "Major"
+
+    @respx.mock
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param({"fields": {}}, id="no priority field"),
+            pytest.param({"fields": None}, id="null fields"),
+            pytest.param([], id="not an object"),
+        ],
+    )
+    async def test_no_editable_priority_field_raises_and_changes_nothing(self, body: object) -> None:
+        respx.get(self._EDITMETA).mock(return_value=Response(200, json=body))
+        route = respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(204))
+        adapter = _adapter()
+
+        with pytest.raises(PriorityUnavailableError, match="no editable priority"):
+            await adapter.set_priority("42", Priority.HIGH)
+
+        assert not route.called
+
+    @respx.mock
+    async def test_editmeta_failure_raises(self) -> None:
+        respx.get(self._EDITMETA).mock(return_value=Response(404, text="Issue does not exist"))
+        adapter = _adapter()
+
+        with pytest.raises(RuntimeError, match="Failed to read edit metadata"):
+            await adapter.set_priority("42", Priority.HIGH)
+
+    @respx.mock
+    async def test_update_failure_raises(self) -> None:
+        respx.get(self._EDITMETA).mock(return_value=self._editmeta(self._PRIORITIES))
+        respx.put(f"{self._URL}/issue/TEST-42").mock(return_value=Response(400, text="Bad request"))
+        adapter = _adapter()
+
+        with pytest.raises(RuntimeError, match="Failed to set priority"):
+            await adapter.set_priority("42", Priority.HIGH)
 
 
 class TestTransitionWithAutoDerivedNames:

@@ -247,3 +247,44 @@ class TestGetPrReviewDataTracking:
         assert result == {1: None, 2: None}
         tracker = get_github_quota_tracker("testuser")
         assert tracker.should_skip()
+
+
+class TestListMergedPrsSince:
+    """The Work board's merged-PR read: the search day is sent, and a failure raises rather than returning []."""
+
+    @pytest.mark.asyncio
+    async def test_asks_for_prs_merged_since_the_day_and_returns_them(self) -> None:
+        import datetime
+
+        from sova.git.pr import list_merged_prs_since
+
+        mock_run = AsyncMock(return_value=ShellResult(returncode=0, stdout='[{"number": 7}]', stderr=""))
+        with patch("sova.git.pr.run", mock_run), patch("sova.git.pr.resolve_gh_env", AsyncMock(return_value={})):
+            result = await list_merged_prs_since(repo="owner/repo", since=datetime.date(2026, 11, 13))
+
+        assert result == [{"number": 7}]
+        args = mock_run.await_args.args
+        assert args[args.index("--state") + 1] == "merged"
+        assert args[args.index("--search") + 1] == "merged:>=2026-11-13"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "shell",
+        [
+            ShellResult(returncode=1, stdout="", stderr="boom"),
+            ShellResult(returncode=0, stdout="not json", stderr=""),
+            ShellResult(returncode=0, stdout='{"not": "a list"}', stderr=""),
+        ],
+        ids=["gh failed", "unparseable", "not a list"],
+    )
+    async def test_a_failure_raises_instead_of_reading_as_nothing_merged(self, shell: ShellResult) -> None:
+        import datetime
+
+        from sova.git.pr import PRLookupError, list_merged_prs_since
+
+        with (
+            patch("sova.git.pr.run", AsyncMock(return_value=shell)),
+            patch("sova.git.pr.resolve_gh_env", AsyncMock(return_value={})),
+            pytest.raises(PRLookupError),
+        ):
+            await list_merged_prs_since(repo="owner/repo", since=datetime.date(2026, 11, 13))

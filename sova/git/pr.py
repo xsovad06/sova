@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from datetime import date
 from enum import StrEnum
 from urllib.parse import urlparse
 
@@ -453,6 +454,47 @@ async def list_open_prs(
         if raise_on_error:
             raise PRLookupError(f"Could not parse the open PR list for repo {repo!r}") from None
         return []
+
+
+# Merged PRs read for the Work board's "done today"; a day with more merges is read in part.
+MERGED_PR_LIST_LIMIT = 100
+
+
+async def list_merged_prs_since(*, repo: str, since: date, github_user: str = "") -> list[dict]:
+    """PRs merged on or after the calendar day ``since`` (GitHub compares the day in UTC), newest first.
+
+    The day is a coarse filter: callers cut at the exact instant with each PR's ``mergedAt``. A failed or
+    unparseable call raises :class:`PRLookupError`, never ``[]``, so an outage does not read as "nothing merged".
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "merged",
+        "--search",
+        f"merged:>={since.isoformat()}",
+        "--json",
+        "number,title,url,mergedAt,body,headRefName,closingIssuesReferences",
+        "--limit",
+        str(MERGED_PR_LIST_LIMIT),
+        env=env,
+    )
+    _track_gh_rate_limit(result, github_user)
+    if not result.success:
+        log.warning("git.list_merged_prs.failed", stderr=result.stderr[:200])
+        raise PRLookupError(f"Could not list merged PRs in repo {repo!r}")
+    try:
+        prs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log.warning("git.list_merged_prs.parse_failed", stdout=result.stdout[:200], exc_info=True)
+        raise PRLookupError(f"Could not parse the merged PR list for repo {repo!r}") from None
+    if not isinstance(prs, list):
+        raise PRLookupError(f"Unexpected merged PR list for repo {repo!r}")
+    return prs
 
 
 @dataclass

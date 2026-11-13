@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from sova.config.context import get_project_dir, resolve_project_dir
+from sova.config.db_loader import task_queue_lock
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.supervisor")
@@ -44,7 +45,7 @@ router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 _daemon_registry: dict = {}
 _background_tasks: set[asyncio.Task] = set()
 _start_lock = asyncio.Lock()
-_queue_lock = asyncio.Lock()
+_queue_lock = task_queue_lock
 
 
 def _get_daemon(project_dir: Path | None = None) -> Any | None:
@@ -385,18 +386,20 @@ def _deduplicate(items: list[int]) -> list[int]:
     return list(dict.fromkeys(items))
 
 
-async def _persist_queue(project_dir: Path | None, queue: list[int]) -> None:
-    """Persist task_queue via the shared DB helper.
+async def _persist_queue(project_dir: Path | None, queue: list[int], *, based_on: list[int] | None = None) -> list[int]:
+    """Persist task_queue via the shared DB helper and return what was saved.
 
-    Catches DB-layer exceptions and raises HTTPException 503.
+    ``based_on`` (the queue the edit was computed from) rebases a single-entry edit onto the stored queue, so
+    a write another process saved in between (the CLI's post-merge prune, the daemon) is kept. Catches
+    DB-layer exceptions and raises HTTPException 503.
     """
     from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
-    from sova.config.db_loader import save_task_queue
+    from sova.config.db_loader import TaskQueueConflictError, save_task_queue
 
     try:
-        await save_task_queue(project_dir, queue)
-    except (SQLAlchemyError, DBAPIError):
+        return await save_task_queue(project_dir, queue, based_on=based_on)
+    except (SQLAlchemyError, DBAPIError, TaskQueueConflictError):
         log.error("supervisor.queue.persist_failed", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to persist queue to database")
 
@@ -497,8 +500,7 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
         if body.issue_number in queue:
             raise HTTPException(status_code=409, detail=f"Issue #{body.issue_number} is already in the queue")
 
-        queue.append(body.issue_number)
-        await _persist_queue(project_dir, queue)
+        queue = await _persist_queue(project_dir, [*queue, body.issue_number], based_on=queue)
         await _notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
@@ -519,8 +521,7 @@ async def remove_from_queue(issue_number: int) -> dict:
         if issue_number not in queue:
             raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the queue")
 
-        queue.remove(issue_number)
-        await _persist_queue(project_dir, queue)
+        queue = await _persist_queue(project_dir, [i for i in queue if i != issue_number], based_on=queue)
         await _notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 

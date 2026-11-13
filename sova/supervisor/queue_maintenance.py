@@ -206,7 +206,9 @@ async def maintain_queue(
         from sova.config.db_loader import save_task_queue
 
         try:
-            await save_task_queue(project_dir, current)
+            # Rebased onto the stored queue: an edit saved while the tracker was being read (a dashboard add,
+            # a post-merge prune) is kept rather than overwritten from `previous`.
+            current = await save_task_queue(project_dir, current, based_on=previous)
             config.task_queue = current
             log.info(
                 "queue_maintenance.updated",
@@ -230,16 +232,34 @@ async def maintain_queue(
     )
 
 
-def _prune_done(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
-    """Remove issues that are done or no longer exist on the tracker."""
+def prune_closed(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
+    """Remove issues that are closed or absent from `task_map`, keeping the order of the rest.
+
+    An absent id reads as "no longer on the tracker", so a caller whose `task_map` can be partial must
+    pass only the ids it has evidence for. An entry that is not an int cannot name an issue and is dropped.
+    """
     result: list[int] = []
     for issue_id in queue:
+        if type(issue_id) is not int:
+            log.warning("queue_maintenance.pruned_malformed", entry=repr(issue_id))
+            continue
         state = task_map.get(issue_id)
         if state is None:
             log.info("queue_maintenance.pruned_missing", issue=issue_id)
             continue
-        if state in _DONE_STATES:
+        if state is TaskState.DONE:
             log.info("queue_maintenance.pruned_done", issue=issue_id, state=state.value)
+            continue
+        result.append(issue_id)
+    return result
+
+
+def _prune_done(queue: list[int], task_map: dict[int, TaskState]) -> list[int]:
+    """Remove issues that are done, human-only or no longer exist on the tracker."""
+    result: list[int] = []
+    for issue_id in prune_closed(queue, task_map):
+        if task_map[issue_id] in _DONE_STATES:
+            log.info("queue_maintenance.pruned_done", issue=issue_id, state=task_map[issue_id].value)
             continue
         result.append(issue_id)
     return result
@@ -494,7 +514,7 @@ async def apply_planner_queue_changes(
         from sova.config.db_loader import save_task_queue
 
         try:
-            await save_task_queue(project_dir, current)
+            current = await save_task_queue(project_dir, current, based_on=config.task_queue)
             config.task_queue = current
         except Exception:  # noqa: BLE001 (queue is reverted in memory on any persistence failure)
             log.warning("queue_maintenance.planner_persist_failed", exc_info=True)

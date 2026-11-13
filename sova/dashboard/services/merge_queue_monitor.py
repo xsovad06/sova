@@ -281,13 +281,23 @@ class MergeQueueMonitor:
             if not issue_number:
                 return []
             moved = await handle_post_merge_state(
-                issue_number, post_merge_state=state, repo=repo, github_user=github_user, adapter=adapter
+                issue_number,
+                post_merge_state=state,
+                repo=repo,
+                github_user=github_user,
+                adapter=adapter,
+                project_dir=self.project_dir,
             )
             outcome = f"moved to {state}" if moved else "not updated (see log)"
             return [f"issue #{issue_number} {outcome}"]
 
         merged = await handle_merged_pr_issues(
-            pr_number, post_merge_state=state, repo=repo, github_user=github_user, adapter=adapter
+            pr_number,
+            post_merge_state=state,
+            repo=repo,
+            github_user=github_user,
+            adapter=adapter,
+            project_dir=self.project_dir,
         )
         if merged is None:
             return [f"issues not updated: the body of PR #{pr_number} could not be read"]

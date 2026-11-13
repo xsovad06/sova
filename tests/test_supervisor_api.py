@@ -1425,7 +1425,7 @@ class TestTaskQueueErrorPaths:
         """PUT /queue returns 503 when DB save fails."""
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+            patch("sova.config.db_loader.save_task_queue", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -1436,7 +1436,7 @@ class TestTaskQueueErrorPaths:
         """POST /queue returns 503 when DB save fails."""
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+            patch("sova.config.db_loader.save_task_queue", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -1452,7 +1452,7 @@ class TestTaskQueueErrorPaths:
 
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+            patch("sova.config.db_loader.save_task_queue", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -1463,7 +1463,7 @@ class TestTaskQueueErrorPaths:
         """DELETE /queue returns 503 when DB save fails."""
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+            patch("sova.config.db_loader.save_task_queue", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))

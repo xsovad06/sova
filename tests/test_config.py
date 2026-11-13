@@ -426,6 +426,20 @@ def test_dashboard_rejects_invalid_kanban_mode(tmp_path: Path) -> None:
         DashboardConfig(kanban_columns="invalid_mode")
 
 
+@pytest.mark.parametrize("value", [[0], [-4], ["12"], [True], "12"])
+def test_dashboard_hidden_issues_rejects_anything_but_positive_ints(value: object) -> None:
+    from sova.config.models import DashboardConfig
+
+    with pytest.raises(ValidationError):
+        DashboardConfig(hidden_issues=value)
+
+
+def test_dashboard_hidden_issues_accepts_positive_ints() -> None:
+    from sova.config.models import DashboardConfig
+
+    assert DashboardConfig(hidden_issues=[3, 12]).hidden_issues == [3, 12]
+
+
 def test_dashboard_confirm_model_default() -> None:
     """Default confirm_model is 'complex_only'."""
     from sova.config.models import DashboardConfig

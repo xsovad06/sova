@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import TaskState
@@ -392,14 +393,49 @@ async def handle_post_merge_state(
     repo: str,
     github_user: str = "",
     adapter: TaskAdapter | None = None,
+    project_dir: Path | None = None,
 ) -> bool:
     """Move one issue to *post_merge_state*. Returns False when nothing was moved.
 
     An adapter's own failure propagates as its exception; the gh fallback logs it and returns False.
+    A closed issue (state ``done``) also leaves ``supervisor.task_queue`` when *project_dir* is given,
+    so the queue loses it whether or not the supervisor runs.
     """
     if not issue_number:
         return False
+    moved = await _move_to_post_merge_state(
+        issue_number, post_merge_state=post_merge_state, repo=repo, github_user=github_user, adapter=adapter
+    )
+    if moved and post_merge_state == TaskState.DONE.value and project_dir is not None:
+        await _drop_from_task_queue(issue_number, project_dir)
+    return moved
 
+
+async def _drop_from_task_queue(issue_number: str | int, project_dir: Path) -> None:
+    """Remove a just-closed issue from the saved queue; a failure is logged, never raised.
+
+    The close already happened, so a persistence error must not turn it into a failed merge step.
+    """
+    from sova.config.db_loader import remove_from_task_queue
+
+    try:
+        number = int(issue_number)
+    except (TypeError, ValueError):
+        return  # a Jira key is not a queue entry
+    try:
+        await remove_from_task_queue(project_dir, [number])
+    except Exception:  # noqa: BLE001 (the issue is already closed; a queue write failure must not undo that result)
+        log.warning("git.merge.queue_prune_failed", issue=issue_number, exc_info=True)
+
+
+async def _move_to_post_merge_state(
+    issue_number: str | int,
+    *,
+    post_merge_state: str,
+    repo: str,
+    github_user: str,
+    adapter: TaskAdapter | None,
+) -> bool:
     if adapter is not None:
         _VALID_POST_MERGE = {TaskState.DONE, TaskState.ON_QA}
         try:
@@ -686,6 +722,7 @@ async def handle_merged_pr_issues(
     repo: str,
     github_user: str = "",
     adapter: TaskAdapter | None = None,
+    project_dir: Path | None = None,
 ) -> MergedIssues | None:
     """Apply *post_merge_state* to the issues a merged GitHub PR closes, and to no other.
 
@@ -708,7 +745,12 @@ async def handle_merged_pr_issues(
     for issue in links.closes:
         try:
             moved = await handle_post_merge_state(
-                issue, post_merge_state=post_merge_state, repo=repo, github_user=github_user, adapter=adapter
+                issue,
+                post_merge_state=post_merge_state,
+                repo=repo,
+                github_user=github_user,
+                adapter=adapter,
+                project_dir=project_dir,
             )
         except Exception:  # noqa: BLE001 (one issue's failure must not abort the other issues)
             log.warning("git.merge.post_merge_state_failed", issue=issue, pr=pr_number, exc_info=True)

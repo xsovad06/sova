@@ -5,7 +5,7 @@ SOVA has four main components: CLI, Agent Core, Dashboard, and Scheduler.
 ```
 CLI (sova/cli/)          -- Typer CLI with 29 subcommands
 Agent Core (sova/core/)  -- WorkflowEngine, step pipelines, state machine
-Dashboard (sova/dashboard/) -- FastAPI web UI with 32 routers and 48 services
+Dashboard (sova/dashboard/) -- FastAPI web UI with 33 routers and 49 services
 Scheduler (sova/scheduler/) -- Watch loop, server daemon
 ```
 
@@ -47,8 +47,8 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 32 API routers (auth, overview, runs, costs, briefing, feed, handoff, health, lifecycle, memory, models, tasks, queue, quota, reliability, settings, setup, agents, work, roles, spec, prs, dependencies, dependency_health, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
-      services/                    # 48 services (run, cost, memory, models, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_state, work_verdict, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_adopt, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
+      routers/                     # 33 API routers (auth, overview, runs, costs, briefing, feed, handoff, health, lifecycle, memory, models, tasks, queue, quota, reliability, settings, setup, agents, work, issues, roles, spec, prs, dependencies, dependency_health, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a, mcp)
+      services/                    # 49 services (run, cost, memory, models, control, feed, handoff, health, lifecycle, queue, batch, reliability, work, work_item, work_board, work_state, work_verdict, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_adopt, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, agent_approval, agent_finalize, agent_resource, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor, mcp_service, awareness, dependency_health)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo; js/pages/<page>/ holds a page's ES modules (agents: 8 modules + actions.js + the render-utils.js leaf)
     a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping

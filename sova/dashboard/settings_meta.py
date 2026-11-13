@@ -15,6 +15,9 @@ class SettingMeta:
     requires_restart: bool = False
     options: tuple[str, ...] = ()
     options_source: str = ""
+    # Entry type of a ``list`` setting: ``string``, or ``int`` for one whose entries are positive whole numbers
+    # (issue numbers). The editor still sends comma-separated text; the server casts each entry.
+    item_type: str = "string"
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -1450,6 +1453,15 @@ _REGISTRY: list[SettingMeta] = [
         'as a JSON array such as ["~/code"] (a comma-separated value is not accepted there)',
         "dashboard",
         "list",
+    ),
+    SettingMeta(
+        "dashboard.hidden_issues",
+        "Hidden issues",
+        "Issue numbers the Work board leaves out of Up next. Display only: hiding changes no label, "
+        "tracker state, queue entry or supervisor decision",
+        "dashboard",
+        "list",
+        item_type="int",
     ),
     # MCP
     SettingMeta(

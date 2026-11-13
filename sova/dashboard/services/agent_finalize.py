@@ -104,6 +104,7 @@ async def _crash_recovery_cleanup(agent: AgentState) -> None:
             repo=repo,
             github_user=github_user,
             adapter=create_adapter(cfg),
+            project_dir=agent.project_dir,
         )
         log.info(
             "finalize.crash_recovery_issues_handled",
@@ -132,6 +133,7 @@ async def _crash_recovery_cleanup(agent: AgentState) -> None:
         repo=repo,
         github_user=github_user,
         adapter=adapter,
+        project_dir=agent.project_dir,
     )
     log.info(
         "finalize.crash_recovery_state_transitioned",

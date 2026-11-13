@@ -23,6 +23,10 @@ class AdapterError(Exception):
     """
 
 
+class PriorityUnavailableError(AdapterError):
+    """Raised when the tracker has no equivalent of a requested priority level; nothing was changed."""
+
+
 class TaskState(StrEnum):
     """Issue lifecycle states managed by agents on the tracker."""
 
@@ -325,3 +329,11 @@ class TaskAdapter(ABC):
     @abstractmethod
     async def set_milestone(self, task_id: str, milestone_title: str) -> None:
         """Assign a milestone/fix version to a task by title."""
+
+    @abstractmethod
+    async def set_priority(self, task_id: str, priority: Priority) -> None:
+        """Set a task's priority to a level of the ``priority:`` label taxonomy, replacing its current one.
+
+        Raises ``PriorityUnavailableError`` when the tracker has no equivalent of the level, leaving the
+        task unchanged.
+        """
