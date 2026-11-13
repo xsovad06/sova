@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `linked-issues`, `pr-verdict`, `refresh-pr-body`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`), `checks` (`checks should-skip`, `checks record`), `board` (`board add`), `audit` (`audit report-path`, `audit disclosure`)
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `linked-issues`, `pr-verdict`, `refresh-pr-body`, `learn-from-pr`, `init-db`, `migrate-config`, `config` (show, `config get`, `config set`), `mcp`, `supervisor`, `briefing`, `assess` (`assess set`, `assess get`, `assess clear`), `db` (`db status`, `db backup`), `checks` (`checks should-skip`, `checks record`), `board` (`board add`), `audit` (`audit report-path`, `audit disclosure`), `retro` (`retro record`, `retro backfill`, `retro report`)
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)

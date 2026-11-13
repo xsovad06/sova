@@ -32,6 +32,7 @@ from sova.cli.commands.pr import (
     review_pr,
 )
 from sova.cli.commands.project import install, setup, uninstall
+from sova.cli.commands.retro import app as retro_app
 from sova.cli.commands.run import parallel, run_issue, watch
 from sova.cli.commands.server import app as server_app
 from sova.cli.commands.supervisor import app as supervisor_app
@@ -110,6 +111,9 @@ app.add_typer(board_app)
 
 # Health-audit gate verdicts (subcommand group)
 app.add_typer(audit_app)
+
+# Review retrospective: repeats of recorded rules per merged PR (subcommand group)
+app.add_typer(retro_app)
 
 console = Console(stderr=True)
 
