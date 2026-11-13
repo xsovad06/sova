@@ -67,7 +67,8 @@ class TestPageStructure:
         assert links == list(SECTIONS)
         for section_id in SECTIONS:
             assert SECTION_LABELS[section_id] in settings_html
-        assert sorted(re.findall(r'data-group-link="([^"]+)"', settings_html)) == sorted(GROUP_ORDER)
+        # Every group, plus the Models view, which is not a settings group.
+        assert sorted(re.findall(r'data-group-link="([^"]+)"', settings_html)) == sorted([*GROUP_ORDER, "models"])
 
     async def test_every_group_has_a_shell_in_its_section(self, settings_html: str) -> None:
         for section_id, group_ids in SECTIONS.items():
@@ -151,6 +152,55 @@ class TestAnchors:
         assert "state.sectionForGroup(" in body
         assert "scrollToEl($('group-' + gid))" in body
         assert "window.addEventListener('hashchange', route)" in page_source
+
+
+class TestModelsView:
+    """The Models view, "Which model runs where", opens at #models, first in Models and agents (#1463)."""
+
+    async def test_sits_first_in_models_and_agents(self, settings_html: str) -> None:
+        section = settings_html[settings_html.index('id="section-models-and-agents"') :]
+        section = section[: section.index("</section>")]
+        assert section.index('id="group-models"') < section.index('id="group-llm"')
+        assert 'data-part="models-view"' in section
+        assert 'href="#models"' in section
+
+    async def test_the_section_list_links_to_it(self, settings_html: str) -> None:
+        nav = settings_html[settings_html.index('data-section-sub="models-and-agents"') :]
+        assert nav.index('data-group-link="models"') < nav.index('data-group-link="llm"')
+
+    def test_a_hash_naming_a_view_opens_the_section_holding_it(self, page_source: str) -> None:
+        assert "const view = $('group-' + hash);" in page_source
+        assert "view.closest('[data-section]')" in page_source
+
+    def test_the_page_loads_the_view_when_its_section_opens(self, page_source: str) -> None:
+        assert "import * as models from './models.js';" in page_source
+        assert '[data-part="models-view"]' in page_source
+
+    def test_the_routing_row_links_to_the_view(self, rows_source: str) -> None:
+        assert "s.key === 'llm.routing'" in rows_source
+        assert 'href="#models"' in rows_source
+
+
+class TestModelsViewWrites:
+    """A write the page cannot confirm is not reported as saved, and a typed fallback ID is not lost (#1463)."""
+
+    @pytest.fixture
+    def models_source(self) -> str:
+        path = Path(__file__).resolve().parent.parent / "sova/dashboard/static/js/pages/settings/models.js"
+        return path.read_text(encoding="utf-8")
+
+    def test_an_unreadable_success_response_is_not_a_saved_write(self, models_source: str) -> None:
+        body = _function_body(models_source, "async function post(path, body) {")
+        assert "res.json().catch(() => null)" in body
+        assert "unconfirmed" in body
+        assert "scheduleRefresh()" in body
+
+    def test_a_typed_fallback_id_is_cleared_only_after_its_save_is_stored(self, models_source: str) -> None:
+        body = _function_body(models_source, "function addCustomFallback(key, value) {")
+        assert "if (stored && input" in body
+        assert "input.value = ''" in body
+        assert "input.value = '';\n      changeList" not in models_source
+        assert "t.value = '';\n    changeList" not in models_source
 
 
 class TestEditability:

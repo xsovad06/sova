@@ -40,6 +40,7 @@
     </a>
     {% if group_ids %}
     <div class="sova-settings-nav-sub" data-section-sub="{{ section_id }}" hidden>
+      {% if section_id == "models-and-agents" %}<a href="#models" data-group-link="models">Which model runs where</a>{% endif %}
       {% for group_id in group_ids %}
       <a href="#{{ group_id }}" data-group-link="{{ group_id }}">{{ setting_groups[group_id] }}</a>
       {% endfor %}
@@ -149,6 +150,17 @@
         <h3>{{ settings_section_labels[section_id] }}</h3>
         <p data-part="section-summary"></p>
       </header>
+      {% if section_id == "models-and-agents" %}
+      {#- The Models view (static/js/pages/settings/models.js): which model each role and step runs on, and why. -#}
+      <div id="group-models" class="sova-settings-group sova-mm">
+        <div class="sova-settings-group-head">
+          <h4>Which model runs where</h4>
+          <span class="sova-settings-group-count" data-part="models-count"></span>
+          <a class="sova-settings-anchor" href="#models" data-tooltip="Link to this view" data-tooltip-pos="left">#models</a>
+        </div>
+        <div data-part="models-view"><p class="sova-settings-note">Loading...</p></div>
+      </div>
+      {% endif %}
       {% for group_id in group_ids %}
       <div id="group-{{ group_id }}" class="sova-settings-group" data-group="{{ group_id }}">
         <div class="sova-settings-group-head">
