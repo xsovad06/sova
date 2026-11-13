@@ -6327,58 +6327,6 @@ class TestStepPassedStatus:
         assert statuses["sync"] == "passed"
         assert statuses["develop"] == "done"
 
-    async def test_work_history_counts_passed_as_completed(self, client: AsyncClient, session: AsyncSession) -> None:
-        """History endpoint counts both 'passed' and 'done' steps as completed."""
-        now = datetime.now(timezone.utc)
-        run = TaskRun(
-            issue_number="201",
-            role="developer",
-            status="done",
-            current_step="handoff_to_reviewer",
-            total_cost_usd=Decimal("0.50"),
-            project_slug="myproject",
-            started_at=now - timedelta(hours=1),
-            ended_at=now,
-        )
-        session.add(run)
-        await session.flush()
-
-        session.add_all(
-            [
-                StepExecution(
-                    task_run_id=run.id,
-                    step_name="sync",
-                    status="passed",
-                    duration_ms=3000,
-                    started_at=now - timedelta(hours=1),
-                    ended_at=now - timedelta(minutes=59, seconds=57),
-                ),
-                StepExecution(
-                    task_run_id=run.id,
-                    step_name="assess",
-                    status="passed",
-                    duration_ms=2000,
-                    started_at=now - timedelta(minutes=59, seconds=57),
-                    ended_at=now - timedelta(minutes=59, seconds=55),
-                ),
-                StepExecution(
-                    task_run_id=run.id,
-                    step_name="develop",
-                    status="done",
-                    duration_ms=60000,
-                    started_at=now - timedelta(minutes=59, seconds=55),
-                    ended_at=now - timedelta(minutes=58, seconds=55),
-                ),
-            ]
-        )
-        await session.commit()
-
-        resp = await client.get("/api/work/history")
-        assert resp.status_code == 200
-        data = resp.json()
-        task = next(t for t in data["tasks"] if t["issue_number"] == "201")
-        assert task["steps_completed"] == 3
-
 
 class TestSettingsAPI:
     """Tests for the settings API endpoints."""
@@ -7365,19 +7313,6 @@ class TestWorkServiceDirect:
         result = await get_work_history(session, limit=10, offset=100)
         assert len(result["tasks"]) == 0
         assert result["total"] == 1
-
-    async def test_get_work_history_non_pipeline_role_shows_none_steps(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_work_history
-
-        now = datetime.now(timezone.utc)
-        async with session.begin():
-            session.add(TaskRun(issue_number="50", role="triage", status="done", started_at=now, ended_at=now))
-            session.add(TaskRun(issue_number="51", role="developer", status="done", started_at=now, ended_at=now))
-
-        result = await get_work_history(session)
-        tasks_by_issue = {t["issue_number"]: t for t in result["tasks"]}
-        assert tasks_by_issue["50"]["total_steps_possible"] is None
-        assert tasks_by_issue["51"]["total_steps_possible"] == 17
 
     async def test_work_history_endpoint_pagination(self, client: AsyncClient) -> None:
         resp = await client.get("/api/work/history?limit=15&offset=0")

@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, exists, false, func, or_, select
 from sqlalchemy.exc import InvalidRequestError, StatementError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sova.core.state import STEP_DONE_STATUSES, TASK_RUN_TERMINAL
+from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.agent_progress import (
     _ADDRESS_REVIEW_ONLY,
     _RESEARCHER_ONLY,
@@ -25,22 +25,14 @@ from sova.dashboard.services.agent_progress import (
     _resolve_pipelines,
     get_step_progress,
 )
+from sova.dashboard.services.work_state import _COMMAND_PREFIX, _ROLE_ACTIONS, _VARIANT_ACTIONS, run_action
 from sova.db.models import StepExecution, TaskRun
-from sova.utils.formatting import decimal_to_json, iso_utc
+from sova.utils.formatting import decimal_to_json, format_cost_usd, iso_utc
 from sova.utils.logging import get_logger
 
 logger = get_logger(component="dashboard.work_service")
 
 _TERMINAL = TASK_RUN_TERMINAL
-
-_PIPELINE_LENGTHS: dict[str, int] = {
-    "developer": len(DEVELOPER_PIPELINE),
-    "address_review": len(ADDRESS_REVIEW_PIPELINE),
-    "researcher": len(RESEARCHER_PIPELINE),
-    "command": 1,
-}
-
-_PIPELINE_ROLES = frozenset({"developer", "researcher"})
 
 
 def _init_step_positions(pipelines: dict[str, list[str]]) -> dict[tuple[str, str], tuple[str, int]]:
@@ -129,64 +121,135 @@ async def get_work_history(
     *,
     status: str | None = None,
     role: str | None = None,
-    limit: int = 50,
+    action: str | None = None,
+    number: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = 25,
     offset: int = 0,
 ) -> dict:
-    """Get completed/failed/interrupted task runs with step counts.
+    """Finished runs, newest first by start time, with the filtered count, cost and failed count.
 
-    Returns ``{"tasks": [...], "total": N}`` for pagination support.
+    ``since`` is inclusive and ``until`` exclusive, both on ``started_at``, which is also the sort key, so a window
+    and its ordering agree. ``action`` is a key of the run action table (``work_state.RUN_ACTIONS``, or a command
+    name), ``number`` an issue number, tracker key or PR number (a leading ``#`` is ignored). ``failed_total`` counts
+    failed runs matching every filter except ``status``, for the Failed tab. Returns ``{"tasks": [...], "total": N,
+    "total_cost_usd": "...", "failed_total": N}``.
     """
-    base = select(TaskRun).where(TaskRun.status.in_(_TERMINAL))
-
-    if status:
-        base = base.where(TaskRun.status == status)
+    shared = [TaskRun.status.in_(_TERMINAL)]
     if role:
-        base = base.where(TaskRun.role == role)
+        shared.append(TaskRun.role == role)
+    if action:
+        shared.append(_action_clause(action))
+    number_clause = _number_clause(number)
+    if number_clause is not None:
+        shared.append(number_clause)
+    if since is not None:
+        shared.append(TaskRun.started_at >= _as_utc(since))
+    if until is not None:
+        shared.append(TaskRun.started_at < _as_utc(until))
+    filters = [*shared, TaskRun.status == status] if status else shared
 
-    total = await session.scalar(select(func.count()).select_from(base.subquery()))
+    count, cost = (
+        await session.execute(
+            select(func.count(TaskRun.id), func.coalesce(func.sum(TaskRun.total_cost_usd), 0)).where(*filters)
+        )
+    ).one()
+    failed_total = await session.scalar(select(func.count(TaskRun.id)).where(*shared, TaskRun.status == "failed"))
 
-    stmt = base.order_by(TaskRun.ended_at.desc()).limit(min(limit, 200)).offset(max(offset, 0))
-    result = await session.execute(stmt)
-    runs = result.scalars().all()
-
-    run_ids = [r.id for r in runs]
-    steps_by_run = await _batch_step_names(session, run_ids)
-
-    step_counts = await _batch_step_counts(session, run_ids)
-    items = [_build_history_item(r, steps_by_run.get(r.id, set()), step_counts.get(r.id, (0, 0))) for r in runs]
-    return {"tasks": items, "total": total or 0}
-
-
-async def _batch_step_counts(session: AsyncSession, run_ids: list[int]) -> dict[int, tuple[int, int]]:
-    """Batch-fetch (total, completed) step counts per run."""
-    if not run_ids:
-        return {}
-    total_stmt = (
-        select(StepExecution.task_run_id, func.count(StepExecution.id))
-        .where(StepExecution.task_run_id.in_(run_ids))
-        .group_by(StepExecution.task_run_id)
+    stmt = (
+        select(TaskRun)
+        .where(*filters)
+        .order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
+        .limit(max(min(limit, 200), 0))
+        .offset(max(offset, 0))
     )
-    total_rows = (await session.execute(total_stmt)).all()
-    totals = {row[0]: row[1] for row in total_rows}
+    runs = (await session.execute(stmt)).scalars().all()
+    steps_by_run = await _batch_step_names(session, [r.id for r in runs])
+    return {
+        "tasks": [_build_history_item(r, steps_by_run.get(r.id, set())) for r in runs],
+        "total": count or 0,
+        "total_cost_usd": format_cost_usd(cost),
+        "failed_total": failed_total or 0,
+    }
 
-    done_stmt = (
-        select(StepExecution.task_run_id, func.count(StepExecution.id))
-        .where(StepExecution.task_run_id.in_(run_ids), StepExecution.status.in_(STEP_DONE_STATUSES))
-        .group_by(StepExecution.task_run_id)
+
+def _as_utc(dt: datetime) -> datetime:
+    """An aware UTC datetime; a naive one is taken as UTC, the way the database stores every timestamp."""
+    return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _number_clause(number: str | None) -> ColumnElement[bool] | None:
+    """Runs for this issue (number, or tracker key in any case) or this PR; None when the text is empty."""
+    value = (number or "").strip().lstrip("#").strip()
+    if not value:
+        return None
+    # ASCII digits only ("²" passes isdigit() but not int()), and short enough to fit the INTEGER column.
+    if value.isascii() and value.isdigit() and len(value) <= 18:
+        return or_(TaskRun.issue_number == value, TaskRun.pr_number == int(value))
+    # Tracker keys are stored upper-case (RHCLOUD-12) but typed in any case.
+    return func.lower(TaskRun.issue_number) == value.lower()
+
+
+def _has_step(names: frozenset[str]) -> ColumnElement[bool]:
+    return exists().where(StepExecution.task_run_id == TaskRun.id, StepExecution.step_name.in_(names))
+
+
+def _address_review_variant_clause() -> ColumnElement[bool]:
+    """SQL twin of ``_resolve_variant(...) == "address_review"`` for a developer run, so the action filter agrees
+    with the ``action`` each row reports. Order matters as it does there: researcher-only steps win, then
+    address-review-only steps, then the current step and PR."""
+    no_step_yet = or_(TaskRun.current_step.is_(None), TaskRun.current_step == "agent")
+    current = func.coalesce(TaskRun.current_step, "")
+    return and_(
+        ~_has_step(_RESEARCHER_ONLY),
+        or_(
+            _has_step(_ADDRESS_REVIEW_ONLY),
+            and_(
+                current.notin_(_RESEARCHER_ONLY),
+                or_(and_(no_step_yet, TaskRun.pr_number.isnot(None)), current.in_(_ADDRESS_REVIEW_ONLY)),
+            ),
+        ),
     )
-    done_rows = (await session.execute(done_stmt)).all()
-    dones = {row[0]: row[1] for row in done_rows}
 
-    return {rid: (totals.get(rid, 0), dones.get(rid, 0)) for rid in run_ids}
+
+_VARIANT_CLAUSES = {"address_review": _address_review_variant_clause}
+
+
+def _role_clause(role: str) -> ColumnElement[bool]:
+    """Runs stored with this role; a ``command:<name>`` role also matches the ``command:/<name> <args>`` form."""
+    if not role.startswith(_COMMAND_PREFIX):
+        return TaskRun.role == role
+    name = role[len(_COMMAND_PREFIX) :]
+    forms = (f"{_COMMAND_PREFIX}{name}", f"{_COMMAND_PREFIX}/{name}")
+    return or_(*(c for f in forms for c in (TaskRun.role == f, TaskRun.role.startswith(f + " ", autoescape=True))))
+
+
+def _action_clause(key: str) -> ColumnElement[bool]:
+    """Runs whose ``run_action()`` key is ``key``: the SQL side of the action table in ``work_state``."""
+    clauses: list[ColumnElement[bool]] = []
+    for role, action_key in _ROLE_ACTIONS.items():
+        by_variant = _VARIANT_ACTIONS.get(role, {})
+        if action_key == key:
+            exclude = [_VARIANT_CLAUSES[v]() for v in by_variant]
+            clauses.append(and_(_role_clause(role), *(~c for c in exclude)))
+        for variant, variant_key in by_variant.items():
+            if variant_key == key:
+                clauses.append(and_(_role_clause(role), _VARIANT_CLAUSES[variant]()))
+    # A command or custom role named after itself (``command:develop`` reports the registered key "develop"), unless
+    # that role has an action of its own.
+    if f"{_COMMAND_PREFIX}{key}" not in _ROLE_ACTIONS:
+        clauses.append(_role_clause(f"{_COMMAND_PREFIX}{key}"))
+    if key not in _ROLE_ACTIONS:
+        clauses.append(TaskRun.role == key)
+    return or_(*clauses) if clauses else false()
 
 
 def _compute_duration_ms(started_at: datetime | None, ended_at: datetime | None) -> int | None:
     """Compute duration in milliseconds between two timestamps."""
     if not started_at or not ended_at:
         return None
-    started = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-    ended = ended_at if ended_at.tzinfo else ended_at.replace(tzinfo=timezone.utc)
-    return int((ended - started).total_seconds() * 1000)
+    return int((_as_utc(ended_at) - _as_utc(started_at)).total_seconds() * 1000)
 
 
 def _resolve_variant(step_names: set[str], current_step: str | None, role: str | None, pr_number: int | None) -> str:
@@ -198,25 +261,21 @@ def _resolve_variant(step_names: set[str], current_step: str | None, role: str |
     return _detect_variant(current_step, role=role, pr_number=pr_number)
 
 
-def _build_history_item(
-    r: TaskRun,
-    step_names: set[str],
-    step_counts: tuple[int, int],
-) -> dict:
-    """Build a single history item dict from a run and its precomputed data."""
-    step_total, steps_completed = step_counts
+def _build_history_item(r: TaskRun, step_names: set[str]) -> dict:
+    """Build a single history item dict from a run and its step names."""
     duration_ms = _compute_duration_ms(r.started_at, r.ended_at)
     variant = _resolve_variant(step_names, r.current_step, r.role, r.pr_number)
+    action = run_action(r.role, variant)
     return {
         "id": r.id,
         "issue_number": r.issue_number,
         "role": r.role,
+        "action": action.key,
+        "action_label": action.label,
+        "action_color": action.color,
         "status": r.status,
         "current_step": r.current_step,
         "pipeline_variant": variant,
-        "steps_completed": steps_completed,
-        "steps_total": step_total,
-        "total_steps_possible": (_PIPELINE_LENGTHS.get(variant) if r.role in _PIPELINE_ROLES else None),
         "branch_name": r.branch_name,
         "pr_number": r.pr_number,
         "total_cost_usd": decimal_to_json(r.total_cost_usd),
