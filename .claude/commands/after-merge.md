@@ -72,6 +72,11 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
    fi
    ```
 
+   On a GitHub project, also record which recorded rules the PR's review findings repeat (read by `sova retro report`). A non-zero exit means nothing was recorded: name it in the final report and carry on:
+   ```bash
+   sova retro record <PR_NUMBER> || echo "FAILED: sova retro record <PR_NUMBER>" >&2
+   ```
+
 6. **Capture learnings** from the PR review (run the `/ingest-review` workflow):
    - Fetch PR review data
    - Extract lessons: patterns to follow, mistakes to avoid, style preferences, test coverage gaps
