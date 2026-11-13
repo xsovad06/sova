@@ -94,6 +94,77 @@ GROUP_ORDER: list[str] = [
     "conflict_resolution",
 ]
 
+# The Settings page's section list (#1463): each section shows whole groups, and every group in GROUP_ORDER sits in
+# exactly one section (tests/test_settings_meta.py). Overview holds no group: it repeats OVERVIEW_KEYS, which also
+# stay in their own groups. A section id equal to a group id must hold that group, since `/settings#<id>` opens the
+# section first.
+SECTIONS: dict[str, tuple[str, ...]] = {
+    "overview": (),
+    "project-and-tracker": ("project", "task_source", "commit", "ci", "external_reviews", "security"),
+    "models-and-agents": ("llm", "agent", "roles", "runaway"),
+    "pipeline": (
+        "pipeline",
+        "pipelines",
+        "spec",
+        "triage",
+        "develop",
+        "review",
+        "validation",
+        "confidence",
+        "conflict_resolution",
+        "worktree",
+        "watch",
+    ),
+    "automation": ("supervisor", "oversight", "agent_health", "awareness"),
+    "integrations": ("integration", "mcp", "a2a", "ldap", "dependency_health", "fleet"),
+    "server": ("server", "dashboard"),
+}
+
+SECTION_LABELS: dict[str, str] = {
+    "overview": "Overview",
+    "project-and-tracker": "Project and tracker",
+    "models-and-agents": "Models and agents",
+    "pipeline": "Pipeline",
+    "automation": "Automation",
+    "integrations": "Integrations",
+    "server": "Server",
+}
+
+# The supervisor's 13 switches as the Supervisor page and the Settings Overview group them.
+SUPERVISOR_SWITCH_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Steps it may start",
+        (
+            "supervisor.auto_triage",
+            "supervisor.auto_research",
+            "supervisor.auto_develop",
+            "supervisor.auto_review",
+            "supervisor.auto_address_review",
+            "supervisor.auto_integrate",
+            "supervisor.auto_rebase",
+            "supervisor.auto_queue",
+        ),
+    ),
+    (
+        "Guards",
+        (
+            "supervisor.require_approval",
+            "supervisor.respect_dependencies",
+            "supervisor.respect_ownership",
+            "supervisor.file_overlap_gate",
+        ),
+    ),
+    ("Planning", ("supervisor.llm_planning",)),
+)
+
+# The everyday settings the Overview repeats: the agent limit, the supervisor with its switches, and oversight.
+OVERVIEW_KEYS: tuple[str, ...] = (
+    "max_parallel_agents",
+    "supervisor.enabled",
+    *(key for _title, keys in SUPERVISOR_SWITCH_GROUPS for key in keys),
+    "oversight.enabled",
+)
+
 _REGISTRY: list[SettingMeta] = [
     # Project
     SettingMeta(
