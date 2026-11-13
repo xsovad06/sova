@@ -430,6 +430,7 @@ log_backup_count = 5
 | **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search\|prune\|dump\|export\|import`, `sova assess set\|get\|clear <issue>` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
+| **Review retro** | `sova retro record <pr> [--force]`, `sova retro backfill [--dry-run]`, `sova retro report [--since YYYY-MM]`: which recorded rules (bold-labelled bullets in AGENTS.md, CLAUDE.md, `.claude/rules/`, common-mistakes.md) each merged PR's review findings repeat, per month |
 | **MCP** | `sova mcp serve` (blocking command tools, plus operator tools that drive a running `sova server`: status, pending handoffs and plan, start, stop, resume, handoff dismiss and action, plan approve and skip) |
 | **Maintenance** | `sova cleanup` |
 
