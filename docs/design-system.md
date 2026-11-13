@@ -73,8 +73,9 @@ window.SOVA_COLORS.accent   // "#89b4fa"
 window.SOVA_COLORS.green    // "#a6e3a1"
 window.SOVA_COLORS.red      // "#f38ba8"
 
-// Role colors use these dynamically:
-ROLE_COLORS.developer.hex   // reads from SOVA_COLORS.accent
+// Run (role) colors come from the server's run action table (window.SOVA_RUN_ACTIONS):
+roleColor('developer').hex  // the action's colour token, read from SOVA_COLORS.accent
+runActionColors('teal')     // {bg, text, dot, border, hex} for a colour token
 ```
 
 ## Typography Scale

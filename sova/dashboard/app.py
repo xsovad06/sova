@@ -86,6 +86,7 @@ from sova.dashboard.security import (
 from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.work_service import _TERMINAL
+from sova.dashboard.services.work_state import run_actions_payload
 from sova.dashboard.settings_meta import get_meta as get_setting_meta
 from sova.db.session import close_db, init_db, init_db_for_project
 from sova.utils.logging import get_logger
@@ -690,6 +691,16 @@ def priorities_json() -> Markup:
     return Markup(json.dumps(payload))
 
 
+def run_actions_json() -> Markup:
+    """Jinja global: JSON payload for `window.SOVA_RUN_ACTIONS` (see base.html).
+
+    The run action table (`work_state.RUN_ACTIONS`): one name, running form and colour per kind of run, so
+    `formatRole()` and `roleColor()` in app.js read it instead of keeping their own copy. `<` is escaped so a
+    label can never close the surrounding script element.
+    """
+    return Markup(json.dumps(run_actions_payload()).replace("<", "\\u003c"))
+
+
 async def _registry_unreadable_handler(request: Request, exc: Exception) -> Response:
     """Report an unreadable project registry as a 409 naming the file, instead of a bare 500.
 
@@ -1148,6 +1159,7 @@ def create_app(
     templates.env.globals["priorities_json"] = priorities_json
     # A page control's label and tooltip come from the settings registry, so they match the Settings page.
     templates.env.globals["setting_meta"] = get_setting_meta
+    templates.env.globals["run_actions_json"] = run_actions_json
 
     if is_multi:
         _setup_multi_project(app, templates)

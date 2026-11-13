@@ -18,6 +18,7 @@ function initColors() {
     red:     getCSSVar('--ctp-red'),
     yellow:  getCSSVar('--ctp-yellow'),
     purple:  getCSSVar('--ctp-mauve'),
+    teal:    getCSSVar('--ctp-teal'),
     peach:    getCSSVar('--ctp-peach'),
     lavender: getCSSVar('--ctp-lavender'),
     sapphire: getCSSVar('--ctp-sapphire'),
@@ -1976,54 +1977,74 @@ function priorityDisplayName(priority) {
 }
 
 /* ============================================================
-   13. ROLE COLORS
+   13. RUN ACTIONS (names and colours)
    ============================================================ */
 
-function _roleHex(key) {
-  var map = { developer: 'accent', triage: 'yellow', researcher: 'purple', planner: 'purple', reviewer: 'green', auto: 'muted' };
-  return (window.SOVA_COLORS && window.SOVA_COLORS[map[key]]) || _ROLE_HEX_FALLBACK[key];
+/* Each kind of run's name, running form and colour token come from the server's table
+   (work_state.RUN_ACTIONS), emitted once per page as window.SOVA_RUN_ACTIONS. These helpers only
+   normalize a stored role, look it up, and turn a colour token into classes. A page without the
+   table (home.html and setup.html do not extend base.html) still shows the command or role name. */
+
+var _RUN_ACTION_CLASSES = {
+  blue:   { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        hexKey: 'accent' },
+  green:  { bg: 'bg-accent-green/20',  text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  hexKey: 'green' },
+  mauve:  { bg: 'bg-accent-purple/20', text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', hexKey: 'purple' },
+  yellow: { bg: 'bg-accent-yellow/20', text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', hexKey: 'yellow' },
+  teal:   { bg: 'bg-accent-teal/20',   text: 'text-accent-teal',   dot: 'bg-accent-teal',   border: 'border-accent-teal/40',   hexKey: 'teal' },
+  gray:   { bg: 'bg-gray-500/20',      text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         hexKey: 'muted' },
+};
+
+// style.css values, for a canvas or inline style drawn before initColors() has read the CSS variables.
+var _RUN_ACTION_HEX_FALLBACK = {
+  accent: '#89b4fa', green: '#a6e3a1', purple: '#cba6f7', yellow: '#f9e2af', teal: '#94e2d5', muted: '#7f849c',
+};
+
+function runActionColors(token) {
+  var c = Object.prototype.hasOwnProperty.call(_RUN_ACTION_CLASSES, token) ? _RUN_ACTION_CLASSES[token] : _RUN_ACTION_CLASSES.gray;
+  return {
+    bg: c.bg, text: c.text, dot: c.dot, border: c.border,
+    get hex() { return (window.SOVA_COLORS && window.SOVA_COLORS[c.hexKey]) || _RUN_ACTION_HEX_FALLBACK[c.hexKey]; },
+  };
 }
 
-var _ROLE_HEX_FALLBACK = {
-  developer: '#89b4fa', triage: '#f9e2af', researcher: '#cba6f7', planner: '#cba6f7', reviewer: '#a6e3a1', auto: '#585b70',
-};
+// command:<name> without a leading slash or arguments, as work_state.command_role() does; other roles unchanged.
+function _commandRole(role) {
+  if (role.indexOf('command:') !== 0) return role;
+  var words = role.slice('command:'.length).trim().split(/\s+/);
+  return 'command:' + words[0].replace(/^\/+/, '');
+}
 
-var ROLE_COLORS = {
-  developer:  { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        get hex() { return _roleHex('developer'); } },
-  triage:     { bg: 'bg-accent-yellow/20',  text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', get hex() { return _roleHex('triage'); } },
-  researcher: { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', get hex() { return _roleHex('researcher'); } },
-  planner:    { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', get hex() { return _roleHex('planner'); } },
-  reviewer:   { bg: 'bg-accent-green/20',   text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  get hex() { return _roleHex('reviewer'); } },
-  auto:       { bg: 'bg-gray-500/20',       text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         get hex() { return _roleHex('auto'); } },
-};
-
-function roleColor(role) {
-  if (!role) return ROLE_COLORS.auto;
-  var key = role.startsWith('command:') ? _commandToRole(role) : role;
-  return ROLE_COLORS[key] || ROLE_COLORS.auto;
+// The action a run performed: {key, label, running, color}. Mirrors work_state.run_action() over the same table.
+function runActionFor(role, pipelineVariant) {
+  if (!role) return { key: 'auto', label: 'Auto', running: 'Running', color: 'gray' };
+  var table = window.SOVA_RUN_ACTIONS;
+  var own = function(obj, k) { return !!obj && Object.prototype.hasOwnProperty.call(obj, k); };
+  var normalized = _commandRole(role);
+  var key = null;
+  if (table) {
+    var byVariant = own(table.variants, role) ? table.variants[role] : null;
+    if (own(byVariant, pipelineVariant || '')) key = byVariant[pipelineVariant];
+    else if (own(table.roles, normalized)) key = table.roles[normalized];
+  }
+  if (key !== null && own(table.actions, key)) {
+    var a = table.actions[key];
+    return { key: key, label: a.label, running: a.running, color: a.color };
+  }
+  if (normalized.indexOf('command:') === 0 && normalized !== 'command:') {
+    var name = normalized.slice('command:'.length);
+    // With the table loaded, an unlisted command reads like the server names it ("Health audit").
+    var label = table ? name.charAt(0).toUpperCase() + name.slice(1).toLowerCase().replace(/-/g, ' ') : name;
+    return { key: name, label: label, running: 'Running', color: 'gray' };
+  }
+  return { key: role, label: role, running: 'Running', color: 'gray' };
 }
 
 function formatRole(role, pipelineVariant) {
-  if (!role) return 'auto';
-  var base;
-  if (!role.startsWith('command:')) {
-    base = role;
-  } else {
-    var cmd = role.slice('command:'.length).trim();
-    base = cmd.split(/\s+/)[0].replace(/^\//, '');
-  }
-  if (pipelineVariant === 'address_review' && role === 'developer') {
-    return base + ' - address pr';
-  }
-  return base;
+  return runActionFor(role, pipelineVariant).label;
 }
 
-function _commandToRole(role) {
-  var cmd = role.slice('command:'.length).trim().replace(/^\//, '');
-  if (cmd.startsWith('address-pr')) return 'developer';
-  if (cmd.startsWith('review')) return 'reviewer';
-  if (cmd.startsWith('develop')) return 'developer';
-  return 'auto';
+function roleColor(role, pipelineVariant) {
+  return runActionColors(runActionFor(role, pipelineVariant).color);
 }
 
 /* ============================================================
@@ -2129,10 +2150,9 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var stepData = (opts && opts.stepData) || [];
 
   if (pipelineVariant === 'command') {
-    var cmdName = (role || '').replace(/^command:/, '').replace(/^\//, '');
     var label = '';
     if (!compact) {
-      label = '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(cmdName || 'Running') + '</div>';
+      label = '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(runActionFor(role, pipelineVariant).running) + '</div>';
     }
     return '<div class="flex gap-0.5"><div class="flex-1 ' + (compact ? 'h-1.5' : 'h-2.5') + ' rounded animate-pulse" style="background:' + colors.hex + ';opacity:0.7"></div></div>' + label;
   }

@@ -30,9 +30,6 @@ from sova.dashboard.services.work_state import (
     _LABEL_STATE_MAP as _LABEL_STATE_MAP,
 )
 from sova.dashboard.services.work_state import (
-    _ROLE_LABELS as _ROLE_LABELS,
-)
-from sova.dashboard.services.work_state import (
     _SPEC_ACTION_IDS as _SPEC_ACTION_IDS,
 )
 from sova.dashboard.services.work_state import (
@@ -68,6 +65,7 @@ from sova.dashboard.services.work_state import (
 from sova.dashboard.services.work_state import (
     resolve_next_action as resolve_next_action,
 )
+from sova.dashboard.services.work_state import run_action
 from sova.dashboard.services.work_state import (
     state_color as state_color,
 )
@@ -991,7 +989,7 @@ def _format_running_agent(agent: dict) -> dict:
     return {
         "run_id": agent.get("run_id"),
         "role": role,
-        "role_label": _ROLE_LABELS.get(role, "Running"),
+        "role_label": run_action(role, agent.get("pipeline_variant")).running,
         "elapsed_seconds": agent.get("elapsed_seconds", 0),
     }
 
