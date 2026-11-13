@@ -748,3 +748,36 @@ class BudgetOverride(Base):
         Index("ix_budget_overrides_issue", "issue_number"),
         Index("ix_budget_overrides_created", "created_at"),
     )
+
+
+class PrRetro(Base):
+    """Per merged PR: which recorded rules its review findings repeat (``sova retro``, issue #744).
+
+    ``findings`` holds every classified finding, matched or not, so a row can be audited; a finding whose
+    ``same_as`` names an earlier round's finding is a re-raise and counts once, as that first occurrence.
+    ``kinds_digest`` identifies the rule list the findings were matched against, so a report can tell rows
+    classified against different rules apart.
+    """
+
+    __tablename__ = "pr_retros"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    merged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    review_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    address_cycles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    classify_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal("0"))
+    classify_model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    findings_by_severity: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    kinds_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    kinds_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    findings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+    __table_args__ = (
+        UniqueConstraint("pr_number", name="uq_pr_retros_pr_number"),
+        Index("ix_pr_retros_merged_at", "merged_at"),
+    )

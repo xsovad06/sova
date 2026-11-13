@@ -650,6 +650,34 @@ async def test_migration_042_round_trips_on_a_real_sqlite_file(tmp_path: Path) -
     assert set(not_null().values()) == {0}
 
 
+async def test_migration_043_creates_and_drops_pr_retros(tmp_path: Path) -> None:
+    import asyncio
+    import sqlite3
+
+    from alembic import command
+    from alembic.config import Config
+
+    mod = _import_migration("043")
+    assert (mod.revision, mod.down_revision) == ("043", "042")
+
+    db_path = tmp_path / "retro.db"
+    alembic_cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+
+    def columns() -> set[str]:
+        raw = sqlite3.connect(str(db_path))
+        try:
+            return {row[1] for row in raw.execute("PRAGMA table_info(pr_retros)")}
+        finally:
+            raw.close()
+
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+    assert {"pr_number", "merged_at", "findings", "kinds_digest", "classify_cost_usd"} <= columns()
+
+    await asyncio.to_thread(command.downgrade, alembic_cfg, "042")
+    assert columns() == set()
+
+
 async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None:
     """Every new connection should get PRAGMA synchronous=NORMAL, not the FULL default.
 
