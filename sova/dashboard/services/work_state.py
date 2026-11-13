@@ -182,17 +182,94 @@ def state_color(state: str) -> str:
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
-_ROLE_LABELS: dict[str, str] = {
-    "developer": "Developing",
-    "reviewer": "Reviewing",
-    "researcher": "Researching",
-    "triage": "Triaging",
-    "command:address-pr": "Addressing",
-    "command:integrate-pr": "Integrating",
-    "command:review-pr": "Reviewing",
-    "command:after-merge": "Cleaning up",
-    "command:spec": "Writing Spec",
+
+@dataclass(frozen=True)
+class RunAction:
+    """What a kind of run is called: its action name, its running form, and its colour token."""
+
+    key: str
+    label: str
+    running: str
+    color: str
+
+
+# One name per kind of run, shown by the run history, agent cards, kanban, log viewer and run detail page. The page
+# receives the whole table as window.SOVA_RUN_ACTIONS (run_actions_payload()), so JavaScript keeps no copy. The colour
+# tokens are the role colours the agent cards already used (developer blue, reviewer green, researcher and planner
+# mauve, triage yellow); #1279 later moves this table into its display registry.
+RUN_ACTIONS: dict[str, RunAction] = {
+    a.key: a
+    for a in (
+        RunAction("develop", "Develop", "Developing", "blue"),
+        RunAction("address-review", "Address review", "Addressing", "blue"),
+        RunAction("review", "Review", "Reviewing", "green"),
+        RunAction("integrate", "Integrate", "Integrating", "teal"),
+        RunAction("research", "Research", "Researching", "mauve"),
+        RunAction("plan", "Plan", "Planning", "mauve"),
+        RunAction("rebase", "Rebase", "Rebasing", "gray"),
+        RunAction("triage", "Triage", "Triaging", "yellow"),
+        RunAction("spec", "Spec", "Writing Spec", "gray"),
+        RunAction("after-merge", "After merge", "Cleaning up", "gray"),
+    )
 }
+
+# Stored role -> action. A command role is keyed by its bare name ("command:integrate-pr"); command_role() strips the
+# leading slash and arguments an older run stored ("command:/integrate-pr 524").
+_ROLE_ACTIONS: dict[str, str] = {
+    "developer": "develop",
+    "reviewer": "review",
+    "researcher": "research",
+    "planner": "plan",
+    "triage": "triage",
+    "supervisor:rebase": "rebase",
+    "command:address-pr": "address-review",
+    "command:review-pr": "review",
+    "command:integrate-pr": "integrate",
+    "command:spec": "spec",
+    "command:after-merge": "after-merge",
+}
+
+# A role whose action also depends on the run's pipeline variant: a developer run on the address-review pipeline.
+_VARIANT_ACTIONS: dict[str, dict[str, str]] = {"developer": {"address_review": "address-review"}}
+
+_COMMAND_PREFIX = "command:"
+
+
+def command_role(role: str) -> str:
+    """`command:<name>` for any stored command role, without a leading slash or arguments; other roles unchanged."""
+    if not role.startswith(_COMMAND_PREFIX):
+        return role
+    words = role[len(_COMMAND_PREFIX) :].split()
+    return _COMMAND_PREFIX + (words[0].lstrip("/") if words else "")
+
+
+def run_action(role: str | None, variant: str | None = None) -> RunAction:
+    """The action a run with this stored role and pipeline variant performed.
+
+    A command with no entry is named after itself ("command:health-audit" is "Health audit"); any other unknown role
+    keeps its stored name. Neither has a running form of its own, so both read "Running" while active.
+    """
+    if not role:
+        return RunAction("auto", "Auto", "Running", "gray")
+    key = _VARIANT_ACTIONS.get(role, {}).get(variant or "")
+    normalized = command_role(role)
+    key = key or _ROLE_ACTIONS.get(normalized)
+    if key is not None:
+        return RUN_ACTIONS[key]
+    if normalized.startswith(_COMMAND_PREFIX) and normalized != _COMMAND_PREFIX:
+        name = normalized[len(_COMMAND_PREFIX) :]
+        return RunAction(name, name.replace("-", " ").capitalize(), "Running", "gray")
+    return RunAction(role, role, "Running", "gray")
+
+
+def run_actions_payload() -> dict:
+    """The table as `window.SOVA_RUN_ACTIONS`: actions by key, role -> action, and role -> variant -> action."""
+    return {
+        "actions": {k: {"label": a.label, "running": a.running, "color": a.color} for k, a in RUN_ACTIONS.items()},
+        "roles": dict(_ROLE_ACTIONS),
+        "variants": {role: dict(by_variant) for role, by_variant in _VARIANT_ACTIONS.items()},
+    }
+
 
 _LABEL_STATE_MAP: dict[str, WorkItemState] = {
     "backlog": WorkItemState.BACKLOG,
