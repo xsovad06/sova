@@ -1,6 +1,7 @@
 import { actionAttrs, registerActions } from './actions.js';
 import { getLastLoadedRunIds, loadWorkItems } from './work-items.js';
 import { loadAgents } from './agent-cards.js';
+import { refreshHistoryAfterRun } from './history.js';
 
 // Real-time agent status: WebSocket with polling fallback, via the shared
 // SovaStatusChannel helper (app.js).
@@ -143,6 +144,8 @@ function _handleAgentStatusMessage(msg) {
     }
     _scheduleAgentsRefresh();
     _scheduleWorkItemsRefresh();
+    // The finished run joins the history: page one reloads, a later page offers a "new runs" button.
+    refreshHistoryAfterRun();
     return;
   }
   if (msg.type === 'status_update' && Array.isArray(msg.runs)) {

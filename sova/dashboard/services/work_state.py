@@ -215,7 +215,7 @@ RUN_ACTIONS: dict[str, RunAction] = {
 
 # Stored role -> action. A command role is keyed by its bare name ("command:integrate-pr"); command_role() strips the
 # leading slash and arguments an older run stored ("command:/integrate-pr 524").
-_ROLE_ACTIONS: dict[str, str] = {
+ROLE_ACTIONS: dict[str, str] = {
     "developer": "develop",
     "reviewer": "review",
     "researcher": "research",
@@ -230,44 +230,54 @@ _ROLE_ACTIONS: dict[str, str] = {
 }
 
 # A role whose action also depends on the run's pipeline variant: a developer run on the address-review pipeline.
-_VARIANT_ACTIONS: dict[str, dict[str, str]] = {"developer": {"address_review": "address-review"}}
+VARIANT_ACTIONS: dict[str, dict[str, str]] = {"developer": {"address_review": "address-review"}}
 
-_COMMAND_PREFIX = "command:"
+COMMAND_PREFIX = "command:"
 
 
 def command_role(role: str) -> str:
     """`command:<name>` for any stored command role, without a leading slash or arguments; other roles unchanged."""
-    if not role.startswith(_COMMAND_PREFIX):
+    if not role.startswith(COMMAND_PREFIX):
         return role
-    words = role[len(_COMMAND_PREFIX) :].split()
-    return _COMMAND_PREFIX + (words[0].lstrip("/") if words else "")
+    words = role[len(COMMAND_PREFIX) :].split()
+    return COMMAND_PREFIX + (words[0].lstrip("/") if words else "")
+
+
+# A run stored with no role at all.
+AUTO_ACTION_KEY = "auto"
+
+
+def _unlisted_action(name: str, label: str) -> RunAction:
+    """A registered action when ``name`` is one ("command:develop" reads like the developer run); else a gray one."""
+    return RUN_ACTIONS.get(name) or RunAction(name, label, "Running", "gray")
 
 
 def run_action(role: str | None, variant: str | None = None) -> RunAction:
     """The action a run with this stored role and pipeline variant performed.
 
-    A command with no entry is named after itself ("command:health-audit" is "Health audit"); any other unknown role
-    keeps its stored name. Neither has a running form of its own, so both read "Running" while active.
+    A command with no entry is named after itself ("command:health-audit" is "Health audit"), and takes the
+    registered action of that name when there is one. Any other unknown role keeps its stored name. Neither has a
+    running form of its own, so both read "Running" while active.
     """
     if not role:
-        return RunAction("auto", "Auto", "Running", "gray")
-    key = _VARIANT_ACTIONS.get(role, {}).get(variant or "")
+        return RunAction(AUTO_ACTION_KEY, "Auto", "Running", "gray")
+    key = VARIANT_ACTIONS.get(role, {}).get(variant or "")
     normalized = command_role(role)
-    key = key or _ROLE_ACTIONS.get(normalized)
+    key = key or ROLE_ACTIONS.get(normalized)
     if key is not None:
         return RUN_ACTIONS[key]
-    if normalized.startswith(_COMMAND_PREFIX) and normalized != _COMMAND_PREFIX:
-        name = normalized[len(_COMMAND_PREFIX) :]
-        return RunAction(name, name.replace("-", " ").capitalize(), "Running", "gray")
-    return RunAction(role, role, "Running", "gray")
+    if normalized.startswith(COMMAND_PREFIX) and normalized != COMMAND_PREFIX:
+        name = normalized[len(COMMAND_PREFIX) :]
+        return _unlisted_action(name, name.replace("-", " ").capitalize())
+    return _unlisted_action(role, role)
 
 
 def run_actions_payload() -> dict:
     """The table as `window.SOVA_RUN_ACTIONS`: actions by key, role -> action, and role -> variant -> action."""
     return {
         "actions": {k: {"label": a.label, "running": a.running, "color": a.color} for k, a in RUN_ACTIONS.items()},
-        "roles": dict(_ROLE_ACTIONS),
-        "variants": {role: dict(by_variant) for role, by_variant in _VARIANT_ACTIONS.items()},
+        "roles": dict(ROLE_ACTIONS),
+        "variants": {role: dict(by_variant) for role, by_variant in VARIANT_ACTIONS.items()},
     }
 
 

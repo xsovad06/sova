@@ -25,7 +25,13 @@ from sova.dashboard.services.agent_progress import (
     _resolve_pipelines,
     get_step_progress,
 )
-from sova.dashboard.services.work_state import _COMMAND_PREFIX, _ROLE_ACTIONS, _VARIANT_ACTIONS, run_action
+from sova.dashboard.services.work_state import (
+    AUTO_ACTION_KEY,
+    COMMAND_PREFIX,
+    ROLE_ACTIONS,
+    VARIANT_ACTIONS,
+    run_action,
+)
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import decimal_to_json, format_cost_usd, iso_utc
 from sova.utils.logging import get_logger
@@ -215,21 +221,29 @@ def _address_review_variant_clause() -> ColumnElement[bool]:
 
 _VARIANT_CLAUSES = {"address_review": _address_review_variant_clause}
 
+# A variant added to work_state.VARIANT_ACTIONS without a SQL twin here would make every action-filtered request raise.
+_MISSING_VARIANT_CLAUSES = {v for by_variant in VARIANT_ACTIONS.values() for v in by_variant} - _VARIANT_CLAUSES.keys()
+if _MISSING_VARIANT_CLAUSES:  # not an assert: python -O would strip it
+    raise RuntimeError(f"no SQL clause for work_state variants {sorted(_MISSING_VARIANT_CLAUSES)}")
+
 
 def _role_clause(role: str) -> ColumnElement[bool]:
     """Runs stored with this role; a ``command:<name>`` role also matches the ``command:/<name> <args>`` form."""
-    if not role.startswith(_COMMAND_PREFIX):
+    if not role.startswith(COMMAND_PREFIX):
         return TaskRun.role == role
-    name = role[len(_COMMAND_PREFIX) :]
-    forms = (f"{_COMMAND_PREFIX}{name}", f"{_COMMAND_PREFIX}/{name}")
+    name = role[len(COMMAND_PREFIX) :]
+    forms = (f"{COMMAND_PREFIX}{name}", f"{COMMAND_PREFIX}/{name}")
     return or_(*(c for f in forms for c in (TaskRun.role == f, TaskRun.role.startswith(f + " ", autoescape=True))))
 
 
 def _action_clause(key: str) -> ColumnElement[bool]:
     """Runs whose ``run_action()`` key is ``key``: the SQL side of the action table in ``work_state``."""
     clauses: list[ColumnElement[bool]] = []
-    for role, action_key in _ROLE_ACTIONS.items():
-        by_variant = _VARIANT_ACTIONS.get(role, {})
+    if key == AUTO_ACTION_KEY:
+        # run_action() reports a run with no stored role as "auto".
+        clauses.append(or_(TaskRun.role.is_(None), TaskRun.role == ""))
+    for role, action_key in ROLE_ACTIONS.items():
+        by_variant = VARIANT_ACTIONS.get(role, {})
         if action_key == key:
             exclude = [_VARIANT_CLAUSES[v]() for v in by_variant]
             clauses.append(and_(_role_clause(role), *(~c for c in exclude)))
@@ -238,9 +252,9 @@ def _action_clause(key: str) -> ColumnElement[bool]:
                 clauses.append(and_(_role_clause(role), _VARIANT_CLAUSES[variant]()))
     # A command or custom role named after itself (``command:develop`` reports the registered key "develop"), unless
     # that role has an action of its own.
-    if f"{_COMMAND_PREFIX}{key}" not in _ROLE_ACTIONS:
-        clauses.append(_role_clause(f"{_COMMAND_PREFIX}{key}"))
-    if key not in _ROLE_ACTIONS:
+    if f"{COMMAND_PREFIX}{key}" not in ROLE_ACTIONS:
+        clauses.append(_role_clause(f"{COMMAND_PREFIX}{key}"))
+    if key not in ROLE_ACTIONS:
         clauses.append(TaskRun.role == key)
     return or_(*clauses) if clauses else false()
 
