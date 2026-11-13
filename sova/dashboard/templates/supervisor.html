@@ -20,14 +20,8 @@
 </div>
 
 <!-- What the supervisor may do: its 13 switches, saved one by one (settingSwitch in app.js) -->
-{% set supervisor_switch_columns = [
-  [("Steps it may start", ["supervisor.auto_triage", "supervisor.auto_research", "supervisor.auto_develop",
-                           "supervisor.auto_review", "supervisor.auto_address_review", "supervisor.auto_integrate",
-                           "supervisor.auto_rebase", "supervisor.auto_queue"])],
-  [("Guards", ["supervisor.require_approval", "supervisor.respect_dependencies", "supervisor.respect_ownership",
-               "supervisor.file_overlap_gate"]),
-   ("Planning", ["supervisor.llm_planning"])],
-] %}
+{# The groups come from settings_meta.SUPERVISOR_SWITCH_GROUPS, shared with the Settings Overview. #}
+{% set supervisor_switch_columns = [supervisor_switch_groups[:1], supervisor_switch_groups[1:]] %}
 <div id="supervisor-switches" class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
   <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
     <h3 class="text-sm font-medium text-gray-300">What the supervisor may do</h3>

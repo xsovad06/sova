@@ -735,7 +735,8 @@ function initWidgetToggle(toggleId, panelId, storageKey) {
      label     accessible name, also used in messages
      value     the current value; omitted, the control loads it itself
      tooltip   data-tooltip text (wraps; opens to the left unless tooltipPos says otherwise)
-     onSaved   called with the stored value after a successful save
+     onSaved   called with the stored value after a successful save, and with the whole save result
+               ({value, restartRequired, lifecycleError, warning}) as its second argument
      onError   called with the message after a failed save (also toasted)
      onValue   called with the shown value whenever it changes */
 
@@ -770,7 +771,7 @@ function loadSettingValues(force) {
   return _settingValues;
 }
 
-/* Saves one key. Resolves to {ok: true, value, restartRequired, lifecycleError}
+/* Saves one key. Resolves to {ok: true, value, restartRequired, lifecycleError, warning}
    with the value as stored, or {ok: false, message}; never rejects. */
 async function saveSetting(key, value) {
   var res;
@@ -797,6 +798,7 @@ async function saveSetting(key, value) {
     value: stored,
     restartRequired: !!body.restart_required,
     lifecycleError: body.lifecycle_error ? String(body.lifecycle_error) : '',
+    warning: body.warning ? String(body.warning) : '',
   };
 }
 
@@ -838,7 +840,7 @@ function _settingReport(key, result, opts) {
   var live = (_settingControls[key] || []).filter(function (c) { return c.isConnected !== false; });
   _settingControls[key] = live;
   live.forEach(function (c) { if (c !== opts._root) c.sovaSetValue(result.value); });
-  if (opts.onSaved) opts.onSaved(result.value);
+  if (opts.onSaved) opts.onSaved(result.value, result);
 }
 
 /* An on/off switch (.sova-toggle) for a boolean setting. Returns the <label>;

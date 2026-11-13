@@ -219,7 +219,7 @@ _INERT_RE = re.compile(
 # Unescaped interpolations across all templates and static scripts, as measured by this
 # section's own helpers when the ratchet was added. Lower it when a site is fixed; never
 # raise it: wrap the value in esc().
-_INNERHTML_BASELINE = 205
+_INNERHTML_BASELINE = 199
 
 
 def _skip_string(text: str, pos: int) -> int:

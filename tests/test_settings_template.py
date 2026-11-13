@@ -1,113 +1,152 @@
-"""Guards for the settings page's editability gate.
+"""Structure of the Settings page (#1463) and source-level guards for its scripts.
 
-The gate lives in JavaScript (`renderSettingRow()` in settings.html), so there
-is no Python seam to call. These are source-level drift guards, in the spirit
-of tests/test_model_literal_guard.py: they fail loudly if a refactor silently
-takes the edit affordance away from list-typed settings again.
+settings.html renders the section list, every group's shell, the Overview and the widget slots; the rows are built
+by static/js/pages/settings/ (rows.js, page.js, widgets.js), whose save and reset behavior runs under node in
+tests/test_settings_page_js.py. The guards here check what is plain in the source: which value types stay
+editable, how the fallback list editor works, and the sets mirrored from Python.
 
-Why this matters: sova.toml was removed in #900, so the dashboard and
-`sova config set` are the only ways a human edits configuration. While
-`isStructured` covered lists, 20 registered settings (awareness.providers,
-pipelines.developer, agent.fallback_models, ci.flaky_checks, ...) could not be
-changed anywhere except by hand-editing .claude/sova.db with sqlite3.
+Why lists must stay editable: sova.toml was removed in #900, so the dashboard and `sova config set` are the only
+ways a human edits configuration. While list-typed settings were read-only, 20 registered settings
+(awareness.providers, pipelines.developer, agent.fallback_models, ci.flaky_checks, ...) could only be changed by
+hand-editing .claude/sova.db with sqlite3.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
-from sova.dashboard.settings_meta import _REGISTRY
+from sova.dashboard.settings_meta import _REGISTRY, GROUP_ORDER, GROUPS, OVERVIEW_KEYS, SECTION_LABELS, SECTIONS
 from tests.conftest import agents_page_source
 
-_TEMPLATE = Path(__file__).resolve().parents[1] / "sova" / "dashboard" / "templates" / "settings.html"
+_PAGE_JS = Path(__file__).resolve().parents[1] / "sova" / "dashboard" / "static" / "js" / "pages" / "settings"
 
 
 @pytest.fixture(scope="module")
-def template_source() -> str:
-    return _TEMPLATE.read_text(encoding="utf-8")
+def rows_source() -> str:
+    return (_PAGE_JS / "rows.js").read_text(encoding="utf-8")
 
 
-def _render_setting_row_body(source: str) -> str:
-    """The text of renderSettingRow() up to its return, where editability is decided."""
-    start = source.index("function renderSettingRow(s) {")
-    end = source.index("return '<tr", start)
-    return source[start:end]
+@pytest.fixture(scope="module")
+def page_source() -> str:
+    return (_PAGE_JS / "page.js").read_text(encoding="utf-8")
 
 
-class TestEditabilityGate:
-    def test_only_objects_are_non_editable(self, template_source: str) -> None:
-        """The read-only gate must cover 'object' only, never 'list'."""
-        body = _render_setting_row_body(template_source)
+@pytest.fixture(scope="module")
+def state_source() -> str:
+    return (_PAGE_JS / "state.js").read_text(encoding="utf-8")
 
-        assert re.search(r"var editable = !isBool && !isObject;", body), (
-            "renderSettingRow() no longer computes editability from isBool/isObject"
+
+@pytest.fixture
+async def settings_html(dashboard_app) -> AsyncIterator[str]:
+    async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as client:
+        res = await client.get("/settings")
+        assert res.status_code == 200
+        yield res.text
+
+
+def _function_body(source: str, signature: str) -> str:
+    start = source.index(signature)
+    return source[start : source.index("\n}\n", start)]
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestPageStructure:
+    async def test_lists_every_section_with_its_groups(self, settings_html: str) -> None:
+        links = re.findall(r'data-section-link="([^"]+)"', settings_html)
+        assert links == list(SECTIONS)
+        for section_id in SECTIONS:
+            assert SECTION_LABELS[section_id] in settings_html
+        assert sorted(re.findall(r'data-group-link="([^"]+)"', settings_html)) == sorted(GROUP_ORDER)
+
+    async def test_every_group_has_a_shell_in_its_section(self, settings_html: str) -> None:
+        for section_id, group_ids in SECTIONS.items():
+            if not group_ids:
+                continue
+            block = settings_html[settings_html.index(f'id="section-{section_id}"') :]
+            block = block[: block.index("</section>")]
+            assert re.findall(r'data-group="([^"]+)"', block) == list(group_ids), section_id
+            for group_id in group_ids:
+                assert f"<h4>{GROUPS[group_id]}</h4>" in block.replace("&amp;", "&")
+
+    async def test_no_collapsible_boxes_are_left(self, settings_html: str) -> None:
+        main = settings_html[settings_html.index('class="sova-settings-header"') : settings_html.index("</main>")]
+        for leftover in ("sova-settings-body", "toggleGroup", "aria-expanded", "group-chevron-", "onclick="):
+            assert leftover not in main
+
+    async def test_the_sections_data_matches_settings_meta(self, settings_html: str) -> None:
+        raw = re.search(
+            r'<script type="application/json" id="settings-sections-data">(.*?)</script>', settings_html, re.S
         )
-        assert "'object'" in body
-        assert "'list'" not in body, (
-            "list-typed settings are non-editable again: with sova.toml gone, that "
-            "leaves sqlite3 as the only way to set them"
+        assert raw
+        data = json.loads(raw.group(1))
+        assert [(s["id"], s["label"], s["groups"]) for s in data] == [
+            (sid, SECTION_LABELS[sid], list(groups)) for sid, groups in SECTIONS.items()
+        ]
+
+    async def test_overview_has_the_everyday_controls(self, settings_html: str) -> None:
+        overview = settings_html[settings_html.index('id="section-overview"') :]
+        overview = overview[: overview.index("</section>")]
+        switches = re.findall(r'data-setting-switch="([^"]+)"', overview)
+        steppers = re.findall(r'data-setting-stepper="([^"]+)"', overview)
+        # The expectation is written out, not read from OVERVIEW_KEYS: a control dropped from the list must fail.
+        supervisor_switches = [k for k in switches if k.startswith("supervisor.") and k != "supervisor.enabled"]
+        assert len(supervisor_switches) == 13
+        assert "supervisor.enabled" in switches
+        assert "oversight.enabled" in switches
+        assert steppers == ["max_parallel_agents"]
+        assert sorted(switches + steppers) == sorted(
+            ["max_parallel_agents", "supervisor.enabled", "oversight.enabled", *supervisor_switches]
         )
+        assert sorted(OVERVIEW_KEYS) == sorted(switches + steppers)
+        # Each control sits in an Overview copy bound to the same key, which a save re-renders with the row.
+        assert sorted(re.findall(r'data-key="([^"]+)" data-ctx="overview"', overview)) == sorted(OVERVIEW_KEYS)
+        assert 'data-widget="installation"' in overview
+        assert 'data-widget="health"' in overview
 
-    def test_list_rows_get_a_format_hint(self, template_source: str) -> None:
-        """A raw JSON array in a text box is unguessable without a hint."""
-        assert "_LIST_INPUT_HINT" in template_source
+    @pytest.mark.parametrize(
+        ("widget", "group_id"),
+        [
+            ("personas", "project"),
+            ("labels", "task_source"),
+            ("invariants", "validation"),
+            ("operations-persona", "oversight"),
+        ],
+    )
+    async def test_widgets_sit_in_their_groups(self, settings_html: str, widget: str, group_id: str) -> None:
+        shell = settings_html[settings_html.index(f'id="group-{group_id}"') :]
+        shell = shell[: shell.index('data-part="group-rows"')]
+        assert f'data-widget="{widget}"' in shell
 
-    def test_edit_and_blur_share_one_raw_to_string_helper(self, template_source: str) -> None:
-        """Two renderings of the same value would make an untouched list look edited."""
-        assert "function _rawToInputString(" in template_source
-        # Once in editConfig() to seed the input, once in the blur no-change check.
-        assert template_source.count("_rawToInputString(JSON.parse(span.dataset.raw))") == 2
-
-
-class TestFormatValueKeyParameter:
-    def test_key_is_declared_and_passed_when_the_body_uses_it(self, template_source: str) -> None:
-        """An undeclared `key` throws on the first boolean row and blanks the whole page.
-
-        loadConfig() wraps rendering in a catch-all that only shows "Failed to load
-        configuration", and the ReferenceError never reaches the server log (#1103).
-        """
-        signature = re.search(r"function formatValue\(([^)]*)\) \{", template_source)
-        assert signature, "formatValue() not found in settings.html"
-        params = [p.strip() for p in signature.group(1).split(",")]
-        body = template_source[signature.end() : template_source.index("\n}\n", signature.end())]
-
-        code = re.sub(r"//[^\n]*", "", body)  # a comment mentioning "key" is not a use of it
-        if re.search(r"\bkey\b", code):
-            assert "key" in params, "formatValue() uses `key` but does not declare it"
-            assert "formatValue(s.value, s.value_type, s.key)" in template_source, (
-                "renderSettingRow() does not pass s.key to formatValue()"
-            )
+    async def test_loads_the_page_module(self, settings_html: str) -> None:
+        assert "import { init } from '/static/js/pages/settings/page.js';" in settings_html
 
 
-class TestEnumerableListPicker:
-    """agent.fallback_models' grouped-<select> picker beside the plain list editor."""
+class TestAnchors:
+    def test_a_hash_opens_a_section_or_the_section_holding_a_group(self, page_source: str) -> None:
+        body = _function_body(page_source, "function route() {")
+        assert "state.sectionById(hash)" in body
+        assert "state.sectionForGroup(" in body
+        assert "scrollToEl($('group-' + gid))" in body
+        assert "window.addEventListener('hashchange', route)" in page_source
 
-    def test_list_input_is_normalized_before_the_picker_operates_on_it(self, template_source: str) -> None:
-        """A non-empty list renders as a JSON array literal (_rawToInputString()); the
-        picker must never split that literal on ',' directly, or appending a model to an
-        already-non-empty agent.fallback_models corrupts the other entries (issue #1162).
-        """
-        assert "function _parseListInput(" in template_source
-        start = template_source.index("function editEnumerableListConfig(")
-        end = template_source.index("\n}\n", start)
-        body = template_source[start:end]
-        assert "_parseListInput(input.value)" in body
-        assert "input.value.split(',')" not in body
 
-    def test_picker_commits_only_on_explicit_action_not_bare_change(self, template_source: str) -> None:
-        """A native <select> fires 'change' for every option an arrow-key traversal lands
-        on, not just the one the user settles on: acting on 'change' alone silently
-        appends every model passed over and is unreachable by keyboard without corrupting
-        the list.
-        """
-        start = template_source.index("function editEnumerableListConfig(")
-        end = template_source.index("\n}\n", start)
-        body = template_source[start:end]
-        assert "select.onchange" not in body
-        assert "addBtn.onclick" in body
+class TestEditability:
+    def test_only_objects_are_read_only(self, rows_source: str) -> None:
+        """Lists get the text box every other plain value gets; objects alone render as a read-only table."""
+        body = _function_body(rows_source, "export function controlHtml(s) {")
+        assert "if (s.value_type === 'object') return objectControl(s);" in body
+        assert "'list'" not in body
+        assert body.rstrip().endswith("return textControl(s);")
+
+    def test_list_rows_get_a_format_hint(self, rows_source: str) -> None:
+        assert "const LIST_HINT = " in rows_source
+        assert "list ? LIST_HINT" in _function_body(rows_source, "function textControl(s) {")
 
 
 class TestRegistryCoverage:
@@ -126,38 +165,22 @@ class TestRegistryCoverage:
 class TestFallbackOrderControls:
     """agent.fallback_models is an ordered chain; the editor must let it be reordered (#1036)."""
 
-    @staticmethod
-    def _body(source: str) -> str:
-        start = source.index("function editEnumerableListConfig(")
-        return source[start : source.index("\n}\n", start)]
+    def test_rows_offer_up_down_and_remove(self, rows_source: str) -> None:
+        body = _function_body(rows_source, "function renderFallbackOrder(row) {")
+        for act in ('data-act="order-up"', 'data-act="order-down"', 'data-act="order-remove"'):
+            assert act in body
 
-    def test_rows_offer_up_down_and_remove(self, template_source: str) -> None:
-        body = self._body(template_source)
-        for action in ("action: 'up'", "action: 'down'", "action: 'remove'"):
-            assert action in body
+    def test_reorder_rewrites_the_text_box_that_gets_saved(self, rows_source: str) -> None:
+        """The text box stays the single source of truth for what Save sends."""
+        body = _function_body(rows_source, "function changeOrder(row, act, index) {")
+        assert "const parts = parseList(input.value);" in body
+        assert (
+            "input.value = parts.some((p) => p.indexOf(',') !== -1) ? JSON.stringify(parts) : parts.join(', ');" in body
+        )
 
-    def test_reorder_rewrites_the_text_input_that_gets_saved(self, template_source: str) -> None:
-        """The text input stays the single source of truth for what saveConfig() sends."""
-        start = template_source.index("function applyOrderAction(")
-        body = template_source[start : template_source.index("\n  }\n", start)]
-        assert "_parseListInput(input.value)" in body
-        assert "input.value = parts.join(', ')" in body
-
-    def test_order_list_rerenders_on_manual_typing(self, template_source: str) -> None:
-        assert "input.addEventListener('input', renderOrder)" in self._body(template_source)
-
-    def test_blur_no_change_check_compares_parsed_entries_for_lists(self, template_source: str) -> None:
-        """The list editor rewrites its own text, so a raw string compare saves on every blur.
-
-        _rawToInputString() renders a non-empty list as a JSON array literal while
-        editEnumerableListConfig() normalizes the input to comma-separated text, so
-        comparing the two strings never matched and merely opening the editor and
-        clicking away POSTed the unchanged list back.
-        """
-        start = template_source.index("function _isUnchanged(")
-        body = template_source[start : template_source.index("\n  }\n", start)]
-        assert "_parseListInput(newVal).join(', ') === _parseListInput(origStr).join(', ')" in body
-        assert "if (!_isUnchanged(newVal, origStr))" in template_source
+    def test_order_list_rerenders_on_manual_typing(self, rows_source: str) -> None:
+        body = _function_body(rows_source, "export function handleInput(target) {")
+        assert "renderFallbackOrder(row)" in body
 
     def test_saved_list_preserves_order(self) -> None:
         from sova.dashboard.services.settings_service import _cast_list
@@ -240,19 +263,18 @@ class TestRuntimeModelSelectors:
         assert "data.honours_model_override === false" in body
         assert "'codex'" not in body
 
-    def test_settings_row_hidden_for_runtimes_that_drop_the_override(self, template_source: str) -> None:
-        assert (
-            "_setConfigRowVisible('roles.developer_runtime_model', !_NO_MODEL_CHOICE_RUNTIMES[runtime])"
-            in template_source
+    def test_settings_row_hidden_for_runtimes_that_drop_the_override(self, state_source: str) -> None:
+        assert "if (NO_MODEL_CHOICE_RUNTIMES[runtime]) hidden.add('roles.developer_runtime_model');" in _function_body(
+            state_source, "export function hiddenKeys() {"
         )
 
-    def test_settings_runtime_set_mirrors_honours_model_override(self, template_source: str) -> None:
+    def test_settings_runtime_set_mirrors_honours_model_override(self, state_source: str) -> None:
         """A new runtime that ignores the model override must not keep showing a
         selector whose value it will drop."""
         from sova.ipc.runtime import _RUNTIMES, create_runtime
 
-        match = re.search(r"var _NO_MODEL_CHOICE_RUNTIMES = \{([^}]*)\};", template_source)
-        assert match, "_NO_MODEL_CHOICE_RUNTIMES not found in settings.html"
+        match = re.search(r"const NO_MODEL_CHOICE_RUNTIMES = \{([^}]*)\};", state_source)
+        assert match, "NO_MODEL_CHOICE_RUNTIMES not found in static/js/pages/settings/state.js"
         client_set = set(re.findall(r"([\w-]+): true", match.group(1)))
         server_set = {name for name in _RUNTIMES if not create_runtime(name).honours_model_override}
         assert client_set == server_set

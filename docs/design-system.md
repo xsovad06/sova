@@ -150,6 +150,10 @@ In a template, declare a placeholder and let `mountSettingControls(root, overrid
 
 `overrides` maps a key to extra options such as `onSaved(value)` or `onValue(value)`. A control's tooltip moves from the placeholder onto the control, wraps (`data-tooltip-wide`) and opens to the left unless `data-tooltip-pos` says otherwise: controls sit at the right edge of a row or header, where a centered single-line tooltip's hidden box would widen the page. `data-tooltip-wide` tooltips take their natural width up to 320px. A control belongs on a page only for an on/off switch or a number the user changes regularly; everything else stays in Settings.
 
+### Settings Page Rows
+
+The Settings page builds each setting as a row (`static/js/pages/settings/rows.js`): label, badges and key on the left; control, default with Reset to default, and a message line on the right. Badges are `rounded-full` pills: Changed (blue, stored for this project), Stored, same as default (muted), Environment (mauve, a `SOVA_` variable sets it, so the row has no control and no Reset) and Restart. Booleans and the agent limit and per-issue spending limit use the shared Setting Controls above; text, number and list values show an input with Save and Cancel once edited (Enter saves, Escape cancels); model fields become a grouped dropdown once the model list loads (a provider or runtime save rebuilds the other model fields, except one being edited). A save's result, or the server's error, shows on the row's message line, never only in a toast.
+
 ### Tables
 
 ```html
