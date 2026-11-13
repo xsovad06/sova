@@ -11,7 +11,7 @@ import types
 import typing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,11 +20,15 @@ from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from sova.commands.distribution import DiffResult, ReverseDiffResult
     from sova.config.models import ProjectConfig
     from sova.dashboard.settings_meta import SettingMeta
 
 log = get_logger(component="dashboard.settings")
+
+_T = TypeVar("_T")
 
 # One lock per project, serializing the validate-then-persist sequence in
 # update_config() within this process. Without it, two concurrent saves (e.g.
@@ -380,6 +384,267 @@ async def reset_config(project_dir: Path | None = None, *, key: str) -> dict:
     return result
 
 
+_ROUTING_KEY = "llm.routing"
+
+
+def _routing_refusal(step: str) -> dict | None:
+    """Why ``llm.routing.<step>`` cannot be written here, as an error result, or None when it can."""
+    from sova.config.loader import env_override_var
+    from sova.dashboard.services.model_map_service import ROUTING_KEYS
+
+    if step not in ROUTING_KEYS:
+        return {"error": f"Unknown step '{step}': routing names a task type or an issue size", "unknown": True}
+    env_var = env_override_var(_ROUTING_KEY)
+    if env_var:
+        return {
+            "error": f"'{_ROUTING_KEY}' is set by {env_var} in the server environment. Change it there.",
+            "env_var": env_var,
+        }
+    return None
+
+
+async def _write_routing_rows(
+    project_dir: Path | None, *, set_rows: dict[str, str], delete: tuple[str, ...] = ()
+) -> int:
+    """Write and delete ``llm.routing.<step>`` rows in one transaction; returns how many rows were deleted.
+
+    The routing table is stored one row per step. A whole-table ``llm.routing`` row (an older write) would
+    replace the per-step rows when the config is assembled, so it is split into per-step rows first.
+    """
+    from sqlalchemy import select
+
+    from sova.config.db_loader import delete_setting, save_setting
+    from sova.db.models import ProjectSetting
+    from sova.db.session import get_session
+
+    deleted = 0
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        # The value only, not the row object: delete_setting() removes the row with a bulk DELETE, which would
+        # leave a loaded object behind in the session for a later insert to collide with.
+        legacy = (
+            await session.execute(select(ProjectSetting.value).where(ProjectSetting.key == _ROUTING_KEY))
+        ).scalar_one_or_none()
+        if legacy is not None:
+            try:
+                table = json.loads(legacy)
+            except (json.JSONDecodeError, TypeError):
+                table = None
+            await delete_setting(session, _ROUTING_KEY)
+            for step, model in table.items() if isinstance(table, dict) else ():
+                if step not in set_rows and step not in delete:
+                    await save_setting(session, f"{_ROUTING_KEY}.{step}", model)
+        for step, model in set_rows.items():
+            await save_setting(session, f"{_ROUTING_KEY}.{step}", model)
+        for step in delete:
+            deleted += await delete_setting(session, f"{_ROUTING_KEY}.{step}")
+    _invalidate_config_cache(project_dir)
+    return deleted
+
+
+async def _run_to_completion(work: Awaitable[_T]) -> _T:
+    """Await *work* so that it always finishes before this returns, even when the caller is cancelled.
+
+    A bare ``asyncio.shield()`` lets the work run on after a cancellation, but the cancelled caller leaves
+    its ``async with _get_update_lock()`` block at once, so a second write could start while the first is still
+    committing. This waits for the work to end first and only then re-raises the cancellation, so the lock is
+    held for the whole write.
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if not task.done():
+            await asyncio.wait({task})  # unlike shield(), a cancellation here leaves the task running
+        if not task.cancelled() and task.exception() is not None:  # retrieved, so it is not reported as lost
+            log.warning("settings.write_failed_after_cancel", exc_info=task.exception())
+        raise
+
+
+async def _write_routing_rows_to_completion(
+    project_dir: Path | None, *, set_rows: dict[str, str], delete: tuple[str, ...] = ()
+) -> int:
+    """``_write_routing_rows()`` that always finishes before it returns, even when the caller is cancelled."""
+    return await _run_to_completion(_write_routing_rows(project_dir, set_rows=set_rows, delete=delete))
+
+
+async def set_step_model(project_dir: Path | None, *, step: str, model: str) -> dict:
+    """Set the model one step runs on: writes exactly the ``llm.routing.<step>`` row (Settings, Models view).
+
+    *step* is a task type (``TASK_TYPE_KEYS``) or an issue size. An empty *model* deletes the row instead, so the
+    step uses its role's model again (``clear_step_model()``). Refused for an unknown step, a model ID with
+    whitespace, a routing table a ``SOVA_`` variable sets (``env_var``), and a value that would make the config
+    unloadable. Returns ``{"status": "ok", "step", "model"}`` or ``{"error": ...}``.
+    """
+    model = model.strip()
+    if not model:
+        return await clear_step_model(project_dir, step=step)
+    refusal = _routing_refusal(step) or _unreadable_database_error(project_dir)
+    if refusal:
+        return refusal
+    if any(ch.isspace() for ch in model):
+        return {"error": f"'{model}' is not a model ID: it contains whitespace"}
+    async with _get_update_lock(project_dir):
+        routing = _current_routing(project_dir) or {}
+        consistency_error = _validate_config_consistency(project_dir, _ROUTING_KEY, {**routing, step: model})
+        if consistency_error:
+            return {"error": consistency_error}
+        try:
+            await _write_routing_rows_to_completion(project_dir, set_rows={step: model})
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.warning("settings.route_write_failed", step=step, exc_info=True)
+            return {"error": "Failed to save the step's model (DB unavailable)", "unavailable": True}
+    _save_setting_to_toml(project_dir, f"{_ROUTING_KEY}.{step}", model)
+    return {"status": "ok", "step": step, "model": model}
+
+
+async def clear_step_model(project_dir: Path | None, *, step: str) -> dict:
+    """Delete ``llm.routing.<step>``, so the step uses its role's model again ("Use the role model").
+
+    Also removes the step from ``sova.toml``, which would otherwise set it again on the next load. Returns
+    ``{"status": "ok", "step", "model": None, "deleted"}`` or ``{"error": ...}``.
+    """
+    refusal = _routing_refusal(step) or _unreadable_database_error(project_dir)
+    if refusal:
+        return refusal
+    async with _get_update_lock(project_dir):
+
+        async def clear() -> tuple[int, bool]:
+            # One unit that a cancellation cannot split: a row deleted while sova.toml still sets the step would
+            # bring the override back on the next config load.
+            removed = await _write_routing_rows(project_dir, set_rows={}, delete=(step,))
+            cleared = _remove_setting_from_toml(project_dir, f"{_ROUTING_KEY}.{step}")
+            _invalidate_config_cache(project_dir)
+            return removed, cleared
+
+        try:
+            deleted, toml_cleared = await _run_to_completion(clear())
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.warning("settings.route_delete_failed", step=step, exc_info=True)
+            return {"error": "Failed to remove the step's model (DB unavailable)", "unavailable": True}
+    result: dict[str, Any] = {"status": "ok", "step": step, "model": None, "deleted": deleted}
+    routing = _current_routing(project_dir)
+    still = routing.get(step) if routing is not None else None
+    if routing is None:
+        result["warning"] = (
+            f"The stored value was removed, but the effective '{_ROUTING_KEY}.{step}' could not be read back, "
+            "so whether another config layer still sets it is unknown."
+        )
+    elif still is not None:
+        reason = (
+            "it could not be removed from sova.toml, which may still set it"
+            if not toml_cleared
+            else "another config layer still sets it"
+        )
+        result["warning"] = f"The stored value was removed, but '{_ROUTING_KEY}.{step}' is still {still!r}: {reason}."
+    return result
+
+
+def _changed_since_read(project_dir: Path | None, expected: dict[str, Any] | None) -> dict | None:
+    """A ``conflict`` error result when a key in *expected* no longer has the value the caller read, else None.
+
+    Called under the update lock. An unloadable config is a conflict too: the comparison cannot be made.
+    """
+    if not expected:
+        return None
+    from sova.config.loader import load_config
+    from sova.dashboard.services.model_map_service import setting_value
+
+    try:
+        cfg = load_config(project_dir)
+        changed = sorted(key for key, value in expected.items() if setting_value(cfg, key) != value)
+    except Exception:  # noqa: BLE001 (an unreadable config cannot confirm the value; refuse rather than overwrite)
+        log.warning("settings.pin_recheck_failed", exc_info=True)
+        return {"error": "Could not re-read the configuration to confirm nothing changed; try again", "conflict": True}
+    if changed:
+        return {"error": f"{', '.join(changed)} changed since it was read; reload and try again", "conflict": True}
+    return None
+
+
+def _current_routing(project_dir: Path | None) -> dict[str, str] | None:
+    """The effective routing table, or None when the config cannot be loaded (never an empty table for a failure)."""
+    from sova.config.loader import load_config
+
+    try:
+        return dict(load_config(project_dir).llm.routing)
+    except Exception:  # noqa: BLE001 (an unloadable config is reported by the save path's consistency check)
+        return None
+
+
+async def pin_short_names(
+    project_dir: Path | None, *, keys: list[str] | None = None, catalog: list[str] | None = None
+) -> dict:
+    """Replace model settings stored as a short name (``sonnet``) with the exact ID each runs as today.
+
+    *keys* limits it to those settings ("Pin"); None pins every one ("Pin all"). The exact ID comes from
+    ``model_map_service.short_name_settings()``: ``resolve_alias()`` first, else the single model of that family
+    in *catalog*. A setting whose ID is ambiguous, or that a ``SOVA_`` variable sets, is left alone and listed in
+    ``skipped``. Single-model and list settings are written in one transaction, routing rows in another.
+    Returns ``{"status": "ok", "pinned": {key: value}, "skipped": [{key, reason}]}`` or ``{"error": ...}``.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.services.model_map_service import short_name_settings
+
+    try:
+        cfg = load_config(project_dir)
+    except Exception as exc:  # noqa: BLE001 (an unloadable config cannot be pinned; report it)
+        return {"error": f"Could not load the configuration: {exc}"}
+    pinned: dict[str, Any] = {}
+    routes: dict[str, str] = {}
+    updates: dict[str, str] = {}
+    # What each pinned key was when read: compared under the write lock, so a concurrent edit is not overwritten.
+    read_values: dict[str, Any] = {}
+    skipped: list[dict[str, str]] = []
+    for item in short_name_settings(cfg, catalog):
+        key = item["key"]
+        if keys is not None and key not in keys:
+            continue
+        if item["env_var"]:
+            skipped.append({"key": key, "reason": f"set by {item['env_var']}"})
+        elif item["pin_to"] is None:
+            skipped.append({"key": key, "reason": f"'{item['value']}' does not name one model here; pick one"})
+        elif key.startswith(f"{_ROUTING_KEY}."):
+            routes[key.removeprefix(f"{_ROUTING_KEY}.")] = item["pin_to"]
+            pinned[key] = item["pin_to"]
+            read_values[key] = item["value"]
+        else:
+            value = item["pin_to"]
+            updates[key] = json.dumps(value) if isinstance(value, list) else value
+            pinned[key] = value
+            read_values[key] = item["value"]
+    unknown = sorted(set(keys or ()) - set(pinned) - {s["key"] for s in skipped})
+    skipped += [{"key": key, "reason": "not stored as a short name"} for key in unknown]
+    if updates:
+        result = await update_config_many(project_dir, updates, expected={k: read_values[k] for k in updates})
+        if "error" in result:
+            return result
+    # The settings the first transaction stored. An error from the routing write below lists them as ``committed``
+    # so the caller still applies their reloads: they are stored, and a retry will not pin them again.
+    committed = sorted(updates)
+    if routes:
+        unreadable = _unreadable_database_error(project_dir)
+        if unreadable:
+            return {**unreadable, "committed": committed}
+        async with _get_update_lock(project_dir):
+            stale = _changed_since_read(
+                project_dir, {f"{_ROUTING_KEY}.{step}": read_values[f"{_ROUTING_KEY}.{step}"] for step in routes}
+            )
+            if stale:
+                return {**stale, "committed": committed}
+            try:
+                await _write_routing_rows_to_completion(project_dir, set_rows=routes)
+            except (OSError, RuntimeError, SQLAlchemyError):
+                log.warning("settings.pin_routes_failed", exc_info=True)
+                return {
+                    "error": "Failed to save the pinned step models (DB unavailable)",
+                    "pinned": pinned,
+                    "committed": committed,
+                    "unavailable": True,
+                }
+        for step, model in routes.items():
+            _save_setting_to_toml(project_dir, f"{_ROUTING_KEY}.{step}", model)
+    return {"status": "ok", "pinned": pinned, "skipped": skipped}
+
+
 def _remove_setting_from_toml(project_dir: Path | None, key: str) -> bool:
     """Best-effort removal of *key* from sova.toml, the counterpart of ``_save_setting_to_toml()``.
 
@@ -513,7 +778,9 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     return {"status": "ok", "key": key, "value": value}
 
 
-async def update_config_many(project_dir: Path | None, updates: dict[str, str]) -> dict:
+async def update_config_many(
+    project_dir: Path | None, updates: dict[str, str], *, expected: dict[str, Any] | None = None
+) -> dict:
     """Persist several non-secret config keys in one all-or-nothing DB transaction.
 
     Unlike ``update_config()`` (one key validated and persisted at a time),
@@ -533,6 +800,10 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
     Returns ``{"status": "ok"}`` or ``{"error": ...}``; ``sova.toml`` is
     updated best-effort per key afterward, same as ``update_config()``: a
     TOML write failure never rolls back the authoritative DB transaction.
+
+    *expected* maps a key to the value the caller read before computing its update. It is compared under the
+    write lock, and a key that changed since is refused (``conflict``) rather than overwritten with a value
+    derived from the old one.
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
@@ -554,18 +825,15 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
         return unreadable
 
     async with _get_update_lock(project_dir):
+        stale = _changed_since_read(project_dir, expected)
+        if stale:
+            return stale
         consistency_error = _validate_config_consistency_many(project_dir, casted)
         if consistency_error:
             return {"error": consistency_error}
 
         try:
-            from sova.config.db_loader import save_setting
-            from sova.db.session import get_session
-
-            async with await get_session(project_dir=project_dir) as session, session.begin():
-                for key, value in casted.items():
-                    await save_setting(session, key, value)
-            _invalidate_config_cache(project_dir)
+            await _run_to_completion(_save_settings_in_one_transaction(project_dir, casted))
         except Exception:  # noqa: BLE001 (any persist failure must return the error contract, never escape uncaught)
             log.warning("settings.atomic_db_write_failed", keys=sorted(casted), exc_info=True)
             return {"error": "Failed to persist settings (DB unavailable); no keys were changed"}
@@ -575,6 +843,17 @@ async def update_config_many(project_dir: Path | None, updates: dict[str, str]) 
             log.debug("settings.toml_write_skipped", key=key)
 
     return {"status": "ok"}
+
+
+async def _save_settings_in_one_transaction(project_dir: Path | None, values: dict[str, object]) -> None:
+    """Write every key in *values* in one DB transaction, then drop the cached config."""
+    from sova.config.db_loader import save_setting
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        for key, value in values.items():
+            await save_setting(session, key, value)
+    _invalidate_config_cache(project_dir)
 
 
 def _validate_config_consistency_many(project_dir: Path | None, updates: dict[str, object]) -> str | None:

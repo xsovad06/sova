@@ -606,3 +606,498 @@ class TestRolesRunInTheirScope:
         with patch("sova.supervisor.planner.invoke", side_effect=fake_invoke):
             await planner._call_llm("system", "user", "claude-sonnet-5-5")
         assert seen == ["planner"]
+
+
+# ---------------------------------------------------------------------------
+# Models view: which model each step runs on, and why (#1463)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _firstparty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve short names for the first-party API, whatever the developer's shell routes Claude Code through."""
+    for name in ("CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _steps(payload: dict) -> dict[str, dict]:
+    steps = {s["step"]: s for role in payload["roles"] for s in role["steps"]}
+    steps.update({s["step"]: s for s in payload["writing"]})
+    return steps
+
+
+@pytest.mark.usefixtures("_firstparty")
+class TestModelMap:
+    """A config with a step setting (develop), a role model (researcher) and the default for everything else."""
+
+    def _payload(self, **overrides: object) -> dict:
+        from sova.dashboard.services.model_map_service import build_model_map
+
+        cfg = ProjectConfig(
+            agent={"model": "claude-sonnet-5-5", "fallback_models": list(_DEFAULT_CHAIN)},
+            llm={"routing": {"develop": "claude-opus-5-5", **overrides.pop("routing", {})}},
+            roles={"researcher_model": "claude-opus-5-5", "triage_model": "", **overrides.pop("roles", {})},
+        )
+        return build_model_map(cfg)
+
+    def test_a_step_setting_wins_and_says_so(self) -> None:
+        develop = _steps(self._payload())["develop"]
+        assert (develop["runs_as"], develop["source"], develop["route"]) == (
+            "claude-opus-5-5",
+            "route",
+            "claude-opus-5-5",
+        )
+
+    def test_a_role_model_applies_to_the_roles_steps(self) -> None:
+        steps = _steps(self._payload())
+        for name in ("research", "spec"):
+            assert (steps[name]["runs_as"], steps[name]["source"]) == ("claude-opus-5-5", "role")
+
+    def test_the_default_model_applies_where_nothing_more_specific_is_set(self) -> None:
+        steps = _steps(self._payload(roles={"researcher_model": ""}))
+        assert (steps["research"]["runs_as"], steps["research"]["source"]) == ("claude-sonnet-5-5", "default")
+
+    def test_without_a_developer_model_the_developer_pipeline_picks_by_issue_size(self) -> None:
+        simplify = _steps(self._payload())["simplify"]
+        assert simplify["source"] == "size"
+        sizes = {entry["tier"]: entry["runs_as"] for entry in simplify["by_size"]}
+        # Built-in tiers pinned to agent.model's family, then resolved: sonnet pins to agent.model.
+        assert sizes == {
+            "trivial": "claude-haiku-5-5",
+            "simple": "claude-sonnet-5-5",
+            "moderate": "claude-sonnet-5-5",
+            "complex": "claude-opus-5-5",
+            "epic": "claude-opus-5-5",
+        }
+
+    def test_an_address_review_run_uses_the_default_model_not_the_developer_model(self) -> None:
+        steps = _steps(self._payload(roles={"developer_model": "claude-opus-5-5"}))
+        assert (steps["rearrange_commits"]["runs_as"], steps["rearrange_commits"]["source"]) == (
+            "claude-sonnet-5-5",
+            "default",
+        )
+        validate = steps["validate"]
+        assert (validate["runs_as"], validate["source"]) == ("claude-opus-5-5", "role")
+        assert validate["address_review"]["runs_as"] == "claude-sonnet-5-5"
+
+    def test_validate_route_applies_to_fix_attempt_one_only(self) -> None:
+        validate = _steps(self._payload(routing={"validate": "claude-haiku-5-5"}))["validate"]
+        assert (validate["runs_as"], validate["source"]) == ("claude-haiku-5-5", "route")
+        assert validate["later_attempts"]["source"] == "size"
+
+    def test_the_developer_pin_outranks_a_step_setting_on_code_editing_steps_only(self) -> None:
+        steps = _steps(self._payload(roles={"developer_runtime_model": "claude-fable-5-2"}))
+        assert (steps["develop"]["runs_as"], steps["develop"]["source"]) == ("claude-fable-5-2", "pin")
+        assert steps["commit_message"]["source"] != "pin"
+        assert steps["rebase"]["source"] == "default"
+
+    def test_the_developer_pin_does_nothing_on_a_runtime_that_drops_the_model(self) -> None:
+        from sova.dashboard.services.model_map_service import build_model_map
+
+        cfg = ProjectConfig(roles={"developer_runtime_model": "claude-fable-5-2"})
+        develop = _steps(build_model_map(cfg, runtime_honours_model=False))["develop"]
+        assert develop["source"] != "pin"
+
+    def test_tool_steps_report_the_runtimes_own_model_and_no_fallbacks_when_it_drops_the_model(self) -> None:
+        from sova.dashboard.services.model_map_service import build_model_map
+
+        cfg = ProjectConfig(
+            agent={"runtime": "codex", "fallback_models": list(_DEFAULT_CHAIN)},
+            codex={"model": "gpt-5-codex"},
+            llm={"routing": {"develop": "claude-opus-5-5"}},
+            roles={"developer_runtime_model": "claude-fable-5-2"},
+        )
+        steps = _steps(build_model_map(cfg, runtime_honours_model=False))
+        for name in ("develop", "simplify"):
+            assert (steps[name]["runs_as"], steps[name]["source"], steps[name]["fallbacks"]) == (
+                "gpt-5-codex",
+                "runtime",
+                [],
+            )
+        # A text-only step still goes through the provider, with its route and fallbacks.
+        assert steps["commit_message"]["source"] != "runtime"
+        assert steps["commit_message"]["fallbacks"]
+
+    def test_a_runtime_with_no_model_set_reports_its_name(self) -> None:
+        from sova.dashboard.services.model_map_service import build_model_map
+
+        cfg = ProjectConfig(agent={"runtime": "codex"})
+        assert _steps(build_model_map(cfg, runtime_honours_model=False))["develop"]["runs_as"] == "codex"
+
+    def test_rebase_passes_the_default_model_even_with_a_developer_model(self) -> None:
+        rebase = _steps(self._payload(roles={"developer_model": "claude-opus-5-5"}))["rebase"]
+        assert (rebase["runs_as"], rebase["source"]) == ("claude-sonnet-5-5", "default")
+
+    def test_triage_with_no_model_runs_on_the_provider_default(self) -> None:
+        triage = _steps(self._payload())["triage"]
+        assert (triage["model"], triage["source"]) == (None, "provider_default")
+
+    def test_a_short_role_model_runs_as_its_exact_id(self) -> None:
+        review = _steps(self._payload(roles={"reviewer_model": "sonnet"}))["review"]
+        assert (review["model"], review["runs_as"], review["source"]) == ("sonnet", "claude-sonnet-5-5", "role")
+
+    def test_extraction_falls_back_to_the_built_in_short_name(self) -> None:
+        extraction = _steps(self._payload())["extraction"]
+        assert (extraction["model"], extraction["runs_as"], extraction["source"]) == (
+            "haiku",
+            "claude-haiku-5-5",
+            "built_in",
+        )
+
+    def test_each_step_lists_its_roles_fallback_chain(self) -> None:
+        steps = _steps(self._payload(roles={"researcher_fallback_models": ["claude-haiku-5-5"]}))
+        assert steps["research"]["fallbacks"] == ["claude-haiku-5-5"]
+        # The default chain, minus the model already tried first.
+        assert steps["rebase"]["fallbacks"] == ["claude-haiku-5-5"]
+        assert steps["develop"]["fallbacks"] == _DEFAULT_CHAIN
+
+    def test_a_step_picked_by_issue_size_skips_the_fallback_equal_to_each_sizes_model(self) -> None:
+        simplify = _steps(self._payload())["simplify"]
+        chains = {entry["tier"]: entry["fallbacks"] for entry in simplify["by_size"]}
+        # The default chain is Sonnet then Haiku: a Sonnet run never retries Sonnet, a Haiku run never Haiku.
+        assert chains["moderate"] == ["claude-haiku-5-5"]
+        assert chains["trivial"] == ["claude-sonnet-5-5"]
+        assert chains["complex"] == _DEFAULT_CHAIN
+
+    def test_a_role_block_reports_whether_its_fallbacks_are_its_own(self) -> None:
+        roles = {r["id"]: r for r in self._payload(roles={"reviewer_fallback_models": []})["roles"]}
+        assert roles["reviewer"]["fallbacks"] == {"key": "roles.reviewer_fallback_models", "own": True, "models": []}
+        assert roles["triage"]["fallbacks"]["own"] is False
+        assert roles["triage"]["fallbacks"]["models"] == _DEFAULT_CHAIN
+
+    def test_every_step_names_a_routing_key(self) -> None:
+        from sova.dashboard.services.model_map_service import ROUTING_KEYS
+
+        assert set(_steps(self._payload())) <= ROUTING_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Step rows and Pin all, against a project database (#1463)
+# ---------------------------------------------------------------------------
+
+
+async def _store_rows(project_dir: Path, rows: dict[str, object]) -> None:
+    from sova.config.db_loader import save_setting
+    from sova.config.loader import invalidate_config_cache
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        for key, value in rows.items():
+            await save_setting(session, key, value)
+    invalidate_config_cache(project_dir)
+
+
+async def _stored(project_dir: Path) -> dict[str, object]:
+    from sqlalchemy import select
+
+    from sova.db.models import ProjectSetting
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session:
+        rows = (await session.execute(select(ProjectSetting))).scalars().all()
+    return {row.key: json.loads(row.value) for row in rows}
+
+
+@pytest.mark.usefixtures("_dispose_project_engines")
+class TestStepModelRows:
+    async def test_choosing_a_model_writes_exactly_one_routing_row(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import set_step_model
+
+        before = await _stored(tmp_path)
+        result = await set_step_model(tmp_path, step="simplify", model="claude-haiku-5-5")
+
+        assert result == {"status": "ok", "step": "simplify", "model": "claude-haiku-5-5"}
+        added = {k: v for k, v in (await _stored(tmp_path)).items() if k not in before}
+        assert added == {"llm.routing.simplify": "claude-haiku-5-5"}
+        assert load_config(tmp_path).llm.routing == {"simplify": "claude-haiku-5-5"}
+
+    async def test_use_the_role_model_deletes_that_row_only(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import clear_step_model
+
+        await _store_rows(tmp_path, {"llm.routing.simplify": "claude-haiku-5-5", "llm.routing.develop": "x-model"})
+        result = await clear_step_model(tmp_path, step="simplify")
+
+        assert (result["status"], result["deleted"]) == ("ok", 1)
+        stored = await _stored(tmp_path)
+        assert "llm.routing.simplify" not in stored
+        assert stored["llm.routing.develop"] == "x-model"
+        assert load_config(tmp_path).llm.routing == {"develop": "x-model"}
+
+    async def test_an_empty_model_deletes_the_row(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import set_step_model
+
+        await _store_rows(tmp_path, {"llm.routing.review": "claude-opus-5-5"})
+        result = await set_step_model(tmp_path, step="review", model="  ")
+        assert result["model"] is None
+        assert "llm.routing.review" not in await _stored(tmp_path)
+
+    async def test_an_issue_size_is_a_valid_step(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import set_step_model
+
+        assert (await set_step_model(tmp_path, step="complex", model="claude-opus-5-5"))["status"] == "ok"
+
+    @pytest.mark.parametrize("step", ["deploy", "llm.routing", "develop.extra", ""])
+    async def test_an_unknown_step_is_refused(self, tmp_path: Path, step: str) -> None:
+        from sova.dashboard.services.settings_service import set_step_model
+
+        result = await set_step_model(tmp_path, step=step, model="claude-opus-5-5")
+        assert result.get("unknown") is True
+        assert not any(k.startswith("llm.routing") for k in await _stored(tmp_path))
+
+    async def test_a_model_id_with_whitespace_is_refused(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import set_step_model
+
+        assert "error" in await set_step_model(tmp_path, step="develop", model="claude opus")
+
+    async def test_a_routing_table_set_by_the_environment_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services.settings_service import clear_step_model, set_step_model
+
+        monkeypatch.setenv("SOVA_LLM_ROUTING", '{"develop": "x"}')
+        assert (await set_step_model(tmp_path, step="develop", model="y"))["env_var"] == "SOVA_LLM_ROUTING"
+        assert (await clear_step_model(tmp_path, step="develop"))["env_var"] == "SOVA_LLM_ROUTING"
+
+    async def test_a_failed_read_back_is_reported_not_taken_for_an_empty_table(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import settings_service
+
+        await _store_rows(tmp_path, {"llm.routing.simplify": "claude-haiku-5-5"})
+        with patch.object(settings_service, "_current_routing", return_value=None):
+            result = await settings_service.clear_step_model(tmp_path, step="simplify")
+
+        assert result["status"] == "ok"
+        assert "could not be read back" in result["warning"]
+
+    async def test_the_update_lock_is_held_until_a_cancelled_write_finishes(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.dashboard.services import settings_service
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def slow_write(*_args: object, **_kwargs: object) -> int:
+            started.set()
+            await release.wait()
+            finished.set()
+            return 0
+
+        lock_free_when_released: list[bool] = []
+
+        async def caller() -> None:
+            async with settings_service._get_update_lock(tmp_path):
+                try:
+                    with patch.object(settings_service, "_write_routing_rows", slow_write):
+                        await settings_service._write_routing_rows_to_completion(tmp_path, set_rows={"a": "b"})
+                finally:
+                    lock_free_when_released.append(finished.is_set())
+
+        task = asyncio.create_task(caller())
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), "the cancelled caller must wait for the write"
+        assert settings_service._get_update_lock(tmp_path).locked()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert lock_free_when_released == [True]
+        assert not settings_service._get_update_lock(tmp_path).locked()
+
+    async def test_a_cancelled_clear_still_removes_the_toml_setting(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.dashboard.services import settings_service
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def slow_delete(*_args: object, **_kwargs: object) -> int:
+            started.set()
+            await release.wait()
+            order.append("db")
+            return 1
+
+        def remove_toml(*_args: object, **_kwargs: object) -> bool:
+            order.append("toml")
+            return True
+
+        with (
+            patch.object(settings_service, "_write_routing_rows", slow_delete),
+            patch.object(settings_service, "_remove_setting_from_toml", remove_toml),
+        ):
+            task = asyncio.create_task(settings_service.clear_step_model(tmp_path, step="develop"))
+            await started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert order == ["db", "toml"]
+        assert not settings_service._get_update_lock(tmp_path).locked()
+
+    async def test_a_cancelled_bulk_write_finishes_before_the_lock_is_released(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.dashboard.services import settings_service
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished: list[bool] = []
+
+        async def slow_write(*_args: object, **_kwargs: object) -> None:
+            started.set()
+            await release.wait()
+            finished.append(True)
+
+        with patch.object(settings_service, "_save_settings_in_one_transaction", slow_write):
+            task = asyncio.create_task(
+                settings_service.update_config_many(tmp_path, {"roles.triage_model": "claude-sonnet-5-5"})
+            )
+            await started.wait()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "the cancelled caller must wait for the write"
+            assert settings_service._get_update_lock(tmp_path).locked()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert finished == [True]
+
+    async def test_a_whole_table_row_is_split_so_it_cannot_hide_the_new_row(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import set_step_model
+
+        await _store_rows(tmp_path, {"llm.routing": {"develop": "a-model", "review": "b-model"}})
+        await set_step_model(tmp_path, step="develop", model="c-model")
+
+        stored = await _stored(tmp_path)
+        assert "llm.routing" not in stored
+        assert (stored["llm.routing.develop"], stored["llm.routing.review"]) == ("c-model", "b-model")
+        assert load_config(tmp_path).llm.routing == {"develop": "c-model", "review": "b-model"}
+
+
+@pytest.mark.usefixtures("_dispose_project_engines", "_firstparty")
+class TestPinEndpointContract:
+    def test_the_conflict_response_is_declared(self) -> None:
+        from sova.dashboard.routers.settings import router
+
+        route = next(r for r in router.routes if getattr(r, "path", "").endswith("/settings/models/pin"))
+        assert 409 in route.responses
+
+
+@pytest.mark.usefixtures("_dispose_project_engines")
+class TestPinAll:
+    async def test_pin_all_replaces_every_short_name(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.model_map_service import short_name_settings
+        from sova.dashboard.services.settings_service import pin_short_names
+
+        await _store_rows(
+            tmp_path,
+            {
+                "agent.model": "opus",
+                "roles.reviewer_model": "sonnet",
+                "agent.fallback_models": ["sonnet", "claude-haiku-5-5"],
+                "roles.developer_fallback_models": ["haiku"],
+                "llm.routing.extraction": "haiku",
+            },
+        )
+        # roles.triage_model, roles.planner_model, confidence.model and oversight.analysis_model default to "sonnet".
+        assert len(short_name_settings(load_config(tmp_path))) >= 8
+
+        result = await pin_short_names(tmp_path)
+
+        assert result["status"] == "ok", result
+        cfg = load_config(tmp_path)
+        assert short_name_settings(cfg) == []
+        assert cfg.agent.model == "claude-opus-5-5"
+        assert cfg.roles.reviewer_model == "claude-sonnet-5-5"
+        assert cfg.roles.triage_model == "claude-sonnet-5-5"
+        assert cfg.agent.fallback_models == ["claude-sonnet-5-5", "claude-haiku-5-5"]
+        assert cfg.roles.developer_fallback_models == ["claude-haiku-5-5"]
+        # A routing row is pinned to agent.model's family first, as routing applies it.
+        assert cfg.llm.routing == {"extraction": "claude-haiku-5-5"}
+
+    async def test_pin_one_changes_only_that_setting(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import pin_short_names
+
+        result = await pin_short_names(tmp_path, keys=["roles.planner_model"])
+
+        assert result["pinned"] == {"roles.planner_model": "claude-sonnet-5-5"}
+        cfg = load_config(tmp_path)
+        assert (cfg.roles.planner_model, cfg.roles.triage_model) == ("claude-sonnet-5-5", "sonnet")
+
+    async def test_an_unresolved_name_takes_the_single_model_of_its_family(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import pin_short_names
+
+        await _store_rows(tmp_path, {"llm.resolve_tier_aliases": False})
+        catalog = ["claude-sonnet-5-5", "claude-haiku-5-5"]
+        result = await pin_short_names(tmp_path, keys=["roles.triage_model"], catalog=catalog)
+
+        assert result["pinned"] == {"roles.triage_model": "claude-sonnet-5-5"}
+        assert load_config(tmp_path).roles.triage_model == "claude-sonnet-5-5"
+
+    async def test_a_target_that_is_itself_an_alias_is_not_offered(self) -> None:
+        from sova.dashboard.services.model_map_service import short_name_settings
+
+        cfg = ProjectConfig(
+            llm={"model_aliases": {"sonnet": "model-a", "model-a": "model-b"}}, roles={"triage_model": "sonnet"}
+        )
+        triage = next(i for i in short_name_settings(cfg) if i["key"] == "roles.triage_model")
+        assert triage["pin_to"] is None
+
+    async def test_a_setting_changed_after_it_was_read_is_not_overwritten(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config_many
+
+        await _store_rows(tmp_path, {"roles.triage_model": "haiku"})
+        result = await update_config_many(
+            tmp_path, {"roles.triage_model": "claude-sonnet-5-5"}, expected={"roles.triage_model": "sonnet"}
+        )
+
+        assert result["conflict"] is True
+        assert load_config(tmp_path).roles.triage_model == "haiku"
+
+    async def test_a_failed_routing_write_reports_the_pins_already_stored(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services import settings_service
+
+        await _store_rows(tmp_path, {"llm.routing.simplify": "haiku"})
+        with patch.object(settings_service, "_write_routing_rows_to_completion", side_effect=OSError("down")):
+            result = await settings_service.pin_short_names(tmp_path)
+
+        assert result["unavailable"] is True
+        assert "roles.reviewer_model" in result["committed"]
+        assert "llm.routing.simplify" not in result["committed"]
+        assert load_config(tmp_path).roles.reviewer_model == "claude-sonnet-5-5"
+
+    async def test_an_ambiguous_name_is_left_alone(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import pin_short_names
+
+        await _store_rows(tmp_path, {"llm.resolve_tier_aliases": False})
+        catalog = ["claude-sonnet-5-5", "claude-sonnet-5-2"]
+        result = await pin_short_names(tmp_path, keys=["roles.triage_model"], catalog=catalog)
+
+        assert result["pinned"] == {}
+        assert [s["key"] for s in result["skipped"]] == ["roles.triage_model"]
+        assert load_config(tmp_path).roles.triage_model == "sonnet"
+
+    async def test_a_value_set_by_the_environment_is_not_pinned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services.settings_service import pin_short_names
+
+        monkeypatch.setenv("SOVA_ROLES_TRIAGE_MODEL", "haiku")
+        result = await pin_short_names(tmp_path, keys=["roles.triage_model"])
+        assert result["pinned"] == {}
+        assert "SOVA_ROLES_TRIAGE_MODEL" in result["skipped"][0]["reason"]

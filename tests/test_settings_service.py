@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -1466,20 +1466,6 @@ class TestReadTextOrNone:
         path = tmp_path / "binary.md"
         path.write_bytes(b"\xff\xfe\x00\x01invalid-utf8")
         assert read_text_or_none(path) is None
-
-
-@pytest.fixture
-async def _dispose_project_engines(tmp_path: Path) -> AsyncIterator[None]:
-    """Dispose the engines get_session(project_dir=tmp_path) opened, so no connection leaks into a later test.
-
-    reset_db_rows does not fit here: these tests read the project's own database through the sync config loader.
-    """
-    yield
-    from sova.db import session as db_session
-
-    for url in [u for u in db_session._engines if str(tmp_path) in str(u)]:
-        engine, _factory = db_session._engines.pop(url)
-        await engine.dispose()
 
 
 async def _store_rows(project_dir: Path, rows: dict[str, object]) -> None:
