@@ -17,7 +17,7 @@ from sova.config.models import ProjectConfig
 from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import settings_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
-from sova.dashboard.settings_meta import get_grouped_config, get_meta
+from sova.dashboard.settings_meta import get_meta
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["settings"])
@@ -159,16 +159,17 @@ async def get_config() -> dict:
     responses={500: {"description": "Failed to fetch configuration"}},
 )
 async def get_config_grouped() -> dict:
-    """Get configuration organized into labeled groups with descriptions."""
+    """Get configuration organized into labeled groups with descriptions.
+
+    Each setting also carries its default, whether a value is stored for this project and the ``SOVA_`` variable
+    overriding it, and ``leftover`` lists stored rows no setting reads (see ``get_grouped_settings()``).
+    """
     from sova.llm import keyring_store
 
     try:
-        project_dir = _settings_project_dir()
-        raw = settings_service._get_raw_config(project_dir)
-        flat = settings_service.get_config(project_dir, raw=raw)
-        locations = settings_service.get_secret_locations(project_dir, raw=raw)
-        groups = get_grouped_config(flat, secret_locations=locations)
-        return {"groups": groups, "keyring_available": keyring_store.is_keyring_available()}
+        payload = settings_service.get_grouped_settings(_settings_project_dir())
+        payload["keyring_available"] = keyring_store.is_keyring_available()
+        return payload
     except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
         log.warning("settings.config.grouped.error", exc_info=True)
         detail = _extract_validation_detail(exc)
@@ -492,6 +493,44 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
     except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
         log.warning("settings.config.update.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
+
+
+class ConfigResetRequest(BaseModel):
+    key: str
+
+
+@router.post(
+    "/settings/config/reset",
+    responses={
+        404: {"description": "No such setting and no stored value under that key"},
+        409: {"description": "A SOVA_ environment variable sets this value, so there is nothing to reset here"},
+        422: {"description": "Not reset: the default would make the project config invalid"},
+        500: {"description": "Failed to reset the setting"},
+        503: {"description": "The project database could not be read or written, so nothing was removed; retry"},
+    },
+    dependencies=[Depends(require_same_origin_csrf)],
+)
+async def reset_config(req: ConfigResetRequest) -> dict:
+    """Delete the value stored for one setting, so its default applies again (Settings, "Changed only")."""
+    try:
+        project_dir = _settings_project_dir()
+        result = await settings_service.reset_config(project_dir, key=req.key)
+        if result.get("unknown"):
+            raise HTTPException(status_code=404, detail=result["error"])
+        if result.get("env_var"):
+            raise HTTPException(status_code=409, detail=result["error"])
+        if result.get("unavailable") or result.get("unreadable_database"):
+            raise HTTPException(status_code=503, detail=result["error"])
+        if "error" in result:
+            raise HTTPException(status_code=422, detail=result["error"])
+        if get_meta(req.key) is not None:
+            await _apply_config_update(project_dir, req.key, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.warning("settings.config.reset.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to reset the setting") from exc
 
 
 @router.get(

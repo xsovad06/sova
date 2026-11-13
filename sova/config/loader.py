@@ -341,6 +341,38 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
     _drop_env_shadowed(merged, ProjectConfig, {key.upper() for key, val in os.environ.items() if val})
 
 
+def env_override_var(key: str, environ: dict[str, str] | None = None) -> str | None:
+    """Name the ``SOVA_`` variable that overrides the dotted setting *key*, or None when none does.
+
+    Mirrors ``_apply_env_overrides()``: a top-level field, a whole section included, is replaced by
+    ``SOVA_<FIELD>`` whenever that variable exists, and a section field (at any depth of nested settings
+    sections) by a non-empty ``<section env_prefix><FIELD>``. A variable naming a whole sub-object
+    (``SOVA_EXTERNAL_REVIEWS_CODERABBIT``) overrides every key under it. *environ* is an upper-cased snapshot
+    of the environment, for a caller asking about many keys; by default it is taken here.
+    """
+    if environ is None:
+        environ = {name.upper(): value for name, value in os.environ.items()}
+    parts = key.split(".")
+    field = ProjectConfig.model_fields.get(parts[0])
+    if field is None:
+        return None
+    top_level = f"SOVA_{parts[0].upper()}"
+    if top_level in environ:
+        return top_level
+    model = field.annotation
+    if len(parts) == 1 or not (isinstance(model, type) and issubclass(model, BaseSettings)):
+        return None
+    for part in parts[1:]:
+        name = f"{model.model_config.get('env_prefix', '')}{part}".upper()
+        if environ.get(name):
+            return name
+        child = model.model_fields.get(part)
+        model = child.annotation if child is not None else None
+        if not (isinstance(model, type) and issubclass(model, BaseSettings)):
+            return None
+    return None
+
+
 def _drop_env_shadowed(stored: dict[str, Any], settings_model: type[BaseSettings], env_keys: set[str]) -> None:
     """Remove stored section fields (recursively, for nested sub-sections) that an env var names."""
     for name, field in settings_model.model_fields.items():
