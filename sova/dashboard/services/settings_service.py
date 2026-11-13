@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import functools
 import json
+import os
+import types
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.utils.files import read_text_or_none
@@ -16,6 +22,7 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from sova.commands.distribution import DiffResult, ReverseDiffResult
     from sova.config.models import ProjectConfig
+    from sova.dashboard.settings_meta import SettingMeta
 
 log = get_logger(component="dashboard.settings")
 
@@ -112,6 +119,302 @@ def get_secret_locations(project_dir: Path | None = None, *, raw: dict | None = 
         else:
             locations[key] = "unset"
     return locations
+
+
+def _default_instance(model: type[BaseModel]) -> BaseModel:
+    """A config model holding only its declared defaults, built without reading the environment.
+
+    ``model_validate()`` and the constructor of a settings section read ``SOVA_*`` variables, and pydantic-settings
+    deep-merges a dict-valued one (``SOVA_ROLES_NICKNAMES``, ``SOVA_LLM_ROUTING``) into an explicit value, so
+    either would report an environment override as the default. ``model_construct()`` reads nothing, but it would
+    still build a nested section through its default factory (the constructor), so nested sections are built here
+    first, and the model's "after" validators, which derive a default from other fields (the CodeRabbit quota
+    fills ``reviews_per_hour`` from its plan), are run by hand.
+    """
+    nested = {}
+    for name, field_info in model.model_fields.items():
+        factory = field_info.default_factory
+        if isinstance(factory, type) and issubclass(factory, BaseModel):
+            nested[name] = _default_instance(factory)
+    instance = model.model_construct(**nested)
+    for decorator in model.__pydantic_decorators__.model_validators.values():
+        if decorator.info.mode == "after":
+            instance = decorator.func(instance)
+    return instance
+
+
+@functools.cache
+def _default_values() -> dict[str, Any]:
+    from sova.config.models import ProjectConfig
+
+    flat: dict[str, Any] = {}
+    _flatten_dict("", _default_instance(ProjectConfig).model_dump(), flat)
+    return flat
+
+
+def default_values() -> dict[str, Any]:
+    """Every setting's default, as the flat ``{dotted key: value}`` dict ``get_config()`` returns for a project."""
+    return copy.deepcopy(_default_values())
+
+
+def _setting_for_row(row_key: str) -> str | None:
+    """The registered setting a stored row belongs to, or None when no setting reads it.
+
+    A row is its own setting, or one entry of an object-valued setting stored a row per entry
+    (``llm.routing.develop`` belongs to ``llm.routing``).
+    """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    if row_key in _META_BY_KEY:
+        return row_key
+    parts = row_key.split(".")
+    for end in range(len(parts) - 1, 0, -1):
+        meta = _META_BY_KEY.get(".".join(parts[:end]))
+        if meta is not None:
+            return meta.key if meta.value_type == "object" else None
+    return None
+
+
+def _model_class(annotation: Any) -> type[BaseModel] | None:
+    """The config model an annotation names directly (a section, or an optional one), else None.
+
+    A ``dict[str, Model]`` or ``list[Model]`` is not a section: its entries are the rest of the dotted path.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        for arg in typing.get_args(annotation):
+            found = _model_class(arg)
+            if found is not None:
+                return found
+    return None
+
+
+def config_reads_row(row_key: str) -> bool:
+    """True when the dotted path *row_key* resolves to a field ``ProjectConfig`` reads.
+
+    The settings registry (``SettingMeta``) is a subset of the config: a stored row for a field that has no
+    registry entry is still read by ``load_config()``, so it is not a leftover and must never be offered for
+    removal. The walk descends sections via ``model_fields``; a field that is not a section (a leaf, or a dict
+    whose entries are the remaining parts) ends it.
+    """
+    from sova.config.models import ProjectConfig
+
+    model: type[BaseModel] = ProjectConfig
+    parts = row_key.split(".")
+    for index, part in enumerate(parts):
+        field_info = model.model_fields.get(part)
+        if field_info is None:
+            return False
+        nested = _model_class(field_info.annotation)
+        if nested is None:
+            # Parts left after a leaf are read only when the field holds entries (a dict or list); a stray
+            # ``max_parallel_agents.x`` row is read by nothing and clashes with the scalar.
+            return index == len(parts) - 1 or _holds_entries(field_info.annotation)
+        model = nested
+    return True
+
+
+def _holds_entries(annotation: object) -> bool:
+    """True when *annotation* is a mapping or list type, whose entries a longer dotted path can address."""
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_holds_entries(arg) for arg in typing.get_args(annotation))
+    return (origin or annotation) in (dict, list)
+
+
+_SECRET_LOOKING_KEY_PARTS = ("token", "secret", "password", "api_key", "apikey")
+
+
+def get_grouped_settings(project_dir: Path | None = None) -> dict:
+    """The settings page payload: every setting grouped, with its default and where its value comes from.
+
+    Each setting carries, besides ``get_grouped_config()``'s fields, ``default`` (from a default config, never
+    the environment), ``stored`` (a value is stored for this project; for an object-valued setting, any of its
+    rows, counted in ``stored_rows``) and ``env_var`` (the ``SOVA_`` variable overriding it, or ""). ``leftover``
+    lists stored rows no setting reads any more (neither the registry nor ``ProjectConfig``), with every text,
+    list or mapping value masked. Secret values stay masked as ``get_config()`` masks them.
+    ``stored_unreadable`` is True when the stored rows could not be read, so no ``stored`` flag is trustworthy.
+    """
+    from sova.config.db_loader import read_stored_settings
+    from sova.config.loader import env_override_var
+    from sova.dashboard.settings_meta import get_grouped_config
+
+    raw = _get_raw_config(project_dir)
+    if "_error" in raw:
+        return {"groups": [], "leftover": [], "stored_unreadable": False, "error": raw["_error"]}
+    flat = get_config(project_dir, raw=raw)
+    groups = get_grouped_config(flat, secret_locations=get_secret_locations(project_dir, raw=raw))
+
+    stored = read_stored_settings(project_dir)
+    rows_per_setting: dict[str, int] = {}
+    leftover: list[dict] = []
+    for row_key, value in (stored or {}).items():
+        owner = _setting_for_row(row_key)
+        if owner is not None:
+            rows_per_setting[owner] = rows_per_setting.get(owner, 0) + 1
+            continue
+        if config_reads_row(row_key):
+            continue  # read by load_config() though the registry has no entry for it: live, not a leftover
+        # No registered setting describes this row, so nothing says whether it held a credential: only a
+        # flag, a number or an empty value is sent as it is, and any text, list or mapping is masked.
+        if not isinstance(value, bool | int | float | None):
+            value = _SECRET_MASK_PLACEHOLDER
+        leftover.append({"key": row_key, "value": value})
+
+    defaults = _default_values()
+    environ = {name.upper(): value for name, value in os.environ.items()}
+    for group in groups:
+        for setting in group["settings"]:
+            key = setting["key"]
+            setting["default"] = copy.deepcopy(defaults.get(key))
+            setting["stored"] = rows_per_setting.get(key, 0) > 0
+            if setting.get("value_type") == "object":
+                setting["stored_rows"] = rows_per_setting.get(key, 0)
+            setting["env_var"] = env_override_var(key, environ) or ""
+    return {"groups": groups, "leftover": leftover, "stored_unreadable": stored is None}
+
+
+def _reset_refusal(project_dir: Path | None, key: str, meta: SettingMeta | None) -> dict | None:
+    """Why *key* cannot be reset, as an error result, or None when it can.
+
+    A key with no setting can be reset only as a leftover row (stored, not an entry of an object-valued
+    setting, and not a field the config loader reads); a setting a ``SOVA_`` variable overrides cannot be reset
+    here at all.
+    """
+    from sova.config.db_loader import read_stored_settings
+    from sova.config.loader import env_override_var
+
+    if meta is None:
+        stored = read_stored_settings(project_dir)
+        if stored is None:
+            # Not "nothing stored": the rows could not be read, so nothing can be said about this key.
+            return _unreadable_database_error(project_dir) or {
+                "error": "The stored values could not be read",
+                "unavailable": True,
+            }
+        if key not in stored or _setting_for_row(key) is not None or config_reads_row(key):
+            return {"error": f"Unknown setting: '{key}'", "unknown": True}
+        return None
+    env_var = env_override_var(key)
+    if env_var:
+        return {"error": f"'{key}' is set by {env_var} in the server environment. Change it there.", "env_var": env_var}
+    return None
+
+
+def _has_keychain_entry(key: str, meta: SettingMeta | None) -> bool:
+    """True when *key* is a secret whose value may live in the OS keychain."""
+    from sova.llm import keyring_store
+
+    return meta is not None and meta.value_type == "secret" and key in keyring_store.RESOLVED_SECRET_KEYS
+
+
+async def _delete_stored_value(project_dir: Path | None, key: str, meta: SettingMeta | None) -> tuple[int, str | None]:
+    """Delete *key*'s stored rows and, for a keyring-backed secret, its keychain entry.
+
+    Returns ``(rows deleted, warning)``. The row goes first and is committed before the keychain is touched:
+    a database failure then leaves the credential intact, while a keychain entry that could not be confirmed
+    removed only leaves an orphan, which is reported as the warning rather than treated as a failure.
+    """
+    from sova.config.db_loader import delete_setting
+    from sova.db.session import get_session
+    from sova.llm import keyring_store
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        deleted = await delete_setting(session, key, with_children=meta is not None and meta.value_type == "object")
+    if not _has_keychain_entry(key, meta):
+        return deleted, None
+    provider = _keyring_scope(project_dir, key, "")
+    if not provider:
+        return deleted, "Could not determine the active LLM provider; the keychain entry was not removed"
+    resolved_dir = project_dir if project_dir is not None else Path.cwd()
+    scoped_name = keyring_store.scoped_secret_name(key, resolved_dir, provider)
+    legacy_owned = keyring_store.fixed_scope(key) is None and provider == _active_llm_provider(project_dir)
+    return deleted, _clear_keychain_entries(key, scoped_name, legacy_owned)
+
+
+async def reset_config(project_dir: Path | None = None, *, key: str) -> dict:
+    """Delete the value stored for *key*, so its default applies again.
+
+    Removes the database row (every row under an object-valued setting), a keychain entry behind a
+    keyring-backed secret, and the key in ``sova.toml``, which would otherwise apply again on the next load. A
+    stored row no setting reads (a leftover) can be removed the same way. Refused when a ``SOVA_`` variable
+    overrides the setting (``env_var`` names it), when the default would make the project config unloadable,
+    and for a key that is neither a setting nor stored (``unknown``). Returns ``{"status": "ok", "key",
+    "value", "deleted"}`` with the value now in effect, plus ``warning`` when a keychain entry could not be
+    removed or the value in effect still differs from the default, or ``{"error": ...}``.
+    """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    meta = _META_BY_KEY.get(key)
+    refusal = _reset_refusal(project_dir, key, meta) or _unreadable_database_error(project_dir)
+    if refusal:
+        return refusal
+    toml_cleared = True
+
+    async with _get_update_lock(project_dir):
+        if meta is not None:
+            consistency_error = _validate_config_consistency(project_dir, key, _default_values().get(key))
+            if consistency_error:
+                return {"error": f"Not reset: {consistency_error}"}
+        try:
+            deleted, warning = await _delete_stored_value(project_dir, key, meta)
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.warning("settings.reset_failed", key=key, exc_info=True)
+            return {"error": "Failed to remove the stored value (DB unavailable)", "unavailable": True}
+        toml_cleared = _remove_setting_from_toml(project_dir, key)
+        _invalidate_config_cache(project_dir)
+
+    result: dict[str, Any] = {"status": "ok", "key": key, "value": None, "deleted": deleted}
+    if meta is not None:
+        result["value"] = get_config(project_dir).get(key)
+        if meta.value_type != "secret" and result["value"] != _default_values().get(key):
+            reason = (
+                "it could not be removed from sova.toml, which may still set it"
+                if not toml_cleared
+                else "another config layer still sets it"
+            )
+            warning = warning or f"The stored value was removed, but '{key}' is still {result['value']!r}: {reason}."
+    if warning:
+        result["warning"] = warning
+    return result
+
+
+def _remove_setting_from_toml(project_dir: Path | None, key: str) -> bool:
+    """Best-effort removal of *key* from sova.toml, the counterpart of ``_save_setting_to_toml()``.
+
+    Returns False only when the key may still be there because the removal failed; True when it was removed or
+    was never in the file.
+    """
+    toml_path = get_config_file_path(project_dir)
+    if not toml_path.exists():
+        return True
+    try:
+        import tomlkit
+
+        doc = tomlkit.parse(toml_path.read_text(encoding="utf-8"))
+        # A top-level field may sit at the root or in the [project] table, which the loader maps onto the root.
+        parts = key.split(".")
+        if len(parts) == 1 and key not in doc and key in doc.get("project", {}):
+            parts = ["project", key]
+        target = doc
+        for part in parts[:-1]:
+            if part not in target:
+                return True
+            target = target[part]
+        if parts[-1] not in target:
+            return True
+        del target[parts[-1]]
+        tmp_path = toml_path.with_suffix(".toml.tmp")
+        tmp_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+        tmp_path.replace(toml_path)
+    except ImportError:
+        log.debug("tomlkit not available")
+        return False
+    except Exception:  # noqa: BLE001 (tomlkit surfaces arbitrary parse errors; the stored row is already gone)
+        log.warning("settings.toml_remove_failed", key=key, exc_info=True)
+        return False
+    return True
 
 
 def _flatten_dict(prefix: str, obj: dict, result: dict, registered: frozenset[str] | None = None) -> None:
@@ -348,6 +651,22 @@ def _keyring_scope(project_dir: Path | None, key: str, provider: str) -> str | N
     return keyring_store.fixed_scope(key) or provider or _active_llm_provider(project_dir)
 
 
+def _clear_keychain_entries(key: str, scoped_name: str, legacy_owned: bool) -> str | None:
+    """Delete a secret's keychain entry (and its legacy unscoped one when *legacy_owned*).
+
+    Returns a warning when a real delete failure (locked keychain, backend error, permission denied) means the
+    old key may still live in the keyring and be picked up again by ``resolve_secret()`` on the next read,
+    silently defeating the user's intent to fall back to ``ANTHROPIC_API_KEY``. No backend at all is not a failure.
+    """
+    from sova.llm import keyring_store
+
+    deleted = keyring_store.delete_secret(scoped_name)
+    legacy_deleted = keyring_store.delete_secret(key) if legacy_owned else True
+    if keyring_store.is_keyring_available() and (not deleted or not legacy_deleted):
+        return "Could not confirm the OS keychain entry was removed; the old key may still be used"
+    return None
+
+
 async def _save_secret(
     project_dir: Path | None, key: str, value: str, *, provider: str = ""
 ) -> tuple[bool, str | None]:
@@ -405,19 +724,9 @@ async def _save_secret(
     legacy_owned = keyring_store.fixed_scope(key) is None and resolved_provider == _active_llm_provider(project_dir)
 
     if not value:
-        deleted = keyring_store.delete_secret(scoped_name)
-        legacy_deleted = True
-        if legacy_owned:
-            legacy_deleted = keyring_store.delete_secret(key)
+        warning = _clear_keychain_entries(key, scoped_name, legacy_owned)
         db_ok = await _save_setting_to_db(project_dir, key, "")
-        if keyring_store.is_keyring_available() and (not deleted or not legacy_deleted):
-            # A real delete failure (locked keychain, backend error, permission
-            # denied), not just "no backend". The database row is cleared, but
-            # the old key may still live in the keyring and would be picked up
-            # again by resolve_secret() on the next read, silently defeating
-            # the user's intent to fall back to ANTHROPIC_API_KEY.
-            return db_ok, "Could not confirm the OS keychain entry was removed; the old key may still be used"
-        return db_ok, None
+        return db_ok, warning
 
     if keyring_store.set_secret(scoped_name, value):
         return await _save_setting_to_db(project_dir, key, keyring_store.SENTINEL), None
