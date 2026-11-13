@@ -59,6 +59,24 @@ async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
     await session.flush()
 
 
+async def delete_setting(session: AsyncSession, key: str, *, with_children: bool = False) -> int:
+    """Delete the row for *key* and, with *with_children*, every ``key.<child>`` row under it.
+
+    An object-valued setting such as ``llm.routing`` is stored one row per entry (``llm.routing.develop``),
+    so removing it has to remove those rows too. Returns how many rows were deleted.
+    """
+    from sqlalchemy import delete, or_
+
+    table = ProjectSetting.__table__
+    condition = table.c.key == key
+    if with_children:
+        escaped = key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        condition = or_(condition, table.c.key.like(f"{escaped}.%", escape="\\"))
+    result = await session.execute(delete(table).where(condition))
+    await session.flush()
+    return int(result.rowcount or 0)
+
+
 async def get_setting(session: AsyncSession, key: str) -> Any | None:
     """Get a single setting value by dot-notation key. Returns None if missing."""
     try:
@@ -765,16 +783,11 @@ def _is_db_confirmed_empty(project_dir: Path | str | None) -> bool:
         return False
 
 
-def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
-    """Sync bridge: load config from DB if possible.
+def _read_setting_rows(project_dir: Path | str | None, *, flag_failure: bool) -> list[Any] | None:
+    """Every ``project_settings`` row, or None when they could not be read.
 
-    Reads the database ``get_session()`` writes to (``SOVA_DATABASE_URL`` first).
-    Returns None (fallback to the non-DB layers) when:
-    - The DB file does not exist on disk
-    - The table does not exist (pre-migration DB)
-    - The DB dialect or sync driver is unsupported (logged once as an error)
-    - The DB is unreachable (flagged via ``db_read_failed()``)
-    - Any other error
+    A missing database file and a pre-migration database without the table hold no rows (``[]``). None is an
+    unsupported dialect (logged once) or a read error, which *flag_failure* also records for ``db_read_failed()``.
     """
     try:
         url = _sync_url_for(Path(project_dir) if project_dir is not None else None)
@@ -783,7 +796,7 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
         return None
     db_file = _sqlite_file(url)
     if url.get_backend_name() == "sqlite" and (db_file is None or not db_file.exists()):
-        return None
+        return []
 
     try:
         from sqlalchemy import create_engine, inspect
@@ -795,22 +808,53 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
                 # has_table, not a probe SELECT caught as OperationalError: a locked or dropped
                 # connection must reach the handler below and be flagged, not read as "no table".
                 if not inspect(conn).has_table(ProjectSetting.__tablename__):
-                    return None
+                    return []
 
-                rows = conn.execute(
-                    sa_select(ProjectSetting.__table__).order_by(ProjectSetting.__table__.c.key)
-                ).fetchall()
-
-            if not rows:
-                return None
-
-            return _rows_to_nested(rows)
+                return list(conn.execute(sa_select(ProjectSetting.__table__).order_by(ProjectSetting.__table__.c.key)))
         finally:
             engine.dispose()
     except Exception:  # noqa: BLE001 (fallback to file-based config on any DB failure; flagged for the cache)
-        _read_state.failed = True
+        if flag_failure:
+            _read_state.failed = True
         logger.debug("db_loader.load_skipped", exc_info=True)
         return None
+
+
+def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
+    """Sync bridge: load config from DB if possible.
+
+    Reads the database ``get_session()`` writes to (``SOVA_DATABASE_URL`` first).
+    Returns None (fallback to the non-DB layers) when:
+    - The DB file does not exist on disk
+    - The table does not exist (pre-migration DB)
+    - The DB dialect or sync driver is unsupported (logged once as an error)
+    - The DB is unreachable (flagged via ``db_read_failed()``)
+    - Any other error
+    """
+    rows = _read_setting_rows(project_dir, flag_failure=True)
+    if not rows:
+        return None
+    return _rows_to_nested(rows)
+
+
+def read_stored_settings(project_dir: Path | str | None) -> dict[str, Any] | None:
+    """The settings stored for this project as ``{dotted key: value}``, one entry per row, or None if unreadable.
+
+    Internal bookkeeping rows are left out. A row whose value is not valid JSON is kept with its raw text, since
+    it is still stored. An empty table is ``{}``; a missing database or table is ``{}`` too (nothing is stored).
+    """
+    rows = _read_setting_rows(project_dir, flag_failure=False)
+    if rows is None:
+        return None
+    stored: dict[str, Any] = {}
+    for row in rows:
+        if row.key in _INTERNAL_SETTING_KEYS:
+            continue
+        try:
+            stored[row.key] = json.loads(row.value)
+        except (json.JSONDecodeError, TypeError):
+            stored[row.key] = row.value
+    return stored
 
 
 def _engine_kwargs(url: URL) -> dict[str, Any]:

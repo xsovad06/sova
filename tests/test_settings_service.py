@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -1490,3 +1491,529 @@ class TestListPersonas:
         expected = sorted(f.stem for f in get_personas_dir().iterdir() if f.suffix == ".md")
         assert names == expected
         assert "python" in names
+
+
+@pytest.fixture
+async def _dispose_project_engines(tmp_path: Path) -> AsyncIterator[None]:
+    """Dispose the engines get_session(project_dir=tmp_path) opened, so no connection leaks into a later test.
+
+    reset_db_rows does not fit here: these tests read the project's own database through the sync config loader.
+    """
+    yield
+    from sova.db import session as db_session
+
+    for url in [u for u in db_session._engines if str(tmp_path) in str(u)]:
+        engine, _factory = db_session._engines.pop(url)
+        await engine.dispose()
+
+
+async def _store_rows(project_dir: Path, rows: dict[str, object]) -> None:
+    """Write raw project_settings rows, as `sova config set` or an older SOVA version left them."""
+    from sova.config.db_loader import save_setting
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        for key, value in rows.items():
+            await save_setting(session, key, value)
+    from sova.config.loader import invalidate_config_cache
+
+    invalidate_config_cache(project_dir)
+
+
+async def _stored_keys(project_dir: Path) -> set[str]:
+    from sqlalchemy import select
+
+    from sova.db.models import ProjectSetting
+    from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY, get_session
+
+    async with await get_session(project_dir=project_dir) as session:
+        keys = set((await session.execute(select(ProjectSetting.key))).scalars())
+    return keys - {_ORPHAN_SWEEP_MARKER_KEY}
+
+
+def _entry(payload: dict, key: str) -> dict:
+    for group in payload["groups"]:
+        for setting in group["settings"]:
+            if setting["key"] == key:
+                return setting
+    raise AssertionError(f"{key} missing from the grouped payload")
+
+
+@pytest.mark.usefixtures("_dispose_project_engines")
+class TestGroupedSettingFlags:
+    """GET /settings/config/grouped tells the page each setting's default, whether a value is stored for this
+    project and whether a SOVA_ environment variable overrides it (#1463)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_defaults(self) -> Iterator[None]:
+        """The defaults are cached process-wide: a test must neither read another's nor leave its own behind."""
+        from sova.dashboard.services import settings_service
+
+        settings_service._default_values.cache_clear()
+        yield
+        settings_service._default_values.cache_clear()
+
+    async def test_stored_is_exactly_the_stored_rows(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"max_parallel_agents": 4, "supervisor.auto_triage": False})
+        payload = get_grouped_settings(tmp_path)
+
+        stored = {s["key"] for g in payload["groups"] for s in g["settings"] if s["stored"]}
+        assert stored == {"max_parallel_agents", "supervisor.auto_triage"}
+
+    async def test_another_projects_rows_are_not_stored_here(self, tmp_path: Path) -> None:
+        """One database per project: a row written for one project never marks a setting stored in another."""
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        mine, other = tmp_path / "mine", tmp_path / "other"
+        await _store_rows(mine, {"max_parallel_agents": 4})
+        await _store_rows(other, {"supervisor.auto_triage": False, "agent.model": "other-model"})
+
+        stored = {s["key"] for g in get_grouped_settings(mine)["groups"] for s in g["settings"] if s["stored"]}
+
+        assert stored == {"max_parallel_agents"}
+
+    async def test_a_stored_value_an_environment_variable_overrides_is_both_stored_and_env_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Changed only lists it (a row is stored) and the env pill shows which value wins."""
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"agent.model": "stored-model"})
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "env-model")
+        model = _entry(get_grouped_settings(tmp_path), "agent.model")
+
+        assert model["stored"] is True
+        assert model["env_var"] == "SOVA_AGENT_MODEL"
+        assert model["value"] == "env-model"
+
+    async def test_an_object_setting_is_stored_when_any_of_its_rows_is(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"llm.routing.develop": "claude-sonnet-5-5", "llm.routing.triage": "x"})
+        routing = _entry(get_grouped_settings(tmp_path), "llm.routing")
+
+        assert routing["stored"] is True
+        assert routing["stored_rows"] == 2
+        assert routing["value"] == {"develop": "claude-sonnet-5-5", "triage": "x"}
+
+    async def test_default_comes_from_a_default_config_not_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "from-env")
+        await _store_rows(tmp_path, {"max_parallel_agents": 4})
+        payload = get_grouped_settings(tmp_path)
+
+        assert _entry(payload, "max_parallel_agents")["default"] == ProjectConfig.model_fields[
+            "max_parallel_agents"
+        ].get_default(call_default_factory=True)
+        assert _entry(payload, "agent.model")["default"] == "opus"
+        assert _entry(payload, "agent.model")["value"] == "from-env"
+
+    @pytest.mark.parametrize(
+        ("key", "env_var", "env_value"),
+        [
+            ("roles.nicknames", "SOVA_ROLES_NICKNAMES", '{"a": "b"}'),
+            ("llm.routing", "SOVA_LLM_ROUTING", '{"develop": "env-model"}'),
+        ],
+    )
+    async def test_a_dict_valued_environment_override_is_not_the_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, env_var: str, env_value: str
+    ) -> None:
+        """pydantic-settings deep-merges a dict from the environment into an explicit value, so the defaults
+        must be built without constructing a section; the cached result must not keep the leak either."""
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        monkeypatch.setenv(env_var, env_value)
+        payload = get_grouped_settings(tmp_path)
+
+        assert _entry(payload, key)["default"] == {}
+        assert _entry(payload, key)["env_var"] == env_var
+
+    def test_a_default_a_validator_derives_is_reported(self) -> None:
+        """coderabbit_quota fills reviews_per_hour from its plan; the page must not call 4 a change from None."""
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import default_values
+
+        assert (
+            default_values()["coderabbit_quota.reviews_per_hour"] == ProjectConfig().coderabbit_quota.reviews_per_hour
+        )
+
+    def test_every_setting_has_a_default(self) -> None:
+        """The defaults are flattened the way get_config() flattens a project's config: the same keys."""
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import _flatten_dict, default_values
+
+        flat: dict = {}
+        _flatten_dict("", ProjectConfig().model_dump(), flat)
+        assert set(default_values()) == set(flat)
+
+    @pytest.mark.parametrize(
+        ("key", "env_var"),
+        [
+            ("agent.model", "SOVA_AGENT_MODEL"),
+            ("max_parallel_agents", "SOVA_MAX_PARALLEL_AGENTS"),
+            ("task_source.jira_api_token", "SOVA_TASK_JIRA_API_TOKEN"),
+            ("review.panel.enabled", "SOVA_REVIEW_PANEL_ENABLED"),
+        ],
+    )
+    async def test_an_environment_override_is_named(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str, env_var: str
+    ) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        monkeypatch.setenv(env_var, "1")
+        assert _entry(get_grouped_settings(tmp_path), key)["env_var"] == env_var
+
+    async def test_an_empty_section_variable_is_no_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loader treats an empty SOVA_<SECTION>_<FIELD> as unset, so the page must too."""
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "")
+        assert _entry(get_grouped_settings(tmp_path), "agent.model")["env_var"] == ""
+
+    async def test_a_stored_row_no_setting_reads_is_listed_as_leftover(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"old_section.removed_field": True, "max_parallel_agents": 3})
+        payload = get_grouped_settings(tmp_path)
+
+        assert payload["leftover"] == [{"key": "old_section.removed_field", "value": True}]
+
+    @pytest.mark.parametrize("row_key", ["old_section.api_token", "old_section.credential", "old_section.pat"])
+    async def test_a_leftover_text_value_is_never_sent_raw(self, tmp_path: Path, row_key: str) -> None:
+        """A renamed credential field has no registry entry to say it is a secret, so no leftover text is sent."""
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {row_key: "secret-value-123"})
+        payload = get_grouped_settings(tmp_path)
+
+        assert "secret-value-123" not in repr(payload)
+        assert [row["key"] for row in payload["leftover"]] == [row_key]
+
+    async def test_a_leftover_list_or_mapping_is_masked_too(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"old_a.hosts": ["h1-secret"], "old_b.table": {"k": "v-secret"}})
+        payload = get_grouped_settings(tmp_path)
+
+        assert "h1-secret" not in repr(payload)
+        assert "v-secret" not in repr(payload)
+
+    async def test_a_field_the_loader_reads_without_a_registry_entry_is_not_a_leftover(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The registry is a subset of the config: such a row is live and must not offer a removal."""
+        from sova.dashboard.services import settings_service
+        from sova.dashboard.settings_meta import _META_BY_KEY
+
+        unregistered = "agent.max_budget"
+        monkeypatch.delitem(_META_BY_KEY, unregistered)
+        await _store_rows(tmp_path, {unregistered: 30})
+        payload = settings_service.get_grouped_settings(tmp_path)
+
+        assert unregistered not in [row["key"] for row in payload["leftover"]]
+        result = await settings_service.reset_config(tmp_path, key=unregistered)
+        assert result.get("unknown") is True
+        assert unregistered in await _stored_keys(tmp_path)
+
+    def test_every_leaf_field_of_the_config_has_an_entry_or_is_never_a_leftover(self) -> None:
+        """A leaf of ProjectConfig is registered, or the loader reads it (so it is never classified a leftover)."""
+        from pydantic import BaseModel
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import _model_class, _setting_for_row, config_reads_row
+
+        def leaves(model: type[BaseModel], prefix: str = "") -> list[str]:
+            found: list[str] = []
+            for name, info in model.model_fields.items():
+                nested = _model_class(info.annotation)
+                if nested is None:
+                    found.append(prefix + name)
+                else:
+                    found.extend(leaves(nested, prefix + name + "."))
+            return found
+
+        paths = leaves(ProjectConfig)
+        assert len(paths) > 100
+        stray = [p for p in paths if _setting_for_row(p) is None and not config_reads_row(p)]
+        assert stray == []
+        assert not config_reads_row("old_section.removed_field")
+        assert not config_reads_row("agent.no_such_field")
+
+    def test_a_row_below_a_scalar_is_not_read(self) -> None:
+        """Nothing reads max_parallel_agents.x, while the entries of a dict-valued setting are read."""
+        from sova.dashboard.services.settings_service import config_reads_row
+
+        assert not config_reads_row("max_parallel_agents.x")
+        assert not config_reads_row("supervisor.enabled.old")
+        assert config_reads_row("llm.routing.develop")
+        assert config_reads_row("roles.nicknames.a")
+
+    async def test_secrets_stay_masked(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import get_grouped_settings
+
+        await _store_rows(tmp_path, {"task_source.jira_api_token": "real-token-value"})
+        entry = _entry(get_grouped_settings(tmp_path), "task_source.jira_api_token")
+
+        assert entry["stored"] is True
+        assert "real-token-value" not in repr(entry)
+
+
+@pytest.mark.usefixtures("_dispose_project_engines")
+class TestResetConfig:
+    """Reset to default deletes the stored value, so the default applies again (#1463)."""
+
+    async def test_deletes_the_stored_row_and_the_default_applies(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import reset_config, update_config
+
+        await update_config(tmp_path, key="max_parallel_agents", value="7")
+        assert "max_parallel_agents" in await _stored_keys(tmp_path)
+
+        result = await reset_config(tmp_path, key="max_parallel_agents")
+
+        assert result["status"] == "ok"
+        assert "max_parallel_agents" not in await _stored_keys(tmp_path)
+        default = ProjectConfig.model_construct().max_parallel_agents
+        assert load_config(tmp_path).max_parallel_agents == default
+        assert result["value"] == default
+
+    async def test_an_object_setting_deletes_every_row_under_it(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"llm.routing.develop": "a", "llm.routing.review": "b", "llm.model": ""})
+        result = await reset_config(tmp_path, key="llm.routing")
+
+        assert result["status"] == "ok"
+        assert await _stored_keys(tmp_path) == {"llm.model"}
+
+    async def test_a_setting_set_by_the_environment_has_no_reset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"agent.model": "stored-model"})
+        monkeypatch.setenv("SOVA_AGENT_MODEL", "env-model")
+
+        result = await reset_config(tmp_path, key="agent.model")
+
+        assert "SOVA_AGENT_MODEL" in result["error"]
+        assert result["env_var"] == "SOVA_AGENT_MODEL"
+        assert "agent.model" in await _stored_keys(tmp_path)
+
+    async def test_a_keychain_entry_it_cannot_remove_is_reported_with_the_reset(self, tmp_path: Path) -> None:
+        """The database value is gone either way, so the reset succeeds and says what it could not do."""
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"llm.provider": "anthropic", "llm.api_key": "sk-stored-in-db"})
+        with (
+            patch("sova.llm.keyring_store.delete_secret", return_value=False),
+            patch("sova.llm.keyring_store.is_keyring_available", return_value=True),
+        ):
+            result = await reset_config(tmp_path, key="llm.api_key")
+
+        assert result["status"] == "ok"
+        assert "keychain" in result["warning"]
+        assert "llm.api_key" not in await _stored_keys(tmp_path)
+
+    async def test_a_database_failure_leaves_the_keychain_entry_alone(self, tmp_path: Path) -> None:
+        """The row is deleted first: when that fails the credential must still be in place, never half-removed."""
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"llm.provider": "anthropic", "llm.api_key": "sk-stored-in-db"})
+        with (
+            patch("sova.llm.keyring_store.delete_secret", return_value=True) as delete_secret,
+            patch("sova.config.db_loader.delete_setting", side_effect=SQLAlchemyError("down")),
+        ):
+            result = await reset_config(tmp_path, key="llm.api_key")
+
+        assert not delete_secret.called, "the keychain entry was cleared although the row could not be deleted"
+        assert "Failed to remove the stored value" in result["error"]
+        assert "keychain" not in result["error"]
+        assert result["unavailable"] is True
+        assert "llm.api_key" in await _stored_keys(tmp_path)
+
+    async def test_a_database_failure_for_a_plain_setting_does_not_mention_the_keychain(self, tmp_path: Path) -> None:
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"max_parallel_agents": 3})
+        with patch("sova.config.db_loader.delete_setting", side_effect=SQLAlchemyError("down")):
+            result = await reset_config(tmp_path, key="max_parallel_agents")
+
+        assert "keychain" not in result["error"]
+
+    async def test_a_top_level_value_in_the_project_table_is_removed_too(self, tmp_path: Path) -> None:
+        """The loader maps sova.toml's [project] table onto top-level fields, so Reset must look there."""
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import reset_config
+
+        (tmp_path / "sova.toml").write_text("[project]\nmax_parallel_agents = 3\n", encoding="utf-8")
+        await _store_rows(tmp_path, {"max_parallel_agents": 3})
+
+        result = await reset_config(tmp_path, key="max_parallel_agents")
+
+        assert "max_parallel_agents" not in (tmp_path / "sova.toml").read_text(encoding="utf-8")
+        assert "warning" not in result
+        assert load_config(tmp_path).max_parallel_agents == result["value"] != 3
+
+    async def test_a_toml_key_that_could_not_be_removed_is_reported_as_such(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"max_parallel_agents": 3})
+        (tmp_path / "sova.toml").write_text("max_parallel_agents = 5\n", encoding="utf-8")
+        with patch("sova.dashboard.services.settings_service._remove_setting_from_toml", return_value=False):
+            result = await reset_config(tmp_path, key="max_parallel_agents")
+
+        assert result["value"] == 5
+        assert "could not be removed from sova.toml" in result["warning"]
+
+    async def test_a_value_another_layer_still_sets_is_not_blamed_on_sova_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sova.toml was cleaned, so a value that still differs from the default comes from somewhere else."""
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"max_parallel_agents": 3})
+        with (
+            patch("sova.dashboard.services.settings_service._remove_setting_from_toml", return_value=True),
+            patch("sova.dashboard.services.settings_service.get_config", return_value={"max_parallel_agents": 5}),
+        ):
+            result = await reset_config(tmp_path, key="max_parallel_agents")
+
+        assert "another config layer still sets it" in result["warning"]
+        assert "sova.toml" not in result["warning"]
+
+    def test_removing_a_key_from_toml_reports_whether_it_worked(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import _remove_setting_from_toml
+
+        (tmp_path / "sova.toml").write_text("max_parallel_agents = 5\n", encoding="utf-8")
+        assert _remove_setting_from_toml(tmp_path, "max_parallel_agents") is True
+        assert _remove_setting_from_toml(tmp_path, "max_parallel_agents") is True, "an absent key is not a failure"
+        (tmp_path / "sova.toml").write_text("max_parallel_agents = = 5\n", encoding="utf-8")
+        assert _remove_setting_from_toml(tmp_path, "max_parallel_agents") is False
+
+    async def test_a_keyring_backed_secret_loses_its_row_and_its_keychain_entry(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"llm.provider": "anthropic", "llm.api_key": "sk-stored-in-db"})
+        with patch("sova.llm.keyring_store.delete_secret", return_value=True) as delete_secret:
+            result = await reset_config(tmp_path, key="llm.api_key")
+
+        assert result["status"] == "ok"
+        assert result["value"] == ""
+        assert "llm.api_key" not in await _stored_keys(tmp_path)
+        assert delete_secret.called, "the keychain entry behind the secret was left in place"
+
+    async def test_a_whole_section_variable_overrides_every_key_under_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The loader replaces a whole section from SOVA_<SECTION>, so nothing under it can be reset here."""
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"agent.max_budget": 30})
+        monkeypatch.setenv("SOVA_AGENT", "{}")
+
+        result = await reset_config(tmp_path, key="agent.max_budget")
+
+        assert result.get("env_var") == "SOVA_AGENT"
+        assert "agent.max_budget" in await _stored_keys(tmp_path)
+
+    async def test_a_leftover_row_can_be_removed(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"old_section.removed_field": 1})
+        result = await reset_config(tmp_path, key="old_section.removed_field")
+
+        assert result["status"] == "ok"
+        assert await _stored_keys(tmp_path) == set()
+
+    async def test_an_unreadable_database_is_not_reported_as_an_unknown_key(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        with (
+            patch("sova.config.db_loader.read_stored_settings", return_value=None),
+            patch("sova.config.db_loader.config_db_unreadable_reason", return_value="database is locked"),
+        ):
+            result = await reset_config(tmp_path, key="old_section.removed_field")
+
+        assert "unknown" not in result
+        assert "database is locked" in result["error"]
+
+    async def test_an_unknown_key_that_is_not_stored_is_refused(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import reset_config
+
+        result = await reset_config(tmp_path, key="no_such.setting")
+        assert result["unknown"] is True
+        assert "Unknown setting" in result["error"]
+
+    async def test_a_default_that_would_make_the_config_unloadable_is_refused(self, tmp_path: Path) -> None:
+        """llm.provider=ollama needs an explicit llm.model: resetting the model would break every load."""
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import reset_config
+
+        await _store_rows(tmp_path, {"llm.model": "ollama/qwen3", "llm.provider": "ollama"})
+        result = await reset_config(tmp_path, key="llm.model")
+
+        assert "error" in result
+        assert "llm.model" in await _stored_keys(tmp_path)
+        assert load_config(tmp_path).llm.model == "ollama/qwen3"
+
+    async def test_removes_the_key_from_sova_toml_too(self, tmp_path: Path) -> None:
+        """A value left in sova.toml would apply again on the next load."""
+        from sova.config.loader import load_config
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.services.settings_service import reset_config
+
+        (tmp_path / "sova.toml").write_text('base_branch = "develop"\n[agent]\nmax_budget = 30\n', encoding="utf-8")
+        await _store_rows(tmp_path, {"agent.max_budget": 30})
+
+        await reset_config(tmp_path, key="agent.max_budget")
+
+        assert "max_budget" not in (tmp_path / "sova.toml").read_text(encoding="utf-8")
+        assert "base_branch" in (tmp_path / "sova.toml").read_text(encoding="utf-8")
+        assert load_config(tmp_path).agent.max_budget == ProjectConfig.model_construct().agent.max_budget
+
+    async def test_sova_toml_keeps_everything_but_the_removed_line(self, tmp_path: Path) -> None:
+        """A hand-maintained sova.toml keeps its comments, order, other tables and inline tables: the file after a
+        Reset equals the original minus exactly the removed line."""
+        from sova.dashboard.services.settings_service import reset_config
+
+        original = (
+            "# Project settings, edited by hand\n"
+            'base_branch = "develop"  # the integration branch\n'
+            "\n"
+            "[project]\n"
+            "# how many agents run at once\n"
+            "max_parallel_agents = 3\n"
+            'github_user = "someone"\n'
+            "\n"
+            "[agent]\n"
+            "# spend cap per run\n"
+            "max_budget = 30\n"
+            'fallback_models = ["a", "b"]\n'
+            "\n"
+            "[llm]\n"
+            'routing = { develop = "x" }\n'
+        )
+        (tmp_path / "sova.toml").write_text(original, encoding="utf-8")
+        await _store_rows(tmp_path, {"agent.max_budget": 30, "max_parallel_agents": 3})
+
+        await reset_config(tmp_path, key="agent.max_budget")
+        after_budget = (tmp_path / "sova.toml").read_text(encoding="utf-8")
+        assert after_budget == original.replace("max_budget = 30\n", "")
+
+        await reset_config(tmp_path, key="max_parallel_agents")
+        after_limit = (tmp_path / "sova.toml").read_text(encoding="utf-8")
+        assert after_limit == after_budget.replace("max_parallel_agents = 3\n", "")

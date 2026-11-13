@@ -249,6 +249,7 @@ class TestSingleProjectResolution:
             ("get", "/api/settings/config", None),
             ("get", "/api/settings/config/grouped", None),
             ("post", "/api/settings/config", {"key": "max_parallel_agents", "value": 3}),
+            ("post", "/api/settings/config/reset", {"key": "max_parallel_agents"}),
         ],
     )
     async def test_uses_the_startup_project_without_a_request_project(
@@ -263,7 +264,10 @@ class TestSingleProjectResolution:
             _get_raw_config=MagicMock(side_effect=lambda project_dir: seen.append(project_dir) or {}),
             get_secret_locations=MagicMock(return_value={}),
             update_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"error": "x"}),
+            get_grouped_settings=MagicMock(side_effect=lambda project_dir: seen.append(project_dir) or {"groups": []}),
+            reset_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"status": "ok"}),
         )
+        monkeypatch.setattr("sova.dashboard.routers.settings._apply_config_update", AsyncMock())
         monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", service)
         monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: None, raising=False)
         monkeypatch.setattr("sova.dashboard.routers.settings.get_default_project_dir", lambda: startup_project)
