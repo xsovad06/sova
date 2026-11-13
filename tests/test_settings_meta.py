@@ -18,6 +18,21 @@ from sova.dashboard.settings_meta import (
 )
 
 
+def _optional_container(key: str, container: type) -> bool:
+    """True when the config field behind *key* is declared as an optional *container* (``list[str] | None``)."""
+    import typing
+
+    from sova.config.models import ProjectConfig
+
+    model: type = ProjectConfig
+    parts = key.split(".")
+    for part in parts[:-1]:
+        model = model.model_fields[part].annotation
+    annotation = model.model_fields[parts[-1]].annotation
+    args = typing.get_args(annotation)
+    return type(None) in args and any(typing.get_origin(arg) is container for arg in args)
+
+
 class TestSettingMeta:
     def test_get_meta_known_key(self) -> None:
         meta = get_meta("agent.model")
@@ -108,6 +123,8 @@ class TestSettingMeta:
             if expected is not None and meta.value_type != expected:
                 mismatched.append(f"{meta.key}: registered '{meta.value_type}', config declares '{expected}'")
             declared = container_types.get(meta.value_type)
+            if declared is not None and flat[meta.key] is None and _optional_container(meta.key, declared):
+                continue  # list[str] | None: None means "not set" (roles.<role>_fallback_models, #1463)
             if declared is not None and actual is not declared:
                 mismatched.append(f"{meta.key}: registered '{meta.value_type}', config declares {actual.__name__}")
 

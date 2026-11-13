@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.dashboard.services.supervisor_service import resolve_project_slug
-from sova.llm.client import invoke, resolve_model
+from sova.llm.client import invoke, resolve_model, runs_as_role
 from sova.llm.errors import LLMTimeoutError
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
@@ -494,6 +494,7 @@ class SupervisorPlanner:
         )
         return resolved[0] if resolved else _DEFAULT_MODEL
 
+    @runs_as_role("planner")
     async def _call_llm(self, system_prompt: str, user_prompt: str, model: str) -> dict | None:
         max_attempts = self._config.supervisor.planner_max_attempts
         backoff = self._config.supervisor.planner_retry_backoff_seconds

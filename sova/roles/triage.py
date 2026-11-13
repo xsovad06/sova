@@ -22,6 +22,7 @@ from sova.config.models import TriageConfig
 from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError, validate_step_output
 from sova.core.schemas import get_triage_schema
+from sova.llm.client import runs_as_role
 from sova.roles._review_format import SCOPE_BOUNDARY_HEADINGS
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended
@@ -534,6 +535,7 @@ class TriageRole(AgentRole):
         """
         return self._heuristic_assess(task)
 
+    @runs_as_role("triage")
     async def assess_task_with_llm(self, task: Task, ctx: ExecutionContext) -> TaskAssessment:
         """Assess task using Claude for deeper analysis.
 
@@ -629,6 +631,7 @@ class TriageRole(AgentRole):
 
         return self._heuristic_assess(task)
 
+    @runs_as_role("triage")
     async def assess_tasks_batch(
         self,
         tasks: list[Task],
@@ -1165,6 +1168,7 @@ class TriageRole(AgentRole):
             quality,
         )
 
+    @runs_as_role("triage")
     async def _assess_and_enrich(
         self, ctx: ExecutionContext, task: Task, quality: QualityScore
     ) -> EnrichedAssessment | None:
