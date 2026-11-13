@@ -20,13 +20,13 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "typer>=0.12,<1.0",
-    "fastapi>=0.162.0,<0.163",
+    "typer>=0.29.0,<1.0",
+    "fastapi>=0.162.2,<0.163",
     "starlette>=1.10.0,<2.0",
     "uvicorn[standard]>=0.54.0,<1.0",
     "sqlalchemy[asyncio]>=2.1.6,<2.2",
     "alembic>=1.13,<2.0",
-    "pydantic>=2.14.2,<3.0",
+    "pydantic>=2.14.3,<3.0",
     "pydantic-settings>=2.16.2,<3.0",
     "aiosqlite>=0.20,<1.0",
     "jinja2>=3.1,<4.0",
@@ -48,11 +48,11 @@ Issues = "https://github.com/xsovad06/sova/issues"
 Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=2.4.0"]
-litellm = ["litellm>=1.106.6"]
+anthropic = ["anthropic>=2.7.0"]
+litellm = ["litellm>=1.110.0.dev2"]
 vertex = ["google-auth>=2.62.1", "requests>=2.20"]
 batch = ["sova[vertex]"]
-compression = ["headroom-ai>=0.42.0"]
+compression = ["headroom-ai>=0.44.0"]
 awareness = [
     "google-api-python-client>=2.100.0",
     "google-auth>=2.62.1",
@@ -69,7 +69,7 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
-    "ruff>=0.17.3",
+    "ruff>=0.17.4",
     "respx>=0.22",
 ]
 
