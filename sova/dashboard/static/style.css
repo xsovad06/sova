@@ -745,26 +745,198 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 }
 
 /* ============================================================
-   8. SETTINGS ACCORDION
+   8. SETTINGS PAGE (settings.html, static/js/pages/settings/)
    ============================================================ */
 
-.sova-settings-group .sova-card-header {
-  border-bottom: none;
+.sova-settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--color-surface);
+  padding: 0 0 1rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
 }
-
-.sova-settings-group .sova-card-header:hover {
-  background: rgb(var(--ctp-surface0-rgb) / 0.3);
+.sova-settings-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin-bottom: 0.75rem; }
+.sova-settings-subtitle { font-size: 0.875rem; color: var(--ctp-overlay1); }
+.sova-settings-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.sova-settings-search { position: relative; flex: 1 1 20rem; max-width: 34rem; }
+.sova-settings-search > svg { position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--ctp-overlay0); pointer-events: none; }
+.sova-settings-search .sova-input { padding-left: 2.25rem; padding-right: 4rem; }
+.sova-settings-search .sova-settings-clear { position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); padding: 0.125rem 0.5rem; background: transparent; color: var(--ctp-blue); }
+.sova-settings-search .sova-settings-clear:hover { background: rgb(var(--ctp-blue-rgb) / 0.15); }
+.sova-settings-chip {
+  /* A .sova-btn variant: the shared button supplies layout, type and transitions; this adds only the toggle's colours. */
+  padding: 0.5rem 0.75rem; font-size: 0.875rem;
+  border: 1px solid var(--color-border); background: var(--color-surface-card); color: var(--ctp-subtext0);
 }
+.sova-settings-chip:hover:not(:disabled) { background: var(--color-surface-hover); color: var(--ctp-text); }
+.sova-settings-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.sova-settings-chip[aria-pressed="true"] { background: rgb(var(--ctp-blue-rgb) / 0.15); border-color: rgb(var(--ctp-blue-rgb) / 0.5); color: var(--ctp-blue); }
+.sova-settings-chip-count { font-size: 0.75rem; font-variant-numeric: tabular-nums; padding: 0 0.375rem; border-radius: 9999px; background: var(--ctp-surface0); color: var(--ctp-subtext1); }
+.sova-settings-chip[aria-pressed="true"] .sova-settings-chip-count { background: rgb(var(--ctp-blue-rgb) / 0.2); color: var(--ctp-blue); }
 
-.sova-settings-body {
-  overflow: hidden;
-  transition: max-height 250ms ease;
-  border-top: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+.sova-settings-layout { display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: 2rem; align-items: start; }
+.sova-settings-main { min-width: 0; }
+.sova-settings-nav { position: sticky; top: 7.5rem; display: flex; flex-direction: column; gap: 0.125rem; }
+.sova-settings-eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ctp-overlay0); padding: 0 0.625rem 0.5rem; }
+.sova-settings-nav-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.4375rem 0.625rem; border-radius: 0.375rem; font-size: 0.875rem; color: var(--ctp-subtext0);
+  transition: background-color 150ms ease, color 150ms ease;
 }
+.sova-settings-nav-item:hover { background: var(--color-surface-hover); color: var(--ctp-text); }
+.sova-settings-nav-item.sova-settings-nav-on { background: var(--ctp-surface1); color: var(--ctp-text); }
+.sova-settings-nav-count { font-size: 0.75rem; color: var(--ctp-overlay0); font-variant-numeric: tabular-nums; }
+.sova-settings-nav-count.sova-settings-nav-hit { color: var(--ctp-yellow); }
+.sova-settings-nav-sub { display: flex; flex-direction: column; margin: 0.125rem 0 0.375rem 0.625rem; padding-left: 0.5rem; border-left: 1px solid rgb(var(--ctp-surface1-rgb) / 0.6); }
+.sova-settings-nav-sub[hidden] { display: none; }
+.sova-settings-nav-sub a { font-size: 0.75rem; color: var(--ctp-overlay1); padding: 0.25rem 0.5rem; border-radius: 0.25rem; transition: background-color 150ms ease, color 150ms ease; }
+.sova-settings-nav-sub a:hover { background: var(--color-surface-hover); color: var(--ctp-subtext1); }
+.sova-settings-nav-hint { margin-top: 0.875rem; padding: 0 0.625rem; font-size: 0.75rem; color: var(--ctp-overlay0); }
 
-.sova-settings-body[style*="max-height: 0px"],
-.sova-settings-body[style*="max-height:0px"] {
-  border-top-color: transparent;
+.sova-settings-section-head { margin-bottom: 1.5rem; }
+.sova-settings-section-head h3 { font-size: 1.125rem; font-weight: 600; color: var(--ctp-text); margin: 0 0 0.25rem; }
+.sova-settings-section-head p { font-size: 0.875rem; color: var(--ctp-overlay1); margin: 0; }
+.sova-settings-group { margin-bottom: 2.25rem; scroll-margin-top: 9rem; }
+.sova-settings-group-head { display: flex; align-items: baseline; gap: 0.625rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.6); }
+.sova-settings-group-head h4 { font-size: 0.9375rem; font-weight: 600; color: var(--ctp-text); margin: 0; }
+.sova-settings-group-count { font-size: 0.75rem; color: var(--ctp-overlay0); }
+.sova-settings-anchor { margin-left: auto; font-size: 0.75rem; color: var(--ctp-overlay0); transition: color 150ms ease; }
+.sova-settings-anchor:hover { color: var(--ctp-blue); }
+.sova-settings-push { margin-left: auto; }
+.sova-settings-crumb { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ctp-overlay1); margin: 1.75rem 0 0.625rem; }
+.sova-settings-crumb:first-child { margin-top: 0; }
+.sova-settings-mark { background: rgb(var(--ctp-yellow-rgb) / 0.25); color: var(--ctp-yellow); border-radius: 2px; padding: 0 1px; }
+.sova-settings-note { font-size: 0.75rem; color: var(--ctp-overlay1); margin: 0.375rem 0 0; }
+.sova-settings-note-warn { color: var(--ctp-yellow); }
+.sova-settings-empty { padding: 2.5rem 0; text-align: center; }
+.sova-settings-empty-title { font-size: 0.9375rem; color: var(--ctp-text); margin: 0 0 0.25rem; }
+.sova-settings-error { margin-bottom: 1.5rem; padding: 1rem; border-radius: 0.5rem; background: rgb(var(--ctp-red-rgb) / 0.1); border: 1px solid rgb(var(--ctp-red-rgb) / 0.3); color: var(--ctp-red); }
+.sova-settings-error-title { font-size: 0.875rem; font-weight: 500; margin: 0 0 0.25rem; }
+
+/* A status widget beside the settings it belongs to */
+.sova-settings-status, .sova-settings-status-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 0.75rem; font-size: 0.8125rem; color: var(--ctp-subtext0);
+}
+.sova-settings-status { margin-top: 0.625rem; padding: 0.625rem 0.75rem; background: var(--color-surface-card); border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.4); border-radius: 0.375rem; }
+.sova-settings-status:empty { display: none; }
+.sova-settings-status > .sova-settings-status-line, .sova-settings-status > .sova-settings-pre { flex-basis: 100%; }
+.sova-settings-status-title { color: var(--ctp-text); font-weight: 500; }
+.sova-settings-status-muted { font-size: 0.75rem; color: var(--ctp-overlay1); }
+.sova-settings-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.sova-settings-tag { display: inline-flex; padding: 0.0625rem 0.4375rem; border-radius: 0.25rem; font-size: 0.75rem; background: var(--ctp-surface0); color: var(--ctp-subtext0); }
+.sova-settings-tag-on { background: rgb(var(--ctp-green-rgb) / 0.15); color: var(--ctp-green); }
+.sova-settings-tag-warn { background: rgb(var(--ctp-yellow-rgb) / 0.15); color: var(--ctp-yellow); }
+/* A status dot, drawn from data-state (ok, warn, err, muted) so the markup carries no dot of its own */
+[data-state].sova-settings-status::before, [data-state].sova-settings-status-line::before,
+[data-state].sova-settings-sync::before, [data-state].sova-settings-health-row::before {
+  content: ""; width: 0.5rem; height: 0.5rem; border-radius: 9999px; flex-shrink: 0; display: inline-block; background: var(--ctp-overlay0);
+}
+.sova-settings-main [data-state="ok"]::before { background: var(--ctp-green); }
+.sova-settings-main [data-state="warn"]::before { background: var(--ctp-yellow); }
+.sova-settings-main [data-state="err"]::before { background: var(--ctp-red); }
+.sova-settings-pre { margin: 0.5rem 0 0; max-height: 12rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--ctp-subtext0); background: var(--color-surface); border-radius: 0.375rem; padding: 0.75rem; }
+.sova-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.625rem; margin-top: 0.625rem; }
+.sova-settings-sync { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; font-weight: 500; color: var(--ctp-subtext0); }
+.sova-settings-sync-ok { color: var(--ctp-green); }
+.sova-settings-sync-warn { color: var(--ctp-yellow); }
+
+/* One setting */
+.sova-setting-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(14rem, 19rem); gap: 0.5rem 1.5rem;
+  padding: 0.75rem 0.5rem; border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3); border-radius: 0.25rem;
+  transition: background-color 300ms ease, opacity 150ms ease;
+}
+.sova-setting-row:hover { background: rgb(var(--ctp-surface0-rgb) / 0.35); }
+.sova-setting-row[hidden] { display: none; }
+.sova-setting-flash { background: rgb(var(--ctp-green-rgb) / 0.08); }
+.sova-setting-busy { opacity: 0.6; }
+.sova-setting-info { min-width: 0; }
+.sova-setting-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.sova-setting-label { font-size: 0.875rem; font-weight: 500; color: var(--ctp-text); }
+.sova-setting-badges { display: inline-flex; flex-wrap: wrap; gap: 0.375rem; }
+.sova-setting-pill { display: inline-flex; align-items: center; padding: 0 0.4375rem; border-radius: 9999px; font-size: 0.75rem; line-height: 1.125rem; background: var(--ctp-surface0); color: var(--ctp-overlay2); }
+.sova-setting-pill-changed { background: rgb(var(--ctp-blue-rgb) / 0.15); color: var(--ctp-blue); }
+.sova-setting-pill-env { background: rgb(var(--ctp-mauve-rgb) / 0.15); color: var(--ctp-mauve); }
+.sova-setting-key { font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--ctp-overlay0); margin-top: 0.125rem; overflow-wrap: anywhere; }
+.sova-setting-key-strong { color: var(--ctp-subtext1); font-size: 0.8125rem; }
+.sova-setting-desc { font-size: 0.8125rem; color: var(--ctp-overlay1); margin-top: 0.25rem; max-width: 68ch; }
+.sova-setting-side { min-width: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+.sova-setting-control { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
+.sova-setting-control > .sova-input { flex: 1 1 10rem; width: auto; min-width: 0; padding: 0.375rem 0.625rem; font-size: 0.8125rem; }
+.sova-setting-readonly { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, monospace; font-size: 0.8125rem; color: var(--ctp-overlay2); overflow-wrap: anywhere; }
+.sova-setting-edit-btns { display: none; align-items: center; gap: 0.5rem; }
+.sova-setting-dirty .sova-setting-edit-btns, .sova-setting-edit-btns.sova-setting-edit-btns-on { display: inline-flex; }
+.sova-setting-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; flex-basis: 100%; }
+.sova-setting-custom[hidden] { display: none; }
+.sova-setting-custom > .sova-input { flex: 1 1 10rem; width: auto; padding: 0.375rem 0.625rem; font-size: 0.8125rem; }
+.sova-setting-link { border: 0; background: transparent; padding: 0; font-size: 0.75rem; color: var(--ctp-blue); cursor: pointer; }
+.sova-setting-link:hover { text-decoration: underline; }
+.sova-setting-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; font-size: 0.75rem; color: var(--ctp-overlay0); }
+.sova-setting-meta:empty { display: none; }
+.sova-setting-meta code { color: var(--ctp-subtext0); overflow-wrap: anywhere; }
+.sova-setting-msg { font-size: 0.75rem; flex-basis: 100%; }
+.sova-setting-msg:empty { display: none; }
+.sova-setting-msg-ok { color: var(--ctp-green); }
+.sova-setting-msg-warn { color: var(--ctp-yellow); }
+.sova-setting-msg-err { color: var(--ctp-red); }
+.sova-setting-msg-muted { color: var(--ctp-overlay1); }
+.sova-setting-object { width: 100%; font-size: 0.75rem; border-collapse: collapse; }
+.sova-setting-object td { padding: 0.1875rem 0.375rem; border-top: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3); vertical-align: top; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.sova-setting-object td:first-child { color: var(--ctp-overlay1); width: 45%; }
+.sova-setting-object td:last-child { color: var(--ctp-subtext1); }
+.sova-setting-order { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; flex-basis: 100%; }
+.sova-setting-order:empty { display: none; }
+.sova-setting-order li { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; }
+.sova-setting-order-name { flex: 1; min-width: 0; font-family: ui-monospace, monospace; color: var(--ctp-subtext1); overflow-wrap: anywhere; }
+.sova-setting-order .sova-btn { padding: 0.125rem 0.375rem; color: var(--ctp-overlay2); }
+.sova-setting-order .sova-btn:hover:not(:disabled) { background: var(--color-surface-hover); color: var(--ctp-text); }
+.sova-setting-order .sova-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.sova-setting-picker { display: flex; gap: 0.5rem; flex-basis: 100%; }
+.sova-setting-picker .sova-input { padding: 0.375rem 0.625rem; font-size: 0.8125rem; }
+
+/* Overview */
+.sova-overview-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 1.25rem; align-items: start; }
+.sova-overview-side { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.sova-overview-health { margin-top: 1.25rem; }
+.sova-overview-grid .sova-card-header { justify-content: flex-start; gap: 0.625rem; }
+.sova-overview-health .sova-card-header { justify-content: flex-start; gap: 0.625rem; }
+.sova-overview-card-title { font-size: 0.875rem; font-weight: 600; color: var(--ctp-text); margin: 0; }
+.sova-overview-state { font-size: 0.8125rem; font-weight: 600; color: var(--ctp-overlay1); }
+.sova-overview-state-on { color: var(--ctp-green); }
+.sova-overview-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.625rem; padding: 0.4375rem 0.25rem; border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.25); min-width: 0; }
+.sova-overview-row-main { border-bottom: 0; margin-bottom: 0.375rem; }
+.sova-overview-name { flex: 1; min-width: 0; font-size: 0.8125rem; color: var(--ctp-subtext1); }
+.sova-overview-dot { display: inline-block; width: 0.375rem; height: 0.375rem; border-radius: 9999px; background: var(--ctp-blue); margin-left: 0.375rem; vertical-align: 0.125rem; }
+.sova-overview-dot[hidden] { display: none; }
+.sova-overview-switch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.25rem; margin-bottom: 0.875rem; }
+.sova-overview-switches .sova-settings-eyebrow { padding: 0 0 0.375rem; }
+.sova-overview-offnote { display: none; font-size: 0.75rem; color: var(--ctp-yellow); margin: 0 0 0.625rem; }
+.sova-overview-off .sova-overview-offnote { display: block; }
+.sova-overview-off .sova-overview-switches { opacity: 0.55; }
+.sova-overview-limit { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.sova-overview-capacity { display: flex; flex-direction: column; gap: 0.125rem; margin-top: 0.625rem; font-size: 0.75rem; color: var(--ctp-subtext0); }
+.sova-overview-capacity:empty { display: none; }
+.sova-settings-health { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.5rem; }
+.sova-settings-health-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0; border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.25); min-width: 0; font-size: 0.8125rem; }
+.sova-settings-health-name { color: var(--ctp-subtext1); white-space: nowrap; }
+.sova-settings-health-detail { flex: 1; min-width: 0; text-align: right; font-size: 0.75rem; color: var(--ctp-overlay0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 1279px) {
+  .sova-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .sova-setting-row { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1023px) {
+  .sova-settings-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .sova-settings-header { position: static; }
+  .sova-settings-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 0.25rem; }
+  .sova-settings-nav .sova-settings-eyebrow, .sova-settings-nav-sub, .sova-settings-nav-hint { display: none; }
+  .sova-settings-group { scroll-margin-top: 1rem; }
+  .sova-overview-switch-grid, .sova-settings-health { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sova-setting-row, .sova-settings-chip, .sova-settings-nav-item { transition: none; }
 }
 
 /* ============================================================

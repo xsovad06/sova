@@ -2,28 +2,174 @@
 {% block title %}Settings - SOVA{% endblock %}
 {% block content %}
 {% from "_icons.html" import icon %}
-<h2 class="text-2xl font-semibold mb-6">Settings</h2>
+{#- Status widgets shown under the group they belong to (static/js/pages/settings/widgets.js). -#}
+{% set group_widgets = {
+  "project": "personas",
+  "task_source": "labels",
+  "validation": "invariants",
+  "oversight": "operations-persona",
+  "llm": "llm-tools",
+  "agent": "runtime-tools",
+} %}
 
-<!-- Capacity recommendation (loaded async) -->
-<div id="capacity-callout" class="hidden mb-6 bg-surface-card rounded-lg border border-gray-700/50 p-4">
-  <div class="flex items-start gap-3">
-    <div class="shrink-0 w-8 h-8 rounded-full bg-accent-purple/20 flex items-center justify-center">
-      <span class="text-accent-purple text-sm font-bold">C</span>
+<div class="sova-settings-header">
+  <div class="sova-settings-title">
+    <h2 class="text-2xl font-semibold">Settings</h2>
+    <span id="settings-subtitle" class="sova-settings-subtitle">Loading settings...</span>
+  </div>
+  <div class="sova-settings-tools">
+    <div class="sova-settings-search">
+      {{ icon("search", "w-4 h-4") }}
+      <input id="settings-search" type="search" class="sova-input" autocomplete="off" spellcheck="false"
+             placeholder="Search all settings by name, key or description" aria-label="Search all settings">
+      <button id="settings-search-clear" type="button" class="sova-btn sova-settings-clear" hidden>Clear</button>
     </div>
-    <div class="min-w-0">
-      <p class="text-sm font-medium text-gray-300">Capacity Recommendation</p>
-      <p class="text-xs text-gray-500 mt-1" id="capacity-detail"></p>
-      <div class="flex gap-4 mt-2" id="capacity-metrics"></div>
-    </div>
+    <button id="settings-changed" type="button" class="sova-btn sova-settings-chip" aria-pressed="false">
+      Changed only <span id="settings-changed-count" class="sova-settings-chip-count">0</span>
+    </button>
   </div>
 </div>
 
-<!-- All settings in a responsive two-column grid -->
-<div id="config-groups" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 items-start">
-  <p class="text-gray-500 text-sm lg:col-span-2">Loading configuration...</p>
+<div class="sova-settings-layout">
+  <nav class="sova-settings-nav" aria-label="Settings sections">
+    <div class="sova-settings-eyebrow">Sections</div>
+    {% for section_id, group_ids in settings_sections.items() %}
+    <a href="#{{ section_id }}" class="sova-settings-nav-item" data-section-link="{{ section_id }}">
+      <span>{{ settings_section_labels[section_id] }}</span>
+      <span class="sova-settings-nav-count" data-section-count="{{ section_id }}"></span>
+    </a>
+    {% if group_ids %}
+    <div class="sova-settings-nav-sub" data-section-sub="{{ section_id }}" hidden>
+      {% for group_id in group_ids %}
+      <a href="#{{ group_id }}" data-group-link="{{ group_id }}">{{ setting_groups[group_id] }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+    <p id="settings-nav-hint" class="sova-settings-nav-hint"></p>
+  </nav>
+
+  <div class="sova-settings-main">
+    <div id="settings-error" class="sova-settings-error" role="alert" hidden></div>
+
+    {#- Overview: the settings the user checks most. Each control is the same setting as in its own group. -#}
+    <section id="section-overview" data-section="overview" class="sova-settings-section">
+      <header class="sova-settings-section-head">
+        <h3>Overview</h3>
+        <p>What you check most. Each control here is the same setting as in its own section; a change shows in both places.</p>
+      </header>
+      <div class="sova-overview-grid">
+        <div id="overview-supervisor" class="sova-card">
+          <div class="sova-card-header">
+            <h4 class="sova-overview-card-title">Supervisor</h4>
+            <span id="overview-supervisor-state" class="sova-overview-state"></span>
+            <a href="#supervisor" class="sova-settings-anchor sova-settings-push">All supervisor settings</a>
+          </div>
+          <div class="sova-card-body">
+            {% set meta = setting_meta("supervisor.enabled") %}
+            <div class="sova-overview-row sova-overview-row-main" data-key="supervisor.enabled" data-ctx="overview">
+              <span class="sova-overview-name" data-tooltip="{{ meta.description }}" data-tooltip-wide>Supervisor runs the pipeline on its own<span class="sova-overview-dot" data-part="dot" role="img" aria-label="changed" hidden></span></span>
+              <span class="flex" data-setting-switch="supervisor.enabled" data-label="{{ meta.label }}"></span>
+              <div class="sova-setting-msg" data-part="msg" role="status" aria-live="polite"></div>
+            </div>
+            <p class="sova-overview-offnote">The supervisor is off, so none of the switches below act until it is on. You can still set them.</p>
+            <div class="sova-overview-switches">
+              {% for title, keys in supervisor_switch_groups %}
+              <div class="sova-settings-eyebrow">{{ title }}</div>
+              <div class="sova-overview-switch-grid">
+                {% for key in keys %}{% set meta = setting_meta(key) %}
+                <div class="sova-overview-row" data-key="{{ key }}" data-ctx="overview">
+                  <span class="sova-overview-name" data-tooltip="{{ meta.description }}" data-tooltip-wide>{{ meta.label }}<span class="sova-overview-dot" data-part="dot" role="img" aria-label="changed" hidden></span></span>
+                  <span class="flex" data-setting-switch="{{ key }}" data-label="{{ meta.label }}"></span>
+                  <div class="sova-setting-msg" data-part="msg" role="status" aria-live="polite"></div>
+                </div>
+                {% endfor %}
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+
+        <div class="sova-overview-side">
+          <div class="sova-card">
+            <div class="sova-card-header">
+              <h4 class="sova-overview-card-title">Agent limit</h4>
+              <a href="#project" class="sova-settings-anchor sova-settings-push">Project</a>
+            </div>
+            {% set meta = setting_meta("max_parallel_agents") %}
+            <div class="sova-card-body" data-key="max_parallel_agents" data-ctx="overview">
+              <div class="sova-overview-limit">
+                <span class="flex" data-setting-stepper="max_parallel_agents" data-label="{{ meta.label }}" data-min="1" data-step="1"></span>
+                <span class="sova-overview-name">agents may run at once<span class="sova-overview-dot" data-part="dot" role="img" aria-label="changed" hidden></span></span>
+              </div>
+              <div class="sova-overview-capacity" data-widget="capacity"></div>
+              <div class="sova-setting-msg" data-part="msg" role="status" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="sova-card">
+            <div class="sova-card-header">
+              <h4 class="sova-overview-card-title">Oversight agent</h4>
+              <span id="overview-oversight-state" class="sova-overview-state"></span>
+              <a href="#oversight" class="sova-settings-anchor sova-settings-push">All oversight settings</a>
+            </div>
+            {% set meta = setting_meta("oversight.enabled") %}
+            <div class="sova-card-body">
+              <div class="sova-overview-row" data-key="oversight.enabled" data-ctx="overview">
+                <span class="sova-overview-name" data-tooltip="{{ meta.description }}" data-tooltip-wide>Watches runs and flags problems<span class="sova-overview-dot" data-part="dot" role="img" aria-label="changed" hidden></span></span>
+                <span class="flex" data-setting-switch="oversight.enabled" data-label="{{ meta.label }}"></span>
+                <div class="sova-setting-msg" data-part="msg" role="status" aria-live="polite"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sova-card">
+            <div class="sova-card-header">
+              <h4 class="sova-overview-card-title">Commands</h4>
+              <span class="sova-settings-status-muted sova-settings-push">SOVA Installation</span>
+            </div>
+            <div class="sova-card-body" data-widget="installation"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sova-card sova-overview-health">
+        <div class="sova-card-header">
+          <h4 class="sova-overview-card-title">Health checks</h4>
+          <span class="sova-settings-status-muted" data-part="health-summary"></span>
+          <button type="button" class="sova-btn sova-btn-primary sova-settings-push" data-act="health-run">Run again</button>
+        </div>
+        <div class="sova-card-body" data-widget="health"></div>
+      </div>
+    </section>
+
+    {% for section_id, group_ids in settings_sections.items() if group_ids %}
+    <section id="section-{{ section_id }}" data-section="{{ section_id }}" class="sova-settings-section" hidden>
+      <header class="sova-settings-section-head">
+        <h3>{{ settings_section_labels[section_id] }}</h3>
+        <p data-part="section-summary"></p>
+      </header>
+      {% for group_id in group_ids %}
+      <div id="group-{{ group_id }}" class="sova-settings-group" data-group="{{ group_id }}">
+        <div class="sova-settings-group-head">
+          <h4>{{ setting_groups[group_id] }}</h4>
+          <span class="sova-settings-group-count" data-part="group-count"></span>
+          <a class="sova-settings-anchor" href="#{{ group_id }}" data-tooltip="Link to this group" data-tooltip-pos="left">#{{ group_id }}</a>
+        </div>
+        {% if group_id in group_widgets %}
+        <div class="sova-settings-status" data-widget="{{ group_widgets[group_id] }}"></div>
+        {% endif %}
+        <div data-part="group-rows"><p class="sova-settings-note">Loading...</p></div>
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+
+    <section id="settings-results" class="sova-settings-section" aria-live="polite" hidden></section>
+  </div>
 </div>
 
-<!-- Review changes modal -->
+{#- Review changes modal (SOVA Installation, Overview) -#}
 <div id="review-changes-modal" class="sova-modal-backdrop">
   <div class="sova-modal-dialog flex flex-col" style="max-width: 56rem; max-height: 85vh">
     <div class="flex items-center gap-3 px-5 py-4 border-b border-gray-700/40 shrink-0">
@@ -35,1595 +181,23 @@
         <p class="text-xs text-gray-500 leading-tight mt-0.5">Select which files to sync</p>
       </div>
     </div>
-
     <div id="review-changes-body" class="px-5 py-4 space-y-3 overflow-y-auto grow">
       <p class="text-gray-500 text-sm">Loading...</p>
     </div>
-
-    <div class="flex items-center justify-between gap-2 px-5 py-3 border-t border-gray-700/40 shrink-0">
-      <span id="review-changes-status" class="text-xs text-gray-500"></span>
-      <div class="flex items-center gap-2">
-        <button type="button" onclick="closeReviewChangesModal()" class="sova-btn text-gray-400 hover:text-gray-200">Cancel</button>
-        <button type="button" onclick="applySelectedChanges()" id="apply-selected-btn" class="sova-btn sova-btn-primary">Apply selected</button>
-      </div>
+    <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-700/40 shrink-0">
+      <button type="button" data-act="review-close" class="sova-btn text-gray-400 hover:text-gray-200">Cancel</button>
+      <button type="button" data-act="review-apply" class="sova-btn sova-btn-primary">Apply selected</button>
     </div>
   </div>
 </div>
+
+<script type="application/json" id="settings-sections-data">[{% for section_id, group_ids in settings_sections.items() %}{"id": {{ section_id|tojson }}, "label": {{ settings_section_labels[section_id]|tojson }}, "groups": {{ group_ids|list|tojson }}}{{ "," if not loop.last }}{% endfor %}]</script>
 {% endblock %}
 
 {% block scripts %}
-<script>
-function formatValue(val, type, key) {
-  if (val === null || val === undefined || val === '') {
-    return '<span class="text-gray-600 italic text-xs">not set</span>';
-  }
-  if (type === 'boolean' || val === true || val === false) {
-    var isTrue = (val === true || val === 'true');
-    return '<label class="sova-toggle">' +
-      '<input type="checkbox"' + (isTrue ? ' checked' : '') +
-        ' onchange="toggleBool(\'' + escapeJsStr(key) + '\', this.checked)">' +
-      '<span class="sova-toggle-track"></span>' +
-    '</label>';
-  }
-  if (type === 'list') {
-    if (Array.isArray(val)) {
-      if (val.length === 0) return '<span class="text-gray-600 italic text-xs">empty list</span>';
-      return val.map(function(v) {
-        return '<span class="sova-badge mr-1 mb-0.5" style="background:rgb(var(--ctp-surface1-rgb)/0.5);color:var(--ctp-subtext1)">' + escapeHtml(String(v)) + '</span>';
-      }).join('');
-    }
-    return '<span class="text-gray-300 text-xs">' + escapeHtml(String(val)) + '</span>';
-  }
-  if (type === 'object') {
-    if (typeof val === 'object' && val !== null) {
-      var entries = Object.entries(val);
-      if (entries.length === 0) return '<span class="text-gray-600 italic text-xs">empty</span>';
-      return '<div class="space-y-0.5">' + entries.map(function(kv) {
-        return '<div class="text-xs"><span class="text-gray-500 font-mono">' + escapeHtml(kv[0]) + '</span>' +
-          '<span class="text-gray-600 mx-1">=</span>' +
-          '<span class="text-gray-300">' + escapeHtml(String(kv[1])) + '</span></div>';
-      }).join('') + '</div>';
-    }
-    return '<span class="text-gray-300 text-xs">' + escapeHtml(String(val)) + '</span>';
-  }
-  // A secret's real value never reaches here: get_config() masks every
-  // value_type="secret" key server-side, so val is always the fixed mask
-  // placeholder when set, and there is nothing to reveal.
-  if (type === 'secret' || type === 'number') {
-    return '<span class="text-gray-300 text-xs font-mono">' + escapeHtml(String(val)) + '</span>';
-  }
-  return '<span class="text-gray-300 text-xs">' + escapeHtml(String(val)) + '</span>';
-}
+<script type="module">
+import { init } from '/static/js/pages/settings/page.js';
 
-// Lists are edited as free text (JSON array or comma-separated); the backend
-// parses either form. Objects have no single-line representation, so they stay
-// read-only until a dedicated editor exists.
-var _LIST_INPUT_HINT = 'JSON array or comma-separated, e.g. ["gmail", "gcal"] or gmail, gcal';
-
-function renderSettingRow(s) {
-  var isBool = (s.value_type === 'boolean' || s.value === true || s.value === false);
-  var isObject = (s.value_type === 'object');
-  var editable = !isBool && !isObject;
-  var valHtml = formatValue(s.value, s.value_type, s.key);
-  var descHtml = s.description
-    ? '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(s.description) + '</div>'
-    : '';
-  var clickAttr = editable ? ' onclick="editConfig(\'' + escapeJsStr(s.key) + '\')" style="cursor:pointer"' : '';
-  var editBtn = editable
-    ? '<button onclick="event.stopPropagation(); editConfig(\'' + escapeJsStr(s.key) + '\')" ' +
-      'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">' +
-      'edit' +
-    '</button>'
-    : '<span class="text-xs opacity-0 shrink-0 pointer-events-none">edit</span>';
-  var moveToKeychainBtn = '';
-  if (s.value_type === 'secret' && s.keyring_capable && s.secret_location === 'database' && window._sovaKeyringAvailable) {
-    moveToKeychainBtn =
-      '<button onclick="event.stopPropagation(); moveSecretToKeychain(\'' + escapeJsStr(s.key) + '\')" ' +
-        'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">' +
-        'move to keychain' +
-      '</button>';
-  }
-  return '<tr class="border-b border-gray-700/20 hover:bg-surface-hover/30 group">' +
-    '<td class="px-4 py-3 align-top">' +
-      '<div class="flex items-baseline">' +
-        '<span class="text-sm text-gray-300">' + escapeHtml(s.label) + '</span>' +
-        '<span class="font-mono text-gray-600 text-xs ml-2 opacity-0 group-hover:opacity-100 transition-opacity">' + escapeHtml(s.key) + '</span>' +
-      '</div>' +
-      descHtml +
-    '</td>' +
-    '<td class="px-4 py-3 align-top text-right">' +
-      '<div class="flex items-center gap-2 justify-end"' + clickAttr + '>' +
-        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-options="' + escapeHtml(JSON.stringify(s.options || [])) + '" data-options-source="' + escapeHtml(s.options_source || '') + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
-        moveToKeychainBtn +
-        editBtn +
-      '</div>' +
-    '</td>' +
-  '</tr>';
-}
-
-async function moveSecretToKeychain(key) {
-  try {
-    var res = await fetch(apiUrl('/settings/config/migrate-secret'), {
-      method: 'POST',
-      headers: jsonCsrfHeaders(),
-      body: JSON.stringify({key: key}),
-    });
-    var data = await res.json();
-    if (!res.ok || data.error) {
-      showToast(data.detail || data.error || 'Failed to move secret', 'error');
-    } else {
-      showToast(key + ' moved to the OS keychain', 'success');
-      loadConfig();
-    }
-  } catch (e) {
-    showToast('Failed to move secret: ' + e.message, 'error');
-  }
-}
-
-function toggleGroup(groupId) {
-  var body = document.getElementById('group-body-' + groupId);
-  var chevron = document.getElementById('group-chevron-' + groupId);
-  var toggle = document.getElementById('group-toggle-' + groupId);
-  if (!body) return;
-
-  var isOpen = body.style.maxHeight && body.style.maxHeight !== '0px';
-  if (isOpen) {
-    body.style.maxHeight = '0px';
-    chevron.style.transform = 'rotate(-90deg)';
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
-  } else {
-    body.style.maxHeight = body.scrollHeight + 'px';
-    chevron.style.transform = 'rotate(0deg)';
-    if (toggle) toggle.setAttribute('aria-expanded', 'true');
-  }
-}
-
-async function loadConfig() {
-  try {
-    var res = await fetch(apiUrl('/settings/config/grouped'));
-    if (!res.ok) {
-      var detail = await getErrorDetail(res, 'Failed to fetch configuration');
-      throw new Error(detail);
-    }
-    var data = await res.json();
-    var container = document.getElementById('config-groups');
-    var groups = data.groups;
-    window._sovaKeyringAvailable = !!data.keyring_available;
-
-    if (!groups || groups.length === 0) {
-      groups = [];
-    }
-
-    // Remember which groups are expanded before rebuilding DOM
-    var expanded = [];
-    document.querySelectorAll('.sova-settings-body').forEach(function(body) {
-      if (body.style.maxHeight && body.style.maxHeight !== '0px') {
-        expanded.push(body.id.replace('group-body-', ''));
-      }
-    });
-
-    var html = groups.map(function(group) {
-      var rows = group.settings.map(renderSettingRow).join('');
-      var count = group.settings.length;
-
-      return '<div class="sova-card sova-settings-group">' +
-        '<button id="group-toggle-' + group.id + '" onclick="toggleGroup(\'' + group.id + '\')" ' +
-          'class="w-full sova-card-header cursor-pointer hover:bg-surface-hover/30 transition-colors" ' +
-          'aria-label="Toggle ' + escapeHtml(group.label) + ' settings" ' +
-          'aria-expanded="false" ' +
-          'aria-controls="group-body-' + group.id + '">' +
-          '<div class="flex items-center gap-2">' +
-            '<svg id="group-chevron-' + group.id + '" class="w-4 h-4 text-gray-500 transition-transform duration-200" ' +
-              'fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">' +
-              '<path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5"/>' +
-            '</svg>' +
-            '<h3 class="text-sm font-medium text-gray-300">' + escapeHtml(group.label) + '</h3>' +
-            '<span class="text-xs text-gray-600">' + count + '</span>' +
-          '</div>' +
-        '</button>' +
-        '<div id="group-body-' + group.id + '" class="sova-settings-body" style="max-height:0px">' +
-          '<div class="overflow-x-auto">' +
-            '<table class="w-full text-left" style="table-layout:fixed"><colgroup><col style="width:65%"><col style="width:35%"></colgroup><tbody>' + rows + '</tbody></table>' +
-          '</div>' +
-        '</div>' +
-      '</div>';
-    }).join('');
-
-    // Append Invariants and Personas cards into the same grid
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">Invariants</h3>' +
-      '</div>' +
-      '<div class="sova-card-body" id="invariants-list">' +
-        '<p class="text-gray-500 text-sm">Loading...</p>' +
-      '</div>' +
-    '</div>';
-
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">Personas</h3>' +
-      '</div>' +
-      '<div class="sova-card-body" id="personas-list">' +
-        '<p class="text-gray-500 text-sm">Loading...</p>' +
-      '</div>' +
-    '</div>';
-
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<div class="flex items-center justify-between">' +
-          '<h3 class="text-sm font-medium text-gray-400">Operations Persona</h3>' +
-          '<button type="button" onclick="openPersonaEditor()" ' +
-            'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Edit</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="sova-card-body" id="persona-preview">' +
-        '<p class="text-gray-500 text-sm">Loading...</p>' +
-      '</div>' +
-    '</div>';
-
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">SOVA Installation</h3>' +
-      '</div>' +
-      '<div class="sova-card-body" id="installation-status">' +
-        '<p class="text-gray-500 text-sm">Checking for updates...</p>' +
-      '</div>' +
-    '</div>';
-
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">GitHub Labels</h3>' +
-      '</div>' +
-      '<div class="sova-card-body" id="labels-status">' +
-        '<p class="text-gray-500 text-sm">Checking labels...</p>' +
-      '</div>' +
-    '</div>';
-
-    html += '<div class="sova-card">' +
-      '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">Health Checks</h3>' +
-      '</div>' +
-      '<div class="sova-card-body" id="health-checks-status">' +
-        '<p class="text-gray-500 text-sm">Running checks...</p>' +
-      '</div>' +
-    '</div>';
-
-    container.innerHTML = html;
-
-    // Inject LLM-specific tools and toggle the API key row before measuring
-    // group heights so the restored maxHeight reflects the final DOM.
-    enhanceLLMGroup();
-    enhanceAgentGroup();
-
-    // Restore previously expanded groups without animation, or auto-expand first on initial load
-    var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
-    toExpand.forEach(function(id) {
-      var body = document.getElementById('group-body-' + id);
-      if (body) {
-        body.style.transition = 'none';
-        body.style.maxHeight = body.scrollHeight + 'px';
-        body.offsetHeight;
-        body.style.transition = '';
-      }
-      var chevron = document.getElementById('group-chevron-' + id);
-      if (chevron) chevron.style.transform = 'rotate(0deg)';
-      var toggle = document.getElementById('group-toggle-' + id);
-      if (toggle) toggle.setAttribute('aria-expanded', 'true');
-    });
-
-    // Load invariants, personas, installation status, labels, and health checks into their containers
-    loadInvariants();
-    loadPersonas();
-    loadPersonaPreview();
-    loadInstallationStatus();
-    loadLabelsStatus();
-    loadHealthChecks();
-
-    // If the URL has a #groupId hash, open that group and scroll to it
-    var hash = window.location.hash.replace('#', '');
-    if (hash && document.getElementById('group-body-' + hash)) {
-      var hashBody = document.getElementById('group-body-' + hash);
-      var isAlreadyOpen = hashBody.style.maxHeight && hashBody.style.maxHeight !== '0px';
-      if (!isAlreadyOpen) toggleGroup(hash);
-      setTimeout(function() {
-        hashBody.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 120);
-    }
-  } catch (e) {
-    console.error('Failed to load config:', e);
-    var detail = (e.message || '').replace('HTTP 500: ', '');
-    if (detail.startsWith('Invalid configuration:')) {
-      document.getElementById('config-groups').innerHTML =
-        '<div class="lg:col-span-2 p-4 rounded-lg" style="background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3)">' +
-        '<p class="text-red-400 text-sm font-medium mb-1">Configuration Error</p>' +
-        '<p class="text-red-300 text-xs font-mono">' + escapeHtml(detail) + '</p>' +
-        '<p class="text-gray-500 text-xs mt-2">Fix the value in the settings above (or set the matching SOVA_ env var), then reload.</p>' +
-        '</div>';
-    } else {
-      document.getElementById('config-groups').innerHTML =
-        '<p class="text-gray-500 text-sm lg:col-span-2">Failed to load configuration</p>';
-    }
-  }
-}
-
-function _handleSaveResponse(data) {
-  if (data.error) {
-    showToast(data.error, 'error');
-  } else if (data.lifecycle_error) {
-    showToast(data.lifecycle_error, 'warning');
-  } else if (data.warning) {
-    showToast(data.warning, 'warning');
-  } else if (data.restart_required) {
-    showToast('Restart required for this setting to take effect', 'warning');
-  }
-}
-
-async function toggleBool(key, checked) {
-  try {
-    var res = await fetch(apiUrl('/settings/config'), {
-      method: 'POST',
-      headers: jsonCsrfHeaders(),
-      body: JSON.stringify({key: key, value: String(checked)}),
-    });
-    var data = await res.json();
-    _handleSaveResponse(data);
-    loadConfig();
-  } catch (e) {
-    showToast('Failed to save: ' + e.message, 'error');
-    loadConfig();
-  }
-}
-
-// Render a stored value as the text the edit input shows. An empty list becomes
-// an empty string so the format placeholder stays visible; every other
-// non-string value is JSON, which _cast_list()/_cast_value() parse back.
-// editConfig() and the blur no-change check must share this, or blurring an
-// untouched empty list would look like an edit and fire a pointless save.
-function _rawToInputString(raw) {
-  if (typeof raw === 'string') return raw;
-  if (Array.isArray(raw) && raw.length === 0) return '';
-  return JSON.stringify(raw);
-}
-
-function editConfig(key) {
-  var span = document.querySelector('.config-val[data-key="' + key + '"]');
-  // A live editor is either an input or a select. renderSettingRow() only
-  // wires editConfig() for non-boolean, non-object rows, and formatValue()
-  // renders no input or select for those types, so either element present
-  // here is a live editor. Re-entering while one is mounted would overwrite
-  // origHtml with the editor's own markup, so a later cancel would restore a
-  // dead widget instead of the value.
-  if (!span || span.querySelector('input') || span.querySelector('select')) return;
-
-  var currentVal;
-  if (span.dataset.raw) {
-    currentVal = _rawToInputString(JSON.parse(span.dataset.raw));
-  } else {
-    currentVal = span.textContent.trim();
-  }
-  if (currentVal === 'null' || currentVal === 'not set') currentVal = '';
-
-  var fieldType = span.dataset.type || 'string';
-
-  // Captured here, before any editor replaces the cell, so cancelEdit()
-  // restores the pre-edit display even when one editor hands off to another
-  // (the enumerable upgrade below).
-  span.dataset.origHtml = span.innerHTML;
-
-  if (fieldType === 'select') {
-    editSelectConfig(key, span, currentVal);
-  } else if (span.dataset.optionsSource && fieldType === 'list') {
-    editEnumerableListConfig(key, span, currentVal, span.dataset.optionsSource);
-  } else if (span.dataset.optionsSource) {
-    editEnumerableConfig(key, span, currentVal, span.dataset.optionsSource);
-  } else {
-    renderPlainTextEditor(key, span, currentVal, fieldType);
-  }
-}
-
-// Swap the live editor into the value cell and hide the row's edit button.
-function _mountEditor(span, el) {
-  span.innerHTML = '';
-  span.appendChild(el);
-  var btn = span.closest('td').querySelector('button');
-  if (btn) btn.style.display = 'none';
-}
-
-// Plain free-text editor: the default for every field, and the fail-open
-// fallback for an enumerable field while its options are still being
-// fetched (or if that fetch never succeeds).
-function renderPlainTextEditor(key, span, currentVal, fieldType) {
-  var input = document.createElement('input');
-  if (fieldType === 'secret') {
-    input.type = 'password';
-  } else if (fieldType === 'number') {
-    input.type = 'number';
-    input.step = 'any';
-    input.min = '0';
-  } else {
-    input.type = 'text';
-  }
-  input.value = currentVal;
-  input.className = 'sova-input text-xs py-1';
-  if (fieldType === 'list') {
-    input.placeholder = _LIST_INPUT_HINT;
-    input.title = _LIST_INPUT_HINT;
-  }
-
-  var saving = false;
-  input.onkeydown = function(e) {
-    if (e.key === 'Enter') { saving = true; saveConfig(key, input.value, span, input); }
-    if (e.key === 'Escape') { cancelEdit(span, input); }
-  };
-  // A list editor normalizes its own text (_rawToInputString() renders a
-  // non-empty list as a JSON array literal, editEnumerableListConfig()
-  // rewrites it to comma-separated), so the no-change check compares parsed
-  // entries rather than raw strings. Comparing the strings alone made merely
-  // opening agent.fallback_models and clicking away look like an edit and
-  // fire a pointless save, which is exactly what _rawToInputString() is
-  // shared to prevent for an untouched empty list.
-  function _isUnchanged(newVal, origStr) {
-    if (newVal === origStr) return true;
-    if (fieldType !== 'list') return false;
-    return _parseListInput(newVal).join(', ') === _parseListInput(origStr).join(', ');
-  }
-  input.onblur = function() {
-    if (saving) return;
-    var newVal = input.value;
-    var origStr = span.dataset.raw ? _rawToInputString(JSON.parse(span.dataset.raw)) : '';
-    if (!_isUnchanged(newVal, origStr)) {
-      saving = true;
-      saveConfig(key, newVal, span, input);
-    } else {
-      cancelEdit(span, input);
-    }
-  };
-
-  _mountEditor(span, input);
-  input.focus();
-  input.select();
-  return input;
-}
-
-// Per-source cache of the model-discovery fetch, keyed by options_source
-// (e.g. "llm" for GET /api/models/available?layer=llm). A rejected fetch, or
-// a 200 carrying models_service's own curated fallback, resolves to null so
-// every caller can fail open to the plain text input instead of leaving the
-// field stuck mid-request or stuck on the wrong provider's models.
-var _enumerableOptionsCache = {};
-
-function fetchEnumerableOptions(source) {
-  if (!_enumerableOptionsCache[source]) {
-    _enumerableOptionsCache[source] = fetchAPI(apiUrl('/models/available?layer=' + encodeURIComponent(source)))
-      .then(function(data) {
-        var byFamily = groupModelsByFamily(data.models);
-        if (Object.keys(byFamily).length === 0) throw new Error('no models enumerated');
-        // models_service.get_available_models() answers 200 with source
-        // "curated" (an Anthropic-only fallback list) while a provider is
-        // unauthenticated, misconfigured, or timed out, rather than a 503.
-        // It deliberately never caches that result server-side so the next
-        // poll retries; a "curated" answer here must not be retained either,
-        // or the dropdown stays wrong (e.g. an Ollama/LiteLLM deployment
-        // shown Anthropic-only options) for the rest of the page's life.
-        if (data.source === 'curated') throw new Error('curated fallback, not a real answer');
-        return byFamily;
-      })
-      .catch(function() {
-        delete _enumerableOptionsCache[source];
-        return null;
-      });
-  }
-  return _enumerableOptionsCache[source];
-}
-
-var _ENUMERABLE_CUSTOM_VALUE = '__custom__';
-
-// Optgroup labels, family ordering, and option building are shared with the
-// Agents launch modal's per-run override dropdown: see app.js's
-// MODEL_FAMILY_LABELS / appendModelOptgroups().
-
-// An enumerable field (e.g. agent.model) starts as the plain text editor so
-// it is always usable, then upgrades in place to a grouped <select> once
-// discovery resolves. Fetch failure or an empty result leaves the text
-// editor as the final state (fail open), per #1035's edge cases.
-function editEnumerableConfig(key, span, currentVal, source) {
-  var input = renderPlainTextEditor(key, span, currentVal, 'string');
-
-  fetchEnumerableOptions(source).then(function(byFamily) {
-    // The field may have been saved, cancelled, or re-edited while the
-    // fetch was in flight; only upgrade if our own text input is still live.
-    if (!byFamily || span.querySelector('input') !== input) return;
-    // A value the user has already typed is left alone too. The dropdown's
-    // blur semantics cancel rather than save (an untouched custom box must
-    // not clear the setting), so swapping the editor out from under a typed
-    // value would silently discard it on the next click away.
-    if (input.value !== currentVal) return;
-    renderEnumerableSelect(key, span, currentVal, byFamily);
-  });
-}
-
-// A list-valued enumerable field (e.g. agent.fallback_models) keeps the
-// plain comma-separated list editor as the source of truth and adds a
-// grouped <select> beside it that appends the chosen model id to that text
-// instead of replacing it. This avoids a dedicated repeatable-row list
-// editor while still making each entry typo-proof against the discovered
-// model catalog; the existing text input's own save/cancel handling is
-// untouched.
-// Mirrors _cast_list() server-side: accepts a JSON array literal (how
-// _rawToInputString() renders a non-empty list) or a comma-separated string,
-// and always normalizes to the latter so the picker's string ops below never
-// operate on raw JSON syntax.
-function _parseListInput(str) {
-  str = (str || '').trim();
-  if (str.charAt(0) === '[') {
-    try {
-      var parsed = JSON.parse(str);
-      if (Array.isArray(parsed)) return parsed.map(String).map(function(s) { return s.trim(); }).filter(Boolean);
-    } catch (e) {
-      // fall through to comma split
-    }
-  }
-  return str.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
-}
-
-function editEnumerableListConfig(key, span, currentVal, source) {
-  var input = renderPlainTextEditor(key, span, currentVal, 'list');
-  // currentVal may be a JSON array literal (see _rawToInputString()); normalize
-  // to comma-separated text up front so the picker below always deals with the
-  // same format the plain list editor's own save/cancel handling expects.
-  input.value = _parseListInput(input.value).join(', ');
-
-  // Everything below the text input lives in one container, so a blur that
-  // hands focus anywhere inside it is an internal handoff, not an abandoned
-  // edit. Without this, clicking any control first blurs the text input, and
-  // that input's own onblur (shared with every plain-text field) would tear
-  // the whole editor down via cancelEdit() before the click lands.
-  var controls = document.createElement('div');
-  controls.className = 'mt-1 space-y-1';
-  var pickerRow = document.createElement('div');
-  var orderList = document.createElement('ol');
-  orderList.className = 'space-y-1';
-  orderList.setAttribute('aria-label', 'Fallback order (tried top to bottom)');
-  controls.appendChild(pickerRow);
-  controls.appendChild(orderList);
-  span.appendChild(controls);
-
-  var originalInputOnblur = input.onblur;
-  function isInternalFocusHandoff(e) {
-    return !!(e && e.relatedTarget && (e.relatedTarget === input || controls.contains(e.relatedTarget)));
-  }
-  function guardBlur(el) {
-    el.onblur = function(e) {
-      if (isInternalFocusHandoff(e)) return;
-      originalInputOnblur.call(input, e);
-    };
-  }
-  guardBlur(input);
-
-  // The order shown here is exactly the order saved: each control rewrites
-  // the comma-separated text, which the server's _cast_list() splits in
-  // order into the agent.fallback_models list _invoke_with_fallback walks.
-  function renderOrder() {
-    var parts = _parseListInput(input.value);
-    orderList.innerHTML = '';
-    parts.forEach(function(model, i) {
-      var li = document.createElement('li');
-      li.className = 'flex items-center justify-end gap-1 text-xs';
-      var label = document.createElement('span');
-      label.className = 'font-mono text-gray-300 truncate min-w-0';
-      label.textContent = (i + 1) + '. ' + model;
-      li.appendChild(label);
-      [
-        { action: 'up', text: 'Up', title: 'Move up', enabled: i > 0 },
-        { action: 'down', text: 'Down', title: 'Move down', enabled: i < parts.length - 1 },
-        { action: 'remove', text: 'Remove', title: 'Remove', enabled: true },
-      ].forEach(function(spec) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'sova-btn text-xs px-1.5 py-0.5';
-        btn.textContent = spec.text;
-        btn.title = spec.title + ': ' + model;
-        btn.setAttribute('aria-label', spec.title + ' ' + model);
-        btn.dataset.idx = String(i);
-        btn.dataset.action = spec.action;
-        btn.disabled = !spec.enabled;
-        // Keep a mouse click from moving focus at all, so the text input
-        // stays focused; keyboard activation still focuses the button.
-        btn.onmousedown = function(e) { e.preventDefault(); };
-        btn.onclick = function(e) {
-          e.stopPropagation();
-          applyOrderAction(i, spec.action, document.activeElement === btn);
-        };
-        guardBlur(btn);
-        li.appendChild(btn);
-      });
-      orderList.appendChild(li);
-    });
-  }
-
-  function applyOrderAction(index, action, refocus) {
-    var parts = _parseListInput(input.value);
-    var target = index;
-    if (action === 'up' && index > 0) {
-      parts.splice(index - 1, 0, parts.splice(index, 1)[0]);
-      target = index - 1;
-    } else if (action === 'down' && index < parts.length - 1) {
-      parts.splice(index + 1, 0, parts.splice(index, 1)[0]);
-      target = index + 1;
-    } else if (action === 'remove') {
-      parts.splice(index, 1);
-    }
-    // Park focus on the input before the rows are rebuilt: removing a
-    // focused button fires a blur with no relatedTarget in some browsers,
-    // which would read as the user leaving the editor.
-    if (refocus) input.focus();
-    input.value = parts.join(', ');
-    renderOrder();
-    if (!refocus) return;
-    var next = orderList.querySelector('button[data-idx="' + target + '"][data-action="' + action + '"]');
-    if (next && !next.disabled) next.focus();
-  }
-
-  input.addEventListener('input', renderOrder);
-  renderOrder();
-
-  fetchEnumerableOptions(source).then(function(byFamily) {
-    if (!byFamily || span.querySelector('input') !== input) return;
-
-    var select = document.createElement('select');
-    select.className = 'sova-input text-xs py-1';
-    var picker = document.createElement('option');
-    picker.value = '';
-    picker.textContent = 'Add model...';
-    picker.selected = true;
-    select.appendChild(picker);
-    appendModelOptgroups(select, byFamily);
-
-    var addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'sova-btn text-xs ml-1';
-    addBtn.textContent = 'Add';
-
-    // Commit only on an explicit Add click/activation, not on the select's
-    // own 'change' event: a native <select> fires 'change' for every option
-    // arrow-key traversal lands on, not just the one the user settles on, so
-    // acting on 'change' alone appended every model a keyboard user navigated
-    // past on the way to the one they wanted, and was unreachable by keyboard
-    // without silently corrupting the list.
-    function commitPick() {
-      if (!select.value) return;
-      var parts = _parseListInput(input.value);
-      if (parts.indexOf(select.value) === -1) parts.push(select.value);
-      input.value = parts.join(', ');
-      select.value = '';
-      renderOrder();
-    }
-    addBtn.onclick = commitPick;
-    guardBlur(select);
-    guardBlur(addBtn);
-
-    pickerRow.appendChild(select);
-    pickerRow.appendChild(addBtn);
-  });
-}
-
-function renderEnumerableSelect(key, span, currentVal, byFamily) {
-  var select = document.createElement('select');
-  select.className = 'sova-input text-xs py-1';
-
-  var matched = appendModelOptgroups(select, byFamily, currentVal);
-
-  var customOpt = document.createElement('option');
-  customOpt.value = _ENUMERABLE_CUSTOM_VALUE;
-  customOpt.textContent = 'Custom...';
-  if (!matched) customOpt.selected = true;
-  select.appendChild(customOpt);
-
-  var customInput = document.createElement('input');
-  customInput.type = 'text';
-  customInput.className = 'sova-input text-xs py-1 mt-1';
-  customInput.placeholder = 'Custom model ID';
-  // Always prefilled with the real current value, even when matched (and
-  // thus hidden): picking "Custom..." to look around and then blurring
-  // without typing anything must cancel like every other editor, not wipe
-  // the field. A deliberate clear still works by deleting the text.
-  customInput.value = currentVal;
-  customInput.style.display = matched ? 'none' : '';
-
-  var wrap = document.createElement('div');
-  wrap.appendChild(select);
-  wrap.appendChild(customInput);
-
-  var saving = false;
-
-  // cancelEdit() clears onblur only on the element it is handed, and this
-  // editor hands it the wrapper, so the custom box's own handler has to be
-  // dropped here or it stays armed on a detached node.
-  function cancelEnumerable() {
-    customInput.onblur = null;
-    cancelEdit(span, wrap);
-  }
-
-  // Focus moving between the select and the custom box is a handoff inside
-  // this editor, not an abandoned edit. Without this the unmatched state
-  // (custom box visible and focused, which is every field whose stored ID is
-  // not in the discovered list) tears itself down the instant the user
-  // reaches for the dropdown: the mousedown blurs the box, the blur removes
-  // the editor, and the click never lands on the select at all.
-  function isInternalFocusHandoff(e) {
-    return !!(e && e.relatedTarget && wrap.contains(e.relatedTarget));
-  }
-
-  select.onchange = function() {
-    if (select.value === _ENUMERABLE_CUSTOM_VALUE) {
-      customInput.style.display = '';
-      customInput.focus();
-      return;
-    }
-    saving = true;
-    saveConfig(key, select.value, span, wrap);
-  };
-  select.onblur = function(e) {
-    if (saving || isInternalFocusHandoff(e)) return;
-    // Belt and braces for the programmatic focus() above: whenever the custom
-    // box is showing AND actually holds focus, its own onblur owns the exit
-    // from this editor. Checking visibility alone is not enough: once focus
-    // has already moved from the box to the select, the box's onblur fired
-    // and returned early as an internal handoff, so no handler would own the
-    // exit if this one also deferred to it.
-    if (customInput.style.display !== 'none' && document.activeElement === customInput) return;
-    cancelEnumerable();
-  };
-  select.onkeydown = function(e) {
-    if (e.key === 'Escape') cancelEnumerable();
-  };
-
-  customInput.onkeydown = function(e) {
-    if (e.key === 'Enter') { saving = true; saveConfig(key, customInput.value, span, wrap); }
-    if (e.key === 'Escape') { cancelEnumerable(); }
-  };
-  customInput.onblur = function(e) {
-    if (saving || isInternalFocusHandoff(e)) return;
-    // The box starts prefilled with currentVal (even when hidden behind a
-    // matched dropdown choice), so an untouched blur here is a no-op cancel,
-    // same as the plain text editor. Deleting the text and blurring is how a
-    // deliberate clear of an optional model field (e.g. roles.developer_model,
-    // which defaults to "") still works, saving the empty value rather than
-    // being treated as an abandoned pick that reverts to the old value.
-    if (customInput.value !== currentVal) {
-      saving = true;
-      saveConfig(key, customInput.value, span, wrap);
-    } else {
-      cancelEnumerable();
-    }
-  };
-
-  _mountEditor(span, wrap);
-  if (matched) select.focus(); else customInput.focus();
-}
-
-function editSelectConfig(key, span, currentVal) {
-  var options = [];
-  try { options = JSON.parse(span.dataset.options || '[]'); } catch (e) { options = []; }
-  if (!options.length) return;
-
-  var select = document.createElement('select');
-  select.className = 'sova-input text-xs py-1';
-  options.forEach(function(opt) {
-    var o = document.createElement('option');
-    o.value = opt;
-    o.textContent = opt;
-    if (opt === currentVal) o.selected = true;
-    select.appendChild(o);
-  });
-
-  var done = false;
-  select.onchange = function() {
-    done = true;
-    saveConfig(key, select.value, span, select);
-  };
-  select.onblur = function() {
-    if (done) return;
-    cancelEdit(span, select);
-  };
-  select.onkeydown = function(e) {
-    if (e.key === 'Escape') cancelEdit(span, select);
-  };
-
-  _mountEditor(span, select);
-  select.focus();
-}
-
-function cancelEdit(span, input) {
-  if (!input.parentNode) return;
-  input.onblur = null;
-  span.innerHTML = span.dataset.origHtml;
-  var btn = span.closest('td').querySelector('button');
-  if (btn) btn.style.display = '';
-}
-
-// A setting that does not apply to the active provider/runtime is hidden
-// rather than deleted: the stored value is retained server-side.
-function _setConfigRowVisible(key, visible) {
-  var span = document.querySelector('.config-val[data-key="' + key + '"]');
-  if (!span) return;
-  var row = span.closest('tr');
-  if (row) row.style.display = visible ? '' : 'none';
-}
-
-function enhanceLLMGroup() {
-  var providerSpan = document.querySelector('.config-val[data-key="llm.provider"]');
-  var provider = 'claude-code';
-  if (providerSpan && providerSpan.dataset.raw) {
-    try { provider = JSON.parse(providerSpan.dataset.raw); } catch (e) { provider = 'claude-code'; }
-  }
-
-  // Only the anthropic provider uses a stored API key.
-  _setConfigRowVisible('llm.api_key', provider === 'anthropic');
-
-  var body = document.getElementById('group-body-llm');
-  if (!body || document.getElementById('llm-tools')) return;
-  var panel = document.createElement('div');
-  panel.id = 'llm-tools';
-  panel.className = 'px-4 py-3 border-t border-gray-700/20 space-y-2';
-  panel.innerHTML =
-    '<div class="flex items-center gap-3">' +
-      '<button type="button" onclick="testLLMConnection()" class="sova-btn sova-btn-primary text-xs">Test Connection</button>' +
-      '<span id="llm-test-result" class="text-xs text-gray-500"></span>' +
-    '</div>' +
-    '<div class="text-xs text-gray-500">Projected monthly cost: ' +
-      '<span id="llm-cost-projection" class="text-gray-300 font-mono">loading...</span></div>';
-  body.appendChild(panel);
-  loadCostProjection();
-}
-
-async function _testConnection(url, elId, successPrefix, failureFallback) {
-  var el = document.getElementById(elId);
-  if (el) { el.textContent = 'Testing...'; el.className = 'text-xs text-gray-500'; }
-  try {
-    var res = await fetch(apiUrl(url), { method: 'POST' });
-    var data = await res.json();
-    if (!el) return;
-    if (data.ok) {
-      el.textContent = successPrefix + (data.detail ? ' (' + data.detail + ')' : '');
-      el.className = 'text-xs text-green-400';
-    } else {
-      el.textContent = 'Failed: ' + (data.detail || failureFallback);
-      el.className = 'text-xs text-red-400';
-    }
-  } catch (e) {
-    if (el) { el.textContent = 'Failed: ' + e.message; el.className = 'text-xs text-red-400'; }
-  }
-}
-
-async function testLLMConnection() {
-  return _testConnection('/settings/llm/test-connection', 'llm-test-result', 'Connected', 'provider unavailable');
-}
-
-// Runtimes whose AgentRuntime.honours_model_override is False: a model passed
-// to them is silently dropped, so a runtime-model pin has nothing to select.
-var _NO_MODEL_CHOICE_RUNTIMES = { codex: true };
-
-function enhanceAgentGroup() {
-  var runtimeSpan = document.querySelector('.config-val[data-key="agent.runtime"]');
-  var runtime = 'claude-code';
-  if (runtimeSpan && runtimeSpan.dataset.raw) {
-    try { runtime = JSON.parse(runtimeSpan.dataset.raw); } catch (e) { runtime = 'claude-code'; }
-  }
-
-  // codex.* settings only apply when agent.runtime = codex.
-  ['codex.model', 'codex.sandbox'].forEach(function(key) {
-    _setConfigRowVisible(key, runtime === 'codex');
-  });
-
-  // The converse for roles.developer_runtime_model (rendered in the roles
-  // group, found document-wide): a runtime that never forwards a
-  // caller-supplied model (codex, whose model comes from codex.model alone)
-  // gets no selector at all under #1039 rather than the plain, unhelpful
-  // text box fetchEnumerableOptions would otherwise leave behind. Decided
-  // from a mirrored set rather than a fetch so the row's final visibility is
-  // settled before renderSettings() measures group heights below; the set is
-  // pinned against AgentRuntime.honours_model_override by
-  // tests/test_settings_template.py, so a new runtime cannot drift past it.
-  _setConfigRowVisible('roles.developer_runtime_model', !_NO_MODEL_CHOICE_RUNTIMES[runtime]);
-
-  var body = document.getElementById('group-body-agent');
-  if (!body || document.getElementById('agent-runtime-tools')) return;
-  var panel = document.createElement('div');
-  panel.id = 'agent-runtime-tools';
-  panel.className = 'px-4 py-3 border-t border-gray-700/20 space-y-2';
-  panel.innerHTML =
-    '<div class="flex items-center gap-3">' +
-      '<button type="button" onclick="testAgentRuntimeConnection()" class="sova-btn sova-btn-primary text-xs">Test Runtime</button>' +
-      '<span id="agent-runtime-test-result" class="text-xs text-gray-500"></span>' +
-    '</div>';
-  body.appendChild(panel);
-}
-
-async function testAgentRuntimeConnection() {
-  return _testConnection('/settings/agent-runtime/test-connection', 'agent-runtime-test-result', 'Available', 'runtime unavailable');
-}
-
-async function loadCostProjection() {
-  var el = document.getElementById('llm-cost-projection');
-  if (!el) return;
-  try {
-    var data = await fetchAPI(apiUrl('/settings/llm/cost-projection'));
-    if (data.insufficient_data) {
-      el.textContent = 'insufficient data';
-      el.className = 'text-gray-600 italic';
-    } else {
-      el.textContent = '$' + parseFloat(data.projected_monthly_usd || 0).toFixed(2) + '/mo' +
-        ' (based on $' + parseFloat(data.window_total_usd || 0).toFixed(2) + ' over ' + data.observed_days + ' active day(s))';
-      el.className = 'text-gray-300 font-mono';
-    }
-  } catch (e) {
-    el.textContent = 'unavailable';
-    el.className = 'text-gray-600 italic';
-  }
-}
-
-async function saveConfig(key, value, span, input) {
-  try {
-    var res = await fetch(apiUrl('/settings/config'), {
-      method: 'POST',
-      headers: jsonCsrfHeaders(),
-      body: JSON.stringify({key: key, value: value}),
-    });
-    var data = await res.json();
-    if (data.error) {
-      showToast(data.error, 'error');
-      cancelEdit(span, input);
-    } else {
-      _handleSaveResponse(data);
-      input.onblur = null;
-      // A changed provider surface (llm.provider, or any llm.* field feeding
-      // model discovery) invalidates every previously-fetched enumerable
-      // dropdown, not just the field just saved, or a later edit to
-      // agent.model would still offer the old provider's models until reload.
-      if (key.indexOf('llm.') === 0) _enumerableOptionsCache = {};
-      loadConfig();
-    }
-  } catch (e) {
-    showToast('Failed to save: ' + e.message, 'error');
-    cancelEdit(span, input);
-  }
-}
-
-async function loadInvariants() {
-  try {
-    var data = await fetchAPI(apiUrl('/settings/invariants'));
-    var container = document.getElementById('invariants-list');
-    if (data.invariants.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-xs">No invariants found</p>';
-      return;
-    }
-    container.innerHTML = data.invariants.map(function(inv) {
-      var dotColor = inv.executable ? 'bg-accent-green' : 'bg-gray-500';
-      return '<div class="flex items-center gap-2 py-1">' +
-        '<span class="w-2 h-2 rounded-full ' + dotColor + '"></span>' +
-        '<span class="text-xs font-mono text-gray-300">' + escapeHtml(inv.name) + '</span>' +
-        (inv.executable ? '' : '<span class="text-xs text-gray-600">(not executable)</span>') +
-      '</div>';
-    }).join('');
-  } catch (e) {
-    console.error('Failed to load invariants:', e);
-  }
-}
-
-async function loadPersonas() {
-  try {
-    var data = await fetchAPI(apiUrl('/settings/personas'));
-    var container = document.getElementById('personas-list');
-
-    var html = '';
-    if (data.detected) {
-      html += '<div class="mb-3 text-xs">' +
-        '<span class="text-gray-500">Detected:</span> ' +
-        '<span class="text-accent-green font-medium">' + escapeHtml(data.detected) + '</span>' +
-      '</div>';
-    }
-
-    if (data.personas.length === 0) {
-      html += '<p class="text-gray-500 text-xs">No persona files found</p>';
-    } else {
-      html += data.personas.map(function(p) {
-        var isActive = data.detected && p.name === data.detected;
-        return '<div class="flex items-center gap-2 py-1">' +
-          '<span class="w-2 h-2 rounded-full ' + (isActive ? 'bg-accent-green' : 'bg-gray-600') + '"></span>' +
-          '<span class="text-xs text-gray-300">' + escapeHtml(p.name) + '</span>' +
-          (isActive ? '<span class="text-xs text-accent-green">(active)</span>' : '') +
-        '</div>';
-      }).join('');
-    }
-
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('Failed to load personas:', e);
-  }
-}
-
-async function loadInstallationStatus() {
-  var container = document.getElementById('installation-status');
-  if (!container) return;
-  try {
-    var data = await fetchAPI(apiUrl('/settings/installation/status'));
-    var html = '';
-
-    if (data.has_updates) {
-      html += '<div class="text-sm text-accent-yellow font-medium mb-2">' +
-        data.total_updates + ' update' + (data.total_updates !== 1 ? 's' : '') + ' available</div>';
-
-      html += '<div class="mt-3 flex items-center gap-3">' +
-        '<button type="button" onclick="openReviewChangesModal()" ' +
-          'class="px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">' +
-          'Review changes</button>' +
-        '<button type="button" id="btn-sync-installation" onclick="syncInstallation()" ' +
-          'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Sync All</button>' +
-        '<span id="sync-installation-status" class="text-xs text-gray-500"></span>' +
-      '</div>';
-    } else {
-      html += '<div class="text-sm text-accent-green mb-1">Up to date</div>' +
-        '<div class="mt-2">' +
-          '<button type="button" onclick="loadInstallationStatus()" ' +
-            'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>' +
-        '</div>';
-    }
-
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('Failed to load installation status:', e);
-    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to check installation status</p>';
-  }
-}
-
-async function syncInstallation() {
-  var btn = document.getElementById('btn-sync-installation');
-  var status = document.getElementById('sync-installation-status');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'Syncing...';
-  if (status) status.textContent = '';
-  try {
-    var res = await fetch(apiUrl('/setup/commands/sync'), {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-    });
-    if (!res.ok) {
-      var err = await res.json();
-      if (status) {
-        status.textContent = 'Error: ' + (err.detail || res.status);
-        status.className = 'text-xs text-accent-red';
-      }
-      btn.disabled = false;
-      btn.textContent = 'Sync All';
-      return;
-    }
-    var data = await res.json();
-    var parts = [];
-    if (data.commands && data.commands.updated > 0) {
-      parts.push(data.commands.updated + ' command' + (data.commands.updated !== 1 ? 's' : '') + ' updated');
-    }
-    if (data.guidelines && data.guidelines.updated > 0) {
-      parts.push(data.guidelines.updated + ' guideline' + (data.guidelines.updated !== 1 ? 's' : '') + ' updated');
-    }
-    if (parts.length === 0) parts.push('Already up to date');
-
-    var conflicts = [];
-    if (data.commands && data.commands.conflicts && data.commands.conflicts.length > 0) {
-      conflicts = conflicts.concat(data.commands.conflicts);
-    }
-    if (data.guidelines && data.guidelines.conflicts && data.guidelines.conflicts.length > 0) {
-      conflicts = conflicts.concat(data.guidelines.conflicts);
-    }
-
-    var container = document.getElementById('installation-status');
-    var html = '<div class="text-sm text-accent-green mb-1">Sync complete</div>' +
-      '<div class="text-xs text-gray-400 mb-1">' + escapeHtml(parts.join(', ')) + '</div>';
-
-    if (conflicts.length > 0) {
-      html += conflicts.map(function(f) {
-        return '<div class="text-xs text-accent-yellow">! ' + escapeHtml(f) + ': locally modified, skipped</div>';
-      }).join('');
-    }
-
-    html += '<div class="mt-2">' +
-      '<button type="button" onclick="loadInstallationStatus()" ' +
-        'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>' +
-    '</div>';
-
-    container.innerHTML = html;
-  } catch (e) {
-    if (status) {
-      status.textContent = 'Error: ' + e.message;
-      status.className = 'text-xs text-accent-red';
-    }
-    btn.disabled = false;
-    btn.textContent = 'Sync All';
-  }
-}
-
-var STATUS_META = {
-  conflict: { label: 'Conflict', badgeClass: 'bg-accent-red/20 text-accent-red', checkable: true, defaultChecked: false },
-  local_modified: {
-    label: 'Locally modified',
-    badgeClass: 'bg-accent-yellow/20 text-accent-yellow',
-    checkable: false,
-    defaultChecked: false,
-  },
-  upstream_only: { label: 'Update available', badgeClass: 'bg-accent/20 text-accent', checkable: true, defaultChecked: true },
-  new: { label: 'New', badgeClass: 'bg-accent-green/20 text-accent-green', checkable: true, defaultChecked: true },
-  removed: { label: 'Removed upstream', badgeClass: 'bg-gray-600/30 text-gray-400', checkable: false, defaultChecked: false },
-  local_only: { label: 'Local only', badgeClass: 'bg-gray-600/30 text-gray-400', checkable: false, defaultChecked: false },
-};
-
-var LINE_DIFF_MAX_CELLS = 250000;
-
-function diffMiddleLines(oldLines, newLines) {
-  var m = oldLines.length;
-  var n = newLines.length;
-  if (m === 0 && n === 0) return [];
-  if (m === 0) return newLines.map(function (t) { return { type: 'add', text: t }; });
-  if (n === 0) return oldLines.map(function (t) { return { type: 'remove', text: t }; });
-  if (m * n > LINE_DIFF_MAX_CELLS) {
-    return oldLines
-      .map(function (t) { return { type: 'remove', text: t }; })
-      .concat(newLines.map(function (t) { return { type: 'add', text: t }; }));
-  }
-
-  var dp = new Array(m + 1);
-  var i;
-  for (i = 0; i <= m; i++) dp[i] = new Int32Array(n + 1);
-  for (i = m - 1; i >= 0; i--) {
-    for (var j = n - 1; j >= 0; j--) {
-      dp[i][j] = oldLines[i] === newLines[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  var rows = [];
-  i = 0;
-  var j = 0;
-  while (i < m && j < n) {
-    if (oldLines[i] === newLines[j]) {
-      rows.push({ type: 'context', text: oldLines[i] });
-      i++;
-      j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      rows.push({ type: 'remove', text: oldLines[i] });
-      i++;
-    } else {
-      rows.push({ type: 'add', text: newLines[j] });
-      j++;
-    }
-  }
-  while (i < m) {
-    rows.push({ type: 'remove', text: oldLines[i] });
-    i++;
-  }
-  while (j < n) {
-    rows.push({ type: 'add', text: newLines[j] });
-    j++;
-  }
-  return rows;
-}
-
-function computeLineDiff(oldText, newText) {
-  var oldLines = (oldText === null || oldText === undefined) ? [] : oldText.split('\n');
-  var newLines = (newText === null || newText === undefined) ? [] : newText.split('\n');
-
-  var start = 0;
-  var maxStart = Math.min(oldLines.length, newLines.length);
-  while (start < maxStart && oldLines[start] === newLines[start]) start++;
-
-  var oldEnd = oldLines.length;
-  var newEnd = newLines.length;
-  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
-    oldEnd--;
-    newEnd--;
-  }
-
-  var rows = [];
-  var i;
-  for (i = 0; i < start; i++) rows.push({ type: 'context', text: oldLines[i] });
-  rows = rows.concat(diffMiddleLines(oldLines.slice(start, oldEnd), newLines.slice(start, newEnd)));
-  for (i = oldEnd; i < oldLines.length; i++) rows.push({ type: 'context', text: oldLines[i] });
-  return rows;
-}
-
-function renderDiffRows(oldText, newText) {
-  if (oldText == null && newText == null) {
-    return '<div class="text-xs text-gray-600 italic px-2 py-1">Content unavailable</div>';
-  }
-  if (oldText === '' && newText === '') {
-    return '<div class="text-xs text-gray-600 italic px-2 py-1">Empty file</div>';
-  }
-  var rows = computeLineDiff(oldText, newText);
-  return rows
-    .map(function (row) {
-      var prefix = row.type === 'add' ? '+' : row.type === 'remove' ? '-' : ' ';
-      var rowClass =
-        row.type === 'add'
-          ? 'bg-accent-green/10 text-accent-green'
-          : row.type === 'remove'
-            ? 'bg-accent-red/10 text-accent-red'
-            : 'text-gray-500';
-      return '<div class="' + rowClass + ' px-2 whitespace-pre-wrap break-words">' + escapeHtml(prefix + ' ' + row.text) + '</div>';
-    })
-    .join('');
-}
-
-function fileDiffSectionHtml(file) {
-  var meta = STATUS_META[file.status] || {
-    label: file.status,
-    badgeClass: 'bg-gray-600/30 text-gray-400',
-    checkable: false,
-    defaultChecked: false,
-  };
-  var checkboxHtml = meta.checkable
-    ? '<input type="checkbox" class="review-file-checkbox" data-filename="' + escapeHtml(file.filename) + '" ' +
-      'data-category="' + escapeHtml(file.category) + '" ' +
-      'aria-label="' + escapeHtml('Sync ' + file.filename) + '"' + (meta.defaultChecked ? ' checked' : '') + '>'
-    : '<span class="inline-block w-4"></span>';
-
-  return (
-    '<div class="border border-gray-700/30 rounded-lg overflow-hidden">' +
-      '<div class="flex items-center gap-2 px-3 py-2 bg-surface-hover/20">' +
-        checkboxHtml +
-        '<span class="text-sm font-mono text-gray-200 truncate">' + escapeHtml(file.filename) + '</span>' +
-        '<span class="text-xs px-1.5 py-0.5 rounded ' + meta.badgeClass + '">' + escapeHtml(meta.label) + '</span>' +
-        '<span class="text-xs text-gray-600 ml-auto">' + escapeHtml(file.category) + '</span>' +
-      '</div>' +
-      '<div class="max-h-56 overflow-y-auto font-mono text-xs py-1" tabindex="0" role="region" ' +
-        'aria-label="' + escapeHtml('Diff for ' + file.filename) + '">' +
-        (file.status === 'local_only' || file.status === 'removed'
-          ? '<div class="text-xs text-gray-600 italic px-2 py-1">' +
-            (file.status === 'removed'
-              ? 'Removed from canonical source: local copy is left untouched'
-              : file.local_content === null
-                ? 'File was removed from disk locally'
-                : 'Not managed by SOVA: left untouched') +
-            '</div>'
-          : renderDiffRows(file.local_content, file.canonical_content)) +
-      '</div>' +
-    '</div>'
-  );
-}
-
-var reviewChangesTrigger = null;
-var reviewChangesRequestId = 0;
-
-function reviewChangesFocusableElements(modal) {
-  return Array.prototype.slice.call(modal.querySelectorAll(
-    'button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex="0"]'
-  ));
-}
-
-async function openReviewChangesModal() {
-  var modal = document.getElementById('review-changes-modal');
-  var body = document.getElementById('review-changes-body');
-  var status = document.getElementById('review-changes-status');
-  if (!modal || !body) return;
-
-  reviewChangesTrigger = document.activeElement;
-  var requestId = ++reviewChangesRequestId;
-  body.innerHTML = '<p class="text-gray-500 text-sm">Loading...</p>';
-  if (status) status.textContent = '';
-  modal.classList.add('sova-modal-visible');
-  var initialFocus = reviewChangesFocusableElements(modal)[0];
-  if (initialFocus) initialFocus.focus();
-
-  try {
-    var data = await fetchAPI(apiUrl('/settings/installation/diff'));
-    if (requestId !== reviewChangesRequestId) return;
-    if (!data.source_available) {
-      body.innerHTML = '<p class="text-gray-500 text-sm">Canonical command source not found (non-editable install).</p>';
-      return;
-    }
-    if (!data.files || data.files.length === 0) {
-      body.innerHTML = '<p class="text-gray-500 text-sm">No changes to review.</p>';
-      return;
-    }
-    body.innerHTML = data.files.map(fileDiffSectionHtml).join('');
-  } catch (e) {
-    if (requestId !== reviewChangesRequestId) return;
-    body.innerHTML = '<p class="text-gray-500 text-sm">Failed to load changes: ' + escapeHtml(e.message) + '</p>';
-  }
-}
-
-function closeReviewChangesModal() {
-  var modal = document.getElementById('review-changes-modal');
-  if (modal) modal.classList.remove('sova-modal-visible');
-  reviewChangesRequestId++;
-  if (reviewChangesTrigger && document.contains(reviewChangesTrigger)) {
-    reviewChangesTrigger.focus();
-  }
-  reviewChangesTrigger = null;
-}
-
-async function applySelectedChanges() {
-  var modal = document.getElementById('review-changes-modal');
-  if (!modal) return;
-
-  var filenames = [];
-  var guidelineFilenames = [];
-  modal.querySelectorAll('.review-file-checkbox:checked').forEach(function (cb) {
-    if (cb.dataset.category === 'guideline') {
-      guidelineFilenames.push(cb.dataset.filename);
-    } else {
-      filenames.push(cb.dataset.filename);
-    }
-  });
-
-  if (filenames.length === 0 && guidelineFilenames.length === 0) {
-    showToast('Select at least one file to sync', 'warning');
-    return;
-  }
-
-  var btn = document.getElementById('apply-selected-btn');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = 'Applying...';
-  }
-
-  try {
-    var res = await fetch(apiUrl('/setup/commands/sync'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filenames: filenames, guideline_filenames: guidelineFilenames }),
-    });
-    if (!res.ok) {
-      var err = await res.json();
-      showToast(err.detail || 'Failed to apply changes', 'error');
-      return;
-    }
-    var data = await res.json();
-    var total = (data.commands.updated || 0) + (data.guidelines.updated || 0);
-    showToast(total + ' file' + (total !== 1 ? 's' : '') + ' synced', 'success');
-    closeReviewChangesModal();
-    loadInstallationStatus();
-  } catch (e) {
-    showToast('Failed to apply changes: ' + e.message, 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Apply selected';
-    }
-  }
-}
-
-document.getElementById('review-changes-modal').addEventListener('click', function (e) {
-  if (e.target === this) closeReviewChangesModal();
-});
-
-document.addEventListener('keydown', function (e) {
-  var modal = document.getElementById('review-changes-modal');
-  if (!modal || !modal.classList.contains('sova-modal-visible')) return;
-
-  if (e.key === 'Escape') {
-    closeReviewChangesModal();
-    return;
-  }
-  if (e.key !== 'Tab') return;
-
-  var focusable = reviewChangesFocusableElements(modal);
-  if (!focusable.length) {
-    e.preventDefault();
-    return;
-  }
-  var first = focusable[0];
-  var last = focusable[focusable.length - 1];
-  if (!modal.contains(document.activeElement) || focusable.indexOf(document.activeElement) === -1) {
-    e.preventDefault();
-    first.focus();
-  } else if (e.shiftKey && document.activeElement === first) {
-    e.preventDefault();
-    last.focus();
-  } else if (!e.shiftKey && document.activeElement === last) {
-    e.preventDefault();
-    first.focus();
-  }
-});
-
-async function loadPersonaPreview() {
-  var container = document.getElementById('persona-preview');
-  if (!container) return;
-  try {
-    var data = await fetchAPI(apiUrl('/settings/persona'));
-    var html = '';
-
-    html += '<div class="text-xs text-gray-600 mb-2">' + escapeHtml(data.path) + '</div>';
-
-    if (data.is_default) {
-      html += '<div class="text-xs text-gray-500 mb-2">(using default template)</div>';
-    }
-
-    html += '<pre class="text-xs text-gray-400 whitespace-pre-wrap break-words font-mono ' +
-      'bg-surface-hover/30 rounded p-3 max-h-48 overflow-y-auto">' +
-      escapeHtml(data.content) + '</pre>';
-
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('Failed to load persona:', e);
-    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to load operations persona</p>';
-  }
-}
-
-async function openPersonaEditor() {
-  try {
-    var res = await fetch(apiUrl('/settings/persona/open'), {method: 'POST'});
-    if (!res.ok) {
-      var err = await res.json();
-      alert(err.detail || 'Failed to open editor');
-    }
-  } catch (e) {
-    alert('Failed to open editor: ' + e.message);
-  }
-}
-
-loadConfig();
-loadCapacityRecommendation();
-
-async function loadCapacityRecommendation() {
-  try {
-    var rec = await fetchAPI(apiUrl('/resources/capacity'));
-    if (!rec) return;
-    var callout = document.getElementById('capacity-callout');
-    callout.classList.remove('hidden');
-    document.getElementById('capacity-detail').textContent = rec.reason || 'Insufficient data for recommendation.';
-    if (rec.confidence === 'insufficient') {
-      document.getElementById('capacity-metrics').innerHTML =
-        '<span class="text-xs text-gray-600">Confidence: insufficient</span>';
-      return;
-    }
-    var confColor = rec.confidence === 'high' ? 'text-accent-green' : rec.confidence === 'medium' ? 'text-accent-yellow' : 'text-gray-400';
-    var metricsContainer = document.getElementById('capacity-metrics');
-    metricsContainer.innerHTML = '';
-    function appendMetric(text, cls) {
-      var span = document.createElement('span');
-      span.className = cls;
-      span.textContent = text;
-      metricsContainer.appendChild(span);
-    }
-    appendMetric('Current: ' + rec.current_max, 'text-sm font-medium text-gray-300');
-    appendMetric('Recommended: ' + rec.recommended_max, 'text-sm font-medium text-accent-purple');
-    if (rec.headroom_cpu_percent != null) appendMetric('CPU headroom: ' + rec.headroom_cpu_percent + '%', 'text-xs text-gray-500');
-    if (rec.headroom_memory_percent != null) appendMetric('Mem headroom: ' + rec.headroom_memory_percent + '%', 'text-xs text-gray-500');
-    appendMetric('Confidence: ' + rec.confidence, 'text-xs ' + confColor);
-  } catch (e) {
-    // Capacity data not available
-  }
-}
-
-let _labelsLoading = false;
-
-async function loadLabelsStatus() {
-  var container = document.getElementById('labels-status');
-  if (!container) return;
-  if (_labelsLoading) return;
-  _labelsLoading = true;
-  try {
-    var data = await fetchAPI(apiUrl('/settings/labels/audit'));
-    var html = '';
-
-    if (data.error) {
-      html += '<div class="text-sm text-accent-yellow mb-1">Warning</div>' +
-        '<div class="text-xs text-gray-400 mb-2">' + escapeHtml(data.error) + '</div>' +
-        '<div class="text-xs text-gray-500">Ensure GitHub CLI is installed and authenticated with <code class="font-mono bg-surface-hover/30 px-1 rounded">gh auth login</code></div>';
-      container.innerHTML = html;
-      return;
-    }
-
-    if (data.missing && data.missing.length > 0) {
-      html += '<div class="text-sm text-accent-yellow font-medium mb-2">' +
-        data.missing.length + ' missing label' + (data.missing.length !== 1 ? 's' : '') + '</div>';
-
-      html += '<div class="text-xs text-gray-500 mb-3">Required labels for SOVA issue management</div>';
-
-      html += '<div class="space-y-1 mb-3 max-h-32 overflow-y-auto">';
-      var labelItems = data.missing.map(function(label) {
-        return '<div class="flex items-center gap-2 text-xs">' +
-          '<span class="inline-block w-3 h-3 rounded" style="background:#' + escapeHtml(label.color) + '"></span>' +
-          '<span class="font-mono text-gray-300">' + escapeHtml(label.name) + '</span>' +
-        '</div>';
-      });
-      html += labelItems.join('');
-      html += '</div>';
-
-      html += '<div class="mt-3 flex items-center gap-3">' +
-        '<button type="button" id="btn-create-labels" onclick="createMissingLabels()" ' +
-          'class="px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">' +
-          'Create ' + data.missing.length + ' missing label' + (data.missing.length !== 1 ? 's' : '') + '</button>' +
-        '<span id="create-labels-status" class="text-xs text-gray-500"></span>' +
-      '</div>';
-    } else {
-      html += '<div class="text-sm text-accent-green mb-1">All required labels exist</div>' +
-        '<div class="text-xs text-gray-500">' + data.total_required + ' labels configured</div>' +
-        '<div class="mt-2">' +
-          '<button type="button" onclick="loadLabelsStatus()" ' +
-            'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>' +
-        '</div>';
-    }
-
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('Failed to load labels status:', e);
-    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to check label status</p>';
-  } finally {
-    _labelsLoading = false;
-  }
-}
-
-function _healthCheckBadge(check) {
-  if (check.passed) return { label: 'OK', badgeClass: 'bg-accent-green/20 text-accent-green' };
-  if (check.required) return { label: 'FAIL', badgeClass: 'bg-accent-red/20 text-accent-red' };
-  return { label: 'WARN', badgeClass: 'bg-accent-yellow/20 text-accent-yellow' };
-}
-
-async function loadHealthChecks() {
-  var container = document.getElementById('health-checks-status');
-  if (!container) return;
-  try {
-    var data = await fetchAPI(apiUrl('/health/checks'));
-    var items = data.checks || [];
-
-    var rows = items.map(function(check) {
-      var badge = _healthCheckBadge(check);
-      return '<div class="flex items-start justify-between gap-3 text-xs py-1.5 border-b border-gray-700/20 last:border-b-0">' +
-        '<div class="min-w-0">' +
-          '<span class="text-gray-300 font-medium">' + escapeHtml(check.name) + '</span>' +
-          (check.detail ? '<div class="text-gray-500 mt-0.5">' + escapeHtml(check.detail) + '</div>' : '') +
-        '</div>' +
-        '<span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ' + badge.badgeClass + '">' + badge.label + '</span>' +
-      '</div>';
-    }).join('');
-
-    container.innerHTML = rows || '<p class="text-gray-500 text-sm">No checks reported</p>';
-  } catch (e) {
-    console.error('Failed to load health checks:', e);
-    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to run health checks</p>';
-  }
-}
-
-async function createMissingLabels() {
-  var btn = document.getElementById('btn-create-labels');
-  var status = document.getElementById('create-labels-status');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'Creating...';
-  if (status) status.textContent = '';
-  try {
-    var res = await fetch(apiUrl('/settings/labels/create'), {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-    });
-    if (!res.ok) {
-      var err = await res.json();
-      showToast(err.detail || 'Failed to create labels', 'error');
-      btn.disabled = false;
-      btn.textContent = 'Retry';
-      return;
-    }
-    var data = await res.json();
-    var message = data.created + ' label' + (data.created !== 1 ? 's' : '') + ' created';
-    if (data.errors && data.errors.length > 0) {
-      var errorCount = data.errors.length;
-      if (data.errors_truncated) {
-        errorCount += data.errors_truncated;
-      }
-      showToast(message + ', but ' + errorCount + ' failed (see console)', 'warning');
-      console.error('Label creation errors:', data.errors);
-      if (data.errors_truncated) {
-        console.warn('Plus ' + data.errors_truncated + ' more errors (truncated)');
-      }
-    } else {
-      showToast(message, 'success');
-    }
-    loadLabelsStatus();
-  } catch (e) {
-    showToast('Failed to create labels: ' + e.message, 'error');
-    btn.disabled = false;
-    btn.textContent = 'Retry';
-  }
-}
+init().catch((e) => console.error('settings page: init failed', e));
 </script>
 {% endblock %}

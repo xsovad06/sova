@@ -375,3 +375,95 @@ class TestSettingMetaRegistryParity:
         registry_keys = {m.key for m in _REGISTRY}
         extra = sorted(registry_keys - model_keys)
         assert not extra, f"SettingMeta entries with no matching ProjectConfig field: {extra}"
+
+
+class TestSettingsSections:
+    """The Settings page lists sections, each holding whole groups (#1463)."""
+
+    def test_sections_are_the_grouping_the_issue_agreed(self) -> None:
+        """#1463 named each section's groups; a regrouping must change this list deliberately, not silently."""
+        from sova.dashboard.settings_meta import SECTION_LABELS, SECTIONS
+
+        agreed = {
+            "Overview": [],
+            "Project and tracker": [
+                "Project",
+                "Task Source",
+                "Commits & PRs",
+                "CI / CD",
+                "External Reviews",
+                "Security",
+            ],
+            "Models and agents": ["LLM Provider", "Agent", "Roles", "Runaway Guards"],
+            "Pipeline": [
+                "Pipeline",
+                "Step Pipelines",
+                "Specification",
+                "Triage",
+                "Development",
+                "Code Review",
+                "Validation",
+                "Confidence Scoring",
+                "Conflict Resolution",
+                "Worktrees",
+                "Watch Mode",
+            ],
+            "Automation": ["Supervisor", "Oversight Agent", "Agent Health", "Awareness"],
+            "Integrations": [
+                "Integration",
+                "MCP Endpoint",
+                "A2A Protocol",
+                "LDAP Directory",
+                "Dependency Health",
+                "Fleet & Telemetry",
+            ],
+            "Server": ["Server & Notifications", "Dashboard"],
+        }
+        actual = {SECTION_LABELS[sid]: [GROUPS[gid] for gid in groups] for sid, groups in SECTIONS.items()}
+        assert actual == agreed
+        assert list(actual) == list(agreed)
+
+    def test_every_group_sits_in_exactly_one_section(self) -> None:
+        from sova.dashboard.settings_meta import SECTIONS
+
+        placed = [gid for groups in SECTIONS.values() for gid in groups]
+        assert sorted(placed) == sorted(GROUP_ORDER), "a group is missing from SECTIONS or listed twice"
+        assert len(placed) == len(set(placed))
+
+    def test_sections_name_only_known_groups(self) -> None:
+        from sova.dashboard.settings_meta import SECTIONS
+
+        unknown = [gid for groups in SECTIONS.values() for gid in groups if gid not in GROUPS]
+        assert unknown == []
+
+    def test_overview_comes_first_and_holds_no_group(self) -> None:
+        from sova.dashboard.settings_meta import SECTION_LABELS, SECTIONS
+
+        assert next(iter(SECTIONS)) == "overview"
+        assert SECTIONS["overview"] == ()
+        assert set(SECTION_LABELS) == set(SECTIONS)
+
+    def test_section_ids_never_shadow_a_different_group(self) -> None:
+        """`/settings#<id>` opens a section first, so a section id equal to a group id must hold that group."""
+        from sova.dashboard.settings_meta import SECTIONS
+
+        for section_id, groups in SECTIONS.items():
+            if section_id in GROUPS:
+                assert section_id in groups, f"#{section_id} opens section {section_id}, not the group of that name"
+
+    def test_overview_keys_are_registered_settings(self) -> None:
+        from sova.dashboard.settings_meta import OVERVIEW_KEYS
+
+        assert all(get_meta(key) is not None for key in OVERVIEW_KEYS)
+        assert "max_parallel_agents" in OVERVIEW_KEYS
+        assert "supervisor.enabled" in OVERVIEW_KEYS
+        assert "oversight.enabled" in OVERVIEW_KEYS
+
+    def test_overview_shows_the_13_supervisor_switches(self) -> None:
+        from sova.dashboard.settings_meta import OVERVIEW_KEYS, SUPERVISOR_SWITCH_GROUPS
+
+        switches = [key for _title, keys in SUPERVISOR_SWITCH_GROUPS for key in keys]
+        assert len(switches) == 13
+        assert len(set(switches)) == 13
+        assert all(get_meta(key).value_type == "boolean" for key in switches)
+        assert set(switches) <= set(OVERVIEW_KEYS)
