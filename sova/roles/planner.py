@@ -24,6 +24,7 @@ from sova.ipc.handoff import (
     write_handoff,
     write_handoff_file,
 )
+from sova.llm.client import runs_as_role
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
@@ -110,6 +111,7 @@ class PlannerRole(AgentRole):
             suggested_role="planner",
         )
 
+    @runs_as_role("planner")
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
         log.info("planner.start", project=ctx.project_dir.name)
 

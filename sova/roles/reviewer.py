@@ -48,7 +48,7 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.ipc.runtime import _codex_exec_args, _resolve_codex_api_key, _resolve_codex_cost_source
-from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model
+from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model, runs_as_role
 from sova.llm.guard import PromptInjectionError
 from sova.llm.models import CostSource, accumulate_llm_result
 
@@ -212,6 +212,7 @@ class ReviewerRole(AgentRole):
             suggested_role="reviewer",
         )
 
+    @runs_as_role("reviewer")
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
         try:
             return await self._execute(ctx)

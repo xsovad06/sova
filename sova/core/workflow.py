@@ -30,7 +30,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.db.models import FAILURE_ANNOUNCED_KEY, CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.ipc.notifications import NotificationKind, notify
-from sova.llm.client import start_call_counter
+from sova.llm.client import running_role, start_call_counter
 from sova.llm.errors import is_billing_failure, is_configuration_failure
 from sova.llm.models import CostSource
 from sova.utils.logging import get_logger
@@ -127,7 +127,15 @@ class WorkflowEngine:
         self._run_started_at: float = 0.0
 
     async def run(self) -> WorkflowResult:
-        """Execute all steps in order, respecting gates and retries."""
+        """Execute all steps in order, respecting gates and retries.
+
+        Every LLM call the steps make runs as ``ctx.role``'s, so the client's model fallback chain uses that
+        role's own fallbacks (``running_role()``), as the engine's own step fallback walk does.
+        """
+        with running_role(self._ctx.role):
+            return await self._run()
+
+    async def _run(self) -> WorkflowResult:
         # Set once, never re-stamped: the wall-clock guard must not be resettable
         # by re-entering run() on the same engine. The conditional is also what
         # lets a test preset the start to simulate an already-long-running pipeline
@@ -448,11 +456,12 @@ class WorkflowEngine:
         """Execute a step, retrying on failure up to max_retries.
 
         When all retries are exhausted with a billing/rate-limit failure,
-        advances to the next model in the configured fallback chain and
-        resets the retry counter.
+        advances to the next model in the run's fallback chain (the role's own
+        fallbacks when set, else ``agent.fallback_models``) and resets the
+        retry counter.
         """
         record = StepRecord(step_name=step.name, status="pending")
-        fallback_chain = self._ctx.config.agent.fallback_models
+        fallback_chain = self._ctx.fallback_chain
 
         while True:
             result = await self._try_step_with_retries(step, record)
@@ -818,7 +827,7 @@ class WorkflowEngine:
         """
         if not self._ctx.config.llm.engine_owned_fallback:
             return False
-        chain = self._ctx.config.agent.fallback_models
+        chain = self._ctx.fallback_chain
         return self._ctx.fallback_model_index < len(chain)
 
     def _advance_fallback(self, chain: list[str]) -> str | None:

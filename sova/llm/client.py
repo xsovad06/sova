@@ -8,15 +8,17 @@ to work unchanged.  The actual implementation lives in the configured
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from sova.config.models import LLMConfig, RolesConfig
 from sova.llm.backends import (
@@ -58,6 +60,8 @@ if TYPE_CHECKING:
     from sova.llm.provider import LLMProvider
 
 log = get_logger(component="llm.client")
+
+_T = TypeVar("_T")
 
 _provider: LLMProvider | None = None
 
@@ -190,6 +194,44 @@ def start_call_counter() -> None:
     ``_run_started_at`` so a resumed run does not reset the count mid-flight).
     """
     _call_counter.set(_CallCounter())
+
+
+# The role whose run is making LLM calls, so the model fallback chain can use that role's own fallbacks
+# (roles.<role>_fallback_models, #1463). Set for the duration of one role's run by running_role(), where each
+# role runs: WorkflowEngine.run() (every pipeline), TriageRole.execute(), ReviewerRole.execute() (panel review
+# included), PlannerRole.execute() and SupervisorPlanner.plan(). A role's run is the scope, not deferred work:
+# a task created inside it is that role's work, and anything outside every scope (a CLI harden, a scheduler
+# loop) reads None and walks agent.fallback_models, never another role's list.
+_running_role: ContextVar[str | None] = ContextVar("_running_role", default=None)
+
+
+@contextmanager
+def running_role(role: str | None) -> Iterator[None]:
+    """Mark the LLM calls made inside this block as *role*'s, for the role's fallback chain."""
+    token = _running_role.set(role or None)
+    try:
+        yield
+    finally:
+        _running_role.reset(token)
+
+
+def runs_as_role(role: str) -> Callable[[Callable[..., Awaitable[_T]]], Callable[..., Awaitable[_T]]]:
+    """Decorate a role's async entry point so every LLM call it makes runs under ``running_role(role)``."""
+
+    def decorate(fn: Callable[..., Awaitable[_T]]) -> Callable[..., Awaitable[_T]]:
+        @functools.wraps(fn)
+        async def wrapper(*args: object, **kwargs: object) -> _T:
+            with running_role(role):
+                return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def current_role() -> str | None:
+    """The role whose run is making the current LLM call, or None outside every role's run."""
+    return _running_role.get()
 
 
 def get_call_count() -> int:
@@ -513,8 +555,13 @@ def _build_candidate_chain(
     *,
     normalize: Callable[[str | None], str | None] = _normalize_model,
     prepend: str | None = None,
+    role: str | None = None,
 ) -> list[str | None]:
-    """Return the ordered chain: *primary* followed by ``agent.fallback_models``.
+    """Return the ordered chain: *primary* followed by the role's fallbacks.
+
+    The fallbacks are ``cfg.fallback_models_for(role)``: the role's own ``roles.<role>_fallback_models`` when
+    set, else ``agent.fallback_models``. *role* defaults to the role whose run is making the call
+    (``current_role()``); outside every role's run there is none, so the default list applies.
 
     *prepend*, when set (the per-run override, see ``run_model_override()``),
     goes ahead of *primary* so the override is tried first and the configured
@@ -552,7 +599,7 @@ def _build_candidate_chain(
     if cfg is None:
         return chain
 
-    for entry in cfg.agent.fallback_models:
+    for entry in cfg.fallback_models_for(role if role is not None else current_role()):
         if not entry:
             continue
         candidate = select_model(entry, cfg)

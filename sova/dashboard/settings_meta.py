@@ -1156,6 +1156,24 @@ _REGISTRY: list[SettingMeta] = [
         "roles",
         options_source="llm",
     ),
+    *(
+        SettingMeta(
+            f"roles.{role}_fallback_models",
+            f"{label} fallbacks",
+            f"Models tried in order when a {who} call hits a billing or rate-limit error. Not set uses the "
+            "default fallbacks (agent.fallback_models); an empty list means no fallbacks. Pin explicit IDs",
+            "roles",
+            "list",
+            options_source="llm",
+        )
+        for role, label, who in (
+            ("triage", "Triage", "triage"),
+            ("researcher", "Researcher", "research or spec"),
+            ("developer", "Developer", "developer pipeline (or address-review)"),
+            ("reviewer", "Reviewer", "review or panel review"),
+            ("planner", "Planner", "supervisor planner or Planner role"),
+        )
+    ),
     SettingMeta(
         "roles.nicknames", "Role nicknames", "Short aliases for role names (e.g. dev=developer)", "roles", "object"
     ),

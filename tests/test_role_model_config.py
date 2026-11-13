@@ -393,3 +393,216 @@ class TestPlannerModelResolution:
     def test_empty_planner_model_falls_back_to_literal(self, tmp_path: Path) -> None:
         planner = self._planner(tmp_path, RolesConfig(planner_model=""))
         assert planner._resolve_model() == _DEFAULT_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Fallbacks per role (#1463)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CHAIN = ["claude-sonnet-5-5", "claude-haiku-5-5"]
+
+
+def _fallback_config(**roles: object) -> ProjectConfig:
+    return ProjectConfig(agent={"model": "claude-opus-5-5", "fallback_models": list(_DEFAULT_CHAIN)}, roles=roles)
+
+
+def _identity(model: str | None) -> str | None:
+    return model
+
+
+class TestRoleFallbackSettings:
+    @pytest.mark.parametrize("role", ["triage", "researcher", "developer", "reviewer", "planner"])
+    def test_each_role_has_a_fallback_setting_that_defaults_to_none(self, role: str) -> None:
+        key = f"roles.{role}_fallback_models"
+        assert getattr(RolesConfig(), f"{role}_fallback_models") is None
+        meta = get_meta(key)
+        assert meta is not None
+        assert (meta.group, meta.value_type, meta.options_source) == ("roles", "list", "llm")
+
+    def test_a_role_without_its_own_list_uses_the_default_fallbacks(self) -> None:
+        assert _fallback_config().fallback_models_for("developer") == _DEFAULT_CHAIN
+
+    def test_a_role_with_its_own_list_uses_it(self) -> None:
+        cfg = _fallback_config(developer_fallback_models=["claude-haiku-5-5"])
+        assert cfg.fallback_models_for("developer") == ["claude-haiku-5-5"]
+        assert cfg.fallback_models_for("reviewer") == _DEFAULT_CHAIN
+
+    def test_an_empty_list_means_no_fallbacks(self) -> None:
+        assert _fallback_config(reviewer_fallback_models=[]).fallback_models_for("reviewer") == []
+
+    @pytest.mark.parametrize("role", [None, "", "custom"])
+    def test_no_role_or_a_role_without_a_field_uses_the_default_fallbacks(self, role: str | None) -> None:
+        cfg = _fallback_config(developer_fallback_models=["x"])
+        assert cfg.fallback_models_for(role) == _DEFAULT_CHAIN
+
+    def test_the_doctor_enumeration_lists_role_fallback_entries(self) -> None:
+        from sova.utils.diagnostics import configured_model_fields
+
+        fields = dict(configured_model_fields(_fallback_config(triage_fallback_models=["claude-haiku-5-5"])))
+        assert fields["roles.triage_fallback_models[0]"] == "claude-haiku-5-5"
+
+
+class TestCandidateChainUsesTheRunningRole:
+    """_build_candidate_chain() walks the running role's fallbacks; outside every role's run, the default."""
+
+    def _chain(self, cfg: ProjectConfig, **kwargs: object) -> list[str | None]:
+        from sova.llm.client import _build_candidate_chain
+
+        return _build_candidate_chain("claude-opus-5-5", cfg, normalize=_identity, **kwargs)
+
+    def test_a_role_with_its_own_fallbacks_uses_them(self) -> None:
+        from sova.llm.client import running_role
+
+        cfg = _fallback_config(developer_fallback_models=["claude-haiku-5-5"])
+        with running_role("developer"):
+            assert self._chain(cfg) == ["claude-opus-5-5", "claude-haiku-5-5"]
+
+    def test_a_role_without_its_own_fallbacks_uses_the_default(self) -> None:
+        from sova.llm.client import running_role
+
+        cfg = _fallback_config(developer_fallback_models=["claude-haiku-5-5"])
+        with running_role("reviewer"):
+            assert self._chain(cfg) == ["claude-opus-5-5", *_DEFAULT_CHAIN]
+
+    def test_outside_every_role_the_default_applies(self) -> None:
+        cfg = _fallback_config(developer_fallback_models=["claude-haiku-5-5"])
+        assert self._chain(cfg) == ["claude-opus-5-5", *_DEFAULT_CHAIN]
+
+    def test_an_empty_role_list_leaves_only_the_primary(self) -> None:
+        assert self._chain(_fallback_config(triage_fallback_models=[]), role="triage") == ["claude-opus-5-5"]
+
+    def test_the_scope_ends_with_the_block(self) -> None:
+        from sova.llm.client import current_role, running_role
+
+        with running_role("triage"):
+            with running_role("reviewer"):
+                assert current_role() == "reviewer"
+            assert current_role() == "triage"
+        assert current_role() is None
+
+
+class TestEngineFallbackWalkUsesTheRole:
+    """WorkflowEngine's step fallback walk and the CLI --fallback-model read the run's role list."""
+
+    def _ctx(self, tmp_path: Path, cfg: ProjectConfig, role: str = "developer") -> ExecutionContext:
+        return ExecutionContext(project_dir=tmp_path, config=cfg, adapter=AsyncMock(), issue_number="42", role=role)
+
+    def test_cli_fallback_model_is_the_roles_first_fallback(self, tmp_path: Path) -> None:
+        cfg = _fallback_config(developer_fallback_models=["claude-haiku-5-5"])
+        assert self._ctx(tmp_path, cfg).get_cli_fallback_model() == "claude-haiku-5-5"
+        assert self._ctx(tmp_path, cfg, role="reviewer").get_cli_fallback_model() == "claude-sonnet-5-5"
+
+    def test_has_fallback_models_reads_the_role_list(self, tmp_path: Path) -> None:
+        from sova.core.workflow import WorkflowEngine
+
+        cfg = _fallback_config(developer_fallback_models=[])
+        cfg.llm.engine_owned_fallback = True
+        assert WorkflowEngine(steps=[], ctx=self._ctx(tmp_path, cfg))._has_fallback_models() is False
+        assert WorkflowEngine(steps=[], ctx=self._ctx(tmp_path, cfg, role="triage"))._has_fallback_models() is True
+
+    @pytest.mark.parametrize(
+        ("roles", "expected"),
+        [({"developer_fallback_models": ["claude-haiku-5-5"]}, "claude-haiku-5-5"), ({}, "claude-sonnet-5-5")],
+    )
+    async def test_a_billing_failure_switches_to_the_roles_next_fallback(
+        self, tmp_path: Path, roles: dict, expected: str
+    ) -> None:
+        from sova.core.workflow import WorkflowEngine
+
+        cfg = _fallback_config(**roles)
+        cfg.llm.engine_owned_fallback = True
+        ctx = self._ctx(tmp_path, cfg)
+        ctx.resolved_model = "claude-opus-5-5"
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        seen: list[str | None] = []
+
+        async def attempt(_step: object, _record: object) -> str:
+            seen.append(ctx.resolved_model)
+            return "billing_exhausted" if len(seen) == 1 else "done"
+
+        with patch.object(engine, "_try_step_with_retries", side_effect=attempt):
+            await engine._execute_with_retries(MagicMock(name="develop"))
+
+        assert seen == ["claude-opus-5-5", expected]
+
+    async def test_run_marks_its_llm_calls_as_the_roles(self, tmp_path: Path) -> None:
+        from sova.core.workflow import WorkflowEngine
+        from sova.llm.client import current_role
+
+        engine = WorkflowEngine(steps=[], ctx=self._ctx(tmp_path, ProjectConfig(), role="researcher"))
+        seen: list[str | None] = []
+
+        async def body() -> MagicMock:
+            seen.append(current_role())
+            return MagicMock()
+
+        with patch.object(engine, "_run", side_effect=body):
+            await engine.run()
+        assert seen == ["researcher"]
+        assert current_role() is None
+
+
+class TestRolesRunInTheirScope:
+    """Each role that runs outside the WorkflowEngine marks its own LLM calls."""
+
+    async def test_triage_llm_assessment(self, tmp_path: Path) -> None:
+        from sova.llm.client import current_role
+        from sova.roles.triage import TriageRole
+
+        seen: list[str | None] = []
+
+        async def fake_invoke(*_a: object, **_k: object) -> LLMResult:
+            seen.append(current_role())
+            raise RuntimeError("stop here")
+
+        ctx = ExecutionContext(project_dir=tmp_path, config=ProjectConfig(), adapter=AsyncMock(), role="developer")
+        with patch("sova.llm.client.invoke", side_effect=fake_invoke):
+            await TriageRole().assess_task_with_llm(_task(), ctx)
+        assert seen == ["triage"]
+
+    async def test_reviewer_execute(self, tmp_path: Path) -> None:
+        from sova.llm.client import current_role
+
+        seen: list[str | None] = []
+
+        async def inner(_ctx: ExecutionContext) -> MagicMock:
+            seen.append(current_role())
+            return MagicMock()
+
+        role = ReviewerRole()
+        with patch.object(role, "_execute", side_effect=inner):
+            await role.execute(_review_ctx(tmp_path))
+        assert seen == ["reviewer"]
+
+    async def test_planner_role_execute(self, tmp_path: Path) -> None:
+        from sova.llm.client import current_role
+        from sova.roles.planner import PlannerRole
+
+        seen: list[str | None] = []
+
+        async def fake_invoke(*_a: object, **_k: object) -> LLMResult:
+            seen.append(current_role())
+            raise RuntimeError("stop here")
+
+        role = PlannerRole()
+        ctx = ExecutionContext(project_dir=tmp_path, config=ProjectConfig(), adapter=AsyncMock(), role="planner")
+        with (
+            patch.object(role, "_gather_open_issues", AsyncMock(return_value=[])),
+            patch("sova.llm.client.invoke", side_effect=fake_invoke),
+        ):
+            await role.execute(ctx)
+        assert seen == ["planner"]
+
+    async def test_supervisor_planner_call(self, tmp_path: Path) -> None:
+        from sova.llm.client import current_role
+
+        seen: list[str | None] = []
+
+        async def fake_invoke(*_a: object, **_k: object) -> LLMResult:
+            seen.append(current_role())
+            raise RuntimeError("stop here")
+
+        planner = TestPlannerModelResolution()._planner(tmp_path)
+        with patch("sova.supervisor.planner.invoke", side_effect=fake_invoke):
+            await planner._call_llm("system", "user", "claude-sonnet-5-5")
+        assert seen == ["planner"]

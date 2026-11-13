@@ -333,7 +333,7 @@ class ExecutionContext:
     runtime_usage: TokenUsage | None = None
     runtime_cost_usd: Decimal = Decimal("0")
 
-    # Model fallback chain (index into config.agent.fallback_models)
+    # Model fallback chain (index into fallback_chain: the role's own fallbacks, else agent.fallback_models)
     fallback_model_index: int = 0
 
     # Wall-clock start of the current run (time.monotonic()), mirrored from
@@ -656,14 +656,19 @@ class ExecutionContext:
             return None
         return task_type or None
 
+    @property
+    def fallback_chain(self) -> list[str]:
+        """This run's model fallback chain: the role's own fallbacks when set, else ``agent.fallback_models``."""
+        return self.config.fallback_models_for(self.role)
+
     def get_cli_fallback_model(self) -> str | None:
         """Get the next fallback model to pass to the Claude CLI via --fallback-model flag.
 
-        Returns the model at fallback_models[fallback_model_index], or None if exhausted.
+        Returns the model at fallback_chain[fallback_model_index], or None if exhausted.
         This enables intra-session resilience: if the primary model hits billing/rate-limit,
         Claude can fall back internally before the step-level retry kicks in.
         """
-        fallback_chain = self.config.agent.fallback_models
+        fallback_chain = self.fallback_chain
         if self.fallback_model_index < len(fallback_chain):
             return fallback_chain[self.fallback_model_index]
         return None

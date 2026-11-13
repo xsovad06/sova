@@ -704,6 +704,13 @@ class RolesConfig(BaseSettings):
     # would silently do nothing. A role gaining such steps adds its field
     # here and to _RUNTIME_MODEL_FIELDS.
     developer_runtime_model: str = ""
+    # Models tried in order when the role's model hits a billing or rate-limit error (#1463). None (the
+    # default) uses agent.fallback_models; an empty list means the role has no fallbacks.
+    triage_fallback_models: list[str] | None = None
+    researcher_fallback_models: list[str] | None = None
+    developer_fallback_models: list[str] | None = None
+    reviewer_fallback_models: list[str] | None = None
+    planner_fallback_models: list[str] | None = None
     nicknames: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_ROLES_")
@@ -713,8 +720,23 @@ class RolesConfig(BaseSettings):
         field_name = _RUNTIME_MODEL_FIELDS.get(role)
         return getattr(self, field_name) if field_name else ""
 
+    def fallback_models_for(self, role: str | None) -> list[str] | None:
+        """Return *role*'s own fallback list, or None when it has none set (or no field), so the default applies."""
+        field_name = ROLE_FALLBACK_FIELDS.get(role or "")
+        return getattr(self, field_name) if field_name else None
+
 
 _RUNTIME_MODEL_FIELDS: dict[str, str] = {"developer": "developer_runtime_model"}
+
+# The roles with their own fallback list, by the role name a run carries (ExecutionContext.role, and the name
+# sova.llm.client.running_role() is given). "planner" covers both the supervisor planner and the Planner role.
+ROLE_FALLBACK_FIELDS: dict[str, str] = {
+    "triage": "triage_fallback_models",
+    "researcher": "researcher_fallback_models",
+    "developer": "developer_fallback_models",
+    "reviewer": "reviewer_fallback_models",
+    "planner": "planner_fallback_models",
+}
 
 # The roles a runtime-model pin applies to, from either source (the config
 # field above or the launch modal's per-run override). One set, read by
@@ -1433,3 +1455,12 @@ class ProjectConfig(BaseSettings):
     @property
     def shared_knowledge_path(self) -> Path:
         return Path(self.shared_knowledge_dir).expanduser()
+
+    def fallback_models_for(self, role: str | None) -> list[str]:
+        """The fallback chain a call made for *role* walks: the role's own list when set, else agent.fallback_models.
+
+        The one rule for both chain walks (``sova.llm.client._build_candidate_chain()`` and the WorkflowEngine's
+        step fallback). A role without its own field, or no role at all, uses ``agent.fallback_models``.
+        """
+        own = self.roles.fallback_models_for(role)
+        return list(own) if own is not None else list(self.agent.fallback_models)

@@ -867,14 +867,17 @@ def names_non_openai_model(value: str) -> bool:
 # Model fields only the agent runtime consumes. Under a non-Codex runtime they legitimately name that
 # runtime's models (Claude IDs for claude-code), so a mixed setup does not fail on them.
 _RUNTIME_MODEL_KEYS = frozenset({"agent.model", "roles.developer_runtime_model"})
+# List fields whose entries the agent runtime walks too: the default chain and the developer's own (the only role
+# whose steps reach the runtime).
+_RUNTIME_MODEL_LIST_PREFIXES = ("agent.fallback_models[", "roles.developer_fallback_models[")
 
 
 def configured_model_fields(cfg: ProjectConfig) -> list[tuple[str, str]]:
     """List every non-empty model field of *cfg* as (key, value), in a stable order.
 
-    Covers the llm (routing and tier aliases included), agent, roles, oversight, confidence, review-panel and
-    conflict-resolution model fields. The one enumeration of SOVA's model settings: the openai-only and
-    configured-models doctor checks both filter it rather than keeping their own field list.
+    Covers the llm (routing and tier aliases included), agent, roles (fallback lists included), oversight,
+    confidence, review-panel and conflict-resolution model fields. The one enumeration of SOVA's model settings:
+    the openai-only and configured-models doctor checks both filter it rather than keeping their own field list.
     """
     scalar_fields = {
         "llm.model": cfg.llm.model,
@@ -891,6 +894,11 @@ def configured_model_fields(cfg: ProjectConfig) -> list[tuple[str, str]]:
     }
     fields = list(scalar_fields.items())
     fields += [(f"agent.fallback_models[{i}]", value) for i, value in enumerate(cfg.agent.fallback_models)]
+    from sova.config.models import ROLE_FALLBACK_FIELDS
+
+    for role, field_name in ROLE_FALLBACK_FIELDS.items():
+        own = getattr(cfg.roles, field_name) or []
+        fields += [(f"roles.{role}_fallback_models[{i}]", value) for i, value in enumerate(own)]
     fields += [(f"llm.routing.{task_type}", value) for task_type, value in cfg.llm.routing.items()]
     fields += [(f"llm.model_aliases.{alias}", value) for alias, value in cfg.llm.model_aliases.items()]
     fields += [(f"conflict_resolution.models[{i}]", value) for i, value in enumerate(cfg.conflict_resolution.models)]
@@ -911,7 +919,7 @@ def claude_model_references(cfg: ProjectConfig, *, include_runtime_fields: bool 
         (key, value)
         for key, value in configured_model_fields(cfg)
         if names_non_openai_model(value)
-        and (include_runtime_fields or not (key in _RUNTIME_MODEL_KEYS or key.startswith("agent.fallback_models[")))
+        and (include_runtime_fields or not (key in _RUNTIME_MODEL_KEYS or key.startswith(_RUNTIME_MODEL_LIST_PREFIXES)))
     ]
 
 
