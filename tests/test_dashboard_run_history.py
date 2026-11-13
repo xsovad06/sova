@@ -9,14 +9,17 @@ import re
 import shutil
 import subprocess
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.dashboard.services.work_service import get_work_history
 from sova.dashboard.services.work_state import RUN_ACTIONS, run_action, run_actions_payload
+from sova.db.models import StepExecution, TaskRun
 from sova.db.session import get_session
 from tests.conftest import DASHBOARD_DIR
 
@@ -97,6 +100,235 @@ class TestRunActionTable:
         assert (
             _format_running_agent({"role": "developer", "pipeline_variant": "developer"})["role_label"] == "Developing"
         )
+
+
+async def _add_run(
+    session: AsyncSession,
+    *,
+    role: str,
+    status: str = "done",
+    hours: float = 0,
+    issue: str | None = None,
+    pr: int | None = None,
+    cost: str = "0",
+    current_step: str | None = "complete",
+    steps: tuple[str, ...] = (),
+    error: str | None = None,
+) -> TaskRun:
+    started = T0 + timedelta(hours=hours)
+    run = TaskRun(
+        role=role,
+        status=status,
+        issue_number=issue,
+        pr_number=pr,
+        total_cost_usd=Decimal(cost),
+        current_step=current_step,
+        started_at=started,
+        ended_at=None if status == "running" else started + timedelta(minutes=10),
+        error_message=error,
+    )
+    session.add(run)
+    await session.flush()
+    for name in steps:
+        session.add(StepExecution(task_run_id=run.id, step_name=name, status="done", started_at=started))
+    return run
+
+
+@pytest.fixture
+async def runs(session: AsyncSession) -> dict[str, TaskRun]:
+    """One run per kind of work, including both ways a developer run reads as Address review."""
+    async with session.begin():
+        made = {
+            "develop": await _add_run(session, role="developer", hours=0, issue="10", cost="1.234", steps=("develop",)),
+            "address_steps": await _add_run(
+                session, role="developer", hours=1, issue="11", pr=20, cost="0.004", steps=("address_review",)
+            ),
+            "address_pr_only": await _add_run(
+                session, role="developer", status="failed", hours=2, issue="12", pr=21, current_step=None, error="boom"
+            ),
+            "develop_research_steps": await _add_run(
+                session, role="developer", hours=2.5, issue="16", pr=23, steps=("research",)
+            ),
+            "review": await _add_run(session, role="reviewer", hours=3, issue="11", pr=20, cost="0.50"),
+            "legacy_integrate": await _add_run(session, role="command:/integrate-pr 524", hours=-48, pr=524),
+            "other_command": await _add_run(session, role="command:health-audit", status="failed", hours=4),
+            "rebase": await _add_run(session, role="supervisor:rebase", status="failed", hours=5, issue="13", pr=22),
+            "research": await _add_run(session, role="researcher", hours=6, issue="14", steps=("research",)),
+            "triage": await _add_run(session, role="triage", hours=7, issue="15"),
+            "address_cmd": await _add_run(session, role="command:address-pr", status="stopped", hours=8, issue="11"),
+            "running": await _add_run(session, role="developer", status="running", hours=9, issue="17"),
+        }
+    return made
+
+
+class TestHistoryRows:
+    async def test_rows_carry_the_action_name_and_colour(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, limit=50)
+        by_id = {t["id"]: t for t in result["tasks"]}
+        expect = {
+            "develop": ("develop", "Develop", "blue"),
+            "address_steps": ("address-review", "Address review", "blue"),
+            "address_pr_only": ("address-review", "Address review", "blue"),
+            "develop_research_steps": ("develop", "Develop", "blue"),
+            "review": ("review", "Review", "green"),
+            "legacy_integrate": ("integrate", "Integrate", "teal"),
+            "other_command": ("health-audit", "Health audit", "gray"),
+            "rebase": ("rebase", "Rebase", "gray"),
+            "research": ("research", "Research", "mauve"),
+            "triage": ("triage", "Triage", "yellow"),
+            "address_cmd": ("address-review", "Address review", "blue"),
+        }
+        for name, (key, label, color) in expect.items():
+            row = by_id[runs[name].id]
+            assert (row["action"], row["action_label"], row["action_color"]) == (key, label, color), name
+        assert runs["running"].id not in by_id
+
+    async def test_rows_are_newest_first_by_start_time(self, session: AsyncSession, runs: dict) -> None:
+        # The reviewer run started after the develop run but ended at the same offset, and the stopped
+        # address-pr run started last: ordering by end time would not give this sequence.
+        async with session.begin():
+            runs["develop"].ended_at = T0 + timedelta(hours=20)
+        result = await get_work_history(session, limit=50)
+        starts = [t["started_at"] for t in result["tasks"]]
+        assert starts == sorted(starts, reverse=True)
+        assert result["tasks"][0]["id"] == runs["address_cmd"].id
+        assert result["tasks"][-1]["id"] == runs["legacy_integrate"].id
+
+    async def test_rows_no_longer_carry_step_counts(self, session: AsyncSession, runs: dict) -> None:
+        row = (await get_work_history(session, limit=1))["tasks"][0]
+        assert "steps_completed" not in row
+        assert "total_steps_possible" not in row
+
+
+class TestHistoryFilters:
+    async def test_since_includes_a_run_that_starts_exactly_then(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, since=T0 + timedelta(hours=3), limit=50)
+        ids = {t["id"] for t in result["tasks"]}
+        assert runs["review"].id in ids
+        assert runs["address_pr_only"].id not in ids
+        assert result["total"] == 6
+
+    async def test_until_excludes_a_run_that_starts_exactly_then(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, since=T0, until=T0 + timedelta(hours=3), limit=50)
+        ids = {t["id"] for t in result["tasks"]}
+        assert runs["review"].id not in ids
+        assert ids == {runs[n].id for n in ("develop", "address_steps", "address_pr_only", "develop_research_steps")}
+
+    async def test_bounds_in_another_time_zone_mean_the_same_instant(self, session: AsyncSession, runs: dict) -> None:
+        cet = timezone(timedelta(hours=1))
+        since = (T0 + timedelta(hours=3)).astimezone(cet)
+        result = await get_work_history(session, since=since, limit=50)
+        assert result["total"] == 6
+
+    @pytest.mark.parametrize(
+        ("action", "names"),
+        [
+            ("develop", {"develop", "develop_research_steps"}),
+            ("address-review", {"address_steps", "address_pr_only", "address_cmd"}),
+            ("review", {"review"}),
+            ("integrate", {"legacy_integrate"}),
+            ("rebase", {"rebase"}),
+            ("research", {"research"}),
+            ("triage", {"triage"}),
+            ("health-audit", {"other_command"}),
+            ("plan", set()),
+        ],
+    )
+    async def test_action_filter_matches_the_row_action(
+        self, session: AsyncSession, runs: dict, action: str, names: set[str]
+    ) -> None:
+        """The filter runs in SQL and the row's action in Python; they must agree for every kind of run."""
+        result = await get_work_history(session, action=action, limit=50)
+        assert {t["id"] for t in result["tasks"]} == {runs[n].id for n in names}
+        assert all(t["action"] == action for t in result["tasks"])
+        assert result["total"] == len(names)
+
+    async def test_action_filter_includes_a_command_named_after_a_registered_key(self, session: AsyncSession) -> None:
+        """``command:develop`` reports the registered key "develop", so the Develop filter must return it too."""
+        async with session.begin():
+            command = await _add_run(session, role="command:develop", hours=1, issue="30")
+            developer = await _add_run(session, role="developer", hours=2, issue="31", steps=("develop",))
+        result = await get_work_history(session, action="develop", limit=50)
+        assert {t["id"] for t in result["tasks"]} == {command.id, developer.id}
+        assert all(t["action"] == "develop" for t in result["tasks"])
+
+    @pytest.mark.parametrize("number", ["11", "#11", " 11 "])
+    async def test_number_matches_the_issue_or_the_pr(self, session: AsyncSession, runs: dict, number: str) -> None:
+        result = await get_work_history(session, number=number, limit=50)
+        ids = {t["id"] for t in result["tasks"]}
+        assert ids == {runs[n].id for n in ("address_steps", "review", "address_cmd")}
+
+    async def test_number_matches_a_pr_with_no_issue(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, number="524", limit=50)
+        assert [t["id"] for t in result["tasks"]] == [runs["legacy_integrate"].id]
+
+    async def test_number_matches_a_tracker_key(self, session: AsyncSession) -> None:
+        async with session.begin():
+            run = await _add_run(session, role="developer", issue="RHCLOUD-42")
+        result = await get_work_history(session, number="RHCLOUD-42", limit=50)
+        assert [t["id"] for t in result["tasks"]] == [run.id]
+
+    @pytest.mark.parametrize("number", ["²", "9" * 30, "#", "   "])
+    async def test_odd_number_text_never_errors(self, session: AsyncSession, runs: dict, number: str) -> None:
+        result = await get_work_history(session, number=number, limit=50)
+        expected = 11 if not number.strip().lstrip("#") else 0
+        assert result["total"] == expected
+
+    async def test_role_filter_still_works(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, role="reviewer", limit=50)
+        assert [t["id"] for t in result["tasks"]] == [runs["review"].id]
+
+
+class TestHistoryTotals:
+    async def test_total_cost_sums_every_filtered_run_not_just_the_page(
+        self, session: AsyncSession, runs: dict
+    ) -> None:
+        result = await get_work_history(session, limit=1)
+        assert len(result["tasks"]) == 1
+        assert result["total"] == 11
+        assert result["total_cost_usd"] == "1.738000"
+
+    async def test_failed_total_ignores_the_status_filter(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, status="done", limit=50)
+        assert result["failed_total"] == 3
+        assert all(t["status"] == "done" for t in result["tasks"])
+
+    async def test_failed_total_follows_the_other_filters(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, since=T0 + timedelta(hours=3), limit=50)
+        assert result["failed_total"] == 2
+        result = await get_work_history(session, action="address-review", limit=50)
+        assert result["failed_total"] == 1
+
+    async def test_an_empty_window_reports_zero(self, session: AsyncSession, runs: dict) -> None:
+        result = await get_work_history(session, since=T0 + timedelta(days=30), limit=50)
+        assert result == {"tasks": [], "total": 0, "total_cost_usd": "0.000000", "failed_total": 0}
+
+
+class TestHistoryEndpoint:
+    async def test_query_parameters_reach_the_service(self, client: AsyncClient, runs: dict) -> None:
+        since = (T0 + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        until = (T0 + timedelta(hours=4)).isoformat()
+        resp = await client.get(
+            "/api/work/history", params={"since": since, "until": until, "action": "review", "number": "#11"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [t["id"] for t in data["tasks"]] == [runs["review"].id]
+        assert data["total"] == 1
+        assert data["failed_total"] == 0
+        assert data["total_cost_usd"] == "0.500000"
+
+    async def test_default_page_is_twenty_five_rows(self, client: AsyncClient, session: AsyncSession) -> None:
+        async with session.begin():
+            for i in range(30):
+                await _add_run(session, role="triage", hours=i, issue=str(i))
+        data = (await client.get("/api/work/history")).json()
+        assert len(data["tasks"]) == 25
+        assert data["total"] == 30
+
+    async def test_an_unparseable_since_is_a_422(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/history", params={"since": "yesterday"})
+        assert resp.status_code == 422
 
 
 class TestRunActionsReachThePage:

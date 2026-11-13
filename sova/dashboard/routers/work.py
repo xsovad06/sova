@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException
 
 from sova.config.context import get_project_dir
@@ -35,13 +37,31 @@ async def get_active_grouped() -> dict:
 async def get_history(
     status: str | None = None,
     role: str | None = None,
-    limit: int = 15,
+    action: str | None = None,
+    number: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = 25,
     offset: int = 0,
 ) -> dict:
-    """Get completed/failed task run history with pagination."""
+    """Finished runs, newest first by start time, with the filtered count, cost and failed count.
+
+    ``since`` and ``until`` are ISO 8601 timestamps the browser computes from the user's local dates (``since``
+    inclusive, ``until`` exclusive), so the server needs no time zone.
+    """
     async with await get_session() as session:
         async with session.begin():
-            return await work_service.get_work_history(session, status=status, role=role, limit=limit, offset=offset)
+            return await work_service.get_work_history(
+                session,
+                status=status,
+                role=role,
+                action=action,
+                number=number,
+                since=since,
+                until=until,
+                limit=limit,
+                offset=offset,
+            )
 
 
 @router.get("/work/summary")
