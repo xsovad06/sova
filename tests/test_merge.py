@@ -495,6 +495,68 @@ class TestHandlePostMergeStateWithAdapter:
         adapter.transition_state.assert_awaited_once_with("PROJ-123", TaskState.ON_QA)
 
 
+class TestHandlePostMergeStateQueuePrune:
+    """A closed issue leaves supervisor.task_queue with the supervisor off; nothing else does."""
+
+    @pytest.mark.parametrize(
+        ("state", "pruned"),
+        [("done", True), ("on_qa", False)],
+    )
+    async def test_only_a_closed_issue_is_pruned(self, tmp_path, state: str, pruned: bool) -> None:
+        adapter = AsyncMock()
+        with patch("sova.config.db_loader.remove_from_task_queue", AsyncMock(return_value=[42])) as remove:
+            await handle_post_merge_state(
+                42, post_merge_state=state, repo="owner/repo", adapter=adapter, project_dir=tmp_path
+            )
+        if pruned:
+            remove.assert_awaited_once_with(tmp_path, [42])
+        else:
+            remove.assert_not_awaited()
+
+    async def test_gh_fallback_close_prunes_too(self, tmp_path) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock, return_value=_shell_ok()),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+            patch("sova.config.db_loader.remove_from_task_queue", AsyncMock(return_value=[42])) as remove,
+        ):
+            assert await handle_post_merge_state(42, post_merge_state="done", repo="owner/repo", project_dir=tmp_path)
+        remove.assert_awaited_once_with(tmp_path, [42])
+
+    async def test_failed_transition_is_not_pruned(self, tmp_path) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock, return_value=_shell_fail()),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+            patch("sova.config.db_loader.remove_from_task_queue", AsyncMock()) as remove,
+        ):
+            assert not await handle_post_merge_state(
+                42, post_merge_state="done", repo="owner/repo", project_dir=tmp_path
+            )
+        remove.assert_not_awaited()
+
+    async def test_prune_failure_does_not_change_the_result(self, tmp_path) -> None:
+        adapter = AsyncMock()
+        with patch("sova.config.db_loader.remove_from_task_queue", AsyncMock(side_effect=RuntimeError("db"))):
+            moved = await handle_post_merge_state(
+                42, post_merge_state="done", repo="owner/repo", adapter=adapter, project_dir=tmp_path
+            )
+        assert moved is True
+
+    async def test_a_jira_key_is_not_a_queue_entry(self, tmp_path) -> None:
+        adapter = AsyncMock()
+        with patch("sova.config.db_loader.remove_from_task_queue", AsyncMock()) as remove:
+            moved = await handle_post_merge_state(
+                "PROJ-7", post_merge_state="done", repo="owner/repo", adapter=adapter, project_dir=tmp_path
+            )
+        assert moved is True
+        remove.assert_not_awaited()
+
+    async def test_without_a_project_dir_nothing_is_pruned(self) -> None:
+        adapter = AsyncMock()
+        with patch("sova.config.db_loader.remove_from_task_queue", AsyncMock()) as remove:
+            await handle_post_merge_state(42, post_merge_state="done", repo="owner/repo", adapter=adapter)
+        remove.assert_not_awaited()
+
+
 class TestHandlePostMergeStateResult:
     """The return value says whether the issue moved, so a skip or a failure never reads as success."""
 

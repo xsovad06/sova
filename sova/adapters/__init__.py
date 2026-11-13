@@ -5,9 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
+
+log = get_logger(component="adapters")
 
 
 def create_adapter(config: ProjectConfig) -> TaskAdapter:
@@ -68,6 +71,21 @@ def create_adapter(config: ProjectConfig) -> TaskAdapter:
     raise ValueError(f"Unknown adapter type: {adapter_type!r}. Available: github, jira")
 
 
+async def close_adapter(adapter: TaskAdapter) -> None:
+    """Release what an adapter built for one call holds (Jira's HTTP client); a failure to close is only logged.
+
+    Safe on every exit path: an adapter with nothing to release (GitHub) is a no-op, and a close error never
+    replaces the result or the exception the caller is already handling.
+    """
+    close = getattr(adapter, "close", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception:  # noqa: BLE001 (cleanup must not replace the result or the error being raised)
+        log.warning("adapters.adapter_close_failed", exc_info=True)
+
+
 __all__ = [
     "AdapterError",
     "Milestone",
@@ -76,5 +94,6 @@ __all__ = [
     "TaskAdapter",
     "TaskFilters",
     "TaskState",
+    "close_adapter",
     "create_adapter",
 ]

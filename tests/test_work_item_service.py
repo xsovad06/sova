@@ -3596,6 +3596,86 @@ class TestBoundedGraphLoad:
         await cancel_graph_builds()
 
 
+class TestForgetGraph:
+    """forget_graph() makes the next ranking fetch afresh, and keeps a build that predates it out of the state."""
+
+    @pytest.fixture(autouse=True)
+    async def _cancel_builds_left_running(self):
+        yield
+        await cancel_graph_builds()
+
+    @pytest.mark.asyncio
+    async def test_the_last_graph_and_a_recorded_failure_are_dropped(self) -> None:
+        from sova.dashboard.services import work_item_service
+
+        work_item_service._last_graphs["None"] = DependencyGraph([_graph_task(1)])
+        work_item_service._graph_failures["None"] = (0.0, RuntimeError("old"))
+
+        work_item_service.forget_graph(None)
+
+        assert "None" not in work_item_service._last_graphs
+        assert "None" not in work_item_service._graph_failures
+
+    @pytest.mark.asyncio
+    async def test_a_build_in_flight_when_it_is_called_is_not_remembered(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        release = asyncio.Event()
+        stale = DependencyGraph([_graph_task(1)])
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return stale
+
+        _no_real_dependency_graph.side_effect = slow_load
+        build = work_item_service._shared_graph_build(None)
+
+        work_item_service.forget_graph(None)
+        release.set()
+        assert await build is stale  # callers already waiting on it still get an answer
+
+        assert "None" not in work_item_service._last_graphs
+        assert work_item_service._shared_graph_build(None) is not build  # the next caller starts afresh
+
+    @pytest.mark.asyncio
+    async def test_a_retired_build_is_still_cancelled_at_shutdown(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        async def hang(project_dir, milestone=""):
+            await asyncio.Event().wait()
+
+        _no_real_dependency_graph.side_effect = hang
+        build = work_item_service._shared_graph_build(None)
+        await asyncio.sleep(0)
+
+        work_item_service.forget_graph(None)
+        assert build in work_item_service._retired_graph_builds
+
+        await cancel_graph_builds()
+
+        assert build.cancelled()
+        assert not work_item_service._retired_graph_builds
+
+    @pytest.mark.asyncio
+    async def test_a_retired_build_is_untracked_once_it_finishes(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        release = asyncio.Event()
+
+        async def slow_load(project_dir, milestone=""):
+            await release.wait()
+            return DependencyGraph([])
+
+        _no_real_dependency_graph.side_effect = slow_load
+        build = work_item_service._shared_graph_build(None)
+        work_item_service.forget_graph(None)
+        release.set()
+        await build
+        await asyncio.sleep(0)  # let the done callback run
+
+        assert build not in work_item_service._retired_graph_builds
+
+
 class TestRankingGraphLoad:
     """`load_ranking_graph()` shares the work-items poll's build and keeps its raise-on-failure contract."""
 

@@ -55,6 +55,7 @@ from sova.dashboard.routers import (
     fleet_insights,
     handoff,
     health,
+    issues,
     lifecycle,
     mcp,
     memory,
@@ -1647,6 +1648,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     # Origin itself (validate_websocket_origin in sova/dashboard/security.py).
     app.include_router(agents.ws_router, prefix=prefix)
     app.include_router(work.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(issues.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(lifecycle.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(roles.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(spec.router, prefix=prefix, dependencies=csrf_dep)

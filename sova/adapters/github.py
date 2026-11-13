@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.label_catalog import LABEL_CATALOG, REQUIRED_LABELS
@@ -73,6 +74,15 @@ class _ProjectBoardMeta:
     project_id: str
     status_field_id: str
     options: dict[str, str] = field(default_factory=dict)
+
+
+# One lock per (repository, issue) for a whole priority update. The dashboard builds an adapter per request, so
+# the per-instance label lock cannot order two requests; this one is shared by every instance in the process.
+_PRIORITY_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _priority_lock(repo: str, task_id: str) -> asyncio.Lock:
+    return _PRIORITY_LOCKS.setdefault((repo, task_id), asyncio.Lock())
 
 
 class GitHubAdapter(TaskAdapter):
@@ -673,6 +683,61 @@ class GitHubAdapter(TaskAdapter):
             raise RuntimeError(
                 f"Failed to set milestone '{milestone_title}' on issue #{task_id}: {result.stderr[:200]}"
             )
+
+    async def set_priority(self, task_id: str, priority: Priority) -> None:
+        """Leave the issue with exactly one ``priority:`` label, the one for ``priority``.
+
+        Every priority label other than the target (any spacing or case, recognized or not) is dropped and the
+        target added, by label rather than by replacing the whole set: the target is added first
+        (``_add_label``), then each stale label is deleted on its own (``_delete_label``). A full-array PATCH
+        computed from a read would restore any label another writer changed after the read (another adapter
+        instance, another process, a human), such as a workflow state label, and no lock can cover writers in
+        other processes. Adding before deleting means a reader never sees the issue without a priority label;
+        between the two it can see both, which ``Priority.from_labels()`` resolves to the more urgent. An issue
+        that already carries only the target is untouched. The whole read, add and delete runs under one lock per
+        repository and issue shared by every adapter instance in the process (the dashboard builds one per
+        request), so two requests cannot interleave and delete each other's target; a writer in another process
+        is not covered.
+        """
+        async with _priority_lock(self.repo, task_id):
+            await self._set_priority_locked(task_id, priority)
+
+    async def _set_priority_locked(self, task_id: str, priority: Priority) -> None:
+        target = priority.github_label
+        result = await self._gh("issue", "view", task_id, "--repo", self.repo, "--json", "labels")
+        if not result.success:
+            raise RuntimeError(f"Failed to read labels for issue #{task_id}: {result.stderr[:200]}")
+        try:
+            current = [lbl["name"] for lbl in json.loads(result.stdout).get("labels", [])]
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+            raise RuntimeError(f"Failed to parse labels for issue #{task_id}: {e}") from e
+
+        # GitHub matches label names without case sensitivity, so "Priority: High" is the target "priority: high":
+        # treating it as stale would add the target (a no-op on the same label) and then delete it.
+        target_key = target.casefold()
+        stale = [name for name in current if name.casefold() != target_key and Priority.has_label([name])]
+        has_target = any(name.casefold() == target_key for name in current)
+        if not stale and has_target:
+            return
+        if not has_target:
+            await self._add_label(task_id, target)
+        for name in stale:
+            await self._delete_label(task_id, name)
+        log.info("set_priority", issue=task_id, priority=priority.value, removed=stale)
+
+    async def _delete_label(self, task_id: str, label: str) -> None:
+        """Remove one label from an issue through the REST endpoint, raising on failure.
+
+        Unlike ``remove_label`` this checks the result. A label already gone (404) counts as removed. Held on
+        the per-issue label lock, so the delete never lands inside ``_set_state_label``'s read-then-PATCH window.
+        """
+        async with self._label_lock(task_id):
+            result = await self._gh(
+                "api", f"repos/{self.repo}/issues/{task_id}/labels/{quote(label, safe='')}", "--method", "DELETE"
+            )
+        if result.success or "http 404" in result.stderr.lower():
+            return
+        raise RuntimeError(f"Failed to remove label '{label}' from issue #{task_id}: {result.stderr[:200]}")
 
     async def _add_label(self, task_id: str, label: str) -> None:
         """Add a label to an issue, creating the label on the repo if it doesn't exist.

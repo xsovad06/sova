@@ -12,18 +12,24 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.config.db_loader import (
+    TaskQueueConflictError,
     _save_config_to_db_sync,
     _save_with_immediate_lock,
     _save_within_transaction,
     _set_nested,
     _try_load_from_db,
     get_setting,
+    load_hidden_issues,
     load_task_queue,
+    merge_task_queue,
+    remove_from_task_queue,
     save_setting,
     save_task_queue,
+    set_issue_hidden,
 )
 from sova.config.loader import _deep_merge
 from sova.db.models import Base, ProjectSetting
+from sova.db.session import get_session
 
 
 @pytest.fixture
@@ -718,3 +724,200 @@ class TestSyncSaveWithoutSettingsTable:
         (tmp_path / ".claude" / "sova.db").write_bytes(b"")
         with patch("sqlalchemy.create_engine", side_effect=RuntimeError("boom")):
             assert _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"}) is None
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestRemoveFromTaskQueue:
+    """Pruning removes only what it is told to, keeps the order, and writes only on a change."""
+
+    async def test_removes_listed_ids_and_keeps_order(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [30, 10, 20, 40])
+
+        removed = await remove_from_task_queue(tmp_path, [10, 40, 99])
+
+        assert removed == [10, 40]
+        assert await load_task_queue(tmp_path) == [30, 20]
+
+    async def test_issue_never_in_the_queue_leaves_it_untouched_and_unsaved(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [1, 2])
+        with patch("sova.config.db_loader.save_task_queue", AsyncMock()) as save:
+            assert await remove_from_task_queue(tmp_path, [99]) == []
+        save.assert_not_awaited()
+        assert await load_task_queue(tmp_path) == [1, 2]
+
+    async def test_malformed_entry_does_not_crash_and_is_kept(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [1, "oops", None, 2])  # type: ignore[list-item]
+
+        assert await remove_from_task_queue(tmp_path, [2]) == [2]
+
+        async with await get_session(project_dir=tmp_path) as session:
+            assert await get_setting(session, "supervisor.task_queue") == [1, "oops", None]
+
+    async def test_unset_queue_is_a_noop(self, tmp_path: Path) -> None:
+        assert await remove_from_task_queue(tmp_path, [1]) == []
+
+
+def _racing_get_session(concurrent_queues: list[list[int]]) -> Any:
+    """A ``get_session`` that saves the next of ``concurrent_queues`` just before each queue write session.
+
+    ``_swap_task_queue()`` opens a read session, then a write session; a save landing before the write is what
+    another process writing between the two looks like.
+    """
+    calls = 0
+
+    async def racing(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls % 2 == 0 and concurrent_queues:
+            async with await get_session(**kwargs) as session, session.begin():
+                await save_setting(session, "supervisor.task_queue", concurrent_queues.pop(0))
+        return await get_session(**kwargs)
+
+    return racing
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestTaskQueueCompareAndSwap:
+    """A queue write computed from a stale read is rebuilt on the stored queue, never saved over it."""
+
+    async def test_prune_keeps_an_entry_another_process_added_meanwhile(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [42, 43])
+
+        with patch("sova.db.session.get_session", _racing_get_session([[42, 43, 44]])):
+            removed = await remove_from_task_queue(tmp_path, [42])
+
+        assert removed == [42]
+        assert await load_task_queue(tmp_path) == [43, 44]
+
+    async def test_based_on_save_keeps_a_concurrent_removal_and_addition(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [1, 2, 3])
+
+        saved = await save_task_queue(tmp_path, [3, 2, 1, 9], based_on=[1, 2, 3, 4])
+
+        # 4 was removed by another writer after the base was read: it stays removed and the rest keeps this order.
+        assert saved == [3, 2, 1, 9]
+        assert await load_task_queue(tmp_path) == [3, 2, 1, 9]
+
+    async def test_based_on_save_with_no_stored_queue_keeps_the_writers_queue(self, tmp_path: Path) -> None:
+        # No row yet (the queue came from sova.toml): nothing was removed by another writer, so nothing is dropped.
+        saved = await save_task_queue(tmp_path, [20], based_on=[10, 20])
+
+        assert saved == [20]
+        assert await load_task_queue(tmp_path) == [20]
+
+    async def test_based_on_save_rebased_after_a_lost_swap(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [1, 2])
+
+        with patch("sova.db.session.get_session", _racing_get_session([[2, 7]])):
+            saved = await save_task_queue(tmp_path, [2, 5], based_on=[1, 2])
+
+        assert saved == [2, 5, 7]
+        assert await load_task_queue(tmp_path) == [2, 5, 7]
+
+    async def test_based_on_save_creates_an_unset_queue(self, tmp_path: Path) -> None:
+        assert await save_task_queue(tmp_path, [5], based_on=[]) == [5]
+        assert await load_task_queue(tmp_path) == [5]
+
+    async def test_a_concurrent_first_write_of_an_unset_queue_is_kept(self, tmp_path: Path) -> None:
+        with patch("sova.db.session.get_session", _racing_get_session([[9]])):
+            saved = await save_task_queue(tmp_path, [5], based_on=[])
+
+        assert saved == [5, 9]
+        assert await load_task_queue(tmp_path) == [5, 9]
+
+    async def test_no_issue_id_removes_nothing_and_reads_nothing(self, tmp_path: Path) -> None:
+        with patch("sova.db.session.get_session", AsyncMock()) as session:
+            assert await remove_from_task_queue(tmp_path, ["7"]) == []  # type: ignore[list-item]
+        session.assert_not_awaited()
+
+    async def test_every_swap_lost_raises_and_saves_nothing_of_its_own(self, tmp_path: Path) -> None:
+        await save_task_queue(tmp_path, [1, 2])
+        concurrent = [[1, 2, 100 + n] for n in range(8)]
+
+        with (
+            patch("sova.db.session.get_session", _racing_get_session(concurrent)),
+            pytest.raises(TaskQueueConflictError),
+        ):
+            await remove_from_task_queue(tmp_path, [1])
+
+        assert await load_task_queue(tmp_path) == [1, 2, 107]
+
+    async def test_unreadable_stored_queue_is_replaced_by_a_based_on_save(self, tmp_path: Path) -> None:
+        async with await get_session(project_dir=tmp_path) as session, session.begin():
+            session.add(ProjectSetting(key="supervisor.task_queue", value="not json"))
+
+        assert await save_task_queue(tmp_path, [3], based_on=[]) == [3]
+        assert await load_task_queue(tmp_path) == [3]
+
+
+class TestMergeTaskQueue:
+    def test_unchanged_store_takes_the_writers_queue(self) -> None:
+        assert merge_task_queue([1, 2, 3], [1, 2, 3], [3, 1, 4]) == [3, 1, 4]
+
+    def test_concurrent_addition_is_appended(self) -> None:
+        assert merge_task_queue([1, 2, 8], [1, 2], [2, 1]) == [2, 1, 8]
+
+    def test_concurrent_removal_stays_removed(self) -> None:
+        assert merge_task_queue([2], [1, 2], [1, 2, 5]) == [2, 5]
+
+    def test_an_entry_both_writers_added_appears_once(self) -> None:
+        assert merge_task_queue([1, 5], [1], [1, 5]) == [1, 5]
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestHiddenIssues:
+    @staticmethod
+    async def _stored(project_dir: Path) -> Any:
+        async with await get_session(project_dir=project_dir) as session:
+            return await get_setting(session, "dashboard.hidden_issues")
+
+    async def test_hide_and_unhide_are_idempotent_and_persist(self, tmp_path: Path) -> None:
+        assert await set_issue_hidden(tmp_path, 5, hidden=True) == [5]
+        assert await set_issue_hidden(tmp_path, 5, hidden=True) == [5]
+        assert await set_issue_hidden(tmp_path, 7, hidden=False) == [5]
+        assert await self._stored(tmp_path) == [5]
+        assert await set_issue_hidden(tmp_path, 5, hidden=False) == []
+        assert await self._stored(tmp_path) == []
+
+    async def test_unhide_of_a_visible_issue_does_not_write(self, tmp_path: Path) -> None:
+        with patch("sova.config.db_loader.save_setting", AsyncMock()) as save:
+            assert await set_issue_hidden(tmp_path, 7, hidden=False) == []
+        save.assert_not_awaited()
+
+    async def test_failed_read_raises_and_keeps_the_stored_list(self, tmp_path: Path) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        await set_issue_hidden(tmp_path, 5, hidden=True)
+        real_get_session = get_session
+
+        async def failing_get_session(**kwargs: Any) -> Any:
+            session = await real_get_session(**kwargs)
+            session.execute = AsyncMock(side_effect=OperationalError("SELECT", {}, Exception("locked")))
+            return session
+
+        with (
+            patch("sova.db.session.get_session", failing_get_session),
+            patch("sova.config.db_loader.save_setting", AsyncMock()) as save,
+            pytest.raises(OperationalError),
+        ):
+            await set_issue_hidden(tmp_path, 9, hidden=True)
+
+        save.assert_not_awaited()
+        assert await self._stored(tmp_path) == [5]
+
+    async def test_unreadable_stored_value_is_replaced(self, tmp_path: Path) -> None:
+        async with await get_session(project_dir=tmp_path) as session, session.begin():
+            session.add(ProjectSetting(key="dashboard.hidden_issues", value="not json"))
+
+        assert await set_issue_hidden(tmp_path, 4, hidden=True) == [4]
+
+    async def test_malformed_entries_are_dropped_and_duplicates_collapsed(self) -> None:
+        config = MagicMock()
+        config.dashboard.hidden_issues = [3, "x", -1, True, 3, 4]
+        with patch("sova.config.loader.load_config", return_value=config):
+            assert await load_hidden_issues(None) == [3, 4]
+
+    async def test_a_list_set_in_toml_is_read_when_the_database_has_none(self, tmp_path: Path) -> None:
+        (tmp_path / "sova.toml").write_text("[dashboard]\nhidden_issues = [12, 13]\n", encoding="utf-8")
+
+        assert await load_hidden_issues(tmp_path) == [12, 13]

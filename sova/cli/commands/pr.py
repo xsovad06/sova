@@ -413,7 +413,8 @@ async def _linked_issues(*, pr: int, apply: bool, mark_in_review: bool, project_
         console.print("[red]--apply (after the merge) and --mark-in-review (once open) are separate steps.[/red]")
         raise typer.Exit(code=2)
     # A linked worktree has no sova.db, so its own config has no repo: read the primary checkout's, as `sova run` does.
-    config = load_config(project_dir or await get_primary_worktree_root())
+    root = project_dir or await get_primary_worktree_root()
+    config = load_config(root)
     repo = config.github_repo
     env = await resolve_gh_env(config.github_user)
     if mark_in_review:
@@ -439,7 +440,12 @@ async def _linked_issues(*, pr: int, apply: bool, mark_in_review: bool, project_
 
     post_merge_state = config.integration.post_merge_state
     merged = await handle_merged_pr_issues(
-        pr, post_merge_state=post_merge_state, repo=repo, github_user=config.github_user, adapter=create_adapter(config)
+        pr,
+        post_merge_state=post_merge_state,
+        repo=repo,
+        github_user=config.github_user,
+        adapter=create_adapter(config),
+        project_dir=root,
     )
     if merged is None:
         console.print(f"[red]Could not read the body of PR #{pr}: no issue updated.[/red]")

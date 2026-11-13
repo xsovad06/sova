@@ -10,7 +10,16 @@ from urllib.parse import quote
 
 import httpx
 
-from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import (
+    AdapterError,
+    Milestone,
+    PriorityUnavailableError,
+    PRReview,
+    Task,
+    TaskAdapter,
+    TaskFilters,
+    TaskState,
+)
 from sova.adapters.priority import Priority
 from sova.utils.logging import get_logger
 
@@ -628,6 +637,42 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(
                 f"Failed to set milestone '{milestone_title}' on issue {issue_key}: {update_resp.text[:200]}"
             )
+
+    async def set_priority(self, task_id: str, priority: Priority) -> None:
+        issue_key = self._resolve_key(task_id)
+        name = await self._priority_name_for(issue_key, priority)
+
+        update_resp = await self._http.put(self._issue_path(issue_key), json={"fields": {"priority": {"name": name}}})
+        if update_resp.status_code not in (200, 204):
+            raise RuntimeError(f"Failed to set priority '{name}' on issue {issue_key}: {update_resp.text[:200]}")
+
+    async def _priority_name_for(self, issue_key: str, level: Priority) -> str:
+        """The name for ``level`` among the priorities the issue's project allows; never an invented one.
+
+        The allowed names come from the issue's edit metadata (``GET /issue/{key}/editmeta``), which applies the
+        project's priority scheme. The global ``GET /priority`` list spans every scheme, so a name picked from it
+        can be one this project rejects (``High`` where the scheme offers only its alias ``Major``). Several
+        names can map to one level (Highest and Critical, Major and High): the name spelled like the level wins,
+        else the first the issue allows. An issue whose edit screen has no priority field, or whose scheme has no
+        name for the level, raises ``PriorityUnavailableError``. ``UNDEFINED`` has no Jira equivalent, since an
+        unrecognized name also resolves to it.
+        """
+        resp = await self._http.get(f"{self._issue_path(issue_key)}/editmeta")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to read edit metadata for issue {issue_key}: {resp.text[:200]}")
+        data = resp.json()
+        fields = data.get("fields") if isinstance(data, dict) else None
+        field = fields.get("priority") if isinstance(fields, dict) else None
+        if not isinstance(field, dict):
+            raise PriorityUnavailableError(f"Issue {issue_key} has no editable priority field")
+        allowed = field.get("allowedValues")
+        names = [v["name"] for v in allowed or [] if isinstance(v, dict) and v.get("name")]
+        candidates = [] if level is Priority.UNDEFINED else [n for n in names if Priority.from_jira(n) is level]
+        if not candidates:
+            raise PriorityUnavailableError(
+                f"Issue {issue_key} allows no priority for '{level.value}' (available: {', '.join(names) or 'none'})"
+            )
+        return next((n for n in candidates if n.strip().lower() == level.value), candidates[0])
 
     _ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
 

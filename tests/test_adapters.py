@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from unittest.mock import AsyncMock, patch
+from urllib.parse import unquote
 
 import pytest
 
@@ -159,6 +160,7 @@ class TestTaskAdapterInterface:
             "list_milestones",
             "create_milestone",
             "set_milestone",
+            "set_priority",
         ]
 
         class IncompleteAdapter(TaskAdapter):
@@ -1408,6 +1410,180 @@ class TestGitHubAdapter:
 
         with pytest.raises(RuntimeError, match="Failed to set milestone"):
             await self.adapter.set_milestone("42", "Nonexistent")
+
+    # set_priority
+
+    @staticmethod
+    def _labels_json(*names: str) -> str:
+        return json.dumps({"labels": [{"name": n} for n in names]})
+
+    @staticmethod
+    def _added_label(call: object) -> str:
+        args, _kwargs = call  # type: ignore[misc]
+        assert "--add-label" in args
+        return args[args.index("--add-label") + 1]
+
+    @staticmethod
+    def _deleted_label_path(call: object) -> str:
+        args, _kwargs = call  # type: ignore[misc]
+        assert "DELETE" in args
+        return args[2]
+
+    async def test_set_priority_adds_the_target_then_deletes_each_stale_label(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("bug", "priority: low", "priority:medium")),
+            _shell_result(),  # add
+            _shell_result(),  # delete priority: low
+            _shell_result(),  # delete priority:medium
+        ]
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        calls = mock_run.await_args_list
+        assert self._added_label(calls[1]) == "priority: high"
+        assert self._deleted_label_path(calls[2]) == "repos/user/repo/issues/42/labels/priority%3A%20low"
+        assert self._deleted_label_path(calls[3]) == "repos/user/repo/issues/42/labels/priority%3Amedium"
+
+    async def test_set_priority_never_replaces_the_whole_label_set(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("agent:researched", "priority: low")),
+            _shell_result(),
+            _shell_result(),
+        ]
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        # A PATCH of the full array would write back the agent: label read above, undoing a concurrent transition.
+        assert not any("PATCH" in call[0] for call in mock_run.await_args_list)
+
+    async def test_set_priority_same_level_again_is_a_noop(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout=self._labels_json("bug", "priority: high"))
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert mock_run.await_count == 1  # the read only
+
+    async def test_set_priority_matches_the_target_label_without_regard_to_case(self, mock_run: AsyncMock) -> None:
+        # GitHub treats "Priority: High" and "priority: high" as one label: adding then deleting would drop it.
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("Priority: High", "priority: low")),
+            _shell_result(),  # delete priority: low only
+        ]
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert mock_run.await_count == 2
+        assert self._deleted_label_path(mock_run.await_args_list[1]).endswith("/labels/priority%3A%20low")
+
+    async def test_set_priority_calls_for_one_issue_do_not_interleave_across_adapter_instances(
+        self, mock_run: AsyncMock
+    ) -> None:
+        from sova.adapters.github import GitHubAdapter
+
+        other = GitHubAdapter(repo="user/repo", github_user="testuser")
+        state = {"labels": ["priority: low"]}
+
+        async def fake(*args: str, **_kwargs: object) -> object:
+            await asyncio.sleep(0)  # a suspension point at every call, so an unlocked pair would interleave
+            if args[1:3] == ("issue", "view"):
+                return _shell_result(stdout=self._labels_json(*state["labels"]))
+            if "--add-label" in args:
+                state["labels"].append(args[args.index("--add-label") + 1])
+            else:
+                state["labels"].remove(unquote(args[2].rsplit("/", 1)[1]))
+            return _shell_result()
+
+        mock_run.side_effect = fake
+
+        async def later() -> None:
+            await asyncio.sleep(0)  # one tick late: the second call's read lands between the first's add and delete
+            await other.set_priority("42", Priority.LOW)
+
+        await asyncio.gather(self.adapter.set_priority("42", Priority.HIGH), later())
+
+        # Unlocked, the second call reads both labels and deletes the first's target while the first deletes the
+        # second's: none remains. Locked, the calls run one after the other and exactly one label remains.
+        assert len(state["labels"]) == 1
+
+    async def test_set_priority_same_level_with_a_stale_one_deletes_only_the_stale(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("priority: high", "priority:low")),
+            _shell_result(),
+        ]
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert mock_run.await_count == 2
+        assert self._deleted_label_path(mock_run.await_args_list[1]).endswith("/labels/priority%3Alow")
+
+    async def test_set_priority_creates_a_missing_label_and_retries(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json()),
+            _shell_result(returncode=1, stderr="'priority: critical' not found"),
+            _shell_result(),  # label create
+            _shell_result(),  # retried add
+        ]
+
+        await self.adapter.set_priority("42", Priority.CRITICAL)
+
+        assert "create" in mock_run.await_args_list[2][0]
+        assert self._added_label(mock_run.await_args_list[3]) == "priority: critical"
+
+    async def test_set_priority_read_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="boom")
+
+        with pytest.raises(RuntimeError, match="Failed to read labels"):
+            await self.adapter.set_priority("42", Priority.HIGH)
+
+    async def test_set_priority_unparsable_labels_raise(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="not json")
+
+        with pytest.raises(RuntimeError, match="Failed to parse labels"):
+            await self.adapter.set_priority("42", Priority.HIGH)
+
+    async def test_set_priority_add_failure_raises_before_any_delete(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("priority: low")),
+            _shell_result(returncode=1, stderr="boom"),
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to add label"):
+            await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert mock_run.await_count == 2
+
+    async def test_set_priority_delete_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("priority: high", "priority: low")),
+            _shell_result(returncode=1, stderr="gh: Server Error (HTTP 500)"),
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to remove label"):
+            await self.adapter.set_priority("42", Priority.HIGH)
+
+    async def test_set_priority_label_already_gone_counts_as_removed(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout=self._labels_json("priority: high", "priority: low")),
+            _shell_result(returncode=1, stderr="gh: Label does not exist (HTTP 404)"),
+        ]
+
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert mock_run.await_count == 2
+
+    async def test_set_priority_deletes_under_the_label_lock(self, mock_run: AsyncMock) -> None:
+        held: list[bool] = []
+
+        async def run(*args: str, **kwargs: object) -> object:
+            if "DELETE" in args:
+                held.append(self.adapter._label_lock("42").locked())
+                return _shell_result()
+            return _shell_result(stdout=self._labels_json("priority: high", "priority: low"))
+
+        mock_run.side_effect = run
+        await self.adapter.set_priority("42", Priority.HIGH)
+
+        assert held == [True]
 
     # get_pr_reviews
 

@@ -245,7 +245,7 @@ def _candidates(
         yield issue, task, assess_suitability(task, graph)
 
 
-def _unblock_count(issue: int, graph: DependencyGraph) -> int:
+def unblock_count(issue: int, graph: DependencyGraph) -> int:
     """Count the open, non-epic issues that transitively depend on `issue`.
 
     Mirrors `unsatisfied_dependencies()`: an epic is a tracking container and a
@@ -289,7 +289,7 @@ def _rank_candidates(
     for issue, task, suitability in candidates:
         if suitability.mode != SuitabilityMode.AUTONOMOUS:
             continue
-        unblocks = _unblock_count(issue, graph)
+        unblocks = unblock_count(issue, graph)
         phase = extract_phase_order(task.milestone)
         unranked.append(
             RankedTask(

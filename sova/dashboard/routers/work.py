@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 
 from sova.config.context import get_project_dir
-from sova.dashboard.services import work_service
+from sova.config.db_loader import set_issue_hidden
+from sova.dashboard.services import work_board_service, work_service
+from sova.dashboard.services.work_item_service import GraphConfigError
 from sova.db.session import get_session
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.api.work")
 
 router = APIRouter(tags=["work"])
+
+_IssueNumber = Annotated[int, Path(gt=0)]
 
 
 @router.get("/work/active")
@@ -81,6 +89,49 @@ async def get_issue_runs(issue_number: str) -> dict:
         async with session.begin():
             runs = await work_service.get_runs_for_issue(session, issue_number)
         return {"runs": runs}
+
+
+@router.get(
+    "/work/board",
+    responses={
+        500: {"description": "Failed to build the board"},
+        503: {"description": "Project configuration unavailable"},
+    },
+)
+async def get_board(milestone: str = "") -> dict:
+    """Every issue in exactly one column: up next, queued, running, review, needs, yours, blocked, done today.
+
+    Declared before ``/work/{run_id}`` so ``board`` is not parsed as a run id. ``milestone`` limits the
+    ranking behind ``up_next`` only. A failure is an error status, never an empty board.
+    """
+    try:
+        return await work_board_service.build_board(get_project_dir(), milestone)
+    except GraphConfigError:
+        log.error("work.board_config_unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail="Project configuration unavailable")
+    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+        log.error("work.board_failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to build the board")
+
+
+@router.post("/work/hidden/{number}", responses={503: {"description": "Failed to save hidden issues"}})
+async def hide_issue(number: _IssueNumber) -> dict:
+    """Leave an issue out of Up next. Idempotent; changes no label, tracker state, queue entry or decision."""
+    return await _set_hidden(number, hidden=True)
+
+
+@router.delete("/work/hidden/{number}", responses={503: {"description": "Failed to save hidden issues"}})
+async def unhide_issue(number: _IssueNumber) -> dict:
+    """Let a hidden issue back into Up next. Idempotent: an issue that is not hidden is a success."""
+    return await _set_hidden(number, hidden=False)
+
+
+async def _set_hidden(number: int, *, hidden: bool) -> dict:
+    try:
+        return {"hidden": await set_issue_hidden(get_project_dir(), number, hidden=hidden)}
+    except Exception:  # noqa: BLE001 (HTTP boundary: a settings write failure becomes a 503)
+        log.error("work.hidden_issues_save_failed", issue=number, hidden=hidden, exc_info=True)
+        raise HTTPException(status_code=503, detail="Failed to save hidden issues")
 
 
 @router.get("/work/{run_id}", responses={404: {"description": "Run not found"}})

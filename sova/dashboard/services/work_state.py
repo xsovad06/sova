@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
+from sova.adapters.base import TaskState
 from sova.core.state import TaskStatus
 from sova.utils.logging import get_logger
 
@@ -177,6 +178,85 @@ def state_color(state: str) -> str:
     """Color token for any state string an API emits; an unregistered state is neutral gray."""
     meta = _state_meta(state)
     return meta[1] if meta is not None else _FALLBACK_COLOR
+
+
+class WorkStage(StrEnum):
+    """The one board column an issue belongs in, declared in the order the Work board shows them."""
+
+    NEXT = "next"
+    QUEUED = "queued"
+    RUNNING = "running"
+    REVIEW = "review"
+    NEEDS = "needs"
+    YOURS = "yours"
+    BLOCKED = "blocked"
+    DONE = "done"
+
+
+_DONE_STAGE_STATES = frozenset({WorkItemState.MERGED, WorkItemState.DONE, TaskState.ON_QA})
+_RUNNING_STAGE_STATES = frozenset({WorkItemState.AGENT_RUNNING, WorkItemState.IN_PROGRESS})
+_REVIEW_STAGE_STATES = frozenset(
+    {
+        WorkItemState.PR_DRAFT,
+        WorkItemState.PR_CONFLICTED,
+        WorkItemState.PR_CI_RUNNING,
+        WorkItemState.PR_CI_FAILED,
+        WorkItemState.PR_AWAITING_REVIEW,
+        WorkItemState.PR_SOVA_CHANGES,
+        WorkItemState.PR_EXTERNAL_CHANGES,
+        WorkItemState.PR_REVIEW_ADDRESSED,
+        WorkItemState.PR_SOVA_PENDING,
+        TaskState.IN_REVIEW,
+    }
+)
+# A person has to act: merge a ready PR, decide on an exhausted review budget, or approve a spec.
+_NEEDS_STAGE_STATES = frozenset(
+    {WorkItemState.PR_READY_TO_MERGE, WorkItemState.PR_REVIEW_EXHAUSTED, WorkItemState.SPEC_REVIEW}
+)
+YOURS_MODES = frozenset({"epic", "human", "interactive", "unclassified"})
+_FAILED_RUN_STATUS = TaskStatus.FAILED.value
+
+
+def work_stage(
+    state: str,
+    suitability_mode: str | None = None,
+    run_status: str | None = None,
+    *,
+    queued: bool = False,
+) -> WorkStage:
+    """The one board stage for an issue, from its state, suitability mode and latest run status.
+
+    The single source of the board's columns, so the client keeps no stage table. An issue fitting more than
+    one stage takes the first that applies:
+
+    1. ``done``: the state is merged, done or on_qa.
+    2. ``running``: an agent is running or the issue is in progress.
+    3. ``review``: a PR is open and not yet merge-ready (draft, conflicts, CI, awaiting or changes requested).
+    4. ``needs``: a merge-ready PR, an exhausted review budget, a spec awaiting approval, or a latest run that
+       failed (a later successful run replaces the latest run, so it clears this).
+    5. ``yours``: the state is human_only, or the mode is epic, human, interactive or unclassified.
+    6. ``blocked``: the mode is blocked.
+    7. ``queued``: the issue is in the supervisor queue.
+    8. ``next``: everything else.
+
+    An unknown state or mode falls through to the later rules rather than raising. ``suitability_mode`` is
+    ``None`` for an item with no issue to classify (a standalone PR).
+    """
+    if state in _DONE_STAGE_STATES:
+        return WorkStage.DONE
+    if state in _RUNNING_STAGE_STATES:
+        return WorkStage.RUNNING
+    if state in _REVIEW_STAGE_STATES:
+        return WorkStage.REVIEW
+    if state in _NEEDS_STAGE_STATES or run_status == _FAILED_RUN_STATUS:
+        return WorkStage.NEEDS
+    if state == WorkItemState.HUMAN_ONLY or suitability_mode in YOURS_MODES:
+        return WorkStage.YOURS
+    if suitability_mode == "blocked":
+        return WorkStage.BLOCKED
+    if queued:
+        return WorkStage.QUEUED
+    return WorkStage.NEXT
 
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})

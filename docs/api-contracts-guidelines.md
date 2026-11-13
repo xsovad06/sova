@@ -6,7 +6,7 @@ API contract patterns, request/response models, and integration conventions used
 
 ### Router Organization
 
-32 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
+33 API routers in `sova/dashboard/routers/`, mounted under `/api` via `_register_api_routers()` in `sova/dashboard/app.py`:
 
 | Router | Purpose |
 |--------|---------|
@@ -22,6 +22,7 @@ API contract patterns, request/response models, and integration conventions used
 | fleet_manager | Live fleet status and slot adjustment |
 | handoff | Read, execute, and clear agent handoff actions |
 | health | Read-only diagnostic checks for the settings page panel |
+| issues | Change one tracker issue (its priority) |
 | lifecycle | Issue lifecycle tracking and phase control |
 | mcp | HTTP+SSE endpoint for agent self-inspection tools |
 | memory | Agent memory entries from the database |
@@ -41,7 +42,7 @@ API contract patterns, request/response models, and integration conventions used
 | supervisor | Status, manual poll trigger, decision log queries, approval plan, and persona |
 | tasks | Open issues from the task source |
 | telemetry | Receives run summaries from remote SOVA instances |
-| work | Unified active tasks and run history |
+| work | Unified active tasks, run history, the Work board, and hidden issues |
 
 ### Response Format
 
@@ -90,6 +91,12 @@ Both share one entry shape: `id`, `title`, `state`, `state_label`, `state_color`
 A graph failure is an error, never an empty list: `next-tasks` and `ready` return 503 for a config or adapter failure and 500 otherwise, because an empty list means "nothing to do". Both endpoints take their running-agent and open-PR exclusions from one helper, `next_task_exclusions(project_dir)` in `work_item_service.py`, called with the explicit project directory, so only the shared ranker decides what they return. Its lookups fail open on any exception (state-only filtering, logged), parse an agent's issue whether it is stored as `507` or `#507`, and an open PR excludes every issue it links to (`linked_issues`), not only its primary one. An empty pool is 200 with `tasks: []` and `unclassified_count: 0`.
 
 Every task entry in `GET /api/agents/work-items` carries `suitability: {mode, reasons, blocked_by}`, classified by `assess_suitability()` from the cached dependency graph's own `Task` for that issue, so it matches the graph node by construction. `mode` reflects labels and dependencies only and ignores task state. An issue the classifier cannot resolve dependencies for classifies `blocked`, never `autonomous`, and the reason says why: `assess_suitability()` reports every such case as `{"source": "graph", "value": "unavailable"}`, and the work-items endpoint (`_classify_queue_item()`, the only place that knows whether a graph exists) refines one of them to `{"source": "graph", "value": "missing"}`: a graph was built but lacks the issue (one created since it was cached, or a closed issue outside the closed-issue window). `unavailable` therefore means there is no graph (it failed to load, was never built, or is in its failure backoff) or the id does not parse as an issue number, so a reader can tell a tracker outage from a gap. A label reason (epic, human-only, on-hold) is never replaced. Every open issue the tracker lists is a node of a freshly built graph, however old: the build lists the 500 most recent issues (open and closed) and then always lists every open issue on its own, paginated, merging in the ones the window left out, so a ready issue older than the window is still ranked. The second listing is not conditional on a full window because the adapter, not the build, decides how many issues a listing returns (Jira's unpaginated listing returns at most 50 whatever limit is asked for), so a short window is no proof it is whole. A failed second listing fails the build, and so does an empty one while the window holds an open issue (the Jira paginated path returns `[]` for a failed page), since a graph that silently lacks open issues reads as a correct answer. Label-driven modes (epic, human, on-hold) still take precedence. Standalone PR items have no issue to classify, so their `suitability` is `null`. The graph load behind `work-items` is bounded because the Agents page polls it: the poll waits at most 3 seconds, concurrent polls share one build per project, a build slower than that keeps running in the background and warms the 180s graph cache, and meanwhile the response classifies from the previous build's graph (kept per project until a build fails), so the cache expiring or an agent spawn invalidating it does not flip every task card to `blocked` for one poll; only a project that has never built a graph, or whose last build failed, classifies `blocked` with the `unavailable` reason. A build is capped at 120 seconds (a build that hits the cap is logged as `work_items.graph_failed`, not as the routine `work_items.graph_timeout` of a poll's own 3 second wait running out), and a failed build is not retried for 30 seconds so a tracker outage does not repeat the full issue fetch on every poll. The poll costs tracker calls: the Agents page requests `work-items` every 30 seconds while it is visible, and that request starts a graph build whenever the cache has expired, so an open page adds one build per 180 seconds per project (about 20 an hour, plus one after each agent spawn or epic close), each a 500-issue listing, the open-issue listing, and one `gh issue view` per dependency outside the listing. The shared build and the cache bound this to one build per project whichever consumers ask, but the budget is the tracker's own API rate limit, shared with every agent. `next-tasks` and `ready` (without `?milestone=`) await that same shared build through `load_ranking_graph()`, so a cold-cache work-items poll and a ranking request run one fetch between them. They have no wait limit of their own beyond the 120 second build cap, and within the 30 second backoff they raise a new error chained to the recorded failure (`GraphConfigError` stays a `GraphConfigError`, so it remains a 503; anything else becomes a `RuntimeError`, a 500) instead of fetching again, since they must fail loudly rather than degrade. The error is new on every call because re-raising the one stored exception would add each request's frames to its shared traceback. At shutdown the lifespan calls `cancel_graph_builds()`, so a build stuck in a tracker call does not outlive it. A `?milestone=` graph is a rare manual build that bypasses the graph cache, so it is built on its own.
+
+### Work Board
+
+`GET /api/work/board[?milestone=]` returns `{stages, up_next, more_ready, queued, running, review, needs, yours, blocked, done_today, chains, other_blocked, hidden, unavailable}` from `work_board_service.build_board()`. Every issue is in exactly one column; each entry carries `number, title, url, stage, state, state_label, state_color, priority` (`number` is `null` for a PR with no issue), and the client keeps no stage table. `up_next` holds at most 5 entries (the unchanged `rank_graph_entries()` order, filtered to issues whose stage is `next` and not hidden) with `rank`, `milestone`, `unblocks` and `why`; `more_ready` counts the ready issues beyond them and is never negative. `milestone` limits the ranking only. `running` adds `role, step_name, step_index, total_steps, ci_state, elapsed_seconds, cost_usd`; `review` adds `pr_number, ci_state, threads_resolved, threads_total`; `needs` adds `kind` (`merge`, `review_budget`, `spec`, `failed_run`), `reason` and `pr_number`; `yours` adds `reason` and `reason_source` (the label or record the classifier reported); `blocked` adds `blocked_by`; `done_today` entries (one per issue a PR merged since server-local midnight links, newest first) add `pr_number` and `merged_at`. `chains` lists only the dependency chains (two or more open, non-epic issues, dependencies first) containing an issue on the board, and `other_blocked` counts open issues still waiting on a dependency that are neither on the board nor in a listed chain. A graph failure is a 503 (config) or 500, never an empty board; the sources that only enrich it fail open and `unavailable` names them (`done_today`, `active_runs` when the run lookup failed, so `running` entries lack step, progress and cost details, and `queue_prune` when removing closed issues from the saved queue failed, so the board hides them but the stored queue still holds them). A queued issue is never offered in `up_next`, even when the work items lack it, and takes the stage `work_stage()` gives its graph state (a queued issue the graph shows in progress is in `running`, not `queued`). An issue two PRs merged today link appears once in `done_today`, with the most recent merge, and an issue in `done_today` is in no other column, since `done` is the first stage that applies and the cached work items can lag a merge.
+
+`POST /api/work/hidden/{number}` and `DELETE /api/work/hidden/{number}` add or remove an issue in `dashboard.hidden_issues` and return `{hidden: [...]}`; both are idempotent and accept an issue the tracker no longer has. Hiding changes no label, tracker state, queue entry or supervisor decision. `PUT /api/issues/{number}/priority` takes `{priority}` (one of `blocker, critical, high, medium, low, undefined`): 200 on success, 400 with the adapter's message when the tracker has no such level (Jira with no matching name among the priorities the issue's project allows, and always for `undefined`), 502 on a tracker failure, 503 when config is unavailable. It drops the graph, queue and shared-build caches so the next board request ranks with the new priority. On GitHub the whole read, add and delete runs under one lock per repository and issue shared by every adapter instance in the process, and label names match without regard to case, as GitHub does.
 
 ### Agent Output Sequence Numbers
 
@@ -193,7 +200,7 @@ result = await self._gh("api", "graphql", "-f", f"query={mutation}", "-f", f"pro
 
 ## Adapter ABC Contract
 
-`TaskAdapter` in `sova/adapters/base.py` defines 15 abstract methods:
+`TaskAdapter` in `sova/adapters/base.py` defines 22 abstract methods (`set_priority` takes a `Priority` level and raises `PriorityUnavailableError` when the tracker has no equivalent):
 
 | Category | Methods |
 |----------|---------|
@@ -201,6 +208,7 @@ result = await self._gh("api", "graphql", "-f", f"query={mutation}", "-f", f"pro
 | State | `transition_state`, `assign`, `add_label`, `remove_label`, `get_available_transitions` |
 | Content | `post_comment`, `post_pr_comment`, `post_pr_review`, `edit_body`, `link_pr` |
 | Create | `create_issue` |
+| Priority | `set_priority` |
 
 Constructor: `__init__(self, repo: str, github_user: str = "")`.
 
