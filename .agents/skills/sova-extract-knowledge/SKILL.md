@@ -96,7 +96,7 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 
 ## Cross-References
 
-- **Called by**: the `sova-review` skill (Step 9). The `sova-integrate-pr` skill then verifies, before merging, that review learnings were captured (its Documentation and Knowledge phase)
+- **Run by**: a person. No workflow runs it, or records review learnings, automatically
 - **Broader assessment**: Run the `sova-agent-readiness` skill to evaluate the full knowledge system
 
 ## Rules

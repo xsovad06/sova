@@ -1658,7 +1658,7 @@ class TestAddressPRCapturesEarly:
         sweep up into an amend that cost a full CI cycle.
         """
         text = request.getfixturevalue(fixture)
-        capture = text.index("**Capture knowledge and documentation updates NOW, before the squash**")
+        capture = text.index("**Apply documentation updates NOW, before the squash**")
         squash = text.index("**Squash fixes into original commits**")
         push = text.index("**Push and wait for CI**")
         assert capture < squash < push
