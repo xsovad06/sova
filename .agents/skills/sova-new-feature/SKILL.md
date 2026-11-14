@@ -26,6 +26,17 @@ Set up a new feature branch and prepare for development.
   BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
   git worktree add ".claude/worktrees/<issue-or-topic>" -b "<branch-name>" "origin/$BASE"
   ```
+  Then run the optional setup hook from the new worktree, in one block (a non-zero exit is a failed setup: stop, never carry on as if it had succeeded):
+  ```bash
+  WT="<worktree path>"
+  PRIMARY_ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+  HOOK="$PRIMARY_ROOT/.claude/scripts/worktree-setup.sh"
+  if [ -x "$HOOK" ]; then
+    (cd "$WT" && "$HOOK" "$WT") || { echo "worktree-setup.sh failed: STOP" >&2; exit 1; }
+  elif [ -e "$HOOK" ]; then
+    echo "WARNING: $HOOK exists but is not executable, setup skipped" >&2
+  fi
+  ```
 - **Otherwise**, from a checkout on the base branch: `git pull origin "$BASE"`, then `git checkout -b <branch-name>`
 
 ### 3. Review Context

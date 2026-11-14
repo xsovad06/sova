@@ -99,3 +99,7 @@ Call `create_app()` yourself only for an app built differently (build-time env o
 - `make check` before push (close to CI, not identical: see docs/testing-guidelines.md)
 - `make test-py` for pytest only
 - `make lint` for ShellCheck + Ruff
+
+## Negative Control
+
+For a test written after the code it covers: break the covered line with a change that keeps the module importable, run the test, and confirm it fails on an assertion for the expected behavior, not with a syntax, import, or collection error. Restore the line, and confirm with `git diff` that the mutation is gone. A test that stays green with the line broken does not cover it.

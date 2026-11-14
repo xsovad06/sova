@@ -2,11 +2,11 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "327c7822f36e6920",
+      "hash": "4737c6f09aa3fd50",
       "managed": true
     },
     "after-merge.md": {
-      "hash": "852d952527d756ee",
+      "hash": "ae7d1d8915d60d3a",
       "managed": true
     },
     "agent-readiness.md": {
@@ -34,7 +34,7 @@
       "managed": true
     },
     "extract-knowledge.md": {
-      "hash": "1575fd791e2b411f",
+      "hash": "a7ec95c25ea14990",
       "managed": true
     },
     "find-task.md": {
@@ -46,11 +46,11 @@
       "managed": true
     },
     "ingest-review.md": {
-      "hash": "9d9f04035dcc66f4",
+      "hash": "3300e66a4a45bcbe",
       "managed": true
     },
     "integrate-pr.md": {
-      "hash": "10b3d4a1d7ac2c46",
+      "hash": "e314af1d52b71f58",
       "managed": true
     },
     "issue.md": {
@@ -58,7 +58,7 @@
       "managed": true
     },
     "new-feature.md": {
-      "hash": "8d79c4c6eb781918",
+      "hash": "1bbfcf2d7ae3e3b6",
       "managed": true
     },
     "optimize-knowledge.md": {
@@ -66,7 +66,7 @@
       "managed": true
     },
     "pr.md": {
-      "hash": "b5e977c5910842a9",
+      "hash": "de30074bb677544f",
       "managed": true
     },
     "rearrange-commits.md": {
@@ -82,11 +82,11 @@
       "managed": true
     },
     "review-pr.md": {
-      "hash": "2e9975d4238bb4bd",
+      "hash": "b39c0533cb882d5d",
       "managed": true
     },
     "review.md": {
-      "hash": "bcdb835563546e3c",
+      "hash": "a9905b6ffe87d93e",
       "managed": true
     },
     "simplify.md": {

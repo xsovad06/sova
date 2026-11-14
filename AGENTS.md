@@ -183,7 +183,7 @@ Agents chain autonomously (Developer -> Reviewer -> Developer -> Reviewer); `pip
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key
 - **Before any push**: ask the user for explicit approval
-- **After any merge**: run `/after-merge` (pull main, delete branches, update memory)
+- **After any merge**: run `/after-merge` (pull main, delete branches, clean worktrees)
 - **Before creating PR**: run `/review` (lint, test, review changes)
 - **Commit policy**: no fix-on-fix, no separate doc commits for changes in the same PR. Use `/rearrange-commits` before pushing.
 

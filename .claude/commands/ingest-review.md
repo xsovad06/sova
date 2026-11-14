@@ -109,7 +109,7 @@ Parse structured review findings from TaskRun records and update agent memory.
 
 ## Cross-References
 
-- **Review learnings during the PR**: the `/address-pr` workflow's knowledge-capture step records each review round's lessons in the primary checkout's cookbook; run this command afterwards only for anything that step missed
+- **Nothing records review learnings automatically**: `/address-pr`, `/integrate-pr` and `/after-merge` do not write the cookbook, so run this command when a PR's review taught something worth keeping
 - **Extract broader knowledge**: Run `/extract-knowledge` for session-wide lessons
 
 ## Rules

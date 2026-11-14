@@ -158,6 +158,11 @@ filterwarnings = [
     # reproduced locally with gc.set_threshold(1)). Scoped to AsyncMock's
     # coroutine so a production coroutine finalized this way still fails.
     "ignore:Exception ignored while finalizing coroutine <coroutine object AsyncMockMixin\\._execute_mock_call:pytest.PytestUnraisableExceptionWarning",
+    # Python 3.12 words the same unraisable report as "Exception ignored in:
+    # <coroutine object ...>" (no "while finalizing"), seen in CI on py3.12
+    # against an unrelated tests/test_progression.py test. The colon after
+    # "in" is written \x3a because a literal one would end the message field.
+    "ignore:Exception ignored in\\x3a <coroutine object AsyncMockMixin\\._execute_mock_call:pytest.PytestUnraisableExceptionWarning",
     # Third-party: starlette.testclient's own documented httpx migration path,
     # unrelated to SOVA code. StarletteDeprecationWarning subclasses
     # UserWarning, not DeprecationWarning.
