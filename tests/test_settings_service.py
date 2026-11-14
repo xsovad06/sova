@@ -1499,11 +1499,10 @@ async def _stored_keys(project_dir: Path) -> set[str]:
     from sqlalchemy import select
 
     from sova.db.models import ProjectSetting
-    from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY, get_session
+    from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session:
-        keys = set((await session.execute(select(ProjectSetting.key))).scalars())
-    return keys - {_ORPHAN_SWEEP_MARKER_KEY}
+        return set((await session.execute(select(ProjectSetting.key))).scalars())
 
 
 def _entry(payload: dict, key: str) -> dict:

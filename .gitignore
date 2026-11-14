@@ -43,6 +43,7 @@ htmlcov/
 .claude/settings.json
 .claude/settings.local.json
 .claude/agent-memory/
+.claude/memories-export-*.json
 .claude/agent-control/
 .claude/agent-output/
 .claude/sova.db

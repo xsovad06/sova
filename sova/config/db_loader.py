@@ -26,14 +26,10 @@ from sqlalchemy.exc import ArgumentError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import ProjectSetting
-from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY, _get_database_url
+from sova.db.session import _get_database_url
 from sova.utils.logging import get_logger
 
 logger = get_logger(component="config.db_loader")
-
-# Internal bookkeeping rows stored in project_settings that are not user-facing
-# configuration and must never surface in the config dict returned to callers.
-_INTERNAL_SETTING_KEYS = frozenset({_ORPHAN_SWEEP_MARKER_KEY})
 
 
 async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
@@ -97,8 +93,6 @@ def _rows_to_nested(rows: Any) -> dict[str, Any] | None:
     """Build a nested dict from key/JSON-value rows. Returns None when nothing is usable."""
     nested: dict[str, Any] = {}
     for row in rows:
-        if row.key in _INTERNAL_SETTING_KEYS:
-            continue
         try:
             value = json.loads(row.value)
         except (json.JSONDecodeError, TypeError):
@@ -840,16 +834,14 @@ def _try_load_from_db(project_dir: Path | str | None) -> dict[str, Any] | None:
 def read_stored_settings(project_dir: Path | str | None) -> dict[str, Any] | None:
     """The settings stored for this project as ``{dotted key: value}``, one entry per row, or None if unreadable.
 
-    Internal bookkeeping rows are left out. A row whose value is not valid JSON is kept with its raw text, since
-    it is still stored. An empty table is ``{}``; a missing database or table is ``{}`` too (nothing is stored).
+    A row whose value is not valid JSON is kept with its raw text, since it is still stored. An empty table is
+    ``{}``; a missing database or table is ``{}`` too (nothing is stored).
     """
     rows = _read_setting_rows(project_dir, flag_failure=False)
     if rows is None:
         return None
     stored: dict[str, Any] = {}
     for row in rows:
-        if row.key in _INTERNAL_SETTING_KEYS:
-            continue
         try:
             stored[row.key] = json.loads(row.value)
         except (json.JSONDecodeError, TypeError):
