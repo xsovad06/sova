@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal
 
-from sqlalchemy import inspect, text
+from sqlalchemy import Connection, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base
@@ -313,7 +313,91 @@ async def inspect_schema(project_dir: Path) -> SchemaInspection:
     return SchemaInspection(state="ready", legacy=legacy, current=current, head=head, missing=tuple(missing))
 
 
-async def _run_migrations(engine) -> bool:
+async def _read_alembic_version(engine, table_names: list[str]) -> str | None:
+    """Return the stored Alembic revision, or None when the database has none.
+
+    A present but corrupt ``alembic_version`` (no row, or a NULL/empty/whitespace
+    version_num) is dropped and reported as None, so the caller falls through to
+    case 1 (fresh DB) instead of handing Alembic's own MigrationContext an
+    unparseable revision that crashes with a bare AssertionError.
+    """
+    if "alembic_version" not in table_names:
+        return None
+    async with engine.begin() as conn:
+        row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        version_value = (row[0] or "").strip() if row is not None else ""
+        if version_value:
+            return version_value
+        await conn.run_sync(lambda c: c.execute(text("DROP TABLE alembic_version")))
+    return None
+
+
+async def _report_schema_drift(engine, head: str) -> None:
+    """Log any ORM column missing from a database already at migration head.
+
+    Being at head proves every revision ran, not that the schema matches the
+    ORM: a model column added without a migration is invisible to Alembic and
+    cannot be repaired by it either (upgrade is a no-op at head, and create_all
+    never alters an existing table). Verify and report so the cause is named
+    here rather than surfacing later as OperationalError on an unrelated query.
+    Purely diagnostic, so it fails open: a database this cannot inspect must
+    still start the server, exactly as it did before the check existed.
+    """
+    try:
+        async with engine.connect() as conn:
+            missing = await conn.run_sync(_find_missing_columns)
+    except Exception:  # noqa: BLE001 (diagnostic check must fail open; schema drift is reported, not fatal)
+        _log.warning("db.schema_verify_failed", exc_info=True)
+        return
+    if missing:
+        _log.error(
+            "db.schema_drift",
+            head=head,
+            missing_count=len(missing),
+            missing_columns=", ".join(missing),
+            hint=(
+                "a model column was added without a migration; queries touching these tables "
+                "will fail; add a migration that creates them"
+            ),
+        )
+
+
+async def _upgrade_or_create(engine, alembic_cfg, *, has_tables: bool, has_alembic: bool) -> None:
+    """Stamp a pre-Alembic DB, else upgrade to head; self-heal only an empty DB.
+
+    A failure on a database that already has tables propagates: stamping it at
+    head here would hide a partially-applied (or entirely unapplied) migration
+    as if it had succeeded. Only a database with no tables falls back to
+    create_all + stamp.
+    """
+    from alembic import command
+
+    def _do_upgrade(sync_conn: Connection) -> None:
+        alembic_cfg.attributes["connection"] = sync_conn
+        command.upgrade(alembic_cfg, "head")
+
+    def _do_stamp(sync_conn: Connection) -> None:
+        alembic_cfg.attributes["connection"] = sync_conn
+        command.stamp(alembic_cfg, "head")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(_do_stamp if has_tables and not has_alembic else _do_upgrade)
+    except Exception:  # noqa: BLE001 (alembic surfaces arbitrary errors; re-raised below unless the DB was empty)
+        if has_tables:
+            raise
+        _log.warning("db.alembic_migration_failed_fallback_create_all", exc_info=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(lambda c: c.execute(text("DROP TABLE IF EXISTS alembic_version")))
+                await conn.run_sync(_do_stamp)
+        except Exception:  # noqa: BLE001 (tables exist either way; stamping is advisory)
+            _log.warning("db.alembic_stamp_failed_tables_untracked", exc_info=True)
+
+
+async def _run_migrations(engine, project_dir: Path | None = None) -> bool:
     """Run Alembic migrations programmatically.
 
     Handles four cases:
@@ -331,107 +415,44 @@ async def _run_migrations(engine) -> bool:
     alembic_version stamped past a migration that never actually ran. A SQLite
     backup is taken (consistent under WAL) immediately before DDL executes.
 
+    ``project_dir`` tells a migration that writes a file where the project's ``.claude/`` is
+    (migration 044 exports the removed memory tables there before dropping them).
+
     Returns True if DDL was executed, False if the DB was already at head.
     Callers that go on to call _enable_sqlite_wal() must dispose the pool
     first regardless of this return value: see that function's docstring.
     """
-    from alembic import command
     from alembic.config import Config
 
     alembic_cfg = Config(str(Path(__file__).parent / "alembic.ini"))
+    if project_dir is not None:
+        alembic_cfg.attributes["memories_export_dir"] = project_dir / ".claude"
 
     async with engine.connect() as conn:
         table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
-        has_alembic = "alembic_version" in table_names
 
-    current_version: str | None = None
-    if has_alembic:
-        async with engine.begin() as conn:
-            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
-            version_value = (row[0] or "").strip() if row is not None else ""
-            if not version_value:
-                # No row, or a NULL/empty/whitespace version_num: tracking is corrupt
-                # either way. Drop it and fall through to case 1 (fresh DB), matching
-                # case 2/4 below which would otherwise hand Alembic's own
-                # MigrationContext an unparseable revision and crash with a bare
-                # AssertionError.
-                await conn.run_sync(lambda c: c.execute(text("DROP TABLE alembic_version")))
-                has_alembic = False
-            else:
-                current_version = version_value
+    current_version = await _read_alembic_version(engine, table_names)
+    has_alembic = current_version is not None
 
     # Counts only real tables, never alembic_version itself: a database whose only
-    # table is alembic_version (case 5, now dropped above) must be treated as "no
-    # tables at all" so it falls into the self-healing path instead of propagating a
-    # real-data failure at the `if has_tables: raise` below.
+    # table is alembic_version (case 5, dropped by _read_alembic_version) must be
+    # treated as "no tables at all" so it falls into the self-healing path instead
+    # of propagating a real-data failure in _upgrade_or_create.
     has_tables = bool(set(table_names) - {"alembic_version"})
 
     # Fast path: DB is already at migration head, skip the upgrade entirely.
     # This saves ~300ms of Alembic script loading on every server restart.
-    # Only safe when version is non-empty (empty string means corrupted tracking).
-    if has_alembic and current_version:
+    if has_alembic:
         head = _get_alembic_head(alembic_cfg)
         if head is not None and current_version == head:
-            # Being at head proves every revision ran, not that the schema matches the
-            # ORM: a model column added without a migration is invisible to Alembic and
-            # cannot be repaired by it either (upgrade is a no-op at head, and create_all
-            # never alters an existing table). Verify and report so the cause is named
-            # here rather than surfacing later as OperationalError on an unrelated query.
-            # Purely diagnostic, so it fails open: a database this cannot inspect must
-            # still start the server, exactly as it did before the check existed.
-            try:
-                async with engine.connect() as conn:
-                    missing = await conn.run_sync(_find_missing_columns)
-            except Exception:  # noqa: BLE001 (diagnostic check must fail open; schema drift is reported, not fatal)
-                _log.warning("db.schema_verify_failed", exc_info=True)
-                missing = []
-            if missing:
-                _log.error(
-                    "db.schema_drift",
-                    head=head,
-                    missing_count=len(missing),
-                    missing_columns=", ".join(missing),
-                    hint=(
-                        "a model column was added without a migration; queries touching these tables "
-                        "will fail; add a migration that creates them"
-                    ),
-                )
+            await _report_schema_drift(engine, head)
             return False  # Already at head, no DDL needed
-
-    def _do_upgrade(sync_conn):
-        alembic_cfg.attributes["connection"] = sync_conn
-        command.upgrade(alembic_cfg, "head")
-
-    def _do_stamp(sync_conn):
-        alembic_cfg.attributes["connection"] = sync_conn
-        command.stamp(alembic_cfg, "head")
 
     backup_path = await _backup_db(str(engine.url))
     if backup_path is not None:
         _log.info("db.pre_migration_backup_written", path=backup_path)
 
-    try:
-        if has_tables and not has_alembic:
-            async with engine.begin() as conn:
-                await conn.run_sync(_do_stamp)
-        else:
-            async with engine.begin() as conn:
-                await conn.run_sync(_do_upgrade)
-    except Exception:  # noqa: BLE001 (alembic surfaces arbitrary errors; re-raised below unless the DB was empty)
-        if has_tables:
-            # Real schema exists: stamping it at head here would hide a
-            # partially-applied (or entirely unapplied) migration as if it had
-            # succeeded. Let init_db() fail loudly instead.
-            raise
-        _log.warning("db.alembic_migration_failed_fallback_create_all", exc_info=True)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        try:
-            async with engine.begin() as conn:
-                await conn.run_sync(lambda c: c.execute(text("DROP TABLE IF EXISTS alembic_version")))
-                await conn.run_sync(_do_stamp)
-        except Exception:  # noqa: BLE001 (tables exist either way; stamping is advisory)
-            _log.warning("db.alembic_stamp_failed_tables_untracked", exc_info=True)
+    await _upgrade_or_create(engine, alembic_cfg, has_tables=has_tables, has_alembic=has_alembic)
     return True  # DDL was executed
 
 
@@ -446,8 +467,8 @@ def _register_sqlite_pragmas(engine) -> None:
     running several agents spends long enough inside each commit that other
     writers exhaust the 30 s busy timeout and fail with "database is locked".
     SQLite ignores foreign key constraints unless ``PRAGMA foreign_keys=ON`` is
-    set on the connection; without it, ``ondelete="CASCADE"`` columns such as
-    ``MemoryEdge.source_id``/``target_id`` never actually cascade.
+    set on the connection; without it, ``ondelete="CASCADE"`` foreign keys
+    never actually cascade.
     """
     from typing import Any
 
@@ -463,82 +484,6 @@ def _register_sqlite_pragmas(engine) -> None:
             cursor.close()
         except Exception:  # noqa: BLE001 (sqlite3 DB-API connection is opaque; pragma failure is advisory)
             _log.warning("db.sqlite_pragmas_failed", exc_info=True)
-
-
-_ORPHANED_MEMORY_EDGES_WHERE = (
-    "source_id NOT IN (SELECT id FROM memories) OR target_id NOT IN (SELECT id FROM memories)"
-)
-_ORPHAN_SWEEP_MARKER_KEY = "db.orphan_edges_swept"
-_ORPHAN_CLEANUP_BACKUP_SUFFIX = ".db.bak.pre-orphan-cleanup"
-
-
-async def _orphan_sweep_already_done(conn) -> bool:
-    row = await conn.execute(text("SELECT 1 FROM project_settings WHERE key = :key"), {"key": _ORPHAN_SWEEP_MARKER_KEY})
-    return row.first() is not None
-
-
-async def _mark_orphan_sweep_done(engine) -> None:
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO project_settings (key, value) VALUES (:key, :value) "
-                "ON CONFLICT(key) DO UPDATE SET value = :value"
-            ),
-            {"key": _ORPHAN_SWEEP_MARKER_KEY, "value": "true"},
-        )
-
-
-async def _cleanup_orphaned_memory_edges(engine) -> None:
-    """Delete memory_edges rows whose source or target memory no longer exists.
-
-    Databases created before PRAGMA foreign_keys was enabled could accumulate
-    dangling edges, since ondelete="CASCADE" never fired on SQLite without it.
-    Deleting the child-side (memory_edges) rows that already violate the
-    constraint is never itself blocked by foreign key enforcement, so this is
-    safe to run with the pragma already active. Once swept (orphans found and
-    removed, or none found), a `project_settings` marker row is written so
-    every later startup skips the scan entirely: with the pragma now active,
-    ondelete="CASCADE" prevents new orphans from ever accumulating again, so
-    the historical sweep is genuinely one-time rather than a per-startup table
-    scan. A backup is taken immediately before the DELETE, under its own
-    suffix (never the pre-migration `.db.bak` slot `_run_migrations()` uses,
-    so this sweep's restore point can't demote or be demoted by that one).
-    Purely a hygiene pass, so it fails open like _find_missing_columns: a
-    database this cannot inspect must still start.
-    """
-    try:
-        async with engine.connect() as conn:
-            table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
-            if "memory_edges" not in table_names or "memories" not in table_names:
-                return
-            if "project_settings" in table_names and await _orphan_sweep_already_done(conn):
-                return
-            exists = await conn.execute(
-                text(f"SELECT 1 FROM memory_edges WHERE {_ORPHANED_MEMORY_EDGES_WHERE} LIMIT 1")
-            )
-            found_orphan = exists.first() is not None
-
-        if not found_orphan:
-            if "project_settings" in table_names:
-                await _mark_orphan_sweep_done(engine)
-            return
-
-        backup_path = await _backup_db(str(engine.url), backup_suffix=_ORPHAN_CLEANUP_BACKUP_SUFFIX)
-        if backup_path is not None:
-            _log.warning("db.orphan_cleanup_backup_written", path=backup_path)
-
-        async with engine.begin() as conn:
-            result = await conn.execute(text(f"DELETE FROM memory_edges WHERE {_ORPHANED_MEMORY_EDGES_WHERE}"))
-            if result.rowcount:
-                _log.warning(
-                    "db.orphaned_memory_edges_removed",
-                    row_count=result.rowcount,
-                )
-
-        if "project_settings" in table_names:
-            await _mark_orphan_sweep_done(engine)
-    except Exception:  # noqa: BLE001 (diagnostic cleanup must fail open; startup must not depend on it)
-        _log.warning("db.orphan_cleanup_failed", exc_info=True)
 
 
 async def _enable_sqlite_wal(engine) -> None:
@@ -559,7 +504,6 @@ async def _enable_sqlite_wal(engine) -> None:
     connect_args={"timeout": 30}.
     """
     _register_sqlite_pragmas(engine)
-    await _cleanup_orphaned_memory_edges(engine)
     try:
         async with engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
@@ -689,8 +633,13 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
         if run_migrations:
             is_sqlite_file = db_path is not None
 
+            # Migration 044 writes a file into the project's .claude/; a caller that passes no project_dir
+            # (the server's bare init_db()) still runs inside the ambient project context, if any.
+            from sova.config.context import get_project_dir
+
+            migration_project_dir = project_dir if project_dir is not None else get_project_dir()
             async with _migration_lock(url):
-                await _run_migrations(_engine)
+                await _run_migrations(_engine, migration_project_dir)
                 if is_sqlite_file:
                     # Pragmas (foreign_keys in particular) must not be registered
                     # until migrations are done: see _enable_sqlite_wal's docstring.
@@ -730,7 +679,7 @@ async def init_db_for_project(project_dir: Path) -> None:
         is_sqlite_file = db_path is not None
 
         async with _migration_lock(url):
-            await _run_migrations(engine)
+            await _run_migrations(engine, project_dir)
             if is_sqlite_file:
                 await engine.dispose()
                 await _enable_sqlite_wal(engine)

@@ -36,7 +36,7 @@ async with await get_session(project_dir=project_dir) as session:
 
 ## ORM Model Conventions
 
-26 models in `sova/db/models.py`: `TaskRun`, `OutputLine`, `StepExecution`, `FailureRecord`, `CostRecord`, `Memory`, `MemoryEdge`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`, `CodeRabbitEvent`, `ResourceSampleRecord`, `ResourceSummaryRecord`, `ActionFeedback`, `OversightRun`, `OversightFinding`, `PRCreationQueue`, `TelemetryEvent`, `SupervisorDecision`, `PREvent`, `ProjectSetting`, `MergeQueueEntry`, `FeedEventRecord`, `BudgetOverride`.
+24 models in `sova/db/models.py`: `TaskRun`, `OutputLine`, `StepExecution`, `FailureRecord`, `CostRecord`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`, `CodeRabbitEvent`, `ResourceSampleRecord`, `ResourceSummaryRecord`, `ActionFeedback`, `OversightRun`, `OversightFinding`, `PRCreationQueue`, `TelemetryEvent`, `SupervisorDecision`, `PREvent`, `ProjectSetting`, `MergeQueueEntry`, `FeedEventRecord`, `BudgetOverride`.
 
 | Convention | Example |
 |---|---|
@@ -264,8 +264,8 @@ even opens a connection to a path with no database file.
 ### SQLite foreign keys
 
 `_register_sqlite_pragmas()`'s connect listener sets `PRAGMA foreign_keys=ON`, so
-`ondelete="CASCADE"`/`ondelete="SET NULL"` columns (e.g. `MemoryEdge.source_id`/`target_id`,
-`TaskRun.workflow_definition_id`) actually cascade/null out on SQLite the way they always have on
+`ondelete="CASCADE"`/`ondelete="SET NULL"` columns (e.g. `ResourceSampleRecord.task_run_id` for CASCADE and
+`TaskRun.workflow_definition_id` for SET NULL) actually cascade/null out on SQLite the way they always have on
 Postgres. `_enable_sqlite_wal()` (which calls `_register_sqlite_pragmas()`) must run only *after*
 `_run_migrations()` has finished on the same engine, never before: Alembic's SQLite batch mode
 (required for any `ALTER`/`DROP COLUMN`, used 8+ times already on `task_runs` alone) does
@@ -275,18 +275,36 @@ of a table other populated tables reference raises `IntegrityError`. `init_db()`
 engine (evicting any connection migrations opened before the pragma listener existed, so it is
 never reused pragma-less for the rest of the engine's lifetime), then call `_enable_sqlite_wal()`.
 That dispose is why engine disposal (see above) can no longer be conditioned on whether DDL
-actually ran. `_enable_sqlite_wal()` then runs a `_cleanup_orphaned_memory_edges()` sweep, since a
-database created before the pragma was enabled could already hold `memory_edges` rows whose
-`memories` row is gone. The sweep is genuinely one-time rather than a per-startup table scan: once
-it has run (orphans found and removed, or none found), it writes a `project_settings` marker row
-(`db.orphan_edges_swept`), and every later call returns immediately on seeing that row, since
-`ondelete="CASCADE"` with the pragma now active means no new orphan can ever accumulate again. It
-takes its own `_backup_db()` snapshot, under its own suffix (`.db.bak.pre-orphan-cleanup`, never
-the pre-migration `.db.bak`/`.db.bak.1` slots `_run_migrations()` uses), immediately before the
-`DELETE` when an orphan is actually found, since that delete is otherwise the one destructive
-write this module performs outside of migrations with no restore point of its own; using a
-separate suffix means this sweep's backup can never demote (or be demoted by) the pre-migration
-restore point `_run_migrations()` took moments earlier in the same startup.
+actually ran.
+
+### Dropping the memory tables (migration 044)
+
+`044_drop_memories_tables` removed the `memories` and `memory_edges` tables (issue #1464). Before dropping
+anything it exports every row of both tables to one JSON file, `<project>/.claude/memories-export-<UTC timestamp,
+microseconds>.json`, with the keys `memories` and `memory_edges`. `_run_migrations(engine, project_dir)` hands the
+migration the project's `.claude/` through the Alembic config (`memories_export_dir`); `init_db()` called with no
+`project_dir` falls back to the ambient project context (`get_project_dir()`) for this. A run with no project at all
+(the bare `alembic` CLI) uses the SQLite file's own directory, and any other database falls back to the stable
+`~/.config/sova`, never the current directory. The absolute path, the row counts and where the location came from
+(`project`, `database_file` or `fallback_state_dir`) are logged at WARNING as `db.memories_exported`. Each
+machine or installation runs the migration on its own database and writes its own file. On a database shared by
+several projects (unsupported, see "PostgreSQL: one database per project, never shared" below), only the project
+whose process runs the migration first receives the export, and it holds every project's rows, told apart by the
+`repo` column. Details:
+
+- No file is written when both tables are empty or absent, and the tables are dropped in either case.
+- A file is created exclusively (never overwritten; a name clash takes a numeric suffix) with owner-only mode
+  `0o600` (it holds free-text agent output) and flushed
+  before the drop. If the write fails, the migration raises with both tables intact and the database stays at revision 043.
+- Keeping it out of version control: SOVA's own `.gitignore` covers `.claude/memories-export-*.json`, and for every
+  other project the name prefix `.claude/memories-export-` is in `RUNTIME_STATE_PATHS`
+  (`sova/git/artifact_exclusions.py`), so `git add -A` from the commit step never stages it and `sova install` writes
+  it into `.git/info/exclude` (re-run `sova install` to add it to an existing project's exclude file). A human
+  running `git add .claude` in a project without that entry can still commit it: move the file out of the repository.
+- Datetimes are ISO strings, `Decimal` is a string, bytes are base64, and `memories.embedding` (a JSON list) is
+  kept as a list.
+- Nothing re-imports the file; the downgrade recreates both tables empty. The pre-migration `.db.bak` backup
+  also still holds the rows.
 
 ## Multi-Project DB Support
 

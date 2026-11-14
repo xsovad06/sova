@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import types
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,7 +16,6 @@ from sova.db.models import (
     FailureRecord,
     IssueLifecycle,
     LifecyclePhaseRecord,
-    Memory,
     StepExecution,
     TaskAssessmentRecord,
     TaskRun,
@@ -678,6 +679,338 @@ async def test_migration_043_creates_and_drops_pr_retros(tmp_path: Path) -> None
     assert columns() == set()
 
 
+def _alembic_config_for(db_path: Path, **attributes: object):
+    from alembic.config import Config
+
+    cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db_path}")
+    cfg.attributes.update(attributes)
+    return cfg
+
+
+def _table_names(db_path: Path) -> set[str]:
+    import sqlite3
+
+    raw = sqlite3.connect(str(db_path))
+    try:
+        return {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        raw.close()
+
+
+def _seed_memories(db_path: Path, *, edges: bool) -> None:
+    import sqlite3
+
+    raw = sqlite3.connect(str(db_path))
+    try:
+        raw.execute(
+            "INSERT INTO memories (id, category, title, content, embedding, created_at, updated_at) "
+            "VALUES (1, 'learning', 'first', 'body', '[0.5, 0.25]', '2026-11-01 10:00:00', '2026-11-01 10:00:00')"
+        )
+        raw.execute(
+            "INSERT INTO memories (id, category, title, content, created_at, updated_at) "
+            "VALUES (2, 'learning', 'second', 'body', '2026-11-02 10:00:00', '2026-11-02 10:00:00')"
+        )
+        if edges:
+            raw.execute(
+                "INSERT INTO memory_edges (source_id, target_id, relation, weight) VALUES (1, 2, 'relates_to', 0.75)"
+            )
+        raw.commit()
+    finally:
+        raw.close()
+
+
+async def test_migration_044_revision_chain() -> None:
+    mod = _import_migration("044")
+
+    assert (mod.revision, mod.down_revision) == ("044", "043")
+
+
+async def test_migration_044_exports_both_tables_then_drops_them(tmp_path: Path) -> None:
+    import asyncio
+    import json
+
+    from alembic import command
+
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    cfg = _alembic_config_for(db_path)
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    _seed_memories(db_path, edges=True)
+
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    assert not {"memories", "memory_edges"} & _table_names(db_path)
+    (export,) = db_path.parent.glob("memories-export-*.json")
+    data = json.loads(export.read_text(encoding="utf-8"))
+    assert [m["title"] for m in data["memories"]] == ["first", "second"]
+    assert data["memories"][0]["embedding"] == [0.5, 0.25]
+    assert data["memories"][0]["created_at"] == "2026-11-01T10:00:00"
+    assert [(e["source_id"], e["target_id"], e["weight"]) for e in data["memory_edges"]] == [(1, 2, "0.7500")]
+
+
+async def test_migration_044_rows_in_one_table_still_write_both_keys(tmp_path: Path) -> None:
+    import asyncio
+    import json
+
+    from alembic import command
+
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    cfg = _alembic_config_for(db_path)
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    _seed_memories(db_path, edges=False)
+
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    (export,) = db_path.parent.glob("memories-export-*.json")
+    data = json.loads(export.read_text(encoding="utf-8"))
+    assert len(data["memories"]) == 2
+    assert data["memory_edges"] == []
+
+
+async def test_migration_044_writes_into_the_configured_directory(tmp_path: Path) -> None:
+    """``_run_migrations()`` hands the project's ``.claude/`` over; it is created when missing."""
+    import asyncio
+
+    from alembic import command
+
+    db_path = tmp_path / "elsewhere" / "sova.db"
+    db_path.parent.mkdir()
+    export_dir = tmp_path / "project" / ".claude"
+    cfg = _alembic_config_for(db_path, memories_export_dir=export_dir)
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    _seed_memories(db_path, edges=False)
+
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    assert len(list(export_dir.glob("memories-export-*.json"))) == 1
+    assert not list(db_path.parent.glob("memories-export-*.json"))
+
+
+@pytest.mark.parametrize("tables_present", [True, False], ids=["empty tables", "tables absent"])
+async def test_migration_044_writes_no_file_without_rows(tmp_path: Path, tables_present: bool) -> None:
+    import asyncio
+    import sqlite3
+
+    from alembic import command
+
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    cfg = _alembic_config_for(db_path)
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    if not tables_present:
+        raw = sqlite3.connect(str(db_path))
+        try:
+            raw.execute("DROP TABLE memory_edges")
+            raw.execute("DROP TABLE memories")
+            raw.commit()
+        finally:
+            raw.close()
+
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    assert not {"memories", "memory_edges"} & _table_names(db_path)
+    assert not list(db_path.parent.glob("memories-export-*.json"))
+
+
+async def test_migration_044_aborts_with_tables_intact_when_the_export_fails(tmp_path: Path) -> None:
+    import asyncio
+
+    from alembic import command
+
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("in the way", encoding="utf-8")
+    cfg = _alembic_config_for(db_path, memories_export_dir=blocker / ".claude")
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    _seed_memories(db_path, edges=True)
+
+    with pytest.raises(OSError):
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+
+    assert {"memories", "memory_edges"} <= _table_names(db_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+async def test_migration_044_export_is_owner_only(tmp_path: Path) -> None:
+    mod = _import_migration("044")
+    old_umask = os.umask(0o022)
+    try:
+        written = mod._write_export(tmp_path, {"memories": [], "memory_edges": []})
+    finally:
+        os.umask(old_umask)
+
+    assert written.stat().st_mode & 0o777 == 0o600
+
+
+async def test_migration_044_never_overwrites_an_existing_export(tmp_path: Path) -> None:
+    from datetime import timezone
+    from unittest.mock import patch
+
+    mod = _import_migration("044")
+    fixed = datetime(2026, 11, 13, 12, 0, 0, tzinfo=timezone.utc)
+    existing = tmp_path / "memories-export-20261113T120000000000Z.json"
+    existing.write_text("keep me", encoding="utf-8")
+
+    with patch.object(mod, "datetime") as fake_datetime:
+        fake_datetime.now.return_value = fixed
+        written = mod._write_export(tmp_path, {"memories": [], "memory_edges": []})
+
+    assert written.name == "memories-export-20261113T120000000000Z-1.json"
+    assert existing.read_text(encoding="utf-8") == "keep me"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (datetime(2026, 11, 1, 10, 0, 0), "2026-11-01T10:00:00"),
+        (Decimal("0.7500"), "0.7500"),
+        (b"\x00\xff", "AP8="),
+        (memoryview(b"\x00\xff"), "AP8="),
+        (object, "<class 'object'>"),
+    ],
+    ids=["datetime", "decimal", "bytes", "memoryview", "other"],
+)
+async def test_migration_044_serializes_every_value_type(value: object, expected: str) -> None:
+    assert _import_migration("044")._json_default(value) == expected
+
+
+async def test_migration_044_downgrade_recreates_both_tables_empty(tmp_path: Path) -> None:
+    import asyncio
+    import sqlite3
+
+    from alembic import command
+
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    cfg = _alembic_config_for(db_path)
+    await asyncio.to_thread(command.upgrade, cfg, "head")
+    assert not {"memories", "memory_edges"} & _table_names(db_path)
+
+    await asyncio.to_thread(command.downgrade, cfg, "043")
+
+    raw = sqlite3.connect(str(db_path))
+    try:
+        assert raw.execute("SELECT COUNT(*) FROM memories").fetchone() == (0,)
+        assert raw.execute("SELECT COUNT(*) FROM memory_edges").fetchone() == (0,)
+        indexes = {row[1] for row in raw.execute("PRAGMA index_list(memories)")}
+        assert {"ix_memories_category", "ix_memories_superseded_by", "ix_memories_archived"} <= indexes
+        assert {row[2] for row in raw.execute("PRAGMA foreign_key_list(memory_edges)")} == {"memories"}
+    finally:
+        raw.close()
+
+
+async def test_init_db_exports_old_memories_into_the_project_claude_dir(tmp_path: Path, monkeypatch) -> None:
+    """The server's own startup migration, not only the alembic CLI, writes the export under the project."""
+    import asyncio
+
+    from alembic import command
+
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+    db_path = tmp_path / ".claude" / "sova.db"
+    db_path.parent.mkdir()
+    await asyncio.to_thread(command.upgrade, _alembic_config_for(db_path), "043")
+    _seed_memories(db_path, edges=True)
+
+    await init_db(tmp_path)
+    try:
+        assert len(list((tmp_path / ".claude").glob("memories-export-*.json"))) == 1
+        assert not {"memories", "memory_edges"} & _table_names(db_path)
+    finally:
+        await close_db()
+
+
+async def test_init_db_without_project_dir_exports_into_the_ambient_project(tmp_path: Path, monkeypatch) -> None:
+    """The server's bare ``init_db()`` still sends the export to the ambient project's ``.claude/``."""
+    import asyncio
+
+    from alembic import command
+
+    monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    db_path = home / ".config" / "sova" / "sova.db"
+    db_path.parent.mkdir(parents=True)
+    project = tmp_path / "project"
+    project.mkdir()
+    await asyncio.to_thread(command.upgrade, _alembic_config_for(db_path), "043")
+    _seed_memories(db_path, edges=True)
+    monkeypatch.setattr("sova.config.context.get_project_dir", lambda: project)
+
+    await init_db()
+    try:
+        assert len(list((project / ".claude").glob("memories-export-*.json"))) == 1
+        assert not list(db_path.parent.glob("memories-export-*.json"))
+    finally:
+        await close_db()
+
+
+@pytest.mark.parametrize(
+    ("dialect", "database", "configured", "expected_reason"),
+    [
+        ("sqlite", "/data/proj/.claude/sova.db", "/cfg/.claude", "project"),
+        ("postgresql", "sova", "/cfg/.claude", "project"),
+        ("sqlite", "/data/proj/.claude/sova.db", None, "database_file"),
+        ("postgresql", "sova", None, "fallback_state_dir"),
+        ("sqlite", ":memory:", None, "fallback_state_dir"),
+    ],
+)
+async def test_migration_044_export_dir_precedence(
+    dialect: str, database: str, configured, expected_reason: str
+) -> None:
+    """A configured directory wins over the database file's directory, which wins over the state dir."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("044")
+    bind = MagicMock()
+    bind.dialect.name = dialect
+    bind.engine.url.database = database
+    attributes = {} if configured is None else {"memories_export_dir": configured}
+    with patch.object(mod.op, "get_context") as get_context:
+        get_context.return_value.config.attributes = attributes
+        path, reason = mod._export_dir(bind)
+
+    assert reason == expected_reason
+    expected_path = {
+        "project": Path(configured) if configured else None,
+        "database_file": Path(database).parent,
+        "fallback_state_dir": Path.home() / ".config" / "sova",
+    }[expected_reason]
+    assert path == expected_path
+
+
+@pytest.mark.skipif(not os.environ.get("SOVA_TEST_POSTGRES_URL"), reason="SOVA_TEST_POSTGRES_URL not set")
+async def test_migration_044_drops_the_tables_on_postgresql(tmp_path: Path) -> None:
+    """Needs an empty PostgreSQL database; the export lands in the directory the runner passes."""
+    import asyncio
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import create_engine, inspect, text
+
+    url = os.environ["SOVA_TEST_POSTGRES_URL"]
+    cfg = Config(str(Path(__file__).parent.parent / "sova" / "db" / "alembic.ini"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    cfg.attributes["memories_export_dir"] = tmp_path
+    await asyncio.to_thread(command.upgrade, cfg, "043")
+    sync_url = url.replace("+asyncpg", "+psycopg")
+    engine = create_engine(sync_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO memories (category, title, content) VALUES ('learning', 't', 'c')"))
+
+        await asyncio.to_thread(command.upgrade, cfg, "head")
+
+        tables = set(inspect(engine).get_table_names())
+        assert not {"memories", "memory_edges"} & tables
+        assert len(list(tmp_path.glob("memories-export-*.json"))) == 1
+    finally:
+        await asyncio.to_thread(command.downgrade, cfg, "base")
+        engine.dispose()
+
+
 async def test_register_sqlite_pragmas_sets_synchronous_normal(tmp_path) -> None:
     """Every new connection should get PRAGMA synchronous=NORMAL, not the FULL default.
 
@@ -729,25 +1062,6 @@ async def test_register_sqlite_pragmas_swallows_exception(tmp_path) -> None:
     pragma_listener(_RaisingConnection(), None)  # must not raise
 
     await engine.dispose()
-
-
-async def test_create_memory() -> None:
-    """Create a memory entry."""
-    async with await get_session() as session:
-        memory = Memory(
-            category="learning",
-            title="Always run migrations before tests",
-            content="The test database needs current migrations to pass.",
-            tags="testing,database",
-            repo="user/project",
-            issue_number="42",
-        )
-        session.add(memory)
-        await session.commit()
-        await session.refresh(memory)
-
-        assert memory.category == "learning"
-        assert memory.tier == "project"
 
 
 async def test_create_task_assessment() -> None:
@@ -808,37 +1122,6 @@ async def test_assessments_project_slug_index_exists() -> None:
         indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("task_assessments"))
     index_names = {idx["name"] for idx in indexes}
     assert "ix_assessments_project_slug" in index_names
-
-
-async def test_memories_superseded_by_index_exists() -> None:
-    """memories table has an index on superseded_by for search() filtering."""
-    async with await get_session() as session:
-        conn = await session.connection()
-        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("memories"))
-    index_names = {idx["name"] for idx in indexes}
-    assert "ix_memories_superseded_by" in index_names
-
-
-async def test_filter_memories_by_superseded_by() -> None:
-    """Queries filtering on superseded_by benefit from the new index."""
-    async with await get_session() as session:
-        m1 = Memory(category="learning", title="Old", content="Replaced", tags="")
-        session.add(m1)
-        await session.commit()
-        await session.refresh(m1)
-
-        m2 = Memory(category="learning", title="New", content="Current", tags="")
-        session.add(m2)
-        await session.commit()
-        await session.refresh(m2)
-
-        m1.superseded_by = m2.id
-        await session.commit()
-
-        result = await session.execute(select(Memory).where(Memory.superseded_by.is_(None)))
-        active = result.scalars().all()
-        assert len(active) == 1
-        assert active[0].title == "New"
 
 
 async def test_filter_assessments_by_project_slug() -> None:
@@ -1325,7 +1608,7 @@ async def test_init_db_for_project_lock_prevents_concurrent_init(tmp_path) -> No
 
     call_count = 0
 
-    async def slow_migrations(engine):
+    async def slow_migrations(engine, project_dir):
         nonlocal call_count
         call_count += 1
         await asyncio.sleep(0.05)
@@ -1539,6 +1822,112 @@ class TestRunMigrationsAtHead:
         await engine.dispose()
 
 
+class TestRunMigrationsHelpers:
+    """Branches of the helpers _run_migrations() delegates to."""
+
+    @staticmethod
+    def _engine(db_path):
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        return create_async_engine(f"sqlite+aiosqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    async def test_run_migrations_passes_project_claude_dir_to_alembic(self, tmp_path) -> None:
+        """``project_dir`` reaches the Alembic config as the memories export directory."""
+        from unittest.mock import patch
+
+        from sova.db.session import _run_migrations
+
+        seen: list[object] = []
+
+        def _record(cfg, _rev):
+            seen.append(cfg.attributes.get("memories_export_dir"))
+
+        engine = self._engine(tmp_path / "export-dir.db")
+        with patch("alembic.command.upgrade", side_effect=_record):
+            assert await _run_migrations(engine, tmp_path) is True
+        await engine.dispose()
+
+        assert seen == [tmp_path / ".claude"]
+
+    async def test_run_migrations_without_project_dir_sets_no_export_dir(self, tmp_path) -> None:
+        """Without ``project_dir`` the attribute is absent, so migration 044 uses its own default."""
+        from unittest.mock import patch
+
+        from sova.db.session import _run_migrations
+
+        seen: list[bool] = []
+        engine = self._engine(tmp_path / "no-export-dir.db")
+        with patch(
+            "alembic.command.upgrade",
+            side_effect=lambda cfg, _rev: seen.append("memories_export_dir" in cfg.attributes),
+        ):
+            await _run_migrations(engine)
+        await engine.dispose()
+
+        assert seen == [False]
+
+    async def test_run_migrations_at_head_reports_schema_drift(self, tmp_path) -> None:
+        """At head, a missing ORM column is logged as schema drift and no DDL runs."""
+        from unittest.mock import patch
+
+        from sova.db.session import _run_migrations
+
+        engine = self._engine(tmp_path / "drift.db")
+        await _run_migrations(engine)
+        with (
+            patch("sova.db.session._find_missing_columns", return_value=["task_runs.ghost"]),
+            patch("sova.db.session._log") as log,
+        ):
+            assert await _run_migrations(engine) is False
+        await engine.dispose()
+
+        log.error.assert_called_once()
+        assert log.error.call_args.args[0] == "db.schema_drift"
+        assert log.error.call_args.kwargs["missing_columns"] == "task_runs.ghost"
+
+    async def test_run_migrations_at_head_schema_verify_failure_fails_open(self, tmp_path) -> None:
+        """A drift check that cannot inspect the DB warns and still takes the fast path."""
+        from unittest.mock import patch
+
+        from sova.db.session import _run_migrations
+
+        engine = self._engine(tmp_path / "verify-fail.db")
+        await _run_migrations(engine)
+        with (
+            patch("sova.db.session._find_missing_columns", side_effect=RuntimeError("inspect boom")),
+            patch("sova.db.session._log") as log,
+        ):
+            assert await _run_migrations(engine) is False
+        await engine.dispose()
+
+        log.warning.assert_called_once()
+        assert log.warning.call_args.args[0] == "db.schema_verify_failed"
+        log.error.assert_not_called()
+
+    async def test_run_migrations_fresh_db_stamp_failure_is_advisory(self, tmp_path) -> None:
+        """On an empty DB, a failed upgrade falls back to create_all; a failed stamp only warns."""
+        from unittest.mock import patch
+
+        from sova.db.session import _run_migrations
+
+        engine = self._engine(tmp_path / "stamp-fail.db")
+        with (
+            patch("alembic.command.upgrade", side_effect=RuntimeError("upgrade boom")),
+            patch("alembic.command.stamp", side_effect=RuntimeError("stamp boom")),
+            patch("sova.db.session._log") as log,
+        ):
+            assert await _run_migrations(engine) is True
+
+        async with engine.connect() as conn:
+            tables = await conn.run_sync(lambda c: inspect(c).get_table_names())
+        await engine.dispose()
+
+        assert "task_runs" in tables
+        assert "alembic_version" not in tables
+        events = [call.args[0] for call in log.warning.call_args_list]
+        assert events == ["db.alembic_migration_failed_fallback_create_all", "db.alembic_stamp_failed_tables_untracked"]
+
+
 # ---------------------------------------------------------------------------
 # _get_db_path_from_url: file vs. non-file SQLite URLs (issue #1205)
 # ---------------------------------------------------------------------------
@@ -1717,69 +2106,6 @@ class TestBackupDb:
         assert result is False
         mock_backup.assert_not_awaited()
         await engine.dispose()
-
-    async def test_orphan_cleanup_backup_does_not_overwrite_pre_migration_backup(self, tmp_path) -> None:
-        """The orphan-edge sweep's backup must not demote the real pre-migration restore point.
-
-        Regression test for issue #1205 review: both backups previously wrote
-        to the same ``.db.bak``/``.db.bak.1`` rotation slots, so a migrating
-        startup that also found a pre-existing orphaned memory_edges row ended
-        with ``.db.bak`` holding a POST-migration snapshot while the log line
-        claimed it was the pre-migration restore point, and the real
-        pre-migration backup silently demoted into ``.db.bak.1``.
-        """
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        from sova.db.session import _enable_sqlite_wal, _run_migrations
-
-        db_path = tmp_path / "orphan-vs-migration-backup.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
-        )
-
-        await _run_migrations(engine)  # builds full schema, stamped at head
-
-        async with engine.begin() as conn:
-            # No foreign_keys pragma active yet, so this orphan insert succeeds,
-            # mimicking data left over from before the pragma was ever enabled.
-            await conn.execute(
-                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
-            )
-            await conn.execute(
-                text(
-                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) "
-                    "VALUES (1, 999, 'relates_to', 1.0)"
-                )
-            )
-            # Rewind the version stamp so the next _run_migrations() call performs
-            # a real upgrade (and therefore a real pre-migration backup).
-            await conn.execute(text("UPDATE alembic_version SET version_num = '039'"))
-
-        await _run_migrations(engine)  # real upgrade 039 -> head, takes the pre-migration backup
-        await engine.dispose()
-        await _enable_sqlite_wal(engine)  # runs the orphan sweep, which finds the row inserted above
-
-        async with engine.connect() as conn:
-            edge_count = (await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))).scalar()
-        await engine.dispose()
-
-        assert edge_count == 0  # orphan was actually removed
-
-        import sqlite3
-
-        pre_migration_backup = db_path.with_suffix(".db.bak")
-        orphan_cleanup_backup = db_path.with_suffix(".db.bak.pre-orphan-cleanup")
-        assert pre_migration_backup.exists()
-        assert orphan_cleanup_backup.exists()
-
-        raw = sqlite3.connect(str(pre_migration_backup))
-        try:
-            version = raw.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        finally:
-            raw.close()
-        assert version == "039"  # the pre-migration restore point, not overwritten by the cleanup sweep
 
 
 # ---------------------------------------------------------------------------
@@ -1961,8 +2287,8 @@ class TestSqliteForeignKeys:
         assert fks_after[0][3] == "workflow_definition_id"
         assert fks_after[0][6] == "SET NULL"
 
-    async def test_cascade_delete_removes_memory_edges(self, tmp_path) -> None:
-        """With foreign_keys enabled, deleting a memory cascades to its edges."""
+    async def test_foreign_keys_pragma_is_enabled_after_wal_setup(self, tmp_path) -> None:
+        """With foreign_keys enabled, deleting a parent row cascades to its children."""
         from sqlalchemy import text
         from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -1978,98 +2304,24 @@ class TestSqliteForeignKeys:
         await _enable_sqlite_wal(engine)
 
         async with engine.begin() as conn:
-            await conn.execute(
-                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
-            )
-            await conn.execute(
-                text("INSERT INTO memories (id, category, title, content) VALUES (2, 'learning', 't2', 'c2')")
-            )
+            await conn.execute(text("CREATE TABLE parent_t (id INTEGER PRIMARY KEY)"))
             await conn.execute(
                 text(
-                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) VALUES (1, 2, 'relates_to', 1.0)"
+                    "CREATE TABLE child_t (id INTEGER PRIMARY KEY, "
+                    "parent_id INTEGER REFERENCES parent_t(id) ON DELETE CASCADE)"
                 )
             )
+            await conn.execute(text("INSERT INTO parent_t (id) VALUES (1)"))
+            await conn.execute(text("INSERT INTO child_t (id, parent_id) VALUES (1, 1)"))
 
         async with engine.begin() as conn:
-            await conn.execute(text("DELETE FROM memories WHERE id = 1"))
+            await conn.execute(text("DELETE FROM parent_t WHERE id = 1"))
 
         async with engine.connect() as conn:
-            result = await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))
-            count = result.scalar()
+            count = (await conn.execute(text("SELECT COUNT(*) FROM child_t"))).scalar()
         await engine.dispose()
 
         assert count == 0
-
-    async def test_cleanup_removes_preexisting_orphans(self, tmp_path) -> None:
-        """A dangling memory_edges row from before the pragma must be removed at startup."""
-        from sqlalchemy import text
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        from sova.db.session import _cleanup_orphaned_memory_edges, _run_migrations
-
-        db_path = tmp_path / "orphans.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
-        )
-        await _run_migrations(engine)
-
-        async with engine.begin() as conn:
-            await conn.execute(
-                text("INSERT INTO memories (id, category, title, content) VALUES (1, 'learning', 't', 'c')")
-            )
-            # No foreign_keys pragma active on this connection, so this orphan insert succeeds.
-            await conn.execute(
-                text(
-                    "INSERT INTO memory_edges (source_id, target_id, relation, weight) "
-                    "VALUES (1, 999, 'relates_to', 1.0)"
-                )
-            )
-
-        await _cleanup_orphaned_memory_edges(engine)
-
-        async with engine.connect() as conn:
-            result = await conn.execute(text("SELECT COUNT(*) FROM memory_edges"))
-            count = result.scalar()
-        await engine.dispose()
-
-        assert count == 0
-
-    async def test_cleanup_is_a_noop_before_tables_exist(self, tmp_path) -> None:
-        """A fresh engine with no tables must not raise."""
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        from sova.db.session import _cleanup_orphaned_memory_edges
-
-        db_path = tmp_path / "no-tables-yet.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
-        )
-
-        await _cleanup_orphaned_memory_edges(engine)  # must not raise
-
-        await engine.dispose()
-
-    async def test_cleanup_swallows_exception(self, tmp_path) -> None:
-        """A failure inspecting or deleting rows must not abort startup."""
-        from unittest.mock import patch
-
-        from sqlalchemy.ext.asyncio import create_async_engine
-
-        from sova.db.session import _cleanup_orphaned_memory_edges, _run_migrations
-
-        db_path = tmp_path / "cleanup-fail.db"
-        engine = create_async_engine(
-            f"sqlite+aiosqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
-        )
-        await _run_migrations(engine)
-
-        with patch("sova.db.session.inspect", side_effect=RuntimeError("boom")):
-            await _cleanup_orphaned_memory_edges(engine)  # must not raise
-
-        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -2522,7 +2774,7 @@ async def test_init_db_serializes_concurrent_calls_for_the_same_url(tmp_path, mo
     monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
     events: list[str] = []
 
-    async def _fake_run_migrations(engine):
+    async def _fake_run_migrations(engine, project_dir):
         events.append("enter")
         await asyncio.sleep(0.05)
         events.append("exit")
@@ -2891,33 +3143,43 @@ async def test_migration_035_does_not_duplicate_task_assessment_indexes() -> Non
     assert "task_assessments" not in indexed_tables
 
 
-async def test_migration_035_repairs_a_drifted_database(tmp_path) -> None:
-    """A DB stamped at 034 without the memory columns is repaired, rows intact."""
-    from sqlalchemy import text
+async def test_migration_035_adds_lifecycle_columns_keeping_rows(tmp_path) -> None:
+    """A DB at 034 has no memory lifecycle columns; upgrading to 035 adds them, rows intact.
 
-    from sova.db.session import _run_migrations
+    A drifted database (columns dropped under a stamp at 034) is not simulated: head no longer has the table.
+    """
+    import asyncio
+    import sqlite3
 
-    engine = await _migrated_engine(tmp_path / "drifted.db")
+    from alembic import command
 
-    # Simulate the real-world drift: drop the columns and rewind the stamp to 034.
-    async with engine.begin() as conn:
-        await conn.execute(text("INSERT INTO memories (category, title, content) VALUES ('learning', 'kept', 'body')"))
-        # SQLite refuses to drop a column an index still references.
-        await conn.execute(text("DROP INDEX ix_memories_archived"))
-        for column in _MEMORY_LIFECYCLE_COLUMNS:
-            await conn.execute(text(f"ALTER TABLE memories DROP COLUMN {column}"))
-        await conn.execute(text("UPDATE alembic_version SET version_num = '034'"))
+    db_path = tmp_path / "drifted.db"
+    alembic_cfg = _alembic_config_for(db_path)
 
-    assert await _run_migrations(engine) is True
+    def columns() -> set[str]:
+        raw = sqlite3.connect(str(db_path))
+        try:
+            return {row[1] for row in raw.execute("PRAGMA table_info(memories)")}
+        finally:
+            raw.close()
 
-    async with engine.connect() as conn:
-        columns = await conn.run_sync(lambda c: {col["name"] for col in inspect(c).get_columns("memories")})
-        rows = await conn.execute(text("SELECT title FROM memories"))
-        titles = [r[0] for r in rows]
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "034")
+    assert not set(_MEMORY_LIFECYCLE_COLUMNS) & columns()
+    raw = sqlite3.connect(str(db_path))
+    try:
+        raw.execute("INSERT INTO memories (category, title, content) VALUES ('learning', 'kept', 'body')")
+        raw.commit()
+    finally:
+        raw.close()
 
-    assert set(_MEMORY_LIFECYCLE_COLUMNS) <= columns
-    assert titles == ["kept"]
-    await engine.dispose()
+    await asyncio.to_thread(command.upgrade, alembic_cfg, "035")
+
+    assert set(_MEMORY_LIFECYCLE_COLUMNS) <= columns()
+    raw = sqlite3.connect(str(db_path))
+    try:
+        assert raw.execute("SELECT title FROM memories").fetchall() == [("kept",)]
+    finally:
+        raw.close()
 
 
 class TestSchemaDriftGuard:
@@ -2999,13 +3261,13 @@ class TestFindMissingColumns:
 
         engine = await _migrated_engine(tmp_path / "dropped.db")
         async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE memories DROP COLUMN embedding"))
+            await conn.execute(text("ALTER TABLE task_assessments DROP COLUMN sub_tasks"))
 
         async with engine.connect() as conn:
             missing = await conn.run_sync(_find_missing_columns)
         await engine.dispose()
 
-        assert missing == ["memories.embedding"]
+        assert missing == ["task_assessments.sub_tasks"]
 
     async def test_at_head_with_drift_logs_an_error(self, tmp_path) -> None:
         """The fast path must name the missing column, not skip silently."""
@@ -3017,7 +3279,7 @@ class TestFindMissingColumns:
 
         engine = await _migrated_engine(tmp_path / "at-head-drift.db")
         async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE memories DROP COLUMN embedding"))
+            await conn.execute(text("ALTER TABLE task_assessments DROP COLUMN sub_tasks"))
 
         mock_logger = MagicMock()
         with patch("sova.db.session._log", mock_logger):
@@ -3028,7 +3290,7 @@ class TestFindMissingColumns:
         mock_logger.error.assert_called_once()
         # Rendered as a structured kwarg rather than interpolated into the
         # message, so reordering the log kwargs cannot turn this into a false pass.
-        assert mock_logger.error.call_args.kwargs["missing_columns"] == "memories.embedding"
+        assert mock_logger.error.call_args.kwargs["missing_columns"] == "task_assessments.sub_tasks"
 
     async def test_verification_failure_does_not_block_startup(self, tmp_path) -> None:
         """The check is diagnostic: a schema it cannot inspect must still start."""
