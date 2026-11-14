@@ -73,7 +73,7 @@ All tests live in `tests/` as flat modules, with one subdirectory: `tests/runtim
 | `test_agent_handoff.py` | `sova/dashboard/services/agent_handoff.py` | ~24 |
 | `test_agent_pool.py` | `sova/dashboard/services/agent_pool.py` | ~17 |
 
-Plus: `test_batch_service.py`, `test_commands.py`, `test_dag.py`, `test_db.py`, `test_external_reviews.py`, `test_extraction.py`, `test_harden.py`, `test_jira_adapter.py`, `test_knowledge.py`, `test_knowledge_sharing.py`, `test_lifecycle.py`, `test_llm.py`, `test_mcp.py`, `test_scheduler.py`, `test_settings_meta.py`, `test_spec.py`, `test_utils.py`.
+Plus: `test_batch_service.py`, `test_commands.py`, `test_dag.py`, `test_db.py`, `test_external_reviews.py`, `test_harden.py`, `test_jira_adapter.py`, `test_personas.py`, `test_lifecycle.py`, `test_llm.py`, `test_mcp.py`, `test_scheduler.py`, `test_settings_meta.py`, `test_spec.py`, `test_utils.py`.
 
 Tests use classes to group related assertions. Fixtures are defined per-file, not in conftest, except for the autouse isolation fixtures, the shared DB fixture (`reset_db_rows`) and the shared dashboard app (`dashboard_app`) described below.
 

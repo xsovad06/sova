@@ -1,4 +1,4 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, refresh-pr-body, learn-from-pr."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, refresh-pr-body."""
 
 from __future__ import annotations
 
@@ -479,57 +479,3 @@ async def _mark_linked_issues_in_review(pr: int, config: ProjectConfig, env: dic
         typer.echo(line)
     if opened.failed:
         raise typer.Exit(code=1)
-
-
-def learn_from_pr(
-    pr: Annotated[int, typer.Argument(help="PR number to learn from.")],
-    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
-) -> None:
-    """Ingest PR review feedback into agent memory."""
-    asyncio.run(_learn_from_pr(pr=pr, project_dir=project))
-
-
-async def _learn_from_pr(*, pr: int, project_dir: Path | None) -> None:
-    from sova.config.loader import load_config
-    from sova.db.session import init_db
-    from sova.knowledge.review_patterns import record_review_finding
-    from sova.utils.gh import resolve_gh_env
-    from sova.utils.shell import run
-
-    resolved_dir = project_dir or Path.cwd()
-    config = load_config(resolved_dir)
-    await init_db(resolved_dir)
-
-    console.print(f"[bold]Learning from PR #{pr}...[/bold]")
-
-    # Fetch PR reviews
-    env = await resolve_gh_env(config.github_user)
-    result = await run(
-        "gh",
-        "api",
-        f"repos/{config.github_repo}/pulls/{pr}/reviews",
-        "--jq",
-        ".[].body",
-        cwd=resolved_dir,
-        env=env,
-    )
-
-    if not result.success:
-        console.print(f"[red]Failed to fetch reviews: {result.stderr}[/red]")
-        raise typer.Exit(code=1)
-
-    reviews = [r.strip() for r in result.stdout.strip().split("\n") if r.strip()]
-
-    if not reviews:
-        console.print("[yellow]No review comments found.[/yellow]")
-        return
-
-    for review_body in reviews:
-        await record_review_finding(
-            session=None,
-            category="pr_feedback",
-            pattern=review_body[:500],
-            source_pr=f"#{pr}",
-        )
-
-    console.print(f"[green]Ingested {len(reviews)} review(s) into memory.[/green]")

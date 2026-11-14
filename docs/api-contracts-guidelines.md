@@ -36,7 +36,7 @@ API contract patterns, request/response models, and integration conventions used
 | resources | Resource monitoring data for agent runs |
 | roles | CRUD for workflow definitions and role introspection |
 | runs | Task run history from the database |
-| settings | Config, invariants, personas, installation status |
+| settings | Config, invariants, detected stack, installation status |
 | setup | Project onboarding, scanning, and installation |
 | spec | Read, approve, revise, skip, reject specs |
 | supervisor | Status, manual poll trigger, decision log queries, approval plan, and persona |

@@ -20,11 +20,9 @@ from sova.cli.commands.db import app as db_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
 from sova.cli.commands.mcp import app as mcp_app
-from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.migrate import migrate_config
 from sova.cli.commands.pr import (
     address_pr,
-    learn_from_pr,
     linked_issues,
     maintain_pr,
     pr_verdict,
@@ -64,7 +62,6 @@ app.command(name="uninstall")(uninstall)
 app.command(name="address-pr")(address_pr)
 app.command(name="maintain-pr")(maintain_pr)
 app.command(name="review-pr")(review_pr)
-app.command(name="learn-from-pr")(learn_from_pr)
 app.command(name="linked-issues")(linked_issues)
 app.command(name="pr-verdict")(pr_verdict)
 app.command(name="refresh-pr-body")(refresh_pr_body)
@@ -84,9 +81,6 @@ app.command(name="briefing")(briefing)
 
 # MCP (subcommand group)
 app.add_typer(mcp_app)
-
-# Memory (subcommand group)
-app.add_typer(memory_app)
 
 # Commands (subcommand group)
 app.add_typer(commands_app)

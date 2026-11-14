@@ -26,14 +26,15 @@ from sqlalchemy.exc import ArgumentError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import ProjectSetting
-from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY, _get_database_url
+from sova.db.session import _get_database_url
 from sova.utils.logging import get_logger
 
 logger = get_logger(component="config.db_loader")
 
 # Internal bookkeeping rows stored in project_settings that are not user-facing
 # configuration and must never surface in the config dict returned to callers.
-_INTERNAL_SETTING_KEYS = frozenset({_ORPHAN_SWEEP_MARKER_KEY})
+# "db.orphan_edges_swept" is a marker the removed memory-edge cleanup wrote; existing databases keep the row.
+_INTERNAL_SETTING_KEYS = frozenset({"db.orphan_edges_swept"})
 
 
 async def save_setting(session: AsyncSession, key: str, value: Any) -> None:

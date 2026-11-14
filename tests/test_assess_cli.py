@@ -2,13 +2,30 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
+import structlog
 from typer.testing import CliRunner
 
 from sova.cli.app import app
+from tests.conftest import configure_test_logging
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _log_to_stderr() -> Iterator[None]:
+    """Send structlog output to stderr, as production does, so stdout carries only the command's own output.
+
+    The suite's default (tests/conftest.py) logs to stdout; a first-load event such as the sova.toml to DB migration
+    would then land in the stdout these pipeable commands are checked on.
+    """
+    structlog.configure(logger_factory=lambda *_args: structlog.PrintLogger(file=sys.stderr))
+    yield
+    configure_test_logging()
 
 
 def _invoke(*args: str, project: Path) -> object:
@@ -59,6 +76,9 @@ class TestAssessSetGet:
 
     def test_get_none_prints_on_stdout_only(self, tmp_path: Path) -> None:
         _write_repo(tmp_path)
+        # The first load of a project migrates sova.toml into the DB, and the suite's structlog setup prints that
+        # debug event on stdout; do it once up front so the call under test shows only the command's output.
+        _invoke("get", "98", project=tmp_path)
         result = _invoke("get", "99", project=tmp_path)
         assert result.stdout.strip() == "none"
 
