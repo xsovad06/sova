@@ -86,9 +86,6 @@ grep -c "async def \|def " sova/adapters/base.py
 # CLI subcommands
 grep -c "app\.\|typer\." sova/cli/app.py
 
-# Personas
-ls personas/*.md | wc -l
-
 # Adapters implemented
 ls sova/adapters/*.py | grep -v __init__ | grep -v base | grep -v factory
 ```

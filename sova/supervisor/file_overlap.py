@@ -25,7 +25,6 @@ _AREA_LABEL_DIRS: dict[str, list[str]] = {
     "agent": ["sova/core/", "sova/roles/"],
     "dashboard": ["sova/dashboard/"],
     "commands": ["sova/commands/data/commands/", ".claude/commands/"],
-    "personas": ["sova/commands/data/personas/"],
     "invariants": ["invariants/"],
     "knowledge": ["sova/knowledge/", "knowledge/"],
     "docs": ["docs/"],
@@ -41,6 +40,8 @@ _AREA_LABEL_DIRS: dict[str, list[str]] = {
     "monitoring": ["sova/monitoring/"],
     "db": ["sova/db/"],
     "awareness": ["sova/awareness/"],
+    # The tech-stack persona files are gone; the supervisor, oversight and stack-detection persona modules stay.
+    "personas": ["sova/supervisor/persona.py", "sova/oversight/persona.py", "sova/knowledge/personas.py"],
 }
 
 _CROSS_CUTTING_FILES = [

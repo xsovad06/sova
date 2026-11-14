@@ -1,16 +1,12 @@
-"""Persona detection and loading for target projects.
+"""Persona detection for target projects.
 
-Detects tech stack from marker files and loads persona guidance documents.
+Detects the project's tech stack from marker files.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
-from sova.utils.logging import get_logger
-
-log = get_logger(component="knowledge.personas")
 
 _SETUP_PY = "setup.py"
 
@@ -120,31 +116,3 @@ def detect_persona(project_dir: Path) -> str | None:
         return "ruby"
 
     return None
-
-
-def load_persona(name: str, personas_dir: Path | None = None) -> str:
-    """Load persona guidance markdown for a given tech stack.
-
-    Args:
-        name: Persona name (e.g., "django", "python").
-        personas_dir: Directory containing persona .md files.
-            Defaults to SOVA's packaged ``personas/`` directory.
-
-    Returns:
-        File content as string, or empty string if not found.
-    """
-    if personas_dir is None:
-        from sova.commands.catalog import get_personas_dir
-
-        personas_dir = get_personas_dir()
-
-    path = personas_dir / f"{name}.md"
-    if not path.is_file():
-        log.debug("persona.not_found", name=name, path=str(path))
-        return ""
-
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        log.warning("persona.read_error", name=name, path=str(path))
-        return ""

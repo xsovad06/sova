@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from decimal import Decimal
-from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 from urllib.parse import urlparse
 
@@ -898,14 +897,6 @@ class SecurityConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SECURITY_")
 
 
-class KnowledgeConfig(BaseSettings):
-    """Knowledge retrieval configuration."""
-
-    max_context_tokens: int = Field(2000, ge=0)
-
-    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_KNOWLEDGE_")
-
-
 class DashboardConfig(BaseSettings):
     """Dashboard UI configuration."""
 
@@ -1363,12 +1354,6 @@ class ProjectConfig(BaseSettings):
     # Persona
     persona_map: str = ""
 
-    # Knowledge
-    shared_knowledge_dir: str = "~/.claude/shared-knowledge"
-    shared_knowledge_categories: list[str] = Field(
-        default_factory=lambda: ["review_pattern", "common_mistake", "codebase_pattern", "ci_pattern"],
-    )
-    ignored_shared_hashes: list[str] = Field(default_factory=list)
     invariants_dir: str = ""
     max_parallel_agents: int = 2
 
@@ -1408,7 +1393,6 @@ class ProjectConfig(BaseSettings):
     feed: FeedConfig = Field(default_factory=FeedConfig)
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
-    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     compression: HeadroomConfig = Field(default_factory=HeadroomConfig)
@@ -1429,7 +1413,3 @@ class ProjectConfig(BaseSettings):
     dependency_health: DependencyHealthConfig = Field(default_factory=DependencyHealthConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
-
-    @property
-    def shared_knowledge_path(self) -> Path:
-        return Path(self.shared_knowledge_dir).expanduser()

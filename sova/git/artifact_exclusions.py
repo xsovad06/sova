@@ -63,6 +63,9 @@ RUNTIME_STATE_PATHS = (
     ".claude/agent-output/",
     ".claude/worktrees/",
     ".claude/mcp_secret",
+    # Migration 044's one-time dump of the removed memory tables: free-text agent output that must never be
+    # committed or pushed from a target project (a name prefix, so it covers `memories-export-<timestamp>.json`).
+    ".claude/memories-export-",
 )
 
 # Only the runtime state stays put while `sync_branch()` stashes the operator's work. `.claude/specs/` is

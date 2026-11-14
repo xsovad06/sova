@@ -285,8 +285,6 @@ class ReviewerRole(AgentRole):
 
         await self._write_handoff(ctx, review, review_head_sha=head_sha or None)
 
-        await self._extract_review_memories(ctx, task, review)
-
         total_count = len(review.findings)
         findings = [f.description for f in review.findings]
         if review.post_failed:
@@ -480,12 +478,6 @@ class ReviewerRole(AgentRole):
                 )
             except (OSError, RuntimeError, SQLAlchemyError):
                 log.warning("reviewer.cost_record_failed", model=llm_result.model, exc_info=True)
-
-    async def _extract_review_memories(self, ctx: ExecutionContext, task: Task, review: ReviewResult) -> None:
-        """No-op: automatic memory extraction is disabled.
-
-        Use ``/extract-knowledge`` for human-reviewed knowledge capture.
-        """
 
     async def _clear_current_step(self, ctx: ExecutionContext) -> None:
         """Clear the current_step sentinel on the TaskRun.

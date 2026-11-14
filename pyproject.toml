@@ -59,7 +59,6 @@ awareness = [
     "google-auth-oauthlib>=1.2.0",
     "google-auth-httplib2>=0.2.0",
 ]
-embeddings = ["sentence-transformers>=2.2"]
 postgres = ["asyncpg>=0.30", "psycopg[binary]>=3.3.8"]
 ldap = ["ldap3>=2.9"]
 keyring = ["keyring>=24.0"]
@@ -87,7 +86,7 @@ include = ["sova*"]
 "sova.db" = ["alembic.ini", "migrations/*.mako"]
 "sova.dashboard" = ["templates/*.html", "static/**/*"]
 "sova.core.schemas" = ["*.json"]
-"sova.commands" = ["data/commands/*.md", "data/guidelines/*.md", "data/personas/*.md", "data/skills/**/*"]
+"sova.commands" = ["data/commands/*.md", "data/guidelines/*.md", "data/skills/**/*"]
 
 [tool.ruff]
 target-version = "py312"

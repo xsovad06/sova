@@ -1468,31 +1468,6 @@ class TestReadTextOrNone:
         assert read_text_or_none(path) is None
 
 
-class TestListPersonas:
-    """list_personas() falls back to SOVA's packaged personas when the project has none."""
-
-    def test_project_local_personas_win(self, tmp_path: Path) -> None:
-        from sova.dashboard.services.settings_service import list_personas
-
-        local = tmp_path / "personas"
-        local.mkdir()
-        (local / "custom.md").write_text("# custom\n", encoding="utf-8")
-
-        names = [p["name"] for p in list_personas(tmp_path)]
-        assert names == ["custom"]
-
-    def test_falls_back_to_packaged_personas(self, tmp_path: Path) -> None:
-        """A project with no personas/ directory still lists the shipped set."""
-        from sova.commands.catalog import get_personas_dir
-        from sova.dashboard.services.settings_service import list_personas
-
-        assert not (tmp_path / "personas").exists()
-        names = [p["name"] for p in list_personas(tmp_path)]
-        expected = sorted(f.stem for f in get_personas_dir().iterdir() if f.suffix == ".md")
-        assert names == expected
-        assert "python" in names
-
-
 @pytest.fixture
 async def _dispose_project_engines(tmp_path: Path) -> AsyncIterator[None]:
     """Dispose the engines get_session(project_dir=tmp_path) opened, so no connection leaks into a later test.
