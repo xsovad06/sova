@@ -9,7 +9,6 @@ from enum import StrEnum
 from sqlalchemy import (
     JSON,
     Boolean,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -205,67 +204,6 @@ class CostRecord(Base):
     task_run: Mapped["TaskRun | None"] = relationship(back_populates="cost_records")
 
     __table_args__ = (Index("ix_cost_records_recorded", "recorded_at"),)
-
-
-_MEMORIES_ID_FK = "memories.id"
-
-
-class Memory(Base):
-    """Agent memory entries."""
-
-    __tablename__ = "memories"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    category: Mapped[str] = mapped_column(String(50), nullable=False, default="learning")
-    title: Mapped[str] = mapped_column(String(200), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    tags: Mapped[str] = mapped_column(String(500), default="")
-    repo: Mapped[str] = mapped_column(String(200), default="")
-    issue_number: Mapped[str] = mapped_column(String(50), default="")
-    tier: Mapped[str] = mapped_column(String(20), default="project")
-    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
-    superseded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK))
-    retrieval_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    last_retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
-    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    health_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-    )
-
-    __table_args__ = (
-        Index("ix_memories_category", "category"),
-        Index("ix_memories_tags", "tags"),
-        Index("ix_memories_superseded_by", "superseded_by"),
-        Index("ix_memories_archived", "archived"),
-    )
-
-
-class MemoryEdge(Base):
-    """Directed relationship between two memories."""
-
-    __tablename__ = "memory_edges"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_id: Mapped[int] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK, ondelete="CASCADE"), nullable=False)
-    target_id: Mapped[int] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK, ondelete="CASCADE"), nullable=False)
-    relation: Mapped[str] = mapped_column(String(30), nullable=False, default="relates_to")
-    weight: Mapped[float] = mapped_column(Numeric(5, 4), default=1.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-    __table_args__ = (
-        UniqueConstraint("source_id", "target_id", "relation", name="uq_memory_edge"),
-        CheckConstraint(
-            "relation IN ('relates_to', 'refines', 'depends_on', 'supersedes', 'contradicts')",
-            name="ck_memory_edge_relation",
-        ),
-        CheckConstraint("weight >= 0.0 AND weight <= 1.0", name="ck_memory_edge_weight"),
-        Index("ix_memory_edges_source", "source_id"),
-        Index("ix_memory_edges_target", "target_id"),
-    )
 
 
 class TaskAssessmentRecord(Base):
