@@ -428,10 +428,8 @@ class TestTryLoadFromDBSyncBridge:
         assert result is None
 
     def test_excludes_internal_orphan_sweep_marker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The orphan-edge sweep's own bookkeeping row must never surface as user config."""
+        """The removed orphan-edge sweep's row, still in old databases, must never surface as user config."""
         from sqlalchemy import create_engine
-
-        from sova.db.session import _ORPHAN_SWEEP_MARKER_KEY
 
         monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
 
@@ -445,7 +443,7 @@ class TestTryLoadFromDBSyncBridge:
             conn.execute(
                 ProjectSetting.__table__.insert(),
                 [
-                    {"key": _ORPHAN_SWEEP_MARKER_KEY, "value": "true"},
+                    {"key": "db.orphan_edges_swept", "value": "true"},
                     {"key": "github_repo", "value": '"user/repo"'},
                 ],
             )
@@ -453,6 +451,33 @@ class TestTryLoadFromDBSyncBridge:
 
         result = _try_load_from_db(tmp_path)
         assert result == {"github_repo": "user/repo"}
+
+    def test_removed_knowledge_keys_stored_in_the_db_do_not_fail_the_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sqlalchemy import create_engine
+
+        from sova.config.loader import load_config
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        engine = create_engine(f"sqlite:///{claude_dir / 'sova.db'}")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                ProjectSetting.__table__.insert(),
+                [
+                    {"key": "github_repo", "value": '"user/repo"'},
+                    {"key": "shared_knowledge_dir", "value": '"~/elsewhere"'},
+                    {"key": "shared_knowledge_categories", "value": '["review_pattern"]'},
+                    {"key": "ignored_shared_hashes", "value": '["abc"]'},
+                    {"key": "knowledge.max_context_tokens", "value": "500"},
+                ],
+            )
+        engine.dispose()
+
+        assert load_config(tmp_path).github_repo == "user/repo"
 
 
 class TestFlattenTomlResourcesMigration:

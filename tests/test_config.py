@@ -675,12 +675,27 @@ model = "gpt-5-codex"
     assert cfg.codex.model == "gpt-5-codex"
 
 
-def test_shared_knowledge_path_expansion() -> None:
-    """Shared knowledge dir expands ~ to home."""
-    cfg = ProjectConfig()
-    path = cfg.shared_knowledge_path
-    assert "~" not in str(path)
-    assert path.is_absolute()
+_REMOVED_KNOWLEDGE_KEYS = {
+    "shared_knowledge_dir": "~/elsewhere",
+    "shared_knowledge_categories": ["review_pattern"],
+    "ignored_shared_hashes": ["abc"],
+    "knowledge": {"max_context_tokens": 500},
+}
+
+
+def test_removed_knowledge_keys_are_ignored_in_a_loaded_dict() -> None:
+    """A stored or sova.toml value for a removed knowledge key must not fail the load."""
+    cfg = ProjectConfig(github_repo="user/repo", **_REMOVED_KNOWLEDGE_KEYS)
+
+    assert cfg.github_repo == "user/repo"
+    assert not any(hasattr(cfg, key) for key in _REMOVED_KNOWLEDGE_KEYS)
+
+
+def test_removed_knowledge_keys_are_ignored_as_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOVA_SHARED_KNOWLEDGE_DIR", "~/elsewhere")
+    monkeypatch.setenv("SOVA_KNOWLEDGE_MAX_CONTEXT_TOKENS", "500")
+
+    assert ProjectConfig(github_repo="user/repo").github_repo == "user/repo"
 
 
 # Project Registry Tests --------------------------------------------------

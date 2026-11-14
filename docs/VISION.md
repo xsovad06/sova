@@ -35,10 +35,9 @@ sova/
     mcp/                           # MCP server for tool integration
     git/                           # Branch, PR, rebase (with LLM conflict resolution), worktree
     ipc/                           # Agent process control, handoff protocol, notifications
-    knowledge/                     # Memory CRUD, tier loading, persona detection, extraction
+    knowledge/                     # Local suitability assessments, tech-stack detection, review retrospectives
     commands/                      # Command distribution (catalog, templates, manifest)
       data/commands/               # 28 standardized commands (markdown with frontmatter)
-      data/personas/               # Framework-specific guidance (Django, FastAPI, Odoo)
       data/guidelines/             # Distributable guideline templates
       data/skills/                 # Distributable skill templates
     config/                        # Pydantic Settings v2 + TOML config + project registry
@@ -186,20 +185,9 @@ type = "github"          # github | jira | linear | manual (planned)
 **Implemented**: GitHub (full, including Projects V2 board integration), JIRA Cloud (httpx-based, async, with lifecycle enrichment).
 **Planned**: Linear, Odoo (via MCP).
 
-## Persona System
+## Stack Detection
 
-Auto-detect project type and load relevant guidance:
-
-| Detection Signal | Persona | Guidance | Status |
-|-----------------|---------|----------|--------|
-| `manage.py` + Django in requirements | `django.md` | Models, views, services, migrations | Done |
-| `fastapi` in requirements | `fastapi.md` | Routers, Pydantic, async patterns | Done |
-| `__manifest__.py` pattern | `odoo.md` | ORM, XML views, TransactionCase | Done |
-| `go.mod` | `go-service.md` | Interfaces, error handling, testing | Planned |
-| `package.json` + React | `react.md` | Components, hooks, testing | Planned |
-| `Cargo.toml` | `rust.md` | Ownership, traits, error handling | Planned |
-
-Users can also create custom personas or override detection.
+`detect_persona()` detects the project's tech stack from marker files (`manage.py` plus Django, `fastapi` in requirements, an Odoo `__manifest__.py`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `Gemfile`) and the Settings page shows the result. The per-stack guidance files that used to be loaded from it were removed (issue #1464); nothing reads them.
 
 ## Command System
 
@@ -298,7 +286,6 @@ Fix model selection crash (unavailable version warning), consolidate fallback lo
 | ~~#24~~ | ~~Evaluate monetization~~ | ~~Q1 2027 decision: open-core vs hosted vs consulting~~ (not planned: kept as an internal tool) |
 | ~~--~~ | ~~JIRA adapter~~ | ~~JIRA Cloud task source with lifecycle enrichment~~ (done: #220) |
 | n/a | Additional adapters | Linear, Odoo task source adapters |
-| n/a | Additional personas | Go, React, Rust framework guidance |
 | ~~--~~ | ~~Intelligent model routing~~ | ~~dynamically select Opus/Sonnet/Haiku based on task complexity~~ (done: #155-157) |
 | ~~#277~~ | ~~Pipeline determinism~~ | ~~replace LLM calls with deterministic code in PR body, memory extraction, triage, review ingestion~~ (done) |
 | ~~#254-259~~ | ~~Resource monitoring~~ | ~~per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor~~ (done: #254-259) |

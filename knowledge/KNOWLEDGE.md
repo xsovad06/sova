@@ -36,7 +36,7 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 **Location**: `~/.claude/shared-knowledge/`
 **Scope**: Cross-project (patterns that apply regardless of tech stack or project)
 **Tracked in git**: No (lives outside any repo)
-**Loaded by**: SOVA agent startup
+**Loaded by**: nothing in SOVA (no code reads this directory since the memory subsystem was removed); a human or an agent reads it on request
 
 ### Structure
 
@@ -130,7 +130,7 @@ The distinction: rules files are always loaded; commands are loaded only when in
 **Location**: `.claude/agent-memory/`
 **Scope**: Agent-specific learnings, accumulated over time
 **Tracked in git**: No (gitignored)
-**Loaded by**: Agent startup (reads at the beginning of each task)
+**Loaded by**: commands and agents that read the relevant `cookbook/` domain files at the start of a task (no SOVA code loads it)
 
 ### Structure
 

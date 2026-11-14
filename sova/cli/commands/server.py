@@ -346,8 +346,7 @@ def install_service(
         # The whole project directory must be writable, not just its .claude/:
         # agents commit from linked worktrees, so git writes {project}/.git as
         # well as {project}/.claude. %h/.claude stays listed too, since the
-        # spawned coding-agent CLI keeps its own state there and
-        # knowledge.shared_knowledge_dir defaults under it. The "-" prefix on %h/.claude.json and
+        # spawned coding-agent CLI keeps its own state there. The "-" prefix on %h/.claude.json and
         # %h/.codex lets a host without one still start the unit. KillMode=process, Type=notify,
         # WatchdogSec and WatchdogSignal are explained in deploy/sova-server.service.
         template = f"""[Unit]

@@ -395,6 +395,17 @@ class TestWorkflowEngine:
         assert result.steps_completed == 1
         assert result.steps_skipped == 1
 
+    async def test_extract_memory_step_is_recorded_as_skipped(self, tmp_path: Path) -> None:
+        from sova.core.steps.extract_memory import ExtractMemoryStep
+
+        engine = WorkflowEngine(steps=[ExtractMemoryStep()], ctx=_make_ctx(tmp_path))
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_completed == 0
+        assert [(r.step_name, r.status) for r in result.step_records] == [("extract_memory", "skipped")]
+
     async def test_multiple_steps_happy_path(self, tmp_path: Path) -> None:
         ctx = _make_ctx(tmp_path)
         steps = [
@@ -5200,6 +5211,37 @@ class TestWorkflowDB:
             assert len(rows) == 1
             assert rows[0].step_name == "dummy"
             assert rows[0].status == "done"
+
+    async def test_extract_memory_step_execution_is_persisted_as_skipped(self, tmp_path: Path) -> None:
+        """A fresh context (nothing completed) still records `skipped`, and never a `done` row, for the step."""
+        from sova.core.steps.extract_memory import ExtractMemoryStep
+
+        ctx = _make_ctx(tmp_path)
+        assert not ctx.completed_steps
+        result = await WorkflowEngine(steps=[ExtractMemoryStep()], ctx=ctx).run()
+
+        session = await get_session()
+        async with session.begin():
+            rows = (
+                (await session.execute(select(StepExecution).where(StepExecution.task_run_id == result.task_run_id)))
+                .scalars()
+                .all()
+            )
+        assert [(row.step_name, row.status) for row in rows] == [("extract_memory", "skipped")]
+
+    def test_extract_memory_step_imports_nothing_removed_from_knowledge(self) -> None:
+        import ast
+        import inspect
+
+        from sova.core.steps import extract_memory
+
+        allowed = {"sova.knowledge.assessments", "sova.knowledge.personas"}
+        imported = {
+            node.module
+            for node in ast.walk(ast.parse(inspect.getsource(extract_memory)))
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("sova.knowledge")
+        }
+        assert imported <= allowed
 
     async def test_failure_creates_failure_record(self, tmp_path: Path) -> None:
         ctx = _make_ctx(tmp_path)
