@@ -174,7 +174,9 @@ None
 - Title: imperative and specific, with no issue number and no type prefix.
   "Cache the CodeRabbit quota lookup" beats "Fix quota".
 - Apply the labels the tracker already uses rather than inventing new ones. On
-  GitHub, read the existing set with `gh label list`.
+  GitHub, read the existing set with `gh label list --limit 200`.
+- Never add `agent:*` labels at creation: triage owns them, and a hand-added
+  `agent:ready` skips triage.
 - Multi-issue tracking containers get the epic label. They are skipped by the
   dependency gate and closed automatically once every child is done.
 

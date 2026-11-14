@@ -145,18 +145,18 @@ This command runs as a headless agent. You MUST execute every step below through
 
 8. **Scout check**: while fixing findings, scan each touched file for pre-existing issues (failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes). Fix them alongside the review findings. Keep scout fixes small and low-risk.
 
-9. **Capture knowledge and documentation updates NOW, before the squash** (MANDATORY):
+9. **Apply documentation updates NOW, before the squash** (MANDATORY):
 
-   This is the only place in the PR lifecycle where documentation and knowledge
-   can be written for free. The branch is about to be squashed and pushed
-   anyway, so tracked documentation folded in here rides that push (the agent
-   memory in step b may be local-only and then never does). Anything left until the
+   This is the only place in the PR lifecycle where documentation can be
+   written for free. The branch is about to be squashed and pushed
+   anyway, so tracked documentation folded in here rides that push. Anything
+   left until the
    `sova-integrate-pr` skill would need a push of its own on an otherwise-ready
    PR, which costs a full CI cycle and delays the merge by the length of the
    suite.
 
    a. **Drain the pending queue**: `.claude/agent-control/pending-docs.md` in
-      the PRIMARY checkout, if it exists, holds documentation and knowledge
+      the PRIMARY checkout, if it exists, holds documentation
       that a previous run of the `sova-integrate-pr` skill found missing and
       deferred rather than pushing. This step usually runs inside a per-issue
       worktree (per step 4 above), not the main checkout, and `.claude/agent-control/` is
@@ -176,19 +176,7 @@ This command runs as a headless agent. You MUST execute every step below through
       rm -f "$QUEUE"
       ```
 
-   b. **Record this round's learnings**: append actionable lessons from the
-      review findings to the cookbook in the PRIMARY checkout, never the
-      worktree's copy: `.claude/agent-memory/` may be gitignored, and a
-      worktree's copy is deleted with the worktree. The cookbook is
-      `$PRIMARY_ROOT/.claude/agent-memory/cookbook/<domain>.md` (domains listed
-      in that directory's `README.md`) when that directory exists, otherwise
-      `$PRIMARY_ROOT/.claude/agent-memory/cookbook.md` under the matching
-      section. Enumerate every review thread from the whole PR history,
-      resolved and unresolved, not only what came up in this round. Skip
-      duplicates and generic advice. Promote a pattern confirmed in 2 or more
-      PRs to `.claude/rules/*.md` (tracked, so it rides the push).
-
-   c. **Fix documentation drift**: run the project's verification commands
+   b. **Fix documentation drift**: run the project's verification commands
       (test count, service count, router count) and correct any drifted values
       in `AGENTS.md`, `README.md`, and the project's vision or roadmap doc, if
       `AGENTS.md` or `README.md` links one. Update any docs the code changes in
@@ -394,7 +382,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     For each unresolved thread, post an inline reply explaining the disposition, then resolve it, regardless of author (bot or human) or disposition (Fixed or Acknowledged). Replying is always required; skipping replies leaves reviewers unclear on what was done. The PR must end with zero unresolved conversations so it reads as ready to merge.
 
-    a. **Reply** with a short, direct explanation:
+    a. **Reply** with a short, direct explanation (rewrite any space-dash-dash-space separator as a colon, comma or parentheses before posting):
        ```bash
        gh api graphql \
          -f query='mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) { comment { id } } }' \
@@ -528,3 +516,4 @@ This command runs as a headless agent. You MUST execute every step below through
 
 - **Don't blindly accept bot suggestions**: evaluate each one against project conventions
 - NEVER use emojis in any output
+- Never post a reply or summary comment containing a space-dash-dash-space separator: rewrite it first

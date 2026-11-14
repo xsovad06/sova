@@ -103,7 +103,7 @@ Parse structured review findings from TaskRun records and update agent memory.
 
 ## Cross-References
 
-- **Review learnings during the PR**: the `sova-address-pr` skill's knowledge-capture step records each review round's lessons in the primary checkout's cookbook; run this command afterwards only for anything that step missed
+- **Nothing records review learnings automatically**: the `sova-address-pr` skill, the `sova-integrate-pr` skill and the `sova-after-merge` skill do not write the cookbook, so run this command when a PR's review taught something worth keeping
 - **Extract broader knowledge**: Run the `sova-extract-knowledge` skill for session-wide lessons
 
 ## Rules
