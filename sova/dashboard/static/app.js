@@ -362,13 +362,18 @@ function statusDot(status) {
   return c.dot + (isActive ? ' animate-pulse' : '');
 }
 
-function _computeBadgeLabel(status, currentStep) {
+function _computeBadgeLabel(status, currentStep, role, pipelineVariant, elapsedSeconds) {
   if (_STATUS_TERMINAL[status]) {
     var label = status.replace(/_/g, ' ');
     return label.charAt(0).toUpperCase() + label.slice(1);
   }
   if (!currentStep || currentStep === 'agent') {
-    return 'Starting...';
+    // A run with output but no pipeline steps (a command or custom role) never reports a step: name the action,
+    // with the elapsed time when it is known, rather than showing "Starting..." for its whole life.
+    // Only a running run has started producing output: a pending or queued one has not, so it keeps "Starting...".
+    if (!role || status !== 'running') return 'Starting...';
+    var action = formatRole(role, pipelineVariant);
+    return elapsedSeconds != null ? action + ' ' + formatElapsed(elapsedSeconds) : action;
   }
   var rawLabel = currentStep.replace(/_/g, ' ');
   var stepLabel = _STEP_LABELS[currentStep] || (rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1));
@@ -384,14 +389,14 @@ function _getBadgeColors(status, currentStep) {
   return STATUS_COLORS[status] || STATUS_COLORS.pending;
 }
 
-function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSeconds, aggregatedLabel) {
+function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSeconds, aggregatedLabel, role, pipelineVariant) {
   var colors = _getBadgeColors(status, currentStep);
   var isTerminal = !!_STATUS_TERMINAL[status];
   var isStuck = !isTerminal && elapsedSeconds != null && elapsedSeconds > _STUCK_THRESHOLD_S;
   var stuckClass = isStuck ? ' sova-status-stuck' : '';
   var pulseClass = isTerminal ? '' : ' animate-pulse';
 
-  var label = escapeHtml(aggregatedLabel || _computeBadgeLabel(status, currentStep));
+  var label = escapeHtml(aggregatedLabel || _computeBadgeLabel(status, currentStep, role, pipelineVariant, elapsedSeconds));
 
   return '<span class="sova-status-badge ' + colors.bg + ' ' + colors.text + stuckClass + '">' +
     '<span class="sova-status-dot ' + colors.dot + pulseClass + '"></span>' +
@@ -467,14 +472,14 @@ function requestNotificationPermission() {
   Notification.requestPermission().then(function(result) {
     _browserNotifPermission = result;
     var banner = document.getElementById('notif-permission-banner');
-    if (banner) banner.classList.add('hidden');
+    if (banner) banner.classList.toggle('hidden', true);
   });
 }
 
 function dismissPermissionBanner() {
   localStorage.setItem('sova-notif-dismissed', '1');
   var banner = document.getElementById('notif-permission-banner');
-  if (banner) banner.classList.add('hidden');
+  if (banner) banner.classList.toggle('hidden', true);
 }
 
 function sendBrowserNotification(title, body) {
@@ -648,11 +653,13 @@ function sovaConfirm(message, options) {
    ============================================================ */
 
 /* Runs fn at once on start and each time the tab becomes visible again, then every intervalMs while the tab
-   is visible. */
-function visibilityAwarePoll(fn, intervalMs) {
+   is visible. With options.skipImmediate the immediate runs are dropped (the first run is one interval after the
+   tab is visible), for work that must not fire on page load, such as a write to an external service. */
+function visibilityAwarePoll(fn, intervalMs, options) {
+  var immediate = !(options && options.skipImmediate);
   var state = { id: null };
   if (!document.hidden) {
-    fn();
+    if (immediate) fn();
     state.id = setInterval(fn, intervalMs);
   }
   document.addEventListener('visibilitychange', function() {
@@ -660,11 +667,228 @@ function visibilityAwarePoll(fn, intervalMs) {
     if (document.hidden) {
       state.id = null;
     } else {
-      fn();
+      if (immediate) fn();
       state.id = setInterval(fn, intervalMs);
     }
   });
   return state;
+}
+
+/* ============================================================
+   6b. SHARED SOCKET HUB (one WebSocket per tab) AND STALE MARKERS
+   ============================================================ */
+
+/* Every page and the sidebar share one /ws/agents/status socket: subscribeSovaSocket() registers a subscriber, the
+   first one opens the socket and the last one to leave closes it. The socket also closes while the tab is hidden
+   (and a pending reconnect is cancelled), reopening on return. While it is down each subscriber with an
+   onFallbackPoll runs it at once and then every pollIntervalMs (default 30s); a (re)connect stops those polls and
+   runs each subscriber's onOpen, which is its catch-up fetch.
+
+   options:
+     onMessage(msg)       every parsed message, for every subscriber
+     onOpen()             the socket (re)opened, or this subscriber joined a socket that is already open
+     onFallbackPoll()     polled while the socket is down (and the tab visible)
+     pollIntervalMs       fallback cadence (default SOVA_SOCKET_FALLBACK_MS)
+     freshnessKey         markRefresh(key, true) on every message that proves the server is delivering
+   Returns { unsubscribe: function }. */
+var SOVA_SOCKET_FALLBACK_MS = 30000;
+var _SOCKET_RECONNECT_BASE_MS = 1000;
+var _SOCKET_RECONNECT_MAX_MS = 16000;
+// The server pushes a status_update every 2s, so a socket silent for this long is dead (half-open after a sleep or
+// network switch) even though it never fired onclose; closing it routes into the normal reconnect path.
+var _SOCKET_WATCHDOG_MS = 20000;
+// How often the watchdog checks, so a silent socket is closed 20 to 25s after its last message, not up to 40s.
+var _SOCKET_WATCHDOG_TICK_MS = 5000;
+
+var _socketHub = {
+  subs: [],
+  ws: null,               // non-null from construction until close, so it is also the single pending-connect flag
+  reconnectTimer: null,
+  reconnectDelay: _SOCKET_RECONNECT_BASE_MS,
+  watchdog: null,
+  lastMessageAt: null,
+  visibilityBound: false
+};
+
+function subscribeSovaSocket(options) {
+  var hub = _socketHub;
+  var sub = {
+    onMessage: options.onMessage || null,
+    onOpen: options.onOpen || null,
+    onFallbackPoll: options.onFallbackPoll || null,
+    pollIntervalMs: options.pollIntervalMs || SOVA_SOCKET_FALLBACK_MS,
+    freshnessKey: options.freshnessKey || null,
+    pollTimer: null
+  };
+  hub.subs.push(sub);
+  if (!hub.visibilityBound) {
+    hub.visibilityBound = true;
+    document.addEventListener('visibilitychange', _socketOnVisibility);
+  }
+  if (hub.ws !== null && hub.ws.readyState === 1) {
+    // Joining an open socket: no open event is coming, so run the catch-up fetch now.
+    setTimeout(function() { _socketCall(sub.onOpen); }, 0);
+  } else if (hub.ws === null) {
+    _socketConnect();
+    // No socket and none being opened (a hidden tab): nothing arrives, so a visible tab polls until one opens.
+    if (hub.ws === null && !document.hidden) _socketStartFallback(sub);
+  }
+  return {
+    unsubscribe: function() {
+      var i = hub.subs.indexOf(sub);
+      if (i === -1) return;
+      hub.subs.splice(i, 1);
+      _socketStopFallback(sub);
+      if (hub.subs.length === 0) _socketSuspend();
+    }
+  };
+}
+
+function _socketCall(fn, arg) {
+  if (!fn) return;
+  try {
+    fn(arg);
+  } catch (e) {
+    console.error('SovaSocket: subscriber error:', e);
+  }
+}
+
+function _socketStartFallback(sub) {
+  if (!sub.onFallbackPoll || sub.pollTimer) return;
+  _socketCall(sub.onFallbackPoll);
+  sub.pollTimer = setInterval(function() { _socketCall(sub.onFallbackPoll); }, sub.pollIntervalMs);
+}
+
+function _socketStopFallback(sub) {
+  if (sub.pollTimer) { clearInterval(sub.pollTimer); sub.pollTimer = null; }
+}
+
+function _socketConnect() {
+  var hub = _socketHub;
+  if (hub.ws !== null || hub.subs.length === 0 || document.hidden) return;
+  if (hub.reconnectTimer) { clearTimeout(hub.reconnectTimer); hub.reconnectTimer = null; }
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var socket;
+  try {
+    socket = new WebSocket(proto + '//' + location.host + apiUrl('/ws/agents/status'));
+  } catch (e) {
+    console.warn('SovaSocket: connect failed:', e);
+    _socketScheduleReconnect();
+    hub.subs.forEach(_socketStartFallback);
+    return;
+  }
+  hub.ws = socket;
+  hub.lastMessageAt = Date.now();
+  if (!hub.watchdog) {
+    hub.watchdog = setInterval(function() {
+      if (hub.ws !== null && (Date.now() - hub.lastMessageAt) > _SOCKET_WATCHDOG_MS) {
+        console.warn('SovaSocket: socket silent, forcing reconnect');
+        hub.ws.close();
+      }
+    }, _SOCKET_WATCHDOG_TICK_MS);
+  }
+
+  socket.onopen = function() {
+    if (hub.ws !== socket) return;
+    hub.lastMessageAt = Date.now();
+    hub.subs.forEach(_socketStopFallback);
+    hub.subs.slice().forEach(function(sub) { _socketCall(sub.onOpen); });
+  };
+
+  socket.onmessage = function(event) {
+    if (hub.ws !== socket) return;
+    hub.lastMessageAt = Date.now();
+    hub.reconnectDelay = _SOCKET_RECONNECT_BASE_MS;
+    var msg;
+    try {
+      msg = JSON.parse(event.data);
+    } catch (e) {
+      console.warn('SovaSocket: message parse error:', e);
+      return;
+    }
+    hub.subs.slice().forEach(function(sub) {
+      // status_unavailable means the server's own fetch is failing: the socket is up but proves nothing is fresh.
+      if (sub.freshnessKey && msg.type !== 'status_unavailable') markRefresh(sub.freshnessKey, true);
+      _socketCall(sub.onMessage, msg);
+    });
+  };
+
+  socket.onclose = function() {
+    if (hub.ws !== socket) return;
+    hub.ws = null;
+    hub.subs.forEach(_socketStartFallback);
+    _socketScheduleReconnect();
+  };
+
+  socket.onerror = function() {
+    if (hub.ws === socket) socket.close();
+  };
+}
+
+function _socketScheduleReconnect() {
+  var hub = _socketHub;
+  if (hub.reconnectTimer || document.hidden || hub.subs.length === 0) return;
+  hub.reconnectTimer = setTimeout(function() {
+    hub.reconnectTimer = null;
+    _socketConnect();
+  }, hub.reconnectDelay);
+  hub.reconnectDelay = Math.min(hub.reconnectDelay * 2, _SOCKET_RECONNECT_MAX_MS);
+}
+
+/* Closes the socket and stops every timer; the reconnect and the polls resume on return (visible) or on subscribe. */
+function _socketSuspend() {
+  var hub = _socketHub;
+  if (hub.reconnectTimer) { clearTimeout(hub.reconnectTimer); hub.reconnectTimer = null; }
+  if (hub.watchdog) { clearInterval(hub.watchdog); hub.watchdog = null; }
+  hub.subs.forEach(_socketStopFallback);
+  var socket = hub.ws;
+  hub.ws = null;   // before close(), so the close handler ignores this deliberate close
+  if (socket) socket.close();
+}
+
+function _socketOnVisibility() {
+  var hub = _socketHub;
+  if (document.hidden) {
+    _socketSuspend();
+    return;
+  }
+  hub.reconnectDelay = _SOCKET_RECONNECT_BASE_MS;
+  _socketConnect();
+  if (hub.ws === null) hub.subs.forEach(_socketStartFallback);
+}
+
+/* Stale marker: a refresh that keeps failing, or a channel that stops delivering, must not leave old data looking
+   current. markRefresh(key, ok, staleAfterMs) records an outcome for the channel named key; an element with id
+   key + '-stale' shows "Updated 45s ago, retrying" as soon as a refresh has failed (markRefresh(key, false)) and
+   until the next success, and also once the last success is older than staleAfterMs (default 90s, one rebuild
+   period plus build time), which is how a channel that merely goes silent is caught. A channel that never
+   succeeded shows nothing: the page's own load error covers that. */
+var _refreshMarks = {};
+var _refreshMarkTimer = null;
+var _REFRESH_MARK_TICK_MS = 5000;
+
+function markRefresh(key, ok, staleAfterMs) {
+  var mark = _refreshMarks[key];
+  if (!mark) mark = _refreshMarks[key] = { lastOk: null, failed: false, staleAfterMs: 90000 };
+  if (staleAfterMs) mark.staleAfterMs = staleAfterMs;
+  if (ok) mark.lastOk = Date.now();
+  mark.failed = !ok;
+  _renderRefreshMark(key);
+  if (!_refreshMarkTimer) {
+    _refreshMarkTimer = setInterval(function() {
+      Object.keys(_refreshMarks).forEach(_renderRefreshMark);
+    }, _REFRESH_MARK_TICK_MS);
+  }
+}
+
+function _renderRefreshMark(key) {
+  var el = document.getElementById(key + '-stale');
+  var mark = _refreshMarks[key];
+  if (!el || !mark) return;
+  var age = mark.lastOk === null ? 0 : Date.now() - mark.lastOk;
+  var stale = mark.lastOk !== null && (mark.failed || age > mark.staleAfterMs);
+  el.classList.toggle('hidden', !stale);
+  if (stale) el.textContent = 'Updated ' + formatElapsed(age / 1000) + ' ago, retrying';
 }
 
 /* ============================================================
@@ -1070,27 +1294,48 @@ function mountSettingControls(root, overrides) {
    7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
-var _lastHandoffState = null;
+// The sidebar dot combines two pushes that now arrive independently and only on change: a handoff awaiting action
+// (yellow) outranks the running state, so an activity change must not paint over it until the handoff clears.
+var _handoffAwaiting = false;
+var _activityRunning;           // undefined until the first activity answer; null when the last one failed
 
 function _dotClass(color, animate) {
   return 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ' + color + ' border-2 border-sidebar' + (animate ? ' animate-pulse' : '');
 }
 
-var _activityPollInterval = null;
-var _handoffPollInterval = null;
 var _connectivityPollInterval = null;
 var _restartPollInterval = null;
 
 function startSidebarPolling() {
-  _pollActivity();
-  _pollHandoff();
   _pollConnectivity();
   _pollRestartRequired();
-  _activityPollInterval = setInterval(_pollActivity, 3000);
-  _handoffPollInterval = setInterval(_pollHandoff, 5000);
   _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
   _restartPollInterval = setInterval(_pollRestartRequired, 15000);
-  _initFeedSSE();
+  _initSidebarSocket();
+}
+
+// Activity, handoff and feed events arrive over the shared socket. A (re)connect, and each fallback poll while the
+// socket is down, fetches the current activity and handoff and fills any feed gap.
+function _initSidebarSocket() {
+  subscribeSovaSocket({
+    onMessage: _handleSidebarMessage,
+    onOpen: _catchUpSidebar,
+    onFallbackPoll: _catchUpSidebar
+  });
+}
+
+function _catchUpSidebar() {
+  _pollActivity();
+  _pollHandoff();
+  if (_feedLastId > 0) _feedGapFill();
+}
+
+function _handleSidebarMessage(msg) {
+  if (msg.type === 'activity') _applyActivity(msg.data);
+  else if (msg.type === 'activity_unavailable') _setActivityDot(null);
+  else if (msg.type === 'handoff') _applyHandoff(msg.data);
+  else if (msg.type === 'handoff_changed' || msg.type === 'handoff_unavailable') _pollHandoff();
+  else if (msg.type === 'feed') _feedAddEvent(msg.event);
 }
 
 // Restart banner
@@ -1172,18 +1417,12 @@ function blockedByConnectivity(action) {
 
 document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
-    if (_activityPollInterval) { clearInterval(_activityPollInterval); _activityPollInterval = null; }
-    if (_handoffPollInterval) { clearInterval(_handoffPollInterval); _handoffPollInterval = null; }
     if (_connectivityPollInterval) { clearInterval(_connectivityPollInterval); _connectivityPollInterval = null; }
     if (_restartPollInterval) { clearInterval(_restartPollInterval); _restartPollInterval = null; }
     if (_globalBatchPollInterval) { clearInterval(_globalBatchPollInterval); _globalBatchPollInterval = null; }
   } else {
-    _pollActivity();
-    _pollHandoff();
     _pollConnectivity();
     _pollRestartRequired();
-    if (!_activityPollInterval) _activityPollInterval = setInterval(_pollActivity, 3000);
-    if (!_handoffPollInterval) _handoffPollInterval = setInterval(_pollHandoff, 5000);
     if (!_connectivityPollInterval) _connectivityPollInterval = setInterval(_pollConnectivity, 15000);
     if (!_restartPollInterval) _restartPollInterval = setInterval(_pollRestartRequired, 15000);
     if (_globalBatchId && !_globalBatchPollInterval) {
@@ -1193,71 +1432,93 @@ document.addEventListener('visibilitychange', function() {
   }
 });
 
+function _setActivityDot(running) {
+  _activityRunning = running;
+  _renderActivityDot();
+}
+
+function _renderActivityDot() {
+  var dot = document.getElementById('activity-dot');
+  if (!dot) return;
+  // A known activity state shows through an unknown handoff one (the banner says the handoff is unknown), so
+  // gray means the activity source itself failed.
+  if (_handoffAwaiting === true) dot.className = _dotClass('bg-accent-yellow', true);
+  else if (_activityRunning === undefined) return;
+  else if (_activityRunning === null) dot.className = _dotClass('bg-gray-500', false);
+  else dot.className = _activityRunning ? _dotClass('bg-accent', true) : _dotClass('bg-accent-green', false);
+}
+
+function _applyActivity(data) {
+  window._sovaActiveAgents = { data: data, ts: Date.now() };
+  _setActivityDot(!!(data.agents && data.agents.length > 0));
+}
+
 async function _pollActivity() {
   try {
-    var data = await fetchAPI(apiUrl('/agents/active'));
-    window._sovaActiveAgents = { data: data, ts: Date.now() };
-    var dot = document.getElementById('activity-dot');
-    if (!dot) return;
-
-    var running = data.agents && data.agents.length > 0;
-    dot.className = running
-      ? _dotClass('bg-accent', true)
-      : _dotClass('bg-accent-green', false);
+    _applyActivity(await fetchAPI(apiUrl('/agents/active')));
   } catch (e) {
-    var dot = document.getElementById('activity-dot');
-    if (dot) dot.className = _dotClass('bg-gray-500', false);
+    _setActivityDot(null);
   }
 }
 
 async function _pollHandoff() {
   try {
     var res = await fetch(apiUrl('/handoff'));
-    if (!res.ok) return;
-    var data = await res.json();
-    var banner = document.getElementById('checkpoint-banner');
-    var unreadableBanner = document.getElementById('handoff-unreadable-banner');
+    if (!res.ok) { _setHandoffUnknown(); return; }
+    _applyHandoff(await res.json());
+  } catch (e) {
+    _setHandoffUnknown();
+  }
+}
 
-    if (unreadableBanner) {
-      var unreadable = data.unreadable_handoffs || [];
-      // Rendered by the dashboard (legacy shapes are accepted) but skipped by the supervisor and the
-      // auto-handoff, so the page must not present them as healthy.
-      var schemaInvalid = data.schema_invalid_handoffs || [];
-      unreadableBanner.classList.toggle('hidden', !(unreadable.length || schemaInvalid.length));
-      var unreadableLabel = document.getElementById('handoff-unreadable-label');
-      if (unreadableLabel && (unreadable.length || schemaInvalid.length)) {
-        // File names in the label, full paths on hover: the banner sits in a narrow sidebar.
-        var baseName = function(p) { return p.split(/[\\/]/).pop(); };
-        var parts = [];
-        if (unreadable.length) parts.push('Handoff file unreadable: ' + unreadable.map(baseName).join(', '));
-        if (schemaInvalid.length) parts.push('Handoff file ignored by the pipeline (invalid schema): ' + schemaInvalid.map(baseName).join(', '));
-        unreadableLabel.textContent = parts.join('; ');
-        unreadableLabel.title = unreadable.concat(schemaInvalid).join('\n');
-      }
+// A handoff state that cannot be read must not leave the last value showing as current: hide the checkpoint
+// banner and show the "unknown" one until a fetch or a push succeeds. The dot keeps the activity state.
+function _setHandoffUnknown() {
+  _handoffAwaiting = null;
+  var banner = document.getElementById('checkpoint-banner');
+  if (banner) banner.classList.toggle('hidden', true);
+  var unknown = document.getElementById('handoff-unknown-banner');
+  if (unknown) unknown.classList.toggle('hidden', false);
+  _renderActivityDot();
+}
+
+function _applyHandoff(data) {
+  var banner = document.getElementById('checkpoint-banner');
+  var unreadableBanner = document.getElementById('handoff-unreadable-banner');
+  var unknownBanner = document.getElementById('handoff-unknown-banner');
+  if (unknownBanner) unknownBanner.classList.toggle('hidden', true);
+
+  if (unreadableBanner) {
+    var unreadable = data.unreadable_handoffs || [];
+    // Rendered by the dashboard (legacy shapes are accepted) but skipped by the supervisor and the
+    // auto-handoff, so the page must not present them as healthy.
+    var schemaInvalid = data.schema_invalid_handoffs || [];
+    unreadableBanner.classList.toggle('hidden', !(unreadable.length || schemaInvalid.length));
+    var unreadableLabel = document.getElementById('handoff-unreadable-label');
+    if (unreadableLabel && (unreadable.length || schemaInvalid.length)) {
+      // File names in the label, full paths on hover: the banner sits in a narrow sidebar.
+      var baseName = function(p) { return p.split(/[\\/]/).pop(); };
+      var parts = [];
+      if (unreadable.length) parts.push('Handoff file unreadable: ' + unreadable.map(baseName).join(', '));
+      if (schemaInvalid.length) parts.push('Handoff file ignored by the pipeline (invalid schema): ' + schemaInvalid.map(baseName).join(', '));
+      unreadableLabel.textContent = parts.join('; ');
+      unreadableLabel.title = unreadable.concat(schemaInvalid).join('\n');
     }
+  }
 
-    if (!banner) return;
+  if (!banner) return;
 
-    var handoffs = (data.handoffs || []).filter(function(h) {
-      return h.status === 'awaiting_action';
-    });
+  var handoffs = (data.handoffs || []).filter(function(h) {
+    return h.status === 'awaiting_action';
+  });
 
-    if (handoffs.length > 0) {
-      banner.classList.remove('hidden');
-      var dot = document.getElementById('activity-dot');
-      if (dot) dot.className = _dotClass('bg-accent-yellow', true);
-      _lastHandoffState = 'awaiting';
-    } else {
-      banner.classList.add('hidden');
-      if (!data.has_handoff) {
-        _lastHandoffState = null;
-      }
-    }
-  } catch (e) { /* ignore */ }
+  _handoffAwaiting = handoffs.length > 0;
+  banner.classList.toggle('hidden', !_handoffAwaiting);
+  _renderActivityDot();
 }
 
 /* ============================================================
-   7b. ACTIVITY FEED (SSE)
+   7b. ACTIVITY FEED (shared socket)
    ============================================================ */
 
 var _feedEvents = [];          // ascending by id (oldest first), as rendered
@@ -1265,7 +1526,6 @@ var _feedUnread = 0;
 var _feedLastId = 0;           // highest id seen (newest)
 var _feedOldestId = 0;         // lowest id currently loaded (pagination cursor)
 var _feedSeenIds = {};
-var _feedEventSource = null;
 var _feedPanelOpen = false;
 var _feedRenderPending = false;
 var _feedHasMoreHistory = true;
@@ -1276,28 +1536,6 @@ var _feedBriefingHtml = '';
 var _feedScrollBound = false;
 var _FEED_MAX_EVENTS = 500;
 var _FEED_PAGE_SIZE = 50;
-
-function _initFeedSSE() {
-  var url = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/api/feed/stream';
-  _feedEventSource = new EventSource(url);
-
-  _feedEventSource.addEventListener('feed', function(e) {
-    try {
-      var event = JSON.parse(e.data);
-      _feedAddEvent(event);
-    } catch (err) { /* ignore parse errors */ }
-  });
-
-  _feedEventSource.addEventListener('open', function() {
-    if (_feedLastId > 0) {
-      _feedGapFill();
-    }
-  });
-
-  _feedEventSource.addEventListener('error', function() {
-    // EventSource auto-reconnects; no action needed
-  });
-}
 
 function _feedGapFill() {
   var url = apiUrl('/feed/history?since_id=' + _feedLastId);
@@ -1314,7 +1552,7 @@ function _feedGapFill() {
   }).catch(function() { /* ignore */ });
 }
 
-// Insert a live event (from SSE). Appends to the tail (newest).
+// Insert a live event (from the socket). Appends to the tail (newest).
 function _feedAddEvent(event) {
   // Dedup by ID (set handles out-of-order gap-fill events)
   if (_feedSeenIds[event.id]) return;
@@ -2303,189 +2541,44 @@ function formatTokenCount(tokens) {
 }
 
 /* ============================================================
-   SOVA STATUS CHANNEL (WebSocket + polling fallback)
+   SOVA STATUS CHANNEL (a page's subscription to the shared socket)
    ============================================================ */
 
 /**
  * createSovaStatusChannel(options) -> { stop: function() }
  *
- * Shared real-time status helper: owns a WebSocket connection, a single
- * reconnect policy, and the fallback-to-polling path, so every page wiring
- * up a status feed shares the exact same connection semantics instead of
- * each reimplementing (and subtly disagreeing on) its own.
- *
- * The reconnect/backoff counter resets on a successfully parsed message, not
- * merely on the socket opening, so a connection that flaps (closes and
- * reopens) repeatedly does not accumulate an ever-growing backoff delay from
- * stale earlier attempts. That reset alone does not prove the connection is
- * live: a socket that stays open but stops delivering anything (a dead
- * proxy, a half-open socket after a laptop sleep/network switch, a server
- * hung awaiting a locked DB) never fires onclose on its own, so nothing
- * would otherwise trigger a reconnect. A separate liveness watchdog covers
- * that case: it tracks the time of the last message (or connect) and forces
- * the socket closed once it goes quiet longer than staleAfterMs, which
- * routes into the normal onclose -> fallback/reconnect path.
- * Once MAX_RECONNECT_ATTEMPTS is exhausted, the channel does not give up:
- * the polling fallback also retries the WebSocket on a slow, indefinitely
- * repeating interval (MAX_RECONNECT_DELAY_MS), so a channel left in fallback
- * for hours still recovers once the server comes back, without accumulating
- * a runaway backoff delay.
+ * A page-level subscription to the tab's shared status socket (subscribeSovaSocket, section 6b), which owns the
+ * connection, the reconnect backoff, the liveness watchdog (a socket silent for 20s is closed and reopened) and
+ * closing while the tab is hidden. This wrapper adds only an optional auxiliary interval that runs for the
+ * channel's whole life.
  *
  * options:
- *   wsPath                API-relative WebSocket path, e.g. apiUrl('/ws/agents/status')
  *   onMessage(msg)         called with the parsed JSON message on every WS push
- *   onOpen()               optional: called every time the socket (re)connects, before
- *                          any message has arrived. For state that can go stale during
- *                          a gap the socket itself cannot narrate (e.g. a run reaching a
- *                          terminal status the periodic push never carries).
- *   onFallbackPoll()       called on an interval while no WS connection is open
- *   pollIntervalMs         fallback polling cadence (default 2000)
- *   staleAfterMs           liveness watchdog threshold: close and reconnect a
- *                          socket that has delivered nothing for this long
- *                          (default max(20000, 10x pollIntervalMs); sized off
- *                          a generous worst case, not off pollIntervalMs
- *                          alone, since the producer's actual inter-message
- *                          gap is its own broadcast interval PLUS however
- *                          long its server-side status fetch takes, which is
- *                          unbounded and independent of the client's poll
- *                          cadence. A caller that knows its server's real
- *                          broadcast interval should pass staleAfterMs
- *                          explicitly rather than rely on this default.
- *   auxiliaryPollFn()      optional: a second, independent interval started and
- *                          stopped alongside this channel's own lifecycle,
- *                          regardless of WS/fallback state
+ *   onOpen()               called every time the socket (re)connects, and when this channel joins a socket that
+ *                          is already open: the catch-up fetch for state the socket itself cannot narrate (e.g. a
+ *                          run reaching a terminal status the periodic push never carries).
+ *   onFallbackPoll()       called at once when the socket goes down, then every pollIntervalMs while it stays down
+ *   pollIntervalMs         fallback polling cadence (default 30000)
+ *   auxiliaryPollFn()      optional: a second, independent interval started and stopped with this channel,
+ *                          regardless of socket state
  *   auxiliaryPollIntervalMs  cadence for auxiliaryPollFn (default 5000)
  */
 function createSovaStatusChannel(options) {
-  var wsPath = options.wsPath;
-  var onMessage = options.onMessage;
-  var onOpen = options.onOpen || null;
-  var onFallbackPoll = options.onFallbackPoll;
-  var pollIntervalMs = options.pollIntervalMs || 2000;
-  var auxiliaryPollFn = options.auxiliaryPollFn || null;
-  var auxiliaryPollIntervalMs = options.auxiliaryPollIntervalMs || 5000;
-  var staleAfterMs = options.staleAfterMs || Math.max(20000, pollIntervalMs * 10);
-
-  var RECONNECT_BASE_MS = 1000;
-  var MAX_RECONNECT_DELAY_MS = 16000;
-  var MAX_RECONNECT_ATTEMPTS = 10;
-
-  var ws = null;
-  var reconnectDelay = RECONNECT_BASE_MS;
-  var reconnectAttempts = 0;
-  var pollInterval = null;
-  var fallbackRetryInterval = null;
-  var reconnectTimer = null;
   var auxiliaryInterval = null;
-  var watchdogInterval = null;
-  var lastMessageAt = null;
-  var stopped = false;
-
-  function startWatchdog() {
-    if (watchdogInterval) return;
-    watchdogInterval = setInterval(function() {
-      if (ws !== null && lastMessageAt !== null && (Date.now() - lastMessageAt) > staleAfterMs) {
-        console.warn('SovaStatusChannel: socket stale, forcing reconnect');
-        ws.close();
-      }
-    }, staleAfterMs);
+  var subscription = subscribeSovaSocket({
+    onMessage: options.onMessage,
+    onOpen: options.onOpen,
+    onFallbackPoll: options.onFallbackPoll,
+    pollIntervalMs: options.pollIntervalMs,
+    freshnessKey: options.freshnessKey
+  });
+  if (options.auxiliaryPollFn) {
+    auxiliaryInterval = setInterval(options.auxiliaryPollFn, options.auxiliaryPollIntervalMs || 5000);
   }
-
-  function startFallback() {
-    if (!pollInterval) {
-      pollInterval = setInterval(onFallbackPoll, pollIntervalMs);
-    }
-    if (!fallbackRetryInterval) {
-      fallbackRetryInterval = setInterval(function() {
-        if (ws === null) connect();
-      }, MAX_RECONNECT_DELAY_MS);
-    }
-  }
-
-  function stopFallback() {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-    if (fallbackRetryInterval) { clearInterval(fallbackRetryInterval); fallbackRetryInterval = null; }
-  }
-
-  function connect() {
-    // Guards against a race between the exponential-backoff retry
-    // (reconnectTimer) and the indefinite fallback retry (fallbackRetryInterval)
-    // both firing close together and opening two live sockets.
-    if (stopped || ws !== null) return;
-    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    var wsUrl = proto + '//' + location.host + wsPath;
-    var socket;
-    try {
-      socket = new WebSocket(wsUrl);
-    } catch (e) {
-      console.warn('SovaStatusChannel: connect failed:', e);
-      startFallback();
-      return;
-    }
-    ws = socket;
-    lastMessageAt = Date.now();
-
-    socket.onopen = function() {
-      if (onOpen) {
-        try {
-          onOpen();
-        } catch (e) {
-          console.error('SovaStatusChannel: onOpen handler error:', e);
-        }
-      }
-    };
-
-    socket.onmessage = function(event) {
-      lastMessageAt = Date.now();
-      reconnectDelay = RECONNECT_BASE_MS;
-      reconnectAttempts = 0;
-      stopFallback();
-      var msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (e) {
-        console.warn('SovaStatusChannel: message parse error:', e);
-        return;
-      }
-      try {
-        onMessage(msg);
-      } catch (e) {
-        console.error('SovaStatusChannel: message handler error:', e);
-      }
-    };
-
-    socket.onclose = function() {
-      if (ws !== socket) return;
-      ws = null;
-      startFallback();
-      reconnectAttempts++;
-      if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-        reconnectTimer = setTimeout(connect, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
-      }
-      // Beyond MAX_RECONNECT_ATTEMPTS, fallbackRetryInterval (started above)
-      // keeps retrying at MAX_RECONNECT_DELAY_MS instead of stopping.
-    };
-
-    socket.onerror = function() {
-      if (ws === socket) socket.close();
-    };
-  }
-
-  connect();
-  startWatchdog();
-  if (auxiliaryPollFn) {
-    auxiliaryInterval = setInterval(auxiliaryPollFn, auxiliaryPollIntervalMs);
-  }
-
   return {
     stop: function() {
-      stopped = true;
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (auxiliaryInterval) { clearInterval(auxiliaryInterval); auxiliaryInterval = null; }
-      if (watchdogInterval) { clearInterval(watchdogInterval); watchdogInterval = null; }
-      stopFallback();
-      if (ws) { ws.close(); ws = null; }
+      subscription.unsubscribe();
     }
   };
 }

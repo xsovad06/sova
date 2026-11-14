@@ -129,7 +129,7 @@ function renderAgentCard(agent) {
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role, agent.pipeline_variant)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
         prBadge +
-        renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds) +
+        renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds, null, agent.role, agent.pipeline_variant) +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent" data-field="cpu">' + (agent.cpu_percent != null ? 'CPU ' + agent.cpu_percent.toFixed(1) + '%' : 'CPU —') + '</span>' +

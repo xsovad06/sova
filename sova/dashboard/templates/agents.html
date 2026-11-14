@@ -69,6 +69,7 @@
     </div>
   </div>
   <!-- Task list -->
+  <p id="work-items-stale" class="hidden text-xs text-accent-yellow py-1" role="status"></p>
   <div id="task-grid" class="divide-y divide-gray-700/30">
     <p class="text-gray-500 text-sm py-6 text-center">Loading tasks...</p>
   </div>
@@ -80,8 +81,9 @@
     <button id="pr-tracker-toggle" type="button" class="flex items-center gap-3 cursor-pointer select-none text-left flex-1" data-action="toggle-pr-tracker" aria-controls="pr-tracker-list" aria-expanded="true">
       <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
       <span id="pr-tracker-count" class="text-xs text-gray-500"></span>
-      <span id="pr-tracker-stale" class="hidden text-xs text-accent-yellow" data-tooltip="Last refresh failed; showing earlier data">(stale)</span>
     </button>
+    <!-- Outside the toggle button: its text changes on every update and would rename the button -->
+    <span id="pr-tracker-stale" class="hidden text-xs text-accent-yellow" data-tooltip="Refreshes are failing; showing earlier data" role="status"></span>
     <div id="pr-filter-toggle" class="flex rounded-md overflow-hidden border border-gray-600/50 text-xs" data-action="stop">
       <button type="button" data-pr-filter="mine" data-action="set-pr-filter" data-args='["mine"]' class="px-2.5 py-1 transition-colors">Mine</button>
       <button type="button" data-pr-filter="all" data-action="set-pr-filter" data-args='["all"]' class="px-2.5 py-1 transition-colors">All</button>
@@ -144,6 +146,7 @@
 
 <!-- Kanban Board (pipeline view) -->
 <div id="kanban-grid" class="hidden mb-6 overflow-x-auto">
+  <p id="kanban-stale" class="hidden text-xs text-accent-yellow py-1" role="status"></p>
   <div id="kanban-columns" class="flex gap-3 min-h-[200px] pb-2">
     <p class="text-gray-500 text-sm py-8 text-center w-full">Loading pipeline view...</p>
   </div>

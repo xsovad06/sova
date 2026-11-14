@@ -116,16 +116,48 @@ function _buildLabelHtml(runLabel) {
     '<div class="text-xs text-gray-400 truncate">' + escapeHtml(runLabel) + '</div></div>';
 }
 
-async function loadKanban() {
+// The board refreshes on socket messages and every 30s while the socket is down, so a minute without a successful
+// load or a socket message means the board is out of date.
+var _KANBAN_STALE_AFTER_MS = 60000;
+
+// One load at a time. The triggers (the 30s timer, a status-signature change, work_items_changed, a drag ending)
+// overlap, and two fetches finishing out of order would let an older board overwrite a newer one. A trigger that
+// arrives while a load is in flight is coalesced into exactly one more load after it, so it is neither dropped
+// nor reordered.
+var _kanbanLoad = null;
+var _kanbanReloadPending = false;
+
+function loadKanban() {
+  if (_kanbanLoad) {
+    _kanbanReloadPending = true;
+    return _kanbanLoad;
+  }
+  _kanbanLoad = (async function() {
+    try {
+      do {
+        _kanbanReloadPending = false;
+        await _loadKanbanOnce();
+      } while (_kanbanReloadPending);
+    } finally {
+      _kanbanLoad = null;
+    }
+  })();
+  return _kanbanLoad;
+}
+
+async function _loadKanbanOnce() {
   if (_agentView !== 'kanban') return;
   if (_kanbanDragging) return;
   try {
     var data = await fetchAPI(apiUrl('/agents/kanban'));
     var container = document.getElementById('kanban-columns');
     if (!container) return;
+    // A drag that started during the fetch owns the DOM now.
+    if (_kanbanDragging) return;
 
     if (!data.columns || data.columns.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-sm py-8 text-center w-full">No active runs</p>';
+      renderIfChanged(container, '<p class="text-gray-500 text-sm py-8 text-center w-full">No active runs</p>', 'empty');
+      markRefresh('kanban', true, _KANBAN_STALE_AFTER_MS);
       return;
     }
 
@@ -228,11 +260,16 @@ async function loadKanban() {
       '</div>' +
     '</div>';
 
-    container.innerHTML = columnsHtml + failedColHtml;
+    var boardHtml = columnsHtml + failedColHtml;
+    renderIfChanged(container, boardHtml, boardHtml);
+    markRefresh('kanban', true, _KANBAN_STALE_AFTER_MS);
   } catch (e) {
     console.error('Failed to load kanban:', e);
+    markRefresh('kanban', false, _KANBAN_STALE_AFTER_MS);
     var errContainer = document.getElementById('kanban-columns');
-    if (errContainer) errContainer.innerHTML = '<p class="text-red-400 text-sm py-8 text-center w-full">Failed to load pipeline view</p>';
+    if (errContainer) {
+      renderIfChanged(errContainer, '<p class="text-red-400 text-sm py-8 text-center w-full">Failed to load pipeline view</p>', 'error');
+    }
   }
 }
 
@@ -252,7 +289,7 @@ function _saveColumnOrder(cardList) {
 }
 
 // Stop refreshing during drag to prevent the DOM from being replaced mid-interaction
-// (loadKanban returns early while _kanbanDragging is set, so the 5s poll just skips)
+// (loadKanban returns early while _kanbanDragging is set, so the 30s poll just skips)
 function _pauseKanbanPolling() {
   _kanbanDragging = true;
 }
@@ -452,8 +489,32 @@ export function init() {
 
   _initDragAndDrop();
 
-  // Show the saved view preference. The poll's immediate first run loads its data, so
-  // this applies the chrome only; switchAgentView() would fetch the same data twice.
+  // Show the saved view preference. The socket's open (or, when it cannot open, the fallback poll's immediate
+  // first run) loads its data, so this applies the chrome only; switchAgentView() would fetch the same data twice.
   if (_agentView === 'kanban') _applyAgentView('kanban');
-  visibilityAwarePoll(loadKanban, 5000);
+  subscribeSovaSocket({ onMessage: _handleKanbanMessage });
+  // The one refresh path besides the messages above: it loads at once, on every return to the tab, and every 30s,
+  // so it is also the fallback while the socket is down (a second fallback timer would fetch twice per period) and
+  // it refreshes the card fields the signature below does not cover (cost, elapsed time). Until the server emits
+  // work_items_changed (#1459 part B) it keeps running while the socket is up, which is the one place the board
+  // still polls; part B replaces it with the change message. The marker tracks this fetch (loadKanban calls
+  // markRefresh), not socket liveness, so a board that stops loading shows as stale.
+  visibilityAwarePoll(loadKanban, 30000);
+}
+
+// status_update is pushed every 2s and lists only active runs, so a run starting, finishing or changing step
+// changes its signature; work_items_changed is the server's own change signal.
+var _kanbanRunSignature = null;
+
+function _handleKanbanMessage(msg) {
+  if (msg.type === 'work_items_changed') {
+    loadKanban();
+  } else if (msg.type === 'status_update') {
+    var signature = (msg.runs || []).map(function(r) {
+      return r.run_id + ':' + r.status + ':' + r.current_step;
+    }).sort().join('|');
+    var changed = _kanbanRunSignature !== null && signature !== _kanbanRunSignature;
+    _kanbanRunSignature = signature;
+    if (changed) loadKanban();
+  }
 }
