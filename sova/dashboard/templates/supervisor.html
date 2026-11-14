@@ -1689,36 +1689,25 @@ document.getElementById('action-drawer').addEventListener('click', e => {
   }
 });
 
-// WebSocket for real-time graph invalidation
-let _supervisorWs = null;
-let _supervisorWsReconnectDelay = 1000;
-
-function _connectSupervisorWs() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsPath = prefix ? `${prefix}/ws/agents/status` : '/ws/agents/status';
-  _supervisorWs = new WebSocket(proto + '//' + location.host + wsPath);
-
-  _supervisorWs.onopen = () => { _supervisorWsReconnectDelay = 1000; };
-
-  _supervisorWs.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'graph_invalidated') {
-        loadGraph();
-        loadPlan();
-      }
-    } catch (e) { /* ignore parse errors */ }
-  };
-
-  _supervisorWs.onclose = () => {
-    _supervisorWs = null;
-    setTimeout(_connectSupervisorWs, _supervisorWsReconnectDelay);
-    _supervisorWsReconnectDelay = Math.min(_supervisorWsReconnectDelay * 2, 16000);
-  };
-
-  _supervisorWs.onerror = () => { _supervisorWs?.close(); };
-}
-_connectSupervisorWs();
+// Real-time graph invalidation arrives over the tab's shared status socket. The socket closes while the tab is
+// hidden and a graph_invalidated sent then is lost, so every open after the first (the page's own startup load
+// covers that one) re-reads the graph and plan. While the socket is down, the 30s interval below is the fallback.
+let _supervisorSocketOpened = false;
+subscribeSovaSocket({
+  onOpen: () => {
+    if (_supervisorSocketOpened) {
+      loadGraph();
+      loadPlan();
+    }
+    _supervisorSocketOpened = true;
+  },
+  onMessage: (msg) => {
+    if (msg.type === 'graph_invalidated') {
+      loadGraph();
+      loadPlan();
+    }
+  },
+});
 
 // Task Queue
 let _queueData = [];

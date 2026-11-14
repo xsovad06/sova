@@ -17007,6 +17007,17 @@ def _ws_headers(app: FastAPI) -> dict[str, str]:
 
 
 class TestWebSocketAgentStatus:
+    @pytest.fixture(autouse=True)
+    def _no_sidebar_builds(self):
+        """These tests drive the status tick; the activity and handoff builders open a project DB of their own."""
+        from sova.dashboard.routers import agents as agents_router
+
+        with (
+            patch.object(agents_router, "_build_activity_message", AsyncMock(return_value={"type": "activity"})),
+            patch.object(agents_router, "_build_handoff_message", AsyncMock(return_value={"type": "handoff"})),
+        ):
+            yield
+
     def test_websocket_connect_and_receive_status_update(self) -> None:
         """WebSocket endpoint accepts connection and sends status_update with runs."""
         from starlette.testclient import TestClient
@@ -17300,7 +17311,7 @@ class TestWebSocketAgentStatus:
         ):
             await agents_router.ws_agent_status(ws)
         expected = slug_dir if slug_resolves else default_dir
-        mgr.connect.assert_called_once_with(ws, expected)
+        mgr.connect.assert_called_once_with(ws, expected, "proj-a" if slug_resolves else None)
         mgr.disconnect.assert_called_once_with(ws, expected)
 
 

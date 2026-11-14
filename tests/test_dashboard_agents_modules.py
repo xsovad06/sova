@@ -1157,7 +1157,7 @@ class TestPollingUsesVisibilityAwarePoll:
             ("work-items", "loadAgentsStatRow", 60000),
             ("pr-tracker", "loadPrTracker", 30000),
             ("pr-tracker", "_syncCrQuota", 300000),
-            ("kanban", "loadKanban", 5000),
+            ("kanban", "loadKanban", 30000),
             ("live-status", "_pollDuringStatusOutage", 2000),
             ("live-status", "checkMemoryPressure", 5000),
             ("live-status", "checkInterrupted", 30000),
@@ -1190,6 +1190,7 @@ class TestPollingUsesVisibilityAwarePoll:
             ("live-status", "_workItemsRefreshTimer = setTimeout(function() {"),
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
+            ("work-items", "var timer = setTimeout(function() { ctrl.abort(); }, _WORK_ITEMS_FETCH_TIMEOUT_MS);"),
             ("history", "_refreshTimer = setTimeout(function() {"),
             (
                 "history",
@@ -1288,8 +1289,8 @@ class TestPollingUsesVisibilityAwarePoll:
         source = _module_source("pr-tracker")
         body = source[source.index("async function loadPrTracker()") :]
         body = body[: body.index("\n}\n")]
-        assert "_setPrTrackerStale(false);" in body.split("} catch (e) {")[0]
-        assert "_setPrTrackerStale(true);" in body.split("} catch (e) {")[1]
+        assert "markRefresh('pr-tracker', true," in body.split("} catch (e) {")[0]
+        assert "markRefresh('pr-tracker', false," in body.split("} catch (e) {")[1]
         assert 'id="pr-tracker-stale"' in (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
 
     def test_hidden_tab_handler_leaves_pollers_to_the_helper(self) -> None:
@@ -2538,9 +2539,15 @@ console.log(JSON.stringify({{ fetches, rendered }}));
         assert listed == set(TASK_RUN_TERMINAL)
         assert "_NON_TERMINAL" not in self._RUN_DETAIL
 
-    def test_the_run_detail_channel_uses_the_agents_page_stale_threshold(self) -> None:
-        assert "var _RUN_STALE_AFTER_MS = 20000;" in self._RUN_DETAIL
-        assert "staleAfterMs: _RUN_STALE_AFTER_MS" in self._function(self._RUN_DETAIL, "_startRunStatusChannel")
+    def test_the_run_detail_channel_leaves_the_socket_and_its_watchdog_to_the_shared_hub(self) -> None:
+        start = self._function(self._RUN_DETAIL, "_startRunStatusChannel")
+        assert "wsPath" not in start
+        assert "staleAfterMs" not in start
+        # The hub's watchdog is the one liveness check: 20s of silence, tested every 5s (20 to 25s), the same
+        # bound the run page had with its own staleAfterMs.
+        assert "var _SOCKET_WATCHDOG_MS = 20000;" in _APP_JS
+        assert "var _SOCKET_WATCHDOG_TICK_MS = 5000;" in _APP_JS
+        assert "}, _SOCKET_WATCHDOG_TICK_MS);" in _APP_JS
 
     # A stub page for the run_detail script: every element is a permissive stub, so the real render, patch and
     # refresh functions run end to end and only the spies below record what they did.
@@ -2956,3 +2963,113 @@ console.log(JSON.stringify({{ unchanged, stillUnchanged, rebuilt: writes === fir
         source = _module_source("work-items")
         assert "getElementById('task-grid').innerHTML" not in source
         assert "grid.innerHTML" not in source
+
+
+_WORK_ITEMS_TIMEOUT_SCENARIO = r"""
+const workItems = await load('work-items');
+const grid = { html: '' };
+const baseGetElementById = doc.getElementById;
+doc.getElementById = (id) => (id === 'task-grid' ? grid : baseGetElementById(id));
+globalThis.renderIfChanged = (container, html) => { container.html = html; return true; };
+globalThis.getErrorDetail = async () => 'Failed to load tasks';
+globalThis.settingSaveCount = () => 0;
+const marks = [];
+globalThis.markRefresh = (key, ok) => marks.push([key, ok]);
+// Fire the 15s abort timer at once; every other timer is left alone.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms === 15000 ? 0 : ms, ...rest);
+let calls = 0;
+globalThis.fetch = (url, opts) => {
+  calls += 1;
+  // A request that never answers, until its signal aborts.
+  return new Promise((_, reject) => {
+    opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  });
+};
+console.warn = () => {};
+await workItems.loadWorkItems();
+out.firstSettled = true;
+out.firstMarks = marks.slice();
+out.grid = grid.html;
+await workItems.loadWorkItems();
+out.calls = calls;
+process.stdout.write(JSON.stringify(out));
+"""
+
+_KANBAN_SINGLE_FLIGHT_SCENARIO = r"""
+globalThis.localStorage = {
+  getItem: (k) => (k === 'sova-agents-view' ? 'kanban' : null), setItem() {}, removeItem() {},
+};
+const kanban = await import(pathToFileURL(path.join(dir, 'kanban.js')).href + '?kanban-view');
+const subs = [];
+const polls = [];
+globalThis.subscribeSovaSocket = (options) => { subs.push(options); return { unsubscribe() {} }; };
+globalThis.visibilityAwarePoll = (fn, ms) => { polls.push([fn.name, ms]); polls.fn = fn; return { id: null }; };
+globalThis.markRefresh = () => {};
+globalThis.getErrorDetail = async () => '';
+const releases = [];
+let fetches = 0;
+globalThis.__onFetch = () => { fetches += 1; return new Promise((resolve) => releases.push(resolve)); };
+kanban.init();
+out.subscription = { keys: Object.keys(subs[0]).sort(), polls: polls.map((p) => p.join(':')) };
+const first = polls.fn();
+const onMessage = subs[0].onMessage;
+onMessage({ type: 'work_items_changed' });
+onMessage({ type: 'work_items_changed' });
+onMessage({ type: 'work_items_changed' });
+await tick();
+out.whileInFlight = fetches;
+releases[0]({ columns: [], failed: [] });
+await tick(); await tick();
+out.afterFirst = fetches;
+releases[1]({ columns: [], failed: [] });
+await first;
+out.afterAll = fetches;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+class TestRefreshPaths:
+    def _run(self, tmp_path: Path, scenario: str) -> dict:
+        _require_node("node is required to run the page modules")
+        script = tmp_path / "scenario.mjs"
+        script.write_text(_LOG_HARNESS_PRELUDE + scenario, encoding="utf-8")
+        proc = subprocess.run(
+            ["node", str(script), str(_STATIC)], capture_output=True, text=True, timeout=60, check=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_a_work_items_request_that_never_answers_ends_as_a_failed_refresh_and_does_not_block_the_next(
+        self, tmp_path: Path
+    ) -> None:
+        out = self._run(tmp_path, _WORK_ITEMS_TIMEOUT_SCENARIO)
+        assert out["firstMarks"] == [["work-items", False]]
+        assert "timed out" in out["grid"]
+        assert out["calls"] == 2
+
+    def test_kanban_has_one_refresh_path_and_coalesces_overlapping_triggers_into_one_more_load(
+        self, tmp_path: Path
+    ) -> None:
+        out = self._run(tmp_path, _KANBAN_SINGLE_FLIGHT_SCENARIO)
+        # Messages only on the socket (no onOpen or onFallbackPoll: the one 30s timer is the fallback).
+        assert out["subscription"] == {"keys": ["onMessage"], "polls": ["loadKanban:30000"]}
+        assert out["whileInFlight"] == 1
+        assert out["afterFirst"] == 2, "three triggers during a load coalesce into exactly one more"
+        assert out["afterAll"] == 2
+
+    def test_the_coderabbit_quota_sync_is_not_run_on_page_load(self) -> None:
+        source = _module_source("pr-tracker")
+        assert "visibilityAwarePoll(_syncCrQuota, 300000, {skipImmediate: true});" in source
+        # The widget reads the cached value (a GET) at once instead.
+        assert "  _loadCrQuota();\n" in source
+
+    def test_the_sidebar_and_kanban_do_not_keep_a_residual_poll_for_what_the_socket_carries(self) -> None:
+        kanban = _module_source("kanban")
+        assert "onFallbackPoll" not in kanban
+        assert kanban.count("visibilityAwarePoll(") == 1
+        sidebar = re.search(r"function _initSidebarSocket\(\) \{(.*?)\n\}", _APP_JS, re.DOTALL)
+        assert sidebar is not None
+        assert "onFallbackPoll: _catchUpSidebar" in sidebar.group(1)
+        start_fn = _APP_JS.split("function startSidebarPolling")[1].split("function _initSidebarSocket")[0]
+        assert "/agents/active" not in start_fn

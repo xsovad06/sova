@@ -96,11 +96,48 @@ function _renderAgentLimit(running, limit, limitIsStale) {
   host.appendChild(_agentLimitControl);
 }
 
-export async function loadWorkItems() {
+// A refresh asked for while one is in flight (a work_items_changed that arrives mid-fetch, or a user action) runs
+// once more after it, so the newer change is never dropped and the burst coalesces into one extra fetch. Every
+// caller gets the promise of the load that will include its change.
+var _workItemsLoad = null;
+var _workItemsRefetch = false;
+// The 30s poll plus a 60s server rebuild period, with margin: older than this the list is out of date.
+var _WORK_ITEMS_STALE_AFTER_MS = 90000;
+
+export function loadWorkItems() {
+  if (_workItemsLoad) {
+    _workItemsRefetch = true;
+    return _workItemsLoad;
+  }
+  _workItemsLoad = (async function() {
+    try {
+      do {
+        _workItemsRefetch = false;
+        await _fetchWorkItems();
+      } while (_workItemsRefetch);
+    } finally {
+      _workItemsLoad = null;
+    }
+  })();
+  return _workItemsLoad;
+}
+
+// A request that never answers (half-open connection, stalled proxy) would hold _workItemsLoad forever and, with
+// it, every later poll and message; the abort turns it into a failed refresh that the stale marker reports.
+var _WORK_ITEMS_FETCH_TIMEOUT_MS = 15000;
+var _workItemsLoaded = false;
+
+async function _fetchWorkItems() {
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, _WORK_ITEMS_FETCH_TIMEOUT_MS);
+  var failure = 'Failed to load tasks';
   try {
     var savesBefore = settingSaveCount();
-    var res = await fetch(apiUrl('/agents/work-items'));
-    if (!res.ok) return;
+    var res = await fetch(apiUrl('/agents/work-items'), { signal: ctrl.signal });
+    if (!res.ok) {
+      failure = await getErrorDetail(res, 'Failed to load tasks');
+      throw new Error(failure);
+    }
     var data = await res.json();
     _workItems = data.items || [];
     _setGithubUser(data.github_user);
@@ -146,9 +183,20 @@ export async function loadWorkItems() {
       }
     }
 
+    _workItemsLoaded = true;
     renderTaskCards();
+    markRefresh('work-items', true, _WORK_ITEMS_STALE_AFTER_MS);
   } catch (e) {
-    _writeTaskGrid('<p class="text-accent-red text-sm py-6 text-center">Failed to load tasks</p>');
+    console.warn('Failed to load work items', e);
+    markRefresh('work-items', false, _WORK_ITEMS_STALE_AFTER_MS);
+    // A failed refresh keeps the last good list, with the marker showing its age, rather than wiping it; with
+    // nothing loaded yet, say why (the server's detail for an HTTP error, a timeout, or the generic text).
+    if (!_workItemsLoaded) {
+      if (e && e.name === 'AbortError') failure = 'Failed to load tasks (timed out)';
+      _writeTaskGrid('<p class="text-accent-red text-sm py-6 text-center">' + escapeHtml(failure) + '</p>');
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -981,6 +1029,14 @@ export function init() {
   document.getElementById('task-search').addEventListener('input', filterTaskCards);
 
   _initTaskFilters();
+  // The 30s poll stays as the safety net until the server pushes work_items_changed on every change; the message
+  // and a socket (re)connect refresh at once, and a 30s fallback while the socket is down is the same poll.
   visibilityAwarePoll(loadWorkItems, 30000);
+  subscribeSovaSocket({
+    onMessage: function(msg) { if (msg.type === 'work_items_changed') loadWorkItems(); },
+    // Always a catch-up: a load already in flight may have been answered before this socket subscribed, so a rebuild
+    // in that window would never reach this tab. A call during a load coalesces into at most one more fetch.
+    onOpen: function() { loadWorkItems(); }
+  });
   visibilityAwarePoll(loadAgentsStatRow, 60000);
 }
