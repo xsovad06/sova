@@ -574,6 +574,7 @@ async def _shutdown_tasks(
     from sova.dashboard.routers.oversight import cancel_run_now_tasks
     from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
     from sova.dashboard.services.batch_service import cancel_all_batches
+    from sova.dashboard.services.snapshot_service import cancel_snapshot_builds
     from sova.dashboard.services.work_item_service import cancel_graph_builds
 
     await cancel_background_tasks()
@@ -581,6 +582,7 @@ async def _shutdown_tasks(
     await cancel_all_batches()
     await cancel_run_now_tasks()
     await cancel_graph_builds()
+    await cancel_snapshot_builds()
     if metrics_writer is not None:
         await metrics_writer.stop()
     if oversight_agent is not None:

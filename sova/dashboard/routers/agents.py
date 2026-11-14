@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,6 +18,7 @@ from starlette.responses import StreamingResponse
 
 from sova.adapters.label_catalog import AREA_CHOICES
 from sova.adapters.priority import Priority
+from sova.config.context import set_project_context
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.security import validate_websocket_origin
@@ -26,7 +28,13 @@ from sova.dashboard.services.agent_validation import (
     classify_for_launch,
     suitability_blocked_detail,
 )
+from sova.dashboard.services.feed_service import get_feed_service
 from sova.dashboard.services.output_stream_service import get_output_stream_service
+from sova.dashboard.services.snapshot_service import (
+    get_snapshot,
+    refresh_snapshot,
+    set_change_listener,
+)
 from sova.dashboard.services.work_item_service import load_classification_graph
 from sova.db.models import TaskRun
 from sova.db.session import get_session
@@ -44,6 +52,14 @@ ws_router = APIRouter(tags=["agents"])
 log = get_logger(component="dashboard.agents")
 
 _STATUS_BROADCAST_INTERVAL = 2  # seconds
+# The handoff is rebuilt every this many status ticks (6 s at the 2 s cadence): the sidebar used to poll it every 5 s
+# per tab, and it only matters when a handoff file or a PR's review state changes.
+_HANDOFF_EVERY_N_TICKS = 3
+# The work items are rebuilt on this cadence while a socket is open (60 s at the 2 s cadence), which bounds how long
+# a change made outside the dashboard (a PR merged on GitHub) stays unseen; a page request also rebuilds one that is
+# older than its snapshot TTL.
+_WORK_ITEMS_EVERY_N_TICKS = 30
+_FEED_IDLE_TIMEOUT = 15.0  # seconds a feed forwarder waits for an event before re-checking its subscribers
 
 
 def _normalize_project_key(project_dir: Path | None) -> Path | None:
@@ -65,24 +81,42 @@ class _ConnectionManager:
     task per project_dir polls ``get_all_agent_statuses`` and broadcasts to all
     subscribers in that group.  This keeps backend work constant regardless of
     client count and correctly scopes data in multi-project mode.
+
+    Besides the ``status_update`` tick, the same socket carries what the sidebar and pages used to poll: ``feed``
+    (one activity-feed event, forwarded from the process-wide FeedService), ``activity`` (the unified running-agents
+    payload) and ``handoff`` (the ``/handoff`` payload). The last two are sent only when their serialized payload
+    differs from the previous one, so an idle project sends nothing. A client that has just connected asks for the
+    current values over HTTP (its ``onOpen`` catch-up), so the manager keeps no per-connection state.
     """
 
     def __init__(self) -> None:
         # Keyed by project_dir (None for single-project mode)
         self._groups: dict[Path | None, list[WebSocket]] = {}
         self._producer_tasks: dict[Path | None, asyncio.Task] = {}
+        self._feed_tasks: dict[Path | None, asyncio.Task] = {}
+        # Producers past the loop and into their cleanup await: out of _producer_tasks (so a new socket gets a fresh
+        # producer) but still owed a cancel at shutdown, which cancel_all() reads from here.
+        self._draining: set[asyncio.Task] = set()
+        # The URL slug the group's first socket connected under: the producer runs outside any request, so it
+        # re-establishes the project context the HTTP routes it reuses expect.
+        self._slugs: dict[Path | None, str | None] = {}
 
     @property
     def active_connections(self) -> list[WebSocket]:
         return [ws for conns in self._groups.values() for ws in conns]
 
-    def connect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
+    def connect(self, ws: WebSocket, project_dir: Path | None = None, slug: str | None = None) -> None:
         project_dir = _normalize_project_key(project_dir)
         group = self._groups.setdefault(project_dir, [])
         group.append(ws)
+        if self._slugs.setdefault(project_dir, slug) is None and slug:
+            self._slugs[project_dir] = slug
         task = self._producer_tasks.get(project_dir)
         if task is None or task.done():
             self._producer_tasks[project_dir] = asyncio.create_task(self._produce_loop(project_dir))
+        feed_task = self._feed_tasks.get(project_dir)
+        if feed_task is None or feed_task.done():
+            self._feed_tasks[project_dir] = asyncio.create_task(self._feed_loop(project_dir))
 
     def disconnect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
         project_dir = _normalize_project_key(project_dir)
@@ -93,16 +127,22 @@ class _ConnectionManager:
             pass
         if not group:
             self._groups.pop(project_dir, None)
+            self._slugs.pop(project_dir, None)
 
     async def cancel_all(self) -> None:
-        """Cancel all producer tasks. Called during lifespan shutdown."""
-        tasks = [t for t in self._producer_tasks.values() if not t.done()]
+        """Cancel all producer and feed tasks. Called during lifespan shutdown."""
+        tasks = [
+            t for t in (*self._producer_tasks.values(), *self._feed_tasks.values(), *self._draining) if not t.done()
+        ]
         for t in tasks:
             t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._producer_tasks.clear()
+        self._feed_tasks.clear()
+        self._draining.clear()
         self._groups.clear()
+        self._slugs.clear()
 
     async def broadcast_event(self, event_type: str, project_dir: Path | None, extra: dict | None = None) -> None:
         """Send a one-shot event to all subscribers for a project.
@@ -139,11 +179,33 @@ class _ConnectionManager:
                 self.disconnect(failed_ws, project_dir)
 
     async def _produce_loop(self, project_dir: Path | None) -> None:
-        """Single producer per project: fetch statuses and broadcast."""
+        """Single producer per project: fetch statuses, broadcast, and push changed activity and handoff."""
         from sova.dashboard.services.agent_status import (
             format_status_update,
             get_all_agent_statuses,
         )
+
+        if project_dir is not None:
+            # Always established from the group's own project_dir (never left to ambient state), inside this
+            # task so it scopes only this producer's context copy. The slug is optional: an unprefixed socket
+            # has none, and the services fall back to their default slug.
+            set_project_context(project_dir, self._slugs.get(project_dir))
+        last_sent: dict[str, str] = {}
+        tick = 0
+        # The activity and handoff builds can wait seconds (metrics, DB, GitHub when the synthesis cache lapses),
+        # so each runs beside the tick (inheriting this task's project context) rather than holding back every
+        # status_update; a build still running at its next tick is left to finish instead of being doubled.
+        side_tasks: dict[str, asyncio.Task] = {}
+
+        def _spawn_once(kind: str, build: Callable[[], Awaitable[dict]]) -> None:
+            running = side_tasks.get(kind)
+            if running is None or running.done():
+                side_tasks[kind] = asyncio.create_task(self._push_changed(project_dir, kind, build, last_sent))
+
+        def _spawn_work_items_refresh() -> None:
+            running = side_tasks.get("work_items")
+            if running is None or running.done():
+                side_tasks["work_items"] = asyncio.create_task(_refresh_work_items_snapshot(project_dir))
 
         try:
             while self._groups.get(project_dir):
@@ -158,12 +220,105 @@ class _ConnectionManager:
                     # per-run tracking state on every outage.
                     message = {"type": "status_unavailable"}
                 await self._broadcast(message, project_dir)
+                _spawn_once("activity", _build_activity_message)
+                if tick % _HANDOFF_EVERY_N_TICKS == 0:
+                    _spawn_once("handoff", _build_handoff_message)
+                if tick % _WORK_ITEMS_EVERY_N_TICKS == 0:
+                    _spawn_work_items_refresh()
+                tick += 1
                 await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
-        except asyncio.CancelledError:
-            raise
+        finally:
+            # Free this producer's slot before awaiting anything: connect() treats a not-yet-done registered task
+            # as a live producer, so a socket arriving during the cleanup await below would otherwise get none.
+            current = asyncio.current_task()
+            if current is not None:
+                self._draining.add(current)
+            if self._producer_tasks.get(project_dir) is current:
+                self._producer_tasks.pop(project_dir, None)
+            try:
+                pending = [t for t in side_tasks.values() if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    # Await the cancellation so each build's coroutine is closed here, not left pending for the
+                    # loop's teardown (which surfaces as an unraisable "never awaited" error in later code).
+                    await asyncio.gather(*pending, return_exceptions=True)
+            finally:
+                self._draining.discard(current)
+
+    async def _push_changed(
+        self,
+        project_dir: Path | None,
+        kind: str,
+        build: Callable[[], Awaitable[dict]],
+        last_sent: dict[str, str],
+    ) -> None:
+        """Broadcast the message *build* returns for *kind* unless it equals the previous one sent."""
+        try:
+            # Encoded once, the way the HTTP endpoint would: the digest and the bytes sent then cannot disagree, and
+            # a datetime or Decimal in a payload cannot fail inside the broadcast and drop every socket.
+            message = jsonable_encoder(await build())
+        except Exception:  # noqa: BLE001 (a failed build must not stop the status tick for every client)
+            log.warning("agents.ws_build_failed", kind=kind, exc_info=True)
+            # A distinct type so the client marks the value unknown instead of keeping a stale one as current.
+            message = {"type": f"{kind}_unavailable"}
+        serialized = json.dumps(message, sort_keys=True)
+        if last_sent.get(kind) == serialized:
+            return
+        last_sent[kind] = serialized
+        await self._broadcast(message, project_dir)
+
+    async def _feed_loop(self, project_dir: Path | None) -> None:
+        """Forward the process-wide activity feed to this project's sockets as ``feed`` messages."""
+        feed = get_feed_service()
+        sub_id, queue = feed.subscribe()
+        try:
+            while self._groups.get(project_dir):
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=_FEED_IDLE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    continue
+                try:
+                    await self._broadcast({"type": "feed", "event": event.to_dict()}, project_dir)
+                except Exception:  # noqa: BLE001 (one bad event must not end the forwarder: the socket stays up)
+                    log.warning("agents.ws_feed_forward_failed", exc_info=True)
+        finally:
+            feed.unsubscribe(sub_id)
+
+
+async def _build_activity_message() -> dict:
+    return {"type": "activity", "data": await get_active_agents()}
+
+
+async def _build_handoff_message() -> dict:
+    from sova.dashboard.routers.handoff import build_handoff_snapshot
+
+    # A fresh build, not the served snapshot: this is the producer that keeps the snapshot warm.
+    return {"type": "handoff", "data": await build_handoff_snapshot()}
+
+
+async def _refresh_work_items_snapshot(project_dir: Path | None) -> None:
+    """Rebuild the work-items snapshot; a changed payload reaches the sockets via the change listener."""
+    from sova.config.context import get_project_dir
+    from sova.dashboard.services.work_item_service import build_work_items, normalize_work_items_for_digest
+
+    target = project_dir if project_dir is not None else get_project_dir()
+    try:
+        await refresh_snapshot(
+            "work_items", target, lambda: build_work_items(target), normalize=normalize_work_items_for_digest
+        )
+    except Exception:  # noqa: BLE001 (a failed first build leaves no snapshot; the next page request reports it)
+        log.warning("agents.work_items_refresh_failed", exc_info=True)
+
+
+async def _on_snapshot_changed(kind: str, project_dir: Path | None) -> None:
+    """Tell a project's sockets a snapshot changed: they refetch the payload from its HTTP endpoint."""
+    if kind == "work_items":
+        await _ws_manager.broadcast_event("work_items_changed", project_dir)
 
 
 _ws_manager = _ConnectionManager()
+set_change_listener(_on_snapshot_changed)
 
 
 class StartAgentRequest(BaseModel):
@@ -463,11 +618,23 @@ async def get_issue_complexity(issue_number: str, role: str | None = None) -> di
 
 @router.get("/agents/work-items")
 async def get_work_items() -> dict:
-    """Get unified work items with computed state and actions."""
-    from sova.config.context import get_project_dir
-    from sova.dashboard.services.work_item_service import get_work_items as _get_work_items
+    """Get unified work items with computed state and actions, from the last build.
 
-    return await _get_work_items(get_project_dir())
+    The payload answers at once from the snapshot; one older than its TTL is rebuilt in the background and a change
+    reaches the sockets as ``work_items_changed``. ``snapshot`` reports the payload's age and whether its latest
+    rebuild failed. Only the first request for a project waits for the build, and fails when it fails.
+    """
+    from sova.config.context import get_project_dir
+    from sova.dashboard.services.work_item_service import build_work_items, normalize_work_items_for_digest
+
+    project_dir = get_project_dir()
+    snapshot = await get_snapshot(
+        "work_items",
+        project_dir,
+        lambda: build_work_items(project_dir),
+        normalize=normalize_work_items_for_digest,
+    )
+    return {**snapshot.payload, "snapshot": snapshot.meta()}
 
 
 @router.get(
@@ -887,10 +1054,10 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     # registering under None while broadcasters key on the real path. The cwd
     # is deliberately not a further fallback: it would key the connection under
     # a path no broadcaster uses.
-    project_dir = _ws_slug_project_dir(websocket) or resolve_project_dir_or_none(
-        default_project_dir=get_default_project_dir()
-    )
-    _ws_manager.connect(websocket, project_dir)
+    slug_project_dir = _ws_slug_project_dir(websocket)
+    project_dir = slug_project_dir or resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    slug = websocket.path_params.get("slug") if slug_project_dir is not None else None
+    _ws_manager.connect(websocket, project_dir, slug)
     try:
         # Keep connection alive: wait for client messages or disconnect.
         # The producer task in _ws_manager handles sending updates.
