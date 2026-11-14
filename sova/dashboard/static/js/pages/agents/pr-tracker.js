@@ -318,10 +318,8 @@ function setPrFilter(value) {
   _renderPrTracker();
 }
 
-function _setPrTrackerStale(stale) {
-  var marker = document.getElementById('pr-tracker-stale');
-  if (marker) marker.classList.toggle('hidden', !stale);
-}
+// A failed poll shows the age marker at once; this threshold only matters to the marker's silence check.
+var _PR_TRACKER_STALE_AFTER_MS = 90000;
 
 async function loadPrTracker() {
   try {
@@ -330,15 +328,15 @@ async function loadPrTracker() {
     var data = await res.json();
     _prTrackerData = data.prs || [];
     _prTrackerLoaded = 'ok';
-    _setPrTrackerStale(false);
+    markRefresh('pr-tracker', true, _PR_TRACKER_STALE_AFTER_MS);
     _renderPrTracker();
   } catch (e) {
     // A failed poll keeps the last good list rather than claiming there are no
-    // open PRs, and marks it stale so old states and CI dots are not read as
+    // open PRs, and the shared marker shows its age so old states and CI dots are not read as
     // current; with nothing loaded yet, say the load failed.
     console.warn('Failed to load open PRs', e);
     if (_prTrackerData.length) {
-      _setPrTrackerStale(true);
+      markRefresh('pr-tracker', false, _PR_TRACKER_STALE_AFTER_MS);
       return;
     }
     _prTrackerLoaded = 'failed';
@@ -458,5 +456,8 @@ export function init() {
   mountSettingControls(document.getElementById('cr-quota-widget'));
 
   visibilityAwarePoll(loadPrTracker, 30000);
-  visibilityAwarePoll(_syncCrQuota, 300000);
+  // The sync POSTs to CodeRabbit, so loading the page must not trigger one: the first run is one interval out.
+  // The widget shows the cached value (a GET) until then.
+  _loadCrQuota();
+  visibilityAwarePoll(_syncCrQuota, 300000, {skipImmediate: true});
 }

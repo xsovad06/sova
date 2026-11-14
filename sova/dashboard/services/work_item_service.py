@@ -783,6 +783,34 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     }
 
 
+async def build_work_items(project_dir: Path | None) -> dict:
+    """One full build of the work items: the snapshot service's builder (``get_work_items`` under another name)."""
+    return await get_work_items(project_dir)
+
+
+# Fields that advance with the clock rather than with a change, so they stay out of the change digest: a
+# rebuild whose only difference is an age must not tell every client to refetch.
+_VOLATILE_ITEM_KEYS = ("elapsed_seconds", "age_seconds")
+_VOLATILE_API_HEALTH_KEYS = ("down_seconds", "cooldown_seconds")
+
+
+def normalize_work_items_for_digest(payload: dict) -> dict:
+    """A copy of a ``get_work_items()`` payload without its clock-driven fields, for change detection only."""
+
+    def strip(value: object) -> object:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k not in _VOLATILE_ITEM_KEYS}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    out: dict = strip(payload)  # type: ignore[assignment]  # a dict in, so a dict out
+    health = out.get("api_health")
+    if isinstance(health, dict):
+        out["api_health"] = {k: v for k, v in health.items() if k not in _VOLATILE_API_HEALTH_KEYS}
+    return out
+
+
 # Next tasks ------------------------------------------------------------------
 
 

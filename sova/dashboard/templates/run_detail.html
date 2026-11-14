@@ -163,7 +163,6 @@ var _RUN_REFRESH_TOAST_AFTER = 3;
 var _runUnavailableStreak = 0;
 var _runUnavailableToasted = false;
 var _RUN_UNAVAILABLE_THRESHOLD = 3;
-var _RUN_STALE_AFTER_MS = 20000;
 
 function _isLive(status) {
   return _TERMINAL.indexOf(status) === -1;
@@ -523,14 +522,11 @@ function _handleRunStatusMessage(msg) {
 function _startRunStatusChannel() {
   if (_runStatusChannel) return;
   _runStatusChannel = createSovaStatusChannel({
-    wsPath: apiUrl('/ws/agents/status'),
     onMessage: _handleRunStatusMessage,
     // The run may have finished before the socket opened or while it was down, which no push narrates.
     onOpen: _refreshRun,
     onFallbackPoll: _refreshRun,
-    pollIntervalMs: 5000,
-    // The server broadcasts every 2s, so 20s of silence is a dead socket (same threshold as the Agents page).
-    staleAfterMs: _RUN_STALE_AFTER_MS
+    pollIntervalMs: 5000
   });
 }
 

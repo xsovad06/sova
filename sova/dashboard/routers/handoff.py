@@ -13,6 +13,7 @@ from sova.dashboard.services.agent_recovery import (
     get_synthesized_handoff,
     invalidate_synthesis_cache,
 )
+from sova.dashboard.services.snapshot_service import get_snapshot, invalidate_snapshot, refresh_snapshot
 
 router = APIRouter()
 
@@ -48,9 +49,46 @@ class ClearHandoffRequest(BaseModel):
     issue: str | None = None
 
 
+def _project_dir() -> Path | None:
+    from sova.config.context import get_project_dir
+
+    return get_project_dir()
+
+
+async def build_handoff_snapshot() -> dict:
+    """Rebuild the project-wide handoff snapshot now and return it; raises when the rebuild failed.
+
+    The status socket's producer calls this, so the snapshot ``GET /handoff`` answers from stays warm. A failed
+    rebuild raises rather than returning the previous payload: the producer then reports ``handoff_unavailable``
+    instead of passing old data off as current.
+    """
+    project_dir = _project_dir()
+    await refresh_snapshot("handoff", project_dir, _build_handoff)
+    snapshot = await get_snapshot("handoff", project_dir, _build_handoff)
+    if snapshot.failed_at is not None:
+        raise RuntimeError(f"handoff rebuild failed: {snapshot.last_error}")
+    return snapshot.payload
+
+
+async def _build_handoff() -> dict:
+    return await _read_handoff(None)
+
+
 @router.get("/handoff")
 async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
     """Get active handoff files, optionally filtered by issue.
+
+    The project-wide read (no ``issue``) answers from the last build and rebuilds in the background when it is
+    older than the snapshot TTL, because the synthesized handoff can wait on GitHub; a write here invalidates it.
+    A read for one issue is always built on the spot.
+    """
+    if issue is not None:
+        return await _read_handoff(issue)
+    return (await get_snapshot("handoff", _project_dir(), _build_handoff)).payload
+
+
+async def _read_handoff(issue: str | None) -> dict:
+    """Read active handoff files, optionally filtered by issue.
 
     ``unreadable_handoffs`` lists the files that could not be parsed. ``schema_invalid_handoffs``
     lists the files that parse as JSON objects, and are still returned in ``handoffs`` because the
@@ -166,6 +204,7 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")
 
     exec_params = handoff_service.build_action_command(action)
+    invalidate_snapshot("handoff", _project_dir())
 
     if handoff.get("source") != "pr-review-state":
         issue = str(handoff.get("issue") or "") or None
@@ -209,4 +248,5 @@ async def clear_handoff(req: ClearHandoffRequest | None = None) -> dict:
     """
     issue = req.issue if req else None
     cleared = handoff_service.clear_handoff(issue=issue)
+    invalidate_snapshot("handoff", _project_dir())
     return {"cleared": cleared}

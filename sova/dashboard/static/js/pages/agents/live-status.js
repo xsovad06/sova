@@ -225,7 +225,7 @@ function _handleAgentStatusMessage(msg) {
       // Re-render status badge with current values
       var badgeEl = card.querySelector('.sova-status-badge');
       if (badgeEl) {
-        var newBadge = renderStatusBadge(run.status, run.current_step, run.step_index, run.total_steps, run.elapsed_seconds);
+        var newBadge = renderStatusBadge(run.status, run.current_step, run.step_index, run.total_steps, run.elapsed_seconds, null, run.role, run.pipeline_variant);
         badgeEl.outerHTML = newBadge;
       }
 
@@ -257,19 +257,12 @@ function _handleAgentStatusMessage(msg) {
 function _startAgentStatusChannel() {
   if (_statusChannel) { _statusChannel.stop(); _statusChannel = null; }
   _statusChannel = createSovaStatusChannel({
-    wsPath: apiUrl('/ws/agents/status'),
     onMessage: _handleAgentStatusMessage,
     // A (re)connect can follow a gap long enough for a run to have been
     // interrupted and dropped from the banner's stale local state.
     onOpen: checkInterrupted,
     onFallbackPoll: loadAgents,
     pollIntervalMs: _WS_FALLBACK_POLL_MS,
-    // The server's own push cadence is _STATUS_BROADCAST_INTERVAL (2s,
-    // sova/dashboard/routers/agents.py), but each tick also runs
-    // get_all_agent_statuses(), an unbounded per-run DB fetch. 20s is
-    // generous enough to absorb that without misdiagnosing a slow-but-alive
-    // server as a dead socket; see createSovaStatusChannel's staleAfterMs doc.
-    staleAfterMs: 20000,
     auxiliaryPollFn: _refreshCardMetrics,
     auxiliaryPollIntervalMs: 5000
   });
@@ -277,8 +270,8 @@ function _startAgentStatusChannel() {
 
 function _refreshCardMetrics() {
   if (!document.querySelector('[id^="agent-card-"]')) return;
-  // The shared activity poll in app.js (a classic script on every page) publishes this cache; it is not
-  // owned by any page module, and it refreshes every 3s, so the reader keeps the 5s freshness guard below.
+  // The sidebar in app.js (a classic script on every page) publishes this cache from each socket "activity" push
+  // and catch-up fetch; it is not owned by any page module, so the reader keeps the 5s freshness guard below.
   var cached = window._sovaActiveAgents;
   if (!cached || !cached.data || (Date.now() - cached.ts) > 5000) return;
   var data = cached.data;

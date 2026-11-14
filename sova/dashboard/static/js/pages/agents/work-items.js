@@ -96,11 +96,53 @@ function _renderAgentLimit(running, limit, limitIsStale) {
   host.appendChild(_agentLimitControl);
 }
 
-export async function loadWorkItems() {
+// A refresh asked for while one is in flight (a work_items_changed that arrives mid-fetch, or a user action) runs
+// once more after it, so the newer change is never dropped and the burst coalesces into one extra fetch. Every
+// caller gets the promise of the load that will include its change.
+var _workItemsLoad = null;
+var _workItemsRefetch = false;
+// The server rebuilds every 60s and the marker is refreshed by each socket status tick that proves nothing
+// changed, so a list not confirmed for this long (a dead channel) is out of date. Not used while the tab is hidden.
+var _WORK_ITEMS_STALE_AFTER_MS = 90000;
+// A failed fetch while the socket is up has no poll to retry it, so the next status tick retries, at most this often.
+var _WORK_ITEMS_RETRY_MS = 10000;
+var _workItemsFetchFailedAt = null;   // when the latest fetch failed; null after a success
+var _workItemsServerStale = false;    // the server's own latest rebuild failed (it serves its last result)
+
+export function loadWorkItems() {
+  if (_workItemsLoad) {
+    _workItemsRefetch = true;
+    return _workItemsLoad;
+  }
+  _workItemsLoad = (async function() {
+    try {
+      do {
+        _workItemsRefetch = false;
+        await _fetchWorkItems();
+      } while (_workItemsRefetch);
+    } finally {
+      _workItemsLoad = null;
+    }
+  })();
+  return _workItemsLoad;
+}
+
+// A request that never answers (half-open connection, stalled proxy) would hold _workItemsLoad forever and, with
+// it, every later poll and message; the abort turns it into a failed refresh that the stale marker reports.
+var _WORK_ITEMS_FETCH_TIMEOUT_MS = 15000;
+var _workItemsLoaded = false;
+
+async function _fetchWorkItems() {
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, _WORK_ITEMS_FETCH_TIMEOUT_MS);
+  var failure = 'Failed to load tasks';
   try {
     var savesBefore = settingSaveCount();
-    var res = await fetch(apiUrl('/agents/work-items'));
-    if (!res.ok) return;
+    var res = await fetch(apiUrl('/agents/work-items'), { signal: ctrl.signal });
+    if (!res.ok) {
+      failure = await getErrorDetail(res, 'Failed to load tasks');
+      throw new Error(failure);
+    }
     var data = await res.json();
     _workItems = data.items || [];
     _setGithubUser(data.github_user);
@@ -146,9 +188,25 @@ export async function loadWorkItems() {
       }
     }
 
+    _workItemsLoaded = true;
+    _workItemsFetchFailedAt = null;
+    // The server answers from its last good build; one whose latest rebuild failed is older than the refresh
+    // interval, which the marker must say rather than show it as current.
+    _workItemsServerStale = !!(data.snapshot && data.snapshot.refresh_failed);
     renderTaskCards();
+    markRefresh('work-items', !_workItemsServerStale, _WORK_ITEMS_STALE_AFTER_MS);
   } catch (e) {
-    _writeTaskGrid('<p class="text-accent-red text-sm py-6 text-center">Failed to load tasks</p>');
+    console.warn('Failed to load work items', e);
+    _workItemsFetchFailedAt = Date.now();
+    markRefresh('work-items', false, _WORK_ITEMS_STALE_AFTER_MS);
+    // A failed refresh keeps the last good list, with the marker showing its age, rather than wiping it; with
+    // nothing loaded yet, say why (the server's detail for an HTTP error, a timeout, or the generic text).
+    if (!_workItemsLoaded) {
+      if (e && e.name === 'AbortError') failure = 'Failed to load tasks (timed out)';
+      _writeTaskGrid('<p class="text-accent-red text-sm py-6 text-center">' + escapeHtml(failure) + '</p>');
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -952,6 +1010,19 @@ function toggleCardMenu(event, issue) {
   }
 }
 
+function _handleWorkItemsMessage(msg) {
+  if (msg.type === 'work_items_changed') {
+    loadWorkItems();
+  } else if (msg.type === 'status_update' && _workItemsLoaded) {
+    if (_workItemsFetchFailedAt !== null) {
+      if (Date.now() - _workItemsFetchFailedAt >= _WORK_ITEMS_RETRY_MS) loadWorkItems();
+    } else if (!_workItemsServerStale) {
+      // The server is alive and has pushed no change since the last load, so the list is still current.
+      markRefresh('work-items', true, _WORK_ITEMS_STALE_AFTER_MS);
+    }
+  }
+}
+
 export function init() {
   registerActions({
     'toggle-card-menu': function(el, e, issue) { toggleCardMenu(e, issue); },
@@ -981,6 +1052,14 @@ export function init() {
   document.getElementById('task-search').addEventListener('input', filterTaskCards);
 
   _initTaskFilters();
-  visibilityAwarePoll(loadWorkItems, 30000);
+  // No poll while the socket is up: the server rebuilds the list every 60s and sends work_items_changed only when it
+  // differs. The socket's open is the first load (and every return to the tab), and while it is down the hub runs
+  // onFallbackPoll at once and then every 30s. A load already in flight when a socket opens coalesces into at most
+  // one more fetch.
+  subscribeSovaSocket({
+    onMessage: _handleWorkItemsMessage,
+    onOpen: loadWorkItems,
+    onFallbackPoll: loadWorkItems
+  });
   visibilityAwarePoll(loadAgentsStatRow, 60000);
 }
