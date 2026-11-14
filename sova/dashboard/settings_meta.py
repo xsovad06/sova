@@ -117,23 +117,6 @@ _REGISTRY: list[SettingMeta] = [
         "project",
     ),
     SettingMeta("persona_map", "Persona map", "Path to a custom persona mapping file", "project"),
-    SettingMeta(
-        "shared_knowledge_dir", "Shared knowledge dir", "Directory for cross-project shared knowledge files", "project"
-    ),
-    SettingMeta(
-        "shared_knowledge_categories",
-        "Shared knowledge categories",
-        "Knowledge categories synced to/from the shared knowledge dir",
-        "project",
-        "list",
-    ),
-    SettingMeta(
-        "ignored_shared_hashes",
-        "Ignored shared hashes",
-        "Content hashes of shared knowledge entries to never pull into this project",
-        "project",
-        "list",
-    ),
     SettingMeta("invariants_dir", "Invariants dir", "Directory containing invariant check scripts", "project"),
     SettingMeta(
         "max_parallel_agents",
@@ -1643,14 +1626,6 @@ _REGISTRY: list[SettingMeta] = [
         "Carbon intensity (g CO2/kWh)",
         "Grid carbon intensity for CO2 emissions estimation (default 436 = world average)",
         "agent_health",
-        "number",
-    ),
-    # Knowledge
-    SettingMeta(
-        "knowledge.max_context_tokens",
-        "Knowledge context tokens",
-        "Token budget for relevance-filtered memory injection into agent prompts",
-        "agent",
         "number",
     ),
     # Integration

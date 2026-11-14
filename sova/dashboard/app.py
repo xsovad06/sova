@@ -58,7 +58,6 @@ from sova.dashboard.routers import (
     issues,
     lifecycle,
     mcp,
-    memory,
     models,
     oversight,
     overview,
@@ -1635,7 +1634,6 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(health.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(memory.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(tasks.router, prefix=prefix, dependencies=csrf_dep)
     app.include_router(queue.router, prefix=prefix, dependencies=csrf_dep)

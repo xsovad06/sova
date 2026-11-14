@@ -229,7 +229,7 @@ async function loadConfig() {
       '</div>';
     }).join('');
 
-    // Append Invariants and Personas cards into the same grid
+    // Append Invariants and Detected Stack cards into the same grid
     html += '<div class="sova-card">' +
       '<div class="sova-card-header">' +
         '<h3 class="text-sm font-medium text-gray-400">Invariants</h3>' +
@@ -241,9 +241,9 @@ async function loadConfig() {
 
     html += '<div class="sova-card">' +
       '<div class="sova-card-header">' +
-        '<h3 class="text-sm font-medium text-gray-400">Personas</h3>' +
+        '<h3 class="text-sm font-medium text-gray-400">Detected Stack</h3>' +
       '</div>' +
-      '<div class="sova-card-body" id="personas-list">' +
+      '<div class="sova-card-body" id="detected-stack">' +
         '<p class="text-gray-500 text-sm">Loading...</p>' +
       '</div>' +
     '</div>';
@@ -311,9 +311,9 @@ async function loadConfig() {
       if (toggle) toggle.setAttribute('aria-expanded', 'true');
     });
 
-    // Load invariants, personas, installation status, labels, and health checks into their containers
+    // Load invariants, detected stack, installation status, labels, and health checks into their containers
     loadInvariants();
-    loadPersonas();
+    loadDetectedStack();
     loadPersonaPreview();
     loadInstallationStatus();
     loadLabelsStatus();
@@ -1011,35 +1011,23 @@ async function loadInvariants() {
   }
 }
 
-async function loadPersonas() {
+async function loadDetectedStack() {
   try {
-    var data = await fetchAPI(apiUrl('/settings/personas'));
-    var container = document.getElementById('personas-list');
+    var data = await fetchAPI(apiUrl('/settings/detected-stack'));
+    var container = document.getElementById('detected-stack');
 
-    var html = '';
     if (data.detected) {
-      html += '<div class="mb-3 text-xs">' +
+      container.innerHTML = '<div class="text-xs">' +
         '<span class="text-gray-500">Detected:</span> ' +
         '<span class="text-accent-green font-medium">' + escapeHtml(data.detected) + '</span>' +
       '</div>';
-    }
-
-    if (data.personas.length === 0) {
-      html += '<p class="text-gray-500 text-xs">No persona files found</p>';
     } else {
-      html += data.personas.map(function(p) {
-        var isActive = data.detected && p.name === data.detected;
-        return '<div class="flex items-center gap-2 py-1">' +
-          '<span class="w-2 h-2 rounded-full ' + (isActive ? 'bg-accent-green' : 'bg-gray-600') + '"></span>' +
-          '<span class="text-xs text-gray-300">' + escapeHtml(p.name) + '</span>' +
-          (isActive ? '<span class="text-xs text-accent-green">(active)</span>' : '') +
-        '</div>';
-      }).join('');
+      container.innerHTML = '<p class="text-gray-500 text-xs">No tech stack detected</p>';
     }
-
-    container.innerHTML = html;
   } catch (e) {
-    console.error('Failed to load personas:', e);
+    console.error('Failed to load detected stack:', e);
+    var failed = document.getElementById('detected-stack');
+    if (failed) failed.innerHTML = '<p class="text-red-400 text-xs">Failed to detect the tech stack</p>';
   }
 }
 

@@ -274,3 +274,32 @@ class TestRuntimeModelSelectors:
 
     def test_auto_launch_sends_the_suggestion_only_for_non_direct_roles(self, agents_source: str) -> None:
         assert "var autoModel = _runtimeModelMode(role) === 'spawn' ? data.suggested_model : null;" in agents_source
+
+
+_DASHBOARD = Path(__file__).resolve().parents[1] / "sova" / "dashboard"
+
+
+class TestRemovedSurfaces:
+    def test_no_template_or_script_reads_the_removed_memory_count(self) -> None:
+        offenders = [
+            str(path.relative_to(_DASHBOARD))
+            for root in (_DASHBOARD / "templates", _DASHBOARD / "static")
+            for path in root.rglob("*")
+            if path.suffix in {".html", ".js"} and not path.name.endswith(".min.js")
+            for text in [path.read_text(encoding="utf-8")]
+            if "memory_count" in text or "memory-count" in text
+        ]
+        assert offenders == []
+
+    def test_every_literal_element_id_the_settings_script_reads_exists_in_the_page(self, template_source: str) -> None:
+        """A getElementById('x') for an id the page never renders would throw on the null it returns."""
+        ids = set(re.findall(r"getElementById\('([A-Za-z0-9_-]+)'\)", template_source))
+        declared = set(re.findall(r"""id=\\?["']([A-Za-z0-9_-]+)\\?["']""", template_source))
+        declared |= set(re.findall(r"\.id = '([A-Za-z0-9_-]+)'", template_source))
+        # Group containers are rendered per settings group at runtime ('group-body-' + groupId).
+        missing = sorted(i for i in ids if i not in declared and not i.startswith("group-body-"))
+        assert missing == []
+
+    def test_the_settings_page_has_no_persona_list(self, template_source: str) -> None:
+        assert "persona-list" not in template_source
+        assert "renderPersona" not in template_source

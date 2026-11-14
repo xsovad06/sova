@@ -116,6 +116,12 @@ class TestPredictCandidateFiles:
         for f in _CROSS_CUTTING_FILES:
             assert f not in result
 
+    def test_personas_scope_still_resolves_to_the_remaining_persona_files(self) -> None:
+        result = predict_candidate_files(["area:personas"], "")
+        assert result
+        assert "sova/supervisor/persona.py" in result
+        assert not any(path.startswith("sova/commands/data/personas") for path in result)
+
     def test_unknown_area_label(self) -> None:
         result = predict_candidate_files(["area:unknown_thing"], "")
         assert result == set()

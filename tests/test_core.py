@@ -395,6 +395,17 @@ class TestWorkflowEngine:
         assert result.steps_completed == 1
         assert result.steps_skipped == 1
 
+    async def test_extract_memory_step_is_recorded_as_skipped(self, tmp_path: Path) -> None:
+        from sova.core.steps.extract_memory import ExtractMemoryStep
+
+        engine = WorkflowEngine(steps=[ExtractMemoryStep()], ctx=_make_ctx(tmp_path))
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_completed == 0
+        assert [(r.step_name, r.status) for r in result.step_records] == [("extract_memory", "skipped")]
+
     async def test_multiple_steps_happy_path(self, tmp_path: Path) -> None:
         ctx = _make_ctx(tmp_path)
         steps = [
@@ -5200,6 +5211,75 @@ class TestWorkflowDB:
             assert len(rows) == 1
             assert rows[0].step_name == "dummy"
             assert rows[0].status == "done"
+
+    async def test_extract_memory_step_execution_is_persisted_as_skipped(self, tmp_path: Path) -> None:
+        """A fresh context (nothing completed) still records `skipped`, and never a `done` row, for the step."""
+        from sova.core.steps.extract_memory import ExtractMemoryStep
+
+        ctx = _make_ctx(tmp_path)
+        assert not ctx.completed_steps
+        result = await WorkflowEngine(steps=[ExtractMemoryStep()], ctx=ctx).run()
+
+        session = await get_session()
+        async with session.begin():
+            rows = (
+                (await session.execute(select(StepExecution).where(StepExecution.task_run_id == result.task_run_id)))
+                .scalars()
+                .all()
+            )
+        assert [(row.step_name, row.status) for row in rows] == [("extract_memory", "skipped")]
+
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "memory",
+            "retrieval",
+            "tiers",
+            "sharing",
+            "lifecycle",
+            "embeddings",
+            "graph",
+            "extraction",
+            "similarity",
+            "review_patterns",
+        ],
+    )
+    def test_removed_knowledge_modules_are_not_importable(self, module: str) -> None:
+        import importlib
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"sova.knowledge.{module}")
+
+    def test_extract_memory_step_imports_nothing_removed_from_knowledge(self) -> None:
+        """Every import form (plain, from, relative) that reaches sova.knowledge stays on the survivors."""
+        import ast
+        import inspect
+
+        from sova.core.steps import extract_memory
+
+        allowed = {"sova.knowledge.assessments", "sova.knowledge.personas"}
+        package = extract_memory.__package__ or ""
+        imported: set[str] = set()
+        for node in ast.walk(ast.parse(inspect.getsource(extract_memory))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    parent = ".".join(package.split(".")[: len(package.split(".")) - node.level + 1])
+                    base = f"{parent}.{base}" if base else parent
+                imported.add(base)
+                imported.update(f"{base}.{alias.name}" for alias in node.names)
+        reaching = {name for name in imported if name.startswith("sova.knowledge")}
+        assert reaching <= allowed | {"sova.knowledge"}
+
+    def test_extract_memory_is_registered_and_precedes_the_handoff_in_both_pipelines(self) -> None:
+        from sova.core.steps import STEP_REGISTRY, get_address_review_steps, get_developer_steps
+
+        assert "extract_memory" in STEP_REGISTRY
+        for steps in (get_developer_steps(), get_address_review_steps()):
+            names = [s.name for s in steps]
+            assert names.index("extract_memory") + 1 == names.index("handoff_to_reviewer")
 
     async def test_failure_creates_failure_record(self, tmp_path: Path) -> None:
         ctx = _make_ctx(tmp_path)

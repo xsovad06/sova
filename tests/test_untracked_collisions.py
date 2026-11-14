@@ -583,7 +583,15 @@ class TestStagingWithIgnoredRuntimePaths:
 
     async def test_commit_never_stages_runtime_state_without_ignore_rules(self, repo: InvariantRepo) -> None:
         """Without any ignore rule, `git add -A` still leaves the database and secret unstaged (#1402)."""
-        for runtime_file in (".claude/sova.db", ".claude/sova.db-wal", ".claude/mcp_secret", ".sova/baseline.json"):
+        for runtime_file in (
+            ".claude/sova.db",
+            ".claude/sova.db-wal",
+            ".claude/mcp_secret",
+            ".sova/baseline.json",
+            # Migration 044's dump of the removed memory tables: never pushed from a target project.
+            ".claude/memories-export-20261113T120000000000Z.json",
+            ".claude/memories-export-20261113T120000000000Z-1.json",
+        ):
             repo.write(runtime_file, "secret\n")
         repo.write(SPEC, "spec\n")
         repo.write("feature.py", "x = 1\n")

@@ -59,8 +59,7 @@ ProtectHome=read-only
 # commit from linked worktrees, so git writes ${SOVA_PROJECT_DIR}/.git as well
 # as ${SOVA_PROJECT_DIR}/.claude, and ProtectSystem=strict makes everything
 # else on the filesystem read-only. %h/.claude stays listed too, since the
-# spawned coding-agent CLI keeps its own state there and
-# knowledge.shared_knowledge_dir defaults under it. %h/.claude.json (the Claude
+# spawned coding-agent CLI keeps its own state there. %h/.claude.json (the Claude
 # CLI's settings and session state) and %h/.codex (the Codex CLI's) are listed
 # with a leading '-' so a host without one still starts the unit. ReadWritePaths
 # does not expand ${SOVA_PROJECT_DIR}, so substitute the real path when adapting

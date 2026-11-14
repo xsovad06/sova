@@ -16,9 +16,9 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 
 - **End-to-end automation**: from issue triage to merged PR, SOVA handles the full development cycle. You approve, it executes.
 - **Quality by design**: gate checks between every pipeline step catch problems early. Agents refuse to work on issues that haven't been properly triaged and researched.
-- **Learns from mistakes**: a 4-tier knowledge system captures review feedback, common patterns, and gotchas. Each run is better than the last.
+- **Learns from mistakes**: lessons are kept as markdown in `.claude/agent-memory/`, captured through the human-reviewed `/extract-knowledge` command, and `sova retro` measures how often review findings repeat a recorded rule.
 - **You stay in control**: agents are ephemeral (spawn, work, handoff, exit). The dashboard shows what they did, what they need, and lets you decide when to merge. Nothing ships without your approval.
-- **Works on any project**: install once, configure with `sova config set` or the dashboard, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
+- **Works on any project**: install once, configure with `sova config set` or the dashboard, and SOVA detects your stack from marker files (Django, FastAPI, Odoo, and more).
 
 ## Key Features
 
@@ -28,8 +28,8 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 - **24/7 Server Mode**: scheduler with a priority-based watch loop; `sova parallel` runs several issues concurrently
 - **Handoff System**: per-issue handoff files eliminate race conditions in parallel agent runs; dashboard renders action buttons for human decisions
 - **28 Standardized Commands**: develop, test, review, PR, ship, debug, and more. Works on any project
-- **4-Tier Knowledge System**: layered memory with cross-project learning ([details](knowledge/KNOWLEDGE.md))
-- **Persona Auto-Detection**: detects your tech stack and loads relevant guidance (see [`sova/commands/data/personas/`](sova/commands/data/personas/))
+- **Markdown Knowledge System**: project rules plus agent memory captured via `/extract-knowledge`, and a review retro (`sova retro`) that tracks repeated findings ([details](knowledge/KNOWLEDGE.md))
+- **Stack Detection**: detects your tech stack from marker files and shows it on the Settings page
 - **Pluggable Task Sources**: GitHub Issues and Jira Cloud supported, Linear planned
 
 ## Architecture Overview
@@ -426,9 +426,9 @@ log_backup_count = 5
 | **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
-| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply | --mark-in-review]`, `sova pr-verdict <pr>`, `sova refresh-pr-body <pr> [--only-if-unparseable] [--head <sha>]`, `sova learn-from-pr <pr>` |
+| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply | --mark-in-review]`, `sova pr-verdict <pr>`, `sova refresh-pr-body <pr> [--only-if-unparseable] [--head <sha>]` |
 | **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
-| **Knowledge** | `sova memory search\|prune\|dump\|export\|import`, `sova assess set\|get\|clear <issue>` |
+| **Knowledge** | `sova assess set\|get\|clear <issue>` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
 | **Review retro** | `sova retro record <pr> [--force]`, `sova retro backfill [--dry-run]`, `sova retro report [--since YYYY-MM]`: which recorded rules (bold-labelled bullets in AGENTS.md, CLAUDE.md, `.claude/rules/`, common-mistakes.md) each merged PR's review findings repeat, per month |
 | **MCP** | `sova mcp serve` (blocking command tools, plus operator tools that drive a running `sova server`: status, pending handoffs and plan, start, stop, resume, handoff dismiss and action, plan approve and skip) |

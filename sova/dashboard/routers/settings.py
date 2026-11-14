@@ -1,4 +1,4 @@
-"""Settings router: config, invariants, personas, installation status."""
+"""Settings router: config, invariants, detected stack, installation status."""
 
 from __future__ import annotations
 
@@ -600,18 +600,15 @@ async def list_invariants() -> dict:
         raise HTTPException(status_code=500, detail="Failed to fetch invariants")
 
 
-@router.get("/settings/personas", responses={500: {"description": "Failed to fetch personas"}})
-async def list_personas() -> dict:
-    """List available personas and detected persona."""
+@router.get("/settings/detected-stack", responses={500: {"description": "Failed to detect the tech stack"}})
+async def get_detected_stack() -> dict:
+    """Return the tech stack detected from the project's marker files."""
     try:
         project_dir = _settings_project_dir()
-        return {
-            "personas": settings_service.list_personas(project_dir),
-            "detected": settings_service.get_detected_persona(project_dir),
-        }
+        return {"detected": settings_service.get_detected_persona(project_dir)}
     except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.personas.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch personas")
+        log.warning("settings.detected_stack.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to detect the tech stack")
 
 
 @router.get("/settings/persona", responses={500: {"description": "Failed to fetch operations persona"}})
