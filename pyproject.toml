@@ -155,9 +155,13 @@ filterwarnings = [
     # "never awaited" warning cannot import `warnings` and raises
     # KeyError('__import__') instead, which pytest reports as unraisable on
     # whichever test happens to be running (seen on Python 3.14 in CI,
-    # reproduced locally with gc.set_threshold(1)). Scoped to AsyncMock's
-    # coroutine so a production coroutine finalized this way still fails.
-    "ignore:Exception ignored while finalizing coroutine <coroutine object AsyncMockMixin\\._execute_mock_call:pytest.PytestUnraisableExceptionWarning",
+    # reproduced locally with gc.set_threshold(1)). Python 3.12 words the same
+    # report "Exception ignored in: <coroutine object ..." rather than
+    # "Exception ignored while finalizing coroutine <coroutine object ...", so
+    # the pattern accepts both (a filter field cannot hold a colon, so "in."
+    # matches "in:"). Scoped to AsyncMock's coroutine so a production
+    # coroutine finalized this way still fails.
+    "ignore:Exception ignored (while finalizing coroutine|in.) <coroutine object AsyncMockMixin\\._execute_mock_call:pytest.PytestUnraisableExceptionWarning",
     # Third-party: starlette.testclient's own documented httpx migration path,
     # unrelated to SOVA code. StarletteDeprecationWarning subclasses
     # UserWarning, not DeprecationWarning.
