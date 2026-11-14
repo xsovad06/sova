@@ -98,6 +98,24 @@ Every task entry in `GET /api/agents/work-items` carries `suitability: {mode, re
 
 `POST /api/work/hidden/{number}` and `DELETE /api/work/hidden/{number}` add or remove an issue in `dashboard.hidden_issues` and return `{hidden: [...]}`; both are idempotent and accept an issue the tracker no longer has. Hiding changes no label, tracker state, queue entry or supervisor decision. `PUT /api/issues/{number}/priority` takes `{priority}` (one of `blocker, critical, high, medium, low, undefined`): 200 on success, 400 with the adapter's message when the tracker has no such level (Jira with no matching name among the priorities the issue's project allows, and always for `undefined`), 502 on a tracker failure, 503 when config is unavailable. It drops the graph, queue and shared-build caches so the next board request ranks with the new priority. On GitHub the whole read, add and delete runs under one lock per repository and issue shared by every adapter instance in the process, and label names match without regard to case, as GitHub does.
 
+### Status Socket Messages
+
+`/ws/agents/status` (also `/p/{slug}/api/ws/agents/status`) is the one socket a browser tab opens; `app.js` shares it between the sidebar and every page. Each message is a JSON object with a `type`:
+
+| `type` | Body | Sent |
+|--------|------|------|
+| `status_update` | `runs: [...]` | every 2 s |
+| `status_unavailable` | none | the status fetch failed; the socket is up but proves nothing is fresh |
+| `agent_finished`, `graph_invalidated` | per `broadcast_event()` | on the event |
+| `feed` | `event`: a feed event as `FeedEvent.to_dict()` | each event the process emits, in order (process-wide: a feed event carries no project, so every project's sockets receive every event, as with `/feed/stream`) |
+| `activity` | `data`: the `GET /agents/active` payload | when it differs from the last one sent |
+| `activity_unavailable` | none | the activity build failed; the client marks its value unknown |
+| `handoff` | `data`: the `GET /handoff` payload | when it differs from the last one sent (checked every 6 s) |
+| `handoff_unavailable` | none | the handoff build failed; the client re-fetches `GET /handoff` and, if that also fails, shows a gray "Checkpoint status unknown" banner in place of the checkpoint banner (the dot keeps the activity state) |
+| `work_items_changed`, `handoff_changed` | none | reserved: the client re-fetches `/agents/work-items` or `/handoff` on receipt; the server does not emit them yet |
+
+A change message carries no payload: the HTTP endpoint stays the single source of payload shape. A message never replaces a connect-time catch-up: a new socket receives nothing until the next change, so a client fetches the current value over HTTP in its `onOpen`. `GET /feed/stream` (SSE) remains for non-browser clients; the browser no longer opens it.
+
 ### Agent Output Sequence Numbers
 
 `GET /agents/{run_id}/output` returns `seq` next to `lines` and `total`, and the `connected` event of `GET /agents/{run_id}/output/stream` carries `{"seq": N}`. Both are `AgentState.output_seq`, the count of lines the in-memory agent has buffered over its life (the 5000-line deque evicts, so its length cannot stand in). `_buffer_line()` counts and publishes a line in one step, with no `await` between, and the endpoints read the number with no `await` before they read the lines or subscribe, so a snapshot at `seq` and a stream connected at `seq` overlap by exactly the difference. The log viewer uses that to drop the lines its backfill and the stream both carry, on a first open as well as a tab return. The field is `null`/absent when the agent is no longer in memory (the log then comes from disk), and a client must fall back to text matching there. The field is additive: a client that ignores it behaves as before. The count is only exact if the stream delivered every line, and `OutputStreamService.publish()` drops a line for a subscriber whose queue is full, so the stream also emits an `event: gap` (empty JSON object) ahead of the next line after any drop; a client that relies on `seq` must treat it as "this stream has a hole" and re-read the run instead of continuing (the log viewer abandons the stream and polls from line 0).
