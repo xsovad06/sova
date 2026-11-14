@@ -2343,43 +2343,6 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_extract_memory_failure_non_fatal(self, tmp_path: Path) -> None:
-        """Memory extraction failure should not prevent reviewer from returning success."""
-        import json
-        from decimal import Decimal
-        from unittest.mock import patch
-
-        from sova.llm.models import LLMResult
-        from sova.roles.reviewer import ReviewerRole
-
-        adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
-        role = ReviewerRole()
-        llm_resp = json.dumps({"findings": [], "summary": "OK"})
-        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
-
-        with (
-            patch(
-                "sova.roles.reviewer.get_pr_branch_and_head_sha",
-                new_callable=AsyncMock,
-                return_value=("feat/x", "abc123"),
-            ),
-            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
-            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
-            patch("sova.roles.reviewer.get_pr_head_sha", new_callable=AsyncMock, return_value="abc123"),
-            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
-            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
-            patch(
-                "sova.knowledge.extraction.extract_memories",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("extraction failed"),
-            ),
-        ):
-            result = await role.execute(ctx)
-
-        assert result.success
-
     async def test_execute_handoff_db_failure_non_fatal(self, tmp_path: Path) -> None:
         """DB handoff write failure should not prevent reviewer from returning success."""
         import json
@@ -7318,49 +7281,6 @@ class TestReviewerExceptionPaths:
         assert error_msg is None
         assert ctx.branch_name is None
         assert head_sha == ""
-
-    async def test_extract_review_memories_exception_non_fatal(self, tmp_path: Path) -> None:
-        """_extract_review_memories handles extraction failure gracefully (lines 564-565)."""
-        from unittest.mock import patch
-
-        from sova.roles.reviewer import ReviewerRole, ReviewResult
-
-        role = ReviewerRole()
-        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
-        review = ReviewResult(findings=[], summary="OK", total_cost=0)
-
-        with patch(
-            "sova.knowledge.extraction.extract_memories",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("extraction failed"),
-        ):
-            # Should not raise
-            await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
-
-    async def test_extract_review_memories_is_noop(self, tmp_path: Path) -> None:
-        """_extract_review_memories is a no-op (extraction disabled for reviewer)."""
-        from unittest.mock import patch
-
-        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
-
-        role = ReviewerRole()
-        ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
-        finding = ReviewFinding(
-            file="src/app.py",
-            line=10,
-            severity=5,
-            category="bug",
-            description="Null check missing",
-            suggestion="Add check",
-        )
-        review = ReviewResult(findings=[finding], summary="Found issue", total_cost=0)
-
-        with patch(
-            "sova.knowledge.extraction.extract_memories",
-            new_callable=AsyncMock,
-        ) as mock_extract:
-            await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
-            mock_extract.assert_not_awaited()
 
     async def test_append_review_rationale_exception_non_fatal(self, tmp_path: Path) -> None:
         """_append_review_rationale handles spec write failure gracefully (lines 699-700)."""

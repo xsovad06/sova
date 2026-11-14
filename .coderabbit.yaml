@@ -25,7 +25,6 @@ reviews:
     - "!assets/**"
     - "!deploy/**"
     - "!templates/**"
-    - "!sova/commands/data/personas/**"
     - "!knowledge/**"
 
   path_instructions:

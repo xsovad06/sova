@@ -1,6 +1,7 @@
 /* The Settings page's status widgets, each beside the settings it belongs to: SOVA Installation (command sync) and
-   the health checks in Overview, personas under Project, GitHub labels under Task Source, invariants under
-   Validation, the operations persona under Oversight, and the connection tests under LLM Provider and Agent.
+   the health checks in Overview, the detected tech stack under Project, GitHub labels under Task Source,
+   invariants under Validation, the operations persona under Oversight, and the connection tests under LLM Provider
+   and Agent.
    A widget loads the first time its section is shown and again only when its own button asks; a setting save
    never reloads one. */
 
@@ -8,7 +9,7 @@ const loaders = {
   installation: loadInstallationStatus,
   health: loadHealthChecks,
   capacity: loadCapacity,
-  personas: loadPersonas,
+  'detected-stack': loadDetectedStack,
   labels: loadLabelsStatus,
   invariants: loadInvariants,
   'operations-persona': loadPersonaPreview,
@@ -350,20 +351,16 @@ async function loadCapacity(el) {
   }
 }
 
-/* --- Project: personas ----------------------------------------------------------------------------------- */
+/* --- Project: detected tech stack ----------------------------------------------------------------------- */
 
-async function loadPersonas(el) {
+async function loadDetectedStack(el) {
   try {
-    const data = await fetchAPI(apiUrl('/settings/personas'));
-    const personas = data.personas || [];
+    const data = await fetchAPI(apiUrl('/settings/detected-stack'));
     setState(el, data.detected ? 'ok' : 'muted');
-    el.innerHTML = `<span class="sova-settings-status-title">${data.detected ? `Persona: ${escapeHtml(data.detected)} detected` : 'No persona detected'}</span>
-      ${personas.length ? `<span class="sova-settings-status-muted">Available:</span><span class="sova-settings-tags">${personas.map((p) =>
-        `<span class="sova-settings-tag${p.name === data.detected ? ' sova-settings-tag-on' : ''}">${escapeHtml(p.name)}</span>`).join('')}</span>`
-        : '<span class="sova-settings-status-muted">No persona files found</span>'}`;
+    el.innerHTML = `<span class="sova-settings-status-title">${data.detected ? `Detected stack: ${escapeHtml(data.detected)}` : 'No tech stack detected'}</span>`;
   } catch (e) {
-    console.error('Failed to load personas:', e);
-    failed(el, 'Could not load personas');
+    console.error('Failed to load detected stack:', e);
+    failed(el, 'Failed to detect the tech stack');
   }
 }
 

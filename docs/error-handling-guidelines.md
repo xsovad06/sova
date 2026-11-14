@@ -78,7 +78,6 @@ This pattern appears in 100+ locations including:
 - Tracker state transitions (`create_pr.py`, `_handoff_helpers.py`)
 - Notification wrappers (`_safe_desktop`, `_safe_slack` in `sova/ipc/notifications.py`)
 - PR assignment and label operations
-- Memory extraction (`extract_memory.py`)
 - Handoff file/DB writes
 
 ## Failure Must Not Look Like Success

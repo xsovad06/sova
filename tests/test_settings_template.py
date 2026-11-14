@@ -129,7 +129,7 @@ class TestPageStructure:
     @pytest.mark.parametrize(
         ("widget", "group_id"),
         [
-            ("personas", "project"),
+            ("detected-stack", "project"),
             ("labels", "task_source"),
             ("invariants", "validation"),
             ("operations-persona", "oversight"),
@@ -342,3 +342,42 @@ class TestLoadFailures:
         body = _function_body(widgets_source, "export function loadWidgets(root) {")
         assert "Promise.resolve().then(() => load(el)).catch(" in body
         assert "delete el.dataset.widgetLoaded" in body
+
+
+_DASHBOARD = Path(__file__).resolve().parents[1] / "sova" / "dashboard"
+
+
+class TestRemovedSurfaces:
+    def test_no_template_or_script_reads_the_removed_memory_count(self) -> None:
+        offenders = [
+            str(path.relative_to(_DASHBOARD))
+            for root in (_DASHBOARD / "templates", _DASHBOARD / "static")
+            for path in root.rglob("*")
+            if path.suffix in {".html", ".js"} and not path.name.endswith(".min.js")
+            for text in [path.read_text(encoding="utf-8")]
+            if "memory_count" in text or "memory-count" in text
+        ]
+        assert offenders == []
+
+    def test_every_literal_element_id_the_settings_scripts_read_exists_in_the_page(self) -> None:
+        """A getElementById('x') for an id the page never renders would throw on the null it returns."""
+        scripts = "\n".join(path.read_text(encoding="utf-8") for path in sorted(_PAGE_JS.glob("*.js")))
+        template = (_DASHBOARD / "templates" / "settings.html").read_text(encoding="utf-8")
+        ids = set(re.findall(r"(?:getElementById|\$)\('([A-Za-z0-9_-]+)'\)", scripts))
+        declared = set(re.findall(r"""id=\\?["']([A-Za-z0-9_-]+)\\?["']""", template + scripts))
+        declared |= set(re.findall(r"\.id = '([A-Za-z0-9_-]+)'", scripts))
+        assert ids, "no literal element ids found: the pattern no longer matches the scripts"
+        assert sorted(ids - declared) == []
+
+    def test_the_settings_page_has_no_persona_list(self, widgets_source: str) -> None:
+        template = (_DASHBOARD / "templates" / "settings.html").read_text(encoding="utf-8")
+        for source in (template, widgets_source):
+            assert "persona-list" not in source
+            assert "renderPersona" not in source
+            assert "/settings/personas" not in source
+
+    def test_the_project_group_shows_the_detected_stack(self, widgets_source: str) -> None:
+        body = _function_body(widgets_source, "async function loadDetectedStack(el) {")
+        assert "apiUrl('/settings/detected-stack')" in body
+        assert "failed(el, " in body
+        assert "'detected-stack': loadDetectedStack," in widgets_source

@@ -59,7 +59,7 @@ def _packaged_data_dir(name: str) -> Path:
 
     Uses ``importlib.resources`` rather than a repo-root-relative ``Path(__file__)``
     walk so this resolves correctly both in an editable checkout and in a wheel
-    install, where ``commands/``, ``guidelines/``, ``skills/`` and ``personas/``
+    install, where ``commands/``, ``guidelines/`` and ``skills/``
     ship inside the installed package (under ``sova/commands/data/``) rather
     than next to it. ``files()`` returns
     a real ``pathlib.Path`` for both cases since neither pip nor setuptools
@@ -81,11 +81,6 @@ def get_guidelines_dir() -> Path:
 def get_skills_dir() -> Path:
     """Return the path to the distributable skills directory packaged with SOVA."""
     return _packaged_data_dir("skills")
-
-
-def get_personas_dir() -> Path:
-    """Return the path to the personas directory packaged with SOVA."""
-    return _packaged_data_dir("personas")
 
 
 def classify(commands: list[CommandEntry]) -> dict[str, list[CommandEntry]]:

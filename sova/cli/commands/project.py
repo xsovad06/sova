@@ -31,7 +31,7 @@ console = Console(stderr=True)
 def install(
     path: Annotated[Optional[Path], typer.Argument(help="Project directory to install into.")] = None,
     no_dashboard: Annotated[bool, typer.Option("--no-dashboard", help="Skip dashboard setup.")] = False,
-    update: Annotated[bool, typer.Option("--update", help="Quick sync (config + personas only).")] = False,
+    update: Annotated[bool, typer.Option("--update", help="Quick sync (commands, guidelines, skills).")] = False,
 ) -> None:
     """Install SOVA into a project directory."""
     asyncio.run(_install(path=path, no_dashboard=no_dashboard, update=update))

@@ -1,6 +1,6 @@
 # Knowledge Management System
 
-Standardized knowledge architecture for AI-assisted development. This system ensures agents learn from every session, retain knowledge across conversations, and share learnings across projects.
+Standardized knowledge architecture for AI-assisted development. This system ensures agents learn from every session, retain knowledge across conversations,.
 
 ---
 
@@ -9,8 +9,7 @@ Standardized knowledge architecture for AI-assisted development. This system ens
 Knowledge is organized in **four tiers**, from most permanent and broadly shared to most ephemeral and session-specific:
 
 ```
-Tier 0: Shared Knowledge (~/.claude/shared-knowledge/)
-        Cross-project patterns, reusable across all repos
+Tier 0: (removed, see below)
         |
 Tier 1: Project Rules (AGENTS.md, CLAUDE.md, .claude/rules/*.md)
         Canonical conventions, loaded every session, never truncated
@@ -26,41 +25,17 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 
 - Knowledge starts at **Tier 2** (agent learns a pattern from a review or debugging session)
 - Once confirmed across multiple sessions, it gets **promoted to Tier 1** (added to `.claude/rules/` or `AGENTS.md`)
-- If a pattern applies to multiple projects, it gets **promoted to Tier 0** (shared knowledge)
+- A pattern that applies to multiple projects is copied into each project's Tier 1 by hand (Tier 0 is removed)
 - **Tier 3** is auto-managed by Claude Code: agents don't write here directly
 
 ---
 
-## Tier 0: Shared Knowledge
+## Tier 0: Shared Knowledge (removed)
 
-**Location**: `~/.claude/shared-knowledge/`
-**Scope**: Cross-project (patterns that apply regardless of tech stack or project)
-**Tracked in git**: No (lives outside any repo)
-**Loaded by**: SOVA agent startup
-
-### Structure
-
-```
-~/.claude/shared-knowledge/
-  patterns.md                    # Universal development patterns
-  git-workflows.md               # Git/GitHub workflow knowledge
-  proactive-experimentation.md   # When and how to test changes proactively
-  scout-rule.md                  # Leave-it-better-than-you-found-it patterns
-```
-
-### What Belongs Here
-
-- Git workflow patterns (rebase strategies, commit organization)
-- Code review heuristics (what to look for, scoring patterns)
-- Universal debugging techniques
-- Cross-project architectural principles
-- Patterns confirmed in 2+ projects
-
-### What Does NOT Belong Here
-
-- Project-specific conventions (those go in Tier 1)
-- Framework-specific patterns (those go in Tier 1 of the relevant project)
-- Session-specific state (that's Tier 3)
+SOVA no longer manages cross-project shared knowledge (removed in #1464): nothing writes or reads
+`~/.claude/shared-knowledge/`, and the `shared_knowledge_*` settings and `sova memory export` are gone. A pattern that
+applies to several projects is copied into each project's Tier 1 rules by hand. The tier numbering below is kept so
+existing references to Tiers 1 to 3 stay valid.
 
 ---
 
@@ -130,7 +105,7 @@ The distinction: rules files are always loaded; commands are loaded only when in
 **Location**: `.claude/agent-memory/`
 **Scope**: Agent-specific learnings, accumulated over time
 **Tracked in git**: No (gitignored)
-**Loaded by**: Agent startup (reads at the beginning of each task)
+**Loaded by**: commands and agents that read the relevant `cookbook/` domain files at the start of a task (no SOVA code loads it)
 
 ### Structure
 

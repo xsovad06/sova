@@ -212,7 +212,7 @@ def task_type_model_compatible(model: str | None, catalog: list[str] | None) -> 
 
 
 def resolve_extraction_model(cfg: LLMConfig | None) -> str:
-    """Resolve the model for extraction-tier sub-tasks (implementation notes, memory consolidation).
+    """Resolve the model for extraction-tier sub-tasks (implementation notes, the review retro).
 
     Returns ``llm.routing["extraction"]`` when configured, else ``"haiku"``.
     """
