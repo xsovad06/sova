@@ -34,7 +34,9 @@ _SLACK_CHARS = 1_000
 # Command file name -> cap. Only files over _DEFAULT_COMMAND_CAP belong here. Lower an entry in
 # the same diff as any cut, and delete it once the file is at or under the default.
 _COMMAND_CAPS: dict[str, int] = {
-    "address-pr.md": 40_000,
+    # Issue #1361 lowered this from 40,000: dropping the per-round cookbook append freed more than the
+    # no-double-dash rule on replies and summary comments added.
+    "address-pr.md": 39_200,
     "find-task.md": 15_500,
     # Raised from the #1363 target of 24,000 by 2,500 for folding open issues before filing: the fold search,
     # the fold comment posted only after confirmation, and the separate `folded=` and `deferred=` tracker
@@ -47,20 +49,31 @@ _COMMAND_CAPS: dict[str, int] = {
     # asks the shared resolver for a standing REVISE or BLOCK on the head (issue #1436).
     # Issue #1428 raised this by 700 for the Phase 5 `sova refresh-pr-body --only-if-unparseable --head` re-judge
     # of a body whose verdicts could not be parsed: the shell time budget (two LLM calls) and the exit codes.
-    "integrate-pr.md": 67_700,
+    # Issue #1361 lowered this by 1,000 by dropping the Phase 3 check for uncaptured review learnings.
+    "integrate-pr.md": 66_700,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
-    "pr.md": 36_000,
+    # Issue #1361 raised this by 1,000 for the push guard (the branch step 2 recorded must still be checked out
+    # before every push) and the CI-failure evidence fallback and the canceled-run read in step 16, plus 200
+    # for the shared evidence read (step conclusions and annotations) that a canceled job gets before any re-run.
+    # Review fixes added 700 more: the stop-before-fixing rule for a never-started or timed-out failed job, the
+    # conditional push flags, and the literal PR_BRANCH rule that keeps the guard from always passing.
+    "pr.md": 38_500,
     # Issue #1383 took this over the default with the Test Coverage check that flags a diff adding far more
     # test lines than production lines, the main source of test-suite growth.
+    # Issue #1361 added the most-repeated-rules pass, paid for by cutting the "Read related files as needed"
+    # line, the "missing tests" bullet, and the "These lists exist" sentence, and by shortening Step 9.
     "review.md": 12_400,
-    "review-pr.md": 22_000,
+    # Issue #1361 raised this by 500 for the review-summary clause on the most-repeated-rules pass and the
+    # double-dash check that runs before the review is posted.
+    "review-pr.md": 22_500,
 }
 # Skill directory name -> cap for its SKILL.md. Only skills over _DEFAULT_SKILL_CAP belong here.
 _SKILL_CAPS: dict[str, int] = {
     # Raised by 1,000 for "Before Filing a New Issue": search the open issues for the files a new
     # issue would touch and fold into a match instead of filing, the main source of issue inflow.
-    "issue-template": 9_000,
+    # Issue #1361 raised this by 100 for the rule that triage, not the filer, adds `agent:*` labels.
+    "issue-template": 9_100,
 }
 
 

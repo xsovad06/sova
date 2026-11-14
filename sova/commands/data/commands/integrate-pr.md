@@ -13,7 +13,7 @@ outputs:
 
 Merge a PR that is already ready, then clean up. Verifies mergeability, checks the replayed commits for silent reverts, merges, audits what actually landed, cleans up branches/worktrees/stashes, closes the linked issue, and runs post-merge cleanup. Replaces the need to run `/after-merge` separately. Works for both manual invocation and autonomous agent use.
 
-**This command does not push by default.** A push creates a new head SHA and spends a full CI cycle, which on a ready PR is pure waste and delays the merge by the length of the suite. The PR is expected to arrive here mergeable, with review learnings and documentation already folded in by `/address-pr`. Two things justify a push, both meaning another PR merged into the base branch since this one was last pushed: a real conflict (`mergeable: CONFLICTING`), or, under this repository's strict status-check policy, the branch simply being behind (`mergeStateStatus: BEHIND`) even with no conflicting lines. Phase 2 resolves either case and is explicit about the cost.
+**This command does not push by default.** A push creates a new head SHA and spends a full CI cycle, which on a ready PR is pure waste and delays the merge by the length of the suite. The PR is expected to arrive here mergeable, with documentation already folded in by `/address-pr`. Two things justify a push, both meaning another PR merged into the base branch since this one was last pushed: a real conflict (`mergeable: CONFLICTING`), or, under this repository's strict status-check policy, the branch simply being behind (`mergeStateStatus: BEHIND`) even with no conflicting lines. Phase 2 resolves either case and is explicit about the cost.
 
 PR: $ARGUMENTS
 
@@ -337,7 +337,7 @@ conflicts to resolve.
    tracked descendants, which would otherwise skip their deletions too), and
    the ignore check applies only to staging new, untracked files:
    ```bash
-   for p in .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/; do
+   for p in AGENTS.md README.md docs/ .claude/rules/; do
      [ -n "$(git ls-files -- "$p")" ] && git add -u -- "$p"
      { [ -e "$p" ] && ! git check-ignore -q "$p"; } && git add -A -- "$p"
    done
@@ -487,11 +487,11 @@ Act on the marker it prints:
 - **`GATE_FAIL`**: STOP. Do not proceed to Phase 3, 4 or 5. Report the guard's output verbatim (commit, file, line counts, scope) and the fix described above. On the merged-result path the flagged commit is the synthetic trial commit, whose subject is the PR title: if the title's scope is too narrow for a legitimate cross-scope change, widening the title's scope is a fix as valid as the justification trailer.
 - **`GATE_ERROR`**: STOP and report the error; nothing was checked.
 
-### Phase 3: Documentation and Knowledge (verify; do not push on its own)
+### Phase 3: Documentation (verify; do not push on its own)
 
-Knowledge capture and documentation freshness belong to `/address-pr` and `/review`, which run while the branch is already being pushed. This phase only verifies that they did their job. It must never create a head SHA of its own: a documentation amend on an otherwise-ready PR buys nothing and costs a full CI cycle.
+Documentation freshness belongs to `/address-pr` and `/review`, which run while the branch is already being pushed. This phase only verifies that they did their job. It must never create a head SHA of its own: a documentation amend on an otherwise-ready PR buys nothing and costs a full CI cycle.
 
-**Skip this phase entirely if Phase 2 already pushed** (the state file reads `1`): the Update subroutine's step 7 already ran this exact check before that push, and a second run risks a confusing amend after the push has gone out. Read the state file from the primary checkout:
+**Skip this phase entirely if Phase 2 already pushed** (the state file reads `1`): the Update subroutine's step 7 already ran the documentation-count check before that push, and a second run risks a confusing amend after the push has gone out. Read the state file from the primary checkout:
 ```bash
 echo "::sova-phase::docs"
 COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
@@ -500,24 +500,14 @@ PUSHED=$(cat "$PRIMARY_ROOT/.claude/agent-control/integrate-pushed" 2>/dev/null 
 echo "PUSHED=$PUSHED"
 ```
 
-Only run the rest of this phase if `.claude/agent-memory/` exists in the
-project AND `PUSHED` is `0`.
+Only run the rest of this phase if `PUSHED` is `0`. It never records review
+learnings: a person runs `/ingest-review` for that.
 
-1. **Check for uncaptured review learnings**: fetch review data from the PR
-   (`gh pr view`, `gh api repos/.../pulls/<N>/comments`,
-   `gh api repos/.../pulls/<N>/reviews`). Enumerate every review thread from
-   the whole PR history, resolved and unresolved, and check whether the
-   actionable ones are already reflected in the primary checkout's cookbook
-   (`cookbook/` domain files when split, otherwise `cookbook.md`). When
-   `.claude/agent-memory/` is gitignored, missing cookbook entries need no
-   queue or push: write them straight to `$PRIMARY_ROOT/.claude/agent-memory/`
-   and queue only tracked documentation below.
-
-2. **Check documentation counts**: run the verification commands (test count,
+1. **Check documentation counts**: run the verification commands (test count,
    service count, router count) and compare against `AGENTS.md`, `README.md`,
    and the project's vision or roadmap doc, if AGENTS.md or README.md links one.
 
-3. **Act on the result**:
+2. **Act on the result**:
 
    - **Nothing stale**: continue to Phase 4. This is the expected outcome when
      `/address-pr` ran properly.
@@ -532,7 +522,7 @@ project AND `PUSHED` is `0`.
      reading exactly `EOF`, which would end a heredoc early and run the rest).
      ```
      ## From PR #<PR_NUMBER> (<DATE>)
-     <the rule promotions and count corrections for tracked files, verbatim>
+     <the count corrections for tracked files, verbatim>
      ```
      `/address-pr` drains this queue at the start of its next run, resolving
      the primary checkout the same way, and folds the content into that
@@ -545,7 +535,7 @@ project AND `PUSHED` is `0`.
      ```bash
      COMMON_DIR=$(git rev-parse --git-common-dir 2>/dev/null)
      case "$COMMON_DIR" in /*) PRIMARY_ROOT="${COMMON_DIR%/.git}" ;; *) PRIMARY_ROOT="$(git rev-parse --show-toplevel)" ;; esac
-     for p in .claude/agent-memory/ AGENTS.md README.md docs/ .claude/rules/; do
+     for p in AGENTS.md README.md docs/ .claude/rules/; do
        [ -n "$(git ls-files -- "$p")" ] && git add -u -- "$p"
        { [ -e "$p" ] && ! git check-ignore -q "$p"; } && git add -A -- "$p"
      done
@@ -963,7 +953,7 @@ sova cleanup --all --project <PROJECT_DIR>
 echo "::sova-phase::report"
 ```
 
-Note: this command makes no post-merge commits. Documentation and knowledge are captured by `/address-pr` on the branch; anything Phase 3 found missing was queued for the next branch rather than pushed.
+Note: this command makes no post-merge commits. Documentation is folded in by `/address-pr` on the branch; anything Phase 3 found missing was queued for the next branch rather than pushed.
 
 Output a concise summary covering:
 
@@ -975,7 +965,7 @@ Output a concise summary covering:
 - Branches cleaned up (local + remote), and any worktree or branch kept and why
 - Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue; whether Phase 5 re-judged the closing decision
 - Review retro: the line `sova retro record` printed, or its failure
-- Documentation and knowledge: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
+- Documentation: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
 - **Manual post-merge actions** (omit if none apply), derived from `gh pr diff <PR_NUMBER> --name-only`:
   - service or unit files changed (systemd units, launchd plists, cron entries): they need install, reload and restart on the host, because the running copy is not the repo copy
@@ -996,7 +986,7 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 ## Cross-References
 
 - **Replaces**: `/after-merge` (cleanup), built into Phase 6
-- **Knowledge capture happens upstream**: `/address-pr` folds review learnings and documentation into the branch's own commits. This command only verifies and, if something was missed, queues it for the next branch.
+- **Documentation happens upstream**: `/address-pr` folds documentation into the branch's own commits. This command only verifies and, if something was missed, queues it for the next branch.
 - **Before this**: `/review-full` or `/address-pr` to prepare the PR
 - **Next**: `/find-task` or `/standup` to pick up the next task
 

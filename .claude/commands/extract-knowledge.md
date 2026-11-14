@@ -102,7 +102,7 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 
 ## Cross-References
 
-- **Called by**: the `/review` workflow (Step 9). The `/integrate-pr` workflow then verifies, before merging, that review learnings were captured (its Documentation and Knowledge phase)
+- **Run by**: a person. No workflow runs it, or records review learnings, automatically
 - **Broader assessment**: Run `/agent-readiness` to evaluate the full knowledge system
 
 ## Rules

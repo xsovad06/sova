@@ -67,7 +67,7 @@ If `CURRENT_SHA` differs from `HEAD_SHA`, the PR moved mid-fetch: restart this s
 
 Every artifact path referenced in the rest of this command (Steps 6 and 7) is `${ARTIFACT_PREFIX}-<name>` (`-diff.txt`, `-findings.json`, `-thresholds.sh`, `-body.md`, `-payload.json`), never a fixed, shared temp-directory path. Each fenced bash block in this command may run as a separate shell invocation (only the working directory carries over between them, not shell variables), so `ARTIFACT_PREFIX` does not survive from this step's block into Step 6's or Step 7's automatically. Carry the concrete value forward the same way `<PR_NUMBER>`, `<OWNER>`, and `<REPO>` are carried forward: note the exact string this step computed, and re-assign it literally (`ARTIFACT_PREFIX="<that exact value>"`) as the first line of Step 6's and Step 7's bash blocks before anything else in those blocks references it.
 
-**CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern: the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
+**CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. A PR with failing CI still needs its code reviewed.
 
 ## 1.5. Catalog Existing Bot Findings (if external reviews are configured)
 
@@ -99,15 +99,15 @@ For every file touched in the diff:
 - Identify the module's role in the architecture
 - Note related files that interact with the changed code
 
-Read related files as needed: review with full understanding, not in isolation.
-
 ## 4. Deep Analysis
 
-**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding; note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding. Exception: if the bot finding also repeats an entry from the project's mistakes list (see Recorded mistakes first below), keep it in `findings` with severity at least 6/10, cite the entry, and also list it under "Confirmed Bot Findings".
+**Bot deduplication** (when Step 1.5 was performed): check the bot findings table from Step 1.5 before recording a finding. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding; note it for "Confirmed Bot Findings" in Step 6. If you disagree with a bot, record that as a regular finding. Exception: a bot finding that also repeats a recorded mistake or most-repeated rule (see below) stays in `findings` at 6/10 or higher, citing the entry, and is also listed under "Confirmed Bot Findings".
 
 Review across these dimensions, in priority order. Reference `AGENTS.md` and `.claude/rules/*.md` for project-specific rules.
 
 **Recorded mistakes first.** If the project keeps a mistakes list (`.claude/agent-memory/common-mistakes.md`, or the mistakes section of `.claude/agent-memory/cookbook.md`), read it and check the diff against every entry before the dimensions below. A diff that repeats a recorded mistake is a finding scored at least 6/10, citing the entry.
+
+**Most-repeated rules.** Run `sova retro top-rules --limit 3` (JSON: `label`, `text`, `note`); name what in the diff each `text` applies to (or that nothing does) and check it, in the review summary. A violation scores at least 6/10, citing the rule. `[]` or no `sova` on PATH: skip and say so in the summary. A non-zero exit or unparsable output: report "could not read the repeated rules" there. A `note` means no text: say so, never invent it.
 
 ### Security (Critical)
 - Auth/permission checks correct?
@@ -288,6 +288,11 @@ print(build_review_payload_from_json(
 }
 
 build_payload "$EVENT"
+# Never post a space-dash-dash-space separator: rewrite the findings and rebuild first.
+if grep -n ' -- ' "${ARTIFACT_PREFIX}-body.md" "${ARTIFACT_PREFIX}-payload.json"; then
+  echo 'double-dash separator in review body: rewrite before posting' >&2
+  exit 1
+fi
 gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --method POST --input "${ARTIFACT_PREFIX}-payload.json"
 ```
 
@@ -365,10 +370,9 @@ Report the review URL and the inline comment count after posting.
 ## Rules
 
 - Be constructive and specific. Every finding must have a concrete suggestion.
-- Do not nitpick style if the code passes the project's linter.
-- Do not invent problems. If the code is solid, say so.
+- Do not nitpick style the linter passes. Do not invent problems: if the code is solid, say so.
 - Do not review generated files (migrations, lock files) unless they look wrong.
 - Respect the author's approach: suggest alternatives only when there's a concrete problem.
-- Do not restate findings already posted by bot reviewers (CodeRabbit, SonarCloud, etc.). Acknowledge agreement in the "Confirmed Bot Findings" section instead.
-- Keep the review concise.
-- NEVER use emojis or icons in the review output.
+- Do not restate bot findings (CodeRabbit, SonarCloud, etc.): confirm them under "Confirmed Bot Findings".
+- Keep the review concise. NEVER use emojis or icons in it.
+- Never post a space-dash-dash-space separator in a review body, inline comment or reply: use a colon, comma or parentheses.

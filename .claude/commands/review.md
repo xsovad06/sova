@@ -40,13 +40,13 @@ For every file touched in the diff:
 - Identify the module's role in the architecture
 - Note any related files that interact with the changed code
 
-Read related files as needed: the goal is to review with full understanding, not in isolation.
-
 ## 3. Deep Analysis
 
 Review across these dimensions, in priority order. Reference the project's guidelines (`AGENTS.md`, `.claude/rules/*.md`) for project-specific rules.
 
-**Recorded mistakes first.** If the project keeps a mistakes list (`.claude/agent-memory/common-mistakes.md`, or the mistakes section of `.claude/agent-memory/cookbook.md`), read it and check the diff against every entry before the dimensions below. A diff that repeats a recorded mistake is a finding scored at least 6/10, citing the entry. These lists exist because the same mistakes recur; rules loaded into context alone have not prevented them.
+**Recorded mistakes first.** If the project keeps a mistakes list (`.claude/agent-memory/common-mistakes.md`, or the mistakes section of `.claude/agent-memory/cookbook.md`), read it and check the diff against every entry before the dimensions below. A diff that repeats a recorded mistake is a finding scored at least 6/10, citing the entry.
+
+**Most-repeated rules.** Run `sova retro top-rules --limit 3` (JSON: `label`, `text`, `note`); name what in the diff each `text` applies to (or that nothing does) and check it. A violation scores at least 6/10, citing the rule. `[]` or no `sova` on PATH: skip and say so. A non-zero exit or unparsable output: report "could not read the repeated rules". A `note` means the text is unavailable: say so, never invent it.
 
 ### Security (Critical)
 - Input validation on all user-provided data?
@@ -90,7 +90,6 @@ git diff --stat --diff-filter=RD HEAD
 - Are new code paths covered by tests?
 - Are edge cases and error paths tested?
 - Do tests assert meaningful behavior (not just status codes)?
-- Are there missing tests for important scenarios?
 - Does the diff add far more test lines than production lines (`git diff --numstat` for the test paths against the rest, over about 3 to 1 on a change that is not test-only)? Then look for cases that should be parameters of one test, tests that only assert a mock was called, and phrase checks on prose, and report each as Medium
 
 ### Code Quality (Medium)
@@ -155,9 +154,7 @@ For each finding, report:
 
 Fix each finding directly in the code, starting with the highest severity. For each finding:
 - **Default**: Fix it in the code.
-- **Exception**: If a finding is a false positive, not applicable in context, or requires a human decision, acknowledge it with a one-line justification instead of fixing.
-
-If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
+- **Exception**: If a finding is a false positive, not applicable in context, risky or ambiguous to fix, or requires a human decision, acknowledge it with a one-line justification instead of fixing.
 
 After all fixes:
 
@@ -206,11 +203,9 @@ Fix every `FAIL` the same way as a test failure. Never plan to bypass one with `
 - Items that need human decision or are too risky to auto-fix
 ```
 
-## 9. Extract Knowledge
+## 9. Knowledge (manual only)
 
-After fixes are applied, review the session for reusable patterns. Skip this step if no new patterns were found.
-
-Run the `/extract-knowledge` workflow to capture any reusable patterns, gotchas, or lessons into the project's knowledge system.
+This step writes nothing to the knowledge system. If the session taught something reusable, say in the report that a person can run `/extract-knowledge`.
 
 ## Cross-References
 

@@ -1,13 +1,13 @@
 ---
 name: sova-after-merge
-description: "Post-merge cleanup: sync the base branch, delete the branch, clean worktrees, update issue status, capture learnings."
+description: "Post-merge cleanup: sync the base branch, delete the branch, clean worktrees, update issue status."
 ---
 
 # After Merge Cleanup
 
 The `sova-integrate-pr` skill is the preferred path (it merges, audits and cleans up in one run); this command is kept for PRs merged outside it.
 
-Run this after a PR has been merged to clean up local state and capture learnings.
+Run this after a PR has been merged to clean up local state.
 
 ## Instructions
 
@@ -70,17 +70,12 @@ Each shell block below runs as its own shell invocation, so each one assigns eve
    sova retro record <PR_NUMBER> || echo "FAILED: sova retro record <PR_NUMBER>" >&2
    ```
 
-6. **Capture learnings** from the PR review (run the `sova-ingest-review` skill):
-   - Fetch PR review data
-   - Extract lessons: patterns to follow, mistakes to avoid, style preferences, test coverage gaps
-   - Update the PRIMARY checkout's cookbook (`cookbook/<domain>.md` when split, otherwise `cookbook.md` under the matching section) before removing any worktree: a worktree's copy of `.claude/agent-memory/` may be gitignored and is deleted with it
-
-7. **Report** what was cleaned up, any worktree or branch kept and why, and what was learned.
+6. **Report** what was cleaned up, and any worktree or branch kept and why. This command records no review lessons: run the `sova-ingest-review` skill by hand when the review taught something worth keeping.
 
 ## Cross-References
 
 - **Preferred path**: the `sova-integrate-pr` skill merges, runs the post-merge audit, and does this cleanup in one run
-- **Learning from the review**: calls the `sova-ingest-review` skill internally
+- **Learning from the review**: run the `sova-ingest-review` skill by hand; nothing calls it automatically
 - **Extract broader knowledge**: run the `sova-extract-knowledge` skill if significant patterns emerged
 - **Ready for next task?** Run the `sova-find-task` skill or the `sova-standup` skill
 

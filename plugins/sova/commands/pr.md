@@ -43,7 +43,7 @@ Create a pull request for the current branch using the project's standard PR tem
 
 2. **Gather branch information**. These commands do not need `$BASE` and can run in parallel:
    - `git status`: check for uncommitted changes
-   - `git branch --show-current`: get current branch name
+   - `git branch --show-current`: get current branch name. This is the **PR branch**: every push below must still be on it (step 10)
    - `git diff --stat`: summary of uncommitted changes
    - `gh pr list --head $(git branch --show-current) --json number,url,state`: check if PR already exists
 
@@ -78,10 +78,10 @@ Create a pull request for the current branch using the project's standard PR tem
 4. **Handle the base branch** (if the current branch is the base branch itself):
    - Create a new feature branch from changes
    - Generate a descriptive branch name (e.g., `fix/lint-errors`, `feat/add-caching`)
-   - Continue PR process on the new branch
+   - Continue PR process on the new branch, which is now the PR branch
 
 5. **Recreate history (Option A) and handle uncommitted changes**. For Option A, the first bullet and the verification after the commit format below always run, even when nothing is uncommitted. The remaining bullets apply whenever uncommitted changes exist, including a WIP commit from step 3:
-   - **Option A only**: recreate every commit. Back up the branch, then soft-reset to the fork point; this replaces the WIP undo in the next bullet, since the reset uncommits the WIP snapshot too. Never reset to `origin/$BASE` by name: the step 3 rebase made the two equal, but a later fetch can move `origin/$BASE`, and recommitting this branch's tree on top of the newer base silently reverts everything the base gained. Note the printed backup name: the verification below and step 10 re-assign `BACKUP` to it.
+   - **Option A only**: recreate every commit. Back up the branch, then soft-reset to the fork point; this replaces the WIP undo in the next bullet, since the reset uncommits the WIP snapshot too. Never reset to `origin/$BASE` by name: the step 3 rebase made the two equal, but a later fetch can move `origin/$BASE`, and recommitting this branch's tree on top of the newer base silently reverts everything the base gained. Note the printed backup name: the verification below re-assigns `BACKUP` to it, and step 10 deletes it after a successful push.
      ```bash
      [ -z "$(git status --porcelain)" ] || { echo "Uncommitted changes remain: STOP before creating the backup" >&2; exit 1; }
      BASE=$(gh pr view --json baseRefName --jq .baseRefName 2>&1) || { case "$BASE" in *"no pull requests found"*) BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name) ;; *) echo "Unable to resolve the base branch: $BASE" >&2; exit 1 ;; esac; }
@@ -251,14 +251,14 @@ Create a pull request for the current branch using the project's standard PR tem
    PY
    ```
 
-10. **Push the branch**:
-    - New PR: `git push -u origin $(git branch --show-current)`
-    - Existing PR (AI feedback): push, then delete the step 5 backup only once the push has succeeded. If the push fails, keep the backup and report its name:
-      ```bash
-      BACKUP=<backup branch printed in step 5>
-      git push --force-with-lease origin "$(git branch --show-current)" && git branch -D "$BACKUP"
-      ```
-    - Existing PR (incremental): `git push origin $(git branch --show-current)`
+10. **Push the branch**. Every push in this command (this step, steps 14, 16 and 18) is this one bash block, guard and push in the same call, since an editor switch would push the wrong branch. `PR_BRANCH` is the PR branch (step 4's new branch when step 2 found the base branch, else step 2's), written as the literal quoted name noted there, never a command substitution (`$(git branch --show-current)` would make the guard always pass). `<flags>` is chosen by condition: `-u` when the branch has no upstream yet, and `--force-with-lease` whenever local history was rewritten (Option A, step 3's rebase, any amend, so every push in steps 14, 16 and 18); both apply together to a new PR whose branch was rewritten after an earlier push, and neither applies to a plain push of new commits:
+    ```bash
+    PR_BRANCH='<literal PR branch from step 2 or 4>'  # never $(git ...)
+    CUR=$(git branch --show-current)
+    [ "$CUR" = "$PR_BRANCH" ] || { echo "On $CUR, not the PR branch $PR_BRANCH: push aborted" >&2; exit 1; }
+    git push <flags> origin "$PR_BRANCH"
+    ```
+    For Option A, end only this step's push with `&& git branch -D <backup branch printed in step 5>`, so the backup goes once the push succeeds; if it fails, keep it and report its name. Pushes in steps 14, 16 and 18 omit the suffix: the backup is gone.
 
 11. **Create or update PR**:
     ```bash
@@ -297,7 +297,7 @@ Create a pull request for the current branch using the project's standard PR tem
 These phases run after the PR is created/updated. They enable autonomous operation (push-to-ready-to-merge in one command).
 
 14. **Visual verification** (if applicable):
-    If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push (`git push --force-with-lease`) before proceeding to step 15: otherwise CI runs against the old commit and step 17 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
+    If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views, but not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, commit the fix (amend into the relevant commit or add a new commit), and push with step 10's block (`--force-with-lease`) before proceeding to step 15: otherwise CI runs against the old commit and step 17 reviews a diff that doesn't contain the fix. Skip if no `/verify-local` command exists.
 
 15. **Wait for CI pipeline**:
     Wait for every check that gates the PR, not just one matched workflow
@@ -427,8 +427,8 @@ These phases run after the PR is created/updated. They enable autonomous operati
 
 16. **Handle CI result** (the verdict line of the last step 15 call; "checks" below means the scope it names: the required checks, or every check when the repository requires none):
     - **`CI PASSED`**: every check has bucket `pass` or `skipping` and no required check is missing; continue to step 17 (a `skipping` check, e.g. a path-filtered workflow, is treated as satisfied).
-    - **`CI FAILED`**: fetch logs for each check listed with a bucket other than `pass`, `skipping` or `cancel` (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, force push (`--force-with-lease`), go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
-    - **`CI CANCELED`**: treat as a non-success state, not a pass. Report it and re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled check.
+    - **`CI FAILED`**: first read the evidence. Always read each job's step conclusions (`gh run view <run_id> --json jobs --jq '.jobs[] | [.databaseId, .name, .conclusion, ([.steps[]?.conclusion] | join(","))] | @tsv'`), since the stop decision below depends on them, and its annotations (`gh api repos/{owner}/{repo}/check-runs/<databaseId>/annotations`). Also run the project's `.claude/scripts/ci-failures.sh <PR>` if it exists and is executable (from the primary checkout when in a linked worktree), and use its output only when it exits zero and prints text. A failing job with an empty steps list (it never started), or whose steps are all green but which hit a job-timeout envelope (`timed_out`, or an annotation naming the time limit), is a stop: run step 19, report every such job and the PR URL, and stop; do not fix-and-push, re-run, or continue to step 17. Otherwise fetch logs for each check listed with a bucket other than `pass`, `skipping` or `cancel` (`gh run view <run_id> --log-failed` when `link` points at a GitHub Actions run, otherwise open `link`), analyze, fix, amend to the relevant commit, re-run step 9's checks, push with step 10's block, go back to step 15 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
+    - **`CI CANCELED`**: treat as a non-success state, not a pass. Read the same evidence as `CI FAILED` before any re-run. A job that never started (empty steps list) or hit the job-timeout envelope (conclusion `timed_out`, or `cancelled` with an annotation naming the time limit) is never re-run. If any canceled job is one of these, run step 19, report every canceled job and stop: do not re-run or continue to step 17. Otherwise re-run step 15 to trigger it again (e.g. re-push or `gh run rerun`) before continuing; do not proceed to step 17 with a canceled check.
     - **`CI PENDING` once the 30 minute total is used up**: report the current statuses and the PR URL, naming any required check the verdict lists as not registered. Suggest the user check back later.
     - **`NO CI TRIGGERED`**: no CI ran for this head commit, most likely because the workflows' path filters exclude every changed file. The step 9 local checks are the only verification this change gets. Say exactly that in the report (and in the PR when you comment on CI), never "CI passed", then continue to step 17.
     - **`NO CHECKS` once the 30 minute total is used up**: a workflow run exists for the head (or could not be listed) but no check ever registered on it. Report the runs the block listed and the PR URL. Do not continue to step 17: an empty check list is never a pass.
@@ -448,10 +448,10 @@ These phases run after the PR is created/updated. They enable autonomous operati
     2. Commit fixes
     3. Reply to review comments on GitHub
     4. Resolve threads
-    5. Re-run step 9's checks, then force push: `git push --force-with-lease`
+    5. Re-run step 9's checks, then push with step 10's block (`--force-with-lease`)
     6. Wait for CI again (go back to step 15 logic, max 3 total CI cycles across the entire run)
 
-19. **Trigger CodeRabbit now** if step 12 was deferred, using step 12's block unchanged. Do the same before stopping early at step 16 (CI still pending, or the retry limit reached), so a deferred trigger is never dropped.
+19. **Trigger CodeRabbit now** if step 12 was deferred, using step 12's block unchanged. Do the same before any early stop in step 16 (CI still pending, the retry limit reached, a failed or canceled job that is never re-run, or a job timeout), so a deferred trigger is never dropped.
 
 20. **Report**:
     ```

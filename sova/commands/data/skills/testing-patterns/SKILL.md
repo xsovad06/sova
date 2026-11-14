@@ -20,7 +20,8 @@ When writing or modifying test files, follow these conventions.
 - Use descriptive test names that explain the scenario and expected outcome
 - Each test should be independent and not rely on execution order
 - Prefer real implementations over mocks when practical
-- Mock at system boundaries (external APIs, file I/O, databases), not internal interfaces
+- Mock at system boundaries (external APIs, network, clock), not internal interfaces
+- Prefer the framework's test database (a real test DB, an in-memory engine) over mocking the database
 
 ## Before Adding a Test
 
@@ -39,11 +40,14 @@ When writing or modifying test files, follow these conventions.
 
 - Patch at the import site, not the definition site
 - Always use `patch.object()` for methods on instances
-- Verify mock calls when the call itself is the behavior under test
-- Do not assert mock call counts when only the return value matters
+- A mock standing in for a side effect (a write, a send, a spawn) asserts it was called and with what (`assert_called_once_with`), so the test fails when the code skips the side effect
 
 ## Test Organization
 
 - Group related tests with classes
 - Use parametrize for testing multiple inputs with the same logic
 - Keep test files focused on one module or feature
+
+## Negative Control
+
+For a test written after the code it covers: break the covered line with a change that keeps the module importable, run the test, and confirm it fails on an assertion for the expected behavior, not with a syntax, import, or collection error. Restore the line, and confirm with `git diff` that the mutation is gone. A test that stays green with the line broken does not cover it.
