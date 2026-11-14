@@ -13,7 +13,7 @@ _project_dir_var: ContextVar[Path | None] = ContextVar("project_dir", default=No
 _project_slug_var: ContextVar[str | None] = ContextVar("project_slug", default=None)
 
 
-def set_project_context(project_dir: Path, slug: str) -> None:
+def set_project_context(project_dir: Path, slug: str | None) -> None:
     """Set the active project for the current request context."""
     _project_dir_var.set(project_dir)
     _project_slug_var.set(slug)
