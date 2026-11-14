@@ -1,4 +1,4 @@
-"""CLI commands: sova retro record, backfill, report.
+"""CLI commands: sova retro record, backfill, report, top-rules.
 
 Records which recorded rules (bold-labelled bullets in AGENTS.md, CLAUDE.md, .claude/rules/*.md and
 common-mistakes.md) each merged PR's review findings repeat, and reports the repeat rate per month (issue #744).
@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.knowledge.retro import (
     COMMON_MISTAKES_PATH,
@@ -22,10 +25,12 @@ from sova.knowledge.retro import (
     build_report,
     collect_pr_review_data,
     load_retro_rows,
+    load_rule_bullets,
     load_rule_catalog,
     pr_numbers_with_runs,
     record_pr_retro,
     recorded_pr_numbers,
+    with_rule_text,
 )
 
 app = typer.Typer(
@@ -221,14 +226,22 @@ async def _backfill(
         raise typer.Exit(code=1)
 
 
+def _check_since(since: str | None) -> str | None:
+    """Option callback shared by ``report`` and ``top-rules``: no value or a ``YYYY-MM`` month, else a usage error."""
+    if since is not None and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", since, flags=re.ASCII) is None:
+        raise typer.BadParameter(f"takes a month as YYYY-MM, got {since!r}.", param_hint="--since")
+    return since
+
+
+_SINCE_OPTION = typer.Option("--since", help="First month to include, YYYY-MM.", callback=_check_since)
+
+
 @app.command("report")
 def report_cmd(
-    since: Annotated[Optional[str], typer.Option("--since", help="First month to include, YYYY-MM.")] = None,
+    since: Annotated[Optional[str], _SINCE_OPTION] = None,
     project: Annotated[Optional[Path], _PROJECT_OPTION] = None,
 ) -> None:
     """Print the monthly repeat rate of recorded rules and the most repeated rules."""
-    if since is not None and (len(since) != 7 or since[4] != "-" or not (since[:4] + since[5:]).isdigit()):
-        raise _fail(f"--since takes a month as YYYY-MM, got {since!r}.")
     asyncio.run(_report(since=since, project=project))
 
 
@@ -268,3 +281,33 @@ async def _report(*, since: str | None, project: Path | None) -> None:
         for rule in report.top_rules:
             prs = ", ".join(f"#{n}" for n in rule.prs)
             typer.echo(f"  {rule.count:>3}  {rule.file}: {rule.label} (PRs {prs})")
+
+
+@app.command("top-rules")
+def top_rules_cmd(
+    limit: Annotated[int, typer.Option("--limit", min=1, help="Most repeated rules to return.")] = 3,
+    since: Annotated[Optional[str], _SINCE_OPTION] = None,
+    project: Annotated[Optional[Path], _PROJECT_OPTION] = None,
+) -> None:
+    """Print the most repeated recorded rules as JSON, with each rule's text. `[]` means none recorded.
+
+    Exits 1 (message on stderr) when the retro data or the rule files cannot be read, so an unreadable
+    database never reads as `[]`; exits 2 on a malformed --since or a --limit below 1.
+    """
+    try:
+        asyncio.run(_top_rules(limit=limit, since=since, project=project))
+    except (RetroError, SQLAlchemyError, OSError) as exc:
+        raise _fail(f"could not read the repeated rules: {type(exc).__name__}: {exc}") from exc
+
+
+async def _top_rules(*, limit: int, since: str | None, project: Path | None) -> None:
+    from sova.db.session import get_session
+
+    project_dir = await _project_dir(project)
+    async with await get_session(project_dir) as session:
+        rows = await load_retro_rows(session)
+    ranked = build_report(rows, since=since, top=limit).top_rules
+    # The bullets are read (never dated through git) only once a rule ranks: with nothing recorded there is no text.
+    bullets = await load_rule_bullets(project_dir) if ranked else []
+    rules = with_rule_text(ranked, bullets)
+    typer.echo(json.dumps([asdict(rule) for rule in rules], indent=2))

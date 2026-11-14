@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import typer
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from typer.testing import CliRunner
 
 from sova.cli.commands.retro import _backfill, _report
@@ -20,16 +21,19 @@ from sova.db.session import get_session
 from sova.knowledge.retro import (
     COMMON_MISTAKES_PATH,
     RetroClassificationError,
+    RetroError,
     RetroFinding,
     RuleBullet,
     RuleCatalog,
     build_report,
     collect_pr_review_data,
+    load_rule_bullets,
     load_rule_catalog,
     parse_classification,
     parse_first_seen,
     parse_rule_bullets,
     record_pr_retro,
+    with_rule_text,
 )
 from sova.llm.models import LLMResult
 
@@ -152,6 +156,15 @@ async def test_load_rule_catalog_dates_tracked_bullets_from_git_and_reads_untrac
         ("AGENTS.md", "First rule"): datetime(2026, 5, 1, 10, tzinfo=timezone.utc),
         (".claude/rules/x.md", "Second rule"): datetime(2026, 6, 1, 10, tzinfo=timezone.utc),
     }
+
+
+async def test_load_rule_bullets_reads_the_bullets_without_calling_git(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("- **First rule**: a\n", encoding="utf-8")
+
+    with patch("sova.knowledge.retro.run", AsyncMock(side_effect=AssertionError("git must not run"))):
+        bullets = await load_rule_bullets(tmp_path)
+
+    assert [(b.file, b.label) for b in bullets] == [("AGENTS.md", "First rule")]
 
 
 async def _seed_runs(pr: int = 7) -> None:
@@ -451,6 +464,108 @@ class TestBuildReport:
             ("AGENTS.md", "Fan-out audit", 2, [1, 3]),
             (COMMON_MISTAKES_PATH, "x or default", 1, [2]),
         ]
+
+
+class TestWithRuleText:
+    def test_pairs_ranked_rules_with_bullet_text_and_notes_a_vanished_bullet(self) -> None:
+        fan = ("AGENTS.md", "Fan-out audit")
+        gone = ("AGENTS.md", "Removed rule")
+        rows = [_row(1, 9, [_f("F1", "high", fan), _f("F2", "high", gone)]), _row(2, 9, [_f("F1", "high", fan)])]
+
+        ranked = build_report(rows).top_rules
+        rules = with_rule_text(ranked, [_rule("AGENTS.md", "Fan-out audit", "- **Fan-out audit**: grep")])
+
+        assert [(r.label, r.count, r.prs, r.text) for r in rules] == [
+            ("Fan-out audit", 2, [1, 2], "- **Fan-out audit**: grep"),
+            ("Removed rule", 1, [1], None),
+        ]
+        assert rules[0].note is None
+        assert "no longer in the catalog" in (rules[1].note or "")
+
+    def test_returns_only_what_exists_without_padding(self) -> None:
+        rows = [_row(1, 9, [_f("F1", "high", ("AGENTS.md", "A"))])]
+
+        ranked = build_report(rows, top=3).top_rules
+        assert len(with_rule_text(ranked, [_rule("AGENTS.md", "A")])) == 1
+        assert with_rule_text([], []) == []
+
+
+class TestRetroTopRulesCli:
+    @pytest.fixture(autouse=True)
+    def _environment(self, tmp_path: Path):
+        self.rows = [_row(1, 9, [_f("F1", "high", ("AGENTS.md", "A")), _f("F2", "high", ("AGENTS.md", "B"))])]
+        self.bullets = AsyncMock(return_value=[_rule("AGENTS.md", "A", "- **A**: text a")])
+        self.dated_catalog = AsyncMock()
+        with (
+            patch("sova.cli.commands.retro._project_dir", AsyncMock(return_value=tmp_path)),
+            patch("sova.cli.commands.retro.load_retro_rows", AsyncMock(side_effect=lambda _s: self.rows)),
+            patch("sova.cli.commands.retro.load_rule_bullets", self.bullets),
+            patch("sova.cli.commands.retro.load_rule_catalog", self.dated_catalog),
+            patch("sova.db.session.get_session", AsyncMock(return_value=AsyncMock())),
+        ):
+            yield
+
+    def test_prints_the_ranked_rules_as_json_honouring_limit(self) -> None:
+        result = runner.invoke(retro_app, ["top-rules", "--limit", "1"])
+
+        assert result.exit_code == 0
+        assert [r["label"] for r in json.loads(result.stdout)] == ["A"]
+        assert json.loads(result.stdout)[0]["text"] == "- **A**: text a"
+        self.dated_catalog.assert_not_awaited()
+
+    def test_prints_the_note_for_a_rule_missing_from_the_catalog(self) -> None:
+        result = runner.invoke(retro_app, ["top-rules"])
+
+        missing = json.loads(result.stdout)[1]
+        assert (missing["label"], missing["text"]) == ("B", None)
+        assert "unavailable" in missing["note"]
+
+    def test_prints_an_empty_list_only_when_nothing_is_recorded(self) -> None:
+        self.rows = []
+
+        result = runner.invoke(retro_app, ["top-rules"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == []
+        self.bullets.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "error",
+        [OSError("disk gone"), OperationalError("select", {}, Exception("refused"))],
+    )
+    def test_an_unreadable_database_exits_1_instead_of_printing_an_empty_list(self, error: Exception) -> None:
+        with patch("sova.cli.commands.retro.load_retro_rows", AsyncMock(side_effect=error)):
+            result = runner.invoke(retro_app, ["top-rules"])
+
+        assert result.exit_code == 1
+        assert "could not read the repeated rules" in result.output
+        assert "[]" not in result.output
+
+    def test_an_unreadable_rule_catalog_exits_1_instead_of_printing_rules_without_text(self) -> None:
+        self.bullets.side_effect = RetroError("no rules")
+
+        result = runner.invoke(retro_app, ["top-rules"])
+
+        assert result.exit_code == 1
+        assert "could not read the repeated rules" in result.output
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--since", "2026-9"],
+            ["--since", "2026/09"],
+            ["--since", "2026-00"],
+            ["--since", "2026-13"],
+            ["--since", "2026-1\u00b2"],
+            ["--limit", "0"],
+        ],
+    )
+    def test_a_malformed_since_or_a_limit_below_one_is_a_usage_error(self, args: list[str]) -> None:
+        assert runner.invoke(retro_app, ["top-rules", *args]).exit_code == 2
+
+    @pytest.mark.parametrize("since", ["2026-9", "2026/09", "2026-00", "2026-13", "2026-1\u00b2"])
+    def test_report_gives_the_same_usage_error_for_a_malformed_since(self, since: str) -> None:
+        assert runner.invoke(retro_app, ["report", "--since", since]).exit_code == 2
 
 
 class TestRetroCli:
