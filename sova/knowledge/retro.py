@@ -187,10 +187,11 @@ class RuleCatalog:
         return offered
 
 
-async def load_rule_catalog(rules_root: Path) -> RuleCatalog:
-    """Read the rule bullets under *rules_root* and date them from its git history.
+async def load_rule_bullets(rules_root: Path) -> list[RuleBullet]:
+    """Read the rule bullets under *rules_root*, without dating them (no git call).
 
     ``common-mistakes.md`` is read from the primary checkout, since ``.claude/agent-memory/`` lives only there.
+    Raises ``RetroError`` when a rule file is unreadable or no bullet is found.
     """
     from sova.git.worktree import get_primary_worktree_root
 
@@ -209,7 +210,12 @@ async def load_rule_catalog(rules_root: Path) -> RuleCatalog:
         bullets.extend(parse_rule_bullets(rel_path, content))
     if not bullets:
         raise RetroError(f"no recorded rules (bold-labelled bullets) found under {rules_root}")
+    return bullets
 
+
+async def load_rule_catalog(rules_root: Path) -> RuleCatalog:
+    """Read the rule bullets under *rules_root* and date them from its git history."""
+    bullets = await load_rule_bullets(rules_root)
     result = await run(
         "git",
         "log",
@@ -729,3 +735,37 @@ def build_report(rows: Iterable[PrRetro], *, since: str | None = None, top: int 
         digests=len(digests),
         classify_cost=classify_cost,
     )
+
+
+@dataclass(frozen=True)
+class TopRule:
+    """A most-repeated rule with its bullet text. ``text`` is None, with a ``note``, when the bullet is gone."""
+
+    file: str
+    label: str
+    count: int
+    prs: list[int]
+    text: str | None
+    note: str | None = None
+
+
+def with_rule_text(ranked: Iterable[RuleCount], bullets: Sequence[RuleBullet]) -> list[TopRule]:
+    """Pair each ranked rule (from ``build_report().top_rules``) with today's bullet text.
+
+    A ranked rule whose bullet no longer exists in *bullets* (reworded or removed since the PR was classified)
+    carries a note instead of invented text.
+    """
+    texts = {(b.file, b.label): b.text for b in bullets}
+    return [
+        TopRule(
+            file=r.file,
+            label=r.label,
+            count=r.count,
+            prs=r.prs,
+            text=texts.get((r.file, r.label)),
+            note=None
+            if (r.file, r.label) in texts
+            else "rule text unavailable: the bullet is no longer in the catalog",
+        )
+        for r in ranked
+    ]
