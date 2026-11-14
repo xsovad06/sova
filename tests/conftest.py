@@ -768,6 +768,18 @@ def _reset_work_item_graph_state() -> None:
     reset_graph_load_state()
 
 
+@pytest.fixture(autouse=True)
+def _reset_dashboard_snapshots() -> None:
+    """Forget the last-result snapshots (work items, handoff), which are module state keyed by project.
+
+    Without this, a test that reads ``/handoff`` or ``/agents/work-items`` would be answered from an earlier test's
+    payload for the same project directory. Sync like the graph reset: a build left running is the test's to cancel.
+    """
+    from sova.dashboard.services.snapshot_service import reset_snapshots
+
+    reset_snapshots()
+
+
 def _seed_project_settings(project_dir: Path, values: dict[str, Any]) -> None:
     """Upsert flattened, JSON-encoded config values into ``project_settings``.
 
