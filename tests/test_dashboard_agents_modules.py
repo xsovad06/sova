@@ -23,6 +23,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.dashboard.services import pr_service, work_state
 from sova.dashboard.services.work_state import WorkItemState, state_color, state_label
+from sova.supervisor.dependency_graph import DependencyGraph
 from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR
 
 _STATIC = DASHBOARD_DIR / "static"
@@ -1709,8 +1710,10 @@ class TestSupervisorGraphLegend:
 
     def test_graph_key_changes_when_only_the_raw_pr_state_changes(self) -> None:
         _require_node("node is required to run the graph key")
-        start = self._SOURCE.index("function _computeGraphKey(")
+        start = self._SOURCE.index("function _suitabilityKey(")
         fn = self._SOURCE[start : self._SOURCE.index("\n}\n", start) + 2]
+        start = self._SOURCE.index("function _computeGraphKey(")
+        fn += self._SOURCE[start : self._SOURCE.index("\n}\n", start) + 2]
         node = {"id": 1, "state": "in_review", "state_color": "green", "pr_state": "awaiting_review"}
         before = {**node, "pr_state_color": "blue", "pr_state_label": "Awaiting Review"}
         after = {**node, "pr_state_color": "lavender", "pr_state_label": "Review Addressed"}
@@ -1723,6 +1726,114 @@ class TestSupervisorGraphLegend:
         proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout) == [False, True]
+
+    @staticmethod
+    def _run_template_functions(names: list[str], expression: str) -> object:
+        """Evaluate `expression` in node against the named top-level functions of supervisor.html."""
+        _require_node("node is required to run the graph functions")
+        src = TestSupervisorGraphLegend._SOURCE
+        parts = []
+        for name in names:
+            start = src.index(f"function {name}(")
+            parts.append(src[start : src.index("\n}\n", start) + 2])
+        const = src[src.index("const GRAPH_DIM_OPACITY") : src.index("function nodeMode(")]
+        badges_start = src.index("const DRAWER_MODE_BADGES")
+        badges = src[badges_start : src.index("};\n", badges_start) + 3]
+        esc = "const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n"
+        script = esc + const + badges + "\n".join(parts) + f"\nconsole.log(JSON.stringify({expression}));"
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_graph_key_changes_when_only_the_reasons_change(self) -> None:
+        """A hold added to an already dependency-blocked node keeps the mode `blocked` and changes the reasons."""
+        blocked = {"mode": "blocked", "eligible": False, "reasons": [{"source": "dependency", "value": 1}]}
+        held = self._held_node()["suitability"]
+        a = {"nodes": [{"id": 2, "state": "triaged", "suitability": blocked}], "edges": []}
+        b = {"nodes": [{"id": 2, "state": "triaged", "suitability": held}], "edges": []}
+        assert self._run_template_functions(
+            ["_suitabilityKey", "_computeGraphKey"],
+            f"[_computeGraphKey({json.dumps(a)}) === _computeGraphKey({json.dumps(b)})]",
+        ) == [False]
+
+    def test_node_without_a_verdict_falls_back_to_the_legacy_flags(self) -> None:
+        nodes = [{"is_human_only": True}, {"is_interactive_recommended": True}, {}]
+        modes = self._run_template_functions(["nodeMode"], f"{json.dumps(nodes)}.map(nodeMode)")
+        assert modes == ["human", "interactive", None]
+        assert self._run_template_functions(["nodeMode"], 'nodeMode({suitability: {mode: "blocked"}})') == "blocked"
+
+    def test_one_dim_level_sits_strictly_between_done_and_full_opacity(self) -> None:
+        values = re.findall(r"GRAPH_DIM_OPACITY\s*=\s*([0-9.]+)", self._SOURCE)
+        assert len(values) == 1
+        assert 0.35 < float(values[0]) < 1.0
+        assert "const GRAPH_DIMMED_MODES = new Set(['human', 'epic', 'blocked', 'unclassified']);" in self._SOURCE
+
+    def test_next_up_renders_the_work_board_up_next_as_returned(self) -> None:
+        """The Work page's Up next drops hidden and queued issues, so the raw ranking would not match it."""
+        loader = self._SOURCE[self._SOURCE.index("async function loadNextUp(") :]
+        loader = loader[: loader.index("\n}\n")]
+        assert "/work/board" in loader
+        assert ".up_next" in loader
+        assert not re.search(r"\.(sort|filter|slice)\(", loader)
+
+    _DRAWER_FUNCTIONS = ["isDoneState", "nodeMode", "nodeReasonLabel", "drawerModeBadges", "drawerQueueHtml"]
+
+    @staticmethod
+    def _held_node() -> dict:
+        """The production classifier's node for an `agent:on-hold` ticket, as the graph API serializes it."""
+        task = Task(id="7", title="Held", state=TaskState.TRIAGED, labels=["agent:on-hold"])
+        return json.loads(json.dumps(DependencyGraph([task]).to_dict()["nodes"][0]))
+
+    def test_held_ticket_drawer_shows_blocked_badge_and_hold_chip_and_no_queue_button(self) -> None:
+        held = self._held_node()
+        assert held["suitability"]["mode"] == "blocked"
+        badges, queue = self._run_template_functions(
+            self._DRAWER_FUNCTIONS, f"[drawerModeBadges({json.dumps(held)}), drawerQueueHtml({json.dumps(held)})]"
+        )
+        assert ">Blocked</span>" in badges
+        assert re.search(r'class="dep-reason-chip[^"]*">agent:on-hold</span>', badges)
+        assert queue == ""
+
+    def test_held_ticket_waiting_on_a_dependency_shows_both_reason_chips(self) -> None:
+        blocker = Task(id="1", title="Blocker", state=TaskState.BACKLOG)
+        held = Task(
+            id="2", title="Held", state=TaskState.TRIAGED, labels=["agent:on-hold"], body="## Dependencies\n- #1\n"
+        )
+        node = {n["id"]: n for n in DependencyGraph([blocker, held]).to_dict()["nodes"]}[2]
+        badges = self._run_template_functions(self._DRAWER_FUNCTIONS, f"drawerModeBadges({json.dumps(node)})")
+        assert re.search(r'class="dep-reason-chip[^"]*">agent:on-hold</span>', badges)
+        assert re.search(r'class="dep-reason-chip[^"]*">Waiting on #1</span>', badges)
+
+    def test_next_up_live_region_is_the_stale_status_only(self) -> None:
+        """loadNextUp() rebuilds the chips on every refresh, so the container must not announce them."""
+        container = re.search(r'<div id="graph-next-up"[^>]*>', self._SOURCE)
+        assert container
+        assert "aria-live" not in container.group(0)
+        assert re.search(r'<span id="next-up-stale"[^>]*aria-live="polite"', self._SOURCE)
+
+    def test_drawer_queue_button_follows_eligibility_and_keeps_the_in_queue_label(self) -> None:
+        eligible = {"id": 3, "state": "triaged", "suitability": {"mode": "autonomous", "eligible": True, "reasons": []}}
+        queued = {**eligible, "suitability": {**eligible["suitability"], "eligible": False}, "queue_position": 2}
+        done = {**eligible, "state": "done"}
+        add, in_queue, finished = self._run_template_functions(
+            self._DRAWER_FUNCTIONS, f"{json.dumps([eligible, queued, done])}.map(drawerQueueHtml)"
+        )
+        assert "dep-queue-btn" in add
+        assert "In queue (Q2)" in in_queue
+        assert finished == ""
+
+    def test_drawer_reason_chips_are_escaped(self) -> None:
+        node = {"suitability": {"mode": "human", "reasons": [{"source": "label", "value": "<b>x</b>"}]}}
+        badges = self._run_template_functions(self._DRAWER_FUNCTIONS, f"drawerModeBadges({json.dumps(node)})")
+        assert "&lt;b&gt;x&lt;/b&gt;" in badges
+        assert "<b>" not in badges
+
+    def test_legend_names_every_dimmed_mode(self) -> None:
+        """Unclassified is agent-eligible yet dimmed, so the legend lists the modes, not "no agent will run it"."""
+        dimmed = re.search(r"Dimmed = ([^<]+)<", self._legend_block())
+        assert dimmed
+        for mode in ("human", "epic", "blocked", "unclassified"):
+            assert mode in dimmed.group(1)
 
     def test_legend_does_not_hard_code_a_state_meaning(self) -> None:
         """A static "Awaiting" yellow dot is what made an ordinary triaged node read as waiting for approval."""

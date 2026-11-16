@@ -66,6 +66,9 @@
         <span class="text-gray-700 mx-0.5">|</span>
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:var(--ctp-red);background:rgb(var(--ctp-red-rgb) / 0.19)"></span> Human</span>
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border border-dashed" style="border-color:var(--ctp-peach);background:rgb(var(--ctp-peach-rgb) / 0.125)"></span> Interactive</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-4 h-2 rounded-full border" data-mode-badge="blocked"></span> Blocked or on hold</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-4 h-2 rounded-full border" data-mode-badge="unclassified"></span> Unclassified</span>
+        <span class="text-gray-600">Dimmed = human, epic, blocked or unclassified</span>
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:var(--ctp-sapphire);background:rgb(var(--ctp-sapphire-rgb) / 0.19)"></span> Queued</span>
       </div>
       <div class="flex items-center gap-1">
@@ -76,6 +79,11 @@
         <button type="button" onclick="zoomFit()" title="Fit to view" class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Fit</button>
       </div>
     </div>
+  </div>
+  <div id="graph-next-up" class="flex items-center gap-2 flex-wrap mb-3 text-xs">
+    <span class="text-gray-500 uppercase tracking-wider">Next up</span>
+    <span id="graph-next-up-items" class="flex items-center gap-2 flex-wrap"><span class="text-gray-600">Loading...</span></span>
+    <span id="next-up-stale" class="hidden text-accent-yellow" role="status" aria-live="polite"></span>
   </div>
   <div id="graph-container" class="relative overflow-hidden rounded" style="height: calc(100vh - 420px); min-height: 520px; background: rgba(17,17,27,0.4);">
     <div id="graph-loading" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Loading graph...</div>
@@ -259,13 +267,73 @@ function isDoneState(state) {
   return normalized === 'done' || normalized === 'closed';
 }
 
+// The verdict is part of the change signature: a hold added to a node that is already dependency-blocked
+// changes the reasons, not the mode, so the reason values are keyed with the mode and eligibility.
+function _suitabilityKey(n) {
+  const sv = n.suitability;
+  if (!sv) return '';
+  return `${sv.mode}~${(sv.reasons || []).map(r => r.value).join('+')}~${sv.eligible ? 1 : 0}`;
+}
+
+// A node with no verdict (an older payload or cache) falls back to the legacy label flags and is never dimmed.
+const GRAPH_DIM_OPACITY = 0.6;
+const GRAPH_DIMMED_MODES = new Set(['human', 'epic', 'blocked', 'unclassified']);
+
+// The node badge for the common modes. The renderer and the legend pills both read this table, so the
+// token (a work_state.py color token resolved by stateHex()) lives in one place.
+const GRAPH_MODE_BADGES = {
+  blocked: { label: 'BLOCKED', token: 'yellow', width: 46 },
+  unclassified: { label: 'UNCLASSIFIED', token: 'gray', width: 64 },
+};
+
+function nodeMode(n) {
+  if (n.suitability) return n.suitability.mode;
+  if (n.is_human_only) return 'human';
+  return n.is_interactive_recommended ? 'interactive' : null;
+}
+
+function nodeReasonLabel(r) {
+  return r.source === 'dependency' ? `Waiting on #${r.value}` : String(r.value);
+}
+
+const DRAWER_MODE_BADGES = {
+  human: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-accent-red border border-red-700/30">Human Only</span>',
+  interactive: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30 border-dashed">Interactive Recommended</span>',
+  blocked: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-yellow-900/30 text-accent-yellow border border-yellow-700/30">Blocked</span>',
+  unclassified: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-700/30 text-gray-400 border border-gray-600/30">Unclassified</span>',
+};
+
+// The drawer's mode badge, then one chip per classifier reason for a node no agent will pick up.
+function drawerModeBadges(node) {
+  const mode = nodeMode(node);
+  let html = DRAWER_MODE_BADGES[mode] || '';
+  if (['blocked', 'human', 'epic'].includes(mode)) {
+    ((node.suitability && node.suitability.reasons) || []).forEach(r => {
+      html += `<span class="dep-reason-chip inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-gray-700/30 text-gray-400 border border-gray-600/30">${esc(nodeReasonLabel(r))}</span>`;
+    });
+  }
+  return html;
+}
+
+// The verdict decides, so a held or blocked ticket offers no Add button; a node without one keeps the label check.
+// An already queued node keeps its "In queue" label until queue maintenance prunes it.
+function drawerQueueHtml(node) {
+  if (isDoneState(node.state)) return '';
+  if (node.queue_position) {
+    return `<span class="text-xs px-3 py-1.5 rounded bg-sky-700/20 text-sky-300 border border-sky-700/30">In queue (Q${node.queue_position})</span>`;
+  }
+  const canQueue = node.suitability ? node.suitability.eligible : (!node.is_epic && !node.is_human_only);
+  if (!canQueue) return '';
+  return `<button onclick="addToQueueFromDrawer(${node.id})" class="dep-queue-btn text-xs px-3 py-1.5 rounded bg-sky-700/30 text-sky-300 hover:bg-sky-700/50 transition-colors">Add to Queue</button>`;
+}
+
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
   // and would cause a full re-render (and position reset) on every poll cycle.
   // pr_state is the collapsed state (review_addressed reads awaiting_review, approved reads
   // approved_ci_green), while the PR dot and the drawer draw pr_state_color/pr_state_label from the raw
   // computed state, so the display fields are keyed too or a raw-state change would never repaint.
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.state_color||''}:${n.milestone||''}:${n.pr_state||''}:${n.pr_state_color||''}:${n.pr_state_label||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}:${n.queue_position||0}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.state_color||''}:${n.milestone||''}:${n.pr_state||''}:${n.pr_state_color||''}:${n.pr_state_label||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}:${_suitabilityKey(n)}:${n.queue_position||0}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -495,7 +563,56 @@ async function loadPlannerHealth() {
 }
 
 // Dependency Graph
+// The Work page's own Up next (`up_next` of GET /work/board), shown as returned: hidden and queued issues are
+// already left out there, so no filtering or re-ranking happens here.
+// The board is the expensive build, so the 30 s graph poll refetches it only when the graph changed or the
+// list is older than NEXT_UP_REFRESH_MS.
+const NEXT_UP_REFRESH_MS = 120000;
+let nextUpSeq = 0;
+let nextUpLoaded = false;
+let nextUpAt = 0;
+async function loadNextUp() {
+  nextUpAt = Date.now();
+  const host = document.getElementById('graph-next-up-items');
+  if (!host) return;
+  const seq = ++nextUpSeq;
+  const message = (text) => { host.replaceChildren(Object.assign(document.createElement('span'), { className: 'text-gray-600', textContent: text })); };
+  try {
+    const data = await fetchAPI(`${apiBase}/work/board`);
+    // A slower, older request must not overwrite the result of a newer one.
+    if (seq !== nextUpSeq) return;
+    const tasks = data.up_next || [];
+    nextUpLoaded = true;
+    markRefresh('next-up', true);
+    if (tasks.length === 0) { message('Nothing ready for an agent'); return; }
+    host.replaceChildren(...tasks.map(t => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'dep-next-up px-2 py-0.5 rounded border border-gray-700/60 text-gray-300 hover:border-gray-500 transition-colors';
+      chip.dataset.issue = t.number;
+      chip.textContent = `#${t.number} ${t.title || ''}`;
+      chip.title = t.title || '';
+      return chip;
+    }));
+  } catch (e) {
+    if (seq !== nextUpSeq) return;
+    // Keep the last good list on screen and mark it stale; the error text shows only when nothing has loaded.
+    if (nextUpLoaded) markRefresh('next-up', false);
+    else message('Could not load the next-up list');
+  }
+}
+
+document.getElementById('graph-next-up').addEventListener('click', e => {
+  const chip = e.target.closest('.dep-next-up');
+  if (!chip) return;
+  const issue = +chip.dataset.issue;
+  if (document.querySelector(`.dep-node[data-issue="${issue}"]`)) scrollToGraphNode(issue);
+  else showToast(`Issue #${issue} is not on the graph`, 'info');
+});
+
 async function loadGraph() {
+  const nextUpDue = !nextUpLoaded || Date.now() - nextUpAt > NEXT_UP_REFRESH_MS;
+  if (nextUpDue) loadNextUp();
   const loading = document.getElementById('graph-loading');
   const errorEl = document.getElementById('graph-error');
 
@@ -541,6 +658,7 @@ async function loadGraph() {
     const newKey = _computeGraphKey(data);
     if (newKey === _graphKey) return;
     _graphKey = newKey;
+    if (!nextUpDue) loadNextUp();  // a changed graph means the ranking may have moved
 
     // Capture current user position before re-render so it can be restored after.
     if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
@@ -558,6 +676,11 @@ async function loadGraph() {
 // The legend is built from the label and color token the API attached to each node on screen, so it
 // lists exactly the colors the graph draws and cannot drift from them (work_state.py owns both).
 function renderStateLegend(nodes) {
+  document.querySelectorAll('[data-mode-badge]').forEach(pill => {
+    const hex = stateHex(GRAPH_MODE_BADGES[pill.dataset.modeBadge].token);
+    pill.style.borderColor = hex;
+    pill.style.backgroundColor = `color-mix(in srgb, ${hex} 20%, transparent)`;
+  });
   const host = document.getElementById('graph-state-legend');
   if (!host) return;
   const tokens = new Map();
@@ -897,7 +1020,7 @@ function renderGraph(data) {
       const active = id == null || nid === id || ancestors.has(nid) || descendants.has(nid);
       const color = this.dataset.color;
       const border = this.dataset.border || (color + '66');
-      d3.select(this).attr('opacity', active ? (this.dataset.done === '1' ? 0.35 : 1) : 0.08);
+      d3.select(this).attr('opacity', active ? +this.dataset.opacity : 0.08);
       d3.select(this).select('rect.node-bg')
         .attr('stroke', nid === id ? '#cdd6f4' : (active ? border : color + '1a'))
         .attr('stroke-width', nid === id ? 2 : 1);
@@ -1058,8 +1181,11 @@ function renderGraph(data) {
     const borderColor = prc || (color + '66');
 
     const isEpic = n.is_epic === true;
-    const isHumanOnly = n.is_human_only === true;
-    const isInteractive = n.is_interactive_recommended === true;
+    const mode = nodeMode(n);
+    const isHumanOnly = mode === 'human';
+    const isInteractive = mode === 'interactive';
+    // A done node keeps its stronger dimming instead of stacking the two.
+    const baseOpacity = isDone ? 0.35 : (n.suitability && GRAPH_DIMMED_MODES.has(mode) ? GRAPH_DIM_OPACITY : 1);
 
     // The same sources the legend reads (red and peach), so a marker cannot be recolored in one place only.
     const humanHex = stateHex('red'), interactiveHex = stateHex('peach');
@@ -1068,8 +1194,8 @@ function renderGraph(data) {
 
     const g = mainG.append('g')
       .attr('class', 'dep-node')
-      .attr('data-issue', n.id).attr('data-color', color).attr('data-border', effectiveBorder).attr('data-done', isDone ? '1' : '0')
-      .attr('opacity', isDone ? 0.35 : 1)
+      .attr('data-issue', n.id).attr('data-color', color).attr('data-border', effectiveBorder).attr('data-opacity', baseOpacity)
+      .attr('opacity', baseOpacity)
       .style('cursor', 'pointer');
     const bgRect = g.append('rect').attr('class', 'node-bg')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
@@ -1152,6 +1278,20 @@ function renderGraph(data) {
         .attr('text-anchor', 'middle')
         .attr('fill', INTER_BADGE_COLOR).attr('font-size', '7px').attr('font-weight', '600').attr('font-family', 'monospace')
         .text('INTERACTIVE');
+    } else if (mode === 'blocked' || mode === 'unclassified') {
+      const { label, token, width: modeW } = GRAPH_MODE_BADGES[mode];
+      const modeHex = stateHex(token);
+      // Placed after the priority icon, which these common badges would otherwise cover.
+      const mbX = (isEpic ? pos.x + 4 + EPIC_BADGE_WIDTH + 4 : pos.x + 4) + 18;
+      const mbY = pos.y + NH - 18;
+      g.append('rect')
+        .attr('x', mbX).attr('y', mbY).attr('width', modeW).attr('height', EPIC_BADGE_HEIGHT).attr('rx', 7)
+        .attr('fill', modeHex).attr('fill-opacity', 0.2).attr('stroke', modeHex).attr('stroke-width', 0.5);
+      g.append('text')
+        .attr('x', mbX + modeW/2).attr('y', mbY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', modeHex).attr('font-size', '7px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text(label);
     }
 
     g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
@@ -1281,12 +1421,7 @@ function showDrawer(node) {
   // Agent/handoff/last-run status badges (priority: agent > handoff > last-run)
   const existingBadges = document.getElementById('drawer-status-badges');
   if (existingBadges) existingBadges.remove();
-  let statusBadges = '';
-  if (node.is_human_only) {
-    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-accent-red border border-red-700/30">Human Only</span>`;
-  } else if (node.is_interactive_recommended) {
-    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30 border-dashed">Interactive Recommended</span>`;
-  }
+  let statusBadges = drawerModeBadges(node);
   if (node.agent_running) {
     const agentLink = node.agent_run_id != null ? `<a href="${esc(`${prefix}/work/${encodeURIComponent(node.agent_run_id)}`)}" class="hover:underline">` : '';
     const agentLinkEnd = node.agent_run_id != null ? '</a>' : '';
@@ -1340,6 +1475,12 @@ function showDrawer(node) {
         ${esc(a.label)}
       </a>`;
     }
+    if (a.type === 'copy') {
+      return `<button data-command="${esc(a.command)}"
+        class="dep-copy-btn text-xs px-3 py-1.5 rounded bg-orange-700/30 text-orange-300 hover:bg-orange-700/50 transition-colors">
+        ${esc(a.label)}
+      </button>`;
+    }
     if (a.type === 'api') {
       const btnCls = a.id === 'approve-spec'
         ? 'bg-green-700/40 text-green-400 hover:bg-green-700/60'
@@ -1360,15 +1501,7 @@ function showDrawer(node) {
     View Lifecycle
   </a>`;
 
-  let queueBtn = '';
-  const isDone = isDoneState(node.state);
-  if (!isDone && !node.is_epic && !node.is_human_only) {
-    if (node.queue_position) {
-      queueBtn = `<span class="text-xs px-3 py-1.5 rounded bg-sky-700/20 text-sky-300 border border-sky-700/30">In queue (Q${node.queue_position})</span>`;
-    } else {
-      queueBtn = `<button onclick="addToQueueFromDrawer(${node.id})" class="dep-queue-btn text-xs px-3 py-1.5 rounded bg-sky-700/30 text-sky-300 hover:bg-sky-700/50 transition-colors">Add to Queue</button>`;
-    }
-  }
+  const queueBtn = drawerQueueHtml(node);
 
   actions.innerHTML = actionBtns + queueBtn + lifecycleLink;
   drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1404,6 +1537,16 @@ async function spawnAgent(issue, role, overrideSuitability = false) {
     setTimeout(loadGraph, 1500);
   } catch (e) {
     showToast(`Failed to start agent: ${e.message}`, 'error');
+  }
+}
+
+// Copies a command for an interactive session; nothing is started from here.
+async function copyCommand(command) {
+  try {
+    await navigator.clipboard.writeText(command);
+    showToast(`Copied: ${command}`, 'success');
+  } catch (e) {
+    showToast(`Could not copy, run it yourself: ${command}`, 'error');
   }
 }
 
@@ -1664,6 +1807,9 @@ async function triggerPoll() {
 document.getElementById('action-drawer').addEventListener('click', e => {
   const btn = e.target.closest('.dep-action-btn');
   if (btn) { spawnAgent(btn.dataset.issue, btn.dataset.role); return; }
+
+  const copyBtn = e.target.closest('.dep-copy-btn');
+  if (copyBtn) { copyCommand(copyBtn.dataset.command); return; }
 
   const apiBtn = e.target.closest('.dep-api-btn');
   if (apiBtn) {
