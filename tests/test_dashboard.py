@@ -14600,7 +14600,7 @@ class TestConnectionsAPI:
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             process.finish(0)
-            await asyncio.sleep(0)  # let the watcher task observe the finished process
+            await _wait_for_reconnect_watchers()  # the watcher polls returncode, so wait for it to finish
             status = await client.get("/api/connections/reconnect/status")
         assert status.json()["status"] == "completed"
 
@@ -14615,7 +14615,7 @@ class TestConnectionsAPI:
         ):
             await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
             process.finish(1)
-            await asyncio.sleep(0)
+            await _wait_for_reconnect_watchers()
             status = await client.get("/api/connections/reconnect/status")
         assert status.json()["status"] == "failed"
         assert "exited with code 1" in status.json()["detail"]
@@ -14702,6 +14702,624 @@ async def _wait_for_reconnect_watchers() -> None:
 
     watchers = [s.watcher for s in setup_service._reconnect_sessions.values() if s.watcher is not None]
     await asyncio.wait_for(asyncio.gather(*watchers, return_exceptions=True), timeout=5)
+
+
+async def test_watcher_ends_when_the_child_exits_even_if_a_grandchild_holds_the_pipe(tmp_path: Path) -> None:
+    """A browser gh launched inherits its stdout: `Process.wait()` would block on it, `returncode` does not."""
+    import signal
+    import time
+
+    from sova.dashboard.services import setup_service
+
+    flow = setup_service._FLOWS["claude"]
+    process = await asyncio.create_subprocess_exec(
+        "sh", "-c", "sleep 30 & echo $!; exit 0", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+    assert process.stdout is not None
+    grandchild = int((await asyncio.wait_for(process.stdout.readline(), timeout=3)).decode())
+    session = setup_service._ReconnectSession(process=process, code="ABCD-1234")
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(setup_service._watch_reconnect(session, tmp_path, flow), timeout=3)
+        assert time.monotonic() - started < 3
+        assert session.status == "completed"
+        assert session.code == ""
+    finally:
+        # Release the pipe so the subprocess transport closes cleanly instead of leaking into a later test.
+        os.kill(grandchild, signal.SIGKILL)
+        await asyncio.wait_for(process.wait(), timeout=3)
+
+
+class _FakeStream:
+    """Fake child output pipe: `.read()` blocks until text is fed, and returns b"" once closed."""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def feed(self, text: str) -> None:
+        self._queue.put_nowait(text.encode())
+
+    async def read(self, _size: int) -> bytes:
+        return await self._queue.get()
+
+
+class _FakeOutputProcess(_FakeProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stdout = _FakeStream()
+
+
+def _spawn_patches(process: _FakeProcess):
+    """Patch the spawn so a flow starts against `process`, on a machine that has a display and every CLI."""
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    stack = ExitStack()
+    spawn = stack.enter_context(patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)))
+    stack.enter_context(patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"))
+    stack.enter_context(patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False))
+    # gh is not logged in until a test says so: the start probes `gh auth status` before spawning.
+    stack.enter_context(
+        patch("sova.dashboard.services.setup_service.run", AsyncMock(return_value=SimpleNamespace(success=False)))
+    )
+    return stack, spawn
+
+
+async def _wait_for(predicate, *, timeout: float = 2.0) -> None:
+    async def poll() -> None:
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(poll(), timeout=timeout)
+
+
+class TestReconnectFlows:
+    """The gh and google flows on the flow-keyed reconnect runner (issue #1121)."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_sessions(self):
+        from sova.dashboard.services.setup_service import _reconnect_sessions
+
+        _reconnect_sessions.clear()
+        yield
+        _reconnect_sessions.clear()
+
+    @pytest.fixture(autouse=True)
+    def _no_ambient_gh_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sova.dashboard.services.setup_service import _GH_TOKEN_VARS
+
+        for var in _GH_TOKEN_VARS:
+            monkeypatch.delenv(var, raising=False)
+
+    @pytest.fixture
+    def google_ready(self, tmp_path: Path):
+        """A deployment where the Google control can run: provider configured, extra installed, credentials present."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.awareness.auth import google_oauth
+
+        credentials = tmp_path / "google_credentials.json"
+        credentials.write_text("{}", encoding="utf-8")
+        cfg = SimpleNamespace(awareness=SimpleNamespace(enabled=True, providers=["gmail"], gmail_token_path=""))
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch.object(google_oauth, "InstalledAppFlow", object()),
+            patch.object(google_oauth, "DEFAULT_CREDENTIALS_PATH", credentials),
+        ):
+            yield cfg
+
+    @pytest.mark.parametrize("flow", ["gh", "google"])
+    async def test_non_loopback_is_rejected_without_spawning(self, flow: str, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        process = _FakeProcess()
+        stack, spawn = _spawn_patches(process)
+        with stack:
+            result = await start_reconnect(tmp_path, is_loopback_bind=False, flow=flow)
+        assert result["reason"] == "non_loopback"
+        spawn.assert_not_called()
+
+    async def test_gh_missing_cli_is_cli_missing(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            result = await start_reconnect(tmp_path, flow="gh")
+        assert result == {"status": "error", "reason": "cli_missing", "detail": "gh CLI not found"}
+
+    async def test_gh_is_not_blocked_by_a_vertex_routed_claude(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import reconnect_availability
+        from sova.llm.backends import Backend
+
+        with (
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+            patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
+        ):
+            assert reconnect_availability(is_loopback_bind=True)["reason"] == "vertex_routed"
+            assert reconnect_availability(is_loopback_bind=True, flow="gh")["can_reconnect"] is True
+
+    async def test_gh_surfaces_the_code_while_running_and_clears_it_when_done(self, client: AsyncClient) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeOutputProcess()
+        stack, spawn = _spawn_patches(process)
+        not_yet, logged_in = SimpleNamespace(success=False), SimpleNamespace(success=True)
+        with (
+            stack,
+            patch("sova.dashboard.services.setup_service.run", AsyncMock(side_effect=[not_yet, logged_in])),
+            patch("sova.dashboard.services.setup_service.invalidate_health_checks_cache") as invalidate,
+        ):
+            started = await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            assert started.json() == {"status": "ok"}
+            argv = spawn.call_args.args
+            assert argv[1:] == ("auth", "login", "--web")
+
+            process.stdout.feed("\n! One-time code (B991-E7E6) copied to clipboard\nOpen this URL: https://x\n")
+            await _wait_for(lambda: _gh_status_code() == "B991-E7E6")
+            running = (await client.get("/api/connections/reconnect/gh/status")).json()
+            assert running["status"] == "running"
+            assert running["code"] == "B991-E7E6"
+
+            process.finish(0)
+            await _wait_for_reconnect_watchers()
+            done = (await client.get("/api/connections/reconnect/gh/status")).json()
+        assert done["status"] == "completed"
+        assert done["code"] == ""
+        invalidate.assert_called_once()
+
+    @pytest.mark.parametrize("failure", ["raises", "hangs"])
+    async def test_gh_start_survives_a_raising_or_hanging_precheck_and_releases_the_lock(
+        self, failure: str, tmp_path: Path
+    ) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import setup_service
+
+        async def hang(*_args, **_kwargs):
+            await asyncio.sleep(3600)
+
+        process = _FakeOutputProcess()
+        stack, spawn = _spawn_patches(process)
+        probe = AsyncMock(side_effect=FileNotFoundError("gh")) if failure == "raises" else hang
+        with (
+            stack,
+            patch.object(setup_service, "run", probe),
+            patch.object(setup_service, "_POST_CHECK_TIMEOUT", 0.05),
+        ):
+            result = await setup_service.start_reconnect(tmp_path, flow="gh")
+            assert result == {"status": "ok"}
+            spawn.assert_called_once()
+            assert not setup_service._flow_start_locks["gh"].locked()
+            assert setup_service.get_reconnect_status(tmp_path, "gh")["status"] == "running"
+            process.finish(1)
+            await _wait_for_reconnect_watchers()
+
+    @pytest.mark.parametrize("var", ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"])
+    async def test_gh_is_rejected_while_a_token_env_var_overrides_any_login(
+        self, var: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        monkeypatch.setenv(var, "ghp_expired")
+        stack, spawn = _spawn_patches(_FakeProcess())
+        with stack:
+            result = await start_reconnect(tmp_path, flow="gh")
+        assert result["reason"] == "env_token"
+        assert "ghp_expired" not in result["detail"]
+        spawn.assert_not_called()
+
+    async def test_gh_already_logged_in_completes_without_spawning(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.setup_service import get_reconnect_status, start_reconnect
+
+        stack, spawn = _spawn_patches(_FakeProcess())
+        with (
+            stack,
+            patch("sova.dashboard.services.setup_service.run", AsyncMock(return_value=SimpleNamespace(success=True))),
+            patch("sova.dashboard.services.setup_service.invalidate_health_checks_cache") as invalidate,
+        ):
+            assert await start_reconnect(tmp_path, flow="gh") == {"status": "ok"}
+        spawn.assert_not_called()
+        invalidate.assert_called_once_with(tmp_path)
+        status = get_reconnect_status(tmp_path, "gh")
+        assert status["status"] == "completed"
+        assert status["code"] == ""
+
+    async def test_gh_without_a_code_line_stays_running_with_an_empty_code(self, client: AsyncClient) -> None:
+        process = _FakeOutputProcess()
+        stack, _ = _spawn_patches(process)
+        with stack:
+            await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            process.stdout.feed("Something else entirely\n")
+            await asyncio.sleep(0.02)
+            status = (await client.get("/api/connections/reconnect/gh/status")).json()
+            process.finish(1)
+            await _wait_for_reconnect_watchers()
+        assert status["status"] == "running"
+        assert status["code"] == ""
+
+    async def test_gh_exit_zero_without_a_passing_auth_status_is_failed(self, client: AsyncClient) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+
+        process = _FakeOutputProcess()
+        stack, _ = _spawn_patches(process)
+        with (
+            stack,
+            patch("sova.dashboard.services.setup_service.run", AsyncMock(return_value=SimpleNamespace(success=False))),
+        ):
+            await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            process.finish(0)
+            await _wait_for_reconnect_watchers()
+            status = (await client.get("/api/connections/reconnect/gh/status")).json()
+        assert status["status"] == "failed"
+
+    async def test_gh_timeout_clears_the_code(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        process = _FakeOutputProcess()
+        stack, _ = _spawn_patches(process)
+        with stack, patch("sova.dashboard.services.setup_service._RECONNECT_TIMEOUT", 0.5):
+            await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            process.stdout.feed("one-time code: ABCD-1234\n")
+            await _wait_for(lambda: _gh_status_code() == "ABCD-1234")
+            await _wait_for_reconnect_watchers()
+            status = (await client.get("/api/connections/reconnect/gh/status")).json()
+        assert status["status"] == "timeout"
+        assert status["code"] == ""
+        assert process.killed is True
+
+    async def test_cancel_gh_terminates_and_clears_the_code(self, client: AsyncClient) -> None:
+        process = _FakeOutputProcess()
+        stack, _ = _spawn_patches(process)
+        with stack:
+            await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            process.stdout.feed("one-time code: ABCD-1234\n")
+            await _wait_for(lambda: _gh_status_code() == "ABCD-1234")
+            cancelled = await client.post("/api/connections/reconnect/gh/cancel", headers=_csrf_request_headers(client))
+            process.finish(-15)
+            await _wait_for_reconnect_watchers()
+            status = (await client.get("/api/connections/reconnect/gh/status")).json()
+        assert cancelled.json() == {"status": "ok"}
+        assert process.terminated is True
+        assert status["status"] == "cancelled"
+        assert status["code"] == ""
+
+    async def test_flows_are_single_flight_per_flow_not_across_flows(self, client: AsyncClient) -> None:
+        gh_process, claude_process = _FakeOutputProcess(), _FakeProcess()
+        stack, _ = _spawn_patches(gh_process)
+        with stack:
+            first = await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            second = await client.post("/api/connections/reconnect/gh/start", headers=_csrf_request_headers(client))
+            with _spawn_patches(claude_process)[0]:
+                other = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            gh_process.finish(1)
+            claude_process.finish(1)
+            await _wait_for_reconnect_watchers()
+        assert first.json() == {"status": "ok"}
+        assert second.json()["reason"] == "already_in_progress"
+        assert other.json() == {"status": "ok"}
+
+    async def test_claude_status_payload_has_no_code_field(self, client: AsyncClient) -> None:
+        process = _FakeProcess()
+        stack, _ = _spawn_patches(process)
+        with stack:
+            await client.post("/api/connections/reconnect/claude/start", headers=_csrf_request_headers(client))
+            status = (await client.get("/api/connections/reconnect/status")).json()
+            process.finish(1)
+            await _wait_for_reconnect_watchers()
+        assert set(status) == {"status", "detail", "elapsed_seconds"}
+
+    async def test_unknown_flow_is_404(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/connections/reconnect/nope/start", headers=_csrf_request_headers(client))
+        assert resp.status_code == 404
+
+    async def test_flow_routes_stay_csrf_guarded(self, dashboard_app) -> None:
+        transport = ASGITransport(app=dashboard_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as bare:
+            resp = await bare.post("/api/connections/reconnect/gh/start")
+        assert resp.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("missing", "reason"),
+        [
+            ("providers", "not_configured"),
+            ("disabled", "not_configured"),
+            ("extra", "extra_missing"),
+            ("credentials", "credentials_missing"),
+        ],
+    )
+    async def test_google_gating_rejects_without_spawning(
+        self, missing: str, reason: str, google_ready, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from sova.awareness.auth import google_oauth
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        stack, spawn = _spawn_patches(_FakeProcess())
+        with stack:
+            if missing == "providers":
+                google_ready.awareness.providers = ["reminders"]
+                result = await start_reconnect(tmp_path, flow="google")
+            elif missing == "disabled":
+                google_ready.awareness.enabled = False
+                result = await start_reconnect(tmp_path, flow="google")
+            elif missing == "extra":
+                with patch.object(google_oauth, "InstalledAppFlow", None):
+                    result = await start_reconnect(tmp_path, flow="google")
+            else:
+                with patch.object(google_oauth, "DEFAULT_CREDENTIALS_PATH", tmp_path / "absent.json"):
+                    result = await start_reconnect(tmp_path, flow="google")
+        assert result["reason"] == reason
+        spawn.assert_not_called()
+
+    async def test_google_runs_the_authorize_child_and_rechecks_the_token(self, google_ready, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.awareness.auth import google_oauth
+        from sova.dashboard.services.setup_service import get_reconnect_status, start_reconnect
+
+        process = _FakeProcess()
+        stack, spawn = _spawn_patches(process)
+        with (
+            stack,
+            patch.object(google_oauth, "forget_cached_credentials") as forget,
+            patch.object(google_oauth, "authenticate_google") as authenticate,
+            patch("sova.dashboard.services.setup_service.invalidate_health_checks_cache") as invalidate,
+        ):
+            assert await start_reconnect(tmp_path, flow="google") == {"status": "ok"}
+            # -P keeps the working directory off the child's sys.path.
+            assert spawn.call_args.args[1:] == ("-P", "-m", "sova.awareness.auth.authorize", str(tmp_path))
+            process.finish(0)
+            await _wait_for_reconnect_watchers()
+        assert get_reconnect_status(tmp_path, "google")["status"] == "completed"
+        forget.assert_called_once()
+        assert authenticate.call_args.kwargs == {"interactive": False}
+        invalidate.assert_called_once_with(tmp_path)
+
+    @pytest.mark.parametrize(
+        ("exit_code", "recheck_fails", "expected_detail"),
+        [(1, False, "Google authorization exited with code 1"), (0, True, "no usable token")],
+    )
+    async def test_google_failure_detail_is_generic(
+        self, exit_code: int, recheck_fails: bool, expected_detail: str, google_ready, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from sova.awareness.auth import google_oauth
+        from sova.dashboard.services.setup_service import get_reconnect_status, start_reconnect
+
+        process = _FakeProcess()
+        stack, _ = _spawn_patches(process)
+        with (
+            stack,
+            patch.object(google_oauth, "forget_cached_credentials"),
+            patch.object(
+                google_oauth,
+                "authenticate_google",
+                side_effect=FileNotFoundError("/secret/path") if recheck_fails else None,
+            ),
+        ):
+            await start_reconnect(tmp_path, flow="google")
+            process.finish(exit_code)
+            await _wait_for_reconnect_watchers()
+        status = get_reconnect_status(tmp_path, "google")
+        assert status["status"] == "failed"
+        assert expected_detail in status["detail"]
+        assert "/secret/path" not in status["detail"]
+
+    async def test_google_config_load_failure_is_a_reason_coded_rejection(self, google_ready, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import start_reconnect
+
+        stack, spawn = _spawn_patches(_FakeProcess())
+        with stack, patch("sova.config.loader.load_config", side_effect=ValueError("/secret/config")):
+            result = await start_reconnect(tmp_path, flow="google")
+        assert result["reason"] == "config_error"
+        assert "/secret" not in result["detail"]
+        spawn.assert_not_called()
+
+    async def test_one_flow_check_failing_does_not_hide_the_others(self, google_ready, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import get_reconnect_flow_availability
+
+        stack, _ = _spawn_patches(_FakeProcess())
+        with stack, patch("sova.dashboard.services.setup_service._cli_availability", side_effect=OSError("boom")):
+            flows = await get_reconnect_flow_availability(tmp_path, is_loopback_bind=True)
+        assert flows["gh"]["reason"] == "check_failed"
+        assert "boom" not in flows["gh"]["detail"]
+        assert flows["claude"]["reason"] == "check_failed"
+        assert flows["google"]["can_reconnect"] is True
+
+    async def test_availability_endpoint_reports_every_flow(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
+        ):
+            data = (await client.get("/api/connections/reconnect/availability")).json()
+        assert set(data["flows"]) == {"claude", "gh", "google"}
+        assert data["flows"]["gh"]["reason"] == "cli_missing"
+
+    async def test_read_flow_code_without_stdout_returns_immediately(self) -> None:
+        from sova.dashboard.services.setup_service import _GH_CODE_PATTERN, _read_flow_code, _ReconnectSession
+
+        process = _FakeProcess()
+        process.stdout = None
+        session = _ReconnectSession(process=process)
+        await asyncio.wait_for(_read_flow_code(session, _GH_CODE_PATTERN), timeout=1)
+        assert session.code == ""
+
+    async def test_read_flow_code_keeps_draining_after_the_code_is_found(self) -> None:
+        from sova.dashboard.services.setup_service import _GH_CODE_PATTERN, _read_flow_code, _ReconnectSession
+
+        process = _FakeOutputProcess()
+        session = _ReconnectSession(process=process)
+        process.stdout.feed("! First copy your one-time code: ABCD-1234\n")
+        process.stdout.feed("one-time code: WXYZ-9876\n")
+        process.stdout.feed("")
+        await asyncio.wait_for(_read_flow_code(session, _GH_CODE_PATTERN), timeout=1)
+        assert session.code == "ABCD-1234"
+
+    async def test_read_flow_code_swallows_a_pipe_read_error(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.setup_service import _GH_CODE_PATTERN, _read_flow_code, _ReconnectSession
+
+        process = _FakeOutputProcess()
+        process.stdout.read = AsyncMock(side_effect=OSError("pipe closed"))
+        session = _ReconnectSession(process=process)
+        await asyncio.wait_for(_read_flow_code(session, _GH_CODE_PATTERN), timeout=1)
+        assert session.code == ""
+        assert session.status == "running"
+
+    @pytest.mark.parametrize("failure", ["raises", "hangs"])
+    async def test_a_broken_post_check_ends_the_session_and_frees_single_flight(
+        self, failure: str, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        from dataclasses import replace
+        from unittest.mock import patch
+
+        from sova.dashboard.services import setup_service
+
+        async def broken(_project_dir: Path) -> str:
+            if failure == "raises":
+                raise FileNotFoundError("/secret/gh")
+            await asyncio.sleep(60)
+            return ""
+
+        process = _FakeProcess()
+        stack, _ = _spawn_patches(process)
+        flows = {**setup_service._FLOWS, "claude": replace(setup_service._FLOWS["claude"], on_success=broken)}
+        with (
+            stack,
+            patch.object(setup_service, "_FLOWS", flows),
+            patch.object(setup_service, "_POST_CHECK_TIMEOUT", 0.05),
+        ):
+            await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            process.finish(0)
+            await _wait_for_reconnect_watchers()
+            status = (await client.get("/api/connections/reconnect/status")).json()
+            again = await client.post("/api/connections/reconnect/start", headers=_csrf_request_headers(client))
+            process.finish(0)
+            await _wait_for_reconnect_watchers()
+        assert status["status"] == "failed"
+        assert "post-check could not run" in status["detail"]
+        assert "/secret" not in status["detail"]
+        assert again.json() == {"status": "ok"}
+
+    async def test_the_reader_keeps_draining_after_the_child_exits(self, tmp_path: Path) -> None:
+        """A browser gh launched can hold the pipe open past gh's exit: it must never block on a full pipe."""
+        from sova.dashboard.services import setup_service
+
+        process = _FakeOutputProcess()
+        stack, _ = _spawn_patches(process)
+        with stack:
+            await setup_service.start_reconnect(tmp_path, flow="gh")
+            session = setup_service._reconnect_sessions[setup_service._session_key("gh", tmp_path)]
+            process.finish(1)
+            await _wait_for_reconnect_watchers()
+            assert session.status == "failed"
+            assert session.reader is not None
+            assert not session.reader.done()
+            # The stream stays open after the exit: later writes are still consumed, and EOF ends the reader.
+            process.stdout.feed("browser console noise\n")
+            await _wait_for(process.stdout._queue.empty)
+            assert not session.reader.done()
+            process.stdout.feed("")
+            await asyncio.wait_for(session.reader, timeout=1)
+
+    async def test_the_watcher_never_leaves_a_session_running(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services import setup_service
+
+        process = _FakeProcess()
+        session = setup_service._ReconnectSession(process=process)
+        with patch.object(setup_service, "_await_reconnect_outcome", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                await setup_service._watch_reconnect(session, tmp_path, setup_service._FLOWS["gh"])
+        assert session.status == "failed"
+
+    async def test_await_reconnect_outcome_keeps_a_cancel_during_the_post_check(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
+        from sova.dashboard.services.setup_service import _FLOWS, _await_reconnect_outcome, _ReconnectSession
+
+        process = _FakeProcess()
+        process.finish(0)
+        session = _ReconnectSession(process=process)
+
+        async def cancel_during_check(_project_dir: Path) -> str:
+            session.status = "cancelled"
+            return "post-check failure that must not overwrite the cancel"
+
+        flow = replace(_FLOWS["gh"], on_success=cancel_during_check)
+        await _await_reconnect_outcome(session, tmp_path, flow)
+        assert session.status == "cancelled"
+        assert session.detail == ""
+
+
+def _gh_status_code() -> str:
+    """The gh session's in-memory code, read without a request so a poll loop stays synchronous."""
+    from sova.dashboard.services import setup_service
+
+    return next((s.code for (flow, _), s in setup_service._reconnect_sessions.items() if flow == "gh"), "")
+
+
+class TestAuthorizeGoogleChild:
+    """The thin entry point the google flow runs as a child process."""
+
+    def test_exit_codes(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.awareness.auth import authorize
+
+        cfg = SimpleNamespace(
+            awareness=SimpleNamespace(), server=SimpleNamespace(log_max_bytes=1024, log_backup_count=2)
+        )
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.utils.logging.setup_logging") as setup_logging,
+        ):
+            with patch("sova.awareness.auth.google_oauth.authenticate_google") as authenticate:
+                assert authorize.main([str(tmp_path)]) == 0
+                authenticate.assert_called_once_with(cfg.awareness)
+            with patch("sova.awareness.auth.google_oauth.authenticate_google", side_effect=ValueError("bad")):
+                assert authorize.main([str(tmp_path)]) == 1
+            # The parent discards stderr, so the child must log to the project's shared file.
+            assert setup_logging.call_args.kwargs["log_file"] == tmp_path / ".claude" / "sova.log"
+        assert authorize.main([]) == 2
+
+    def test_forget_cached_credentials_drops_only_the_configured_token(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+
+        from sova.awareness.auth import google_oauth
+
+        token = tmp_path / "token.pickle"
+        other = tmp_path / "other.pickle"
+        google_oauth._set_cached_creds(token, object())
+        google_oauth._set_cached_creds(other, object())
+        google_oauth.forget_cached_credentials(SimpleNamespace(gmail_token_path=str(token)))
+        assert google_oauth._get_cached_creds(token) is None
+        assert google_oauth._get_cached_creds(other) is not None
+        google_oauth._creds_cache.clear()
 
 
 class _FakeModelsProvider:

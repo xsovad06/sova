@@ -62,3 +62,8 @@ async def get_health_checks(project_dir: Path) -> dict:
 
         _health_checks_cache[cache_key] = (time.monotonic(), result)
         return {**result, "cached": False}
+
+
+def invalidate_health_checks_cache(project_dir: Path) -> None:
+    """Drop the cached health result so the next read re-probes, e.g. right after a sign-in completes."""
+    _health_checks_cache.pop(str(project_dir.resolve()), None)
