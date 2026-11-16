@@ -20,7 +20,13 @@ from sova.supervisor.labels import (  # noqa: F401
     is_interactive_recommended,
     is_ready,
 )
-from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, Suitability, assess_suitability
+from sova.supervisor.suitability import (
+    AGENT_ELIGIBLE_MODES,
+    Suitability,
+    SuitabilityMode,
+    assess_suitability,
+    unsatisfied_dependencies,
+)
 from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
@@ -62,7 +68,53 @@ _STATE_ACTIONS: dict[TaskState, list[dict]] = {
     TaskState.HUMAN_ONLY: [],
 }
 
+# The slash command an interactive session runs in place of each agent role a drawer action would launch.
+_INTERACTIVE_COMMANDS: dict[str, str] = {"researcher": "/research", "developer": "/develop-full"}
+
+# The spec actions that start an agent: approving runs the developer, revising re-runs the researcher.
+_SPEC_LAUNCH_ROLES: dict[str, str] = {"approve-spec": "developer", "revise-spec": "researcher"}
+
+# Modes whose drawer offers no Run Researcher or Run Developer: a human or the epic's children own the work,
+# and a `blocked` node (a dependency or an `agent:on-hold` label) must not start a researcher or developer from
+# one click. Triage is kept on purpose: it only classifies a backlog ticket and never writes code.
+_NO_LAUNCH_MODES: frozenset[SuitabilityMode] = frozenset(
+    {SuitabilityMode.HUMAN, SuitabilityMode.EPIC, SuitabilityMode.BLOCKED}
+)
+
 _BODY_EXCERPT_LEN = 100
+
+
+def _launch_role(action: dict) -> str | None:
+    """The researcher or developer role an action starts (a role button or a spec action), else None."""
+    role = _SPEC_LAUNCH_ROLES.get(action.get("id", ""), action.get("role"))
+    return role if role in _INTERACTIVE_COMMANDS else None
+
+
+def _actions_for_mode(actions: list[dict], mode: SuitabilityMode, issue_id: int) -> list[dict]:
+    """Filter a node's drawer actions by its suitability mode, so the API is the one place that decides.
+
+    `human`/`epic`/`blocked` drop every researcher and developer launch (triage stays, it only classifies).
+    `interactive` swaps them for one
+    `copy` action carrying a command to run in an interactive session, which starts no agent run.
+    Other actions (triage, PR actions, the spec link) and the remaining modes are left as they are.
+    """
+    if mode in _NO_LAUNCH_MODES:
+        return [a for a in actions if _launch_role(a) is None]
+    if mode != SuitabilityMode.INTERACTIVE:
+        return actions
+    launch_roles = [role for a in actions if (role := _launch_role(a)) is not None]
+    kept = [a for a in actions if _launch_role(a) is None]
+    if not launch_roles:
+        return kept
+    command = f"{_INTERACTIVE_COMMANDS[launch_roles[0]]} {issue_id}"
+    return [{"id": "copy-command", "label": "Copy command", "type": "copy", "command": command}, *kept]
+
+
+def _add_dependency_reasons(payload: dict, issue_id: int, graph: DependencyGraph) -> None:
+    """Append a dependency reason per open blocker the classifier left out of a held node's reasons."""
+    listed = {r["value"] for r in payload["reasons"] if r.get("source") == "dependency"}
+    missing = [dep for dep in unsatisfied_dependencies(issue_id, graph) or [] if dep not in listed]
+    payload["reasons"] = [*payload["reasons"], *({"source": "dependency", "value": dep} for dep in missing)]
 
 
 def _get_spec_meta(issue_id: int, project_dir: Path | None = None) -> dict | None:
@@ -342,6 +394,15 @@ class DependencyGraph:
         filter. A consumer deciding whether an issue is schedulable should
         read ``suitability.eligible``, never the bare ``mode``.
 
+        ``available_actions`` follow ``suitability.mode`` (see ``_actions_for_mode``): ``human``,
+        ``epic`` and ``blocked`` drop every researcher and developer launch (the spec actions included; triage and
+        PR actions stay), and ``interactive`` swaps them for a ``copy`` action carrying a command for an
+        interactive session.
+
+        A ``blocked`` node held by ``agent:on-hold`` that also waits on open dependencies gets a
+        ``{source: "dependency", value: N}`` reason per open blocker appended to the serialized
+        ``suitability.reasons`` (the classifier reports only the hold), so the drawer shows both.
+
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
         cache the result if multiple reads are needed.
@@ -405,7 +466,10 @@ class DependencyGraph:
             task_is_interactive = is_interactive_recommended(task.labels)
             suitability = assess_suitability(task, self)
             suitabilities[tid] = suitability
+            actions = _actions_for_mode(actions, suitability.mode, tid)
             suitability_payload = asdict(suitability)
+            if suitability.mode == SuitabilityMode.BLOCKED:
+                _add_dependency_reasons(suitability_payload, tid, self)
             suitability_payload["eligible"] = (
                 suitability.mode in AGENT_ELIGIBLE_MODES and task.state not in _EXCLUDED_FROM_READY
             )

@@ -2261,6 +2261,109 @@ class TestNodeSuitabilityField:
         assert node["suitability"]["eligible"] is True
 
 
+class TestNodeActionsFollowMode:
+    """The drawer's actions are decided server-side from the real classifier verdict (issue #1233)."""
+
+    @staticmethod
+    def _node(labels: list[str] | None, state: TaskState = TaskState.TRIAGED, body: str = "") -> dict:
+        return DependencyGraph([_task(1, labels=labels, state=state, body=body)]).to_dict()["nodes"][0]
+
+    @pytest.mark.parametrize(
+        ("labels", "mode"),
+        [
+            pytest.param(["agent:human-only"], "human", id="human"),
+            pytest.param(["type: epic"], "epic", id="epic"),
+        ],
+    )
+    @pytest.mark.parametrize("state", [TaskState.TRIAGED, TaskState.RESEARCHED])
+    def test_human_and_epic_offer_no_researcher_or_developer(
+        self, labels: list[str], mode: str, state: TaskState
+    ) -> None:
+        node = self._node(labels, state=state)
+        assert node["suitability"]["mode"] == mode
+        assert node["available_actions"] == []
+
+    def test_human_and_epic_keep_triage(self) -> None:
+        for labels in (["agent:human-only"], ["type: epic"]):
+            assert [a["id"] for a in self._node(labels, state=TaskState.BACKLOG)["available_actions"]] == ["triage"]
+
+    def test_held_ticket_offers_no_researcher_or_developer(self) -> None:
+        """A held ticket is dimmed and badged BLOCKED, so one click must not start a researcher or developer."""
+        for state in (TaskState.TRIAGED, TaskState.RESEARCHED):
+            node = self._node(["agent:on-hold"], state=state)
+            assert node["suitability"]["mode"] == "blocked"
+            assert node["suitability"]["reasons"] == [{"source": "label", "value": "agent:on-hold"}]
+            assert node["available_actions"] == []
+
+    def test_held_backlog_ticket_keeps_triage(self) -> None:
+        node = self._node(["agent:on-hold"], state=TaskState.BACKLOG)
+        assert [a["id"] for a in node["available_actions"]] == ["triage"]
+
+    def test_dependency_blocked_ticket_offers_no_launch(self) -> None:
+        blocker = _task(1, state=TaskState.BACKLOG)
+        waiting = _task(2, body="## Dependencies\n- #1\n", state=TaskState.TRIAGED)
+        node = {n["id"]: n for n in DependencyGraph([blocker, waiting]).to_dict()["nodes"]}[2]
+        assert node["suitability"]["mode"] == "blocked"
+        assert node["available_actions"] == []
+
+    @pytest.mark.parametrize(
+        ("labels", "expected"),
+        [
+            pytest.param(["agent:human-only"], ["view-spec"], id="human"),
+            pytest.param(["type: epic"], ["view-spec"], id="epic"),
+            pytest.param(["agent:interactive-recommended"], ["copy-command", "view-spec"], id="interactive"),
+        ],
+    )
+    def test_spec_actions_that_start_an_agent_follow_the_mode(
+        self, tmp_path: Path, labels: list[str], expected: list[str]
+    ) -> None:
+        """Approve & Develop runs the developer and Revise Spec re-runs the researcher, so both are launches."""
+        task = _task(1, labels=labels, state=TaskState.RESEARCHED)
+        spec = {"status": "draft", "complexity": "medium", "open_questions": []}
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            node = DependencyGraph([task]).to_dict(project_dir=tmp_path)["nodes"][0]
+        assert [a["id"] for a in node["available_actions"]] == expected
+        if "copy-command" in expected:
+            assert node["available_actions"][0]["command"] == "/develop-full 1"
+
+    def test_on_hold_ticket_keeps_its_pr_actions(self) -> None:
+        task = _task(1, labels=["agent:on-hold"], state=TaskState.IN_REVIEW)
+        pr_actions = {"awaiting_review": [{"id": "integrate-pr", "label": "Integrate PR", "role": "integrate-pr"}]}
+        pr_map = {1: {"pr_number": 5, "pr_state": "awaiting_review"}}
+        node = DependencyGraph([task]).to_dict(pr_map=pr_map, pr_state_actions=pr_actions)["nodes"][0]
+        assert [a["id"] for a in node["available_actions"]] == ["integrate-pr"]
+
+    def test_autonomous_and_unclassified_keep_the_state_actions(self) -> None:
+        for labels in (["agent:ready"], []):
+            assert [a["id"] for a in self._node(labels)["available_actions"]] == ["researcher"]
+
+    def test_interactive_swaps_the_launch_for_a_copy_command(self) -> None:
+        node = self._node(["agent:interactive-recommended"], state=TaskState.RESEARCHED)
+        assert node["suitability"]["mode"] == "interactive"
+        assert node["available_actions"] == [
+            {"id": "copy-command", "label": "Copy command", "type": "copy", "command": "/develop-full 1"}
+        ]
+
+    def test_interactive_with_no_launch_action_gets_no_copy_command(self) -> None:
+        assert self._node(["agent:interactive-recommended"], state=TaskState.NEEDS_SPEC)["available_actions"] == []
+
+    def test_hold_on_a_dependency_blocked_ticket_stays_blocked(self) -> None:
+        blocker = _task(1, state=TaskState.BACKLOG)
+        held = _task(2, labels=["agent:on-hold"], body="## Dependencies\n- #1\n", state=TaskState.TRIAGED)
+        node = {n["id"]: n for n in DependencyGraph([blocker, held]).to_dict()["nodes"]}[2]
+        assert node["suitability"]["mode"] == "blocked"
+        assert node["suitability"]["eligible"] is False
+        # The classifier reports only the hold; to_dict() adds the open dependency so the drawer shows both.
+        assert node["suitability"]["reasons"] == [
+            {"source": "label", "value": "agent:on-hold"},
+            {"source": "dependency", "value": 1},
+        ]
+
+    def test_held_ticket_is_not_eligible_and_lifting_the_hold_makes_it_eligible(self) -> None:
+        assert self._node(["agent:on-hold"])["suitability"]["eligible"] is False
+        assert self._node([])["suitability"]["eligible"] is True
+
+
 class TestGetReadyTasksPrecomputedSuitabilities:
     """`get_ready_tasks(suitabilities=...)` must actually use the precomputed map."""
 
