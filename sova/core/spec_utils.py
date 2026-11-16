@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -254,6 +256,178 @@ _FRESHNESS_CAVEATS: dict[SpecFreshness, str] = {
 def spec_freshness_caveat(freshness: SpecFreshness) -> str:
     """Return an operator/reviewer-facing caveat for a non-current *freshness*, or "" when current."""
     return _FRESHNESS_CAVEATS.get(freshness, "")
+
+
+# Spec code-drift check: did files the spec names change on the base branch after research?
+# Anchored to line start, like the writer's ``_STAMP_LINE_RE`` in ``steps/spec.py``: an inline mention mid-line
+# is neither stripped by the writer nor honoured here.
+_BASE_COMMIT_MARKER_RE = re.compile(r"^\*\*Base commit\*\*:[ \t]*(\S*)", re.MULTILINE)
+_FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
+_BACKTICKED_RE = re.compile(r"`([^`\n]+)`")
+# A repo-relative path: path characters only, with at least one letter (so a version string such as ``1.2.3`` is
+# not mistaken for a file, while ``Makefile`` and ``LICENSE`` are kept). Words that are not files are dropped
+# later by the intersection with the real changed-file list.
+_PATH_CHARS_RE = re.compile(r"[\w.@+/-]+")
+_LETTER_RE = re.compile(r"[A-Za-z]")
+# One or more ``:line``, ``:line-line`` or ``:line:col`` suffixes.
+_LINE_SUFFIX_RE = re.compile(r"(?::\d+(?:-\d+)?)+$")
+_TRAILING_PUNCTUATION = ",;.:)"
+# Wrapping punctuation that prose puts around a path: ``(sova/a.py``, ``"sova/a.py"``, ``[sova/a.py]``.
+_LEADING_WRAPPERS = "(\"'["
+_TRAILING_WRAPPERS = "\"']"
+_STDERR_LOG_CHARS = 200
+_DRIFT_GIT_TIMEOUT_SECONDS = 10
+_MAX_DRIFT_FILES_SHOWN = 10
+
+
+class SpecDrift(Enum):
+    """Whether the code a spec names changed on the base branch after the spec was written.
+
+    ``UNVERIFIABLE`` covers every case where the answer is unknown (no or malformed stamp, unknown commit,
+    missing ``origin/<base>`` ref, git failure), so a broken check never reads as ``CURRENT``.
+    """
+
+    CURRENT = "current"
+    DRIFTED = "drifted"
+    UNVERIFIABLE = "unverifiable"
+
+
+@dataclass(frozen=True)
+class SpecDriftResult:
+    status: SpecDrift
+    files: tuple[str, ...] = ()
+
+
+_UNVERIFIABLE_DRIFT = SpecDriftResult(SpecDrift.UNVERIFIABLE)
+
+
+def _git_stdout(repo_dir: Path, *args: str) -> str | None:
+    """Run ``git <args>`` in *repo_dir* and return stdout, or None on any failure or timeout."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_DRIFT_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("spec.drift_git_failed", args=args, exc_info=True)
+        return None
+    if proc.returncode != 0:
+        log.info(
+            "spec.drift_git_nonzero",
+            args=args,
+            returncode=proc.returncode,
+            stderr=(proc.stderr or "")[:_STDERR_LOG_CHARS],
+        )
+        return None
+    return proc.stdout
+
+
+def compute_base_commit(repo_dir: Path, base_branch: str) -> str | None:
+    """Return the commit of ``origin/<base_branch>`` that *repo_dir*'s HEAD builds on, or None.
+
+    The merge-base (not HEAD) is stamped: a researcher's checkout may carry unrelated local commits, and only
+    the part of the history that is on the base branch can be changed by later merges. No fetch is done.
+    """
+    out = _git_stdout(repo_dir, "merge-base", "HEAD", f"origin/{base_branch}")
+    sha = (out or "").strip()
+    if not _FULL_SHA_RE.fullmatch(sha):
+        return None
+    sha = sha.lower()
+    tip = (_git_stdout(repo_dir, "rev-parse", f"origin/{base_branch}") or "").strip().lower()
+    if tip and tip != sha:
+        # Drift is judged against origin/<base>, so a checkout behind it keeps reporting drift after a re-research.
+        log.warning("spec.base_commit_behind_origin", base_branch=base_branch, stamped=sha, origin_tip=tip)
+    return sha
+
+
+def _normalize_spec_path(token: str) -> str | None:
+    """Turn one backticked word into a repo-relative path, or None when it does not look like one."""
+    path = token.lstrip(_LEADING_WRAPPERS).split("::", 1)[0]
+    # "()" comes off before a lone ")" so ``func()`` and ``(see a.py)`` both reduce correctly.
+    path = path.rstrip(_TRAILING_PUNCTUATION.replace(")", "") + _TRAILING_WRAPPERS).removesuffix("()")
+    path = path.rstrip(_TRAILING_PUNCTUATION + _TRAILING_WRAPPERS)
+    path = _LINE_SUFFIX_RE.sub("", path).removeprefix("./").rstrip(_TRAILING_PUNCTUATION + _TRAILING_WRAPPERS)
+    if not path or path.startswith("/") or not _PATH_CHARS_RE.fullmatch(path) or not _LETTER_RE.search(path):
+        return None
+    return path
+
+
+def extract_spec_paths(spec_text: str) -> set[str]:
+    """Return the repo-relative paths a spec names in single backticks (fenced blocks are ignored).
+
+    A path ending in ``/`` is kept as a directory prefix. Anything that is not path-shaped is dropped here,
+    and a path-shaped token that is not a changed file is dropped later by the intersection.
+    """
+    paths: set[str] = set()
+    for match in _BACKTICKED_RE.finditer(_strip_fenced_blocks(spec_text)):
+        for word in match.group(1).split():
+            path = _normalize_spec_path(word)
+            if path is not None:
+                paths.add(path)
+    return paths
+
+
+def check_spec_code_drift(spec_text: str, repo_dir: Path, base_branch: str) -> SpecDriftResult:
+    """Compare the spec's ``**Base commit**`` stamp with ``origin/<base_branch>`` and report touched spec paths.
+
+    Local refs only (no fetch), so a stale ``origin/<base_branch>`` makes the warning later, never wrong.
+    Blocking git calls: async callers run this in a worker thread. Never raises.
+    """
+    try:
+        match = _BASE_COMMIT_MARKER_RE.search(_frontmatter_span(spec_text))
+        if not match or not _FULL_SHA_RE.fullmatch(match.group(1)):
+            return _UNVERIFIABLE_DRIFT
+        sha = match.group(1).lower()
+        # git exits non-zero when either side does not resolve to a commit (unknown stamp, missing ref). The
+        # three-dot form diffs from the merge-base, so a ref that is behind the stamp reports nothing, not the
+        # stamp's own newer changes.
+        # --no-renames: a rename must report its source as well as its destination (a spec naming the old path
+        # is out of date), and it keeps the output independent of the user's diff.renames setting.
+        diff = _git_stdout(
+            repo_dir,
+            "diff",
+            "--name-only",
+            "--no-renames",
+            # Paths relative to repo_dir (the cwd), not the repository root: specs name project-relative paths,
+            # which differ when the project is a subdirectory of a larger repo. A no-op at the repo root.
+            "--relative",
+            "-z",
+            f"{sha}^{{commit}}...origin/{base_branch}^{{commit}}",
+            "--",
+        )
+        if diff is None:
+            return _UNVERIFIABLE_DRIFT
+        changed = {name for name in diff.split("\0") if name}
+        named = extract_spec_paths(spec_text)
+        exact = {p for p in named if not p.endswith("/")}
+        prefixes = tuple(p for p in named if p.endswith("/"))
+        touched = (changed & exact) | {c for c in changed if prefixes and c.startswith(prefixes)}
+        if not touched:
+            return SpecDriftResult(SpecDrift.CURRENT)
+        return SpecDriftResult(SpecDrift.DRIFTED, tuple(sorted(touched)))
+    except Exception:  # noqa: BLE001 (the drift check is advisory and must never break its caller)
+        log.warning("spec.drift_check_failed", exc_info=True)
+        return _UNVERIFIABLE_DRIFT
+
+
+def spec_drift_caveat(result: SpecDriftResult) -> str:
+    """Return an operator/developer-facing warning for a ``DRIFTED`` *result*, or "" otherwise."""
+    if result.status is not SpecDrift.DRIFTED:
+        return ""
+    shown = result.files[:_MAX_DRIFT_FILES_SHOWN]
+    more = len(result.files) - len(shown)
+    listing = ", ".join(shown) + (f" (and {more} more)" if more > 0 else "")
+    return (
+        "This spec may be out of date with the code: files it names changed on the base branch after the "
+        f"spec was written ({listing}). Re-read those files before relying on the spec's file-level details; "
+        "a human can re-research the issue from the spec page."
+    )
 
 
 def read_spec(issue_number: str, project_dir: Path | None = None) -> dict | None:

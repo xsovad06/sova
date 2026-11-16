@@ -19,12 +19,18 @@ Behavior depends on complexity threshold, research findings, and open questions:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from decimal import Decimal
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
-from sova.core.spec_utils import _frontmatter_span, compute_issue_revision_hash, find_spec_file
+from sova.core.spec_utils import (
+    _frontmatter_span,
+    compute_base_commit,
+    compute_issue_revision_hash,
+    find_spec_file,
+)
 from sova.core.steps._handoff_helpers import write_step_handoff
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.ipc.handoff import HandoffAction
@@ -158,8 +164,22 @@ _COMPLEXITY_LINE_RE = re.compile(r"^\*\*Complexity\*\*:.*$", re.MULTILINE)
 _TITLE_HEADING_RE = re.compile(r"^# .*$", re.MULTILINE)
 
 
-def _stamp_issue_revision(content: str, title: str, body: str) -> str:
+_STAMP_LINE_RE = re.compile(r"^\*\*(?:Issue revision|Base commit)\*\*:.*\n?", re.MULTILINE)
+
+
+def _strip_stamp_lines(content: str) -> str:
+    """Remove stamp lines the researcher echoed from a previous spec, from the frontmatter span only."""
+    # The span is a masked, length-preserving prefix, so a match offset in it maps 1:1 onto *content*.
+    for match in reversed(list(_STAMP_LINE_RE.finditer(_frontmatter_span(content)))):
+        content = content[: match.start()] + content[match.end() :]
+    return content
+
+
+def _stamp_issue_revision(content: str, title: str, body: str, base_commit: str | None = None) -> str:
     """Insert a ``**Issue revision**: <hash>`` line so ``spec_is_current()`` can detect staleness.
+
+    When *base_commit* is given, a ``**Base commit**: <sha>`` line follows it (same anchor, same frontmatter
+    span) so ``check_spec_code_drift()`` can later tell which base-branch changes landed after the spec was written.
 
     Inserted right after the ``**Complexity**`` line (the template's last
     frontmatter line); falls back to right after the title heading for a
@@ -173,7 +193,10 @@ def _stamp_issue_revision(content: str, title: str, body: str) -> str:
     region the line is prepended instead of searching the rest of the
     document, for the same reason.
     """
+    content = _strip_stamp_lines(content)
     revision_line = f"**Issue revision**: {compute_issue_revision_hash(title, body)}"
+    if base_commit:
+        revision_line += f"\n**Base commit**: {base_commit}"
     frontmatter = _frontmatter_span(content)
     match = _COMPLEXITY_LINE_RE.search(frontmatter)
     if match:
@@ -409,7 +432,10 @@ class SpecStep(BaseStep):
                 cost_usd=result.cost_usd,
             )
 
-        spec_content = _stamp_issue_revision(spec_content, task.title, task.body or "")
+        base_commit = await asyncio.to_thread(compute_base_commit, ctx.working_dir, ctx.base_branch)
+        if base_commit is None:
+            log.info("step.spec.base_commit_unavailable", issue=ctx.issue_number, base_branch=ctx.base_branch)
+        spec_content = _stamp_issue_revision(spec_content, task.title, task.body or "", base_commit)
 
         try:
             spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)

@@ -166,8 +166,29 @@ async def _issue_context_for_develop(ctx: ExecutionContext) -> str:
     return "\n\n".join(parts)
 
 
-def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
+_READ_SPEC = object()  # sentinel: "read the spec from disk" (None means "already read, there is none")
+
+
+def _read_approved_spec(ctx: ExecutionContext) -> dict | None:
+    """Return the parsed approved spec for the issue, or None when absent, unapproved or unreadable."""
+    try:
+        from sova.core.spec_utils import read_spec
+
+        spec_data = read_spec(ctx.issue_number, ctx.project_dir)
+    except Exception:  # noqa: BLE001 (the spec is optional context: a read or parse failure must not fail develop)
+        log.warning("step.develop.spec_load_failed", issue=ctx.issue_number, exc_info=True)
+        return None
+    if spec_data is None or spec_data.get("status") != "approved":
+        return None
+    return spec_data
+
+
+def _load_spec_for_develop(ctx: ExecutionContext, spec_data: object = _READ_SPEC) -> tuple[str, str]:
     """Load approved spec sections as compressed context for the develop step.
+
+    ``spec_data`` is the already-read approved spec from ``_read_approved_spec`` (None when there is none);
+    left at its default, the spec is read here. Passing it lets one read feed both the context and the drift
+    check, so they describe the same content.
 
     Returns ``(content, note)``. ``content`` is the spec content string, or
     empty string if no approved spec exists. ``note`` is empty when the spec
@@ -185,8 +206,9 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
         from sova.core.spec_utils import SpecFreshness, check_spec_freshness, read_spec, spec_freshness_caveat
         from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, SECTION_OPEN_QUESTIONS, extract_sections_from_text
 
-        spec_data = read_spec(ctx.issue_number, ctx.project_dir)
-        if spec_data is None or spec_data.get("status") != "approved":
+        if spec_data is _READ_SPEC:
+            spec_data = read_spec(ctx.issue_number, ctx.project_dir)
+        if not isinstance(spec_data, dict) or spec_data.get("status") != "approved":
             return "", ""
 
         raw_content = spec_data.get("raw_content") or ""
@@ -225,6 +247,40 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> tuple[str, str]:
     except (OSError, ValueError):
         log.debug("step.develop.spec_load_failed", exc_info=True)
         return "", ""
+
+
+async def _spec_drift_caveat(ctx: ExecutionContext, spec_data: dict | None) -> str:
+    """Warn when files the approved spec (*spec_data*, as read once by the caller) names changed on main.
+
+    Returns the caveat to prepend to the spec context ("" when the spec is absent, not drifted or the
+    check is unverifiable) and emits one warning feed event per call when drifted. Informational only:
+    never changes step status, never fetches, and rebuilds from the current check on every execution.
+    """
+    try:
+        from sova.core.spec_utils import SpecDrift, check_spec_code_drift, spec_drift_caveat
+
+        if spec_data is None or spec_data.get("status") != "approved":
+            return ""
+        result = await asyncio.to_thread(
+            check_spec_code_drift, spec_data.get("raw_content") or "", ctx.working_dir, ctx.base_branch
+        )
+        if result.status is not SpecDrift.DRIFTED:
+            return ""
+        log.warning("spec.code_drift", issue=ctx.issue_number, files=list(result.files))
+        caveat = spec_drift_caveat(result)
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        emit_safe(
+            f"Spec for #{ctx.issue_number} may be out of date",
+            severity=FeedEventSeverity.warning,
+            detail=f"{caveat} Use Re-research on the spec page for #{ctx.issue_number} to refresh it.",
+            category="agent",
+            metadata={"issue": ctx.issue_number, "drifted_files": list(result.files)},
+        )
+        return caveat
+    except Exception:  # noqa: BLE001 (the drift warning is advisory and must never fail the develop step)
+        log.warning("step.develop.spec_drift_failed", exc_info=True)
+        return ""
 
 
 async def _append_implementation_notes(ctx: ExecutionContext) -> None:
@@ -463,6 +519,37 @@ async def _get_dirty_test_files(cwd: Path) -> set[str]:
     return {f for f in result.stdout.strip().splitlines() if _TEST_FILE_RE.search(f)}
 
 
+async def _build_develop_args(ctx: ExecutionContext) -> tuple[str, str]:
+    """Build the ``/develop`` arguments and return them with the spec note ("" when no spec was used).
+
+    An approved spec is passed inline (prefixed with a drift caveat when main changed the files it
+    names) so the agent uses it directly instead of re-fetching the verbose issue body from GitHub;
+    without one, the issue context SOVA fetched is passed instead, and the bare issue number otherwise.
+    """
+    spec_data = _read_approved_spec(ctx)
+    spec_context, spec_note = _load_spec_for_develop(ctx, spec_data)
+    if spec_context:
+        drift_caveat = await _spec_drift_caveat(ctx, spec_data)
+        if drift_caveat:
+            spec_context = f"{drift_caveat}\n\n{spec_context}"
+        args = (
+            f"{ctx.issue_number}\n\n"
+            "## Spec Context (use as primary task context: do NOT re-fetch the issue body)\n\n"
+            f"{spec_context}"
+        )
+        return args, spec_note
+    issue_context = await _issue_context_for_develop(ctx)
+    if issue_context:
+        args = (
+            f"{ctx.issue_number}\n\n"
+            "## Issue Context (fetched by SOVA: use as primary task context; re-fetch the issue only if "
+            "it says part of the text was cut and your runtime has network access)\n\n"
+            f"{issue_context}"
+        )
+        return args, spec_note
+    return ctx.issue_number, spec_note
+
+
 class DevelopStep(BaseStep):
     name = "develop"
     TASK_TYPE = "develop"
@@ -474,23 +561,7 @@ class DevelopStep(BaseStep):
 
         await _ensure_task(ctx)
 
-        args = ctx.issue_number
-        spec_context, spec_note = _load_spec_for_develop(ctx)
-        if spec_context:
-            # Pass spec as inline context so the /develop agent uses it directly
-            # instead of re-fetching the verbose issue body from GitHub.
-            args = (
-                f"{ctx.issue_number}\n\n"
-                "## Spec Context (use as primary task context: do NOT re-fetch the issue body)\n\n"
-                f"{spec_context}"
-            )
-        elif issue_context := await _issue_context_for_develop(ctx):
-            args = (
-                f"{ctx.issue_number}\n\n"
-                "## Issue Context (fetched by SOVA: use as primary task context; re-fetch the issue only if "
-                "it says part of the text was cut and your runtime has network access)\n\n"
-                f"{issue_context}"
-            )
+        args, spec_note = await _build_develop_args(ctx)
 
         try:
             cost_before_develop = ctx.cost_usd
