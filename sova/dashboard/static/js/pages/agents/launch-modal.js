@@ -2,54 +2,12 @@ import { registerActions } from './actions.js';
 import { loadAgents } from './agent-cards.js';
 import { _autoOpenLogsIfIdle } from './log-viewer.js';
 import { checkInterrupted } from './live-status.js';
-import { loadTaskCards } from './work-items.js';
+import { loadBoard } from '../work/board.js';
 
-function quickStart(issue, force) {
-  showLaunchModal(issue, null, force || false);
-}
-
-async function quickStartRole(issue, role, prNumber) {
-  showLaunchModal(issue, role, false, prNumber);
-}
-
-// Registered here, not in a module that renders a Re-run button: history, the kanban, the interrupted-runs
+// Registered here, not in a module that renders a Re-run button: history, the interrupted-runs
 // banner and the agent cards all emit it, and none of them may depend on another having initialised.
 function rerunAgent(issue, role, prNumber, dismissRunId) {
   showLaunchModal(issue, role === 'auto' ? null : role, false, prNumber || null, dismissRunId || null);
-}
-
-// Runs a slash command as an agent (the task cards' and PR rows' primary and secondary actions).
-async function runCommand(command, args) {
-  if (blockedByConnectivity('running ' + command)) return;
-  try {
-    var res = await fetch(apiUrl('/agents/command'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: command, args: args }),
-    });
-    if (!res.ok) {
-      showToast(await getErrorDetail(res, 'Failed to run command'), 'error');
-    } else {
-      var result = await res.json();
-      if (result.error) {
-        showToast(result.error, 'error');
-      } else {
-        _autoOpenLogsIfIdle(result.run_id);
-      }
-    }
-  } catch (e) {
-    showToast('Failed to run command: ' + e.message, 'error');
-  }
-  loadAgents();
-  loadTaskCards();
-}
-
-function runCommandWithMergeBlockers(command, args, blockers) {
-  if (blockers && blockers.length) {
-    var msg = 'This PR is not fully ready to merge:\n\n' + blockers.join('\n') + '\n\nIntegrate anyway?';
-    if (!confirm(msg)) return;
-  }
-  runCommand(command, args);
 }
 
 async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride, llmModelOverride, dismissRunId, overrideSuitability) {
@@ -128,7 +86,7 @@ async function _doStartAgent(issue, role, force, prNumber, model, budgetOverride
     showToast('Failed to start agent: ' + e.message, 'error');
   }
   loadAgents();
-  loadTaskCards();
+  loadBoard();
 }
 
 async function startPlanner() {
@@ -405,12 +363,6 @@ function confirmLaunch() {
 
 export function init() {
   registerActions({
-    'quick-start': function(el, e, issue, force) { quickStart(issue, force); },
-    'run-command': function(el, e, command, args) { runCommand(command, args); },
-    'run-command-with-merge-blockers': function(el, e, command, args, blockers) {
-      runCommandWithMergeBlockers(command, args, blockers);
-    },
-    'quick-start-role': function(el, e, issue, role, prNumber) { quickStartRole(issue, role, prNumber); },
     'rerun': function(el, e) {
       e.preventDefault();
       e.stopPropagation();

@@ -248,14 +248,6 @@ class TestNoDirectProviderCallsOutsideLlm:
             f"Allow-listed provider-construction users no longer do so, remove stale entries: {missing}"
         )
 
-    def test_llm_suggestion_service_does_not_import_httpx(self) -> None:
-        """The concrete bypass this issue fixed: previously built raw Anthropic/Vertex
-        requests with httpx. Must now go through sova.llm.client.invoke()."""
-        path = SOVA_ROOT / "dashboard" / "services" / "llm_suggestion_service.py"
-        text = path.read_text(encoding="utf-8")
-        assert "httpx" not in text
-        assert "llm_invoke" in text
-
     def test_rebase_uses_llm_provider_invoke_not_raw_http(self) -> None:
         path = SOVA_ROOT / "git" / "rebase.py"
         text = path.read_text(encoding="utf-8")

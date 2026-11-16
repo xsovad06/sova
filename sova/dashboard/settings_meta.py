@@ -1467,13 +1467,6 @@ _REGISTRY: list[SettingMeta] = [
     ),
     # Dashboard
     SettingMeta(
-        "dashboard.kanban_columns",
-        "Kanban column grouping",
-        "How kanban columns are grouped: step_based (by pipeline step) or role_based (by role/status category)",
-        "dashboard",
-        "string",
-    ),
-    SettingMeta(
         "dashboard.confirm_model",
         "Model confirmation",
         "When to show the model selection modal: complex_only (prompt for complex/epic), always, or never",
@@ -1493,13 +1486,6 @@ _REGISTRY: list[SettingMeta] = [
         "TCP port the dashboard server listens on",
         "dashboard",
         "number",
-    ),
-    SettingMeta(
-        "dashboard.llm_suggestions",
-        "LLM action suggestions",
-        "Enable LLM-based PR action suggestions on the agents page (requires Vertex AI or ANTHROPIC_API_KEY)",
-        "dashboard",
-        "boolean",
     ),
     SettingMeta(
         "dashboard.rate_limit_per_minute",

@@ -404,7 +404,8 @@ async def _start_run(client: OperatorClient, issue: int, role: str) -> dict[str,
 
 async def _stop_run(client: OperatorClient, run_id: int) -> dict[str, Any]:
     result = _require_dict(await client.request("POST", f"/agents/{run_id}/stop"), "stop")
-    # The route answers 200 for a run it does not hold ({"status": "not_found"}), so check the status here.
+    # The route answers 409 with the reason for a run it does not hold; any other answer that is not "stopped"
+    # (an idle pool) is checked here.
     if result.get("status") != "stopped":
         raise ToolError(str(result.get("message") or f"Run {run_id} was not stopped")[:MAX_DETAIL_CHARS])
     return result

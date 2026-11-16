@@ -23,7 +23,8 @@ from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.security import validate_websocket_origin
 from sova.dashboard.services import control_service
-from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES
+from sova.dashboard.services.action_registry import tracked_action
+from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES, NO_FREE_SLOT
 from sova.dashboard.services.agent_validation import (
     classify_for_launch,
     suitability_blocked_detail,
@@ -696,27 +697,6 @@ async def get_pipeline() -> dict:
     return {"steps": control_service.DEVELOPER_PIPELINE}
 
 
-@router.get("/agents/kanban")
-async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> dict[str, Any]:
-    """Get non-terminal TaskRuns grouped into Kanban columns."""
-    # Config is loaded per-request intentionally: load_config() caches internally,
-    # and per-request loading supports hot-reload of SOVA config without restart.
-    from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
-
-    project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-    mode = cfg.dashboard.kanban_columns
-
-    # Sequential: AsyncSession doesn't support concurrent queries on the same connection.
-    async with await get_session() as session:
-        columns = await control_service.get_kanban_columns(
-            session, per_column=per_column, mode=mode, project_dir=project_dir
-        )
-        failed_runs = await control_service.get_recent_failed_runs(session)
-    return {"columns": columns, "mode": mode, "failed_runs": failed_runs}
-
-
 @router.get("/agents/{run_id}/output")
 async def get_agent_output(run_id: int, since: int = 0) -> dict:
     """Get output lines for a specific agent.
@@ -901,21 +881,45 @@ async def start_agent(req: StartAgentRequest) -> dict:
     the structured 409 whose message the page shows in a toast, and only ``override_suitability`` lets it start.
     """
     await _validate_start_request(req)
-    result = await control_service.start_agent(
-        req.issue,
-        role=req.role,
-        force=req.force,
-        budget_override=req.budget_override,
-        enforce_suitability=True,
-        override_suitability=req.override_suitability,
-        resume_run_id=req.resume_run_id,
-        pr_number=req.pr_number,
-        model=req.model,
-        llm_model_override=req.llm_model_override,
-    )
-    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
-        raise HTTPException(status_code=409, detail=_start_error_detail(result))
+    role = req.role or "developer"
+    async with tracked_action(
+        _action_project_dir(),
+        kind="start",
+        label=f"Starting the {role} agent",
+        issue=_issue_number(req.issue),
+        pr=req.pr_number,
+    ) as action:
+        result = await control_service.start_agent(
+            req.issue,
+            role=req.role,
+            force=req.force,
+            budget_override=req.budget_override,
+            enforce_suitability=True,
+            override_suitability=req.override_suitability,
+            resume_run_id=req.resume_run_id,
+            pr_number=req.pr_number,
+            model=req.model,
+            llm_model_override=req.llm_model_override,
+        )
+        if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+            # The board queues the issue on a full pool and says so; a failure on its card would contradict that.
+            action.forget = result.get("code") == NO_FREE_SLOT
+            raise HTTPException(status_code=409, detail=_start_error_detail(result))
+        action.message = f"Started the {role} agent"
     return result
+
+
+def _action_project_dir() -> Path | None:
+    """The project an action belongs to, as the board route resolves it."""
+    from sova.config.context import get_project_dir
+
+    return get_project_dir()
+
+
+def _issue_number(raw: object) -> int | None:
+    """An issue number from a request field (``"42"``, ``42``, ``""``), or None when it names none."""
+    text = str(raw).strip() if raw is not None else ""
+    return int(text) if text.isdigit() else None
 
 
 async def _validate_start_request(req: StartAgentRequest) -> None:
@@ -941,13 +945,59 @@ def _start_error_detail(result: dict) -> dict | str:
         }
     if result.get("code") == "suitability_blocked":
         return suitability_blocked_detail(result)
+    if result.get("code") == NO_FREE_SLOT:
+        return {"code": NO_FREE_SLOT, "message": result["error"], "running": result.get("running")}
     return result.get("detail") or result.get("error") or "Command failed"
 
 
-@router.post("/agents/{run_id}/stop")
+@router.post(
+    "/agents/{run_id}/stop",
+    responses={409: {"description": "The run is not one this dashboard can stop (started elsewhere, or ended)"}},
+)
 async def stop_agent(run_id: int) -> dict:
-    """Stop a specific running agent."""
-    return await control_service.stop_agent(run_id=run_id)
+    """Stop a specific running agent.
+
+    A run the dashboard did not start (``sova run`` in a terminal, another server) is not in its pool, so
+    the stop cannot reach it: that answers 409 with the reason, never a silent success.
+    """
+    issue, pr = await _run_issue_and_pr(run_id)
+    async with tracked_action(_action_project_dir(), kind="stop", label="Stopping", issue=issue, pr=pr) as action:
+        result = await control_service.stop_agent(run_id=run_id)
+        if result.get("status") == "not_found":
+            raise HTTPException(status_code=409, detail=await _unstoppable_reason(run_id))
+        action.message = "Stopped"
+    return result
+
+
+async def _run_issue_and_pr(run_id: int) -> tuple[int | None, int | None]:
+    """The issue and PR a run works on, for labelling its action; (None, None) when the lookup fails."""
+    try:
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+    except SQLAlchemyError:
+        log.warning("agents.stop_run_lookup_failed", run_id=run_id, exc_info=True)
+        return None, None
+    if run is None:
+        return None, None
+    return _issue_number(run.issue_number), run.pr_number
+
+
+async def _unstoppable_reason(run_id: int) -> str:
+    """Why the dashboard cannot stop a run its pool does not hold."""
+    try:
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+    except SQLAlchemyError:
+        log.warning("agents.stop_reason_lookup_failed", run_id=run_id, exc_info=True)
+        return f"The dashboard is not running run {run_id}, so it cannot stop it"
+    if run is None:
+        return f"There is no run {run_id}"
+    if run.status in TASK_RUN_TERMINAL:
+        return f"Run {run_id} has already ended ({run.status})"
+    return (
+        f"Run {run_id} was started outside the dashboard (for example `sova run` in a terminal or another "
+        "server), so the dashboard cannot stop it. Stop it where it runs."
+    )
 
 
 @router.post(
@@ -960,13 +1010,18 @@ async def stop_agent(run_id: int) -> dict:
 )
 async def resume_from_approval(run_id: int) -> dict:
     """Resume a paused pipeline run after human approval."""
-    result = await control_service.resume_from_approval(run_id)
-    if result.get("error") == "not_found":
-        raise HTTPException(status_code=404, detail=result["detail"])
-    if result.get("error") == "conflict":
-        raise HTTPException(status_code=409, detail=result["detail"])
-    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
-        raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
+    issue, pr = await _run_issue_and_pr(run_id)
+    async with tracked_action(
+        _action_project_dir(), kind="approve", label="Approving and starting", issue=issue, pr=pr
+    ) as action:
+        result = await control_service.resume_from_approval(run_id)
+        if result.get("error") == "not_found":
+            raise HTTPException(status_code=404, detail=result["detail"])
+        if result.get("error") == "conflict":
+            raise HTTPException(status_code=409, detail=result["detail"])
+        if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+            raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
+        action.message = "Approved; the run continues"
     return result
 
 
@@ -996,9 +1051,19 @@ async def run_command(req: RunCommandRequest) -> dict:
     if req.command not in known_command_names(project_dir):
         raise HTTPException(status_code=400, detail=f"Unknown command: {req.command}")
 
-    result = await control_service.start_command(req.command, req.args or {})
-    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
-        raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
+    args = req.args or {}
+    pr = _issue_number(args.get("pr"))
+    async with tracked_action(
+        _action_project_dir(),
+        kind="command",
+        label=f"Starting /{req.command}",
+        issue=_issue_number(args.get("issue")),
+        pr=pr,
+    ) as action:
+        result = await control_service.start_command(req.command, args)
+        if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+            raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
+        action.message = f"Started /{req.command}"
     return result
 
 

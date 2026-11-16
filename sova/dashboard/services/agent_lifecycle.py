@@ -210,6 +210,9 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
 
+# The error code of a start refused because every agent slot is taken: the Work page queues the issue instead.
+NO_FREE_SLOT = "no_free_slot"
+
 # Roles spawned as a plain trusted subprocess (spawn_direct) rather than
 # through a coding-agent runtime wrapper. Reviewer joins the pipeline roles
 # here, scoped to this one spawn-path decision only: ``_PIPELINE_ROLES``
@@ -671,6 +674,7 @@ async def start_agent(
         if len(pa.agents) >= pa.max_concurrent:
             return {
                 "error": f"Maximum concurrent agents reached ({pa.max_concurrent})",
+                "code": NO_FREE_SLOT,
                 "running": len(pa.agents),
             }
 
@@ -993,6 +997,7 @@ async def start_command(
         if len(pa.agents) >= pa.max_concurrent:
             return {
                 "error": f"Maximum concurrent agents reached ({pa.max_concurrent})",
+                "code": NO_FREE_SLOT,
                 "running": len(pa.agents),
             }
 

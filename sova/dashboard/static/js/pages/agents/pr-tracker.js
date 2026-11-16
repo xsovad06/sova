@@ -1,5 +1,4 @@
 import { actionAttrs, registerActions } from './actions.js';
-import { getGithubUser, onGithubUserChange } from './work-items.js';
 import { diffSizeColor, diffSizeLabel, formatAge, formatAgeBadge } from './render-utils.js';
 
 // safeStorageGet/Set, not localStorage directly: a throwing storage (blocked cookies, some private modes)
@@ -345,6 +344,12 @@ async function loadPrTracker() {
   }
 }
 
+// The project's configured GitHub user, which the template writes on the panel (the "Mine" filter's user).
+function _githubUser() {
+  var panel = document.getElementById('pr-tracker');
+  return (panel && panel.getAttribute('data-github-user')) || '';
+}
+
 function _renderPrTracker() {
   // Nothing has been read yet, or the read failed: loadPrTracker() owns what the panel says then, and a filter
   // click must not paint an empty-list message over a list that was never fetched.
@@ -352,16 +357,15 @@ function _renderPrTracker() {
   var all = _prTrackerData;
   var visible = all;
   if (_prFilter === 'mine') {
-    if (!getGithubUser()) {
-      // Not "No open PRs": nothing can be filtered until the first work-items response names the user,
-      // and onGithubUserChange() redraws the panel when it does.
+    if (!_githubUser()) {
+      // Not "No open PRs": with no configured GitHub user nothing can be filtered.
       document.getElementById('pr-tracker-count').textContent = '';
       document.getElementById('pr-tracker-list').innerHTML =
-        '<p class="text-gray-500 text-sm py-4 text-center">GitHub user not known yet, so your PRs cannot be filtered</p>';
+        '<p class="text-gray-500 text-sm py-4 text-center">No GitHub user is configured, so your PRs cannot be filtered</p>';
       renderPrSummary([]);
       return;
     }
-    var user = getGithubUser().toLowerCase();
+    var user = _githubUser().toLowerCase();
     var isUser = function(login) { return (login || '').toLowerCase() === user; };
     visible = all.filter(function(pr) {
       return isUser(pr.author) || (pr.assignees || []).some(isUser);
@@ -438,11 +442,6 @@ export function init() {
     'set-pr-filter': function(el, e, value) { setPrFilter(value); },
     'toggle-pr-group': function(el, e, groupId) { togglePrGroup(groupId); },
     'sync-cr-quota': function() { _syncCrQuota(); },
-  });
-
-  // The user only matters to the 'mine' filter, and only once the list it filters has actually loaded.
-  onGithubUserChange(function() {
-    if (_prFilter === 'mine' && _prTrackerLoaded === 'ok') _renderPrTracker();
   });
 
   _updateFilterToggleUI();

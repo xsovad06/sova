@@ -1322,6 +1322,166 @@ function mountSettingControls(root, overrides) {
 }
 
 /* ============================================================
+   6c. ACTION STATE (one helper for every action's running and result state)
+   ============================================================ */
+
+/* An action button shows at once that its action runs, and its row (a card, a list row) shows how it ended:
+   a success briefly, an error until dismissed. A toast is never the only signal. State is kept per row key
+   ('issue:42', 'pr:7'), outside the DOM, so a re-render keeps it, and the server's list of the actions it is
+   running (GET /work/actions, setServerActions) is merged in, so a reload keeps a long action such as a
+   rebase on its row too.
+
+     runTrackedAction(key, label, fn)  marks the row running with `label`, awaits fn(); fn resolves to the
+                                       success message (or nothing) and rejects with an Error whose message
+                                       is shown. Resolves to {ok, message}; never rejects.
+     actionStateFor(key)               {status: 'running'|'done'|'failed', label, message} or null
+     actionIsRunning(key)              whether the row's buttons should be disabled
+     actionStatusHtml(key)             the row's status line ('' when there is nothing to show)
+     setServerActions(actions)         the server's list; a running server action shows like a local one
+     actionKey(issue, pr, run)         the row key for an issue (or a PR without one, or a run with neither)
+     onActionStateChange(fn)           called after every change, so the page redraws its rows */
+
+var ACTION_SUCCESS_SHOW_MS = 6000;
+var _localActions = {};    // key -> {status, label, message, at (ms)}
+var _serverActions = {};   // key -> {status, label, message, at (ms), id, failedIds}
+var _actionStateListeners = [];
+
+function actionKey(issue, pr, run) {
+  if (issue !== null && issue !== undefined && issue !== '') return 'issue:' + issue;
+  if (pr !== null && pr !== undefined && pr !== '') return 'pr:' + pr;
+  // A run with neither (a planner): keyed by the run, so its Stop shows its pending state and any refusal.
+  if (run !== null && run !== undefined && run !== '') return 'run:' + run;
+  return '';
+}
+
+function onActionStateChange(fn) { _actionStateListeners.push(fn); }
+
+function _actionStateChanged() {
+  _actionStateListeners.forEach(function (fn) {
+    try {
+      fn();
+    } catch (e) {
+      console.error('action state listener failed', e);
+    }
+  });
+}
+
+function _actionShown(state, now) {
+  if (!state) return false;
+  if (state.status !== 'done') return true;
+  return now - (state.endedAt || state.at) < ACTION_SUCCESS_SHOW_MS;
+}
+
+function _actionEnded(state) { return state.endedAt || state.at; }
+
+function actionStateFor(key) {
+  if (!key) return null;
+  var now = Date.now();
+  var local = _localActions[key];
+  var server = _serverActions[key];
+  if (local && local.status === 'running') return local;
+  // A server action still running (a background rebase) outranks the click's own result, which only says the
+  // request was accepted: the row stays running, and its buttons disabled, until the action ends.
+  if (server && server.status === 'running') return server;
+  var shown = [local, server].filter(function (s) { return _actionShown(s, now); });
+  if (!shown.length) return null;
+  // The one that finished last, both on the same basis (when it ended, else when it started): a reload keeps
+  // only the server's, and a click's failure must not outlast a later server result such as a finished rebase.
+  return shown.reduce(function (a, b) { return (_actionEnded(b) > _actionEnded(a)) ? b : a; });
+}
+
+function actionIsRunning(key) {
+  var state = actionStateFor(key);
+  return !!(state && state.status === 'running');
+}
+
+function setServerActions(actions) {
+  var next = {};
+  (actions || []).forEach(function (a) {
+    var key = actionKey(a.issue, a.pr);
+    if (!key) return;
+    var state = {
+      status: a.status,
+      label: a.label || '',
+      message: a.message || '',
+      at: (a.started_at || 0) * 1000,
+      endedAt: a.ended_at ? a.ended_at * 1000 : null,
+      id: a.id,
+    };
+    // The newest action per row; one still running wins over an older one that ended.
+    var prev = next[key];
+    // Every failure on the row, so one Dismiss clears them all rather than revealing the next older one.
+    state.failedIds = (prev ? prev.failedIds : []).concat(a.status === 'failed' && a.id ? [a.id] : []);
+    if (!prev || prev.status !== 'running' && (state.status === 'running' || state.at > prev.at)) next[key] = state;
+    else prev.failedIds = state.failedIds;
+  });
+  _serverActions = next;
+  _actionStateChanged();
+}
+
+async function runTrackedAction(key, label, fn) {
+  _localActions[key] = { status: 'running', label: label, message: '', at: Date.now() };
+  _actionStateChanged();
+  var result;
+  try {
+    var message = await fn();
+    result = { ok: true, message: message || '' };
+  } catch (e) {
+    result = { ok: false, message: (e && e.message) || String(e) || 'Failed' };
+  }
+  var now = Date.now();
+  _localActions[key] = { status: result.ok ? 'done' : 'failed', label: label, message: result.message, at: now, endedAt: now };
+  _actionStateChanged();
+  if (result.ok) {
+    // Redraw once more when the success has been shown long enough, so it leaves the row on its own.
+    setTimeout(_actionStateChanged, ACTION_SUCCESS_SHOW_MS + 50);
+  }
+  return result;
+}
+
+async function dismissActionState(key) {
+  delete _localActions[key];
+  var server = _serverActions[key];
+  delete _serverActions[key];
+  _actionStateChanged();
+  var ids = server ? (server.failedIds || []).slice() : [];
+  if (server && server.id && server.status !== 'running' && ids.indexOf(server.id) === -1) ids.push(server.id);
+  await Promise.all(ids.map(async function (id) {
+    try {
+      await fetch(apiUrl('/work/actions/' + encodeURIComponent(id)), { method: 'DELETE', headers: jsonCsrfHeaders() });
+    } catch (_e) { /* the server drops a dismissed result on its own when the dashboard restarts */ }
+  }));
+}
+
+function actionStatusHtml(key) {
+  var state = actionStateFor(key);
+  if (!state) return '';
+  if (state.status === 'running') {
+    return '<span class="sova-action-status flex items-center gap-1.5 text-xs text-accent-yellow" role="status">' +
+      '<span class="w-3 h-3 rounded-full border-2 border-accent-yellow/30 border-t-accent-yellow animate-spin shrink-0"></span>' +
+      escapeHtml(state.label) + '...</span>';
+  }
+  if (state.status === 'done') {
+    return '<span class="sova-action-status flex items-center gap-1.5 text-xs text-accent-green" role="status">' +
+      '<span class="w-1.5 h-1.5 rounded-full bg-accent-green shrink-0"></span>' +
+      escapeHtml(state.message || 'Done') + '</span>';
+  }
+  return '<span class="sova-action-status flex items-start gap-1.5 text-xs text-accent-red" role="alert">' +
+    '<span class="min-w-0 break-words">' + escapeHtml(state.message || 'Failed') + '</span>' +
+    '<button type="button" class="ml-auto shrink-0 text-gray-500 hover:text-gray-300 transition-colors" ' +
+    'data-sova-dismiss-action="' + escapeHtml(key) + '" aria-label="Dismiss this error">Dismiss</button></span>';
+}
+
+// The dismiss button lives in markup any page renders, so it is handled here, not by a page's dispatcher. The
+// listener stops the click so the row under it (a selectable card) does not also react.
+document.addEventListener('click', function (e) {
+  var btn = e.target && e.target.closest ? e.target.closest('[data-sova-dismiss-action]') : null;
+  if (!btn) return;
+  e.stopPropagation();
+  dismissActionState(btn.getAttribute('data-sova-dismiss-action'));
+}, true);
+
+/* ============================================================
    7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 

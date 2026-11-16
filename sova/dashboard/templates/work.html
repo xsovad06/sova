@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Agents - SOVA{% endblock %}
+{% block title %}Work - SOVA{% endblock %}
 {% from "_icons.html" import icon %}
 {% block content %}
 <div class="flex items-center justify-between mb-4">
-  <h2 class="text-2xl font-semibold">Agents</h2>
+  <h2 class="text-2xl font-semibold">Work</h2>
   <button type="button" data-action="start-planner" id="run-planner-btn"
     class="px-3 py-1.5 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors"
     aria-label="Analyze project and propose new tasks"
@@ -12,71 +12,84 @@
   </button>
 </div>
 
-<!-- Stat Row -->
-<div class="flex flex-wrap items-center gap-4 mb-6 px-4 py-3 bg-surface-card rounded-lg border border-gray-700/50">
-  <div class="flex items-baseline gap-2">
-    <span class="text-xs text-gray-500 uppercase tracking-wide">Cost (today)</span>
-    <span class="text-lg font-semibold text-accent-green" id="stat-today-cost">--</span>
+<!-- Header: what runs, what waits, what it costs (static/js/pages/work/header.js) -->
+<section id="work-header" class="flex flex-wrap items-stretch gap-2 mb-4" aria-label="Work at a glance">
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">Agents</span>
+    <span class="flex items-baseline gap-1.5">
+      <span id="hdr-agents-running" class="text-xl font-semibold tabular-nums">--</span>
+      <span class="text-xs text-gray-500">running</span>
+    </span>
+    <span class="sova-stat-detail flex items-center gap-1.5">
+      Limit <span id="hdr-agents-limit" class="sova-work-stepper"></span>
+      <span id="hdr-agents-over" class="hidden text-accent-peach">over the limit</span>
+    </span>
   </div>
-  <div class="w-px h-5 bg-gray-700/50"></div>
-  <div class="flex items-baseline gap-2">
-    <span class="text-xs text-gray-500 uppercase tracking-wide">Invocations (all time)</span>
-    <span class="text-lg font-semibold" id="stat-invocations">--</span>
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">Queued</span>
+    <span id="hdr-queued" class="text-xl font-semibold tabular-nums">--</span>
+    <span id="hdr-queued-detail" class="sova-stat-detail"></span>
   </div>
-  <div class="w-px h-5 bg-gray-700/50"></div>
-  <div class="flex items-baseline gap-2">
-    <span class="text-xs text-gray-500 uppercase tracking-wide">Completion (all time)</span>
-    <span class="text-lg font-semibold text-accent-purple" id="stat-completion">--</span>
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">Needs you</span>
+    <span id="hdr-needs" class="text-xl font-semibold tabular-nums">--</span>
+    <span id="hdr-needs-detail" class="sova-stat-detail"></span>
   </div>
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">Spend today</span>
+    <span id="hdr-spend" class="text-xl font-semibold tabular-nums">--</span>
+    <span id="hdr-spend-detail" class="sova-stat-detail"></span>
+  </div>
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">CodeRabbit</span>
+    <span class="flex items-baseline gap-1.5">
+      <span id="hdr-coderabbit" class="text-xl font-semibold tabular-nums">--</span>
+      <span id="hdr-coderabbit-of" class="text-xs text-gray-500"></span>
+    </span>
+    <span id="hdr-coderabbit-detail" class="sova-stat-detail">reviews free this hour</span>
+  </div>
+  <div class="sova-work-stat basis-36 grow">
+    <span class="sova-stat-label">Supervisor</span>
+    <span class="flex items-center gap-2 h-7">
+      <span id="hdr-supervisor-switch" class="flex"></span>
+      <span id="hdr-supervisor-label" class="text-sm text-gray-300"></span>
+    </span>
+    <span id="hdr-supervisor-detail" class="sova-stat-detail"></span>
+  </div>
+</section>
+<p id="work-board-error" class="hidden text-xs text-accent-yellow mb-2" role="status"></p>
+<p class="text-xs text-gray-500 mb-2">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card.</p>
+
+<!-- Board: columns, labels and colors come from GET /api/work/board (static/js/pages/work/board.js) -->
+<div id="work-board" class="sova-work-board mb-6" aria-label="Work board">
+  <p class="text-gray-500 text-sm py-6">Loading the board...</p>
 </div>
 
-<!-- Task Browser -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
-  <!-- Header bar -->
-  <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50">
-    <h3 class="text-sm font-medium text-gray-300">Tasks</h3>
-    <span id="tasks-attention-badge" class="hidden w-5 h-5 rounded-full bg-accent-peach text-surface text-xs font-bold flex items-center justify-center -ml-1" data-tooltip="Items needing your attention"></span>
-    <div id="task-assignee-toggle" class="flex rounded-md overflow-hidden border border-gray-600/50 text-xs ml-2">
-      <button type="button" data-task-assignee="mine" aria-pressed="false" data-action="set-task-assignee" data-args='["mine"]' class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">Mine</button>
-      <button type="button" data-task-assignee="all" aria-pressed="true" data-action="set-task-assignee" data-args='["all"]' class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">All</button>
-    </div>
-    <label for="task-state-filter" class="sr-only">Filter by state</label>
-    <div class="relative">
-      <select id="task-state-filter"
-        class="bg-surface border border-gray-700 rounded pl-2 pr-6 py-1 text-xs text-gray-300 focus:border-accent focus:outline-none appearance-none cursor-pointer">
-        <option value="">All states</option>
-        <option value="running">Running</option>
-        <option value="pr_stage">PR stage</option>
-        <option value="ci_failed">CI Failed</option>
-        <option value="needs_review">Needs review</option>
-        <option value="changes_requested">Changes requested</option>
-        <option value="ready_to_merge">Ready to merge</option>
-        <option value="backlog">Backlog</option>
-      </select>
-      <svg class="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-    </div>
-    <div class="relative flex-1 max-w-xs">
-      <label for="task-search" class="sr-only">Search issues</label>
-      <input type="text" id="task-search" placeholder="Search issues, assignees, labels..." autocomplete="off"
-        class="w-full bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 pl-8 focus:border-accent focus:outline-none">
-      <svg class="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-    </div>
-    <div id="agent-limit" class="ml-auto flex items-center gap-2 text-xs text-gray-400">
-      <span id="agent-limit-running" class="text-sm font-semibold text-gray-200">--</span>
-      <span>of</span>
-      <span id="agent-limit-control"></span>
-      <span>agents running</span>
-    </div>
+<!-- How it hangs together: the dependency chains the board API returns (static/js/pages/work/chains.js) -->
+<section id="work-chains" class="sova-card mb-6" aria-labelledby="work-chains-title">
+  <div class="sova-card-header justify-start gap-3">
+    <h3 id="work-chains-title" class="text-sm font-semibold text-gray-200">How it hangs together</h3>
+    <span class="text-xs text-gray-500">chains that touch something on the board</span>
+    <span id="work-chains-count" class="ml-auto text-xs text-gray-500"></span>
   </div>
-  <!-- Task list -->
-  <p id="work-items-stale" class="hidden text-xs text-accent-yellow py-1" role="status"></p>
-  <div id="task-grid" class="divide-y divide-gray-700/30">
-    <p class="text-gray-500 text-sm py-6 text-center">Loading tasks...</p>
-  </div>
-</div>
+  <div id="work-chains-body" class="p-4 flex flex-col gap-2"></div>
+</section>
+
+<!-- Issue drawer (static/js/pages/work/drawer.js) -->
+<aside id="work-drawer" class="sova-work-drawer" hidden aria-label="Issue details"></aside>
+
+<!-- Icons the board's modules render, from the shared icon macro -->
+<template id="work-icons">
+  {%- for name in ["play", "stop", "arrow-up", "arrow-down", "arrow-right", "close", "external-link", "chevron-down", "chevron-right", "check", "trash", "queue", "chat-bubble"] %}
+  <span data-icon="{{ name }}">{{ icon(name, "w-3.5 h-3.5 shrink-0") }}</span>
+  {%- endfor %}
+</template>
+
+<!-- Finished planner runs and the issues they propose (static/js/pages/agents/agent-cards.js) -->
+<div id="planner-results" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6"></div>
 
 <!-- PR Tracker -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+<div id="pr-tracker" class="bg-surface-card rounded-lg border border-gray-700/50 mb-6" data-github-user="{{ github_user() or '' }}">
   <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50">
     <button id="pr-tracker-toggle" type="button" class="flex items-center gap-3 cursor-pointer select-none text-left flex-1" data-action="toggle-pr-tracker" aria-controls="pr-tracker-list" aria-expanded="true">
       <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
@@ -122,33 +135,6 @@
     <span class="flex" data-setting-switch="external_reviews.coderabbit.trigger_review"
           data-label="Ask CodeRabbit to review each new PR"
           data-tooltip="Posts the @coderabbitai review comment on each PR SOVA opens. Runs started after a change use the new setting."></span>
-  </div>
-</div>
-
-<!-- Handoff actions are now rendered inline in task cards -->
-
-<!-- View Toggle -->
-<div class="flex items-center gap-1 mb-4">
-  <button type="button" data-action="switch-agent-view" data-args='["list"]' id="view-list"
-    class="px-3 py-1.5 text-xs font-medium rounded-l border border-gray-700 transition-colors bg-surface-hover text-white">
-    List
-  </button>
-  <button type="button" data-action="switch-agent-view" data-args='["kanban"]' id="view-kanban"
-    class="px-3 py-1.5 text-xs font-medium rounded-r border border-gray-700 transition-colors bg-surface text-gray-500 hover:text-gray-300">
-    Pipeline
-  </button>
-</div>
-
-<!-- Running Agents Grid (list view) -->
-<div id="agents-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-  <div class="text-gray-500 text-sm">No agents running</div>
-</div>
-
-<!-- Kanban Board (pipeline view) -->
-<div id="kanban-grid" class="hidden mb-6 overflow-x-auto">
-  <p id="kanban-stale" class="hidden text-xs text-accent-yellow py-1" role="status"></p>
-  <div id="kanban-columns" class="flex gap-3 min-h-[200px] pb-2">
-    <p class="text-gray-500 text-sm py-8 text-center w-full">Loading pipeline view...</p>
   </div>
 </div>
 
@@ -290,28 +276,36 @@
 {% block scripts %}
 <script type="module">
 import { init as initActions } from '/static/js/pages/agents/actions.js';
-import { init as initWorkItems } from '/static/js/pages/agents/work-items.js';
 import { init as initLaunchModal } from '/static/js/pages/agents/launch-modal.js';
 import { init as initPrTracker } from '/static/js/pages/agents/pr-tracker.js';
 import { init as initAgentCards } from '/static/js/pages/agents/agent-cards.js';
 import { init as initHistory } from '/static/js/pages/agents/history.js';
 import { init as initLogViewer } from '/static/js/pages/agents/log-viewer.js';
-import { init as initKanban } from '/static/js/pages/agents/kanban.js';
 import { init as initLiveStatus } from '/static/js/pages/agents/live-status.js';
+import { init as initHeader } from '/static/js/pages/work/header.js';
+import { init as initSelection } from '/static/js/pages/work/selection.js';
+import { init as initBoard } from '/static/js/pages/work/board.js';
+import { init as initChains } from '/static/js/pages/work/chains.js';
+import { init as initDrawer } from '/static/js/pages/work/drawer.js';
+import { init as initWorkActions } from '/static/js/pages/work/actions.js';
 
 // Each init runs on its own: one module throwing (an id renamed in this template, a restricted browser
 // context) is logged and must not stop the modules after it from starting. actions comes first because
 // the others register their click handlers into it.
 [
   ['actions', initActions],
-  ['work-items', initWorkItems],
   ['launch-modal', initLaunchModal],
   ['pr-tracker', initPrTracker],
   ['agent-cards', initAgentCards],
   ['history', initHistory],
   ['log-viewer', initLogViewer],
-  ['kanban', initKanban],
   ['live-status', initLiveStatus],
+  ['header', initHeader],
+  ['selection', initSelection],
+  ['work-actions', initWorkActions],
+  ['chains', initChains],
+  ['drawer', initDrawer],
+  ['board', initBoard],
 ].forEach(([name, init]) => {
   try {
     init();

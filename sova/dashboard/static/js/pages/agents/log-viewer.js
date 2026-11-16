@@ -84,7 +84,8 @@ export function updateLogTabs(agents) {
   if (!tabs) return;
 
   if (agents.length === 0) {
-    if (activeLogRunId !== null) closeLogViewer();
+    // No tab to show, but a log opened from the board (often a finished run's) stays open until it is closed.
+    tabs.innerHTML = '';
     return;
   }
 
@@ -103,6 +104,14 @@ export function updateLogTabs(agents) {
 // open, so this never steals focus from a log panel the user is watching.
 export function _autoOpenLogsIfIdle(runId) {
   if (runId && activeLogRunId === null) viewLogs(runId);
+}
+
+// Opens a run's log (leaving it open when it already shows that run) and brings the viewer into view: the
+// Work board's View log buttons sit far above it.
+export function openLog(runId, runStatus) {
+  if (activeLogRunId !== runId) viewLogs(runId, runStatus);
+  var viewer = document.getElementById('log-viewer');
+  if (viewer) viewer.scrollIntoView({ block: 'start' });
 }
 
 function viewLogs(runId, runStatus) {

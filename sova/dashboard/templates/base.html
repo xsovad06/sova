@@ -42,7 +42,7 @@
     </div>
     <!-- Checkpoint banner (shown when handoff awaits action) -->
     <div id="checkpoint-banner" class="hidden px-4 py-2.5 bg-accent-yellow/10 border-b border-accent-yellow/30">
-      <a href="{{ prefix }}/agents" class="flex items-center gap-2 text-xs text-accent-yellow hover:text-yellow-200 transition-colors">
+      <a href="{{ prefix }}/work" class="flex items-center gap-2 text-xs text-accent-yellow hover:text-yellow-200 transition-colors">
         <span class="w-2 h-2 rounded-full bg-accent-yellow animate-pulse shrink-0"></span>
         <span class="sidebar-label">Action required</span>
       </a>
@@ -57,14 +57,14 @@
     </div>
     <!-- Handoff unreadable banner (shown when a handoff file failed to parse) -->
     <div id="handoff-unreadable-banner" class="hidden px-4 py-2.5 bg-accent-red/10 border-b border-accent-red/30">
-      <a href="{{ prefix }}/agents" class="flex items-center gap-2 text-xs text-accent-red hover:text-red-400 transition-colors">
+      <a href="{{ prefix }}/work" class="flex items-center gap-2 text-xs text-accent-red hover:text-red-400 transition-colors">
         <span class="w-2 h-2 rounded-full bg-accent-red shrink-0"></span>
         <span id="handoff-unreadable-label" class="sidebar-label min-w-0 truncate">Handoff file unreadable</span>
       </a>
     </div>
     <div class="sidebar-nav-scroll flex-1 py-2">
       {% set nav_items = [
-        ("agents", prefix + "/agents", "Agents", "agents"),
+        ("work", prefix + "/work", "Work", "work"),
         ("queue", prefix + "/queue", "Queue", "queue"),
         ("supervisor", prefix + "/supervisor", "Supervisor", "supervisor"),
         ("oversight", prefix + "/oversight", "Oversight", "oversight"),

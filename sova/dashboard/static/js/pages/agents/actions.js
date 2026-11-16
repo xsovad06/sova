@@ -1,6 +1,6 @@
-// Delegated click actions for the Agents page.
+// Delegated click actions for the Work page.
 //
-// Markup that is rebuilt on every poll (task rows, PR rows, agent cards, kanban
+// Markup that is rebuilt on every refresh (board cards, PR rows, history rows, planner
 // cards) names its handler with data-action and passes arguments as a JSON array
 // in data-args, instead of an inline onclick attribute. JSON replaces the old
 // hand-escaped JS string literals, so a quote or newline in a title, label or
@@ -60,9 +60,8 @@ export function init() {
   document.body.addEventListener('click', _dispatch);
 
   // An <img> error event does not bubble, so catch it in the capture phase to hide an <img data-hide-on-error>
-  // (renderAssigneeAvatar() in render-utils.js) that failed to load, without an inline onerror attribute.
-  // It lives here, with the page-wide click listener, because task rows and PR rows both emit that markup and
-  // neither module may depend on the other having been initialised.
+  // (a PR row's author avatar) that failed to load, without an inline onerror attribute.
+  // It lives here, with the page-wide click listener, so it is in place whichever page module renders the markup.
   document.addEventListener('error', function(e) {
     if (e.target.matches && e.target.matches('img[data-hide-on-error]')) e.target.style.display = 'none';
   }, true);

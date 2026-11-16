@@ -24,31 +24,45 @@ from sova.adapters.base import Task, TaskState
 from sova.dashboard.services import pr_service, work_state
 from sova.dashboard.services.work_state import WorkItemState, state_color, state_label
 from sova.supervisor.dependency_graph import DependencyGraph
-from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR
+from tests.conftest import AGENTS_PAGE_JS_DIR, DASHBOARD_DIR, WORK_PAGE_JS_DIR
 
 _STATIC = DASHBOARD_DIR / "static"
 _TEMPLATES = DASHBOARD_DIR / "templates"
 _APP_JS = (_STATIC / "app.js").read_text(encoding="utf-8")
 
 _APP_JS_HELPER_CALL = re.compile(r"\b(?:escapeHtml|timeAgo|esc|statusBadge|setText|renderSectionError)\(")
-_PAGE_MODULES = [
-    "work-items",
-    "launch-modal",
-    "pr-tracker",
-    "agent-cards",
-    "history",
-    "log-viewer",
-    "kanban",
-    "live-status",
+_PAGES_JS = _STATIC / "js" / "pages"
+_WORK_TEMPLATE = _TEMPLATES / "work.html"
+# The Work page's modules after actions.js, in the template's init order: (label in its init list, path under
+# static/js/pages/). work/priority-picker.js is a helper with no init, like agents/render-utils.js.
+_PAGE_MODULE_ENTRIES = [
+    ("launch-modal", "agents/launch-modal"),
+    ("pr-tracker", "agents/pr-tracker"),
+    ("agent-cards", "agents/agent-cards"),
+    ("history", "agents/history"),
+    ("log-viewer", "agents/log-viewer"),
+    ("live-status", "agents/live-status"),
+    ("header", "work/header"),
+    ("selection", "work/selection"),
+    ("work-actions", "work/actions"),
+    ("chains", "work/chains"),
+    ("drawer", "work/drawer"),
+    ("board", "work/board"),
 ]
+_PAGE_MODULES = [path for _label, path in _PAGE_MODULE_ENTRIES]
 
 
 def _module_source(name: str) -> str:
-    return (AGENTS_PAGE_JS_DIR / f"{name}.js").read_text(encoding="utf-8")
+    """A page module's source: `name` is a path under static/js/pages/, or a bare agents/ module name."""
+    rel = name if "/" in name else f"agents/{name}"
+    return (_PAGES_JS / f"{rel}.js").read_text(encoding="utf-8")
 
 
 def _all_page_sources() -> dict[str, str]:
-    return {p.stem: p.read_text(encoding="utf-8") for p in sorted(AGENTS_PAGE_JS_DIR.glob("*.js"))}
+    """Every page module, keyed by its agents/ stem or by `work/<stem>` for the Work board's modules."""
+    sources = {p.stem: p.read_text(encoding="utf-8") for p in sorted(AGENTS_PAGE_JS_DIR.glob("*.js"))}
+    sources.update({f"work/{p.stem}": p.read_text(encoding="utf-8") for p in sorted(WORK_PAGE_JS_DIR.glob("*.js"))})
+    return sources
 
 
 def _scripts() -> list[Path]:
@@ -177,7 +191,10 @@ globalThis.document = {
   createElement: () => el(),
   addEventListener: (type, fn) => docListeners.push([type, fn]),
   removeEventListener() {},
-  body: { addEventListener: (type, fn) => clickListeners.push([type, fn]) },
+  body: {
+    addEventListener: (type, fn) => clickListeners.push([type, fn]),
+    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+  },
 };
 
 // app.js globals: parse its top-level names with the real escapeHtml, everything else a no-op.
@@ -192,8 +209,8 @@ globalThis.createSovaStatusChannel = () => ({ stop() {} });
 globalThis.apiUrl = (p) => '/api' + p;
 globalThis.LOG_LEVEL_COLORS = {};
 
-const dir = path.join(staticDir, 'js', 'pages', 'agents');
-const order = ['actions', ...pages];
+const dir = path.join(staticDir, 'js', 'pages');
+const order = ['agents/actions', ...pages];
 const mods = {};
 for (const name of order) {
   try { mods[name] = await import(pathToFileURL(path.join(dir, name + '.js')).href); }
@@ -211,8 +228,9 @@ function click(action, args) {
   const event = { target: { closest: () => node }, stopPropagation() {} };
   for (const [type, fn] of clickListeners) if (type === 'click') fn(event);
 }
-const clicks = [['toggle-pr-tracker'], ['set-pr-filter', ['mine']], ['switch-tab', ['failed']], ['expand-tasks'],
-  ['collapse-tasks'], ['history-next'], ['stop'], ['hide-launch-modal'], ['toggle-pr-group', ['open']]];
+const clicks = [['toggle-pr-tracker'], ['set-pr-filter', ['mine']], ['switch-tab', ['failed']], ['work-toggle-hidden'],
+  ['work-toggle-group', ['yours']], ['work-select', [42]], ['history-next'], ['stop'], ['hide-launch-modal'],
+  ['toggle-pr-group', ['open']]];
 for (const [action, args] of clicks) {
   try { click(action, args); } catch (e) { failures.push(`click ${action}: ${e.stack}`); }
 }
@@ -255,7 +273,7 @@ class TestAgentsModulesRunUnderNode:
         result = json.loads(proc.stdout)
         assert result["failures"] == []
         assert result["bodyClick"] == 1, "actions.init() must attach exactly one delegated click listener"
-        assert len(result["polls"]) == 7
+        assert len(result["polls"]) == 6
 
 
 # Drives the log viewer through hide, show and reconnect with a fake EventSource, to prove that a line
@@ -298,12 +316,11 @@ const content = {
 const viewer = { classList: { add() {}, remove() {}, toggle() {}, contains: () => false } };
 const doc = {
   hidden: false,
-  // No tab strip: with none rendered updateLogTabs() returns early instead of closing a viewer that
-  // has no matching running agent in this stub.
+  // No tab strip unless a scenario sets globalThis.__logTabs: with none rendered updateLogTabs() returns early.
   getElementById: (id) => {
     if (id === 'log-content') return content;
     if (id === 'log-viewer') return viewer;
-    return id === 'log-tabs' ? null : proxy();
+    return id === 'log-tabs' ? (globalThis.__logTabs || null) : proxy();
   },
   querySelector: () => null, querySelectorAll: () => [], createElement: () => proxy(),
   addEventListener: (type, fn) => docListeners.push([type, fn]), removeEventListener() {},
@@ -336,7 +353,7 @@ const dir = path.join(staticDir, 'js', 'pages', 'agents');
 const load = (n) => import(pathToFileURL(path.join(dir, n + '.js')).href);
 await load('actions');
 const viewerModule = await load('log-viewer');
-for (const n of ['work-items', 'launch-modal', 'pr-tracker', 'agent-cards', 'history', 'kanban', 'live-status']) {
+for (const n of ['launch-modal', 'pr-tracker', 'agent-cards', 'history', 'live-status']) {
   await load(n);
 }
 viewerModule.init();
@@ -393,6 +410,18 @@ out.afterBackfill = texts();
 resumed.emit('output', 'l5');
 out.afterLive = texts();
 process.stdout.write(JSON.stringify(out));
+"""
+
+_LOG_EMPTY_TABS_SCENARIO = r"""
+globalThis.__logTabs = { innerHTML: '<button>stale tab</button>' };
+globalThis.__onFetch = (url) => Promise.reject(new Error('offline'));
+viewerModule._autoOpenLogsIfIdle(7);
+// No agent is active (the opened run finished): the strip clears, the log the user opened stays.
+viewerModule.updateLogTabs([]);
+out.openRun = viewerModule.getActiveLogRunId();
+out.tabs = globalThis.__logTabs.innerHTML;
+// The open viewer keeps timers and a stream alive: end the script once the result is flushed.
+process.stdout.write(JSON.stringify(out), () => process.exit(0));
 """
 
 _LOG_POLL_SCENARIO = r"""
@@ -498,67 +527,41 @@ out.afterPoll = texts();
 process.stdout.write(JSON.stringify(out), () => process.exit(0));
 """
 
-_GITHUB_USER_SCENARIO = r"""
-const workItems = await load('work-items');
-let calls = 0;
-workItems.onGithubUserChange(() => { throw new Error('a listener that throws'); });
-workItems.onGithubUserChange(() => { calls++; });
-globalThis.fetch = () => Promise.resolve({
-  ok: true,
-  json: () => Promise.resolve({ items: [], github_user: 'octocat', slots_available: 1, max_concurrent: 2 }),
-});
-const errors = [];
-console.error = (...a) => errors.push(a.map(String).join(' '));
-out.before = workItems.getGithubUser();
-await workItems.loadWorkItems();
-out.afterFirstLoad = [workItems.getGithubUser(), calls];
-await workItems.loadWorkItems();
-out.callsAfterSecondLoad = calls;
-out.errorsLogged = errors.length;
-process.stdout.write(JSON.stringify(out));
-"""
 
-
-# The Agents page's "N of M agents running": the running count is the pool's (agents_running), and the limit is a
-# settingStepper for max_parallel_agents built once, then updated in place on each poll.
+# The Work header's "N running" and agent limit: the running count is the pool's (board.agents.running), and the
+# limit is one settingStepper for max_parallel_agents built at init, then updated in place on each board load.
 _AGENT_LIMIT_SCENARIO = r"""
-const workItems = await load('work-items');
 const els = {};
 const baseGetElementById = doc.getElementById;
 doc.getElementById = (id) => {
-  if (id === 'agent-limit-running' || id === 'agent-limit-control') {
+  if (id === 'hdr-agents-running' || id === 'hdr-agents-limit') {
     return els[id] ||= { textContent: '', children: [], appendChild(c) { this.children.push(c); } };
   }
   return baseGetElementById(id);
 };
+const setTextStart = appSrc.indexOf('function setText(');
+new Function('document', appSrc.slice(setTextStart, appSrc.indexOf('\n}\n', setTextStart) + 2)
+  + '; globalThis.setText = setText;')(doc);
 const made = [];
 const setValues = [];
 globalThis.settingStepper = (key, opts) => {
-  const ctl = { key, opts, sovaSetValue: (v) => setValues.push(v) };
   made.push({ key, value: opts.value, min: opts.min, step: opts.step });
-  return ctl;
+  return { key, opts, sovaSetValue: (v) => setValues.push(v) };
 };
-let reply = {
-  items: [], github_user: 'octocat', running_count: 0, agents_running: 2, slots_available: 2, max_concurrent: 4,
-};
-globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(reply) });
-await workItems.loadWorkItems();
-out.running = els['agent-limit-running'].textContent;
+const header = await import(pathToFileURL(path.join(staticDir, 'js', 'pages', 'work', 'header.js')).href);
+header.init();
+header.renderHeader({ agents: { running: 2, limit: 4 } });
+out.running = els['hdr-agents-running'].textContent;
 out.made = made;
-out.mounted = els['agent-limit-control'].children.length;
-reply = Object.assign({}, reply, { agents_running: 1, max_concurrent: 3 });
-await workItems.loadWorkItems();
-out.runningAfterPoll = els['agent-limit-running'].textContent;
+out.mounted = els['hdr-agents-limit'].children.length;
+header.renderHeader({ agents: { running: 1, limit: 3 } });
+out.runningAfterPoll = els['hdr-agents-running'].textContent;
 out.madeAfterPoll = made.length;
-out.setValues = setValues;
-// A save completed while the next poll was in flight: that poll's limit may predate the save and is not shown.
-let saves = 0;
-globalThis.settingSaveCount = () => saves;
-reply = Object.assign({}, reply, { agents_running: 0, max_concurrent: 2 });
-globalThis.fetch = () => { saves += 1; return Promise.resolve({ ok: true, json: () => Promise.resolve(reply) }); };
-await workItems.loadWorkItems();
-out.runningAfterStalePoll = els['agent-limit-running'].textContent;
-out.setValuesAfterStalePoll = setValues;
+out.setValues = setValues.slice();
+// A save completed while the next board load was in flight: that load's limit may predate the save and is not shown.
+header.renderHeader({ agents: { running: 0, limit: 2 } }, true);
+out.runningAfterStalePoll = els['hdr-agents-running'].textContent;
+out.setValuesAfterStalePoll = setValues.slice();
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -657,117 +660,6 @@ for (let i = 0; i < 3; i++) { toggle(); out.visible.push(group.visible()); }
 process.stdout.write(JSON.stringify(out));
 """
 
-# The Agents task list buckets by work state, never by run history: every item the API returns must be
-# reachable under "All", and an old failed run must not lift an issue above higher-priority work.
-_TASK_BUCKETS_SCENARIO = r"""
-globalThis._priorityRankMap = () => ({ critical: 0, high: 1, medium: 2, low: 3 });
-const item = (n, state, extra) => Object.assign(
-  { issue_number: n, title: 'T' + n, state, issue_priority: 'medium', priority: 0, assignees: [] }, extra || {});
-const items = [
-  item(1, 'agent_running', { running_agent: { role: 'developer', run_id: 'r1' }, assignees: ['octocat'] }),
-  item(2, 'pr_awaiting_review', { pr_number: 20, pr_details: { author: 'someone', assignees: ['OctoCat'] } }),
-  item(3, 'in_progress'),
-  item(4, 'spec_review'),
-  item(5, 'pr_draft', { pr_number: 50, pr_details: { author: 'someone', assignees: ['other'] } }),
-  item(6, 'triaged', { issue_priority: 'low', last_run: { status: 'failed' } }),
-  item(7, 'researched', { issue_priority: 'critical' }),
-  item(8, 'backlog', { issue_priority: 'high', assignees: ['octocat'] }),
-  item(9, 'needs_spec', { issue_priority: 'medium', assignees: ['octocat'] }),
-  item(10, 'human_only', { issue_priority: 'low', assignees: ['octocat'] }),
-  item(11, 'triaged', { issue_priority: 'medium', last_run: { status: 'interrupted' } }),
-  item(12, '', { assignees: ['octocat'] }),
-  item(13, 'some_future_state'),
-  item(14, 'merged', { assignees: ['octocat'] }),
-];
-const grid = { html: '', get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; } };
-const search = { value: '', addEventListener() {} };
-const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'task-grid' ? grid : id === 'task-search' ? search : baseGetElementById(id));
-const clickHandlers = [];
-doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
-globalThis.fetch = () => Promise.resolve({
-  ok: true,
-  json: () => Promise.resolve({ items, slots_available: 1, max_concurrent: 2, github_user: 'octocat' }),
-});
-(await load('actions')).init();
-const workItems = await load('work-items');
-workItems.init();
-await workItems.loadWorkItems();
-
-const click = (action, args) => {
-  const attrs = { 'data-action': action, 'data-args': args === undefined ? null : JSON.stringify(args) };
-  const event = { target: { closest: () => ({ getAttribute: (n) => attrs[n] ?? null }) }, stopPropagation() {} };
-  clickHandlers.forEach((fn) => fn(event));
-};
-const shown = () => [...grid.html.matchAll(/>T(\d+)</g)].map((m) => Number(m[1]));
-out.collapsed = shown();
-out.hasShowMore = grid.html.includes('expand-suggested');
-click('expand-suggested');
-out.expanded = shown();
-out.hasShowLess = grid.html.includes('collapse-suggested');
-click('collapse-suggested');
-out.recollapsed = shown();
-// "Mine" renders its matches uncapped; "All" caps each block until expanded, so the criterion is that every
-// item "Mine" shows stays reachable under "All" once both blocks are expanded.
-click('set-task-assignee', 'mine');
-out.mine = shown();
-click('set-task-assignee', 'all');
-click('expand-tasks');
-click('expand-tasks');
-click('expand-suggested');
-out.allExpanded = shown();
-process.stdout.write(JSON.stringify(out));
-"""
-
-# The 30s work-items poll lands on an unchanged payload almost every time: the grid must not be rewritten then
-# (an open card menu survives), but every input that changes the markup, and the early-return views, must.
-_TASK_GRID_REWRITE_SCENARIO = r"""
-globalThis._priorityRankMap = () => ({ critical: 0, high: 1, medium: 2, low: 3 });
-const items = [
-  { issue_number: 1, title: 'T1', state: 'agent_running', issue_priority: 'medium', priority: 0, assignees: ['octocat'],
-    running_agent: { role: 'developer', run_id: 'r1', elapsed_seconds: 10 } },
-  { issue_number: 2, title: 'T2', state: 'triaged', issue_priority: 'low', priority: 0, assignees: [] },
-];
-let writes = 0;
-const grid = { html: '', get innerHTML() { return this.html; }, set innerHTML(v) { writes++; this.html = v; } };
-let onSearch = () => {};
-const search = { value: '', addEventListener(_, fn) { onSearch = fn; } };
-const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'task-grid' ? grid : id === 'task-search' ? search : baseGetElementById(id));
-const clickHandlers = [];
-doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
-globalThis.fetch = () => Promise.resolve({
-  ok: true,
-  json: () => Promise.resolve({ items: JSON.parse(JSON.stringify(items)), slots_available: 1, max_concurrent: 2,
-    github_user: 'octocat' }),
-});
-(await load('actions')).init();
-const workItems = await load('work-items');
-workItems.init();
-await workItems.loadWorkItems();
-
-const afterFirstLoad = writes;
-// A running agent's elapsed_seconds moves on every fetch, but no card shows it: the grid must stay put.
-items[0].running_agent.elapsed_seconds = 40;
-await workItems.loadWorkItems();
-out.writesOnIdenticalReload = writes - afterFirstLoad;
-
-items[1].title = 'T2 renamed';
-await workItems.loadWorkItems();
-out.writesOnChangedData = writes - afterFirstLoad;
-
-const beforeFilter = writes;
-const type = (text) => { search.value = text; onSearch(); };
-type('zzz');
-out.noMatch = grid.html.includes('No matching issues');
-type('');
-out.restored = grid.html.includes('T1');
-type('zzz');
-out.noMatchAgain = grid.html.includes('No matching issues');
-out.writesOnFilterChanges = writes - beforeFilter;
-process.stdout.write(JSON.stringify(out));
-"""
-
 # Storage that throws (blocked cookies, some private-browsing modes) must not stop a module from evaluating:
 # one that throws while the import graph loads leaves no init() running and the whole page blank.
 _THROWING_STORAGE_SCENARIO = r"""
@@ -778,7 +670,7 @@ const storageStart = appSrc.indexOf('function safeStorageGet(');
 const storageEnd = appSrc.indexOf('\n}\n', appSrc.indexOf('function safeStorageSet(')) + 3;
 new Function(appSrc.slice(storageStart, storageEnd)
   + '; globalThis.safeStorageGet = safeStorageGet; globalThis.safeStorageSet = safeStorageSet;')();
-for (const name of ['work-items', 'pr-tracker']) {
+for (const name of ['pr-tracker', '../work/board']) {
   try {
     await import(pathToFileURL(path.join(dir, name + '.js')).href + '?throwing-storage');
     out[name] = 'evaluated';
@@ -901,16 +793,16 @@ process.stdout.write(JSON.stringify(out), () => process.exit(0));
 """
 )
 
-# The PR tracker redraws when the GitHub user arrives, but not over a failed or not yet loaded list.
-_PR_TRACKER_USER_ARRIVAL_SCENARIO = r"""
-const workItems = await load('work-items');
+# The PR tracker never paints "No open PRs" over a failed or not yet loaded list, the Mine filter included.
+_PR_TRACKER_FAILED_LOAD_SCENARIO = r"""
 const list = {
   html: '', style: {},
   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; },
 };
 const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'pr-tracker-list' ? list : baseGetElementById(id));
+const panel = { getAttribute: (n) => (n === 'data-github-user' ? 'octocat' : null) };
+doc.getElementById = (id) => (id === 'pr-tracker-list' ? list : id === 'pr-tracker' ? panel : baseGetElementById(id));
 const clickHandlers = [];
 doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
 (await load('actions')).init();
@@ -944,8 +836,6 @@ click('set-pr-filter', ['mine']);
 out.beforeAnyLoad = list.html;
 await loadPrs();
 out.afterFailedLoad = list.html;
-await workItems.loadWorkItems();
-out.afterUserArrivesOverFailure = list.html;
 click('set-pr-filter', ['mine']);
 out.afterFilterClickOverFailure = list.html;
 prsOk = true;
@@ -957,14 +847,14 @@ process.stdout.write(JSON.stringify(out));
 
 # The PR tracker's Mine filter keeps a PR the user authored or is assigned to, once each, in any letter case.
 _PR_TRACKER_MINE_SCENARIO = r"""
-const workItems = await load('work-items');
 const list = {
   html: '', style: {},
   classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; },
 };
 const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'pr-tracker-list' ? list : baseGetElementById(id));
+const panel = { getAttribute: (n) => (n === 'data-github-user' ? 'octocat' : null) };
+doc.getElementById = (id) => (id === 'pr-tracker-list' ? list : id === 'pr-tracker' ? panel : baseGetElementById(id));
 const clickHandlers = [];
 doc.body.addEventListener = (type, fn) => { if (type === 'click') clickHandlers.push(fn); };
 (await load('actions')).init();
@@ -993,7 +883,6 @@ globalThis.fetch = (url) => {
 };
 console.warn = () => {};
 (await load('pr-tracker')).init();
-await workItems.loadWorkItems();
 await polled[0]();
 const click = (action, args) => {
   const attrs = { 'data-action': action, 'data-args': JSON.stringify(args) };
@@ -1012,7 +901,7 @@ process.stdout.write(JSON.stringify(out));
 
 class TestAgentsPageMarkup:
     def test_template_has_no_inline_script_logic_or_handlers(self) -> None:
-        html = (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
         assert not re.search(r"\son(?:click|change|input|keydown|error)=", html)
         assert "function " not in html
         scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.DOTALL)
@@ -1022,10 +911,10 @@ class TestAgentsPageMarkup:
     def test_the_inline_entry_script_parses(self) -> None:
         """make lint-js sees only files under static/, and this block is what imports and starts every module:
         a stray bracket in its init list would blank the page while the lint still passed."""
-        _require_node("node is required to syntax-check the Agents page entry script")
-        html = (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
+        _require_node("node is required to syntax-check the Work page entry script")
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
         match = re.search(r'<script type="module">(.*?)</script>', html, re.DOTALL)
-        assert match, "agents.html has no module entry script"
+        assert match, "work.html has no module entry script"
         proc = subprocess.run(
             ["node", "--input-type=module", "--check"],
             input=match.group(1),
@@ -1038,19 +927,19 @@ class TestAgentsPageMarkup:
 
     @pytest.mark.parametrize("name", _PAGE_MODULES)
     def test_each_module_is_imported_and_initialised(self, name: str) -> None:
-        html = (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
-        assert f"/static/js/pages/agents/{name}.js" in html
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
+        assert f"/static/js/pages/{name}.js" in html
         assert "export function init() {" in _module_source(name)
 
     def test_each_init_runs_isolated_with_actions_first(self) -> None:
         """One module throwing during init() must not stop the modules after it from starting."""
-        html = (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
         script = html[html.index('<script type="module">') :]
         assert "try {" in script
         assert "console.error('agents page: ' + name + ' init failed', e);" in script
         order = re.findall(r"\['([\w-]+)', init\w+\]", script)
         assert order[0] == "actions", "the others register their click handlers into it"
-        assert order == ["actions", *(m for m in _PAGE_MODULES)]
+        assert order == ["actions", *(label for label, _path in _PAGE_MODULE_ENTRIES)]
         assert not re.search(r"^init\w+\(\);$", script, re.MULTILINE), "a bare init call runs outside the guard"
 
     def test_render_utils_is_a_stateless_leaf_without_an_init(self) -> None:
@@ -1061,7 +950,7 @@ class TestAgentsPageMarkup:
         assert "Stateless" in source
 
     def test_template_is_a_small_shell(self) -> None:
-        assert len((_TEMPLATES / "agents.html").read_text(encoding="utf-8").splitlines()) < 400
+        assert len(_WORK_TEMPLATE.read_text(encoding="utf-8").splitlines()) < 400
 
     @pytest.mark.parametrize("name", ["control.html", "tasks.html", "overview.html", "runs.html"])
     def test_orphaned_templates_stay_deleted(self, name: str) -> None:
@@ -1078,11 +967,12 @@ class TestDelegatedActions:
     @staticmethod
     def _emitted_actions() -> set[str]:
         emitted: set[str] = set()
-        html = (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
         emitted.update(re.findall(r'data-action="([\w-]+)"', html))
         for source in _all_page_sources().values():
             emitted.update(re.findall(r"actionAttrs\('([\w-]+)'", source))
             emitted.update(re.findall(r'data-action="([\w-]+)"', source))
+            emitted.update(re.findall(r"_btn\([^,]+, [^,]+, '([\w-]+)'", source))
         return emitted
 
     @staticmethod
@@ -1154,7 +1044,6 @@ class TestPollingUsesVisibilityAwarePoll:
     @pytest.mark.parametrize(
         ("module", "fn", "interval_ms"),
         [
-            ("work-items", "loadAgentsStatRow", 60000),
             ("pr-tracker", "loadPrTracker", 30000),
             ("pr-tracker", "_syncCrQuota", 300000),
             ("live-status", "_pollDuringStatusOutage", 2000),
@@ -1186,11 +1075,9 @@ class TestPollingUsesVisibilityAwarePoll:
             ("log-viewer", "logPollInterval = setTimeout(pollLogs, _logBackoffMs);"),
             ("log-viewer", "resume.connectTimer = setTimeout(function() {"),
             ("agent-cards", "_completedCleanupTimer = setTimeout(function() {"),
-            ("live-status", "_workItemsRefreshTimer = setTimeout(function() {"),
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
-            ("work-items", "var timer = setTimeout(function() { ctrl.abort(); }, _WORK_ITEMS_FETCH_TIMEOUT_MS);"),
-            ("kanban", "var timer = setTimeout(function() { ctrl.abort(); }, _KANBAN_FETCH_TIMEOUT_MS);"),
+            ("work/board", "var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);"),
             ("history", "_refreshTimer = setTimeout(function() {"),
             (
                 "history",
@@ -1291,7 +1178,7 @@ class TestPollingUsesVisibilityAwarePoll:
         body = body[: body.index("\n}\n")]
         assert "markRefresh('pr-tracker', true," in body.split("} catch (e) {")[0]
         assert "markRefresh('pr-tracker', false," in body.split("} catch (e) {")[1]
-        assert 'id="pr-tracker-stale"' in (_TEMPLATES / "agents.html").read_text(encoding="utf-8")
+        assert 'id="pr-tracker-stale"' in _WORK_TEMPLATE.read_text(encoding="utf-8")
 
     def test_hidden_tab_handler_leaves_pollers_to_the_helper(self) -> None:
         source = _module_source("live-status")
@@ -1878,9 +1765,8 @@ class TestAgentsModuleResponsibilities:
     @pytest.mark.parametrize(
         ("module", "names"),
         [
-            ("agent-cards", ["loadAgents", "renderAgentCard", "renderCompletedCard", "executeHandoffAction"]),
-            ("agent-cards", ["triggerRebase", "stopAgent", "resumeFromApproval", "enhancePlannerCards"]),
-            ("launch-modal", ["quickStart", "quickStartRole", "rerunAgent", "showLaunchModal"]),
+            ("agent-cards", ["loadAgents", "renderCompletedCard", "enhancePlannerCards", "createPlannerIssues"]),
+            ("launch-modal", ["rerunAgent", "showLaunchModal"]),
             ("history", ["loadHistory", "renderHistoryTable", "switchTab", "refreshHistoryAfterRun"]),
         ],
     )
@@ -1889,30 +1775,11 @@ class TestAgentsModuleResponsibilities:
         for name in names:
             assert re.search(rf"function {name}\(", source), f"{name} is not in {module}.js"
 
-    def test_run_command_lives_with_the_launch_actions_not_the_pr_tracker(self) -> None:
-        """Task cards and PR rows both emit run-command; it launches an agent, so it sits beside quickStart."""
-        launch = _module_source("launch-modal")
-        assert "async function runCommand(" in launch
-        assert "'run-command':" in launch
-        assert "'run-command-with-merge-blockers':" in launch
-        tracker = _module_source("pr-tracker")
-        assert "runCommand" not in tracker
-        assert "/agents/command" not in tracker
-
     def test_broken_avatar_handler_is_registered_once_by_the_shared_dispatcher_module(self) -> None:
-        """Task rows and PR rows both emit data-hide-on-error, so no single page module may own the listener."""
+        """PR rows emit data-hide-on-error, and the shared dispatcher owns the listener, not a page module."""
         owners = [name for name, src in _all_page_sources().items() if "img[data-hide-on-error]" in src]
         assert owners == ["actions"]
         assert "document.addEventListener('error'" in _module_source("actions")
-
-    def test_an_active_filter_does_not_fetch_llm_suggestions(self) -> None:
-        """Filtering is a view change; a suggestion is an LLM call per PR and the fetch walks every item."""
-        body = _module_source("work-items")
-        body = body[body.index("function renderTaskCards()") :]
-        body = body[: body.index("\n}\n")]
-        filtered = body[body.index("if (hasActiveFilter) {") : body.index("var html = '';")]
-        assert "fetchLlmSuggestions" not in filtered
-        assert body.count("fetchLlmSuggestions()") == 1
 
     def test_history_tab_return_refreshes_the_visible_list(self) -> None:
         """One visibility-aware poll refreshes whichever tab is shown, since both tabs share one table; a
@@ -1922,14 +1789,6 @@ class TestAgentsModuleResponsibilities:
         assert "document.addEventListener('visibilitychange'" not in source
         switch = source[source.index("function switchTab(") :]
         assert "_state.tab = " in switch[: switch.index("\n}\n")]
-
-    def test_pr_stage_states_are_listed_once_and_cover_every_python_pr_state(self) -> None:
-        """A PR work item state added in work_state.py must reach the PR-stage filter, sort tier and suggestions."""
-        source = _module_source("work-items")
-        assert "var _PR_STAGE_STATES = new Set(_STATE_FILTER_GROUPS.pr_stage);" in source
-        group = source[source.index("pr_stage: [") :]
-        listed = set(re.findall(r"'(pr_\w+)'", group[: group.index("],")]))
-        assert listed == {m.value for m in WorkItemState if m.value.startswith("pr_")}
 
     @pytest.mark.parametrize(
         ("status", "finished"),
@@ -1974,7 +1833,7 @@ class TestAgentsModuleResponsibilities:
         assert "if (!issue) return;" in handler[: handler.index("\n    },")]
 
     def test_rerun_is_registered_by_the_launch_modal_not_by_a_module_that_renders_the_button(self) -> None:
-        """History, the kanban, the interrupted-runs banner and the agent cards all emit it; it opens the launch
+        """History, the interrupted-runs banner and the planner cards all emit it; it opens the launch
         modal, so it is registered beside the other launch actions and no card module's init gates it."""
         owners = [name for name, src in _all_page_sources().items() if "'rerun': function" in src]
         assert owners == ["launch-modal"]
@@ -1983,17 +1842,18 @@ class TestAgentsModuleResponsibilities:
             for name, src in _all_page_sources().items()
             if "actionAttrs('rerun'" in src or 'data-action="rerun"' in src
         }
-        assert {"history", "kanban", "live-status", "agent-cards"} <= emitters
+        assert {"history", "live-status", "agent-cards"} <= emitters
         assert "launch-modal.js" not in _module_source("agent-cards")
 
-    def test_pr_tracker_redraws_when_the_github_user_arrives(self) -> None:
+    def test_pr_tracker_mine_filter_reads_the_user_from_the_page(self) -> None:
+        """The template writes the configured user on the panel; with none, Mine says so instead of "No open PRs"."""
         tracker = _module_source("pr-tracker")
-        assert "onGithubUserChange(function() {" in tracker
-        assert "if (_prFilter === 'mine' && _prTrackerLoaded === 'ok') _renderPrTracker();" in tracker
+        assert "panel.getAttribute('data-github-user')" in tracker
         render = tracker[tracker.index("function _renderPrTracker()") :]
         render = render[: render.index("\n}\n")]
-        assert render.index("!getGithubUser()") < render.index("No open PRs")
-        assert "GitHub user not known yet" in render
+        assert render.index("!_githubUser()") < render.index("No open PRs")
+        assert "No GitHub user is configured" in render
+        assert "data-github-user=\"{{ github_user() or '' }}\"" in _WORK_TEMPLATE.read_text(encoding="utf-8")
 
     def test_interrupted_check_runs_on_load_tab_return_and_socket_open(self) -> None:
         live = _module_source("live-status")
@@ -2021,52 +1881,13 @@ console.log(JSON.stringify([atStart, whileHidden, calls]));
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout) == [1, 1, 2]
 
-    def test_secondary_action_without_handler_args_does_not_break_the_grid(self) -> None:
-        """renderTaskCard throwing would make loadWorkItems replace every task with "Failed to load tasks"."""
-        source = _module_source("work-items")
-        assert "var ha = sa.handler_args || {};" in source
-        assert "sa.handler_args." not in source
-
     def test_modules_read_storage_only_through_the_safe_helpers(self) -> None:
         """Both read it while the module evaluates, where a throwing localStorage blanks the whole page."""
-        for name in ("work-items", "pr-tracker"):
+        for name in ("pr-tracker", "work/board"):
             assert not re.search(r"\blocalStorage\.", _module_source(name)), name
 
     def test_dead_code_the_split_carried_over_is_gone(self) -> None:
-        assert "_runningIssues" not in _module_source("work-items")
-        assert "var prNum" not in _module_source("work-items")
         assert "agent-role" not in _module_source("launch-modal")
-
-    def test_not_started_issues_sort_by_issue_priority_before_state(self) -> None:
-        """A low researched issue used to sit above a high triaged one, burying the work that mattered."""
-        _require_node("node is required to run the task sort")
-        source = _module_source("work-items")
-        start = source.index("var _NOT_STARTED_STATES")
-        end = source.index("\n}\n", source.index("function _sortWorkItems(")) + 2
-        script = f"""
-var _STATE_FILTER_GROUPS = {{backlog: ['backlog', 'needs_spec', 'triaged', 'researched']}};
-var _PR_STAGE_STATES = new Set(['pr_ci_running']);
-function _priorityRankMap() {{ return {{blocker: 0, critical: 1, high: 2, medium: 3, low: 4, undefined: 5}}; }}
-{source[start:end]}
-const items = [
-  {{n: 1, state: 'researched', priority: 0, issue_priority: 'low'}},
-  {{n: 2, state: 'human_only', priority: 5, issue_priority: 'high'}},
-  {{n: 3, state: 'triaged', priority: 2, issue_priority: 'high'}},
-  {{n: 4, state: 'triaged', priority: 2, issue_priority: 'undefined'}},
-  {{n: 5, state: 'researched', priority: 0, issue_priority: 'high'}},
-  {{n: 6, state: 'pr_ci_running', priority: -2, issue_priority: 'low'}},
-  {{n: 7, state: 'agent_running', priority: 2, issue_priority: 'low'}},
-];
-console.log(JSON.stringify(items.sort(_sortWorkItems).map(i => i.n)));
-"""
-        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
-        assert proc.returncode == 0, proc.stderr
-        assert json.loads(proc.stdout) == [7, 6, 5, 3, 1, 4, 2]
-
-    def test_suggested_tasks_use_the_shared_sort(self) -> None:
-        source = _module_source("work-items")
-        assert "_workItems.filter(_isNotStarted).sort(_sortSuggested);" in source
-        assert "return _sortWorkItems(a, b);" in source, "ties on issue priority fall back to the shared sort"
 
 
 class TestVisualAuditSkillChecksTheClientPatterns:
@@ -2115,6 +1936,11 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["secondPollInFlight"] == 2, "returning to the tab restarts polling"
         assert result["afterStalePoll"] == [], "the pre-hide response must be dropped"
         assert result["afterCurrentPoll"] == ["a"], "the line is appended once, not once per chain"
+
+    def test_an_empty_active_list_clears_the_tab_strip_but_keeps_the_open_log(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _LOG_EMPTY_TABS_SCENARIO)
+        assert result["openRun"] == 7, "a finished run's log opened from the board must stay open"
+        assert result["tabs"] == ""
 
     def _run(self, tmp_path: Path, scenario: str) -> dict:
         _require_node("node is required to run the log viewer")
@@ -2178,10 +2004,9 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["rendered"] == ["a", "b"]
 
     def test_pr_tracker_never_turns_a_failed_load_into_no_open_prs(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, _PR_TRACKER_USER_ARRIVAL_SCENARIO)
+        result = self._run(tmp_path, _PR_TRACKER_FAILED_LOAD_SCENARIO)
         assert result["beforeAnyLoad"] == "", "a filter click before the first load paints nothing"
         assert "Failed to load open PRs" in result["afterFailedLoad"]
-        assert result["afterUserArrivesOverFailure"] == result["afterFailedLoad"]
         assert result["afterFilterClickOverFailure"] == result["afterFailedLoad"]
         assert result["afterRecovery"] is True, "the next good poll renders the list"
 
@@ -2195,64 +2020,29 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["rendered"] is True
         assert result["visible"] == [False, True, False, True]
 
-    def test_task_list_follows_work_state_and_reaches_every_item(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, _TASK_BUCKETS_SCENARIO)
-        # Active work first (running, PR stage, spec review, in progress, draft PR); an empty, unknown or
-        # terminal (merged) state lands here too, on purpose, instead of vanishing.
-        assert result["collapsed"][:8] == [1, 2, 4, 3, 5, 12, 13, 14]
-        assert result["collapsed"][8:] == [7, 8, 9, 11, 6], "only the first five Suggested items show collapsed"
-        assert result["hasShowMore"] is True, "the Suggested block pages instead of capping"
-        # Highest issue priority first, regardless of run history: 7 (critical) before 8 (high), then 9 and 11
-        # (medium), then the low ones; the old failed run on 6 must not lift it.
-        assert result["expanded"][8:] == [7, 8, 9, 11, 6, 10]
-        assert sorted(result["expanded"]) == list(range(1, 15)), "All renders every item the API returned"
-        assert result["hasShowLess"] is True
-        assert result["recollapsed"] == result["collapsed"]
-        # 2 is the user's through its PR's assignees alone (issue unassigned, PR authored by someone else).
-        assert sorted(result["mine"]) == [1, 2, 8, 9, 10, 12, 14], "Mine lists only the user's items, uncapped"
-        assert set(result["mine"]) <= set(result["allExpanded"]), "every item Mine shows is reachable under All"
-        assert sorted(result["allExpanded"]) == list(range(1, 15))
-
-    def test_task_grid_is_rewritten_only_when_something_it_renders_changed(self, tmp_path: Path) -> None:
-        result = self._run(tmp_path, _TASK_GRID_REWRITE_SCENARIO)
-        assert result["writesOnIdenticalReload"] == 0, "an unchanged poll must leave the DOM (and any open menu) alone"
-        assert result["writesOnChangedData"] == 1
-        assert result["noMatch"] is True
-        assert result["restored"] is True
-        assert result["noMatchAgain"] is True, "the early-return view must refresh the key, not leave it stale"
-        assert result["writesOnFilterChanges"] == 3
-
     def test_modules_evaluate_when_storage_throws(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _THROWING_STORAGE_SCENARIO)
-        assert result == {"work-items": "evaluated", "pr-tracker": "evaluated"}
+        assert result == {"pr-tracker": "evaluated", "../work/board": "evaluated"}
 
     def test_interrupted_banner_loads_on_open_and_tab_return_without_a_socket(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _INTERRUPTED_WITHOUT_SOCKET_SCENARIO)
         assert result["afterLoad"] == 1
         assert result["afterTabReturn"] == 2
 
-    def test_listeners_hear_the_github_user_once_and_a_throwing_one_does_not_break_the_load(
-        self, tmp_path: Path
-    ) -> None:
-        result = self._run(tmp_path, _GITHUB_USER_SCENARIO)
-        assert result["before"] == ""
-        assert result["afterFirstLoad"] == ["octocat", 1]
-        assert result["callsAfterSecondLoad"] == 1, "an unchanged user must not redraw the PR tracker on every poll"
-        assert result["errorsLogged"] == 1
-
     def test_agent_limit_shows_the_pool_count_and_one_stepper_updated_in_place(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _AGENT_LIMIT_SCENARIO)
-        assert result["running"] == "2", "the running count is agents_running, the number the limit check uses"
-        assert result["made"] == [{"key": "max_parallel_agents", "value": 4, "min": 1, "step": 1}]
+        assert result["running"] == "2", "the running count is the pool's, the number the limit check uses"
+        # No value: the stepper loads its own.
+        assert result["made"] == [{"key": "max_parallel_agents", "min": 1, "step": 1}]
         assert result["mounted"] == 1
         assert result["runningAfterPoll"] == "1"
-        assert result["madeAfterPoll"] == 1, "a poll must update the stepper, not replace it mid-save"
-        assert result["setValues"] == [3]
+        assert result["madeAfterPoll"] == 1, "a board load must update the stepper, not replace it mid-save"
+        assert result["setValues"] == [4, 3]
 
     def test_a_poll_that_overlapped_a_save_does_not_reset_the_limit(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _AGENT_LIMIT_SCENARIO)
         assert result["runningAfterStalePoll"] == "0", "the running count still updates"
-        assert result["setValuesAfterStalePoll"] == [3], "the limit from a response that predates a save is dropped"
+        assert result["setValuesAfterStalePoll"] == [4, 3], "the limit from a response that predates a save is dropped"
 
 
 class TestRenderIfChanged:
@@ -3069,198 +2859,6 @@ console.log(JSON.stringify({{ unchanged, stillUnchanged, rebuilt: writes === fir
         assert out["display"] == ["none", "", "none"], "bug and ui are hidden by the search 'do', docs stays"
         assert out["checkedBug"] is True
 
-    def test_task_grid_is_only_ever_written_through_the_helper(self) -> None:
-        source = _module_source("work-items")
-        assert "getElementById('task-grid').innerHTML" not in source
-        assert "grid.innerHTML" not in source
-
-
-_WORK_ITEMS_TIMEOUT_SCENARIO = r"""
-const workItems = await load('work-items');
-const grid = { html: '' };
-const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'task-grid' ? grid : baseGetElementById(id));
-globalThis.renderIfChanged = (container, html) => { container.html = html; return true; };
-globalThis.getErrorDetail = async () => 'Failed to load tasks';
-globalThis.settingSaveCount = () => 0;
-const marks = [];
-globalThis.markRefresh = (key, ok) => marks.push([key, ok]);
-// Fire the 15s abort timer at once; every other timer is left alone.
-const realSetTimeout = globalThis.setTimeout;
-globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms === 15000 ? 0 : ms, ...rest);
-let calls = 0;
-globalThis.fetch = (url, opts) => {
-  calls += 1;
-  // A request that never answers, until its signal aborts.
-  return new Promise((_, reject) => {
-    opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-  });
-};
-console.warn = () => {};
-await workItems.loadWorkItems();
-out.firstSettled = true;
-out.firstMarks = marks.slice();
-out.grid = grid.html;
-await workItems.loadWorkItems();
-out.calls = calls;
-process.stdout.write(JSON.stringify(out));
-"""
-
-_WORK_ITEMS_SOCKET_SCENARIO = r"""
-const workItems = await load('work-items');
-const subs = [];
-const polls = [];
-globalThis.subscribeSovaSocket = (options) => { subs.push(options); return { unsubscribe() {} }; };
-globalThis.visibilityAwarePoll = (fn, ms) => { polls.push(fn.name + ':' + ms); return { id: null }; };
-globalThis.renderIfChanged = (container, html) => { container.html = html; return true; };
-globalThis.getErrorDetail = async () => 'Failed to load tasks';
-globalThis.settingSaveCount = () => 0;
-const marks = [];
-globalThis.markRefresh = (key, ok) => marks.push([key, ok]);
-console.warn = () => {};
-let calls = 0;
-let reply = { items: [], snapshot: { refresh_failed: false } };
-globalThis.fetch = () => {
-  calls += 1;
-  return reply === null
-    ? Promise.reject(new Error('offline'))
-    : Promise.resolve({ ok: true, json: async () => reply });
-};
-workItems.init();
-out.subscription = { keys: Object.keys(subs[0]).sort(), polls: polls.filter((p) => p.startsWith('loadWorkItems')) };
-const sub = subs[0];
-// A tick before anything loaded proves nothing about the list.
-sub.onMessage({ type: 'status_update' });
-out.beforeLoad = { marks: marks.length, calls };
-await sub.onOpen();
-out.afterOpen = { calls, marks: marks.slice() };
-marks.length = 0;
-sub.onMessage({ type: 'status_update' });
-out.tickWhenCurrent = marks.slice();
-marks.length = 0;
-// The server's own latest rebuild failed: the list is older than the refresh interval and must say so.
-reply = { items: [], snapshot: { refresh_failed: true } };
-sub.onMessage({ type: 'work_items_changed' });
-await tick(); await tick();
-out.serverStale = marks.slice();
-marks.length = 0;
-sub.onMessage({ type: 'status_update' });
-out.tickWhenServerStale = marks.slice();
-// A fetch failure with the socket up: retried by a later status tick (not at once, and not on every tick).
-reply = null;
-marks.length = 0;
-sub.onMessage({ type: 'work_items_changed' });
-await tick(); await tick();
-const callsAfterFailure = calls;
-sub.onMessage({ type: 'status_update' });
-out.retriedTooSoon = calls !== callsAfterFailure;
-const realNow = Date.now;
-Date.now = () => realNow() + 11000;
-reply = { items: [], snapshot: { refresh_failed: false } };
-sub.onMessage({ type: 'status_update' });
-await tick(); await tick();
-out.retriedAfterTheBackoff = calls === callsAfterFailure + 1;
-Date.now = realNow;
-process.stdout.write(JSON.stringify(out));
-"""
-
-_KANBAN_FAILURE_PRELUDE = r"""
-globalThis.localStorage = {
-  getItem: (k) => (k === 'sova-agents-view' ? 'kanban' : null), setItem() {}, removeItem() {},
-};
-const kanban = await import(pathToFileURL(path.join(dir, 'kanban.js')).href + '?kanban-failure');
-const subs = [];
-globalThis.subscribeSovaSocket = (options) => { subs.push(options); return { unsubscribe() {} }; };
-globalThis.visibilityAwarePoll = () => ({ id: null });
-const marks = [];
-globalThis.markRefresh = (key, ok) => marks.push([key, ok]);
-globalThis.getErrorDetail = async () => '';
-const columns = { html: '', addEventListener() {} };
-const baseGetElementById = doc.getElementById;
-doc.getElementById = (id) => (id === 'kanban-columns' ? columns : baseGetElementById(id));
-globalThis.renderIfChanged = (container, html) => { container.html = html; return true; };
-console.error = () => {};
-kanban.init();
-"""
-
-_KANBAN_KEEPS_THE_BOARD_SCENARIO = (
-    _KANBAN_FAILURE_PRELUDE
-    + r"""
-globalThis.__onFetch = () => Promise.resolve({ columns: [], failed: [] });
-await subs[0].onOpen();
-out.loaded = columns.html;
-globalThis.__onFetch = () => Promise.reject(new Error('API error: 500'));
-await subs[0].onOpen();
-out.afterFailure = columns.html;
-out.marks = marks.slice();
-process.stdout.write(JSON.stringify(out));
-"""
-)
-
-_KANBAN_FIRST_LOAD_FAILS_SCENARIO = (
-    _KANBAN_FAILURE_PRELUDE
-    + r"""
-globalThis.__onFetch = () => Promise.reject(new Error('API error: 500'));
-await subs[0].onOpen();
-out.html = columns.html;
-process.stdout.write(JSON.stringify(out));
-"""
-)
-
-_KANBAN_TIMEOUT_SCENARIO = (
-    _KANBAN_FAILURE_PRELUDE
-    + r"""
-// Fire the 15s abort timer at once; every other timer is left alone.
-const realSetTimeout = globalThis.setTimeout;
-globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms === 15000 ? 0 : ms, ...rest);
-let calls = 0;
-globalThis.__onFetch = (url, opts) => {
-  calls += 1;
-  // A request that never answers, until its signal aborts.
-  return new Promise((_, reject) => {
-    opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
-  });
-};
-await subs[0].onOpen();
-out.firstMarks = marks.slice();
-await subs[0].onOpen();
-out.calls = calls;
-process.stdout.write(JSON.stringify(out));
-"""
-)
-
-_KANBAN_SINGLE_FLIGHT_SCENARIO = r"""
-globalThis.localStorage = {
-  getItem: (k) => (k === 'sova-agents-view' ? 'kanban' : null), setItem() {}, removeItem() {},
-};
-const kanban = await import(pathToFileURL(path.join(dir, 'kanban.js')).href + '?kanban-view');
-const subs = [];
-const polls = [];
-globalThis.subscribeSovaSocket = (options) => { subs.push(options); return { unsubscribe() {} }; };
-globalThis.visibilityAwarePoll = (fn, ms) => { polls.push([fn.name, ms]); polls.fn = fn; return { id: null }; };
-globalThis.markRefresh = () => {};
-globalThis.getErrorDetail = async () => '';
-const releases = [];
-let fetches = 0;
-globalThis.__onFetch = () => { fetches += 1; return new Promise((resolve) => releases.push(resolve)); };
-kanban.init();
-out.subscription = { keys: Object.keys(subs[0]).sort(), polls: polls.map((p) => p.join(':')) };
-const first = subs[0].onOpen();
-const onMessage = subs[0].onMessage;
-onMessage({ type: 'work_items_changed' });
-onMessage({ type: 'work_items_changed' });
-onMessage({ type: 'work_items_changed' });
-await tick();
-out.whileInFlight = fetches;
-releases[0]({ columns: [], failed: [] });
-await tick(); await tick();
-out.afterFirst = fetches;
-releases[1]({ columns: [], failed: [] });
-await first;
-out.afterAll = fetches;
-process.stdout.write(JSON.stringify(out));
-"""
-
 
 class TestRefreshPaths:
     def _run(self, tmp_path: Path, scenario: str) -> dict:
@@ -3273,65 +2871,17 @@ class TestRefreshPaths:
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout)
 
-    def test_a_work_items_request_that_never_answers_ends_as_a_failed_refresh_and_does_not_block_the_next(
-        self, tmp_path: Path
-    ) -> None:
-        out = self._run(tmp_path, _WORK_ITEMS_TIMEOUT_SCENARIO)
-        assert out["firstMarks"] == [["work-items", False]]
-        assert "timed out" in out["grid"]
-        assert out["calls"] == 2
-
-    def test_kanban_has_one_refresh_path_and_coalesces_overlapping_triggers_into_one_more_load(
-        self, tmp_path: Path
-    ) -> None:
-        out = self._run(tmp_path, _KANBAN_SINGLE_FLIGHT_SCENARIO)
-        # The socket's open is the first load and the hub's fallback poll covers a down socket: no timer of its own.
-        assert out["subscription"] == {"keys": ["onFallbackPoll", "onMessage", "onOpen"], "polls": []}
-        assert out["whileInFlight"] == 1
-        assert out["afterFirst"] == 2, "three triggers during a load coalesce into exactly one more"
-        assert out["afterAll"] == 2
-
-    def test_work_items_load_on_the_socket_open_and_never_poll_while_it_is_up(self, tmp_path: Path) -> None:
-        out = self._run(tmp_path, _WORK_ITEMS_SOCKET_SCENARIO)
-        assert out["subscription"] == {"keys": ["onFallbackPoll", "onMessage", "onOpen"], "polls": []}
-        assert out["beforeLoad"] == {"marks": 0, "calls": 0}
-        assert out["afterOpen"]["calls"] == 1, "the socket open is the one first load"
-        # A status tick with no change since the load keeps the marker current; a server-side failed rebuild does not.
-        assert out["tickWhenCurrent"] == [["work-items", True]]
-        assert out["serverStale"] == [["work-items", False]]
-        assert out["tickWhenServerStale"] == []
-        assert out["retriedTooSoon"] is False
-        assert out["retriedAfterTheBackoff"] is True
-
-    def test_a_failed_kanban_refresh_keeps_the_board_on_screen_and_marks_it_stale(self, tmp_path: Path) -> None:
-        out = self._run(tmp_path, _KANBAN_KEEPS_THE_BOARD_SCENARIO)
-        assert "No active runs" in out["loaded"]
-        assert out["afterFailure"] == out["loaded"], "one transient error must not wipe a board that rendered"
-        assert out["marks"] == [["kanban", True], ["kanban", False]]
-
-    def test_a_kanban_with_nothing_loaded_shows_the_failure(self, tmp_path: Path) -> None:
-        out = self._run(tmp_path, _KANBAN_FIRST_LOAD_FAILS_SCENARIO)
-        assert "Failed to load pipeline view" in out["html"]
-
-    def test_a_kanban_request_that_never_answers_ends_as_a_failed_refresh_and_does_not_block_the_next(
-        self, tmp_path: Path
-    ) -> None:
-        out = self._run(tmp_path, _KANBAN_TIMEOUT_SCENARIO)
-        assert out["firstMarks"] == [["kanban", False]]
-        assert out["calls"] == 2
-
     def test_the_coderabbit_quota_sync_is_not_run_on_page_load(self) -> None:
         source = _module_source("pr-tracker")
         assert "visibilityAwarePoll(_syncCrQuota, 300000, {skipImmediate: true});" in source
         # The widget reads the cached value (a GET) at once instead.
         assert "  _loadCrQuota();\n" in source
 
-    def test_the_sidebar_and_kanban_do_not_keep_a_residual_poll_for_what_the_socket_carries(self) -> None:
-        for name in ("kanban", "work-items"):
-            source = _module_source(name)
-            assert "onFallbackPoll: " in source, name
-            assert "onOpen: " in source, name
-            assert "visibilityAwarePoll(loadKanban" not in source and "visibilityAwarePoll(loadWorkItems" not in source
+    def test_the_sidebar_and_board_do_not_keep_a_residual_poll_for_what_the_socket_carries(self) -> None:
+        source = _module_source("work/board")
+        assert "onFallbackPoll: " in source
+        assert "onOpen: " in source
+        assert "visibilityAwarePoll(" not in source
         sidebar = re.search(r"function _initSidebarSocket\(\) \{(.*?)\n\}", _APP_JS, re.DOTALL)
         assert sidebar is not None
         assert "onFallbackPoll: _catchUpSidebar" in sidebar.group(1)

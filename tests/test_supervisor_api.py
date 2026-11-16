@@ -1109,6 +1109,35 @@ class TestTaskQueueRouter:
         assert resp.status_code == 200
         assert resp.json()["queue"] == [20, 10]
 
+    async def test_set_queue_with_a_base_keeps_a_concurrent_addition(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
+            await client.post("/api/supervisor/queue", json={"issue_number": 10})
+            await client.post("/api/supervisor/queue", json={"issue_number": 20})
+            # Another tab queued 30 after this move read [10, 20]: the move rebases onto the stored queue.
+            await client.post("/api/supervisor/queue", json={"issue_number": 30})
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10], "based_on": [10, 20]})
+            stored = await client.get("/api/supervisor/queue")
+        assert resp.status_code == 200
+        assert sorted(resp.json()["queue"]) == [10, 20, 30]
+        assert resp.json()["queue"].index(20) < resp.json()["queue"].index(10)
+        assert stored.json()["queue"] == resp.json()["queue"]
+
+    async def test_set_queue_with_a_base_keeps_a_concurrent_removal(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
+            await client.post("/api/supervisor/queue", json={"issue_number": 10})
+            await client.post("/api/supervisor/queue", json={"issue_number": 20})
+            await client.delete("/api/supervisor/queue/10")
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10], "based_on": [10, 20]})
+        assert resp.json()["queue"] == [20]
+
+    async def test_set_queue_rejects_a_non_positive_base(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1], "based_on": [0]})
+        assert resp.status_code == 422
+
     async def test_set_queue_deduplicates(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             client.headers.update(_csrf_request_headers(client))

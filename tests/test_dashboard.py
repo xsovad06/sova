@@ -22,7 +22,7 @@ from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_
 from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, exclude_pathspecs, unstage_command
-from tests.conftest import agents_page_source
+from tests.conftest import DASHBOARD_DIR, agents_page_source
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -322,7 +322,7 @@ class TestDashboardHealth:
         [
             pytest.param("/", 307, id="root"),
             pytest.param("/dashboard", 301, id="dashboard"),
-            pytest.param("/work", 301, id="work"),
+            pytest.param("/agents", 301, id="agents"),
             pytest.param("/overview", 301, id="overview"),
             pytest.param("/control", 301, id="control"),
             pytest.param("/runs", 301, id="runs"),
@@ -331,15 +331,15 @@ class TestDashboardHealth:
             pytest.param("/memory", 301, id="memory"),
         ],
     )
-    async def test_redirects_to_agents(self, client: AsyncClient, path: str, status: int) -> None:
+    async def test_redirects_to_work(self, client: AsyncClient, path: str, status: int) -> None:
         resp = await client.get(path, follow_redirects=False)
         assert resp.status_code == status
-        assert resp.headers["location"] == "/agents"
+        assert resp.headers["location"] == "/work"
 
     @pytest.mark.parametrize(
         ("path", "expected"),
         [
-            pytest.param("/agents", "Agents", id="agents"),
+            pytest.param("/work", "Work", id="work"),
             pytest.param("/work/1", "Run #1", id="work-detail-with-agents-sidebar"),
             pytest.param("/costs", "Cost", id="costs"),
         ],
@@ -352,7 +352,7 @@ class TestDashboardHealth:
     @pytest.mark.parametrize(
         ("path", "more_open", "highlighted"),
         [
-            pytest.param("/agents", False, "/agents", id="visible-page-leaves-more-collapsed"),
+            pytest.param("/work", False, "/work", id="visible-page-leaves-more-collapsed"),
             pytest.param("/supervisor", False, "/supervisor", id="supervisor-stays-visible"),
             pytest.param("/specs", True, "/specs", id="child-page-opens-more"),
             pytest.param("/connections", True, "/connections", id="connections-lives-in-more"),
@@ -368,7 +368,7 @@ class TestDashboardHealth:
         group_tag, group_body = group.split(">", 1)
         assert ("hidden" in group_tag) is (not more_open)
         more, after = group_body.split('<div class="sidebar-divider', 1)
-        visible_pages = ["/agents", "/queue", "/supervisor", "/oversight", "/costs"]
+        visible_pages = ["/work", "/queue", "/supervisor", "/oversight", "/costs"]
         assert all(f'href="{href}"' in visible for href in visible_pages)
         more_pages = ["/specs", "/pr-metrics", "/reliability", "/roles", "/commands", "/dependency-health", "/fleet"]
         assert all(f'href="{href}"' in more for href in [*more_pages, "/connections", "/setup"])
@@ -378,7 +378,7 @@ class TestDashboardHealth:
         assert [seg.split('"')[1] for seg in active] == [highlighted]
 
     async def test_sidebar_has_retired_pages_removed(self, client: AsyncClient) -> None:
-        html = (await client.get("/agents")).text
+        html = (await client.get("/work")).text
         assert 'href="/logs"' not in html
         assert 'href="/memory"' not in html
         assert (await client.get("/api/logs")).status_code == 404
@@ -423,7 +423,7 @@ class TestDashboardHealth:
 
     @pytest.mark.parametrize(
         "asset",
-        ["/static/style.css", "/static/app.js", "/static/js/pages/agents/work-items.js"],
+        ["/static/style.css", "/static/app.js", "/static/js/pages/work/board.js"],
     )
     async def test_static_assets_revalidate_on_every_use(self, client: AsyncClient, asset: str) -> None:
         """A cached asset must never outlive a deploy: `max-age` let a fresh page pair with pre-deploy JS.
@@ -562,7 +562,7 @@ class TestDashboardHealth:
         terminal-state transition can only be observed from the agent_finished payload, not from
         a status_update broadcast).
         """
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Should use _STATUS_TERMINAL lookup instead of hardcoded done/failed check
@@ -571,7 +571,7 @@ class TestDashboardHealth:
         assert "!== 'paused'" in html or '!== "paused"' in html
 
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         assert "msg.status" in html
@@ -3699,13 +3699,8 @@ class TestHandoffAPI:
         assert call_kwargs.kwargs["pr_number"] == 67
         assert call_kwargs.args[0] == "16"
 
-    async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
-        assert resp.status_code == 200
-        assert "executeHandoffAction" in agents_page_source()
-
     async def test_agents_page_has_interrupted_banner(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         assert 'id="interrupted-banner"' in resp.text
         assert "checkInterrupted" in agents_page_source()
@@ -3714,7 +3709,7 @@ class TestHandoffAPI:
     async def test_agents_page_has_status_filter(self, client: AsyncClient) -> None:
         from sova.core.state import TASK_RUN_TERMINAL
 
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         assert 'id="filter-status"' in resp.text
         for status in TASK_RUN_TERMINAL:
@@ -3723,7 +3718,7 @@ class TestHandoffAPI:
     async def test_agents_page_history_filters_are_rendered(self, client: AsyncClient) -> None:
         """The filter bar's controls; tests/test_dashboard_run_history.py drives them under Node and checks
         each one reaches the /work/history query."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         for element_id in ("filter-action", "filter-number", "history-from", "history-to", "history-clear"):
             assert f'id="{element_id}"' in resp.text, element_id
@@ -3737,92 +3732,22 @@ class TestHandoffAPI:
         """The history re-run button must thread data-run-id through so the delegated
         click handler can auto-dismiss the originating interrupted run, matching the
         banner's own re-run button (source-level check, same pattern as above)."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         idx = agents_page_source().find("function _rerunButton(")
         assert idx != -1, "_rerunButton() not found in the history module"
         body = agents_page_source()[idx : idx + 800]
         assert "data-run-id=" in body
 
-    async def test_agents_page_has_stat_row(self, client: AsyncClient) -> None:
-        """The stat row absorbed the removed dashboard page's summary cards, so both the
-        markup and its poller must be present (source-level check, same pattern as above).
-        """
-        resp = await client.get("/agents")
-        assert resp.status_code == 200
-        assert 'id="stat-today-cost"' in resp.text
-        assert 'id="stat-invocations"' in resp.text
-        assert 'id="stat-completion"' in resp.text
-        idx = agents_page_source().find("async function loadAgentsStatRow()")
-        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = agents_page_source()[idx : idx + 800]
-        assert "apiUrl('/overview')" in body
-        assert "visibilityAwarePoll(loadAgentsStatRow" in agents_page_source()
-
-    async def test_agents_stat_row_clears_on_refresh_failure(self, client: AsyncClient) -> None:
-        """A failed poll must blank the stat row rather than leave the previous poll's
-        numbers on screen looking current (source-level check, same pattern as above).
-        """
-        resp = await client.get("/agents")
-        assert resp.status_code == 200
-        idx = agents_page_source().find("async function loadAgentsStatRow()")
-        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = agents_page_source()[idx : idx + 1400]
-        catch_idx = body.find("} catch (e) {")
-        assert catch_idx != -1, "loadAgentsStatRow() has no catch block"
-        assert "_clearAgentsStatRow();" in body[catch_idx:], "catch block does not reset the stat row"
-
-        accents_idx = agents_page_source().find("var _STAT_ACCENTS")
-        assert accents_idx != -1, "_STAT_ACCENTS map not found in agents.html"
-        accents_body = agents_page_source()[accents_idx : accents_idx + 400]
-        for stat_id in ("stat-today-cost", "stat-invocations", "stat-completion"):
-            assert stat_id in accents_body, f"{stat_id} not registered in _STAT_ACCENTS"
-
-        clear_idx = agents_page_source().find("function _clearAgentsStatRow()")
-        assert clear_idx != -1, "_clearAgentsStatRow() not found in agents.html"
-        clear_body = agents_page_source()[clear_idx : clear_idx + 400]
-        # The failure marker must differ from the "--" pre-fetch placeholder
-        # (lines 18/23/28), or an operator cannot tell "data unavailable"
-        # from "still loading".
-        assert "'Error'" in clear_body
-        assert "text-red-400" in clear_body
-
-    async def test_agents_stat_row_restores_on_refresh_success(self, client: AsyncClient) -> None:
-        """A successful poll after a prior failure must restore the accent styling,
-        not leave the stat row permanently painted red (source-level check, same
-        pattern as above)."""
-        resp = await client.get("/agents")
-        assert resp.status_code == 200
-        idx = agents_page_source().find("async function loadAgentsStatRow()")
-        assert idx != -1, "loadAgentsStatRow() not found in agents.html"
-        body = agents_page_source()[idx : idx + 400]
-        assert "_restoreAgentsStatRow();" in body, "success path does not restore stat row styling"
-
-        restore_idx = agents_page_source().find("function _restoreAgentsStatRow()")
-        assert restore_idx != -1, "_restoreAgentsStatRow() not found in agents.html"
-        restore_body = agents_page_source()[restore_idx : restore_idx + 400]
-        assert "text-red-400" in restore_body
-        assert "removeAttribute('data-tooltip')" in restore_body
-
-    async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
-        assert resp.status_code == 200
-        assert "kanban-grid" in resp.text
-        assert "kanban-columns" in resp.text
-        assert "switchAgentView" in agents_page_source()
-        assert "loadKanban" in agents_page_source()
-        assert "view-list" in resp.text
-        assert "view-kanban" in resp.text
-
     async def test_agents_page_has_pr_summary_strip(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         assert 'id="pr-summary-strip"' in resp.text
         assert "renderPrSummary" in agents_page_source()
 
     async def test_pr_summary_strip_js_constants_and_structure(self, client: AsyncClient) -> None:
         """Verify JS constants, metric labels, and stale threshold for renderPrSummary."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Stale threshold: 7 days in seconds
@@ -3839,7 +3764,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_strip_state_counting_logic(self, client: AsyncClient) -> None:
         """Verify JS logic counts the correct computed_state values for each metric."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # awaiting_review state counted
@@ -3853,7 +3778,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_strip_visible_when_collapsed(self, client: AsyncClient) -> None:
         """Verify the summary strip stays visible when the tracker list is collapsed."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Strip starts hidden (empty data, not collapsed state)
@@ -3865,7 +3790,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_strip_dynamic_grid_cols(self, client: AsyncClient) -> None:
         """Verify grid-cols is computed from metrics.length, not hardcoded."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         assert "grid-cols-' + metrics.length + '" in html
@@ -3906,7 +3831,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_ready_counts_only_approved_ci_green(self, client: AsyncClient) -> None:
         """Ready metric must count only approved_ci_green, not plain approved."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # The approved counter increments only for approved_ci_green
@@ -3916,7 +3841,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_empty_array_hides_strip(self, client: AsyncClient) -> None:
         """When PR data is empty, the strip is hidden and cache key is cleared."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Empty-array guard: hide strip and clear key
@@ -3925,7 +3850,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_avg_age_fallback(self, client: AsyncClient) -> None:
         """When stale count is zero, the Stale cell shows avg age instead."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Stale cell toggles between stale count and avg age
@@ -3934,7 +3859,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_cache_key_includes_all_metrics(self, client: AsyncClient) -> None:
         """Cache key must include all metric values to detect any change."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # Key joins all six computed values plus ageHours
@@ -3942,7 +3867,7 @@ class TestHandoffAPI:
 
     async def test_pr_summary_strip_not_hidden_on_collapse_in_toggle(self, client: AsyncClient) -> None:
         """togglePrTracker must not hide the summary strip."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         html = agents_page_source()
         # The toggle function should NOT contain strip visibility logic
@@ -4097,17 +4022,17 @@ class TestMultiProject:
             pytest.param("/p/alpha", 307, id="project-root"),
             pytest.param("/p/alpha/dashboard", 301, id="dashboard"),
             pytest.param("/p/alpha/overview", 301, id="overview"),
-            pytest.param("/p/alpha/work", 301, id="work"),
+            pytest.param("/p/alpha/agents", 301, id="agents"),
             pytest.param("/p/alpha/tasks", 301, id="tasks"),
             pytest.param("/p/alpha/runs", 301, id="runs"),
             pytest.param("/p/alpha/logs", 301, id="logs"),
             pytest.param("/p/alpha/memory", 301, id="memory"),
         ],
     )
-    async def test_project_redirects_to_agents(self, multi_client: AsyncClient, path: str, status: int) -> None:
+    async def test_project_redirects_to_work(self, multi_client: AsyncClient, path: str, status: int) -> None:
         resp = await multi_client.get(path, follow_redirects=False)
         assert resp.status_code == status
-        assert resp.headers["location"] == "/p/alpha/agents"
+        assert resp.headers["location"] == "/p/alpha/work"
 
     async def test_project_api(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/api/overview")
@@ -4922,547 +4847,6 @@ class TestAgentsAPI:
         mock_start.assert_not_called()
 
 
-class TestKanbanAPI:
-    """Tests for the kanban API endpoint."""
-
-    async def test_kanban_empty(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "columns" in data
-        assert data["columns"] == []
-
-    async def test_kanban_groups_by_step(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        run1 = TaskRun(
-            issue_number="100",
-            role="developer",
-            status="developing",
-            current_step="develop",
-            total_cost_usd=Decimal("0.10"),
-            started_at=now - timedelta(minutes=5),
-        )
-        run2 = TaskRun(
-            issue_number="101",
-            role="developer",
-            status="developing",
-            current_step="develop",
-            total_cost_usd=Decimal("0.20"),
-            started_at=now - timedelta(minutes=3),
-        )
-        run3 = TaskRun(
-            issue_number="102",
-            role="developer",
-            status="developing",
-            current_step="self_review",
-            total_cost_usd=Decimal("0.15"),
-            started_at=now - timedelta(minutes=1),
-        )
-        session.add_all([run1, run2, run3])
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        columns = data["columns"]
-
-        assert len(columns) == 2
-        col_names = [c["name"] for c in columns]
-        assert "develop" in col_names
-        assert "self_review" in col_names
-
-        develop_col = next(c for c in columns if c["name"] == "develop")
-        assert develop_col["count"] == 2
-        assert len(develop_col["runs"]) == 2
-        assert develop_col["pipeline"] == "developer"
-
-        # Verify run objects have all fields the UI relies on
-        run_obj = develop_col["runs"][0]
-        for field in ("id", "issue_number", "role", "status", "elapsed_seconds", "total_cost_usd", "pipeline_variant"):
-            assert field in run_obj, f"missing field '{field}' in kanban run object"
-
-        review_col = next(c for c in columns if c["name"] == "self_review")
-        assert review_col["count"] == 1
-        assert len(review_col["runs"]) == 1
-
-    async def test_kanban_pending_column(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        run_none = TaskRun(
-            issue_number="110",
-            role="developer",
-            status="pending",
-            current_step=None,
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        run_agent = TaskRun(
-            issue_number="111",
-            role="developer",
-            status="pending",
-            current_step="agent",
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        session.add_all([run_none, run_agent])
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-
-        pending_cols = [c for c in columns if c["name"] == "pending"]
-        assert len(pending_cols) == 1
-        assert pending_cols[0]["count"] == 2
-
-    async def test_kanban_excludes_terminal(self, client: AsyncClient, seed_data) -> None:
-        _ = seed_data
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-
-        # seed_data has run3 (developing/develop) as the only non-terminal run
-        total_runs = sum(len(col["runs"]) for col in columns)
-        assert total_runs > 0
-        # Verify terminal runs (done/failed) are not included
-        for col in columns:
-            for run in col["runs"]:
-                assert run["status"] not in ("done", "failed")
-
-    async def test_kanban_per_column_limit(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        runs = [
-            TaskRun(
-                issue_number=str(200 + i),
-                role="developer",
-                status="developing",
-                current_step="develop",
-                total_cost_usd=Decimal("0.01"),
-                started_at=now - timedelta(minutes=i),
-            )
-            for i in range(5)
-        ]
-        session.add_all(runs)
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban?per_column=2")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-        develop_col = next(c for c in columns if c["name"] == "develop")
-        assert develop_col["count"] == 5
-        assert len(develop_col["runs"]) == 2
-
-    async def test_kanban_columns_ordered_by_position(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        run1 = TaskRun(
-            issue_number="300",
-            role="developer",
-            status="developing",
-            current_step="push",
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        run2 = TaskRun(
-            issue_number="301",
-            role="developer",
-            status="developing",
-            current_step="sync",
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        session.add_all([run1, run2])
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-        assert len(columns) == 2
-        # sync comes before push in the developer pipeline
-        assert columns[0]["name"] == "sync"
-        assert columns[1]["name"] == "push"
-        assert columns[0]["position"] < columns[1]["position"]
-
-    async def test_kanban_rejects_invalid_per_column(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/agents/kanban?per_column=0")
-        assert resp.status_code == 422
-
-        resp = await client.get("/api/agents/kanban?per_column=-1")
-        assert resp.status_code == 422
-
-    async def test_kanban_unknown_step(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        run = TaskRun(
-            issue_number="400",
-            role="developer",
-            status="developing",
-            current_step="nonexistent_step",
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        session.add(run)
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-        assert len(columns) == 1
-        assert columns[0]["name"] == "nonexistent_step"
-        assert columns[0]["pipeline"] == "unknown"
-        assert columns[0]["position"] == 999
-
-    async def test_kanban_mixed_variants(self, client: AsyncClient, session: AsyncSession) -> None:
-        """Runs from different pipeline variants at a shared step get separate columns."""
-        now = datetime.now(timezone.utc)
-        # Developer run at 'commit'
-        dev_run = TaskRun(
-            issue_number="500",
-            role="developer",
-            status="developing",
-            current_step="commit",
-            total_cost_usd=Decimal("0.10"),
-            started_at=now - timedelta(minutes=5),
-        )
-        # Address-review run at 'rearrange_commits' with step history containing
-        # address_review-only steps so variant detection identifies it correctly.
-        ar_run = TaskRun(
-            issue_number="501",
-            role="developer",
-            status="developing",
-            current_step="rearrange_commits",
-            pr_number=42,
-            total_cost_usd=Decimal("0.05"),
-            started_at=now - timedelta(minutes=2),
-        )
-        session.add_all([dev_run, ar_run])
-        await session.flush()
-
-        # Add step execution history with an address_review-only step
-        ar_step = StepExecution(
-            task_run_id=ar_run.id,
-            step_name="address_review",
-            status="done",
-            started_at=now - timedelta(minutes=3),
-            ended_at=now - timedelta(minutes=2),
-        )
-        session.add(ar_step)
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        columns = resp.json()["columns"]
-
-        # Developer run is at 'commit', address-review run is at 'rearrange_commits'
-        commit_cols = [c for c in columns if c["name"] == "commit"]
-        assert len(commit_cols) == 1
-        assert commit_cols[0]["pipeline"] == "developer"
-
-        rearrange_cols = [c for c in columns if c["name"] == "rearrange_commits"]
-        assert len(rearrange_cols) == 1
-        assert rearrange_cols[0]["pipeline"] == "address_review"
-
-    async def test_kanban_endpoint_returns_mode(self, client: AsyncClient) -> None:
-        """The /api/agents/kanban response includes a 'mode' field."""
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "mode" in data
-        assert data["mode"] in ("step_based", "role_based")
-        assert "columns" in data
-
-    async def test_kanban_includes_run_label(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="200",
-                role="developer",
-                status="developing",
-                current_step="develop",
-                run_label="feat: add kanban labels",
-                started_at=now - timedelta(minutes=2),
-            )
-        )
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        all_runs = [r for col in data["columns"] for r in col.get("runs", [])]
-        run_obj = next((r for r in all_runs if r["issue_number"] == "200"), None)
-        assert run_obj is not None
-        assert run_obj["run_label"] == "feat: add kanban labels"
-
-    async def test_kanban_run_label_empty_for_issue_runs(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="201",
-                role="developer",
-                status="developing",
-                current_step="develop",
-                started_at=now - timedelta(minutes=1),
-            )
-        )
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        all_runs = [r for col in resp.json()["columns"] for r in col.get("runs", [])]
-        run_obj = next((r for r in all_runs if r["issue_number"] == "201"), None)
-        assert run_obj is not None
-        assert run_obj["run_label"] == ""
-
-    async def test_kanban_includes_failed_runs(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="300",
-                role="developer",
-                status="failed",
-                error_message="CI failed",
-                started_at=now - timedelta(hours=1),
-                ended_at=now - timedelta(minutes=30),
-            )
-        )
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "failed_runs" in data
-        assert len(data["failed_runs"]) == 1
-        assert data["failed_runs"][0]["issue_number"] == "300"
-        assert data["failed_runs"][0]["error_message"] == "CI failed"
-
-    async def test_kanban_failed_runs_empty_when_none(self, client: AsyncClient) -> None:
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "failed_runs" in data
-        assert data["failed_runs"] == []
-
-    async def test_kanban_failed_runs_excludes_old(self, client: AsyncClient, session: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="301",
-                role="developer",
-                status="failed",
-                started_at=now - timedelta(hours=48),
-                ended_at=now - timedelta(hours=47),
-            )
-        )
-        await session.commit()
-
-        resp = await client.get("/api/agents/kanban")
-        assert resp.status_code == 200
-        assert resp.json()["failed_runs"] == []
-
-
-class TestGetRecentFailedRunsDirect:
-    """Direct unit tests for get_recent_failed_runs."""
-
-    async def test_empty_db(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        result = await get_recent_failed_runs(session)
-        assert result == []
-
-    async def test_returns_recent_failures(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="50",
-                role="developer",
-                status="failed",
-                run_label="fix: broken test",
-                error_message="test timeout",
-                pr_number=42,
-                total_cost_usd=Decimal("1.23"),
-                started_at=now - timedelta(hours=2),
-                ended_at=now - timedelta(hours=1),
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert len(result) == 1
-        r = result[0]
-        assert r["issue_number"] == "50"
-        assert r["role"] == "developer"
-        assert r["status"] == "failed"
-        assert r["run_label"] == "fix: broken test"
-        assert r["error_message"] == "test timeout"
-        assert r["pr_number"] == 42
-        assert r["duration_ms"] is not None
-
-    async def test_excludes_non_failed(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(issue_number="60", role="developer", status="done", started_at=now, ended_at=now),
-                TaskRun(issue_number="61", role="developer", status="running", started_at=now),
-                TaskRun(issue_number="62", role="developer", status="interrupted", started_at=now, ended_at=now),
-            ]
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert result == []
-
-    async def test_excludes_old_failures(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="70",
-                role="developer",
-                status="failed",
-                started_at=now - timedelta(hours=48),
-                ended_at=now - timedelta(hours=47),
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert result == []
-
-    async def test_run_label_empty_default(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="80",
-                role="developer",
-                status="failed",
-                started_at=now - timedelta(hours=1),
-                ended_at=now,
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert result[0]["run_label"] == ""
-
-    async def test_respects_limit(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        for i in range(5):
-            session.add(
-                TaskRun(
-                    issue_number=str(90 + i),
-                    role="developer",
-                    status="failed",
-                    started_at=now - timedelta(hours=1),
-                    ended_at=now - timedelta(minutes=i),
-                )
-            )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session, limit=3)
-        assert len(result) == 3
-
-    async def test_command_run_no_issue_number(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number=None,
-                role="command:review-pr",
-                status="failed",
-                run_label="review-pr #55",
-                started_at=now - timedelta(hours=1),
-                ended_at=now,
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert len(result) == 1
-        assert result[0]["issue_number"] is None
-        assert result[0]["run_label"] == "review-pr #55"
-
-    async def test_failed_run_with_null_ended_at(self, session: AsyncSession) -> None:
-        """Crashed runs with NULL ended_at should still appear (falls back to started_at)."""
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="100",
-                role="developer",
-                status="failed",
-                started_at=now - timedelta(hours=1),
-                ended_at=None,
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert len(result) == 1
-        assert result[0]["issue_number"] == "100"
-        assert result[0]["duration_ms"] is None
-        assert result[0]["duration_formatted"] is None
-
-    async def test_duration_formatted_populated(self, session: AsyncSession) -> None:
-        """Verify duration_formatted is a human-readable string when both timestamps exist."""
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="101",
-                role="developer",
-                status="failed",
-                started_at=now - timedelta(hours=2),
-                ended_at=now - timedelta(hours=1),
-            )
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        assert len(result) == 1
-        assert result[0]["duration_ms"] is not None
-        assert result[0]["duration_formatted"] is not None
-        assert "h" in result[0]["duration_formatted"] or "m" in result[0]["duration_formatted"]
-
-    async def test_failed_runs_boundary_24h(self, session: AsyncSession) -> None:
-        """Runs exactly outside the 24h window are excluded; those inside are included."""
-        from sova.dashboard.services.work_service import get_recent_failed_runs
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="110",
-                    role="developer",
-                    status="failed",
-                    started_at=now - timedelta(hours=25),
-                    ended_at=now - timedelta(hours=24, seconds=1),
-                ),
-                TaskRun(
-                    issue_number="111",
-                    role="developer",
-                    status="failed",
-                    started_at=now - timedelta(hours=24),
-                    ended_at=now - timedelta(hours=23, minutes=59),
-                ),
-            ]
-        )
-        await session.commit()
-
-        result = await get_recent_failed_runs(session)
-        issues = [r["issue_number"] for r in result]
-        assert "111" in issues
-        assert "110" not in issues
-
-
 class TestComputeDurationMs:
     """Unit tests for _compute_duration_ms, the module's one duration-in-milliseconds helper."""
 
@@ -5494,397 +4878,6 @@ class TestComputeDurationMs:
         start = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
         assert _compute_duration_ms(start, end) == 300_000
-
-
-class TestGetKanbanColumnsDirect:
-    """Direct unit tests for get_kanban_columns (bypasses API router)."""
-
-    async def test_empty_db_returns_empty(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        result = await get_kanban_columns(session)
-        assert result == []
-
-    async def test_single_run(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        run = TaskRun(
-            issue_number="10",
-            role="developer",
-            status="developing",
-            current_step="develop",
-            total_cost_usd=Decimal("0.05"),
-            started_at=now - timedelta(minutes=2),
-        )
-        session.add(run)
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 1
-        assert cols[0]["name"] == "develop"
-        assert cols[0]["pipeline"] == "developer"
-        assert cols[0]["count"] == 1
-        assert len(cols[0]["runs"]) == 1
-        assert cols[0]["runs"][0]["issue_number"] == "10"
-
-    async def test_pending_variants(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="20",
-                    role="developer",
-                    status="pending",
-                    current_step=None,
-                    total_cost_usd=Decimal("0"),
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="21",
-                    role="developer",
-                    status="pending",
-                    current_step="agent",
-                    total_cost_usd=Decimal("0"),
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 1
-        assert cols[0]["name"] == "pending"
-        assert cols[0]["count"] == 2
-        assert len(cols[0]["runs"]) == 2
-
-    async def test_researcher_variant_detection(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        run = TaskRun(
-            issue_number="30",
-            role="researcher",
-            status="researching",
-            current_step="research",
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        session.add(run)
-        await session.flush()
-
-        step = StepExecution(
-            task_run_id=run.id,
-            step_name="research",
-            status="running",
-            started_at=now,
-        )
-        session.add(step)
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 1
-        assert cols[0]["runs"][0]["pipeline_variant"] == "researcher"
-
-    async def test_address_review_variant_detection(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        run = TaskRun(
-            issue_number="31",
-            role="developer",
-            status="developing",
-            current_step="commit",
-            pr_number=99,
-            total_cost_usd=Decimal("0"),
-            started_at=now,
-        )
-        session.add(run)
-        await session.flush()
-
-        session.add(
-            StepExecution(
-                task_run_id=run.id,
-                step_name="address_review",
-                status="done",
-                started_at=now - timedelta(minutes=1),
-                ended_at=now,
-            )
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 1
-        assert cols[0]["runs"][0]["pipeline_variant"] == "address_review"
-
-    async def test_per_column_limit(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number=str(40 + i),
-                    role="developer",
-                    status="developing",
-                    current_step="develop",
-                    total_cost_usd=Decimal("0"),
-                    started_at=now - timedelta(minutes=i),
-                )
-                for i in range(5)
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, per_column=2)
-        assert len(cols) == 1
-        assert cols[0]["count"] == 5
-        assert len(cols[0]["runs"]) == 2
-
-    async def test_columns_sorted_by_position(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="50",
-                    role="developer",
-                    status="developing",
-                    current_step="push",
-                    total_cost_usd=Decimal("0"),
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="51",
-                    role="developer",
-                    status="developing",
-                    current_step="sync",
-                    total_cost_usd=Decimal("0"),
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 2
-        assert cols[0]["name"] == "sync"
-        assert cols[1]["name"] == "push"
-
-    async def test_role_based_empty(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        result = await get_kanban_columns(session, mode="role_based")
-        assert result == []
-
-    async def test_role_based_developer_runs(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="50",
-                    role="developer",
-                    status="running",
-                    current_step="develop",
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="51",
-                    role="developer",
-                    status="running",
-                    current_step="push",
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        assert len(cols) == 1
-        assert cols[0]["name"] == "developing"
-        assert cols[0]["pipeline"] == "role_based"
-        assert cols[0]["count"] == 2
-
-    async def test_role_based_mixed_roles(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="60",
-                    role="developer",
-                    status="running",
-                    current_step="develop",
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="61",
-                    role="researcher",
-                    status="running",
-                    current_step="research",
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="62",
-                    role="reviewer",
-                    status="running",
-                    current_step="review",
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        col_names = {c["name"] for c in cols}
-        assert col_names == {"developing", "researched", "in_review"}
-        assert all(c["pipeline"] == "role_based" for c in cols)
-
-    async def test_role_based_columns_sorted(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="70",
-                    role="reviewer",
-                    status="running",
-                    current_step="review",
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="71",
-                    role="developer",
-                    status="running",
-                    current_step="develop",
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        positions = [c["position"] for c in cols]
-        assert positions == sorted(positions)
-        assert cols[0]["name"] == "developing"
-        assert cols[1]["name"] == "in_review"
-
-    async def test_role_based_per_column_limit(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number=str(i),
-                    role="developer",
-                    status="running",
-                    current_step="develop",
-                    started_at=now,
-                )
-                for i in range(5)
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based", per_column=2)
-        assert len(cols) == 1
-        assert cols[0]["count"] == 5
-        assert len(cols[0]["runs"]) == 2
-
-    async def test_role_based_command_run(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="80",
-                role="command:review-pr",
-                status="running",
-                current_step="agent",
-                started_at=now,
-            )
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        assert len(cols) == 1
-        assert cols[0]["name"] == "in_review"
-
-    async def test_role_based_triage_run(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="85",
-                role="triage",
-                status="running",
-                current_step="agent",
-                started_at=now,
-            )
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        assert len(cols) == 1
-        assert cols[0]["name"] == "triaged"
-
-    async def test_role_based_integration_commands(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add_all(
-            [
-                TaskRun(
-                    issue_number="86",
-                    role="command:integrate-pr",
-                    status="running",
-                    current_step="agent",
-                    started_at=now,
-                ),
-                TaskRun(
-                    issue_number="87",
-                    role="command:integrate-pr",
-                    status="running",
-                    current_step="agent",
-                    started_at=now,
-                ),
-            ]
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session, mode="role_based")
-        assert len(cols) == 1
-        assert cols[0]["name"] == "in_review"
-        assert cols[0]["count"] == 2
-
-    async def test_step_based_mode_is_default(self, session: AsyncSession) -> None:
-        from sova.dashboard.services.control_service import get_kanban_columns
-
-        now = datetime.now(timezone.utc)
-        session.add(
-            TaskRun(
-                issue_number="90",
-                role="developer",
-                status="running",
-                current_step="develop",
-                started_at=now,
-            )
-        )
-        await session.commit()
-
-        cols = await get_kanban_columns(session)
-        assert len(cols) == 1
-        assert cols[0]["name"] == "develop"
-        assert cols[0]["pipeline"] == "developer"
 
 
 class TestWorkAPI:
@@ -5951,20 +4944,34 @@ class TestWorkAPI:
         mock_stop.assert_awaited_once_with(run_id=run_id)
 
     async def test_work_issue_rebase_endpoint(self, client: AsyncClient) -> None:
-        """The rebase-trigger endpoint delegates to attempt_auto_rebase and returns its result."""
+        """The rebase-trigger endpoint answers at once and runs attempt_auto_rebase in the background.
+
+        The outcome is recorded on the issue's action, so the card shows it when the rebase ends.
+        """
+        import asyncio
         from unittest.mock import AsyncMock, patch
 
+        from sova.dashboard.routers import work as work_router
+        from sova.dashboard.services import action_registry
+
+        action_registry.reset_actions()
         expected = {"status": "success", "pr_number": 123, "conflicts_resolved": 2}
         with patch(
             "sova.supervisor.rebase.attempt_auto_rebase", new_callable=AsyncMock, return_value=expected
         ) as mock_rebase:
             resp = await client.post("/api/work/issue/42/rebase")
+            assert resp.status_code == 202
+            body = resp.json()
+            assert body["status"] == "started"
+            await asyncio.gather(*list(work_router._rebase_tasks))
 
-        assert resp.status_code == 200
-        assert resp.json() == expected
         mock_rebase.assert_awaited_once()
-        call_args = mock_rebase.call_args
-        assert call_args.args[0] == 42
+        assert mock_rebase.call_args.args[0] == 42
+        actions = (await client.get("/api/work/actions")).json()["actions"]
+        assert [(a["id"], a["issue"], a["status"], a["message"]) for a in actions] == [
+            (body["action_id"], 42, "done", "Rebased")
+        ]
+        action_registry.reset_actions()
 
     async def test_active_grouped_excludes_superseded_paused_runs(
         self, client: AsyncClient, session: AsyncSession
@@ -8636,7 +7643,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
             patch("sova.dashboard.services.work_verdict.invalidate_verdict") as invalidate_verdict,
         ):
-            agent_finalize._invalidate_work_item_caches(tmp_path, 99)
+            agent_finalize.invalidate_work_item_caches(tmp_path, 99)
 
         invalidate_prs.assert_not_called()
         invalidate_verdict.assert_called_once_with(tmp_path, 99)
@@ -8651,7 +7658,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(tmp_path)
+            agent_finalize.invalidate_work_item_caches(tmp_path)
 
         invalidate_queue.assert_called_once_with(tmp_path)
         invalidate_prs.assert_not_called()
@@ -8669,7 +7676,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(tmp_path)
+            agent_finalize.invalidate_work_item_caches(tmp_path)
 
         invalidate_prs.assert_called_once_with("owner/repo")
 
@@ -8686,7 +7693,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
-            agent_finalize._invalidate_work_item_caches(tmp_path)
+            agent_finalize.invalidate_work_item_caches(tmp_path)
 
         invalidate_prs.assert_not_called()
 
@@ -8701,7 +7708,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
             patch("sova.dashboard.services.work_verdict.invalidate_verdict", side_effect=OSError("boom")),
         ):
-            agent_finalize._invalidate_work_item_caches(tmp_path, 99)
+            agent_finalize.invalidate_work_item_caches(tmp_path, 99)
 
     def test_repo_context_agent_defaults_off_when_config_load_fails(self, tmp_path: Path) -> None:
         from unittest.mock import patch
@@ -8722,7 +7729,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         mock_ws_manager.broadcast_event = AsyncMock(side_effect=RuntimeError("socket gone"))
 
         with (
-            patch.object(agent_finalize, "_invalidate_work_item_caches"),
+            patch.object(agent_finalize, "invalidate_work_item_caches"),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
             await agent_finalize._announce_agent_finished(agent, status_changed=True, status="done")
@@ -8731,53 +7738,37 @@ class TestWaitAndFinalizeGraphBroadcast:
 
 
 class TestAgentsPageRefreshWiring:
-    """The Agents page must refetch the Tasks list on agent exit, not only on its 30 s poll (#1149)."""
+    """The Work page must refetch its board on agent exit, not only on a poll (#1149)."""
 
-    def _template(self) -> str:
-        return agents_page_source()
+    def _board(self) -> str:
+        return (DASHBOARD_DIR / "static" / "js" / "pages" / "work" / "board.js").read_text(encoding="utf-8")
+
+    def _live_status(self) -> str:
+        return (DASHBOARD_DIR / "static" / "js" / "pages" / "agents" / "live-status.js").read_text(encoding="utf-8")
 
     def test_handles_agent_finished_event(self) -> None:
-        html = self._template()
-        start = html.index("msg.type === 'agent_finished'")
-        handler = html[start : html.index("return;", start)]
-        assert "_scheduleWorkItemsRefresh()" in handler
+        source = self._board()
+        start = source.index("function _handleMessage(msg)")
+        handler = source[start : source.index("return;", start)]
+        assert "msg.type === 'agent_finished'" in handler
+        assert "loadBoard()" in handler
 
     def test_agent_finished_debounces_agents_refresh_too(self) -> None:
         """A parallel batch finishing fires one agent_finished per agent; an undebounced
         loadAgents() per event costs one unthrottled request per exit (#1162 review).
         """
-        html = self._template()
-        start = html.index("msg.type === 'agent_finished'")
-        handler = html[start : html.index("return;", start)]
+        source = self._live_status()
+        start = source.index("msg.type === 'agent_finished'")
+        handler = source[start : source.index("return;", start)]
         assert "_scheduleAgentsRefresh()" in handler
         assert "loadAgents()" not in handler
 
     def test_status_update_change_schedules_refresh(self) -> None:
-        html = self._template()
-        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
-        handler = html[start : html.index("_wsLastRunStatuses = runStatuses;", start)]
-        assert "_scheduleWorkItemsRefresh()" in handler
-
-    def test_status_update_first_snapshot_schedules_refresh(self) -> None:
-        """The first snapshot (_wsLastRunStatuses still null) must also refresh (#1152)."""
-        html = self._template()
-        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
-        condition_start = html.index("if (", start)
-        condition = html[condition_start : html.index(") {", condition_start)]
-        assert "_wsLastRunStatuses === null" in condition
-
-    def test_first_snapshot_skips_refresh_when_it_matches_already_loaded_tasks(self) -> None:
-        """Every page load's normal sequence (loadWorkItems() then the socket opening
-        moments later) must not cost a duplicate request when the first snapshot agrees
-        with what the Tasks list already reported (#1162 review).
-        """
-        html = self._template()
-        start = html.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
-        block_start = html.index("if (_wsLastRunStatuses === null) {", start)
-        block_end = html.index("} else if (runStatuses !== _wsLastRunStatuses) {", block_start)
-        block = html[block_start:block_end]
-        assert "getLastLoadedRunIds()" in block
-        assert "_scheduleWorkItemsRefresh();" in block
+        source = self._board()
+        start = source.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
+        handler = source[start : source.index("_runSignature = signature;", start)]
+        assert "signature !== _runSignature" in handler
+        assert "loadBoard()" in handler
 
 
 # ---------------------------------------------------------------------------
@@ -20186,219 +19177,6 @@ class TestGetPrimaryWorktreeRoot:
             root = await get_primary_worktree_root()
 
         assert root == Path("/current/dir")
-
-
-class TestPrSuggestionEndpoint:
-    """Tests for POST /api/prs/{pr_number}/suggestion."""
-
-    @staticmethod
-    @contextmanager
-    def _patch_suggestion_provider(invoke_mock: object):
-        """Patch the service's two seams: the config load and ``sova.llm.client.invoke()``.
-
-        The suggestion service reaches its LLM only through
-        ``sova.llm.client.invoke()`` (#924), the same choke point every other
-        provider-routed caller in SOVA uses, so an endpoint test stubs that
-        call directly rather than a transport, a provider factory, or an
-        env-var credential check. ``asyncio.to_thread`` is the service's
-        config-load call.
-        """
-        from unittest.mock import AsyncMock, patch
-
-        from sova.config.models import ProjectConfig
-
-        cfg = ProjectConfig()
-        cfg.llm.provider = "anthropic"  # type: ignore[assignment]
-        cfg.llm.model = "claude-haiku-4-5-20251001"
-        cfg.dashboard.llm_suggestions = True
-        with (
-            patch(
-                "sova.dashboard.services.llm_suggestion_service.asyncio.to_thread",
-                new=AsyncMock(return_value=cfg),
-            ),
-            patch("sova.dashboard.services.llm_suggestion_service.llm_invoke", new=invoke_mock),
-        ):
-            yield
-
-    async def test_returns_204_when_provider_fails(self, client: AsyncClient) -> None:
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.llm_suggestion_service import clear_cache
-
-        clear_cache()
-        body = {
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "pr_computed_state": "approved_ci_green",
-            "has_sova_review": False,
-            "sova_verdict": None,
-            "mergeable": "MERGEABLE",
-            "review_decision": "APPROVED",
-            "ci_passed": True,
-        }
-        invoke_mock = AsyncMock(side_effect=RuntimeError("provider unavailable"))
-        with self._patch_suggestion_provider(invoke_mock):
-            resp = await client.post("/api/prs/378/suggestion", json=body)
-        assert resp.status_code == 204
-
-    async def test_returns_suggestion_when_llm_disagrees(self, client: AsyncClient) -> None:
-        import json
-        from unittest.mock import AsyncMock
-
-        from sova.dashboard.services.llm_suggestion_service import clear_cache
-        from sova.llm.models import LLMResult
-
-        clear_cache()
-
-        action_json = json.dumps({"action_id": "integrate", "reasoning": "CI green and approved"})
-        invoke_mock = AsyncMock(return_value=LLMResult(text=action_json, model="claude-haiku-4-5-20251001"))
-
-        body = {
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "pr_computed_state": "approved_ci_green",
-        }
-        with self._patch_suggestion_provider(invoke_mock):
-            resp = await client.post("/api/prs/378/suggestion", json=body)
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["action_id"] == "integrate"
-        assert data["disagrees"] is True
-
-    async def test_rejects_unsupported_merge_state(self, client: AsyncClient) -> None:
-        """merge_state must be one of GitHub's documented mergeStateStatus values (plus the
-        UNKNOWN/empty fallbacks); an arbitrary string must not reach the suggestion prompt
-        unvalidated (CodeRabbit, PR #1114)."""
-        body = {
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "pr_computed_state": "approved_ci_green",
-            "merge_state": "NOT_A_REAL_STATE",
-        }
-        resp = await client.post("/api/prs/378/suggestion", json=body)
-        assert resp.status_code == 422
-
-
-class TestPrFeedbackEndpoint:
-    """Tests for POST /api/prs/feedback."""
-
-    async def test_stores_feedback_record(self, client: AsyncClient) -> None:
-        body = {
-            "pr_number": 378,
-            "issue_number": "377",
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": "integrate",
-            "llm_reasoning": "CI green and approved",
-            "user_choice": "deterministic",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
-        data = resp.json()
-        assert "id" in data
-        assert isinstance(data["id"], int)
-
-    @pytest.mark.parametrize(
-        ("body", "status"),
-        [
-            pytest.param(
-                {
-                    "pr_number": 100,
-                    "deterministic_state": "pr_awaiting_review",
-                    "deterministic_action_id": "review_pr",
-                    "llm_action_id": "address_pr",
-                    "user_choice": "llm",
-                },
-                201,
-                id="stores-llm-choice",
-            ),
-            pytest.param(
-                {
-                    "pr_number": 1,
-                    "deterministic_state": "pr_sova_pending",
-                    "deterministic_action_id": "review_pr",
-                    "llm_action_id": "integrate",
-                    "user_choice": "not_valid_at_all",
-                },
-                400,
-                id="rejects-invalid-user-choice",
-            ),
-            # user_choice can be any valid action_id, not just 'deterministic'/'llm'.
-            pytest.param(
-                {
-                    "pr_number": 200,
-                    "deterministic_state": "pr_sova_pending",
-                    "deterministic_action_id": "review_pr",
-                    "llm_action_id": "integrate",
-                    "user_choice": "address_pr",
-                },
-                201,
-                id="accepts-action-id-as-user-choice",
-            ),
-            # llm_reasoning defaults to empty string when omitted.
-            pytest.param(
-                {
-                    "pr_number": 600,
-                    "deterministic_state": "pr_sova_pending",
-                    "deterministic_action_id": "review_pr",
-                    "llm_action_id": "",
-                    "user_choice": "wrong",
-                },
-                201,
-                id="accepts-missing-llm-reasoning",
-            ),
-        ],
-    )
-    async def test_feedback_status(self, client: AsyncClient, body: dict[str, object], status: int) -> None:
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == status
-
-    async def test_accepts_wrong_as_user_choice(self, client: AsyncClient) -> None:
-        """'wrong' is valid for the standalone 'State is wrong' button."""
-        body = {
-            "pr_number": 300,
-            "deterministic_state": "pr_approved",
-            "deterministic_action_id": "integrate",
-            "llm_action_id": "",
-            "user_choice": "wrong",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
-        assert "id" in resp.json()
-
-    @pytest.mark.parametrize(
-        "llm_action_id",
-        ["", "integrate", "review_pr"],
-        ids=["empty", "valid_integrate", "valid_review"],
-    )
-    async def test_accepts_various_llm_action_ids(self, client: AsyncClient, llm_action_id: str) -> None:
-        body = {
-            "pr_number": 400,
-            "deterministic_state": "pr_sova_pending",
-            "deterministic_action_id": "review_pr",
-            "llm_action_id": llm_action_id,
-            "user_choice": "wrong",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
-
-    @pytest.mark.parametrize(
-        "llm_reasoning",
-        ["", "CI is green and PR approved"],
-        ids=["empty", "non_empty"],
-    )
-    async def test_accepts_various_llm_reasoning(self, client: AsyncClient, llm_reasoning: str) -> None:
-        body = {
-            "pr_number": 500,
-            "deterministic_state": "pr_approved",
-            "deterministic_action_id": "integrate",
-            "llm_action_id": "integrate",
-            "llm_reasoning": llm_reasoning,
-            "user_choice": "deterministic",
-        }
-        resp = await client.post("/api/prs/feedback", json=body)
-        assert resp.status_code == 201
 
 
 class TestSettingsMaxParallelSync:

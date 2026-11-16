@@ -2,102 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
-from pydantic import BaseModel, field_validator
 
 from sova.config.context import resolve_project_dir
 from sova.config.loader import load_config
 from sova.dashboard.services.agent_pool import get_default_project_dir
-from sova.dashboard.services.pr_service import ComputedPRState, list_open_prs_with_state
-from sova.dashboard.services.work_state import VALID_MERGE_STATES
+from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.git.pr import PRLookupError
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.prs")
 
 router = APIRouter(prefix="/prs", tags=["prs"])
-
-# GitHub GraphQL MergeableState enum values, plus "" for "not fetched at all".
-VALID_MERGEABLE_STATES = frozenset({"MERGEABLE", "CONFLICTING", "UNKNOWN", ""})
-
-# GitHub GraphQL PullRequestReviewDecision enum values, plus "" for "not fetched".
-VALID_REVIEW_DECISIONS = frozenset({"APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", ""})
-
-# SOVA's own review verdict values (sova/dashboard/services/work_state.py's
-# PRFacts.sova_verdict docstring), plus "" for "no verdict yet".
-VALID_SOVA_VERDICTS = frozenset({"approve", "revise", "block", "post_failed", ""})
-
-# ComputedPRState's values, plus "" for "not yet computed".
-VALID_PR_COMPUTED_STATES = frozenset({state.value for state in ComputedPRState} | {""})
-
-
-class PRSuggestionRequest(BaseModel):
-    deterministic_state: str
-    deterministic_action_id: str
-    pr_computed_state: str = ""
-    has_sova_review: bool = False
-    sova_verdict: str | None = None
-    mergeable: str = "UNKNOWN"
-    merge_state: str = "UNKNOWN"
-    review_decision: str | None = None
-    ci_passed: bool = False
-    external_reviews_enabled: bool = True
-
-    @field_validator("merge_state")
-    @classmethod
-    def validate_merge_state(cls, v: str) -> str:
-        if v not in VALID_MERGE_STATES:
-            raise ValueError(f"unsupported merge_state {v!r}, expected one of: {', '.join(sorted(VALID_MERGE_STATES))}")
-        return v
-
-    @field_validator("mergeable")
-    @classmethod
-    def validate_mergeable(cls, v: str) -> str:
-        if v not in VALID_MERGEABLE_STATES:
-            raise ValueError(
-                f"unsupported mergeable {v!r}, expected one of: {', '.join(sorted(VALID_MERGEABLE_STATES))}"
-            )
-        return v
-
-    @field_validator("review_decision")
-    @classmethod
-    def validate_review_decision(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_REVIEW_DECISIONS:
-            raise ValueError(
-                f"unsupported review_decision {v!r}, expected one of: {', '.join(sorted(VALID_REVIEW_DECISIONS))}"
-            )
-        return v
-
-    @field_validator("sova_verdict")
-    @classmethod
-    def validate_sova_verdict(cls, v: str | None) -> str | None:
-        if v is not None and v not in VALID_SOVA_VERDICTS:
-            raise ValueError(
-                f"unsupported sova_verdict {v!r}, expected one of: {', '.join(sorted(VALID_SOVA_VERDICTS))}"
-            )
-        return v
-
-    @field_validator("pr_computed_state")
-    @classmethod
-    def validate_pr_computed_state(cls, v: str) -> str:
-        if v not in VALID_PR_COMPUTED_STATES:
-            raise ValueError(
-                f"unsupported pr_computed_state {v!r}, expected one of: {', '.join(sorted(VALID_PR_COMPUTED_STATES))}"
-            )
-        return v
-
-
-class PRFeedbackRequest(BaseModel):
-    pr_number: int
-    issue_number: str | None = None
-    deterministic_state: str
-    deterministic_action_id: str
-    llm_action_id: str
-    llm_reasoning: str = ""
-    user_choice: str
 
 
 @router.get("/open", responses={502: {"description": "The GitHub open-PR listing failed"}})
@@ -112,93 +28,6 @@ async def get_open_prs() -> dict:
     except PRLookupError:
         raise HTTPException(status_code=502, detail="Failed to load open PRs") from None
     return {"prs": prs}
-
-
-@router.post(
-    "/{pr_number}/suggestion",
-    responses={
-        200: {"description": "LLM suggestion (may agree or disagree with deterministic)"},
-        204: {"description": "No suggestion available (LLM provider unavailable or error)"},
-    },
-)
-async def get_pr_action_suggestion(pr_number: int, body: PRSuggestionRequest) -> dict:
-    """Get the LLM's suggested next action for a PR.
-
-    Returns 204 when the LLM provider is unavailable or the call fails.
-    When 200, the response always includes a 'disagrees' boolean. The UI should
-    only render the suggestion widget when disagrees=True.
-    """
-    from sova.dashboard.services.llm_suggestion_service import get_llm_suggestion
-
-    result = await get_llm_suggestion(
-        pr_number=pr_number,
-        deterministic_state=body.deterministic_state,
-        deterministic_action_id=body.deterministic_action_id,
-        pr_computed_state=body.pr_computed_state,
-        has_sova_review=body.has_sova_review,
-        sova_verdict=body.sova_verdict,
-        mergeable=body.mergeable,
-        merge_state=body.merge_state,
-        review_decision=body.review_decision,
-        ci_passed=body.ci_passed,
-        external_reviews_enabled=body.external_reviews_enabled,
-    )
-    if result is None:
-        return Response(status_code=204)
-    return result
-
-
-@router.post(
-    "/feedback",
-    status_code=201,
-    responses={
-        201: {"description": "Feedback recorded"},
-        400: {"description": "Invalid user_choice"},
-    },
-)
-async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
-    """Record user feedback on a disagreeing LLM suggestion.
-
-    user_choice must be one of: "deterministic", "llm", or a valid action_id
-    from the PR action set (review_pr, address_review, address_pr, integrate).
-    """
-    from sova.dashboard.services.llm_suggestion_service import _PR_ACTION_LABELS
-
-    valid_choices = {"deterministic", "llm", "wrong"} | set(_PR_ACTION_LABELS.keys())
-    if body.user_choice not in valid_choices:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid user_choice '{body.user_choice}'. Must be one of: {sorted(valid_choices)}",
-        )
-
-    from sova.db.models import ActionFeedback
-    from sova.db.session import get_session
-
-    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
-    async with await get_session(project_dir) as session:
-        record = ActionFeedback(
-            pr_number=body.pr_number,
-            issue_number=body.issue_number,
-            project_slug=str(project_dir.name) if project_dir else "",
-            deterministic_state=body.deterministic_state,
-            deterministic_action_id=body.deterministic_action_id,
-            llm_action_id=body.llm_action_id,
-            llm_reasoning=body.llm_reasoning,
-            user_choice=body.user_choice,
-            feedback_at=datetime.now(timezone.utc),
-        )
-        session.add(record)
-        await session.commit()
-        await session.refresh(record)
-
-    log.info(
-        "action_feedback.recorded",
-        pr=body.pr_number,
-        deterministic=body.deterministic_action_id,
-        llm=body.llm_action_id,
-        choice=body.user_choice,
-    )
-    return {"id": record.id}
 
 
 # PR Metrics endpoints

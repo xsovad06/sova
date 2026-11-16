@@ -2,7 +2,7 @@
 {% block title %}Run #{{ run_id }} - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-6">
-  <a href="{{ prefix|default('') }}/agents" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Agents</a>
+  <a href="{{ prefix|default('') }}/work" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Work</a>
   <h2 class="text-2xl font-semibold">Run #{{ run_id }}</h2>
 </div>
 
@@ -832,7 +832,7 @@ async function resumeRun() {
     var result = await res.json();
 
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
-    window.location.href = prefix + '/agents';
+    window.location.href = prefix + '/work';
   } catch (e) {
     showToast('Failed to resume: ' + e.message, 'error');
     btn.disabled = false;

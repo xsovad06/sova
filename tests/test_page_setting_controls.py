@@ -80,13 +80,12 @@ class TestSupervisorPage:
         assert "toggleSupervisor" not in html
 
 
-class TestAgentsPage:
+class TestWorkPage:
     async def test_shows_running_of_limit_instead_of_free_slots(self, client: AsyncClient) -> None:
-        html = (await client.get("/agents")).text
+        html = (await client.get("/work")).text
 
-        assert 'id="agent-limit-running"' in html
-        assert 'id="agent-limit-control"' in html
-        assert "agents running" in html
+        assert 'id="hdr-agents-running"' in html
+        assert 'id="hdr-agents-limit"' in html
         assert 'id="slots-info"' not in html
 
 
@@ -103,10 +102,10 @@ class TestCostsPage:
 
 class TestCodeRabbitSwitch:
     async def test_quota_widget_has_the_review_trigger_switch(self, client: AsyncClient) -> None:
-        html = (await client.get("/agents")).text
+        html = (await client.get("/work")).text
 
         widget = html[html.index('id="cr-quota-widget"') :]
-        widget = widget[: widget.index("<!-- Handoff actions")]
+        widget = widget[: widget.index("<!-- Interrupted Runs Banner")]
         assert _switch_keys(widget) == ["external_reviews.coderabbit.trigger_review"]
 
 

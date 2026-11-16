@@ -270,6 +270,29 @@ def work_stage(
     return WorkStage.NEXT
 
 
+# The name and color token each stage shows under, in the same token set as the state colors.
+_STAGE_DISPLAY: dict[WorkStage, tuple[str, str]] = {
+    WorkStage.NEXT: ("Up next", "blue"),
+    WorkStage.QUEUED: ("Queued", "lavender"),
+    WorkStage.RUNNING: ("Running", "yellow"),
+    WorkStage.REVIEW: ("In review", "purple"),
+    WorkStage.NEEDS: ("Needs you", "peach"),
+    WorkStage.YOURS: ("Your own work", "gray"),
+    WorkStage.BLOCKED: ("Blocked", "gray-dim"),
+    WorkStage.DONE: ("Done today", "green"),
+}
+
+
+def stage_label(stage: WorkStage) -> str:
+    """The name a Work board stage shows under."""
+    return _STAGE_DISPLAY[stage][0]
+
+
+def stage_color(stage: WorkStage) -> str:
+    """The color token of a Work board stage."""
+    return _STAGE_DISPLAY[stage][1]
+
+
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
@@ -558,13 +581,6 @@ def _has_standing_sova_changes(facts: PRFacts) -> bool:
 _MERGE_STATES_MERGEABLE = frozenset({"CLEAN", "BEHIND", "HAS_HOOKS", "UNSTABLE"})
 _MERGE_STATES_BLOCKED_BY_GITHUB = frozenset({"BLOCKED"})
 _MERGE_STATES_UNMERGEABLE = _MERGE_STATES_BLOCKED_BY_GITHUB | {"DIRTY", "DRAFT"}
-
-# Every value mergeStateStatus is documented to return, plus "UNKNOWN" (GitHub's own
-# "still computing" value) and "" (not fetched at all, per the PRFacts.merge_state
-# docstring above). Exported so API request models (e.g. PRSuggestionRequest) validate
-# client-supplied merge_state against the same set this resolver understands, rather
-# than a second hand-maintained list that could drift from it.
-VALID_MERGE_STATES = frozenset({"UNKNOWN", ""}) | _MERGE_STATES_MERGEABLE | _MERGE_STATES_UNMERGEABLE
 
 
 def _github_will_merge(facts: PRFacts) -> bool:

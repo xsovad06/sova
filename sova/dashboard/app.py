@@ -118,7 +118,7 @@ class UninstallRequest(BaseModel):
 
 BASE = Path(__file__).parent
 
-_AGENTS_URL = "/agents"
+_WORK_URL = "/work"
 # Agents page "filter-status" dropdown: sourced from the same terminal-status
 # set the history endpoint filters on, so the UI can never offer a value that
 # the backend query would silently return zero rows for (or hide one it does).
@@ -1194,9 +1194,9 @@ def _setup_single_project(
         # Non-permanent: unlike /dashboard and /overview below, "/" is a real
         # route in multi-project mode too (the Fleet Manager home page), and
         # the mode is re-detected on every launch. A cached 301 here would
-        # keep sending a browser to "/agents" after a restart into
-        # multi-project mode, where bare "/agents" is never registered.
-        return RedirectResponse(url=_AGENTS_URL, status_code=307)
+        # keep sending a browser to "/work" after a restart into
+        # multi-project mode, where bare "/work" is never registered.
+        return RedirectResponse(url=_WORK_URL, status_code=307)
 
     _register_page_routes(app, templates)
     _register_api_routers(app, prefix="/api")
@@ -1282,57 +1282,57 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         # (home.html and base.html's sidebar logo both link here), not a
         # retired URL, so a cached 301 would survive any later change to
         # what this route redirects to.
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=307)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=307)
 
     @app.get("/p/{slug}/briefing")
     async def project_briefing(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "briefing.html", "briefing"))
 
-    @app.get("/p/{slug}/agents")
-    async def project_agents(request: Request, slug: str) -> Response:
+    @app.get("/p/{slug}/work")
+    async def project_work(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(
             request,
-            _project_page(request, templates, slug, "agents.html", "agents", status_options=_STATUS_OPTIONS),
+            _project_page(request, templates, slug, "work.html", "work", status_options=_STATUS_OPTIONS),
         )
-
-    @app.get("/p/{slug}/work")
-    async def project_work_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
         return _with_csrf_cookie(
-            request, _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
+            request, _project_page(request, templates, slug, "run_detail.html", "work", run_id=run_id)
         )
 
-    # Old routes as redirects
+    # Old routes as redirects. /agents was the Work page's name until the board replaced its task list.
+    @app.get("/p/{slug}/agents")
+    async def project_agents_redirect(slug: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
+
     @app.get("/p/{slug}/dashboard")
     async def project_dashboard_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/overview")
     async def project_overview_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/control")
     async def project_control_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/tasks")
     async def project_tasks_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/logs")
     async def project_logs_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/memory")
     async def project_memory_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/runs")
     async def project_runs_redirect(slug: str) -> RedirectResponse:
-        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
 
     @app.get("/p/{slug}/runs/{run_id}")
     async def project_run_detail_redirect(slug: str, run_id: int) -> RedirectResponse:
@@ -1362,7 +1362,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}/lifecycle/{issue_number}")
     async def project_lifecycle(request: Request, slug: str, issue_number: int) -> Response:
         return _with_csrf_cookie(
-            request, _project_page(request, templates, slug, "lifecycle.html", "agents", issue_number=issue_number)
+            request, _project_page(request, templates, slug, "lifecycle.html", "work", issue_number=issue_number)
         )
 
     @app.get("/p/{slug}/roles")
@@ -1383,7 +1383,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}/spec/{issue_number}")
     async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
         return _with_csrf_cookie(
-            request, _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
+            request, _project_page(request, templates, slug, "spec.html", "work", issue_number=issue_number)
         )
 
     @app.get("/p/{slug}/supervisor")
@@ -1474,51 +1474,51 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def briefing_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "briefing.html", {"page": "briefing"}))
 
-    @app.get("/agents")
-    async def agents_page(request: Request) -> Response:
+    @app.get("/work")
+    async def work_page(request: Request) -> Response:
         return _with_csrf_cookie(
             request,
-            templates.TemplateResponse(request, "agents.html", {"page": "agents", "status_options": _STATUS_OPTIONS}),
+            templates.TemplateResponse(request, "work.html", {"page": "work", "status_options": _STATUS_OPTIONS}),
         )
 
-    @app.get("/work")
-    async def work_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+    @app.get("/agents")
+    async def agents_redirect() -> RedirectResponse:
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/work/{run_id}")
     async def work_detail_page(request: Request, run_id: int) -> Response:
         return _with_csrf_cookie(
-            request, templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
+            request, templates.TemplateResponse(request, "run_detail.html", {"page": "work", "run_id": run_id})
         )
 
     # Old pages kept as redirects
     @app.get("/dashboard")
     async def dashboard_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/overview")
     async def overview_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/control")
     async def control_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/tasks")
     async def tasks_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/logs")
     async def logs_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/memory")
     async def memory_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/runs")
     async def runs_redirect() -> RedirectResponse:
-        return RedirectResponse(url=_AGENTS_URL, status_code=301)
+        return RedirectResponse(url=_WORK_URL, status_code=301)
 
     @app.get("/runs/{run_id}")
     async def run_detail_redirect(run_id: int) -> RedirectResponse:
@@ -1556,7 +1556,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def lifecycle_page(request: Request, issue_number: int) -> Response:
         return _with_csrf_cookie(
             request,
-            templates.TemplateResponse(request, "lifecycle.html", {"page": "agents", "issue_number": issue_number}),
+            templates.TemplateResponse(request, "lifecycle.html", {"page": "work", "issue_number": issue_number}),
         )
 
     @app.get("/roles")
@@ -1577,7 +1577,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/spec/{issue_number}")
     async def spec_page(request: Request, issue_number: str) -> Response:
         return _with_csrf_cookie(
-            request, templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
+            request, templates.TemplateResponse(request, "spec.html", {"page": "work", "issue_number": issue_number})
         )
 
     @app.get("/supervisor")

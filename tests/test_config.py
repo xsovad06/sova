@@ -396,13 +396,13 @@ def test_dashboard_section_loaded_from_toml(tmp_path: Path) -> None:
 github_repo = "user/repo"
 
 [dashboard]
-kanban_columns = "role_based"
+confirm_model = "always"
 """
     toml_file = tmp_path / "sova.toml"
     toml_file.write_text(toml_content)
 
     cfg = load_config(tmp_path)
-    assert cfg.dashboard.kanban_columns == "role_based"
+    assert cfg.dashboard.confirm_model == "always"
 
 
 def test_dashboard_defaults_when_missing(tmp_path: Path) -> None:
@@ -415,15 +415,15 @@ github_repo = "user/repo"
     toml_file.write_text(toml_content)
 
     cfg = load_config(tmp_path)
-    assert cfg.dashboard.kanban_columns == "step_based"
+    assert cfg.dashboard.confirm_model == "complex_only"
 
 
-def test_dashboard_rejects_invalid_kanban_mode(tmp_path: Path) -> None:
-    """Invalid kanban_columns value is rejected by Literal validation."""
+def test_dashboard_rejects_invalid_confirm_model(tmp_path: Path) -> None:
+    """Invalid confirm_model value is rejected by Literal validation."""
     from sova.config.models import DashboardConfig
 
     with pytest.raises(ValidationError):
-        DashboardConfig(kanban_columns="invalid_mode")
+        DashboardConfig(confirm_model="invalid_mode")
 
 
 @pytest.mark.parametrize("value", [[0], [-4], ["12"], [True], "12"])

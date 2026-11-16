@@ -1,7 +1,6 @@
-// Pure render helpers shared by the PR tracker and the work-item cards.
+// Pure render helpers for the PR tracker and the Work board's cards.
 //
-// A leaf module on purpose: it imports nothing from the other page modules, so the two modules that
-// both need these helpers (pr-tracker.js, work-items.js) no longer import each other for them.
+// A leaf module on purpose: it imports nothing from the other page modules.
 //
 // Stateless, so it exports no init() (unlike the page modules): there is nothing to start, bind or poll.
 
@@ -48,7 +47,8 @@ export function diffSizeLabel(additions, deletions) {
   if (total <= 50) return 'S';
   if (total <= 200) return 'M';
   if (total <= 500) return 'L';
-  return 'XL';
+  if (total <= 1000) return 'XL';
+  return 'XXL';
 }
 
 export function diffSizeColor(additions, deletions) {
@@ -57,21 +57,4 @@ export function diffSizeColor(additions, deletions) {
   if (total <= 200) return 'text-accent';
   if (total <= 500) return 'text-accent-yellow';
   return 'text-accent-red';
-}
-
-// The data-hide-on-error attribute is acted on by the capture-phase error listener in actions.js init(),
-// which every page module depends on, so a failed GitHub avatar is hidden wherever this markup lands.
-export function renderAssigneeAvatar(login) {
-  if (!login) return '';
-  return '<img src="https://avatars.githubusercontent.com/' + encodeURIComponent(login) + '?size=20" ' +
-    'alt="" width="16" height="16" loading="lazy" ' +
-    'class="rounded-full shrink-0" data-tooltip="' + escapeHtml(login) + '" ' +
-    'data-hide-on-error>';
-}
-
-export function renderJiraInitial(name) {
-  if (!name) return '';
-  var initial = name.charAt(0).toUpperCase();
-  return '<span class="w-4 h-4 rounded-full bg-gray-600 flex items-center justify-center text-[9px] text-gray-300 shrink-0" ' +
-    'data-tooltip="' + escapeHtml(name) + '">' + escapeHtml(initial) + '</span>';
 }

@@ -159,7 +159,7 @@ function renderRunStatusBadge(item) {
   var run = item.last_run;
   if (run.status === 'running' || run.status === 'developing' || run.status === 'pending') {
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
-    return '<a href="' + prefix + '/agents" class="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent-green/15 text-accent-green">' +
+    return '<a href="' + prefix + '/work" class="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent-green/15 text-accent-green">' +
       '<span class="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"></span>Running</a>';
   }
   if (run.status === 'done') {
@@ -447,7 +447,7 @@ async function startFromQueue(issue, role, e) {
       btn.style.opacity = '1';
       return;
     }
-    window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
+    window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work';
   } catch (e) {
     showToast('Failed to start agent: ' + e.message, 'error');
     btn.disabled = false;
@@ -496,7 +496,7 @@ async function executeBulkAction(action) {
       if (data.started) {
         // Navigating away removes the toasts, so a skipped issue's toast stays readable before the redirect.
         setTimeout(function() {
-          window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
+          window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work';
         }, failed.length ? 3000 : 0);
       }
     } catch (e) {

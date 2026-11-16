@@ -1,0 +1,245 @@
+import { actionAttrs } from '../agents/actions.js';
+import {
+  actionSignature, cardParts, ciHtml, entryKey, getBoard, iconHtml, lastRunHtml, loadBoard, onBoard, prFlags, prPill,
+  queuePosition, sizeHtml, statePill, threadsHtml,
+} from './board.js';
+import { createPriorityPicker } from './priority-picker.js';
+import { clearSelection, downstreamOf, getSelected, onSelectionChange } from './selection.js';
+
+// The issue drawer: why an issue is where it is, what it waits for, what it unblocks, its PR and last run,
+// its buttons (the same as on its card, then the work item's other actions from the server) and the priority
+// picker. It opens when a card or chain node is
+// selected and closes with Escape or its close button, which also clears the highlight.
+
+// Every issue the board knows, with the stage it is in: column entries first, then hidden ones, then chain
+// members (which carry less detail and are used only when the issue is nowhere else).
+function _index(board) {
+  var byNumber = new Map();
+  (board.columns || []).forEach(function(col) {
+    (board[col.entries] || []).forEach(function(entry) {
+      if (entry.number != null && !byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: col.stage });
+    });
+  });
+  (board.hidden || []).forEach(function(entry) {
+    if (entry.number != null && !byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: 'hidden' });
+  });
+  (board.chains || []).forEach(function(chain) {
+    (chain.issues || []).forEach(function(entry) {
+      if (!byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: entry.stage || '' });
+    });
+  });
+  return byNumber;
+}
+
+function _column(board, stage) {
+  return (board.columns || []).filter(function(c) { return c.stage === stage; })[0] || null;
+}
+
+function _pill(board, stage) {
+  if (stage === 'hidden') return '<span class="px-2 py-0.5 rounded-full text-xs bg-gray-600/30 text-gray-400">Hidden</span>';
+  var col = _column(board, stage);
+  if (!col) return '';
+  return '<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ' + stateBadgeClasses(col.color) + '">' + escapeHtml(col.label) + '</span>';
+}
+
+// The ranking's reasons (`priority:high`, `unblocks:2`, `state:researched`) as words.
+function _whyWords(why) {
+  return (why || []).map(function(w) {
+    var parts = String(w).split(':');
+    var key = parts[0];
+    var value = parts.slice(1).join(':');
+    if (key === 'priority') return priorityDisplayName(value) + ' priority';
+    if (key === 'unblocks') return 'finishing it unblocks ' + value + ' other issue' + (value === '1' ? '' : 's');
+    if (key === 'state') return 'it is ' + value.replace(/_/g, ' ');
+    return String(w).replace(/_/g, ' ');
+  });
+}
+
+function _why(entry, stage) {
+  if (stage === 'next') {
+    var words = _whyWords(entry.why);
+    return 'Rank ' + entry.rank + ' in Up next' + (words.length ? ': ' + words.join(', ') : '') + '.';
+  }
+  if (stage === 'queued') {
+    var pos = queuePosition(entry.number);
+    return 'Queued at position ' + pos[0] + ' of ' + pos[1] + '. The supervisor starts it when a slot frees, while it is on.';
+  }
+  if (stage === 'running') {
+    // A one-step run (a command) has no step worth naming.
+    var steps = entry.total_steps > 1 && entry.step_index != null;
+    var step = steps && entry.step_name ? ' is at ' + entry.step_name.replace(/_/g, ' ') : ' is running';
+    var of = steps ? ', step ' + (entry.step_index + 1) + ' of ' + entry.total_steps : '';
+    return (entry.role ? formatRole(entry.role) : 'An agent') + step + of + '.';
+  }
+  if (stage === 'review') return 'PR #' + entry.pr_number + ' is open and waits on CI or a review.';
+  if (stage === 'needs') return (entry.reason || 'It needs you') + (entry.pr_number ? ' (PR #' + entry.pr_number + ').' : '.');
+  if (stage === 'yours') return 'Agents skip it: ' + (entry.reason || 'no agent label yet') + '.';
+  if (stage === 'blocked') return 'It waits for ' + (entry.depends_on || []).map(function(n) { return '#' + n; }).join(', ') + ' to close.';
+  if (stage === 'done') return 'Merged today' + (entry.pr_number ? ' with PR #' + entry.pr_number : '') + '.';
+  if (stage === 'hidden') return 'Hidden from Up next. Unhide brings it back.';
+  return entry.state_label ? 'Its state is ' + entry.state_label + '. It is not on the board.' : 'It is not on the board.';
+}
+
+function _depRow(board, index, number) {
+  var known = index.get(number);
+  var title = known ? known.entry.title : '';
+  var stage = known ? known.stage : '';
+  return '<button type="button" class="flex items-center gap-2 w-full text-left px-1.5 py-1 rounded hover:bg-surface-hover transition-colors min-w-0"' +
+    actionAttrs('work-select', [number]) + '>' +
+    '<span class="text-xs font-bold text-accent tabular-nums shrink-0">#' + number + '</span>' +
+    '<span class="text-sm text-gray-300 truncate flex-1 min-w-0">' + escapeHtml(title || 'Not on the board') + '</span>' +
+    (stage ? _pill(board, stage) : '') + '</button>';
+}
+
+function _section(label, inner, count) {
+  return '<section class="flex flex-col gap-1.5"><h4 class="flex items-center gap-1.5 text-xs uppercase tracking-wider text-gray-500">' +
+    escapeHtml(label) + (count || '') + '</h4>' + inner + '</section>';
+}
+
+// A count beside a section heading: colored when there is something to count, muted at zero.
+function _count(n, cls) {
+  return '<span class="px-1.5 rounded-full text-xs normal-case tracking-normal tabular-nums ' +
+    (n > 0 ? cls : 'bg-surface-hover text-gray-500') + '">' + n + '</span>';
+}
+
+function _tag(text, cls) {
+  return '<span class="px-1.5 rounded-full text-xs whitespace-nowrap ' + (cls || 'bg-surface-hover text-gray-300') + '">' + escapeHtml(text) + '</span>';
+}
+
+var _ACTION_BUTTON = { primary: 'sova-btn-primary', success: 'sova-btn-success', warning: 'sova-btn-warning', danger: 'sova-btn-danger' };
+
+// The work item's own actions (from the server, for its state) that its card buttons do not already offer:
+// for a PR whose review budget ran out, Review PR and Address PR beside Integrate.
+function _moreActions(entry, parts, busy) {
+  var covered = parts.covers || [];
+  var actions = (entry.actions || []).filter(function(a) { return covered.indexOf(actionSignature(a)) === -1; });
+  if (!actions.length) return '';
+  return '<div class="flex flex-wrap items-center gap-1">' +
+    '<span class="text-xs text-gray-500 mr-1">Also</span>' +
+    actions.map(function(a) {
+      var variant = _ACTION_BUTTON[a.style];
+      var cls = variant ? 'sova-btn ' + variant : 'sova-btn sova-work-btn-quiet bg-surface-hover text-gray-300 hover:text-white';
+      return '<button type="button" class="' + cls + '"' + actionAttrs('work-run-action', [entry.number, a]) + (busy ? ' disabled' : '') + '>' +
+        iconHtml('play') + escapeHtml(a.label) + '</button>';
+    }).join('') + '</div>';
+}
+
+function _kv(rows) {
+  var html = rows.filter(function(r) { return r[1]; }).map(function(r) {
+    return '<dt class="text-gray-500">' + escapeHtml(r[0]) + '</dt><dd class="text-gray-300 min-w-0">' + r[1] + '</dd>';
+  }).join('');
+  return html ? '<dl class="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">' + html + '</dl>' : '';
+}
+
+function _render() {
+  _redrawPending = false;
+  var el = document.getElementById('work-drawer');
+  if (!el) return;
+  var board = getBoard();
+  var number = getSelected();
+  if (number === null || !board) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  var index = _index(board);
+  var known = index.get(number);
+  var entry = known ? known.entry : { number: number, title: '' };
+  var stage = known ? known.stage : '';
+  var parts = known ? cardParts(entry, stage) : { buttons: '' };
+  var waits = entry.depends_on || [];
+  var direct = entry.dependents || [];
+  var total = downstreamOf().size;
+  var pr = entry.pr;
+  var last = entry.last_run;
+
+  var busy = actionIsRunning(entryKey(entry));
+  var col = _column(board, stage);
+  var html = '<div class="flex flex-col gap-2 px-4 pt-4 pb-3 border-b border-gray-700/50">' +
+      '<div class="flex flex-wrap items-center gap-1.5">' +
+        (entry.priority != null && stage !== 'done' ? '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(priorityDisplayName(entry.priority)) + ' priority" width="16" height="16">' : '') +
+        '<span class="text-sm font-bold text-accent tabular-nums">#' + number + '</span>' + _pill(board, stage) + statePill(entry) +
+        '<span class="ml-auto flex items-center gap-1">' +
+          (entry.url ? '<a href="' + escapeHtml(entry.url) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open #' + number + ' on GitHub">' + iconHtml('external-link') + '</a>' : '') +
+          '<button type="button" id="work-drawer-close" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Close the details">' + iconHtml('close') + '</button>' +
+        '</span>' +
+      '</div>' +
+      '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || 'Issue #' + number) + '</h3>' +
+      actionStatusHtml(entryKey(entry)) +
+      (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
+      _moreActions(entry, parts, busy) +
+    '</div>' +
+    '<div class="flex flex-col gap-4 px-4 py-3 overflow-y-auto">' +
+      _section('Why it is here', '<p class="flex items-start gap-2 text-sm text-gray-300">' +
+        '<span class="w-2 h-2 mt-1.5 rounded-full shrink-0" style="background:' + stateHex(col ? col.color : 'gray') + '"></span>' +
+        '<span>' + escapeHtml(_why(entry, stage)) + '</span></p>') +
+      _section('Priority', '<div id="work-drawer-priority"></div>') +
+      _section('Waits for',
+        waits.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing open.</p>',
+        _count(waits.length, 'sova-work-chip-up')) +
+      _section('Unblocks',
+        direct.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing waits for it.</p>',
+        _count(direct.length, 'sova-work-chip-unblocks') +
+          (total > direct.length ? '<span class="normal-case tracking-normal text-gray-500">' + total + ' in total</span>' : '')) +
+      (pr ? _section('Pull request', _kv([
+        ['PR', '<span class="flex flex-wrap items-center gap-1">' + prPill(pr) +
+          (pr.state_label ? _tag(pr.state_label, stateBadgeClasses(pr.state_color)) : '') + prFlags(pr) + '</span>'],
+        ['CI', ciHtml(pr.ci_state) || '<span class="text-gray-500">No checks reported</span>'],
+        ['Threads', threadsHtml(pr, true)],
+        ['Size', sizeHtml(pr, true)],
+      ])) : '') +
+      _section('Context', _kv([
+        ['Milestone', entry.milestone ? _tag(entry.milestone) : '<span class="text-gray-500">None</span>'],
+        ['Agent fit', entry.mode ? _tag(entry.mode.replace(/_/g, ' ')) : ''],
+        ['Last run', last ? '<span class="flex flex-wrap items-center gap-1">' + lastRunHtml(entry, true) +
+          '<a class="text-accent hover:underline" href="' + (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work/' + last.run_id + '">details</a></span>' : ''],
+      ])) +
+    '</div>';
+  el.innerHTML = html;
+  el.hidden = false;
+  var host = document.getElementById('work-drawer-priority');
+  if (host) {
+    host.appendChild(createPriorityPicker({
+      issue: number,
+      value: entry.priority,
+      iconHtml: iconHtml,
+      error: _priorityError && _priorityError.issue === number ? _priorityError.message : '',
+      onSaved: function() {
+        _priorityError = null;
+        loadBoard();
+      },
+      onFailed: function(message) { _priorityError = { issue: number, message: message }; },
+      onIdle: _replayRedraw,
+    }));
+  }
+}
+
+// A redraw replaces the picker, so a board refresh must not land while its menu is open or its save runs. The
+// redraw is held (_redrawPending) and applied when the picker reports idle, so the drawer never keeps old state.
+var _redrawPending = false;
+// The last failed priority save, drawn into the next picker: a redraw after the failure must not hide it.
+var _priorityError = null;
+
+function _renderUnlessBusy() {
+  var el = document.getElementById('work-drawer');
+  if (el && !el.hidden && el.querySelector('.sova-priority-picker[data-open], .sova-priority-picker[data-saving]')) {
+    _redrawPending = true;
+    return;
+  }
+  _render();
+}
+
+function _replayRedraw() {
+  if (!_redrawPending) return;
+  _redrawPending = false;
+  _renderUnlessBusy();
+}
+
+export function init() {
+  onSelectionChange(_render);
+  onBoard(_renderUnlessBusy);
+  onActionStateChange(_renderUnlessBusy);
+  document.addEventListener('click', function(e) {
+    if (e.target.closest && e.target.closest('#work-drawer-close')) clearSelection();
+  });
+}

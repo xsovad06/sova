@@ -29,6 +29,8 @@ from sova.dashboard.services.work_state import (
     YOURS_MODES,
     WorkItemState,
     WorkStage,
+    stage_color,
+    stage_label,
     state_color,
     state_label,
     work_stage,
@@ -89,7 +91,7 @@ def _item_run_status(item: dict) -> str | None:
 
 
 def _item_entry(item: dict, stage: WorkStage) -> dict:
-    return _issue_entry(
+    entry = _issue_entry(
         _parse_issue_number(item.get("issue_number")),
         title=item.get("title", ""),
         url=item.get("url", ""),
@@ -97,6 +99,74 @@ def _item_entry(item: dict, stage: WorkStage) -> dict:
         state=item.get("state", ""),
         priority=item.get("issue_priority", ""),
     )
+    entry.update(_item_extras(item))
+    return entry
+
+
+def _item_extras(item: dict) -> dict:
+    """What a work item adds to its entry: agent fit, the issue's creation time, its open PR, last run and actions."""
+    return {
+        "mode": _item_mode(item),
+        "created_at": item.get("created_at") or None,
+        "pr": _pr_summary(item),
+        "last_run": _last_run_summary(item),
+        "actions": _item_actions(item),
+    }
+
+
+# The handlers the Work page can run. A work-item action with another handler is left out, never shown dead.
+_RUNNABLE_HANDLERS = frozenset({"start_agent", "run_command", "trigger_rebase"})
+_ACTION_KEYS = ("id", "label", "style", "handler", "handler_args", "merge_blockers")
+
+
+def _item_actions(item: dict) -> list[dict]:
+    """The work item's own actions for its state (work_state._get_actions), primary first, as the drawer lists them.
+
+    Each keeps ``id, label, style, handler, handler_args`` and, on an Integrate action, ``merge_blockers`` (the
+    unmet merge conditions the page confirms before running it).
+    """
+    actions = [item.get("primary_action"), *(item.get("secondary_actions") or [])]
+    return [
+        {key: action[key] for key in _ACTION_KEYS if key in action}
+        for action in actions
+        if isinstance(action, dict) and action.get("handler") in _RUNNABLE_HANDLERS
+    ]
+
+
+def _pr_summary(item: dict) -> dict | None:
+    """The linked PR as the card and drawer show it, or None when the issue has no open PR."""
+    pr = item.get("pr_details") or {}
+    number = pr.get("number") or item.get("pr_number")
+    if not number:
+        return None
+    return {
+        "number": number,
+        "url": pr.get("url", ""),
+        "state_label": pr.get("state_label", ""),
+        "state_color": pr.get("state_color", ""),
+        "ci_state": pr.get("ci_status", ""),
+        "mergeable": pr.get("mergeable", ""),
+        "merge_state": pr.get("merge_state", ""),
+        "is_draft": bool(pr.get("is_draft")),
+        "threads_resolved": pr.get("thread_resolved", 0),
+        "threads_total": pr.get("thread_total", 0),
+        "additions": pr.get("additions", 0),
+        "deletions": pr.get("deletions", 0),
+        "changed_files": pr.get("changed_files", 0),
+    }
+
+
+def _last_run_summary(item: dict) -> dict | None:
+    """The issue's latest run (id, role, status, when it ended), or None when it never ran."""
+    run = item.get("last_run") or {}
+    if not run.get("id"):
+        return None
+    return {
+        "run_id": run["id"],
+        "role": run.get("role", ""),
+        "status": run.get("status", ""),
+        "ended_at": run.get("ended_at"),
+    }
 
 
 def _fallback_entry(number: int, graph: DependencyGraph | None, stage: WorkStage) -> dict:
@@ -134,10 +204,16 @@ def _reason_for_yours(item: dict) -> dict:
     return {"reason": mode, "reason_source": "suitability"}
 
 
+def _session_command(item: dict) -> str:
+    """The command that opens an interactive session on the issue: the full workflow, with a person in it."""
+    return f'claude "/develop-full {item.get("issue_number", "")}"'
+
+
 def _running_details(item: dict, runs: dict[str, dict]) -> dict:
     agent = item.get("running_agent") or {}
     run = runs.get(f"run:{agent.get('run_id')}") or runs.get(f"issue:{item.get('issue_number')}") or {}
     return {
+        "run_id": agent.get("run_id") or run.get("id"),
         "role": agent.get("role") or run.get("role"),
         "step_name": run.get("current_step"),
         "step_index": run.get("step_index"),
@@ -181,6 +257,33 @@ async def _active_runs(project_dir: Path | None) -> dict[str, dict] | None:
         indexed[f"run:{run['id']}"] = run
         indexed[f"issue:{run['issue_number']}"] = run
     return indexed
+
+
+def _other_runs(runs: dict[str, dict] | None, running_entries: list[dict]) -> list[dict]:
+    """Running runs no Running card shows (a planner run, or one on an issue the work items leave out), so each
+    still has a View log and a Stop somewhere on the page. Oldest first, like the column."""
+    on_cards = {entry.get("run_id") for entry in running_entries}
+    seen: set[int] = set()
+    others = []
+    for run in (runs or {}).values():
+        run_id = run.get("id")
+        if run_id is None or run_id in seen or run_id in on_cards or run.get("status") != "running":
+            continue
+        seen.add(run_id)
+        others.append(
+            {
+                "run_id": run_id,
+                "issue_number": run.get("issue_number") or None,
+                "pr_number": run.get("pr_number"),
+                "role": run.get("role"),
+                "pipeline_variant": run.get("pipeline_variant"),
+                "run_label": run.get("run_label") or "",
+                "step_name": run.get("current_step"),
+                "elapsed_seconds": run.get("elapsed_seconds"),
+                "started_at": run.get("started_at"),
+            }
+        )
+    return sorted(others, key=lambda r: r["started_at"] or "")
 
 
 def _local_midnight(now: datetime) -> datetime:
@@ -410,6 +513,66 @@ def _chains(graph: DependencyGraph, on_board: set[int], stages: dict[int, WorkSt
     return chains, other_blocked
 
 
+# Relations -------------------------------------------------------------------
+
+
+def _relations(number: int | None, graph: DependencyGraph, open_nodes: set[int]) -> dict:
+    """What an issue waits for and what waits for it (open, non-epic issues, ascending), and its milestone.
+
+    An issue the graph lacks (a merged PR's closed issue, a hidden issue gone from the tracker) has no
+    relations rather than an error.
+    """
+    task = graph.get_task(number) if number is not None else None
+    if task is None:
+        return {"depends_on": [], "dependents": [], "milestone": ""}
+    return {
+        "depends_on": sorted(unsatisfied_dependencies(number, graph) or []),
+        "dependents": sorted(graph.get_dependents(number) & open_nodes),
+        "milestone": task.milestone,
+    }
+
+
+def _milestones(graph: DependencyGraph, *, running: set[int], open_prs: set[int]) -> list[str]:
+    """The milestones of the issues ranked for Up next, for the milestone filter's choices."""
+    return sorted(
+        {entry["milestone"] for entry in rank_graph_entries(graph, running=running, open_prs=open_prs)} - {""}
+    )
+
+
+# Columns ---------------------------------------------------------------------
+
+# Where each stage's entries sit in the payload, and which column shows them: "Your own work" is a collapsed
+# group inside Needs you, and blocked issues have no column (they show in the chains).
+_STAGE_LAYOUT: dict[WorkStage, tuple[str, WorkStage | None]] = {
+    WorkStage.NEXT: ("up_next", WorkStage.NEXT),
+    WorkStage.QUEUED: ("queued", WorkStage.QUEUED),
+    WorkStage.RUNNING: ("running", WorkStage.RUNNING),
+    WorkStage.REVIEW: ("review", WorkStage.REVIEW),
+    WorkStage.NEEDS: ("needs", WorkStage.NEEDS),
+    WorkStage.YOURS: ("yours", WorkStage.NEEDS),
+    WorkStage.BLOCKED: ("blocked", None),
+    WorkStage.DONE: ("done_today", WorkStage.DONE),
+}
+
+
+def _columns() -> list[dict]:
+    """Every stage in board order, with its label, color token, payload key and the column that shows it.
+
+    A stage whose ``column`` is another stage is a collapsed group inside that column; ``None`` means the
+    board has no column for it. The page draws from this list and keeps no stage table of its own.
+    """
+    return [
+        {
+            "stage": stage.value,
+            "label": stage_label(stage),
+            "color": stage_color(stage),
+            "entries": _STAGE_LAYOUT[stage][0],
+            "column": column.value if (column := _STAGE_LAYOUT[stage][1]) is not None else None,
+        }
+        for stage in WorkStage
+    ]
+
+
 # Board -----------------------------------------------------------------------
 
 
@@ -474,9 +637,19 @@ def _stage_details(item: dict, stage: WorkStage, runs: dict[str, dict]) -> dict:
         return _review_details(item)
     if stage is WorkStage.NEEDS:
         kind, reason = _reason_for_needs(item.get("state", ""))
-        return {"kind": kind, "reason": reason, "pr_number": item.get("pr_number")}
+        last_run = item.get("last_run") or {}
+        return {
+            "kind": kind,
+            "reason": reason,
+            "pr_number": item.get("pr_number"),
+            "run_id": last_run.get("id"),
+            "role": last_run.get("role"),
+        }
     if stage is WorkStage.YOURS:
-        return _reason_for_yours(item)
+        details = _reason_for_yours(item)
+        if _item_mode(item) == "interactive":
+            details["session_command"] = _session_command(item)
+        return details
     if stage is WorkStage.BLOCKED:
         return {"blocked_by": (item.get("suitability") or {}).get("blocked_by", [])}
     return {}
@@ -539,8 +712,15 @@ def _apply_done_precedence(board: _Classified, done_today: list[dict] | None) ->
 
 
 async def build_board(project_dir: Path | None, milestone: str = "", *, now: datetime | None = None) -> dict:
-    """The Work board: ``{stages, up_next, more_ready, queued, running, review, needs, yours, blocked, done_today,
-    chains, other_blocked, hidden, unavailable}``.
+    """The Work board: ``{stages, columns, agents, api_health, milestones, up_next, more_ready, queued, queue_order,
+    running, other_runs, review, needs, yours, blocked, done_today, chains, other_blocked, hidden, unavailable}``.
+
+    Every entry carries ``depends_on`` and ``dependents`` (open, non-epic issue numbers) and its ``milestone``;
+    work-item entries add ``mode``, ``pr`` and ``last_run``. Running and needs entries carry the ``run_id`` their
+    buttons act on.
+
+    ``queue_order`` is the whole saved queue (closed issues pruned), including a queued issue that sits in another
+    column, so a card's Move up and Move down read its place in the order the move acts on.
 
     Every issue is in one column (``work_stage()``). ``milestone`` limits the ranking behind ``up_next`` only.
     A dependency graph failure raises, since an empty board must not look like an idle project; the sources that
@@ -572,6 +752,10 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
     up_next, more_ready = _up_next(
         ranking_graph, running=running, open_prs=open_prs, hidden=hidden, queued=queue_set, stage_of=stage_of
     )
+    for entry in up_next:  # the ranking knows no runs or PRs: take them from the issue's work item
+        item = board.by_number.get(entry["number"])
+        if item is not None:
+            entry.update(_item_extras(item))
     hidden_entries = [
         _item_entry(board.by_number[n], stage_of[n])
         if n in board.by_number
@@ -594,13 +778,27 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
         if entry["number"] is not None
     }
     chains, other_blocked = _chains(graph, on_board, stage_of)
+    open_nodes = _open_chain_nodes(graph)
+    for entry in [
+        *up_next,
+        *(e for entries in columns.values() for e in entries),
+        *(done_today or []),
+        *hidden_entries,
+    ]:
+        entry.update(_relations(entry["number"], graph, open_nodes))
 
     return {
         "stages": [stage.value for stage in WorkStage],
+        "columns": _columns(),
+        "agents": {"running": items_data.get("agents_running"), "limit": items_data.get("max_concurrent")},
+        "api_health": items_data.get("api_health") or {"status": "ok"},
+        "milestones": _milestones(graph, running=running, open_prs=open_prs),
         "up_next": up_next,
         "more_ready": more_ready,
         "queued": queued,
+        "queue_order": queue,
         "running": columns[WorkStage.RUNNING],
+        "other_runs": _other_runs(runs, columns[WorkStage.RUNNING]),
         "review": columns[WorkStage.REVIEW],
         "needs": columns[WorkStage.NEEDS],
         "yours": columns[WorkStage.YOURS],

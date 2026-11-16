@@ -404,8 +404,8 @@ async def _drain_stream_reader(agent: AgentState) -> None:
     _log_if_task_failed(next(iter(done)), agent.run_id)
 
 
-def _invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None) -> None:
-    """Drop the cached task, PR, and verdict state an exiting agent may have just made stale.
+def invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None) -> None:
+    """Drop the cached task, PR, and verdict state an exiting agent or a finished dashboard action made stale.
 
     Without this the Tasks list keeps serving pre-run labels, PR state, and the
     superseded SOVA verdict/next-action until the caches expire on their own TTLs
@@ -452,7 +452,7 @@ async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, s
     non-terminal ``TaskRun`` rows, so a finished run never appears there with
     its terminal status for the client to observe.
     """
-    _invalidate_work_item_caches(agent.project_dir, agent.pr_number)
+    invalidate_work_item_caches(agent.project_dir, agent.pr_number)
     try:
         from sova.dashboard.routers.agents import _ws_manager
 

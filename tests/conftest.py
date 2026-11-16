@@ -948,19 +948,21 @@ INVARIANTS_DIR = Path(__file__).parent.parent / "invariants"
 
 DASHBOARD_DIR = Path(__file__).parent.parent / "sova" / "dashboard"
 AGENTS_PAGE_JS_DIR = DASHBOARD_DIR / "static" / "js" / "pages" / "agents"
+WORK_PAGE_JS_DIR = DASHBOARD_DIR / "static" / "js" / "pages" / "work"
 
 
 @functools.cache
 def agents_page_source() -> str:
-    """The Agents page markup followed by every ES module it loads, as one string.
+    """The Work page markup (the former Agents page) followed by every ES module it loads, as one string.
 
-    The page's script lives in `static/js/pages/agents/*.js`, not inline in `agents.html`,
-    so a source-level assertion about its JS (there is no JS test harness) searches this.
+    The page's script lives in `static/js/pages/agents/*.js` and `static/js/pages/work/*.js`, not inline in
+    `work.html`, so a source-level assertion about its JS (there is no JS test harness) searches this.
     Cached: the files do not change during a run and a test may call it many times. Assert on
     markup (an element id) against the rendered response instead, which this string is not.
     """
-    parts = [(DASHBOARD_DIR / "templates" / "agents.html").read_text(encoding="utf-8")]
+    parts = [(DASHBOARD_DIR / "templates" / "work.html").read_text(encoding="utf-8")]
     parts += [p.read_text(encoding="utf-8") for p in sorted(AGENTS_PAGE_JS_DIR.glob("*.js"))]
+    parts += [p.read_text(encoding="utf-8") for p in sorted(WORK_PAGE_JS_DIR.glob("*.js"))]
     return "\n".join(parts)
 
 
