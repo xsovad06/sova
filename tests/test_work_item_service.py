@@ -408,6 +408,26 @@ class TestComputeWorkItemState:
     def test_label_in_review_no_pr(self) -> None:
         assert _state(task_state="in_review") == WorkItemState.PR_AWAITING_REVIEW
 
+    @pytest.mark.parametrize(
+        ("task_state", "expected"),
+        [
+            ("in_review", WorkItemState.PR_MERGED_ISSUE_OPEN),
+            ("in_progress", WorkItemState.IN_PROGRESS),
+            ("triaged", WorkItemState.TRIAGED),
+        ],
+    )
+    def test_label_with_known_closed_pr(self, task_state: str, expected: WorkItemState) -> None:
+        assert _state(task_state=task_state, closed_pr_number=100) == expected
+
+    def test_label_in_review_with_closed_pr_zero_is_still_closed(self) -> None:
+        assert _state(task_state="in_review", closed_pr_number=0) == WorkItemState.PR_MERGED_ISSUE_OPEN
+
+    def test_open_pr_ignores_closed_pr_number(self) -> None:
+        pr_data = {"number": 5, "state": "OPEN"}
+        assert _state(task_state="in_review", pr_data=pr_data, closed_pr_number=4) == _state(
+            task_state="in_review", pr_data=pr_data
+        )
+
     def test_label_needs_spec(self) -> None:
         assert _state(task_state="needs_spec") == WorkItemState.NEEDS_SPEC
 

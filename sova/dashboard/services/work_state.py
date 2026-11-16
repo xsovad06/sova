@@ -45,6 +45,8 @@ class WorkItemState(StrEnum):
     PR_SOVA_PENDING = "pr_sova_pending"
     # address-review cycle budget exhausted; routed to Integrate for a human decision
     PR_REVIEW_EXHAUSTED = "pr_review_exhausted"
+    # label says in-review but the last run's PR is no longer open (merged, or closed unmerged); no PR action applies
+    PR_MERGED_ISSUE_OPEN = "pr_merged_issue_open"
 
     # Handoff states
     SPEC_REVIEW = "spec_review"
@@ -73,6 +75,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
     WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
     WorkItemState.PR_REVIEW_EXHAUSTED: "Review Budget Exhausted",
+    WorkItemState.PR_MERGED_ISSUE_OPEN: "PR Merged, Issue Open",
     WorkItemState.SPEC_REVIEW: "Spec Review",
     WorkItemState.MERGED: "Merged",
     WorkItemState.DONE: "Done",
@@ -100,6 +103,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_READY_TO_MERGE: "green-strong",
     WorkItemState.PR_SOVA_PENDING: "peach",
     WorkItemState.PR_REVIEW_EXHAUSTED: "peach",
+    WorkItemState.PR_MERGED_ISSUE_OPEN: "gray",
     WorkItemState.SPEC_REVIEW: "peach",
     WorkItemState.MERGED: "green-strong",
     WorkItemState.DONE: "green-strong",
@@ -209,9 +213,15 @@ _REVIEW_STAGE_STATES = frozenset(
         TaskState.IN_REVIEW,
     }
 )
-# A person has to act: merge a ready PR, decide on an exhausted review budget, or approve a spec.
+# A person has to act: merge a ready PR, decide on an exhausted review budget, approve a spec, or clear a stale
+# in-review label whose PR is no longer open.
 _NEEDS_STAGE_STATES = frozenset(
-    {WorkItemState.PR_READY_TO_MERGE, WorkItemState.PR_REVIEW_EXHAUSTED, WorkItemState.SPEC_REVIEW}
+    {
+        WorkItemState.PR_READY_TO_MERGE,
+        WorkItemState.PR_REVIEW_EXHAUSTED,
+        WorkItemState.SPEC_REVIEW,
+        WorkItemState.PR_MERGED_ISSUE_OPEN,
+    }
 )
 YOURS_MODES = frozenset({"epic", "human", "interactive", "unclassified"})
 _FAILED_RUN_STATUS = TaskStatus.FAILED.value
@@ -232,8 +242,9 @@ def work_stage(
     1. ``done``: the state is merged, done or on_qa.
     2. ``running``: an agent is running or the issue is in progress.
     3. ``review``: a PR is open and not yet merge-ready (draft, conflicts, CI, awaiting or changes requested).
-    4. ``needs``: a merge-ready PR, an exhausted review budget, a spec awaiting approval, or a latest run that
-       failed (a later successful run replaces the latest run, so it clears this).
+    4. ``needs``: a merge-ready PR, an exhausted review budget, a spec awaiting approval, an in-review label
+       whose PR is no longer open, or a latest run that failed (a later successful run replaces the latest run,
+       so it clears this).
     5. ``yours``: the state is human_only, or the mode is epic, human, interactive or unclassified.
     6. ``blocked``: the mode is blocked.
     7. ``queued``: the issue is in the supervisor queue.
@@ -940,6 +951,7 @@ def compute_work_item_resolution(
     sova_verdict: dict | None = None,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
+    closed_pr_number: int | None = None,
 ) -> tuple[Resolution, PRFacts | None]:
     """Compute the full Resolution plus the PRFacts it was built from (#992).
 
@@ -958,6 +970,10 @@ def compute_work_item_resolution(
     review_budget_exhausted rule): a caller that failed to load config passes
     0 explicitly to fail open to the pre-budget-cap routing rather than
     inventing an exhausted state from a missing value.
+
+    ``closed_pr_number`` is the last run's PR when it is known to be no longer open. It reclassifies
+    only the label fallback that would have said PR_AWAITING_REVIEW, so a stale in-review label
+    does not offer review actions on a PR that is gone.
     """
     if running_agent is not None or pr_data is not None:
         facts = _build_pr_facts(
@@ -972,6 +988,8 @@ def compute_work_item_resolution(
 
     if task_state is not None:
         state = _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
+        if state is WorkItemState.PR_AWAITING_REVIEW and closed_pr_number is not None:
+            state = WorkItemState.PR_MERGED_ISSUE_OPEN
         return Resolution(state, None, ()), None
 
     return Resolution(WorkItemState.BACKLOG, None, ()), None
@@ -985,6 +1003,7 @@ def compute_work_item_state(
     sova_verdict: dict | None = None,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
+    closed_pr_number: int | None = None,
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
@@ -997,6 +1016,7 @@ def compute_work_item_state(
         sova_verdict=sova_verdict,
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
+        closed_pr_number=closed_pr_number,
     )
     return resolution.state
 

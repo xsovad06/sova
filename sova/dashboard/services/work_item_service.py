@@ -426,6 +426,34 @@ def _resolve_spec_review_override(
     return WorkItemState.SPEC_REVIEW, primary, [], spec_handoff_actions
 
 
+def _task_pr_numbers(
+    issue_num: str,
+    pr_data: dict | None,
+    last_run: dict | None,
+    open_pr_numbers: Collection[int] | None,
+) -> tuple[int | None, int | None]:
+    """Return ``(pr_number, closed_pr_number)`` for a queue task.
+
+    A linked PR wins. Otherwise the last run's PR is kept unless ``open_pr_numbers`` proves it is no
+    longer open, in which case it becomes ``closed_pr_number`` (else the queue's own ``closed_pr_number``).
+    """
+    if pr_data:
+        return pr_data.get("number"), None
+    if not last_run:
+        return None, None
+    pr_number = last_run.get("pr_number")
+    if not pr_number:
+        closed = last_run.get("closed_pr_number")
+        # The queue result is cached longer than the open list: a PR it recorded as closed may have reopened.
+        if closed is not None and pr_open_state_from_list(closed, open_pr_numbers) is PROpenState.OPEN:
+            return None, None
+        return None, closed
+    if pr_open_state_from_list(pr_number, open_pr_numbers) is PROpenState.NOT_OPEN:
+        log.debug("work_items.stale_pr_number_dropped", issue=issue_num, pr=pr_number)
+        return None, pr_number
+    return pr_number, last_run.get("closed_pr_number")
+
+
 def _build_task_item(
     task: dict,
     pr_data: dict | None,
@@ -441,17 +469,12 @@ def _build_task_item(
     """Build a work item from a queue task and its linked PR/handoff/agent.
 
     ``open_pr_numbers`` is the fetched open-PR list, or ``None`` when that fetch failed. A PR number
-    carried over from the last run is dropped only when that list proves the PR is no longer open.
+    carried over from the last run is dropped only when that list proves the PR is no longer open;
+    that PR, or the one the queue already proved closed, is passed on as ``closed_pr_number``.
     """
     issue_num = str(task["issue"])
-    pr_number = None
-    if pr_data:
-        pr_number = pr_data.get("number")
-    elif task.get("last_run") and task["last_run"].get("pr_number"):
-        pr_number = task["last_run"]["pr_number"]
-        if pr_open_state_from_list(pr_number, open_pr_numbers) is PROpenState.NOT_OPEN:
-            log.debug("work_items.stale_pr_number_dropped", issue=issue_num, pr=pr_number)
-            pr_number = None
+    last_run = task.get("last_run")
+    pr_number, closed_pr_number = _task_pr_numbers(issue_num, pr_data, last_run, open_pr_numbers)
 
     resolution, facts = compute_work_item_resolution(
         task_state=task.get("state"),
@@ -460,15 +483,11 @@ def _build_task_item(
         sova_verdict=sova_verdict if pr_data else None,
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
+        closed_pr_number=closed_pr_number,
     )
-    state = resolution.state
-    reason_chain = _reason_chain_payload(resolution, facts)
-    matched_reason = reason_chain[-1] if reason_chain else ""
-
-    last_run = task.get("last_run")
     last_run_status = last_run.get("status") if last_run else None
     state, primary, secondary, spec_handoff_actions = _resolve_spec_review_override(
-        state=state,
+        state=resolution.state,
         running=running,
         pr_data=pr_data,
         last_run=last_run,
@@ -477,6 +496,10 @@ def _build_task_item(
         issue_num=issue_num,
         pr_number=pr_number,
     )
+    reason_chain = _reason_chain_payload(resolution, facts)
+    if state is WorkItemState.PR_MERGED_ISSUE_OPEN:
+        reason_chain = [f"PR #{closed_pr_number} is no longer open, but the issue is still labeled in review"]
+    matched_reason = reason_chain[-1] if reason_chain else ""
     _attach_merge_blockers(primary, secondary, resolution, facts)
 
     return _build_item(

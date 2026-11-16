@@ -317,6 +317,19 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
 _MAX_PR_CANDIDATES_PER_ISSUE = 3  # bounds the direct lookups a queue poll can make for an issue's PR history
 
 
+async def _fetch_open_prs(project_dir: Path | None, open_prs: Awaitable[list[dict] | None] | None) -> list[dict] | None:
+    """Await the caller's open-PR listing, or fetch it; ``None`` when the fetch failed (open state unknown)."""
+    if open_prs is not None:
+        return await open_prs
+    from sova.dashboard.services.pr_service import list_open_prs_with_state
+
+    try:
+        return await list_open_prs_with_state(project_dir, raise_on_error=True)
+    except Exception:  # noqa: BLE001 (a failed listing leaves the open state unknown, never "all closed")
+        log.warning("queue.open_prs_failed", exc_info=True)
+        return None
+
+
 async def _drop_closed_pr_numbers(
     last_runs: dict[str, dict],
     project_dir: Path | None,
@@ -327,8 +340,9 @@ async def _drop_closed_pr_numbers(
 
     Settled from the cached open-PR list; ``confirm_open_pr_numbers()`` looks up only a PR newer than
     that list. When the open state is unknown (failed fetch, truncated list, no repo) every run keeps
-    its own PR or the issue's highest one, as before. Removes ``pr_candidates`` from every run. Only the
-    newest ``_MAX_PR_CANDIDATES_PER_ISSUE`` candidates of each (queued) issue are considered.
+    its own PR or the issue's highest one, as before. A run left with no PR gets ``closed_pr_number``, its
+    first candidate, so a run that never had a PR stays distinguishable. Removes ``pr_candidates`` from every
+    run. Only the newest ``_MAX_PR_CANDIDATES_PER_ISSUE`` candidates of each (queued) issue are considered.
     """
     candidates_by_issue = {
         issue: run.pop("pr_candidates", [])[:_MAX_PR_CANDIDATES_PER_ISSUE] for issue, run in last_runs.items()
@@ -337,11 +351,7 @@ async def _drop_closed_pr_numbers(
         return
 
     from sova.config.loader import load_config
-    from sova.dashboard.services.pr_service import (
-        confirm_open_pr_numbers,
-        known_open_pr_numbers,
-        list_open_prs_with_state,
-    )
+    from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
 
     if cfg is None:
         try:
@@ -351,15 +361,7 @@ async def _drop_closed_pr_numbers(
             return
     if not cfg.github_repo:
         return
-    if open_prs is not None:
-        fetched = await open_prs
-    else:
-        try:
-            fetched = await list_open_prs_with_state(project_dir, raise_on_error=True)
-        except Exception:  # noqa: BLE001 (a failed listing leaves the open state unknown, never "all closed")
-            log.warning("queue.open_prs_failed", exc_info=True)
-            fetched = None
-    listed = known_open_pr_numbers(fetched, cfg)
+    listed = known_open_pr_numbers(await _fetch_open_prs(project_dir, open_prs), cfg)
     if listed is None:
         return
     # A candidate after one the list shows open can never be chosen, so it is never looked up.
@@ -372,3 +374,5 @@ async def _drop_closed_pr_numbers(
         if current != run["pr_number"]:
             log.debug("queue.closed_pr_number_dropped", issue=issue, pr=run["pr_number"], current=current)
             run["pr_number"] = current
+        if current is None and candidates:
+            run["closed_pr_number"] = candidates[0]
