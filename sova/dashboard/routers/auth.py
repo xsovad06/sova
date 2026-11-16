@@ -115,21 +115,65 @@ async def activate_runtime_connection(req: _RuntimeCandidateRequest) -> dict:
     return await setup_service.activate_runtime_candidate(project_dir, req.runtime)
 
 
+def _loopback(request: Request) -> bool:
+    return bool(getattr(request.app.state, "is_loopback_bind", True))
+
+
+_UNKNOWN_FLOW_RESPONSES: dict = {404: {"description": "Unknown reconnect flow"}}
+
+
+def _known_flow(flow: str) -> str:
+    if flow not in setup_service.RECONNECT_FLOWS:
+        raise HTTPException(status_code=404, detail=f"Unknown reconnect flow: {flow}")
+    return flow
+
+
+@router.get("/connections/reconnect/availability")
+async def reconnect_availability(request: Request) -> dict:
+    """Whether each reconnect flow (claude, gh, google) can start from this session, and why not."""
+    flows = await setup_service.get_reconnect_flow_availability(_project_dir(), is_loopback_bind=_loopback(request))
+    return {"flows": flows}
+
+
+@router.post(
+    "/connections/reconnect/{flow}/start",
+    dependencies=[Depends(require_same_origin_csrf)],
+    responses=_UNKNOWN_FLOW_RESPONSES,
+)
+async def start_flow_reconnect(flow: str, request: Request) -> dict:
+    """Start the CLI-owned login subprocess for one flow (claude, gh or google)."""
+    return await setup_service.start_reconnect(
+        _project_dir(), is_loopback_bind=_loopback(request), flow=_known_flow(flow)
+    )
+
+
+@router.get("/connections/reconnect/{flow}/status", responses=_UNKNOWN_FLOW_RESPONSES)
+async def flow_reconnect_status(flow: str) -> dict:
+    return setup_service.get_reconnect_status(_project_dir(), _known_flow(flow))
+
+
+@router.post(
+    "/connections/reconnect/{flow}/cancel",
+    dependencies=[Depends(require_same_origin_csrf)],
+    responses=_UNKNOWN_FLOW_RESPONSES,
+)
+async def cancel_flow_reconnect(flow: str) -> dict:
+    return await setup_service.cancel_reconnect(_project_dir(), _known_flow(flow))
+
+
+# The claude flow keeps its original URLs as aliases of the flow-keyed routes above.
 @router.post(
     "/connections/reconnect/start",
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def start_reconnect(request: Request) -> dict:
     """Start a CLI-owned `claude auth login` subprocess for local reconnect."""
-    project_dir = _project_dir()
-    is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
-    return await setup_service.start_reconnect(project_dir, is_loopback_bind=is_loopback_bind)
+    return await start_flow_reconnect("claude", request)
 
 
 @router.get("/connections/reconnect/status")
 async def reconnect_status() -> dict:
-    project_dir = _project_dir()
-    return setup_service.get_reconnect_status(project_dir)
+    return await flow_reconnect_status("claude")
 
 
 @router.post(
@@ -137,5 +181,4 @@ async def reconnect_status() -> dict:
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def cancel_reconnect() -> dict:
-    project_dir = _project_dir()
-    return await setup_service.cancel_reconnect(project_dir)
+    return await cancel_flow_reconnect("claude")

@@ -12,7 +12,9 @@ import contextlib
 import os
 import re
 import shutil
+import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from sova.dashboard.services.health_service import invalidate_health_checks_cache
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
@@ -718,7 +721,25 @@ _CATALOG_PLACEHOLDER_MODEL = "unconfigured"
 # Hard upper bound on how long a `claude auth login` subprocess may run
 # before it is killed and reported as timed out (no browser callback).
 _RECONNECT_TIMEOUT = 300.0
+# Hard upper bound on a flow's post-login re-check (gh auth status, a non-interactive token refresh), so a
+# stalled network can never leave a session "running" after its child has exited.
+_POST_CHECK_TIMEOUT = 60.0
 _CANCEL_GRACE_PERIOD = 2.0
+_EXIT_POLL_INTERVAL = 0.05
+
+
+async def _wait_for_exit(process: asyncio.subprocess.Process, timeout: float) -> None:
+    """Wait until *process* has exited, or raise TimeoutError after *timeout* seconds.
+
+    ``Process.wait()`` resolves only once every pipe to the child has closed as well. A browser that gh launched
+    inherits gh's piped stdout and can outlive gh, so waiting on it would report a finished login as a timeout and
+    block the watcher. ``returncode`` is set the moment the child itself exits, so poll that instead.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while process.returncode is None:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError
+        await asyncio.sleep(_EXIT_POLL_INTERVAL)
 
 
 def _build_llm_candidate_provider(
@@ -1143,16 +1164,13 @@ def _is_headless_environment() -> bool:
     so tests can patch this one signal directly, the same way
     ``_claude_cli_backend`` is mocked for the routing-backend signal.
     """
-    import os
-    import sys
-
     if sys.platform in ("win32", "darwin"):
         return False
     return not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("BROWSER"))
 
 
-def reconnect_availability(*, is_loopback_bind: bool) -> dict:
-    """Determine whether the CLI-owned `claude auth login` reconnect flow can run.
+def reconnect_availability(*, is_loopback_bind: bool, flow: str = "claude") -> dict:
+    """Determine whether a CLI-owned reconnect flow (`claude auth login` by default) can run.
 
     Combines three independent signals (issue #1148, design decision 4): the
     dashboard's own loopback-only bind (the same ``app.state.is_loopback_bind``
@@ -1169,6 +1187,9 @@ def reconnect_availability(*, is_loopback_bind: bool) -> dict:
     headless server process (an SSH session or container bound to loopback
     still has no display to open a browser on), and it is not how a Vertex-
     or Bedrock-routed CLI authenticates at all.
+
+    The loopback and headless checks apply to every flow; the Vertex and Bedrock restriction is
+    specific to the ``claude`` flow, so ``gh`` and ``google`` skip it.
 
     Returns ``{"can_reconnect": bool, "reason": "" | "non_loopback" |
     "headless" | "vertex_routed" | "bedrock_routed", "detail": str}`` so the
@@ -1191,6 +1212,9 @@ def reconnect_availability(*, is_loopback_bind: bool) -> dict:
             "detail": "This server process has no display to open a browser on; reconnect cannot run here.",
         }
 
+    if flow != "claude":
+        return {"can_reconnect": True, "reason": "", "detail": ""}
+
     backend = _claude_cli_backend()
     if backend == Backend.VERTEX:
         return {
@@ -1212,133 +1236,383 @@ def reconnect_availability(*, is_loopback_bind: bool) -> dict:
     return {"can_reconnect": True, "reason": "", "detail": ""}
 
 
-# Connections page: CLI-owned `claude auth login` reconnect ------------------
+# Connections page: CLI-owned reconnect flows (claude, gh, google) -----------
+
+# The line gh prints in a non-tty child is "! One-time code (XXXX-XXXX) copied to clipboard", or
+# "! First copy your one-time code: XXXX-XXXX" when it cannot reach a clipboard (verified against gh 2.102).
+_GH_CODE_PATTERN = re.compile(r"one-time code\W{1,4}([A-Z0-9]{4}-[A-Z0-9]{4})\b", re.IGNORECASE)
+# The code line is a few dozen characters: scanning a short rolling window keeps the buffer bounded.
+_CODE_SCAN_WINDOW = 512
+# One of these in the dashboard's own environment overrides any stored gh login, so a sign-in could never turn
+# the row green: the flow is refused up front (reason env_token) and scrubbed from the child as defense in depth.
+_GH_TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+_GOOGLE_PROVIDERS = frozenset({"gmail", "gcal"})
+
+
+def _available() -> dict:
+    return {"can_reconnect": True, "reason": "", "detail": ""}
+
+
+def _unavailable(reason: str, detail: str) -> dict:
+    return {"can_reconnect": False, "reason": reason, "detail": detail}
+
+
+def _cli_availability(binary: str) -> dict:
+    if shutil.which(binary) is None:
+        return _unavailable("cli_missing", f"{binary} CLI not found")
+    return _available()
+
+
+# The three coroutines marked NOSONAR(S7503) below do no awaiting of their own, but stay
+# coroutines (accepted exception, issue #1193): _ReconnectFlow.check and .on_success are
+# awaited uniformly for every flow, and the google check and the gh and google finishers do await.
+async def _check_claude_flow(project_dir: Path, is_loopback_bind: bool) -> dict:  # NOSONAR(S7503)
+    availability = reconnect_availability(is_loopback_bind=is_loopback_bind)
+    return availability if not availability["can_reconnect"] else _cli_availability("claude")
+
+
+async def _check_gh_flow(project_dir: Path, is_loopback_bind: bool) -> dict:  # NOSONAR(S7503)
+    availability = reconnect_availability(is_loopback_bind=is_loopback_bind, flow="gh")
+    if not availability["can_reconnect"]:
+        return availability
+    availability = _cli_availability("gh")
+    if not availability["can_reconnect"]:
+        return availability
+    if any(os.environ.get(var) for var in _GH_TOKEN_VARS):
+        return _unavailable(
+            "env_token",
+            "GH_TOKEN/GITHUB_TOKEN is set in the dashboard environment and overrides any login; "
+            "unset it and restart the dashboard",
+        )
+    return _available()
+
+
+async def _check_google_flow(project_dir: Path, is_loopback_bind: bool) -> dict:
+    """Server-side gating for Google authorization, so a direct POST gets the same rejection the UI shows."""
+    from sova.awareness.auth import google_oauth
+    from sova.config.loader import load_config
+
+    availability = reconnect_availability(is_loopback_bind=is_loopback_bind, flow="google")
+    if not availability["can_reconnect"]:
+        return availability
+    try:
+        cfg = await asyncio.to_thread(load_config, project_dir)
+    except Exception:  # noqa: BLE001 (any load or validation failure means the flow cannot be gated)
+        log.warning("setup.google_flow_config_failed", exc_info=True)
+        return _unavailable("config_error", "Could not load the project config")
+    if not cfg.awareness.enabled or not _GOOGLE_PROVIDERS.intersection(cfg.awareness.providers):
+        return _unavailable("not_configured", "No Google awareness provider (gmail, gcal) is configured")
+    if google_oauth.InstalledAppFlow is None:
+        return _unavailable(
+            "extra_missing", "Google auth libraries not installed. Install with: pip install sova[awareness]"
+        )
+    if not google_oauth.DEFAULT_CREDENTIALS_PATH.is_file():
+        return _unavailable(
+            "credentials_missing",
+            f"google_credentials.json not found at {google_oauth.DEFAULT_CREDENTIALS_PATH}. "
+            "Download an OAuth Desktop client from the Google Cloud console and save it there first.",
+        )
+    return _available()
+
+
+def _claude_argv(_project_dir: Path) -> list[str]:
+    return [shutil.which("claude") or "claude", "auth", "login"]
+
+
+def _gh_argv(_project_dir: Path) -> list[str]:
+    return [shutil.which("gh") or "gh", "auth", "login", "--web"]
+
+
+def _google_argv(project_dir: Path) -> list[str]:
+    # -P keeps the child's working directory (usually the managed project repo) off sys.path, so a sova/, google/
+    # or stdlib-shadowing module there is never imported in place of the installed one (requires Python 3.11+).
+    return [sys.executable, "-P", "-m", "sova.awareness.auth.authorize", str(project_dir)]
+
+
+async def _finish_claude(project_dir: Path) -> str:  # NOSONAR(S7503)
+    _invalidate_auth_status_cache(project_dir)
+    return ""
+
+
+async def _gh_logged_in() -> bool:
+    """The probe the health panel uses (`_check_gh_cli()`): does `gh auth status` pass."""
+    return (await run("gh", "auth", "status")).success
+
+
+async def _already_logged_in_gh(project_dir: Path) -> bool:
+    """True when gh already has a login, so no device-code page needs opening (and the stale health row is dropped)."""
+    if not await _gh_logged_in():
+        return False
+    invalidate_health_checks_cache(project_dir)
+    return True
+
+
+async def _finish_gh(project_dir: Path) -> str:
+    """Exit code 0 is not proof of a login: re-run the probe the health panel uses."""
+    if not await _gh_logged_in():
+        return "gh auth login finished but gh auth status still reports no login"
+    invalidate_health_checks_cache(project_dir)
+    return ""
+
+
+async def _finish_google(project_dir: Path) -> str:
+    """Re-derive the real state: drop the stale credential cache, then run the non-interactive provider check."""
+    from sova.awareness.auth import google_oauth
+    from sova.config.loader import load_config
+
+    cfg = await asyncio.to_thread(load_config, project_dir)
+    google_oauth.forget_cached_credentials(cfg.awareness)
+    try:
+        await asyncio.to_thread(google_oauth.authenticate_google, cfg.awareness, interactive=False)
+    except Exception:  # noqa: BLE001 (any failure of the re-check means no usable token)
+        log.warning("setup.google_recheck_failed", exc_info=True)
+        return "Google authorization finished but no usable token was found"
+    invalidate_health_checks_cache(project_dir)
+    return ""
+
+
+@dataclass(frozen=True)
+class _ReconnectFlow:
+    """One interactive login the dashboard can drive: how to check, spawn, read and verify it."""
+
+    name: str
+    label: str  # names the child in failure details
+    check: Callable[[Path, bool], Awaitable[dict]]
+    argv: Callable[[Path], list[str]]
+    on_success: Callable[[Path], Awaitable[str]]  # "" when the post-check passes, else the failure detail
+    code_pattern: re.Pattern[str] | None = None  # when set, the child's output is scanned for a one-time code
+    # When it returns True the login is already in place: no child is spawned and the session is born completed.
+    already_done: Callable[[Path], Awaitable[bool]] | None = None
+    extra_scrub: tuple[str, ...] = ()
+
+
+_FLOWS: dict[str, _ReconnectFlow] = {
+    "claude": _ReconnectFlow("claude", "claude auth login", _check_claude_flow, _claude_argv, _finish_claude),
+    "gh": _ReconnectFlow(
+        "gh",
+        "gh auth login",
+        _check_gh_flow,
+        _gh_argv,
+        _finish_gh,
+        code_pattern=_GH_CODE_PATTERN,
+        already_done=_already_logged_in_gh,
+        extra_scrub=_GH_TOKEN_VARS,
+    ),
+    "google": _ReconnectFlow("google", "Google authorization", _check_google_flow, _google_argv, _finish_google),
+}
+RECONNECT_FLOWS = tuple(_FLOWS)
 
 
 @dataclass
 class _ReconnectSession:
-    process: asyncio.subprocess.Process
+    process: asyncio.subprocess.Process | None  # None for a session born completed, with no child to run
     started_at: float = field(default_factory=time.monotonic)
     status: str = "running"  # running | completed | failed | timeout | cancelled
     detail: str = ""
+    # The gh one-time code, held in memory only while running: never logged, cleared on every terminal state.
+    code: str = ""
     # Strong reference to the _watch_reconnect task. asyncio only holds a weak
     # one, so without this the watcher can be garbage-collected mid-wait,
     # leaving status pinned at "running" forever: get_reconnect_status() would
     # never report an outcome and start_reconnect()'s single-flight check would
     # reject every later reconnect for this project.
     watcher: asyncio.Task | None = None
+    reader: asyncio.Task | None = None
 
 
-# Keyed by resolved project dir string. A session is present for as long as a
-# reconnect has ever been started for that project (including after it
+# Keyed by (flow, resolved project dir string). A session is present for as long as a
+# reconnect has ever been started for that flow and project (including after it
 # finished), so get_reconnect_status() can report the terminal outcome once
 # instead of going back to "idle" the instant the subprocess exits.
-_reconnect_sessions: dict[str, _ReconnectSession] = {}
-# Guards the check-then-insert in start_reconnect() so two concurrent calls
-# for the same project can never both pass the "no session running" check and
-# each spawn a `claude auth login` subprocess. Held only for that brief
-# check-and-insert, not for the subprocess's lifetime.
-_reconnect_start_lock = asyncio.Lock()
+_reconnect_sessions: dict[tuple[str, str], _ReconnectSession] = {}
+# One lock per flow guards the check-then-insert in start_reconnect() so two concurrent calls
+# for the same flow and project can never both pass the "no session running" check and
+# each spawn a subprocess. Held only for that brief check-and-insert, not for the
+# subprocess's lifetime. Different flows are independent credentials and may run together.
+_flow_start_locks: dict[str, asyncio.Lock] = {name: asyncio.Lock() for name in _FLOWS}
 
 
-async def _watch_reconnect(session: _ReconnectSession, project_dir: Path) -> None:
+def _session_key(flow: str, project_dir: Path) -> tuple[str, str]:
+    return (flow, str(project_dir.resolve()))
+
+
+async def _read_flow_code(session: _ReconnectSession, pattern: re.Pattern[str]) -> None:
+    """Scan the child's output for its one-time code, then keep draining so it never blocks on a full pipe."""
+    stream = session.process.stdout if session.process is not None else None
+    if stream is None:
+        return
+    window = ""
+    try:
+        while chunk := await stream.read(1024):
+            # Once found, or once the session left "running" (cancel clears the code), only drain.
+            if session.code or session.status != "running":
+                continue
+            window = (window + chunk.decode("utf-8", errors="ignore"))[-_CODE_SCAN_WINDOW:]
+            match = pattern.search(window)
+            if match:
+                session.code = match.group(1)
+                window = ""
+    except (OSError, ValueError):
+        log.debug("setup.reconnect_output_read_failed", exc_info=True)
+
+
+async def _watch_reconnect(session: _ReconnectSession, project_dir: Path, flow: _ReconnectFlow) -> None:
     """Wait for the reconnect subprocess, applying the hard timeout.
 
     Runs as a background task so start_reconnect() can return immediately;
     get_reconnect_status() polls `session.status` rather than this task.
     """
     try:
-        await asyncio.wait_for(session.process.wait(), timeout=_RECONNECT_TIMEOUT)
+        await _await_reconnect_outcome(session, project_dir, flow)
+    finally:
+        # No exit path may leave the session "running": the single-flight check would reject every later start.
+        if session.status == "running":
+            session.status = "failed"
+            session.detail = f"{flow.label} ended unexpectedly"
+        session.code = ""
+        # The reader is left to finish on its own: it only drains once the session is terminal, and it ends at EOF
+        # when the last writer closes. Cancelling it would stop the drain while a browser that gh launched may still
+        # hold the pipe's write end, so that browser would block once the pipe buffer fills.
+
+
+async def _await_reconnect_outcome(session: _ReconnectSession, project_dir: Path, flow: _ReconnectFlow) -> None:
+    process = session.process
+    if process is None:  # a session born completed has no child and no watcher; never reached
+        return
+    try:
+        await _wait_for_exit(process, _RECONNECT_TIMEOUT)
     except TimeoutError:
         if session.status != "cancelled":
             session.status = "timeout"
             session.detail = "Reconnect timed out waiting for browser login"
         with contextlib.suppress(ProcessLookupError):
-            session.process.kill()
-        await session.process.wait()
+            process.kill()
+        # Bounded so the watcher always reaches its finally block, which clears the one-time code.
+        with contextlib.suppress(TimeoutError):
+            await _wait_for_exit(process, _CANCEL_GRACE_PERIOD)
         return
 
     if session.status == "cancelled":
         return
-    if session.process.returncode == 0:
-        session.status = "completed"
-        _invalidate_auth_status_cache(project_dir)
-    else:
+    if process.returncode != 0:
         session.status = "failed"
-        session.detail = f"claude auth login exited with code {session.process.returncode}"
+        session.detail = f"{flow.label} exited with code {process.returncode}"
+        return
+    try:
+        failure = await asyncio.wait_for(flow.on_success(project_dir), timeout=_POST_CHECK_TIMEOUT)
+    except Exception:  # noqa: BLE001 (a raising or hung post-check must still end the session)
+        log.warning("setup.reconnect_post_check_failed", flow=flow.name, exc_info=True)
+        failure = f"{flow.label} finished but the post-check could not run"
+    if session.status == "cancelled":
+        return
+    session.status = "failed" if failure else "completed"
+    session.detail = failure
 
 
-async def start_reconnect(project_dir: Path, *, is_loopback_bind: bool = True) -> dict:
-    """Start a CLI-owned `claude auth login` subprocess for local reconnect.
+async def start_reconnect(project_dir: Path, *, is_loopback_bind: bool = True, flow: str = "claude") -> dict:
+    """Start a CLI-owned login subprocess (claude, gh or google) for local reconnect.
 
-    Single-flight per project: a second call while one is already running is
-    rejected rather than spawning a duplicate subprocess. The login token is
-    never read by SOVA; only the subprocess's exit code is observed, and the
-    real post-login state is re-derived afterward via get_auth_status()'s own
-    `claude auth status --json` probe.
+    Single-flight per project and flow: a second call while one is already running is
+    rejected rather than spawning a duplicate subprocess. No login token is
+    ever read by SOVA; only the subprocess's exit code is observed (plus the gh
+    one-time code, which GitHub intends to be shown to the user), and the
+    real post-login state is re-derived afterward by the flow's own probe.
 
-    Rejected up front, before ever spawning a subprocess, when
-    ``reconnect_availability()`` reports this session cannot complete the
-    flow (a non-loopback dashboard bind, or a Vertex/Bedrock-routed CLI):
-    see that function's docstring for why a browser-based login cannot
-    succeed in either case (issue #1148).
+    Rejected up front, before ever spawning a subprocess, when the flow's check
+    reports this session cannot complete it (a non-loopback dashboard bind, a
+    headless server, a missing CLI, or flow-specific gating such as a Vertex or
+    Bedrock-routed Claude CLI or a missing google_credentials.json): see
+    ``reconnect_availability()`` for why a browser-based login cannot succeed
+    in those cases (issue #1148).
     """
-    availability = reconnect_availability(is_loopback_bind=is_loopback_bind)
+    spec = _FLOWS[flow]
+    availability = await spec.check(project_dir, is_loopback_bind)
     if not availability["can_reconnect"]:
         return {"status": "error", "reason": availability["reason"], "detail": availability["detail"]}
 
-    claude_path = shutil.which("claude")
-    if not claude_path:
-        return {"status": "error", "reason": "cli_missing", "detail": "claude CLI not found"}
+    # The probe touches no session state, so it runs before the lock: a stalled probe must never hold the lock
+    # and queue every later start behind it. A probe that raises or hangs falls through to spawning the login.
+    already_done = False
+    if spec.already_done is not None:
+        try:
+            already_done = await asyncio.wait_for(spec.already_done(project_dir), timeout=_POST_CHECK_TIMEOUT)
+        except Exception:  # noqa: BLE001 (a raising or hung pre-check must not fail the start)
+            log.warning("setup.reconnect_precheck_failed", flow=flow, exc_info=True)
 
-    cache_key = str(project_dir.resolve())
-    async with _reconnect_start_lock:
+    cache_key = _session_key(flow, project_dir)
+    async with _flow_start_locks[flow]:
         existing = _reconnect_sessions.get(cache_key)
         if existing is not None and existing.status == "running":
             return {"status": "error", "reason": "already_in_progress", "detail": "A reconnect is already in progress"}
 
+        if already_done:
+            _reconnect_sessions[cache_key] = _ReconnectSession(process=None, status="completed")
+            log.info("setup.reconnect_already_done", flow=flow)
+            return {"status": "ok"}
+
+        scan_output = spec.code_pattern is not None
         process = await asyncio.create_subprocess_exec(
-            claude_path,
-            "auth",
-            "login",
-            env=scrub_agent_env(passthrough=configured_passthrough()),
+            *spec.argv(project_dir),
+            env=scrub_agent_env(passthrough=configured_passthrough(), extra_scrub=spec.extra_scrub),
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE if scan_output else asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.STDOUT if scan_output else asyncio.subprocess.DEVNULL,
         )
         session = _ReconnectSession(process=process)
         _reconnect_sessions[cache_key] = session
-        session.watcher = asyncio.create_task(_watch_reconnect(session, project_dir))
-
+        if spec.code_pattern is not None:
+            session.reader = asyncio.create_task(_read_flow_code(session, spec.code_pattern))
+        session.watcher = asyncio.create_task(_watch_reconnect(session, project_dir, spec))
+    log.info("setup.reconnect_started", flow=flow)
     return {"status": "ok"}
 
 
-def get_reconnect_status(project_dir: Path) -> dict:
-    """Report the current/last reconnect session's status for this project."""
-    cache_key = str(project_dir.resolve())
-    session = _reconnect_sessions.get(cache_key)
+def get_reconnect_status(project_dir: Path, flow: str = "claude") -> dict:
+    """Report the current/last reconnect session's status for this project and flow."""
+    session = _reconnect_sessions.get(_session_key(flow, project_dir))
     if session is None:
         return {"status": "idle"}
-    return {
+    result = {
         "status": session.status,
         "detail": session.detail,
         "elapsed_seconds": round(time.monotonic() - session.started_at, 1),
     }
+    if _FLOWS[flow].code_pattern is not None:
+        result["code"] = session.code
+    return result
 
 
-async def cancel_reconnect(project_dir: Path) -> dict:
+async def get_reconnect_flow_availability(project_dir: Path, *, is_loopback_bind: bool) -> dict[str, dict]:
+    """Report, per flow, whether it can start from this session, so a control is only offered when it can."""
+    checks = await asyncio.gather(
+        *(spec.check(project_dir, is_loopback_bind) for spec in _FLOWS.values()), return_exceptions=True
+    )
+    result: dict[str, dict] = {}
+    for name, check in zip(_FLOWS, checks):
+        if isinstance(check, BaseException):
+            # One flow's failure must not hide the others' controls; the detail never echoes the exception.
+            log.warning("setup.reconnect_availability_failed", flow=name, exc_info=check)
+            check = _unavailable("check_failed", "Could not check whether this sign-in can run")
+        result[name] = check
+    return result
+
+
+async def cancel_reconnect(project_dir: Path, flow: str = "claude") -> dict:
     """Terminate an in-flight reconnect subprocess so it never outlives the page."""
-    cache_key = str(project_dir.resolve())
-    session = _reconnect_sessions.get(cache_key)
+    session = _reconnect_sessions.get(_session_key(flow, project_dir))
     if session is None or session.status != "running":
         return {"status": "error", "detail": "No reconnect in progress"}
 
+    process = session.process
+    if process is None:  # born completed, so never "running"; kept for the type checker
+        return {"status": "error", "detail": "No reconnect in progress"}
     session.status = "cancelled"
+    session.code = ""
     with contextlib.suppress(ProcessLookupError):
-        session.process.terminate()
+        process.terminate()
     try:
-        await asyncio.wait_for(session.process.wait(), timeout=_CANCEL_GRACE_PERIOD)
+        await _wait_for_exit(process, _CANCEL_GRACE_PERIOD)
     except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
-            session.process.kill()
+            process.kill()
     return {"status": "ok"}
