@@ -23,8 +23,6 @@
 {% block scripts %}
 <script>
 var CATALOG = null;
-var RECONNECT_POLL_MS = 2000;
-var reconnectTimer = null;
 
 var ACTIVE_BADGE = '<span class="sova-badge bg-accent-green/15 text-accent-green">active</span>';
 
@@ -44,7 +42,7 @@ async function loadCatalog() {
   }
   document.getElementById('llm-provider-list').innerHTML = CATALOG.llm_providers.map(renderLLMCard).join('');
   document.getElementById('runtime-list').innerHTML = CATALOG.runtimes.map(renderRuntimeCard).join('');
-  syncReconnectState();
+  if (document.getElementById('reconnect-start-btn')) claudeFlow.adopt();
 }
 
 function renderLLMCard(c) {
@@ -103,8 +101,8 @@ function renderReconnectBlock(c) {
   }
   return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
     '<div class="flex items-center gap-2">' +
-      '<button type="button" class="sova-btn sova-btn-primary" id="reconnect-start-btn" onclick="startReconnect()">Start reconnect (claude auth login)</button>' +
-      '<button type="button" class="sova-btn sova-btn-danger hidden" id="reconnect-cancel-btn" onclick="cancelReconnect()">Cancel</button>' +
+      '<button type="button" class="sova-btn sova-btn-primary" id="reconnect-start-btn" onclick="claudeFlow.start()">Start reconnect (claude auth login)</button>' +
+      '<button type="button" class="sova-btn sova-btn-danger hidden" id="reconnect-cancel-btn" onclick="claudeFlow.cancel()">Cancel</button>' +
       '<span class="text-xs text-gray-500" id="reconnect-status-text"></span>' +
     '</div>' +
     '<p class="text-xs text-gray-500 mt-2">A browser window opens for the Claude.ai login. If no browser is available (SSH, container, headless), use <code class="bg-black/30 px-1 rounded">claude auth login</code> in a terminal on the server that has one, then click Validate above to recheck.</p>' +
@@ -306,83 +304,15 @@ function setReconnectRunning(running) {
   cancel.classList.toggle('hidden', !running);
 }
 
-/* A reconnect started before this page load (or before a refresh) is still
-   running server-side, so adopt it instead of showing an idle Start button
-   that would only come back with already_in_progress. */
-async function syncReconnectState() {
-  if (!document.getElementById('reconnect-start-btn')) return;
-  try {
-    var data = await fetchAPI(apiUrl('/connections/reconnect/status'));
-  } catch (e) {
-    return;
-  }
-  if (data.status !== 'running') return;
-  setReconnectRunning(true);
-  setReconnectStatus('Waiting for browser login... (' + Math.round(data.elapsed_seconds) + 's)');
-  pollReconnect();
-}
-
-async function startReconnect() {
-  try {
-    var res = await fetch(apiUrl('/connections/reconnect/start'), {
-      method: 'POST',
-      headers: csrfHeaders(),
-    });
-    if (!res.ok) {
-      setReconnectStatus(await getErrorDetail(res, 'Failed to start reconnect'));
-      return;
-    }
-    var data = await res.json();
-    if (data.status !== 'ok') {
-      setReconnectStatus(data.detail || 'Failed to start reconnect');
-      return;
-    }
-    setReconnectRunning(true);
-    setReconnectStatus('Waiting for browser login...');
-    pollReconnect();
-  } catch (e) {
-    setReconnectStatus('Failed to start reconnect: ' + e.message);
-  }
-}
-
-function pollReconnect() {
-  clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(async function () {
-    try {
-      var data = await fetchAPI(apiUrl('/connections/reconnect/status'));
-      if (data.status === 'running') {
-        setReconnectStatus('Waiting for browser login... (' + Math.round(data.elapsed_seconds) + 's)');
-        pollReconnect();
-        return;
-      }
-      setReconnectRunning(false);
-      if (data.status === 'completed') {
-        showToast('Reconnected', 'success');
-        loadCatalog();
-      } else if (data.status === 'idle') {
-        setReconnectStatus('');
-      } else {
-        setReconnectStatus(data.detail || data.status);
-      }
-    } catch (e) {
-      setReconnectStatus('Failed to check reconnect status: ' + e.message);
-    }
-  }, RECONNECT_POLL_MS);
-}
-
-async function cancelReconnect() {
-  clearTimeout(reconnectTimer);
-  try {
-    var res = await fetch(apiUrl('/connections/reconnect/cancel'), {method: 'POST', headers: csrfHeaders()});
-    if (!res.ok) throw new Error(await getErrorDetail(res, 'HTTP ' + res.status));
-  } catch (e) {
-    showToast('Failed to cancel: ' + e.message, 'error');
-    pollReconnect();
-    return;
-  }
-  setReconnectRunning(false);
-  setReconnectStatus('Cancelled');
-}
+/* The shared driver (reconnect-flow.js) runs the claude login; this page only renders its state. */
+var claudeFlow = createReconnectFlow({
+  flow: 'claude',
+  onState: function (state) {
+    setReconnectRunning(state.phase === 'running');
+    setReconnectStatus(state.text);
+  },
+  onCompleted: loadCatalog,
+});
 
 loadCatalog();
 </script>
