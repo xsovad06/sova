@@ -554,6 +554,27 @@ class TestSpecStep:
         expected = compute_issue_revision_hash(title, body)
         assert f"**Issue revision**: {expected}" in spec_path.read_text()
 
+    async def test_execute_stamps_base_commit_when_available(self, tmp_path: Path) -> None:
+        """The written spec carries the base commit beside the issue revision; no stamp when unavailable."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+        sha = "b" * 40
+        spec_text = "# Spec: Add widget feature\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nx\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=200
+        )
+        for base_commit, expected in ((sha, True), (None, False)):
+            ctx = _make_ctx(tmp_path, spec_config=SpecConfig(auto_approve_simple=True))
+            with (
+                patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result),
+                patch("sova.core.steps.spec.compute_base_commit", return_value=base_commit),
+            ):
+                await SpecStep().execute(ctx)
+            spec_path = find_spec_file("42", project_dir=tmp_path)
+            assert spec_path is not None
+            assert (f"**Base commit**: {sha}" in spec_path.read_text()) is expected
+
     async def test_execute_honors_researcher_model(self, tmp_path: Path) -> None:
         """roles.researcher_model drives this step, matching ResearchStep (#1129)."""
         from sova.llm.models import LLMResult
@@ -1767,14 +1788,20 @@ class TestSpecRouter:
         from sova.dashboard.routers.spec import get_spec
         from sova.dashboard.services import spec_service
 
-        with patch.object(
-            spec_service,
-            "read_spec",
-            return_value={"issue_number": "42", "status": "draft"},
+        drift = {"status": "drifted", "files": ["src/app/models.py"]}
+        with (
+            patch.object(
+                spec_service,
+                "read_spec",
+                return_value={"issue_number": "42", "status": "draft", "raw_content": "SPEC"},
+            ),
+            patch.object(spec_service, "spec_drift", new=AsyncMock(return_value=drift)) as mock_drift,
         ):
             result = await get_spec("42")
 
         assert result["issue_number"] == "42"
+        assert result["drift"] == drift
+        mock_drift.assert_awaited_once_with("SPEC", "draft", issue_number="42")
 
     async def test_get_spec_not_found(self) -> None:
         from fastapi import HTTPException
