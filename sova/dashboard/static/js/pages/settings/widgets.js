@@ -295,8 +295,77 @@ function trapReviewFocus(e) {
 
 /* --- Overview: health checks -------------------------------------------------------------------------------- */
 
-/* The health panel. #1121 adds the sign-in control of a failing check that needs a login to its row here. */
+/* The health panel. A failing check that needs a login gets a sign-in control on its row, driven by the shared
+   reconnect-flow.js helper (the same one the Connections page uses for claude). */
 let healthRun = 0;
+
+const SIGN_IN_FLOWS = [
+  {flow: 'gh', matches: (name) => name === 'gh authenticated', label: 'Sign in with gh', success: 'GitHub CLI signed in'},
+  {flow: 'google', matches: (name) => /^awareness: (gmail|gcal)$/.test(name), label: 'Authorize Google', success: 'Google authorized'},
+];
+// A row's runner, so a click finds it and a re-render can stop the ones whose rows it is about to replace.
+const signInRunners = new Map();
+// A reason the control is not offered that the row already says (the CLI is missing) or that makes it irrelevant.
+const SIGN_IN_SILENT_REASONS = new Set(['cli_missing', 'not_configured']);
+
+// Called right before the panel's markup is replaced, so no runner outlives the row it renders into.
+function stopSignInRunners() {
+  signInRunners.forEach((runner) => runner.stop());
+  signInRunners.clear();
+}
+
+function signInFlowFor(check) {
+  return check.passed ? null : SIGN_IN_FLOWS.find((f) => f.matches(check.name)) || null;
+}
+
+function renderSignIn(slot, state) {
+  const running = state.phase === 'running';
+  slot.querySelector('[data-act="signin-start"]').classList.toggle('hidden', running);
+  slot.querySelector('[data-act="signin-cancel"]').classList.toggle('hidden', !running);
+  slot.querySelector('[data-part="signin-status"]').textContent = state.text;
+  const code = slot.querySelector('[data-part="signin-code"]');
+  code.textContent = state.code;
+  code.classList.toggle('hidden', !state.code);
+}
+
+/* Offers the control only where the server says the flow can start from this session, so a button never
+   leads to a certain failure. The server re-checks on start: this is a convenience, not the gate. */
+async function attachSignIn(el, run) {
+  const rows = [...el.querySelectorAll('[data-signin-flow]')];
+  if (!rows.length) return;
+  let flows;
+  try {
+    flows = (await fetchAPI(apiUrl('/connections/reconnect/availability'))).flows || {};
+  } catch (e) {
+    return;  // the rows are still correct without the control
+  }
+  if (run !== healthRun) return;
+  const offered = new Set();
+  rows.forEach((row) => {
+    const spec = SIGN_IN_FLOWS.find((f) => f.flow === row.dataset.signinFlow);
+    const availability = flows[spec.flow];
+    const slot = row.querySelector('[data-part="signin"]');
+    // gmail and gcal share one token: one control (and one poller, one toast) per flow, on its first failing row.
+    if (!availability || offered.has(spec.flow)) return;
+    offered.add(spec.flow);
+    if (!availability.can_reconnect) {
+      if (!SIGN_IN_SILENT_REASONS.has(availability.reason)) slot.textContent = availability.detail;
+      return;
+    }
+    slot.innerHTML = `<button type="button" class="sova-btn sova-btn-primary" data-act="signin-start">${escapeHtml(spec.label)}</button>
+      <button type="button" class="sova-btn sova-btn-danger hidden" data-act="signin-cancel">Cancel</button>
+      <strong class="sova-settings-signin-code hidden" data-part="signin-code"></strong>
+      <span class="sova-settings-status-muted" data-part="signin-status"></span>`;
+    const runner = createReconnectFlow({
+      flow: spec.flow,
+      successMessage: spec.success,
+      onState: (state) => renderSignIn(slot, state),
+      onCompleted: () => loadHealthChecks(),
+    });
+    signInRunners.set(row, runner);
+    runner.adopt();
+  });
+}
 
 export async function loadHealthChecks(el) {
   el = el || widget('health');
@@ -314,17 +383,22 @@ export async function loadHealthChecks(el) {
       summary.textContent = items.length ? passing + ' of ' + items.length + ' passing' : 'No checks reported';
       summary.className = 'sova-settings-status-muted ' + (items.length && passing === items.length ? 'text-accent-green' : (items.length ? 'text-accent-yellow' : ''));
     }
+    stopSignInRunners();
     // The tooltip sits on the row: the detail is cut to one line, and a clipped box would clip its tooltip too.
     el.innerHTML = items.length ? `<div class="sova-settings-health">${items.map((check) => `
       <div class="sova-settings-health-row" data-state="${escapeHtml(check.passed ? 'ok' : (check.required ? 'err' : 'warn'))}"
+           ${signInFlowFor(check) ? `data-signin-flow="${signInFlowFor(check).flow}"` : ''}
            ${check.detail ? `data-tooltip="${escapeHtml(check.detail)}" data-tooltip-wide` : ''}>
         <span class="sova-settings-health-name">${escapeHtml(check.name)}</span>
         ${check.required ? '' : '<span class="sova-settings-status-muted">optional</span>'}
         ${check.detail ? `<span class="sova-settings-health-detail">${escapeHtml(check.detail)}</span>` : ''}
+        ${signInFlowFor(check) ? '<span class="sova-settings-signin" data-part="signin"></span>' : ''}
       </div>`).join('')}</div>` : '<p class="sova-settings-note">No checks reported</p>';
+    attachSignIn(el, run);
   } catch (e) {
     if (run !== healthRun) return;
     console.error('Failed to load health checks:', e);
+    stopSignInRunners();
     el.dataset.widgetFailed = '1';
     if (summary) summary.textContent = '';
     el.innerHTML = '<p class="sova-settings-note">Failed to run health checks</p>';
@@ -540,6 +614,8 @@ export function handleClick(target) {
   else if (act === 'review-close') closeReviewChanges();
   else if (act === 'review-apply') applySelectedChanges(btn);
   else if (act === 'health-run') loadHealthChecks();
+  else if (act === 'signin-start') signInRunners.get(btn.closest('[data-signin-flow]'))?.start();
+  else if (act === 'signin-cancel') signInRunners.get(btn.closest('[data-signin-flow]'))?.cancel();
   else if (act === 'labels-create') createMissingLabels(btn);
   else if (act === 'labels-recheck') loadLabelsStatus();
   else if (act === 'persona-open') openPersonaEditor();
