@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from sova.adapters.base import TaskState
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.dashboard.services.work_item_service import _build_task_item, _safe_prs
+from sova.dashboard.services.work_state import WorkItemState
 from sova.git import pr as pr_module
 from sova.git.pr import (
     OPEN_PR_LIST_LIMIT,
@@ -335,6 +337,51 @@ class TestBuildTaskItemStalePr:
 
     def test_default_without_open_list_keeps_the_pr(self) -> None:
         assert _build_task_item(self._task(100), None, None, None)["pr_number"] == 100
+
+
+class TestBuildTaskItemClosedPrInReview:
+    @staticmethod
+    def _task(**last_run: object) -> dict:
+        task = {"issue": "42", "title": "t", "state": "in_review", "labels": [], "priority": 2}
+        task["last_run"] = {"id": 1, "status": "done", "role": "developer", **last_run}
+        return task
+
+    @staticmethod
+    def _assert_closed_pr_row(item: dict) -> None:
+        assert item["state"] == WorkItemState.PR_MERGED_ISSUE_OPEN
+        assert item["pr_number"] is None
+        assert item["primary_action"] is None
+        assert item["secondary_actions"] == []
+        assert "#100" in item["matched_reason"]
+
+    def test_list_proving_the_last_run_pr_closed_reclassifies_the_row(self) -> None:
+        self._assert_closed_pr_row(_build_task_item(self._task(pr_number=100), None, None, None, open_pr_numbers={200}))
+
+    def test_queue_provided_closed_pr_number_reclassifies_the_row(self) -> None:
+        self._assert_closed_pr_row(
+            _build_task_item(self._task(pr_number=None, closed_pr_number=100), None, None, None, open_pr_numbers={200})
+        )
+
+    @pytest.mark.parametrize("open_prs", [{100}, None])
+    def test_open_or_unknown_pr_stays_awaiting_review(self, open_prs: set[int] | None) -> None:
+        item = _build_task_item(self._task(pr_number=100), None, None, None, open_pr_numbers=open_prs)
+        assert item["state"] == WorkItemState.PR_AWAITING_REVIEW
+        assert item["primary_action"]["id"] == "review_pr"
+
+    def test_no_pr_anywhere_stays_awaiting_review(self) -> None:
+        item = _build_task_item(self._task(pr_number=None), None, None, None, open_pr_numbers={200})
+        assert item["state"] == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_spec_awaiting_approval_keeps_its_override_without_the_closed_pr_reason(self) -> None:
+        task = self._task(pr_number=100, status="awaiting_approval", role="researcher")
+        item = _build_task_item(task, None, None, None, open_pr_numbers={200})
+        assert item["state"] == WorkItemState.SPEC_REVIEW
+        assert item["matched_reason"] == ""
+
+    def test_other_labels_are_not_reclassified(self) -> None:
+        task = self._task(pr_number=100)
+        task["state"] = "in_progress"
+        assert _build_task_item(task, None, None, None, open_pr_numbers={200})["state"] == WorkItemState.IN_PROGRESS
 
 
 class TestRecoverLastPrNumber:
@@ -1011,9 +1058,9 @@ class TestQueueLastRunPrNumber:
         task = Task(id="42", title="t", state=TaskState.IN_PROGRESS)
         return patch.object(queue_service, "_get_actionable_tasks", new=AsyncMock(return_value=[task]))
 
-    async def _queue_pr(
+    async def _queue_last_run(
         self, open_prs: list[dict] | None, *, repo: str = "o/r", lookup: PROpenState = PROpenState.NOT_OPEN
-    ) -> int | None:
+    ) -> dict:
         from sova.dashboard.services import queue_service
 
         async def _fetched() -> list[dict] | None:
@@ -1025,11 +1072,33 @@ class TestQueueLastRunPrNumber:
             patch("sova.dashboard.services.pr_service.get_pr_open_state", new=AsyncMock(return_value=lookup)),
         ):
             queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
-        return queue[0]["last_run"]["pr_number"]
+        return queue[0]["last_run"]
+
+    async def _queue_pr(self, open_prs: list[dict] | None, **kwargs: Any) -> int | None:
+        return (await self._queue_last_run(open_prs, **kwargs))["pr_number"]
 
     async def test_merged_pr_from_an_earlier_run_is_not_inherited(self) -> None:
         await self._seed(("developer", 1257), ("triage", None))
         assert await self._queue_pr([{"number": 1300}]) is None
+
+    async def test_pr_proven_closed_is_recorded_as_closed_pr_number(self) -> None:
+        await self._seed(("developer", 1257), ("triage", None))
+        last_run = await self._queue_last_run([{"number": 1300}])
+        assert (last_run["pr_number"], last_run["closed_pr_number"]) == (None, 1257)
+
+    @pytest.mark.parametrize("open_prs", [[{"number": 1257}], None])
+    async def test_open_or_unknown_pr_records_no_closed_pr_number(self, open_prs: list[dict] | None) -> None:
+        await self._seed(("developer", 1257), ("triage", None))
+        assert "closed_pr_number" not in await self._queue_last_run(open_prs)
+
+    async def test_issue_without_any_pr_records_no_closed_pr_number(self) -> None:
+        await self._seed(("triage", None))
+        assert "closed_pr_number" not in await self._queue_last_run([{"number": 1300}])
+
+    async def test_closed_pr_followed_by_an_open_one_records_no_closed_pr_number(self) -> None:
+        await self._seed(("developer", 1257), ("developer", 1300), ("reviewer", None))
+        last_run = await self._queue_last_run([{"number": 1300}])
+        assert (last_run["pr_number"], "closed_pr_number" in last_run) == (1300, False)
 
     async def test_1251_sequence_runs_carrying_the_merged_pr_show_none(self) -> None:
         await self._seed(("developer", 1257), ("triage", 1257), ("researcher", 1257), ("developer", 1257))
@@ -1189,3 +1258,65 @@ class TestQueueLastRunPrNumber:
         assert queue[0]["last_run"]["pr_number"] is None
         assert prs == [{"number": 1300}]
         listing.assert_awaited_once()
+
+
+class TestTaskPrNumbers:
+    """``_task_pr_numbers()`` picks a work item's PR and the PR it records as no longer open."""
+
+    @staticmethod
+    def _numbers(
+        pr_data: dict | None, last_run: dict | None, open_pr_numbers: set[int] | None = None
+    ) -> tuple[int | None, int | None]:
+        from sova.dashboard.services.work_item_service import _task_pr_numbers
+
+        return _task_pr_numbers("42", pr_data, last_run, open_pr_numbers)
+
+    def test_linked_pr_wins_over_the_last_run(self) -> None:
+        last_run = {"pr_number": 5, "closed_pr_number": 4}
+        assert self._numbers({"number": 9}, last_run, {5}) == (9, None)
+
+    def test_no_pr_and_no_last_run(self) -> None:
+        assert self._numbers(None, None) == (None, None)
+
+    def test_last_run_without_pr_passes_on_the_queue_closed_pr(self) -> None:
+        assert self._numbers(None, {"pr_number": None, "closed_pr_number": 4}, {7}) == (None, 4)
+
+    def test_queue_closed_pr_that_the_fresh_list_shows_open_is_discarded(self) -> None:
+        assert self._numbers(None, {"pr_number": None, "closed_pr_number": 4}, {4}) == (None, None)
+
+    def test_last_run_pr_proven_closed_becomes_closed_pr(self) -> None:
+        assert self._numbers(None, {"pr_number": 5}, {7}) == (None, 5)
+
+    @pytest.mark.parametrize("open_pr_numbers", [{5}, None])
+    def test_last_run_pr_open_or_unknown_is_kept(self, open_pr_numbers: set[int] | None) -> None:
+        assert self._numbers(None, {"pr_number": 5}, open_pr_numbers) == (5, None)
+
+
+class TestFetchOpenPrs:
+    """``_fetch_open_prs()`` awaits the caller's listing, else fetches it, and reports a failure as ``None``."""
+
+    async def test_awaits_the_provided_listing_without_fetching(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        async def _provided() -> list[dict]:
+            return [{"number": 1}]
+
+        listing = AsyncMock()
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing):
+            assert await queue_service._fetch_open_prs(None, _provided()) == [{"number": 1}]
+        listing.assert_not_awaited()
+
+    async def test_fetches_when_no_listing_is_provided(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        listing = AsyncMock(return_value=[{"number": 2}])
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing):
+            assert await queue_service._fetch_open_prs(Path("/p"), None) == [{"number": 2}]
+        listing.assert_awaited_once_with(Path("/p"), raise_on_error=True)
+
+    async def test_failed_fetch_returns_none(self) -> None:
+        from sova.dashboard.services import queue_service
+
+        listing = AsyncMock(side_effect=RuntimeError("gh down"))
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing):
+            assert await queue_service._fetch_open_prs(None, None) is None

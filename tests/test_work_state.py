@@ -34,10 +34,11 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
         # 3. review outranks a failed run and the queue
         ({"state": "pr_ci_failed", "run_status": "failed", "queued": True}, "review"),
         ({"state": "in_review", "mode": "unclassified"}, "review"),
-        # 4. needs: merge-ready PR, spec awaiting approval, exhausted budget, or a failed latest run
+        # 4. needs: merge-ready PR, spec awaiting approval, exhausted budget, stale in-review label or failed latest run
         ({"state": "pr_ready_to_merge", "mode": "interactive", "queued": True}, "needs"),
         ({"state": "spec_review", "mode": "autonomous"}, "needs"),
         ({"state": "pr_review_exhausted"}, "needs"),
+        ({"state": "pr_merged_issue_open", "mode": "autonomous", "queued": True}, "needs"),
         ({"state": "triaged", "mode": "autonomous", "run_status": "failed", "queued": True}, "needs"),
         ({"state": "triaged", "mode": "unclassified", "run_status": "failed"}, "needs"),
         # a later successful run replaces the latest run, so it is no failure

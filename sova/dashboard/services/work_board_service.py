@@ -117,6 +117,8 @@ def _reason_for_needs(state: str) -> tuple[str, str]:
         return "review_budget", "Review budget exhausted"
     if state == WorkItemState.SPEC_REVIEW:
         return "spec", "Spec awaiting approval"
+    if state == WorkItemState.PR_MERGED_ISSUE_OPEN:
+        return "stale_label", "PR no longer open, issue still labeled in review"
     return "failed_run", "Last run failed"
 
 
