@@ -29,6 +29,20 @@
   </div>
 </div>
 
+<!-- Code drift warning (shown only when files the spec names changed on the base branch after it was written) -->
+<div id="drift-section" class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-6 mb-6 hidden">
+  <div class="flex items-start gap-3">
+    <div class="flex-1">
+      <h3 class="text-lg font-semibold text-accent-yellow mb-2">Code may have changed since this spec was written</h3>
+      <p class="text-sm text-gray-300 mb-2">These files named in the spec changed on the base branch after research:</p>
+      <ul id="drift-files" class="text-sm text-gray-300 font-mono space-y-1"></ul>
+    </div>
+    <button type="button" onclick="reviseSpec()" class="px-5 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded-lg hover:bg-accent/30 transition-colors font-medium">
+      Re-research
+    </button>
+  </div>
+</div>
+
 <!-- Open Questions Section (shown only when there are questions) -->
 <div id="questions-section" class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-6 mb-6 hidden">
   <h3 class="text-lg font-semibold text-accent-yellow mb-4">Open Questions</h3>
@@ -152,6 +166,26 @@ function renderQuestions(questions) {
   list.innerHTML = html;
 }
 
+var DRIFT_FILES_SHOWN = 10;
+
+function renderDrift(drift) {
+  var section = document.getElementById('drift-section');
+  var files = (drift && drift.status === 'drifted' && drift.files) || [];
+  if (files.length === 0) {
+    section.classList.add('hidden');
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < Math.min(files.length, DRIFT_FILES_SHOWN); i++) {
+    html += '<li>' + escapeHtml(files[i]) + '</li>';
+  }
+  if (files.length > DRIFT_FILES_SHOWN) {
+    html += '<li class="text-gray-500">and ' + (files.length - DRIFT_FILES_SHOWN) + ' more</li>';
+  }
+  document.getElementById('drift-files').innerHTML = html;
+  section.classList.remove('hidden');
+}
+
 function renderSpec(data) {
   _specData = data;
 
@@ -171,6 +205,8 @@ function renderSpec(data) {
   document.getElementById('meta-created').textContent = data.created || '--';
 
   applySpecStatusBadge(data.status);
+
+  renderDrift(data.drift);
 
   // Questions
   renderQuestions(data.open_questions);

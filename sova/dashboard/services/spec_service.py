@@ -7,17 +7,25 @@ and are re-exported here for backward compatibility.  Dashboard-level mutations
 
 from __future__ import annotations
 
+import asyncio
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
+from sova.config.context import get_project_dir
 from sova.core.spec_utils import (
+    SpecDrift,
+    SpecDriftResult,
     _extract_open_questions,
     _parse_spec,
     _specs_dir,
+    check_spec_code_drift,
     find_spec_file,
     read_spec,
 )
+from sova.core.steps._spec_helpers import SECTION_IMPLEMENTATION_NOTES
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section
 
 log = get_logger(component="dashboard.service.spec")
 
@@ -33,6 +41,7 @@ __all__ = [
     "list_pending_specs",
     "list_all_specs",
     "write_answers",
+    "spec_drift",
 ]
 
 
@@ -101,6 +110,104 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
 
     log.info("spec.rejected", issue=issue_number, path=str(path))
     return {"status": "rejected", "issue_number": issue_number}
+
+
+def _drift_for(raw_content: str, repo_dir: Path) -> SpecDriftResult:
+    """Load the project's base branch and run the drift check (blocking: config read plus git)."""
+    from sova.config.loader import load_config
+
+    return check_spec_code_drift(raw_content, repo_dir, load_config(repo_dir).base_branch)
+
+
+_DRIFT_STATUSES = frozenset({"draft", "approved"})
+
+
+def _spec_written_at(issue_number: str, project_dir: Path) -> datetime | None:
+    """When the spec file for *issue_number* was last written (UTC), or None when it cannot be read."""
+    try:
+        path = find_spec_file(issue_number, project_dir)
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc) if path is not None else None
+    except OSError:
+        return None
+
+
+async def _development_started(issue_number: str, project_dir: Path) -> bool | None:
+    """True when a developer run for *issue_number* has opened a PR or is still active; None when unknown.
+
+    The spec has no "implemented" status and ``## Implementation Notes`` is optional (skipped without a task,
+    non-fatal on a failed write, absent from specs written before it existed), so neither can say that the
+    spec's own change has landed. A developer ``TaskRun`` can: once it has a PR, the files the spec names are
+    changed by that PR on the base branch, and a drift warning would always fire and mean nothing. An active
+    developer run is also past the point where a re-research makes sense (``/revise`` refuses it anyway).
+    Only a PR run started after the spec file was last written counts: a run that predates a re-research (for
+    example a PR closed unmerged) consumed an older spec, so it must not hide the new spec's drift. An unreadable
+    spec timestamp applies no such cut-off. An active run counts whatever its age (``/revise`` refuses it).
+    A failed lookup is ``None``, never ``False``, so the caller does not read it as "no development yet".
+    """
+    from sqlalchemy import and_, or_, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from sova.core.state import TASK_RUN_TERMINAL
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    spec_written_at = _spec_written_at(issue_number, project_dir)
+    opened_pr = TaskRun.pr_number.isnot(None)
+    if spec_written_at is not None:
+        opened_pr = and_(opened_pr, TaskRun.started_at >= spec_written_at)
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                stmt = (
+                    select(TaskRun.id)
+                    .where(
+                        TaskRun.issue_number == issue_number,
+                        TaskRun.role == "developer",
+                        or_(opened_pr, TaskRun.status.notin_(TASK_RUN_TERMINAL)),
+                    )
+                    .limit(1)
+                )
+                return (await session.execute(stmt)).first() is not None
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("spec.drift_run_lookup_failed", issue=issue_number, exc_info=True)
+        return None
+
+
+async def _spec_still_guides_work(raw_content: str, status: str, issue_number: str | None, project_dir: Path) -> bool:
+    """True when the spec can still steer development, so a drift warning is meaningful.
+
+    A rejected spec cannot. Neither can one whose own change has landed or is in flight: it has Implementation
+    Notes, or a developer run for the issue has a PR or is active (``_development_started``). When the run
+    lookup fails the answer is unknown, and an unknown is not checked (never a warning on a guess).
+    """
+    if status not in _DRIFT_STATUSES or extract_section(raw_content, SECTION_IMPLEMENTATION_NOTES):
+        return False
+    if issue_number is None:
+        return True
+    return await _development_started(issue_number, project_dir) is False
+
+
+async def spec_drift(
+    raw_content: str,
+    status: str = "draft",
+    project_dir: Path | None = None,
+    issue_number: str | None = None,
+) -> dict:
+    """Report whether files *raw_content* names changed on the base branch after the spec was written.
+
+    Only a spec that can still guide work (see ``_spec_still_guides_work``) is checked; a rejected or already
+    implemented spec is ``unverifiable`` with no files. Runs against the project's primary checkout in a worker
+    thread, with local refs only (never a fetch), so it cannot stall the event loop or the request. Any failure
+    is ``unverifiable``, never ``current``.
+    """
+    result = SpecDriftResult(SpecDrift.UNVERIFIABLE)
+    try:
+        repo_dir = project_dir or get_project_dir()
+        if repo_dir is not None and await _spec_still_guides_work(raw_content, status, issue_number, repo_dir):
+            result = await asyncio.to_thread(_drift_for, raw_content, repo_dir)
+    except Exception:  # noqa: BLE001 (config load and thread dispatch fail in unrelated ways; the check is advisory)
+        log.warning("spec.drift_unavailable", exc_info=True)
+    return {"status": result.status.value, "files": list(result.files)}
 
 
 def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
