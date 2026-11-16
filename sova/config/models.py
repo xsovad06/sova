@@ -922,11 +922,9 @@ class SecurityConfig(BaseSettings):
 class DashboardConfig(BaseSettings):
     """Dashboard UI configuration."""
 
-    kanban_columns: Literal["step_based", "role_based"] = "step_based"
     confirm_model: Literal["complex_only", "always", "never"] = "complex_only"
     gc_on_startup: bool = False
     port: int = 8111
-    llm_suggestions: bool = True
     rate_limit_per_minute: int = 60
     csrf_secret: str = Field("", repr=False)
     # Directories the setup wizard may browse, scan, install into and configure. `~` is expanded.

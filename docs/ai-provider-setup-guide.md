@@ -74,7 +74,7 @@ configured. `resolve_alias()` detects the backend from that same scrubbed-then-p
 environment, not the parent shell's, which is why setting the routing variable only in your own
 shell does not exercise this path either. Set `llm.resolve_tier_aliases = false` to restore
 byte-identical passthrough for every
-`resolve_alias()` caller (`select_model()`, `create_provider()`, `llm_suggestion_service`, and the
+`resolve_alias()` caller (`select_model()`, `create_provider()`, and the
 reviewer's tier fallback), not just `llm.model`/`llm.fallback_model`. Two limits are worth knowing:
 the per-backend candidate lists (`tier_candidates_for()`) exist for the `vertex` and `bedrock`
 backends only; on the `firstparty` backend a bare tier name is instead resolved by SOVA itself via

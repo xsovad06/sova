@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
+from pathlib import Path as PathType
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path
 
 from sova.config.context import get_project_dir
 from sova.config.db_loader import set_issue_hidden
-from sova.dashboard.services import work_board_service, work_service
+from sova.dashboard.services import action_registry, work_board_service, work_service
 from sova.dashboard.services.work_item_service import GraphConfigError
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
@@ -134,6 +136,23 @@ async def _set_hidden(number: int, *, hidden: bool) -> dict:
         raise HTTPException(status_code=503, detail="Failed to save hidden issues")
 
 
+@router.get("/work/actions")
+async def get_actions() -> dict:
+    """The dashboard actions still running and the recent results, for each card's status line.
+
+    Declared before ``/work/{run_id}`` so ``actions`` is not parsed as a run id.
+    """
+    return {"actions": action_registry.list_actions(get_project_dir())}
+
+
+@router.delete("/work/actions/{action_id}", responses={404: {"description": "No finished action with this id"}})
+async def dismiss_action(action_id: str) -> dict:
+    """Dismiss a finished action's result (an error stays on its card until this)."""
+    if not await action_registry.dismiss(get_project_dir(), action_id):
+        raise HTTPException(status_code=404, detail="No finished action with this id")
+    return {"dismissed": action_id}
+
+
 @router.get("/work/{run_id}", responses={404: {"description": "Run not found"}})
 async def get_detail(run_id: int) -> dict:
     """Get a single run with step details and pipeline progress."""
@@ -146,15 +165,58 @@ async def get_detail(run_id: int) -> dict:
         return detail
 
 
-@router.post("/work/issue/{issue_number}/rebase")
-async def trigger_rebase(issue_number: int) -> dict:
-    """Trigger an auto-rebase attempt for the PR linked to an issue."""
+# A background rebase must outlive the request that started it: the event loop keeps only weak references.
+_rebase_tasks: set[asyncio.Task[None]] = set()
+
+
+@router.post("/work/issue/{issue_number}/rebase", status_code=202)
+async def trigger_rebase(issue_number: _IssueNumber) -> dict:
+    """Start an auto-rebase of the PR linked to an issue, in the background, and answer at once.
+
+    Conflict resolution can take minutes, so the request returns the action's id and the card follows the
+    action through ``GET /work/actions``. A second click while one runs gets the running action back.
+    """
+    # Resolve now: the background task must not fall back to the global database or the working directory.
+    project_dir = action_registry.resolve_project(get_project_dir())
+    if project_dir is None:
+        raise HTTPException(status_code=503, detail="No project is configured for this dashboard")
+    running = action_registry.running_action(project_dir, "rebase", issue_number)
+    if running is not None:
+        return {"status": "running", "action": running}
+    action_id = await action_registry.begin(project_dir, kind="rebase", label="Rebasing", issue=issue_number)
+    task = asyncio.create_task(_run_rebase(issue_number, project_dir, action_id))
+    _rebase_tasks.add(task)
+    task.add_done_callback(_rebase_tasks.discard)
+    return {"status": "started", "action_id": action_id}
+
+
+async def _run_rebase(issue_number: int, project_dir: PathType, action_id: str) -> None:
+    """Run the rebase, record its outcome, and drop the caches it made stale so the card shows the new state."""
+    from sova.dashboard.services.agent_finalize import invalidate_work_item_caches
     from sova.db.session import get_session_factory
     from sova.supervisor.rebase import attempt_auto_rebase
 
-    project_dir = get_project_dir()
-    session_factory = await get_session_factory(project_dir)
-    return await attempt_auto_rebase(issue_number, project_dir, session_factory)
+    try:
+        session_factory = await get_session_factory(project_dir)
+        result = await attempt_auto_rebase(issue_number, project_dir, session_factory)
+    except Exception as exc:  # noqa: BLE001 (background task: the failure is recorded on the card, never lost)
+        log.error("work.rebase_failed", issue=issue_number, exc_info=True)
+        await action_registry.finish(project_dir, action_id, ok=False, message=f"Rebase failed: {exc}")
+        return
+    ok, message = _rebase_outcome(result)
+    invalidate_work_item_caches(project_dir, result.get("pr_number"))
+    await action_registry.finish(project_dir, action_id, ok=ok, message=message)
+
+
+def _rebase_outcome(result: dict) -> tuple[bool, str]:
+    """(ok, message) for ``attempt_auto_rebase()``'s answer: a skip names its reason, a failure its error."""
+    status = str(result.get("status") or "")
+    reason = str(result.get("reason") or result.get("error") or result.get("message") or "")
+    if status == "success":
+        return True, "Rebased"
+    if status == "skipped":
+        return True, f"Rebase skipped: {reason}" if reason else "Rebase skipped"
+    return False, f"Rebase failed: {reason}" if reason else f"Rebase failed ({status or 'no status'})"
 
 
 @router.post("/work/{run_id}/mark-failed", responses={404: {"description": "Run not found"}})

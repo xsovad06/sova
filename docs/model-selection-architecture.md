@@ -20,7 +20,7 @@ Model routing is config-driven via three mechanisms: task-type-specific override
 
 **Layer-1 enumeration is a separate axis from layer-2, and an "unavailable" answer expires fast (#1038).** `agent.runtime` carries its own credential, so an Anthropic API key can make layer 2 (`llm.provider`) work while the Claude Code CLI stays unauthenticated, and `codex login` is the reverse. `AgentRuntime.list_available_models()` (`sova/ipc/runtime.py`) is the layer-1 counterpart of `LLMProvider.list_available_models()`: `None` means unavailable, `[]` means reachable with no model IDs of its own; `_RuntimeModelCache` splits its TTL between the two (1800s for a real catalog, 300s for "unavailable", since a mid-session `claude login` must become visible quickly). `get_model_capabilities()` (`sova/llm/provider.py`) composes both layers, each probed independently under its own timeout; the layer-1 catalog itself reaches the UI only via `layer="runtime"`, feeding `roles.developer_runtime_model` and the launch modal's per-run Model select (#1039), applied to tool-using steps via `resolve_runtime_model_pin()`. See section 2.10 below for the full design.
 
-**Alias resolution is backend-aware, not just provider-aware (#1033).** `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` silently redirect the CLI to a deployment that rejects a bare tier name and needs a fully-qualified, dialect-specific ID. `sova/llm/backends.py` adds `detect_backend()`, `backend_can_serve()`, and `tier_candidates_for()`; `sova/llm/client.py:resolve_alias()` is the one choke point `select_model()`, `create_provider()`, and `llm_suggestion_service.py` all share, falling through to a servable candidate when the resolved one is unservable for the backend detected from the spawned CLI child's actual (scrubbed) environment. `llm.resolve_tier_aliases=false` restores byte-identical passthrough. See section 2.7 below for the full design.
+**Alias resolution is backend-aware, not just provider-aware (#1033).** `CLAUDE_CODE_USE_VERTEX`/`CLAUDE_CODE_USE_BEDROCK` silently redirect the CLI to a deployment that rejects a bare tier name and needs a fully-qualified, dialect-specific ID. `sova/llm/backends.py` adds `detect_backend()`, `backend_can_serve()`, and `tier_candidates_for()`; `sova/llm/client.py:resolve_alias()` is the one choke point `select_model()` and `create_provider()` share, falling through to a servable candidate when the resolved one is unservable for the backend detected from the spawned CLI child's actual (scrubbed) environment. `llm.resolve_tier_aliases=false` restores byte-identical passthrough. See section 2.7 below for the full design.
 
 **Fallbacks are per role, and the Settings page shows which model each step runs on (#1463).** `roles.{triage,researcher,developer,reviewer,planner}_fallback_models` (`list[str] | None`) give a role its own fallback chain: `None` uses `agent.fallback_models`, `[]` means none. `ProjectConfig.fallback_models_for(role)` is the one rule, read by both chain walks. The Settings page's Models view (`/settings#models`) is built server side by `model_map_service.build_model_map()`, and writes `llm.routing.<step>` one row at a time. See section 2.13 below for the full design.
 
@@ -234,12 +234,7 @@ part of PR4.
 22 direct `invoke()` and 10 `invoke_command()` sites across `roles/`, `core/steps/`,
 `supervisor/`, `dashboard/services/`, `git/`, `knowledge/`, `cli/commands/`, `mcp/`. One
 deliberately bypasses the client abstraction: `git/rebase.py:146` (multi-model consensus
-fan-out). `dashboard/services/llm_suggestion_service.py` was the second until #924 moved it onto
-`create_provider()`, and a later pass moved it again onto `sova.llm.client.invoke()` itself (so
-its cost is recorded and it counts against the runaway-call guard); it passes
-`task_type="pr_suggestion"` (unrouted by default, since no `llm.routing` entry matches) and
-`isolated=True` (so the default CLI provider runs it `--safe-mode --tools ""`, matching the
-model-availability probe). The
+fan-out). The
 batch path (`triage.py` -> `invoke_batch` -> `anthropic_batch.py`) used to send bare aliases to
 an API that needs full model IDs; `invoke_batch()` now resolves `task_type` routing and expands
 aliases via `models.py:resolve_model_alias()` before either backend is reached.

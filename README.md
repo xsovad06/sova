@@ -126,7 +126,7 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | Page | Purpose |
 |------|---------|
 | **Home** | Project list (command center) for multi-project installations |
-| **Agents** | Multi-agent control panel: start/stop, view handoff actions, task browser, cost/completion stats |
+| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, queue, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer, the dependency chains, open PRs and run history. `/agents` redirects here |
 | **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
 | **Lifecycle** | Issue lifecycle rail (development through post-merge) |
 | **Costs** | Per-task and per-model cost tracking and aggregation |
@@ -295,7 +295,7 @@ webhook_headers = '{"Authorization": "Bearer token123"}'  # JSON object with cus
 ntfy_url = "https://ntfy.example.com"
 ntfy_topic = "sova"
 ntfy_events = ["needs_human", "failed"]   # kinds sent to ntfy: needs_human, failed, finished, info
-link_base_url = "https://sova.example.com"  # notification link: /work/<id>, else /agents
+link_base_url = "https://sova.example.com"  # notification link: /work/<id>, else /work
 # Bearer token: sova config set notification.ntfy_token <token> (stored in the OS keyring when available);
 # the SOVA_NOTIFICATION_NTFY_TOKEN environment variable overrides the stored token
 # SOVA_NOTIFICATION_NTFY_EVENTS takes comma-separated text or a JSON array

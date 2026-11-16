@@ -129,7 +129,7 @@ class TestConfiguredGithubUser:
 class TestSidebarFooterMarkup:
     async def test_footer_hosts_status_row_and_popover(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value="xsovad06"):
-            resp = await client.get("/agents")
+            resp = await client.get("/work")
         assert resp.status_code == 200
         footer = _footer_html(resp.text)
         for element_id in (
@@ -148,13 +148,13 @@ class TestSidebarFooterMarkup:
             assert f'id="{element_id}"' in footer, f"{element_id} must live inside the sidebar footer"
 
     async def test_widget_is_not_rendered_outside_the_sidebar(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.text.count('id="auth-widget"') == 1
         assert resp.text.index('id="auth-widget"') < resp.text.index("</nav>")
 
     async def test_footer_shows_github_user_and_version_beneath(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value="xsovad06"):
-            resp = await client.get("/agents")
+            resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert 'id="auth-widget-user"' in footer
         assert "xsovad06" in footer
@@ -163,26 +163,26 @@ class TestSidebarFooterMarkup:
 
     async def test_unset_github_user_omits_the_segment(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value=""):
-            resp = await client.get("/agents")
+            resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert 'id="auth-widget-user"' not in footer
         assert "None" not in footer
 
     async def test_github_user_is_escaped(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value="<b>x</b>"):
-            resp = await client.get("/agents")
+            resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert "<b>x</b>" not in footer
         assert "&lt;b&gt;x&lt;/b&gt;" in footer
 
     async def test_initial_state_matches_the_old_widget_before_first_poll(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert 'class="resource-widget-dot resource-dot-green" id="auth-widget-dot"' in footer
         assert re.search(r'id="auth-widget-label"[^>]*>provider<', footer)
 
     async def test_panel_starts_closed_and_toggle_is_a_labelled_button(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert re.search(r'<div id="auth-widget-panel" class="[^"]*\bhidden\b', footer)
         toggle = re.search(r'<button id="auth-widget-toggle"[^>]*>', footer)
@@ -193,7 +193,7 @@ class TestSidebarFooterMarkup:
 
     async def test_collapsed_sidebar_hides_text_and_keeps_the_dot(self, client: AsyncClient) -> None:
         """Provider, user and version reuse the existing collapse classes; the dot has none, so it stays visible."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         footer = _footer_html(resp.text)
         dot = re.search(r'<span class="([^"]*)" id="auth-widget-dot"', footer)
         assert dot
@@ -207,33 +207,33 @@ class TestSidebarFooterMarkup:
         assert re.search(r'class="[^"]*\bsidebar-hide\b[^"]*">SOVA v0\.1\.0<', text_wrapper.group(1))
 
     async def test_manage_connections_link_unchanged(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         footer = _footer_html(resp.text)
         assert re.search(r'<a href="/connections"[^>]*>Manage connections', footer)
 
     async def test_unreadable_github_user_omits_the_segment(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.services.setup_service.get_github_user", return_value=None):
-            resp = await client.get("/agents")
+            resp = await client.get("/work")
         assert resp.status_code == 200
         footer = _footer_html(resp.text)
         assert 'id="auth-widget-user"' not in footer
         assert "None" not in footer
 
     async def test_collapse_control_and_footer_do_not_shrink(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert re.search(r'<div id="auth-widget" class="[^"]*\bshrink-0\b', resp.text)
         assert re.search(r'<!-- Collapse toggle -->\s*<div class="[^"]*\bshrink-0\b', resp.text)
 
     async def test_nav_link_list_is_the_scrolling_region(self, client: AsyncClient) -> None:
         """On a short viewport the link list scrolls; the collapse button and footer stay pinned below it."""
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         nav = resp.text[resp.text.index("<nav") : resp.text.index("</nav>")]
         wrapper = re.search(r'<div class="([^"]*\bflex-1\b[^"]*)">\s*<a href=', nav)
         assert wrapper, "the nav links must sit in a flex-1 wrapper"
         assert "sidebar-nav-scroll" in wrapper.group(1).split()
 
     async def test_floating_toggle_markup_is_gone(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert 'class="auth-widget"' not in resp.text
         assert "resource-widget-chevron" not in _footer_html(resp.text)
 

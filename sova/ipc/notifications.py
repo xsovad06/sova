@@ -85,15 +85,15 @@ def _truncate_utf8(text: str, max_bytes: int) -> str:
 # Dashboard pages (sova/dashboard/app.py): `/work/{run_id}` is the run detail page; the older `/runs/{id}`
 # only redirects to it. tests/test_ntfy_notifications.py pins both against the app's routes.
 RUN_PAGE_PATH = "/work/{run_id}"
-AGENTS_PAGE_PATH = "/agents"
+WORK_PAGE_PATH = "/work"
 
 
 def build_item_url(link_base_url: str, run_id: int | None) -> str:
-    """Link to the run page when the run is known, else to the Agents page; "" without a base URL."""
+    """Link to the run page when the run is known, else to the Work page; "" without a base URL."""
     base = link_base_url.strip().rstrip("/")
     if not base:
         return ""
-    path = RUN_PAGE_PATH.format(run_id=run_id) if run_id is not None else AGENTS_PAGE_PATH
+    path = RUN_PAGE_PATH.format(run_id=run_id) if run_id is not None else WORK_PAGE_PATH
     return f"{base}{path}"
 
 

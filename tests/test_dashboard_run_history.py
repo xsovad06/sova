@@ -373,7 +373,7 @@ class TestHistoryEndpoint:
 
 class TestRunActionsReachThePage:
     async def test_every_page_receives_the_table_once(self, client: AsyncClient) -> None:
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         match = re.search(r"window\.SOVA_RUN_ACTIONS = (\{.*?\});\n", resp.text)
         assert match, "window.SOVA_RUN_ACTIONS is not emitted"
@@ -802,7 +802,7 @@ class TestHistoryMarkup:
     async def test_new_runs_button_hides_through_a_wrapper(self, client: AsyncClient) -> None:
         """.sova-btn sets display: inline-flex, which beats Tailwind's .hidden on the same element, so the
         empty button showed as a blank pill; the class that hides it sits on a wrapper."""
-        html = (await client.get("/agents")).text
+        html = (await client.get("/work")).text
         wrapper = html[html.index('id="history-new-runs"') :]
         assert 'class="hidden"' in wrapper[: wrapper.index(">")]
         button = html[html.index('id="history-new-runs-btn"') :]

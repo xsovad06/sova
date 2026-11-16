@@ -64,7 +64,7 @@ class TestBuildItemUrl:
         [
             ("https://sova.example.com", 7, "https://sova.example.com/work/7"),
             ("https://sova.example.com/", 7, "https://sova.example.com/work/7"),
-            ("https://sova.example.com//", None, "https://sova.example.com/agents"),
+            ("https://sova.example.com//", None, "https://sova.example.com/work"),
             ("https://sova.example.com", 0, "https://sova.example.com/work/0"),
             ("", 7, ""),
             ("   ", None, ""),
@@ -75,12 +75,12 @@ class TestBuildItemUrl:
 
     def test_link_paths_are_real_dashboard_pages(self) -> None:
         """A route rename must break this test, not every notification link (a 404 or a redirect hop)."""
-        from sova.ipc.notifications import AGENTS_PAGE_PATH, RUN_PAGE_PATH
+        from sova.ipc.notifications import RUN_PAGE_PATH, WORK_PAGE_PATH
 
         source = (SOVA_ROOT / "dashboard" / "app.py").read_text(encoding="utf-8")
         run_route = RUN_PAGE_PATH.format(run_id="{run_id}")
         assert f'@app.get("{run_route}")' in source
-        assert f'@app.get("{AGENTS_PAGE_PATH}")' in source
+        assert f'@app.get("{WORK_PAGE_PATH}")' in source
         # The run page must render the run detail template, not redirect (/runs/{id} only redirects).
         run_handler = source.split(f'@app.get("{run_route}")', 1)[1].split("@app.", 1)[0]
         assert "run_detail.html" in run_handler

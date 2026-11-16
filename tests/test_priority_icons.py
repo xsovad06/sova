@@ -172,7 +172,7 @@ class TestPrioritiesJson:
         (&#34; instead of ") and silently break window.SOVA_PRIORITIES for every
         page. Render a real page and check the raw response body.
         """
-        resp = await client.get("/agents")
+        resp = await client.get("/work")
         assert resp.status_code == 200
         assert 'window.SOVA_PRIORITIES = [{"value"' in resp.text
 

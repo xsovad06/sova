@@ -27,12 +27,15 @@ class ApproveRequest(BaseModel):
 
 class QueueSetRequest(BaseModel):
     issue_numbers: list[int]
+    # The queue the new order was computed from. When present, the write is rebased onto the stored queue so a
+    # concurrent add or removal is kept; absent, the stored queue is replaced outright.
+    based_on: list[int] | None = None
 
-    @field_validator("issue_numbers")
+    @field_validator("issue_numbers", "based_on")
     @classmethod
-    def _all_positive(cls, v: list[int]) -> list[int]:
-        if any(n < 1 for n in v):
-            raise ValueError("All issue_numbers must be positive integers")
+    def _all_positive(cls, v: list[int] | None) -> list[int] | None:
+        if v is not None and any(n < 1 for n in v):
+            raise ValueError("All issue numbers must be positive integers")
         return v
 
 
@@ -478,9 +481,10 @@ async def set_queue(body: QueueSetRequest) -> dict:
     async with _queue_lock:
         project_dir = _resolve_project_dir()
         queue = _deduplicate(body.issue_numbers)
-        await _persist_queue(project_dir, queue)
+        based_on = _deduplicate(body.based_on) if body.based_on is not None else None
+        saved = await _persist_queue(project_dir, queue, based_on=based_on)
         await _notify_daemon_queue_change(project_dir)
-        return {"queue": queue}
+        return {"queue": saved}
 
 
 @router.post(

@@ -137,5 +137,3 @@ from sova.dashboard.services.agent_recovery import (
 from sova.dashboard.services.agent_recovery import (
     recover_stale_runs as recover_stale_runs,
 )
-from sova.dashboard.services.work_service import get_kanban_columns as get_kanban_columns
-from sova.dashboard.services.work_service import get_recent_failed_runs as get_recent_failed_runs

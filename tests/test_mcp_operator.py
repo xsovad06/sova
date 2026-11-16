@@ -755,7 +755,7 @@ class TestAgainstDashboardApp:
         assert (control_dir / "handoff-123.json").exists()
 
     async def test_stop_of_a_run_the_server_does_not_hold_is_an_error(self, served_app: Any, project: Path) -> None:
-        with pytest.raises(ToolError, match="No agent with run_id 987654"):
+        with pytest.raises(ToolError, match="HTTP 409.*There is no run 987654"):
             await _real_tools(served_app, project).call_tool("sova_stop_run", {"run_id": 987654})
 
     async def test_stop_of_a_held_run_reports_stopped(self, served_app: Any, project: Path) -> None:
