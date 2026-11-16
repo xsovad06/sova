@@ -52,7 +52,8 @@ To set up Google API access for SOVA:
    - Application type: Desktop app
    - Download the JSON file
 5. Save the JSON file to: {credentials_path}
-6. Run `sova briefing` to complete the OAuth flow (opens browser for consent)
+6. Run `sova briefing`, or use the dashboard health panel's Authorize Google control, to complete the OAuth
+   flow (opens browser for consent)
 
 For persistent tokens, publish your OAuth consent screen:
   - Google Workspace: set to "Internal"
@@ -131,6 +132,15 @@ def _get_cached_creds(path: Path) -> object | None:
 def _set_cached_creds(path: Path, creds: object) -> None:
     """Cache credentials with a timestamp for TTL-based expiration."""
     _creds_cache[path.resolve()] = (creds, time.monotonic())
+
+
+def forget_cached_credentials(config: AwarenessConfig, *, token_path: Path | None = None) -> None:
+    """Drop the in-process credential cache entry for the configured token path.
+
+    A token written by another process (the dashboard's authorize child) is invisible to a cache
+    that still holds the earlier result for up to the TTL.
+    """
+    _creds_cache.pop(_resolve_token_path(config, token_path).resolve(), None)
 
 
 def _cache_and_return_creds(creds: object, token_path: Path) -> Credentials:

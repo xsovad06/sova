@@ -29,7 +29,7 @@ sova config set awareness.gmail_token_path /Users/<username>/.config/sova/google
 
 Inspect what is currently stored at any time with `sova config`.
 
-Verify the result with `sova doctor`: it prints one row per configured provider (skipped entirely when `awareness.enabled` is false). A provider that is authorized and reachable shows `ok`; one whose optional dependency is missing, or that has no valid credentials yet, shows why. `sova doctor` never opens the OAuth consent browser, so run `sova briefing` for the initial authorization.
+Verify the result with `sova doctor`: it prints one row per configured provider (skipped entirely when `awareness.enabled` is false). A provider that is authorized and reachable shows `ok`; one whose optional dependency is missing, or that has no valid credentials yet, shows why. `sova doctor` never opens the OAuth consent browser, so run `sova briefing` (or the dashboard's Authorize Google control, below) for the initial authorization.
 
 ## Provider Overview
 
@@ -81,6 +81,8 @@ gmail_token_path = "/Users/<username>/Code/team-productivity-utils/google-worksp
    - Open your browser (or you can copy the URL manually)
    - Ask you to authorize the app
    - Save the token to `~/.config/sova/google_token.pickle`
+
+   Or, from the dashboard: the Settings page health panel shows an **Authorize Google** control on a failing `awareness: gmail` or `awareness: gcal` row. It runs the same consent flow (same token, same path) in a browser on the server's machine, so it is offered only on a loopback-bound, non-headless dashboard, and only once `gmail` or `gcal` is in `awareness.providers`. It does not replace steps 1 to 5: without `~/.config/sova/google_credentials.json` the row says so instead of offering the control.
 
 The token is persisted and auto-refreshed. You only need to authorize once.
 
@@ -192,13 +194,13 @@ Run `sova config set awareness.enabled true` or use the dashboard settings page.
 
 **Fix:**
 1. Delete the old token: `rm ~/.config/sova/google_token.pickle`
-2. Run `sova briefing` again to trigger the OAuth flow
+2. Run `sova briefing` again (or use the Settings health panel's Authorize Google control) to trigger the OAuth flow
 3. Authorize the app in your browser
 4. Confirm with `sova doctor` that the `awareness: gmail` row now reports `ok`
 
 `sova doctor` and the dashboard provider status panel only probe existing
-credentials; they never start the consent flow. Until `sova briefing` has run
-once, they report the provider as not configured.
+credentials; they never start the consent flow. Until `sova briefing` or the
+Authorize Google control has run once, they report the provider as not configured.
 
 ### "pr_status: no oauth token found for github.com account X"
 
