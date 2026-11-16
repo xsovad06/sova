@@ -62,6 +62,9 @@ async def get_spec(issue_number: str) -> dict:
     spec = spec_service.read_spec(issue_number)
     if spec is None:
         raise HTTPException(status_code=404, detail=f"No spec found for issue #{issue_number}")
+    spec["drift"] = await spec_service.spec_drift(
+        spec.get("raw_content") or "", spec.get("status") or "draft", issue_number=issue_number
+    )
     return spec
 
 
