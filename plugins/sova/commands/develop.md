@@ -105,7 +105,7 @@ Run the full CI-equivalent checks:
 the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)
 ```
 
-That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file to list them).
+That command is only as complete as the project configured it: if it is not the same target CI runs, also run the CI steps it omits (read the CI workflow file).
 
 If any check fails, fix and re-run (up to 3 attempts).
 

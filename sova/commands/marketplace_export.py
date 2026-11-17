@@ -73,10 +73,10 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
     # "execute fenced bash blocks literally" contract would try to run.
     (
         re.compile(
-            r"(?P<indent>[ \t]*)if sova checks should-skip \"\{\{\s*check_cmd\s*\}\}\"; then\n"
+            r"(?P<indent>[ \t]*)if sova checks should-skip \"\{\{\s*(?P<cmd>(?:fast_)?check_cmd)\s*\}\}\"; then\n"
             r"[ \t]*echo \"[^\"\n]*\"\n"
             r"[ \t]*else\n"
-            r"[ \t]*\{\{\s*check_cmd\s*\}\} && \{ sova checks record \"\{\{\s*check_cmd\s*\}\}\" --passed "
+            r"[ \t]*\{\{\s*(?P=cmd)\s*\}\} && \{ sova checks record \"\{\{\s*(?P=cmd)\s*\}\}\" --passed "
             r"\|\| true; \}\n"
             r"[ \t]*fi\n"
         ),
@@ -89,6 +89,19 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
             r"`sova checks should-skip` only ever reports a skip there\)"
         ),
         "",
+    ),
+    # A standalone plugin user has no fast_check_cmd setting and no pipeline
+    # gate running the full check later, so the fast-check wording reverts to
+    # running the full check (both placeholders render as the same prose).
+    (re.compile(r"the project's fast check\b"), "the full CI-equivalent checks"),
+    (
+        re.compile(
+            r"If `\{\{\s*fast_check_cmd\s*\}\}` differs from `\{\{\s*check_cmd\s*\}\}`, "
+            r"run only `\{\{\s*fast_check_cmd\s*\}\}`; the autonomous pipeline runs "
+            r"`\{\{\s*check_cmd\s*\}\}` once in its own gate\. "
+            r"If they match, run it and, when it is not the target CI runs"
+        ),
+        "That command is only as complete as the project configured it: if it is not the same target CI runs",
     ),
     # The fix-loop sentence that follows that block explains why a pass is
     # recorded only from inside the chain; with the chain itself collapsed
@@ -104,7 +117,7 @@ _SUBSTITUTIONS: list[tuple[re.Pattern[str], str]] = [
     # same as SOVA's own .claude/commands/ install path.
     (re.compile(r"\{\{\s*arguments\s*\}\}"), "$ARGUMENTS"),
     (
-        re.compile(r"\{\{\s*check_cmd\s*\}\}"),
+        re.compile(r"\{\{\s*(?:fast_)?check_cmd\s*\}\}"),
         "the project's CI-equivalent check command (see its Makefile, package.json scripts, or CI config)",
     ),
     (

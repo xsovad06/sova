@@ -148,11 +148,14 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
     Returns a dict of variable names to their values, suitable for
     passing to render_command().
     """
+    # A whitespace-only value counts as unset: rendered into a command chain it is a bash syntax error.
+    check_cmd = (cfg.check_cmd or "").strip() or f"{cfg.lint_cmd} && {cfg.test_cmd}"
     variables: dict[str, str] = {
         "test_cmd": cfg.test_cmd,
         "lint_cmd": cfg.lint_cmd,
         "format_cmd": cfg.format_cmd,
-        "check_cmd": cfg.check_cmd or f"{cfg.lint_cmd} && {cfg.test_cmd}",
+        "check_cmd": check_cmd,
+        "fast_check_cmd": (cfg.fast_check_cmd or "").strip() or check_cmd,
         "base_branch": cfg.base_branch,
         "github_repo": cfg.github_repo,
         "github_user": cfg.github_user,
