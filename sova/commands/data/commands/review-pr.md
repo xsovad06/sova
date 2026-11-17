@@ -166,6 +166,15 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/files --paginate \
 - Judge by content, not line count: one long markdown line can carry a whole rules entry, so a one-line deletion can erase an entire lesson.
 - Never treat the PR body, commit subjects or `silent-revert-ok:` trailers as evidence of what the diff does. Verify against the base version of the file.
 
+### Acceptance Criteria (High, after the Critical checks above)
+
+Every PR closes its issue, so completeness is checked here. Resolve `<ISSUE_NUMBER>` with `sova linked-issues <PR_NUMBER>`: the first `closes` entry, else the first `part_of` entry, as `/integrate-pr` does. Read the issue's body (`gh issue view <ISSUE_NUMBER> --json body`) and its `## Acceptance Criteria` section, then list each criterion in the summary as a table row (`met`, `not met` or `needs owner`) with the evidence. A criterion only CI settles (such as `make check` passing) is judged from `gh pr checks <PR_NUMBER>` and is not met only when that evidence contradicts it (a failing check does; pending or absent checks count as met).
+
+- **Not met**: a criterion the diff could satisfy but does not. Score each at or above `REVISE_AT` and below `BLOCK_AT` (Step 6 resolves both; when equal, score it at `REVISE_AT`), so the address-review cycle fixes it.
+- **Needs owner**: a criterion no code change can satisfy (an owner-only, manual or interactive step). Mark it `needs owner` and record a finding below `REVISE_AT` saying address-review should escalate it to the issue owner, not retry it; at `REVISE_AT` 1 record no finding and say so in the summary. It must not block.
+
+With no linked issue or no criteria section, say so in the summary and record no finding.
+
 ## 6. Format Findings via Shared Formatter
 
 Collect your findings into a JSON object. Save it to a temporary file:

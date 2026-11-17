@@ -69,7 +69,9 @@ Resolve the linked issue, which names the worktree to clean up and goes into the
 sova linked-issues <PR_NUMBER>
 ```
 
-It prints `{"closes": [...], "part_of": [...]}`: the issues a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms), then the `Part of #N` issues the PR only partly finishes. `<ISSUE_NUMBER>` is the first `closes` entry, else the first `part_of` entry. A bare `#N` in the body or the title is a mention, not a link. On a Jira project it is the ticket key the PR title starts with (`[PROJ-123]`). `<ISSUE_NUMBER>` never decides which issues get closed: Phase 6 does, from the merged PR's body.
+It prints `{"closes": [...], "part_of": [...]}`: the issues a closing keyword names (`Closes #N`, `Fixes #N`, `Resolves #N` and their other forms), then the `Part of #N` issues a hand-written or older PR body names (SOVA no longer writes `Part of`). `<ISSUE_NUMBER>` is the first `closes` entry, else the first `part_of` entry. A bare `#N` in the body or the title is a mention, not a link. On a Jira project it is the ticket key the PR title starts with (`[PROJ-123]`). `<ISSUE_NUMBER>` never decides which issues get closed: Phase 6 does, from the merged PR's body.
+
+**If the PR is open, `closes` is empty and `part_of` is not, say so before merging**: print the PR's `## Issue` section and warn that merging leaves issue `#N` open, unchanged and still `agent:in-review`, with no PR (SOVA cannot tell a hand-written `Part of` from an older generated one). Merge anyway only when the operator meant it; otherwise edit the section to `Closes #N` and re-run.
 
 Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval, except against a standing SOVA REVISE or BLOCK verdict (Phase 1b).
 
@@ -716,8 +718,6 @@ Act on the result:
 
 ### Phase 5: Merge
 
-Before merging, on a GitHub project, run `sova refresh-pr-body <PR_NUMBER> --only-if-unparseable`, adding `--head <sha>` only when Phase 2b printed `GATE_PASS <sha>` (omit the flag after `GATE_SKIPPED`, which records no sha, and never pass an empty or invented value): it re-judges a body whose verdicts could not be parsed (with `--head`, only if the head is still the gated commit), rewriting only its `## Issue` section. It can make two LLM calls of `commit.pr_body_timeout` each (`sova config get commit.pr_body_timeout`), so give the shell a timeout of at least 2 x that + 60 s (600000 ms, the Bash tool maximum, at the default 300 s). Exit 0 or 2: continue. Exit 1 or 4: the body is unchanged and stays `Part of #N`, so merge anyway. Exit 3: the head moved since the gate, so stop and re-run the gate instead of merging.
-
 Resolve the merge settings through the config loader (they are not in the `sova config` table):
 
 ```bash
@@ -905,10 +905,10 @@ sova linked-issues <PR_NUMBER> --apply
 It acts on each issue the body links and prints one line per issue:
 
 - **Closing keyword** (`Closes #N`, `Fixes #N`, `Resolves #N` or another GitHub form): the issue moves to `post_merge_state`. "done" (default) closes it; "on_qa" adds the `agent:on-qa` label and keeps it open; any other value leaves it as it is and is reported as not updated.
-- **`Part of #N`**: the issue stays open, whatever `post_merge_state` says. It gets one comment naming this PR and its `Not done in this PR:` bullets (else the issue's unchecked criteria), once. It also loses the `agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block` labels unless another open PR links it.
+- **`Part of #N`** (a hand-written or older PR body): left alone, with no comment and no label change.
 - **A bare `#N`**: left alone.
 
-A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead: closing a `Part of` issue is the bug this step exists to prevent.
+A non-zero exit means the PR body could not be read or an issue could not be updated. Report the output and carry on with the rest of this phase, but never close or relabel an issue by hand instead.
 
 Then record which recorded rules the PR's review findings repeat (read by `sova retro report`). A failure is reported and never stops cleanup:
 
@@ -957,7 +957,7 @@ Output a concise summary covering:
 - Silent-revert checks: the Phase 2b and Phase 6 results (pass, or skipped because no guard honouring an explicit range exists at the path checked), which replay Phase 2b used (rebase, merged, or rebase-fallback), and how Phase 6 classified the landing, including any wide-window note
 - CI status (passed, retried, or skipped because nothing was re-pushed)
 - Branches cleaned up (local + remote), and any worktree or branch kept and why
-- Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as `Part of`, not updated), or no linked issue; whether Phase 5 re-judged the closing decision
+- Linked issues: each line `sova linked-issues --apply` printed (closed or moved to on_qa, left open as Part of and unchanged, not updated), or no linked issue
 - Review retro: the line `sova retro record` printed, or its failure
 - Documentation: "already captured" or the items queued to `.claude/agent-control/pending-docs.md` for the next branch
 - Stale stashes found (if any)
