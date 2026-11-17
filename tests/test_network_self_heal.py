@@ -207,9 +207,9 @@ class TestExactlyOnce:
         """A newer run the outer query's own filters exclude (here, a status
         outside _SELF_HEAL_STATUSES) must still block an older candidate: it
         never enters the seen_issues loop at all, so only the status-blind
-        newer-run check in `_has_newer_live_run` can catch it.
+        newer-run check in `_newer_run_count` can catch it.
 
-        `_has_newer_live_run` compares by `TaskRun.id`, which in production
+        `_newer_run_count` compares by `TaskRun.id`, which in production
         always increases with creation time, so the rows are added here in
         that same order (older first) to keep id order consistent with the
         `minutes_ago` timestamps rather than contradicting them.
