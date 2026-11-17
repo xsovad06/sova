@@ -1370,6 +1370,7 @@ class ProjectConfig(BaseSettings):
     lint_cmd: str = "make lint"
     format_cmd: str = "make format"
     check_cmd: str = ""
+    fast_check_cmd: str = ""
 
     # Persona
     persona_map: str = ""

@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 from sova.core.agent_dispatch import dispatch_command, dispatch_prompt
-from sova.core.check_cache import has_recorded_pass
+from sova.core.check_cache import has_recorded_pass, record_result, snapshot_untracked
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.steps.research import split_research_section
@@ -397,8 +397,11 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
 
     Returns the command string, or None if no check command is available.
     """
-    if ctx.config.check_cmd and ctx.config.check_cmd.strip():
-        return ctx.config.check_cmd
+    configured = (ctx.config.check_cmd or "").strip()
+    if configured:
+        # Stripped like build_variables() does, so the spelling this loop runs and records is the
+        # one pr.md and the agent prompts look up.
+        return configured
 
     makefile = Path(ctx.working_dir) / "Makefile"
     if makefile.exists():
@@ -648,6 +651,7 @@ class DevelopStep(BaseStep):
             return True, "checks passed (reused the recorded run)"
 
         # Initial check run
+        pre_untracked = await self._snapshot_untracked(ctx)
         check_start = time.monotonic()
         check_result = await run(
             "sh",
@@ -661,6 +665,7 @@ class DevelopStep(BaseStep):
         max_check_duration = last_check_duration
         if check_result.success:
             log.info("step.develop.checks_passed_first_try")
+            await self._record_full_pass(ctx, check_cmd, pre_untracked)
             return True, "checks passed"
 
         check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
@@ -695,6 +700,7 @@ class DevelopStep(BaseStep):
                 return False, _with_check_output_tail(result, check_output)
 
             # Re-run checks
+            pre_untracked = await self._snapshot_untracked(ctx)
             check_start = time.monotonic()
             check_result = await run(
                 "sh",
@@ -708,6 +714,7 @@ class DevelopStep(BaseStep):
             max_check_duration = max(max_check_duration, last_check_duration)
             if check_result.success:
                 log.info("step.develop.checks_passed_after_fix", cycles=cycle)
+                await self._record_full_pass(ctx, check_cmd, pre_untracked)
                 return True, f"checks passed after {cycle} fix cycle(s)"
 
             check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
@@ -844,6 +851,38 @@ class DevelopStep(BaseStep):
         except Exception:  # noqa: BLE001 (a failed cache lookup degrades to running the real check)
             log.warning("step.develop.check_reuse_lookup_failed", exc_info=True)
             return False
+
+    async def _record_full_pass(self, ctx: ExecutionContext, check_cmd: str, pre_untracked: set[str] | None) -> None:
+        """Record this loop's own full-check pass for the worktree content, so a later call site reuses it.
+
+        Recorded only under *check_cmd*, the command this loop actually ran: a record must never
+        claim a pass for a spelling that did not run (``make check`` need not cover the ``lint_cmd &&
+        test_cmd`` that ``pr.md`` renders when ``check_cmd`` is unset, so that project's ``pr.md``
+        runs its own check).
+
+        *pre_untracked* is the set of untracked paths from before the run, so the paths the check
+        creates, and the ones earlier records or the baseline run already treat as outputs, stay out
+        of the key.
+        The agent's fast check records under its own command text and never satisfies this loop's
+        lookup; this record is the one a later ``should-skip`` or ``has_recorded_pass`` call reuses.
+        Advisory: a failure only costs a later call site its reuse.
+        """
+        try:
+            # use_pending=False: this call has its own snapshot, so a failed one means "exclude
+            # nothing" and must not consume a note the agent's should-skip left for another call.
+            await record_result(
+                Path(ctx.working_dir), check_cmd, passed=True, pre_untracked=pre_untracked, use_pending=False
+            )
+        except Exception:  # noqa: BLE001 (recording is advisory; the loop's own pass stands)
+            log.warning("step.develop.check_record_failed", exc_info=True)
+
+    async def _snapshot_untracked(self, ctx: ExecutionContext) -> set[str] | None:
+        """The untracked paths before a check run, or None when they cannot be read (advisory)."""
+        try:
+            return await snapshot_untracked(Path(ctx.working_dir))
+        except Exception:  # noqa: BLE001 (the snapshot is advisory; without it nothing is excluded)
+            log.warning("step.develop.check_snapshot_failed", exc_info=True)
+            return None
 
     async def _resolve_and_verify_check_cmd(self, ctx: ExecutionContext) -> str | None:
         """Resolve the check command and verify it is executable.
