@@ -322,18 +322,21 @@ function _computeGraphKey(data) {
   return n + '|' + e;
 }
 
-// Priority configuration: colors for backward compatibility
+// Priority colors: a SOVA_COLORS key per priority. Blocker outranks critical, so it keeps the saturated orange-red
+// it always had: no Catppuccin token is distinct enough from critical's red (maroon is a paler pink).
 const PRIORITY_CONFIG = {
-  blocker:   { color: '#ff5630' },
-  critical:  { color: '#f38ba8' },
-  high:      { color: '#fab387' },
-  medium:    { color: '#f9e2af' },
-  low:       { color: '#6c7086' },
-  undefined: { color: '#585b70' }
+  blocker:   { hex: '#ff5630' },
+  critical:  { colorKey: 'red' },
+  high:      { colorKey: 'peach' },
+  medium:    { colorKey: 'yellow' },
+  low:       { colorKey: 'gray' },
+  undefined: { colorKey: 'grayDim' }
 };
 
 function priorityColor(priority) {
-  return PRIORITY_CONFIG[priority]?.color || null;
+  const cfg = PRIORITY_CONFIG[priority];
+  if (!cfg) return null;
+  return cfg.hex || sovaColor(cfg.colorKey);
 }
 
 function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
@@ -739,18 +742,19 @@ function renderGraph(data) {
     return a.localeCompare(b);
   });
 
-  // Distinct palette: opaque bg + accent border + header text color (Catppuccin-inspired)
+  // Distinct palette: opaque bg + accent border + header text color. The header is a SOVA_COLORS token; the
+  // bg/border tints are derived dark shades no token fits.
   const PALETTE = [
-    { bg: '#1e1e32', border: '#585b70', head: '#cba6f7' },  // mauve
-    { bg: '#192a19', border: '#3d6b3d', head: '#a6e3a1' },  // green
-    { bg: '#2a1919', border: '#7a4040', head: '#f38ba8' },  // red
-    { bg: '#192a2a', border: '#3d6b6b', head: '#89dceb' },  // teal
-    { bg: '#2a2a19', border: '#6b6b3d', head: '#f9e2af' },  // yellow
-    { bg: '#19192a', border: '#3d3d7a', head: '#89b4fa' },  // blue
-    { bg: '#2a192a', border: '#6b3d6b', head: '#f5c2e7' },  // pink
-    { bg: '#192a2e', border: '#3d6b70', head: '#94e2d5' },  // sky
-    { bg: '#2a2419', border: '#6b603d', head: '#fab387' },  // peach
-    { bg: '#1e2a19', border: '#4f6b3d', head: '#b5e8a1' },  // lime
+    { bg: '#1e1e32', border: '#585b70', head: sovaColor('purple') },
+    { bg: '#192a19', border: '#3d6b3d', head: sovaColor('green') },
+    { bg: '#2a1919', border: '#7a4040', head: sovaColor('red') },
+    { bg: '#192a2a', border: '#3d6b6b', head: sovaColor('sky') },
+    { bg: '#2a2a19', border: '#6b6b3d', head: sovaColor('yellow') },
+    { bg: '#19192a', border: '#3d3d7a', head: sovaColor('accent') },
+    { bg: '#2a192a', border: '#6b3d6b', head: sovaColor('pink') },
+    { bg: '#192a2e', border: '#3d6b70', head: sovaColor('teal') },
+    { bg: '#2a2419', border: '#6b603d', head: sovaColor('peach') },
+    { bg: '#1e2a19', border: '#4f6b3d', head: sovaColor('lavender') },
   ];
   const groupPal = new Map();
   sortedMs.forEach((m, i) => groupPal.set(m, PALETTE[i % PALETTE.length]));
@@ -952,10 +956,12 @@ function renderGraph(data) {
       .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', color);
   }
-  addMarker('arr-dim',  '#2a2a3a');
-  addMarker('arr-def',  '#45475a');
-  addMarker('arr-anc',  '#f9e2af');
-  addMarker('arr-desc', '#89b4fa');
+  // One color per edge state, used for both the edge stroke and its arrow marker so the two always match.
+  const EDGE_COLORS = { dim: sovaColor('base'), def: sovaColor('surface1'), anc: sovaColor('yellow'), desc: sovaColor('accent') };
+  addMarker('arr-dim',  EDGE_COLORS.dim);
+  addMarker('arr-def',  EDGE_COLORS.def);
+  addMarker('arr-anc',  EDGE_COLORS.anc);
+  addMarker('arr-desc', EDGE_COLORS.desc);
 
   const zoom = d3.zoom()
     .scaleExtent([0.08, 3])
@@ -1006,7 +1012,7 @@ function renderGraph(data) {
       const border = this.dataset.border || (color + '66');
       d3.select(this).attr('opacity', active ? +this.dataset.opacity : 0.08);
       d3.select(this).select('rect.node-bg')
-        .attr('stroke', nid === id ? '#cdd6f4' : (active ? border : color + '1a'))
+        .attr('stroke', nid === id ? sovaColor('text') : (active ? border : color + '1a'))
         .attr('stroke-width', nid === id ? 2 : 1);
     });
 
@@ -1021,14 +1027,14 @@ function renderGraph(data) {
     mainG.selectAll('.dep-edge').each(function() {
       const ef = +this.dataset.from, et = +this.dataset.to;
       if (id == null) {
-        d3.select(this).attr('stroke', '#45475a').attr('opacity', 0.45).attr('stroke-width', 1).attr('marker-end', 'url(#arr-def)');
+        d3.select(this).attr('stroke', EDGE_COLORS.def).attr('opacity', 0.45).attr('stroke-width', 1).attr('marker-end', 'url(#arr-def)');
         return;
       }
       const onAnc  = (ancestors.has(ef)   || ef === id) && (ancestors.has(et)   || et === id);
       const onDesc = (descendants.has(ef) || ef === id) && (descendants.has(et) || et === id);
-      if      (onAnc)  d3.select(this).attr('stroke', '#f9e2af').attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-anc)');
-      else if (onDesc) d3.select(this).attr('stroke', '#89b4fa').attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-desc)');
-      else             d3.select(this).attr('stroke', '#1e1e2e').attr('opacity', 0.08).attr('stroke-width', 1).attr('marker-end', 'url(#arr-dim)');
+      if      (onAnc)  d3.select(this).attr('stroke', EDGE_COLORS.anc).attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-anc)');
+      else if (onDesc) d3.select(this).attr('stroke', EDGE_COLORS.desc).attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-desc)');
+      else             d3.select(this).attr('stroke', EDGE_COLORS.dim).attr('opacity', 0.08).attr('stroke-width', 1).attr('marker-end', 'url(#arr-dim)');
     });
   }
 
@@ -1150,7 +1156,7 @@ function renderGraph(data) {
       .attr('class', 'dep-edge')
       .attr('data-from', e.from).attr('data-to', e.to)
       .attr('d', `M${sx},${sy} C${sx+dx},${sy} ${tx-dx},${ty} ${tx},${ty}`)
-      .attr('fill', 'none').attr('stroke', '#45475a').attr('stroke-width', 1).attr('opacity', 0.45)
+      .attr('fill', 'none').attr('stroke', EDGE_COLORS.def).attr('stroke-width', 1).attr('opacity', 0.45)
       .attr('marker-end', 'url(#arr-def)');
   });
 
@@ -1222,7 +1228,7 @@ function renderGraph(data) {
 
     // Epic badge at bottom-left (similar to PR badge)
     if (isEpic) {
-      const EPIC_BADGE_COLOR = '#cba6f7';  // Catppuccin mauve
+      const EPIC_BADGE_COLOR = sovaColor('purple');  // Catppuccin mauve
       const epicBadgeX = pos.x + 4;
       const epicBadgeY = pos.y + NH - 18;
       g.append('rect')
@@ -1282,7 +1288,7 @@ function renderGraph(data) {
 
     g.append('text')
       .attr('x', pos.x + 24).attr('y', pos.y + 21)
-      .attr('fill', '#cdd6f4').attr('font-size', '10.5px').attr('font-weight', '700').attr('font-family', 'monospace')
+      .attr('fill', sovaColor('text')).attr('font-size', '10.5px').attr('font-weight', '700').attr('font-family', 'monospace')
       .text(`#${n.id}`);
 
     // Agent running indicator (pulsing dot at top-left)
@@ -1315,7 +1321,7 @@ function renderGraph(data) {
 
     // Queue position badge (sapphire pill at bottom-right, offset left of status indicators)
     if (n.queue_position) {
-      const QUEUE_COLOR = window.SOVA_COLORS.sapphire || stateHex('gray');  // Catppuccin sapphire, as the legend
+      const QUEUE_COLOR = sovaColor('sapphire');  // Catppuccin sapphire, as the legend
       const qbW = 26, qbH = 14;
       const qbX = pos.x + NW - qbW - 16, qbY = pos.y + NH - qbH - 2;
       g.append('rect')
@@ -1345,7 +1351,7 @@ function renderGraph(data) {
     const t1 = (n.title || '').slice(0, titleMax) + ((n.title || '').length > titleMax ? '…' : '');
     g.append('text')
       .attr('x', pos.x + 24).attr('y', pos.y + 35)
-      .attr('fill', '#a6adc8').attr('font-size', '9px').attr('font-family', 'sans-serif')
+      .attr('fill', sovaColor('subtext0')).attr('font-size', '9px').attr('font-family', 'sans-serif')
       .text(t1);
 
     g.on('mouseenter', function() {

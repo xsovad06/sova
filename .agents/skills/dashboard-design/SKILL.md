@@ -54,7 +54,7 @@ If your generated code includes ANY of these, the output fails quality checks:
 - Mixing font weights within the same visual role
 
 ### Components
-- Inventing new button variants beyond `.sova-btn-primary|success|danger|warning`
+- Inventing new button variants beyond `.sova-btn-primary|success|danger|warning|purple|secondary|ghost` (sizes: `.sova-btn-xs|md|icon`)
 - Using Tailwind shadow classes (`shadow-md`, `shadow-lg`): use border-based depth
 - Inline SVGs for icons that exist in `_icons.html` (use `{{ icon("name", "w-5 h-5") }}`)
 - Native browser elements without `.sova-input`, `.sova-table` classes
@@ -95,7 +95,7 @@ If everything is the same size and weight, nothing stands out. If there are more
 
 | Component | Primary | Secondary | Tertiary |
 |-----------|---------|-----------|----------|
-| Stat card | `.sova-stat-value` (text-2xl, font-semibold) | `.sova-stat-label` (text-xs, uppercase) | `.sova-stat-detail` (text-xs, text-gray-500) |
+| Stat card | `.sova-stat-value` (30px, bold; `-md` 24px, `-sm` 20px) | `.sova-stat-label` (text-xs, uppercase) | `.sova-stat-detail` (text-xs, text-gray-500) |
 | Task row | Issue title (text-sm, text-white) | Issue number (text-xs, font-bold, text-accent) | Badges, timestamps (text-xs, muted) |
 | Agent card | Role + issue (font-semibold) | Status + step (text-sm) | Cost, duration (text-xs, text-gray-500) |
 | Table | Data cells (text-sm) | Column headers (text-xs, font-medium, uppercase) | Action icons (text-xs, muted) |
@@ -161,13 +161,13 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 ## 6. Component Quick Reference
 
 ### Buttons
-`.sova-btn .sova-btn-primary|success|danger|warning`: never invent variants
+`.sova-btn .sova-btn-primary|success|danger|warning|purple|secondary|ghost`, sized with `.sova-btn-xs|md|icon` (icon-only needs an `aria-label`): never invent variants. Build them with the `btn()` macro or `sovaBtn(label, opts)` in JS (an icon goes in `opts.iconHtml`, trusted markup, never a text glyph); both default to `type="button"`. Extra layout classes go in `cls="..."` (macro) or `opts.className` (JS), never in `attrs.class`, which is merged rather than emitted as a second `class=`
 
 ### Cards
 `.sova-card` container, `.sova-card-header` or `card_header()` macro
 
 ### Stats
-`.sova-stat` + `.sova-stat-label` + `.sova-stat-value` or `stat_card()` macro
+`stat_card(label, value_id, size="lg"|"md"|"sm")` macro, or `statCardHtml(label, valueId, {size})` in JS; never hand-write the `.sova-stat` classes or `text-2xl font-bold`
 
 ### Capacity and quota meters
 Use the fuel-gauge model: a full bar means all capacity is available, an empty bar means it is depleted. Compute the fill as `remaining / total * 100`, never `consumed / total * 100`, and label it "X of Y available" or "X remaining", not "X / Y consumed". A filling-up bar next to "0 / 4 reviews" reads as contradictory (a full green bar with nothing used). Applies to every remaining-capacity widget: CodeRabbit quota, CI budget, agent slots.
@@ -176,10 +176,13 @@ Use the fuel-gauge model: a full bar means all capacity is available, an empty b
 `{{ icon("name", "w-5 h-5") }}`: never use ASCII characters for icons
 
 ### Badges
-`rounded-full` for read-only state indicators (pills), `rounded` for clickable buttons
+`rounded-full` for other read-only pills, `rounded` for clickable buttons. `.sova-badge` is the tag form for a state indicator (0.25rem radius, the same `text-xs px-2 py-0.5 rounded` shape `statusBadge()` renders, not a `rounded-full` pill) and its text is 12px; build it with the `badge(label, color)` macro or `badgeHtml(label, {color})` (both take `cls`/`className` for extra classes), where `color` is a state color token (`STATE_BADGE_CLASSES`)
+
+### Empty states
+`empty_state(title, hint)` macro or `emptyStateHtml(title, hint)` (`.sova-empty`), both plain text
 
 ### Tooltips
-`data-tooltip="text"` with optional `data-tooltip-pos="top|bottom|left|right"`
+`data-tooltip="text"` with optional `data-tooltip-pos="top|bottom|left|right"`; it shows on hover and on keyboard focus, never use a native `title=`
 
 ### Notifications
 - Ephemeral: `showToast(message, type)`: info, warning, error, success

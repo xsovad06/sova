@@ -1,13 +1,45 @@
 {#- Reusable UI component macros for SOVA Dashboard -#}
 
-{%- macro stat_card(label, value_id, value_class="", detail_id="") -%}
+{#- The class vocabulary below is mirrored by the JS twins in static/app.js (sovaBtn, badgeHtml, emptyStateHtml, statCardHtml); tests/test_dashboard_component_vocabulary.py compares the two. -#}
+
+{%- macro stat_card(label, value_id, value_class="", detail_id="", size="lg") -%}
+{%- set size_class = {"md": "sova-stat-value-md", "sm": "sova-stat-value-sm"}.get(size, "") -%}
 <div class="sova-stat">
   <p class="sova-stat-label">{{ label }}</p>
-  <p class="sova-stat-value {{ value_class }}" id="{{ value_id }}">--</p>
+  <p class="sova-stat-value{% if size_class %} {{ size_class }}{% endif %} {{ value_class }}" id="{{ value_id }}">--</p>
   {%- if detail_id %}
   <p class="sova-stat-detail" id="{{ detail_id }}"></p>
   {%- endif %}
 </div>
+{%- endmacro -%}
+
+{#- variant: primary, success, danger, warning, purple, secondary or ghost (anything else renders as primary); size: "", "xs", "md" or "icon" (anything else is the default size). An icon-only button passes the icon() markup as its label and an aria-label in attrs. attrs adds attributes, e.g. {"data-action": "retry"}. cls adds extra classes (e.g. "ml-auto"); a "class" key in attrs is merged into it, and a "type" key is ignored (use the type argument). The macro never adds tabindex. -#}
+{%- macro btn(label, variant="primary", size="", id="", type="button", tooltip="", disabled=False, attrs={}, cls="") -%}
+{%- set extra_class = ((cls ~ " " ~ attrs.get("class", "")) | trim) -%}
+{%- set variant_name = variant if variant in ["primary", "success", "danger", "warning", "purple", "secondary", "ghost"] else "primary" -%}
+<button type="{{ type }}" class="sova-btn sova-btn-{{ variant_name }}{% if size in ["xs", "md", "icon"] %} sova-btn-{{ size }}{% endif %}{% if extra_class %} {{ extra_class }}{% endif %}"{% if id %} id="{{ id }}"{% endif %}{% if tooltip %} data-tooltip="{{ tooltip }}"{% endif %}{% if disabled %} disabled{% endif %}{% for name, value in attrs.items() if name not in ["class", "type"] %} {{ name }}="{{ value }}"{% endfor %}>{{ label }}</button>
+{%- endmacro -%}
+
+{#- color: a state color token (work_state.state_color()); the table equals STATE_BADGE_CLASSES in app.js and its token set equals the one work_state.py emits (tests/test_dashboard_component_vocabulary.py checks both), and anything else renders as gray. cls adds extra classes; a "class" key in attrs is merged into it. -#}
+{%- macro badge(label, color="gray", attrs={}, cls="") -%}
+{%- set extra_class = ((cls ~ " " ~ attrs.get("class", "")) | trim) -%}
+{%- set color_classes = {
+  "gray": "bg-gray-600/30 text-gray-400",
+  "gray-dim": "bg-gray-600/30 text-gray-500",
+  "yellow": "bg-accent-yellow/20 text-accent-yellow",
+  "peach": "bg-accent-peach/20 text-accent-peach",
+  "green": "bg-accent-green/20 text-accent-green",
+  "green-strong": "bg-accent-green/30 text-accent-green",
+  "purple": "bg-accent-purple/20 text-accent-purple",
+  "blue": "bg-accent/20 text-accent",
+  "red": "bg-accent-red/20 text-accent-red",
+  "lavender": "bg-accent-lavender/20 text-accent-lavender",
+} -%}
+<span class="sova-badge {{ color_classes.get(color, color_classes["gray"]) }}{% if extra_class %} {{ extra_class }}{% endif %}"{% for name, value in attrs.items() if name != "class" %} {{ name }}="{{ value }}"{% endfor %}>{{ label }}</span>
+{%- endmacro -%}
+
+{%- macro empty_state(title, hint="") -%}
+<div class="sova-empty"><p>{{ title }}</p>{% if hint %}<p class="sova-empty-hint">{{ hint }}</p>{% endif %}</div>
 {%- endmacro -%}
 
 {%- macro card_header(title, action_text="", action_href="#", title_id="") -%}

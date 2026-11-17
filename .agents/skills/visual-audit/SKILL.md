@@ -115,7 +115,7 @@ For each template in scope, check:
 | Check | What to look for | Severity |
 |-------|-----------------|----------|
 | **Icon system** | Using `{{ icon("name") }}` not inline SVG or ASCII? | High |
-| **Button variants** | Only `.sova-btn-primary|success|danger|warning` used? | High |
+| **Button variants** | Only `.sova-btn-primary|success|danger|warning|purple|secondary|ghost` used? | High |
 | **Badge shapes** | `rounded-full` for indicators, `rounded` for buttons? | Medium |
 | **Tooltip system** | `data-tooltip` not native `title` attribute? | Medium |
 

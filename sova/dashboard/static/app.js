@@ -26,7 +26,36 @@ function initColors() {
     grayDim:  getCSSVar('--ctp-surface2'),
     surface: getCSSVar('--ctp-surface0'),
     muted:   getCSSVar('--ctp-overlay1'),
+    base:      getCSSVar('--ctp-base'),
+    mantle:    getCSSVar('--ctp-mantle'),
+    crust:     getCSSVar('--ctp-crust'),
+    surface1:  getCSSVar('--ctp-surface1'),
+    overlay2:  getCSSVar('--ctp-overlay2'),
+    subtext0:  getCSSVar('--ctp-subtext0'),
+    subtext1:  getCSSVar('--ctp-subtext1'),
+    text:      getCSSVar('--ctp-text'),
+    sky:       getCSSVar('--ctp-sky'),
+    flamingo:  getCSSVar('--ctp-flamingo'),
+    pink:      getCSSVar('--ctp-pink'),
+    rosewater: getCSSVar('--ctp-rosewater'),
+    maroon:    getCSSVar('--ctp-maroon'),
   };
+}
+
+// style.css values for every SOVA_COLORS key, used when initColors() has not run or a token is missing from it
+// (tests/test_dashboard_component_vocabulary.py keeps this table equal to style.css).
+var _SOVA_COLOR_FALLBACK = {
+  accent: '#89b4fa', green: '#a6e3a1', greenStrong: '#40a02b', red: '#f38ba8', yellow: '#f9e2af',
+  purple: '#cba6f7', teal: '#94e2d5', peach: '#fab387', lavender: '#b4befe', sapphire: '#74c7ec',
+  gray: '#6c7086', grayDim: '#585b70', surface: '#313244', muted: '#7f849c',
+  base: '#1e1e2e', mantle: '#181825', crust: '#11111b', surface1: '#45475a', overlay2: '#9399b2',
+  subtext0: '#a6adc8', subtext1: '#bac2de', text: '#cdd6f4', sky: '#89dceb', flamingo: '#f2cdcd',
+  pink: '#f5c2e7', rosewater: '#f5e0dc', maroon: '#eba0ac',
+};
+
+// A SOVA_COLORS token as a hex string: never undefined, so an SVG attribute or inline style stays valid.
+function sovaColor(key) {
+  return (window.SOVA_COLORS && window.SOVA_COLORS[key]) || _SOVA_COLOR_FALLBACK[key] || _SOVA_COLOR_FALLBACK.gray;
 }
 
 /* ============================================================
@@ -454,6 +483,72 @@ function renderIfChanged(container, html, key, afterRender) {
   container.innerHTML = html;
   if (afterRender) afterRender(container);
   return true;
+}
+
+/* ============================================================
+   2b. COMPONENT HELPERS (JS twins of the _components.html macros)
+   ============================================================ */
+
+// Each table and class string below must equal the macro's in templates/_components.html:
+// tests/test_dashboard_component_vocabulary.py renders both and compares them.
+var SOVA_BTN_VARIANTS = ['primary', 'success', 'danger', 'warning', 'purple', 'secondary', 'ghost'];
+var SOVA_BTN_SIZES = ['xs', 'md', 'icon'];
+var SOVA_STAT_SIZES = { md: 'sova-stat-value-md', sm: 'sova-stat-value-sm' };
+
+// ' name="value"' for each entry, both escaped; the caller's attrs never become markup. `skip` names attributes the
+// helper owns (class, and type on a button): they are left out here so the element never gets a second, ignored one.
+function _attrsHtml(attrs, skip) {
+  return Object.keys(attrs || {}).filter(function (k) {
+    return k !== 'class' && (skip || []).indexOf(k) === -1;
+  }).map(function (k) {
+    return ' ' + escapeHtml(k) + '="' + escapeHtml(attrs[k]) + '"';
+  }).join('');
+}
+
+// The extra classes a caller adds (opts.className plus a stray attrs.class, merged rather than emitted twice),
+// as ' a b' or ''. Escaped: a class string is data.
+function _extraClass(opts) {
+  var extra = [opts.className, opts.attrs && opts.attrs['class']].filter(Boolean).join(' ').trim();
+  return extra ? ' ' + escapeHtml(extra) : '';
+}
+
+// opts: {variant, size (a SOVA_BTN_SIZES entry), id, type, tooltip, disabled, attrs, iconHtml, className (extra
+// classes such as 'ml-auto' or 'hidden', appended after the component's own)}. An unknown variant
+// renders as primary and an unknown size as the default. The label is always escaped text. iconHtml is trusted
+// markup (an icon() or ICONS svg, never user data) placed before the label; an icon-only ('icon') button passes
+// iconHtml, an empty label and an aria-label in attrs.
+function sovaBtn(label, opts) {
+  opts = opts || {};
+  var variant = SOVA_BTN_VARIANTS.indexOf(opts.variant) !== -1 ? opts.variant : 'primary';
+  var cls = 'sova-btn sova-btn-' + variant + (SOVA_BTN_SIZES.indexOf(opts.size) !== -1 ? ' sova-btn-' + opts.size : '');
+  return '<button type="' + escapeHtml(opts.type || 'button') + '" class="' + cls + _extraClass(opts) + '"' +
+    (opts.id ? ' id="' + escapeHtml(opts.id) + '"' : '') +
+    (opts.tooltip ? ' data-tooltip="' + escapeHtml(opts.tooltip) + '"' : '') +
+    (opts.disabled ? ' disabled' : '') +
+    _attrsHtml(opts.attrs, ['type']) + '>' + (opts.iconHtml || '') + escapeHtml(label) + '</button>';
+}
+
+// opts: {color (a state color token, as stateBadgeClasses() takes; unknown renders as gray), attrs, className}.
+function badgeHtml(label, opts) {
+  opts = opts || {};
+  return '<span class="sova-badge ' + stateBadgeClasses(opts.color) + _extraClass(opts) + '"' + _attrsHtml(opts.attrs) + '>' +
+    escapeHtml(label) + '</span>';
+}
+
+// Plain strings only: both are escaped. A caller that needs markup inside builds its own block.
+function emptyStateHtml(title, hint) {
+  return '<div class="sova-empty"><p>' + escapeHtml(title) + '</p>' +
+    (hint ? '<p class="sova-empty-hint">' + escapeHtml(hint) + '</p>' : '') + '</div>';
+}
+
+// opts: {size ('md' | 'sm'; anything else is the default size), valueClass, detailId}. The value shows '--' until filled.
+function statCardHtml(label, valueId, opts) {
+  opts = opts || {};
+  var sizeClass = Object.prototype.hasOwnProperty.call(SOVA_STAT_SIZES, opts.size) ? ' ' + SOVA_STAT_SIZES[opts.size] : '';
+  return '<div class="sova-stat"><p class="sova-stat-label">' + escapeHtml(label) + '</p>' +
+    '<p class="sova-stat-value' + sizeClass + (opts.valueClass ? ' ' + escapeHtml(opts.valueClass) : '') +
+    '" id="' + escapeHtml(valueId) + '">--</p>' +
+    (opts.detailId ? '<p class="sova-stat-detail" id="' + escapeHtml(opts.detailId) + '"></p>' : '') + '</div>';
 }
 
 /* ============================================================
@@ -2313,12 +2408,15 @@ function initSidebarCollapse() {
 function initSidebarTooltips() {
   var sidebar = document.querySelector('.sidebar');
   if (!sidebar) return;
-  sidebar.addEventListener('mouseover', function (e) {
+  // focusin as well as mouseover: the tooltip also shows on keyboard focus (:focus-visible in style.css).
+  function placeTip(e) {
     var el = e.target.closest ? e.target.closest('[data-tooltip]') : null;
     if (!el || !sidebar.contains(el)) return;
     var rect = el.getBoundingClientRect();
     el.style.setProperty('--sidebar-tip-y', (rect.top + rect.height / 2) + 'px');
-  });
+  }
+  sidebar.addEventListener('mouseover', placeTip);
+  sidebar.addEventListener('focusin', placeTip);
 }
 
 /* The "More" nav group. The server renders it open when the current page is one of its children;
@@ -2452,16 +2550,11 @@ var _RUN_ACTION_CLASSES = {
   gray:   { bg: 'bg-gray-500/20',      text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         hexKey: 'muted' },
 };
 
-// style.css values, for a canvas or inline style drawn before initColors() has read the CSS variables.
-var _RUN_ACTION_HEX_FALLBACK = {
-  accent: '#89b4fa', green: '#a6e3a1', purple: '#cba6f7', yellow: '#f9e2af', teal: '#94e2d5', muted: '#7f849c',
-};
-
 function runActionColors(token) {
   var c = Object.prototype.hasOwnProperty.call(_RUN_ACTION_CLASSES, token) ? _RUN_ACTION_CLASSES[token] : _RUN_ACTION_CLASSES.gray;
   return {
     bg: c.bg, text: c.text, dot: c.dot, border: c.border,
-    get hex() { return (window.SOVA_COLORS && window.SOVA_COLORS[c.hexKey]) || _RUN_ACTION_HEX_FALLBACK[c.hexKey]; },
+    get hex() { return sovaColor(c.hexKey); },
   };
 }
 
@@ -2571,7 +2664,7 @@ var _STATE_HEX_KEYS = {
 
 function stateHex(token) {
   var key = Object.prototype.hasOwnProperty.call(_STATE_HEX_KEYS, token) ? _STATE_HEX_KEYS[token] : 'gray';
-  return (window.SOVA_COLORS && window.SOVA_COLORS[key]) || '#6c7086';
+  return sovaColor(key);
 }
 
 var PHASE_STATUS_COLORS = {
