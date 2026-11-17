@@ -347,6 +347,32 @@ async def test_estimation_with_history(session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_a_failed_averages_query_costs_the_estimate_not_the_run(session: AsyncSession):
+    """A database failure while fetching the history averages leaves the run listed, with no estimate."""
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy.exc import OperationalError
+
+    run = TaskRun(
+        issue_number="11",
+        role="developer",
+        status="running",
+        current_step="develop",
+        started_at=NOW - timedelta(minutes=5),
+    )
+    session.add(run)
+    await session.commit()
+
+    failing = AsyncMock(side_effect=OperationalError("select", {}, Exception("db is locked")))
+    with patch("sova.dashboard.services.agent_status._fetch_step_averages", failing):
+        status = await _status_for(run.id)
+
+    assert status is not None
+    assert status.current_step == "develop"
+    assert not status.estimated_remaining_ms
+
+
+@pytest.mark.asyncio
 async def test_estimation_partial_step_history(session: AsyncSession):
     """Estimation works when many runs exist but some steps have sparse history."""
     # Create 5 completed historical runs with only early steps (sync, assess, create_worktree)
@@ -1167,7 +1193,7 @@ async def test_fetch_step_averages_empty_pipeline_steps(session: AsyncSession):
     """No pipeline steps to average means an empty result, no query issued."""
     from sova.dashboard.services.agent_status import _fetch_step_averages
 
-    assert await _fetch_step_averages(session, []) == {}
+    assert await _fetch_step_averages([]) == {}
 
 
 @pytest.mark.asyncio
@@ -1200,7 +1226,7 @@ async def test_fetch_step_averages_no_positive_duration_rows(session: AsyncSessi
             )
     await session.commit()
 
-    averages = await _fetch_step_averages(session, pipeline_steps)
+    averages = await _fetch_step_averages(pipeline_steps)
     assert averages == {}
 
 

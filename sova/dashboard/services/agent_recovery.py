@@ -21,7 +21,7 @@ from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy import Select
 
     from sova.adapters.base import TaskAdapter, TaskState
     from sova.db.models import TaskRun
@@ -1383,9 +1383,10 @@ async def _find_self_heal_candidates(project_dir: Path | None, window_minutes: i
                 if run.resumed_from_id is not None:
                     continue
 
-                if await _has_newer_live_run(session, run):
+                # The helpers only build the queries; this function's session runs them.
+                if await session.scalar(_newer_run_count(run)):
                     continue
-                if await _already_resumed(session, run.id):
+                if await session.scalar(_resume_count(run.id)):
                     continue
 
                 steps_done = await session.scalar(
@@ -1411,8 +1412,8 @@ async def _find_self_heal_candidates(project_dir: Path | None, window_minutes: i
     return candidates
 
 
-async def _has_newer_live_run(session: AsyncSession, run: object) -> bool:
-    """True when this issue already has any later run, regardless of its status.
+def _newer_run_count(run: TaskRun) -> Select:
+    """Count of this issue's later runs, regardless of status; nonzero means skip the candidate.
 
     This is what stops a resume from duplicating work the system already redid
     on its own: in the motivating incident the supervisor respawned both issues
@@ -1428,17 +1429,11 @@ async def _has_newer_live_run(session: AsyncSession, run: object) -> bool:
 
     from sova.db.models import TaskRun
 
-    newer = await session.scalar(
-        select(func.count(TaskRun.id)).where(
-            TaskRun.issue_number == run.issue_number,
-            TaskRun.id > run.id,
-        )
-    )
-    return bool(newer)
+    return select(func.count(TaskRun.id)).where(TaskRun.issue_number == run.issue_number, TaskRun.id > run.id)
 
 
-async def _already_resumed(session: AsyncSession, run_id: int) -> bool:
-    """True when some run already resumed this one.
+def _resume_count(run_id: int) -> Select:
+    """Count of runs that already resumed this one; nonzero means skip the candidate.
 
     ``resumed_from_id`` is written by WorkflowEngine for every ``--resume``
     spawn, so it marks "already handled" with no new column (the retry-tracking
@@ -1450,8 +1445,7 @@ async def _already_resumed(session: AsyncSession, run_id: int) -> bool:
 
     from sova.db.models import TaskRun
 
-    existing = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.resumed_from_id == run_id))
-    return bool(existing)
+    return select(func.count(TaskRun.id)).where(TaskRun.resumed_from_id == run_id)
 
 
 async def _count_recent_resumes(project_dir: Path | None) -> int:

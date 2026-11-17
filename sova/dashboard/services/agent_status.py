@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
@@ -20,8 +21,6 @@ from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from sova.dashboard.services.agent_pool import AgentState
     from sova.db.models import StepExecution, TaskRun
 
@@ -106,70 +105,73 @@ async def get_all_agent_statuses(
         for s in all_steps:
             steps_by_run.setdefault(s.task_run_id, []).append(s)
 
-        # Cache estimation per pipeline variant
-        estimation_cache: dict[str, dict[str, float]] = {}
+    # Cache estimation per pipeline variant
+    estimation_cache: dict[str, dict[str, float]] = {}
 
-        now = datetime.now(timezone.utc)
-        live_agents = _resolve_live_pool_agents(project_dir)
+    now = datetime.now(timezone.utc)
+    live_agents = _resolve_live_pool_agents(project_dir)
 
-        statuses: list[AgentStatus] = []
-        for run in runs:
-            try:
-                progress = await get_step_progress(
-                    run.current_step, role=run.role, pr_number=run.pr_number, project_dir=project_dir
+    statuses: list[AgentStatus] = []
+    for run in runs:
+        try:
+            progress = await get_step_progress(
+                run.current_step, role=run.role, pr_number=run.pr_number, project_dir=project_dir
+            )
+            run_steps = steps_by_run.get(run.id, [])
+            completed = [s.step_name for s in run_steps if s.status in STEP_DONE_STATUSES]
+
+            step_progress_pct = _compute_progress_pct(progress["step_index"], progress["total_steps"], len(completed))
+            time_in_step_ms, time_in_step_known = _compute_time_in_step(run, run_steps)
+            is_stuck = time_in_step_ms > stuck_threshold_ms
+
+            # Estimation: fetch averages once per variant
+            variant = progress["pipeline_variant"]
+            if variant not in estimation_cache:
+                try:
+                    estimation_cache[variant] = await _fetch_step_averages(progress["steps"], project_dir)
+                except (SQLAlchemyError, OSError):
+                    # A database hiccup costs this variant its estimate, never the run's row in the listing.
+                    log.warning("agent_status.averages_failed", variant=variant, exc_info=True)
+                    estimation_cache[variant] = {}
+
+            estimated_remaining_ms = _compute_estimation(
+                estimation_cache[variant],
+                progress["steps"],
+                completed,
+            )
+
+            live_fields = _compute_live_fields(run, live_agents)
+
+            statuses.append(
+                AgentStatus(
+                    run_id=run.id,
+                    status=run.status,
+                    role=run.role,
+                    pipeline_variant=variant,
+                    current_step=run.current_step or "agent",
+                    step_index=progress["step_index"],
+                    total_steps=progress["total_steps"],
+                    step_progress_pct=step_progress_pct,
+                    time_in_step_ms=time_in_step_ms,
+                    time_in_step_known=time_in_step_known,
+                    is_stuck=is_stuck,
+                    estimated_remaining_ms=estimated_remaining_ms,
+                    issue=run.issue_number,
+                    pid=run.pid,
+                    elapsed_seconds=_compute_elapsed_seconds(run, now),
+                    cost_usd=format_cost_usd(run.total_cost_usd),
+                    pr_number=run.pr_number,
+                    completed_steps=completed,
+                    error_message=run.error_message,
+                    output_lines=live_fields["output_lines"],
+                    cpu_percent=live_fields["cpu_percent"],
+                    memory_rss_bytes=live_fields["memory_rss_bytes"],
+                    source=live_fields["source"],
                 )
-                run_steps = steps_by_run.get(run.id, [])
-                completed = [s.step_name for s in run_steps if s.status in STEP_DONE_STATUSES]
-
-                step_progress_pct = _compute_progress_pct(
-                    progress["step_index"], progress["total_steps"], len(completed)
-                )
-                time_in_step_ms, time_in_step_known = _compute_time_in_step(run, run_steps)
-                is_stuck = time_in_step_ms > stuck_threshold_ms
-
-                # Estimation: fetch averages once per variant
-                variant = progress["pipeline_variant"]
-                if variant not in estimation_cache:
-                    estimation_cache[variant] = await _fetch_step_averages(session, progress["steps"])
-
-                estimated_remaining_ms = _compute_estimation(
-                    estimation_cache[variant],
-                    progress["steps"],
-                    completed,
-                )
-
-                live_fields = _compute_live_fields(run, live_agents)
-
-                statuses.append(
-                    AgentStatus(
-                        run_id=run.id,
-                        status=run.status,
-                        role=run.role,
-                        pipeline_variant=variant,
-                        current_step=run.current_step or "agent",
-                        step_index=progress["step_index"],
-                        total_steps=progress["total_steps"],
-                        step_progress_pct=step_progress_pct,
-                        time_in_step_ms=time_in_step_ms,
-                        time_in_step_known=time_in_step_known,
-                        is_stuck=is_stuck,
-                        estimated_remaining_ms=estimated_remaining_ms,
-                        issue=run.issue_number,
-                        pid=run.pid,
-                        elapsed_seconds=_compute_elapsed_seconds(run, now),
-                        cost_usd=format_cost_usd(run.total_cost_usd),
-                        pr_number=run.pr_number,
-                        completed_steps=completed,
-                        error_message=run.error_message,
-                        output_lines=live_fields["output_lines"],
-                        cpu_percent=live_fields["cpu_percent"],
-                        memory_rss_bytes=live_fields["memory_rss_bytes"],
-                        source=live_fields["source"],
-                    )
-                )
-            except Exception:  # noqa: BLE001 (one malformed run must not break the status listing)
-                log.warning(f"Failed to compute status for run {run.id}", exc_info=True)
-                continue
+            )
+        except Exception:  # noqa: BLE001 (one malformed run must not break the status listing)
+            log.warning(f"Failed to compute status for run {run.id}", exc_info=True)
+            continue
 
     return statuses
 
@@ -280,14 +282,16 @@ def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution]) -> tupl
 
 
 async def _fetch_step_averages(
-    session: AsyncSession,
     pipeline_steps: list[str],
+    project_dir: Path | None = None,
 ) -> dict[str, float]:
     """Fetch average duration per step name from historical completed runs.
 
+    Opens its own short-lived session (this module owns its sessions; none is injected).
     Returns empty dict if fewer than _MIN_HISTORY_RUNS exist.
     """
     from sova.db.models import StepExecution, TaskRun
+    from sova.db.session import get_session
 
     if not pipeline_steps:
         return {}
@@ -310,29 +314,30 @@ async def _fetch_step_averages(
         .subquery()
     )
 
-    # Count distinct runs in the subquery
-    count_result = await session.execute(select(func.count(subq.c.task_run_id.distinct())))
-    run_count = count_result.scalar() or 0
-    if run_count < _MIN_HISTORY_RUNS:
-        return {}
+    async with await get_session(project_dir=project_dir) as session:
+        # Count distinct runs in the subquery
+        count_result = await session.execute(select(func.count(subq.c.task_run_id.distinct())))
+        run_count = count_result.scalar() or 0
+        if run_count < _MIN_HISTORY_RUNS:
+            return {}
 
-    # Average duration per step name across those runs
-    avg_result = await session.execute(
-        select(
-            StepExecution.step_name,
-            func.avg(StepExecution.duration_ms),
+        # Average duration per step name across those runs
+        avg_result = await session.execute(
+            select(
+                StepExecution.step_name,
+                func.avg(StepExecution.duration_ms),
+            )
+            .where(
+                StepExecution.task_run_id.in_(select(subq.c.task_run_id)),
+                StepExecution.status.in_(STEP_DONE_STATUSES),
+                StepExecution.step_name.in_(pipeline_steps),
+                StepExecution.duration_ms > 0,
+            )
+            .group_by(StepExecution.step_name)
         )
-        .where(
-            StepExecution.task_run_id.in_(select(subq.c.task_run_id)),
-            StepExecution.status.in_(STEP_DONE_STATUSES),
-            StepExecution.step_name.in_(pipeline_steps),
-            StepExecution.duration_ms > 0,
-        )
-        .group_by(StepExecution.step_name)
-    )
-    rows = avg_result.all()
-    if not rows:
-        return {}
+        rows = avg_result.all()
+        if not rows:
+            return {}
 
     return {row[0]: float(row[1]) for row in rows}
 
