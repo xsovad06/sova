@@ -15,6 +15,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.llm.errors import ComponentMisconfiguredError
 from sova.llm.models import (
     CURATED_MODELS,
     BatchRequest,
@@ -442,7 +443,7 @@ def create_provider(cfg: LLMConfig, project_dir: Path | None = None) -> LLMProvi
         return AnthropicAPIProvider(model=model or "", api_key=api_key)
 
     available = ["claude-code", "litellm", "hybrid", "anthropic", "openai", "ollama", "vertex"]
-    raise ValueError(f"Unknown LLM provider: {cfg.provider!r}. Available: {', '.join(available)}")
+    raise ComponentMisconfiguredError(f"Unknown LLM provider: {cfg.provider!r}. Available: {', '.join(available)}")
 
 
 def _measure_ms(start: float) -> int:

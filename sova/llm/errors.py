@@ -30,6 +30,20 @@ class ConfigurationError(LLMError):
     """
 
 
+class ComponentMisconfiguredError(ValueError):
+    """A provider or runtime factory refused its config; the message is author-written and safe to show a user.
+
+    A ``ValueError`` subclass, so existing ``except ValueError`` callers still catch it. The dashboard's Test
+    connection buttons pass ``user_message`` through as a 400 detail (what to fix), where any other ``ValueError`` is
+    not assumed to be written for a client. Construct it only from author-written text, never from a wrapped
+    exception's message: ``user_message`` is the one attribute a route may return.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.user_message = message
+
+
 class ModelUnavailableError(LLMError):
     """Raised when the requested model is not enabled on the deployment."""
 

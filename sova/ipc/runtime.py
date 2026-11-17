@@ -23,7 +23,7 @@ from sova.config.models import RUNTIME_MODEL_PIN_ROLES, CodexConfig, ProjectConf
 from sova.ipc.codex import CodexStreamParser
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
-from sova.llm.errors import ConfigurationError
+from sova.llm.errors import ComponentMisconfiguredError, ConfigurationError
 from sova.llm.models import CURATED_MODELS, CostSource, StreamEvent, build_claude_cli_result
 from sova.utils.env import (
     ANTHROPIC_CREDENTIAL_VARS,
@@ -1676,7 +1676,7 @@ def create_runtime(runtime_type: str = "claude-code", *, codex: CodexConfig | No
     cls = _RUNTIMES.get(runtime_type)
     if cls is None:
         available = ", ".join(sorted([*_RUNTIMES, "mock"]))
-        raise ValueError(f"Unknown agent runtime: {runtime_type!r}. Available: {available}")
+        raise ComponentMisconfiguredError(f"Unknown agent runtime: {runtime_type!r}. Available: {available}")
 
     if cls is CodexRuntime:
         return CodexRuntime(config=codex)
