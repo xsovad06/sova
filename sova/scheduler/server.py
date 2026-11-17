@@ -8,6 +8,7 @@ asyncio task alongside the uvicorn ASGI server.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import signal
 import socket
@@ -517,11 +518,14 @@ class SOVAServer:
         """Resolve the PID file path."""
         if self._config.server.pid_file:
             return Path(self._config.server.pid_file)
-        return _resolve_default_pid_path(self._project_dir)
+        return _resolve_default_pid_path(pid_scope_dir(self._project_dir, self._multi_project))
 
     def _write_pid_file(self) -> None:
         """Write the current PID to the PID file."""
         pid_path = self._pid_file_path()
+        if pid_path.parent == _DEFAULT_PID_DIR:
+            # The resolver is read-only (status/stop must not touch a read-only HOME), so the write creates it.
+            pid_path.parent.mkdir(parents=True, exist_ok=True)
         pid_path.write_text(str(os.getpid()), encoding="utf-8")
         log.info("pid.written", path=str(pid_path), pid=os.getpid())
 
@@ -534,13 +538,39 @@ class SOVAServer:
             log.warning("pid.remove_failed", path=str(pid_path), exc_info=True)
 
 
+def pid_scope_dir(project_dir: Path | None, multi: bool) -> Path | None:
+    """Return the directory that scopes the default PID file: None (global path) in multi-project mode."""
+    return None if multi else project_dir
+
+
+def resolve_multi_mode(project: Path | None, multi: bool | None = None) -> bool:
+    """Decide multi-project mode as ``sova server start`` does: explicit flag, else no --project and a registry."""
+    if multi is not None:
+        return multi
+    from sova.config.registry import has_projects
+
+    return project is None and has_projects()
+
+
 def _resolve_default_pid_path(project_dir: Path | None = None) -> Path:
-    """Derive the default PID file path, scoped to project_dir when available."""
+    """Derive the default PID file path: the project's own when ``project_dir`` is given, else the global one.
+
+    A project with a ``.claude/`` keeps ``<project>/.claude/sova-server.pid``. One without it gets a file in
+    the global directory keyed by a hash of its path, so a single-project server never shares the
+    multi-project file and never creates a ``.claude/`` in a directory that is not a SOVA project (a start
+    from a subdirectory or a scratch directory). The key is the directory itself, not an ancestor:
+    ``load_config()`` and the database are keyed on the exact directory too, so ``proj/src`` and ``proj``
+    are different projects.
+
+    Pure: it creates nothing, so a read-only lookup (``status``, ``stop``) works when the global
+    directory is absent or ``HOME`` is read-only. ``SOVAServer._write_pid_file`` creates the directory.
+    """
     if project_dir is not None:
         claude_dir = project_dir / ".claude"
         if claude_dir.is_dir():
             return claude_dir / "sova-server.pid"
-    _DEFAULT_PID_DIR.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(str(project_dir.resolve()).encode("utf-8")).hexdigest()[:16]
+        return _DEFAULT_PID_DIR / f"sova-server-{key}.pid"
     return _DEFAULT_PID_DIR / "sova-server.pid"
 
 
@@ -600,6 +630,29 @@ def read_pid_file(
     except OSError:
         pass
     return None
+
+
+def locate_running_server(
+    config: ProjectConfig | None,
+    project_dir: Path,
+    multi: bool,
+    *,
+    fallback: bool,
+) -> tuple[bool, int | None]:
+    """Find the live server's PID in the PID file for ``multi``, then (with ``fallback``) the other mode's.
+
+    Returns ``(mode, pid)`` where ``mode`` is the multi-project flag of the server that was found,
+    or ``multi`` itself when no PID file holds a live process. ``fallback`` is for a mode the caller
+    inferred rather than named: it covers a server started from another directory or with other
+    ``--project`` arguments. A destructive caller (``stop``, ``restart``) that named ``--project`` or
+    ``--multi/--no-multi`` passes ``fallback=False``, so it never reaches (and never stops) a server it did
+    not address. ``start`` always passes ``fallback=True``, since refusing to start stops nothing.
+    """
+    for candidate in (multi, not multi) if fallback else (multi,):
+        pid = read_pid_file(config, project_dir=pid_scope_dir(project_dir, candidate))
+        if pid is not None:
+            return candidate, pid
+    return multi, None
 
 
 def _wait_for_pid_death(pid: int, timeout: float, poll_interval: float = _POLL_INTERVAL_SECONDS) -> bool:
