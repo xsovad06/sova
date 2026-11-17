@@ -11,13 +11,11 @@ import pytest
 from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
 from sova.git.merge import (
-    _OPEN_PR_LIMIT,
     MergedIssues,
     MergeQueueStatus,
     OpenedPrIssues,
     _build_merge_args,
     _get_pr_base_branch,
-    _render_part_of_comment,
     delete_remote_branch,
     detect_merge_queue,
     get_merge_queue_status,
@@ -583,77 +581,21 @@ class TestHandlePostMergeStateResult:
             assert await handle_post_merge_state(42, post_merge_state="custom_qa", repo="o/r") is False
 
 
-_ISSUE_BODY = """## Objective
-Ship it.
-
-## Acceptance Criteria
-- [x] Code merged
-- [ ] Rolled out on the host (owner)
-* [ ] Host check passes
-  - [ ] nested detail, not a criterion
-```
-- [ ] example inside a fence
-```
-
-## References
-- [ ] not a criterion either
-"""
-
-
-class TestRenderPartOfComment:
-    def test_lists_only_unchecked_top_level_criteria(self) -> None:
-        comment = _render_part_of_comment(884, _ISSUE_BODY)
-        assert comment.splitlines()[0] == "<!-- sova-part-of: pr=884 -->"
-        assert "PR #884 was merged as part of this issue, so the issue stays open." in comment
-        assert "- Rolled out on the host (owner)\n- Host check passes" in comment
-        for absent in ("Code merged", "nested detail", "inside a fence", "not a criterion either"):
-            assert absent not in comment
-
-    def test_no_unchecked_criteria_still_says_the_issue_stays_open(self) -> None:
-        comment = _render_part_of_comment(7, "## Acceptance Criteria\n- [x] done\n")
-        assert "stays open" in comment
-        assert "no unchecked acceptance criteria" in comment
-
-    def test_lists_the_pr_not_done_items_instead_of_the_issue_boxes(self) -> None:
-        comment = _render_part_of_comment(
-            884, _ISSUE_BODY, ("host check (unverified)", "rollout (requires owner/manual action)")
-        )
-        assert "Not done in this PR:\n- host check (unverified)\n- rollout (requires owner/manual action)" in comment
-        assert "Acceptance criteria still unchecked" not in comment
-        assert "Host check passes" not in comment
-
-    def test_keeps_a_wrapped_pr_item_and_its_sub_bullet_nested(self) -> None:
-        from sova.utils.gh import parse_not_done_items
-
-        body = "## Issue\nPart of #884\n\nNot done in this PR:\n- host check\n  on staging\n  - sub step\n- rollout\n"
-        comment = _render_part_of_comment(884, _ISSUE_BODY, parse_not_done_items(body))
-        assert "Not done in this PR:\n- host check\n  on staging\n  - sub step\n- rollout" in comment
-
-    def test_empty_not_done_falls_back_to_the_issue_boxes(self) -> None:
-        comment = _render_part_of_comment(884, _ISSUE_BODY, ())
-        assert "- Rolled out on the host (owner)\n- Host check passes" in comment
-
-
 _FakeRun = Callable[..., Awaitable[ShellResult]]
 
 
 def _fake_gh(
     pr_body: str,
     *,
-    issues: dict[str, dict] | None = None,
     failing: tuple[str, ...] = (),
     not_json: tuple[str, ...] = (),
-    open_prs: list[dict] | None = None,
 ) -> tuple[_FakeRun, list[tuple[str, ...]]]:
     """A stand-in for sova.git.merge.run that answers the gh calls handle_merged_pr_issues makes.
 
-    *failing* names the calls that fail, as "pr view", "issue view <n>", "issue comment <n>", "issue edit <n>" or
-    "issue close <n>" or "pr list".
-    *not_json* names the view and list calls ("pr view", "pr list", "issue view <n>") that succeed but print something
-    that is not JSON. *open_prs* is what "pr list" returns: the other open PRs, as {"number", "body"} dicts.
+    *failing* names the calls that fail, as "pr view" or "issue close <n>". *not_json* names the view calls
+    ("pr view") that succeed but print something that is not JSON.
     """
     calls: list[tuple[str, ...]] = []
-    issues = issues or {}
 
     async def fake_run(*args: str, **_kwargs: object) -> ShellResult:
         calls.append(args)
@@ -664,10 +606,6 @@ def _fake_gh(
             return _shell_ok("not json")
         if args[1:3] == ("pr", "view"):
             return _shell_ok(json.dumps({"body": pr_body}))
-        if args[1:3] == ("pr", "list"):
-            return _shell_ok(json.dumps(open_prs or []))
-        if args[1:3] == ("issue", "view"):
-            return _shell_ok(json.dumps(issues.get(args[3], {"body": "", "comments": []})))
         return _shell_ok()
 
     return fake_run, calls
@@ -682,55 +620,27 @@ async def _handle(fake_run: _FakeRun, *, post_merge_state: str = "done") -> Merg
 
 
 class TestHandleMergedPrIssues:
-    async def test_part_of_comments_and_never_closes(self) -> None:
-        """The #1340 incident: a "Part of" PR merged and its issue was closed with criteria still open."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779\n\nNot done in this PR:\n- host checks",
-            issues={
-                "779": {"body": _ISSUE_BODY, "comments": []},
-            },
-        )
+    async def test_part_of_is_left_alone(self) -> None:
+        """The #1340 incident, and its replacement: a "Part of" body (hand-written or older) merges with
+        no comment, no label change and no close, so the only gh call is the body read."""
+        fake_run, calls = _fake_gh("## Issue\nPart of #779\n\nNot done in this PR:\n- host checks")
         outcome = await _handle(fake_run)
 
-        assert outcome == MergedIssues(unlabeled=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "close")]
-        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
-        assert comment[3] == "779"
-        assert "<!-- sova-part-of: pr=884 -->" in comment[comment.index("--body") + 1]
-
-    async def test_part_of_comment_lists_the_pr_body_items_and_reads_the_body_once(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779\n\nNot done in this PR:\n- host checks (unverified)\n"
-            "- rollout (requires owner/manual action)",
-            issues={"779": {"body": _ISSUE_BODY, "comments": []}},
-        )
-        await _handle(fake_run)
-
-        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
-        body = comment[comment.index("--body") + 1]
-        assert "- host checks (unverified)\n- rollout (requires owner/manual action)" in body
-        assert "Host check passes" not in body
-        assert len([c for c in calls if c[1:3] == ("pr", "view")]) == 1
-
-    async def test_part_of_comment_falls_back_without_a_pr_list(self) -> None:
-        fake_run, calls = _fake_gh("## Issue\nPart of #779", issues={"779": {"body": _ISSUE_BODY, "comments": []}})
-        await _handle(fake_run)
-
-        comment = next(c for c in calls if c[1:3] == ("issue", "comment"))
-        assert "- Rolled out on the host (owner)\n- Host check passes" in comment[comment.index("--body") + 1]
+        assert outcome == MergedIssues(part_of=["779"])
+        assert calls == [("gh", "pr", "view", "884", "--repo", "o/r", "--json", "body")]
 
     async def test_closing_keyword_closes_the_issue(self) -> None:
         fake_run, calls = _fake_gh("## Issue\nCloses #1340")
         outcome = await _handle(fake_run)
 
-        assert outcome == MergedIssues(transitioned=["1340"], commented=[], failed=[])
+        assert outcome == MergedIssues(transitioned=["1340"], failed=[])
         assert ("gh", "issue", "close", "1340", "--repo", "o/r") in calls
 
     async def test_on_qa_applies_to_closing_issues_only(self) -> None:
         fake_run, calls = _fake_gh("Fixes #5\n\n## Issue\nPart of #6")
         outcome = await _handle(fake_run, post_merge_state="on_qa")
 
-        assert outcome == MergedIssues(transitioned=["5"], unlabeled=["6"])
+        assert outcome == MergedIssues(transitioned=["5"], part_of=["6"])
         edits = [c for c in calls if c[1:3] == ("issue", "edit")]
         assert [e[3] for e in edits] == ["5"]
 
@@ -740,29 +650,6 @@ class TestHandleMergedPrIssues:
 
         assert outcome == MergedIssues()
         assert len(calls) == 1  # the PR body read, nothing else
-
-    async def test_existing_marker_is_not_posted_twice(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={
-                "779": {"body": _ISSUE_BODY, "comments": [{"body": "<!-- sova-part-of: pr=884 -->\nPR #884 ..."}]},
-            },
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(unlabeled=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "comment")]
-
-    async def test_a_comment_from_another_pr_does_not_count(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={
-                "779": {"body": _ISSUE_BODY, "comments": [{"body": "<!-- sova-part-of: pr=880 -->"}]},
-            },
-        )
-        await _handle(fake_run)
-
-        assert [c for c in calls if c[1:3] == ("issue", "comment")]
 
     async def test_unreadable_pr_body_returns_none(self) -> None:
         fake_run, calls = _fake_gh("Closes #1", failing=("pr view",))
@@ -777,273 +664,36 @@ class TestHandleMergedPrIssues:
         assert await _handle(fake_run) is None
         assert len(calls) == 1
 
-    async def test_unparseable_issue_is_a_failure_with_no_comment(self) -> None:
-        fake_run, calls = _fake_gh("## Issue\nPart of #779", not_json=("issue view 779",))
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "comment")]
-
-    async def test_failed_comment_is_a_failure_not_a_comment(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": []}},
-            failing=("issue comment 779",),
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert [c for c in calls if c[1:3] == ("issue", "comment")]
-
     async def test_failures_are_reported_per_issue(self) -> None:
-        fake_run, _ = _fake_gh(
-            "Closes #1, closes #2\n\n## Issue\nPart of #3",
-            failing=("issue close 1", "issue view 3"),
-        )
+        fake_run, _ = _fake_gh("Closes #1, closes #2", failing=("issue close 1",))
         outcome = await _handle(fake_run)
 
-        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1", "3"])
+        assert outcome == MergedIssues(transitioned=["2"], failed=["1"])
 
-    async def test_adapter_error_is_a_failure_not_an_abort(self) -> None:
+    @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyError("name")])
+    async def test_adapter_error_is_a_failure_not_an_abort(self, error: Exception) -> None:
+        """Any error from one issue's transition (even a malformed gh payload) must not lose the result."""
         fake_run, _ = _fake_gh("Closes #1, closes #2")
         adapter = AsyncMock()
-        adapter.transition_state.side_effect = [RuntimeError("boom"), None]
+        adapter.transition_state.side_effect = [error, None]
         with (
             patch("sova.git.merge.run", new=fake_run),
             patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
         ):
             outcome = await handle_merged_pr_issues(884, post_merge_state="done", repo="o/r", adapter=adapter)
 
-        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1"])
-
-    async def test_unexpected_adapter_error_is_a_failure_not_an_abort(self) -> None:
-        """An error outside RuntimeError/OSError/AdapterError (a malformed gh payload) must not lose the result."""
-        fake_run, _ = _fake_gh("Closes #1, closes #2")
-        adapter = AsyncMock()
-        adapter.transition_state.side_effect = [KeyError("name"), None]
-        with (
-            patch("sova.git.merge.run", new=fake_run),
-            patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
-        ):
-            outcome = await handle_merged_pr_issues(884, post_merge_state="done", repo="o/r", adapter=adapter)
-
-        assert outcome == MergedIssues(transitioned=["2"], commented=[], failed=["1"])
-
-    async def test_part_of_comment_error_is_a_failure_not_an_abort(self) -> None:
-        """A raise while commenting on one "Part of" issue is recorded and the next issue is still handled."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #7, part of #8",
-            issues={"7": {"body": _ISSUE_BODY, "comments": []}, "8": {"body": _ISSUE_BODY, "comments": []}},
-        )
-
-        async def raising_run(*args: str, **kwargs: object) -> ShellResult:
-            if args[1:4] == ("issue", "view", "7"):
-                raise OSError("gh vanished")
-            return await fake_run(*args, **kwargs)
-
-        outcome = await _handle(raising_run)
-
-        assert outcome == MergedIssues(unlabeled=["8"], failed=["7"])
-        assert [c[3] for c in calls if c[1:3] == ("issue", "comment")] == ["8"]
-
-    async def test_part_of_strips_only_the_workflow_labels_it_carries(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={
-                "779": {
-                    "body": _ISSUE_BODY,
-                    "comments": [],
-                    "labels": [{"name": n} for n in ("agent:in-review", "sova:revise", "agent:ready", "area:agent")],
-                }
-            },
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(commented=["779"])
-        (edit,) = [c for c in calls if c[1:3] == ("issue", "edit")]
-        assert edit[3] == "779"
-        assert edit[4:] == ("--repo", "o/r", "--remove-label", "agent:in-review", "--remove-label", "sova:revise")
-
-    async def test_part_of_without_workflow_labels_makes_no_edit(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:ready"}]}},
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(unlabeled=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-        assert outcome.describe("done") == [
-            "issue #779 left open (Part of), criteria comment in place, no workflow labels to remove"
-        ]
-
-    async def test_failed_label_strip_is_a_failure_even_after_the_comment_posted(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:in-review"}]}},
-            failing=("issue edit 779",),
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert [c for c in calls if c[1:3] == ("issue", "comment")]
-
-    async def test_rerun_strips_labels_without_a_second_comment(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={
-                "779": {
-                    "body": _ISSUE_BODY,
-                    "comments": [{"body": "<!-- sova-part-of: pr=884 -->"}],
-                    "labels": [{"name": "sova:block"}],
-                }
-            },
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(commented=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "comment")]
-        assert [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    async def test_closing_issue_gets_no_part_of_label_strip(self) -> None:
-        fake_run, calls = _fake_gh(
-            "Closes #5",
-            issues={"5": {"body": "", "comments": [], "labels": [{"name": "agent:in-review"}]}},
-        )
-        await _handle(fake_run)
-
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    async def test_mixed_body_strips_only_the_part_of_issue(self) -> None:
-        """Closes #5 plus Part of #6, both carrying agent:in-review: only #6 loses it, #5 only gains on-qa."""
-        labels = [{"name": "agent:in-review"}]
-        fake_run, calls = _fake_gh(
-            "Closes #5\n\n## Issue\nPart of #6",
-            issues={
-                "5": {"body": "", "comments": [], "labels": labels},
-                "6": {"body": _ISSUE_BODY, "comments": [], "labels": labels},
-            },
-        )
-        outcome = await _handle(fake_run, post_merge_state="on_qa")
-
-        assert outcome == MergedIssues(transitioned=["5"], commented=["6"])
-        edits = {c[3]: c[4:] for c in calls if c[1:3] == ("issue", "edit")}
-        assert edits == {
-            "5": ("--repo", "o/r", "--add-label", "agent:on-qa"),
-            "6": ("--repo", "o/r", "--remove-label", "agent:in-review"),
-        }
-
-    async def test_malformed_labels_payload_is_a_failure_with_no_edit(self) -> None:
-        """A labels list of strings, not {"name": ...} dicts, is "could not tell", never "no labels"."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": ["agent:in-review"]}},
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    @pytest.mark.parametrize("other_body", ["Closes #779", "## Issue\nPart of #779", "Fixes #3, part of #779"])
-    async def test_labels_stay_while_another_open_pr_links_the_issue(self, other_body: str) -> None:
-        """A second open PR still in review keeps the issue's labels: nothing re-applies them for it."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={
-                "779": {
-                    "body": _ISSUE_BODY,
-                    "comments": [],
-                    "labels": [{"name": n} for n in ("agent:in-review", "sova:revise")],
-                }
-            },
-            open_prs=[{"number": 890, "body": other_body}],
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(kept=["779"])
-        assert [c for c in calls if c[1:3] == ("issue", "comment")]
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-        assert outcome.describe("done") == [
-            "issue #779 left open (Part of), criteria comment in place, "
-            "workflow labels kept (another open PR still links it)"
-        ]
-
-    async def test_unrelated_and_own_open_prs_do_not_keep_the_labels(self) -> None:
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:in-review"}]}},
-            open_prs=[
-                {"number": 884, "body": "## Issue\nPart of #779"},
-                {"number": 890, "body": "Closes #7790, see also #779"},
-                {"number": 891, "body": None},
-            ],
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(commented=["779"])
-        assert [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    @pytest.mark.parametrize("failure", ["fail", "not_json"])
-    async def test_unreadable_open_pr_list_is_a_failure_with_no_edit(self, failure: str) -> None:
-        """When the open PRs cannot be read, "no other PR" is unknown: keep the labels and report it."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:in-review"}]}},
-            failing=("pr list",) if failure == "fail" else (),
-            not_json=("pr list",) if failure == "not_json" else (),
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    async def test_truncated_open_pr_list_without_a_match_is_a_failure_with_no_edit(self) -> None:
-        """A full page of open PRs hides the older ones, so "no match" is unknown: keep the labels and report it."""
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:in-review"}]}},
-            open_prs=[{"number": 1000 + n, "body": "unrelated"} for n in range(_OPEN_PR_LIMIT)],
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(failed=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    async def test_truncated_open_pr_list_with_a_match_keeps_the_labels(self) -> None:
-        open_prs = [{"number": 1000 + n, "body": "unrelated"} for n in range(_OPEN_PR_LIMIT - 1)]
-        open_prs.append({"number": 890, "body": "Closes #779"})
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779",
-            issues={"779": {"body": _ISSUE_BODY, "comments": [], "labels": [{"name": "agent:in-review"}]}},
-            open_prs=open_prs,
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(kept=["779"])
-        assert not [c for c in calls if c[1:3] == ("issue", "edit")]
-
-    async def test_open_pr_list_is_read_once_for_several_part_of_issues(self) -> None:
-        labels = [{"name": "agent:in-review"}]
-        fake_run, calls = _fake_gh(
-            "## Issue\nPart of #779, part of #780, part of #781",
-            issues={n: {"body": _ISSUE_BODY, "comments": [], "labels": labels} for n in ("779", "780", "781")},
-            open_prs=[{"number": 890, "body": "Closes #780"}],
-        )
-        outcome = await _handle(fake_run)
-
-        assert outcome == MergedIssues(commented=["779", "781"], kept=["780"])
-        assert len([c for c in calls if c[1:3] == ("pr", "list")]) == 1
+        assert outcome == MergedIssues(transitioned=["2"], failed=["1"])
 
     def test_describe_lists_every_outcome(self) -> None:
-        outcome = MergedIssues(transitioned=["1"], commented=["2"], failed=["3"], unlabeled=["4"], kept=["5"])
+        outcome = MergedIssues(transitioned=["1"], failed=["3"], part_of=["7"])
         assert outcome.describe("done") == [
             "issue #1 moved to done",
-            "issue #2 left open (Part of), criteria comment in place, workflow labels cleared",
-            "issue #4 left open (Part of), criteria comment in place, no workflow labels to remove",
-            "issue #5 left open (Part of), criteria comment in place, "
-            "workflow labels kept (another open PR still links it)",
             "issue #3 not updated (see log)",
+            "issue #7 left open (Part of): unchanged",
         ]
+
+    def test_part_of_only_is_described_so_it_reads_as_deliberate(self) -> None:
+        assert MergedIssues(part_of=["7"]).describe("done") == ["issue #7 left open (Part of): unchanged"]
 
 
 class TestMarkPrIssuesInReview:

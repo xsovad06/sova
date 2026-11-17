@@ -26,7 +26,6 @@ from sova.cli.commands.pr import (
     linked_issues,
     maintain_pr,
     pr_verdict,
-    refresh_pr_body,
     review_pr,
 )
 from sova.cli.commands.project import install, setup, uninstall
@@ -64,7 +63,6 @@ app.command(name="maintain-pr")(maintain_pr)
 app.command(name="review-pr")(review_pr)
 app.command(name="linked-issues")(linked_issues)
 app.command(name="pr-verdict")(pr_verdict)
-app.command(name="refresh-pr-body")(refresh_pr_body)
 
 # Configuration
 app.add_typer(config_app, name="config")

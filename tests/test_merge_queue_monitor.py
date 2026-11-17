@@ -20,7 +20,7 @@ from sova.dashboard.services.merge_queue_monitor import (
 )
 from sova.db.models import MergeQueueEntry
 from sova.db.session import get_session
-from sova.git.merge import MergeQueueStatus, _PartOfResult
+from sova.git.merge import MergeQueueStatus
 from sova.ipc.notifications import NotificationKind
 from sova.utils.shell import ShellResult
 
@@ -1014,7 +1014,6 @@ class TestTransitionIssueState:
             patch.object(GitHubAdapter, "_gh", new_callable=AsyncMock) as mock_gh,
             patch("sova.git.merge.run", new=self._pr_body(pr_body)),
             patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
-            patch("sova.git.merge._update_part_of_issue", new_callable=AsyncMock, return_value=_PartOfResult.STRIPPED),
         ):
             cfg = MagicMock()
             cfg.task_source.type = "github"
@@ -1043,7 +1042,7 @@ class TestTransitionIssueState:
         from sova.git.merge import MergedIssues
 
         monitor = _make_monitor(project_dir)
-        merged = MergedIssues(commented=["10"])
+        merged = MergedIssues(transitioned=["10"])
         with (
             patch("sova.config.loader.load_config", return_value=self._cfg("github")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
@@ -1055,7 +1054,7 @@ class TestTransitionIssueState:
         handle.assert_awaited_once()
         assert handle.await_args.args == (42,)
         single.assert_not_awaited()
-        assert actions == ["issue #10 left open (Part of), criteria comment in place, workflow labels cleared"]
+        assert actions == ["issue #10 moved to done"]
 
     @pytest.mark.asyncio
     async def test_github_unreadable_body_is_reported(self, project_dir: Path) -> None:

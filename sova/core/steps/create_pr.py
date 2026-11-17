@@ -15,12 +15,8 @@ from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     _ISSUE_BODY_EXCERPT_LIMIT,
     _UNAVAILABLE,
-    _jira_ticket_link,
-    apply_verdict_overrides,
-    compose_body,
-    extract_acceptance_criteria,
+    compose_run_body,
     generate_pr_body_text,
-    process_llm_result,
     split_title_tail,
 )
 from sova.core.steps._pr_body import (
@@ -41,6 +37,7 @@ from sova.git import operations as git_ops
 from sova.llm.client import invoke
 from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
+from sova.utils.markdown import strip_preamble
 from sova.utils.shell import run
 
 if TYPE_CHECKING:
@@ -554,8 +551,8 @@ class CreatePRStep(BaseStep):
         # Both use the remote-tracking ref, not the local one, matching
         # RefreshPrBodyStep and ConfidenceScoreStep: a stale local base (this
         # worktree created before a later push to the base branch) would
-        # otherwise pollute both the body and the acceptance-criteria diff
-        # with the base's own commits since this branch's actual fork point.
+        # otherwise pollute the body with the base's own commits since this
+        # branch's actual fork point.
         diff_range = f"origin/{ctx.base_branch}...HEAD"
         log_range = f"origin/{ctx.base_branch}..HEAD"
         log_result, diff_stat_result, diff_content_result = await asyncio.gather(
@@ -570,7 +567,7 @@ class CreatePRStep(BaseStep):
         full_diff = diff_content_result.stdout.strip() if diff_content_result.success else _UNAVAILABLE
 
         try:
-            result, criteria = await generate_pr_body_text(
+            result = await generate_pr_body_text(
                 ctx,
                 invoke,
                 task_title=task_title,
@@ -594,41 +591,15 @@ class CreatePRStep(BaseStep):
             and is_valid_commit_line(title_candidate, types=ctx.config.commit.types, scopes=ctx.config.commit.scopes)
         ):
             title = title_candidate
-        sections_markdown, verdicts = process_llm_result(body_text, criteria, ctx.config.commit)
-        diff_ok = log_result.success and diff_stat_result.success and diff_content_result.success
-        if verdicts and not diff_ok:
-            # The model still answered "met" for every criterion checkable
-            # only against the diff it never saw (git evidence unavailable):
-            # crediting that guess would violate the fail-toward-"Part of"
-            # rule the rest of this PR follows. A genuine "unmet"/"owner"
-            # verdict can still come from the issue text alone, so only
-            # "met" is demoted. A CI-gated "met" never came from the diff,
-            # so the overrides are re-applied.
-            demoted = [(text, "unknown" if verdict == "met" else verdict) for text, verdict in verdicts]
-            verdicts = apply_verdict_overrides(demoted, ctx.config.commit)
-
-        if not ctx.has_issue:
-            return sections_markdown, title
-
-        ts = ctx.config.task_source
-        jira_link = _jira_ticket_link(ts, ctx.issue_number) if ts.is_jira else ""
-        body = compose_body(sections_markdown, ctx.issue_number, verdicts, is_jira=ts.is_jira, jira_link=jira_link)
-        return body, title
+        return compose_run_body(ctx, strip_preamble(body_text).strip()), title
 
     @staticmethod
     def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
         """Build a structured PR body without an LLM, for when body generation fails.
 
-        The closing decision is computed deterministically from the issue's
-        acceptance criteria (via :func:`compose_body`), the same fail-toward-
-        "Part of #N" rule every other generation path follows: a criterion
-        that cannot be verified here (no LLM ran) must never be credited as
-        met, so any criterion that is not CI-gated yields ``Part of #N``
-        rather than an unconditional ``Closes #N``. A criterion matching
-        ``commit.ci_gated_patterns`` counts as met, since the merge gate
-        settles it, unless an owner-only pattern also matches.
+        The ``## Issue`` section still reads ``Closes #N``: :func:`compose_run_body` writes it
+        independently of any model output.
         """
-        ts = ctx.config.task_source
         lines = [
             "## Summary",
             "",
@@ -657,23 +628,7 @@ class CreatePRStep(BaseStep):
                 "```",
             ]
         )
-        body = "\n".join(lines)
-        if not ctx.has_issue:
-            return body
-
-        if ts.is_jira:
-            jira_link = _jira_ticket_link(ts, ctx.issue_number)
-            return compose_body(body, ctx.issue_number, None, is_jira=True, jira_link=jira_link)
-
-        criteria = extract_acceptance_criteria(issue_body)
-        # "unknown", not "unmet": no LLM ran in this path, so no criterion
-        # was actually checked. "unmet" would claim the criteria were
-        # verified and found incomplete, which render_closing_block()
-        # reserves for a real model-reported verdict.
-        # The CI-gated and owner-only overrides still apply: neither needs
-        # an LLM, and both keep this path's decision equal to the LLM path's.
-        verdicts = apply_verdict_overrides([(c, "unknown") for c in criteria], ctx.config.commit) if criteria else None
-        return compose_body(body, ctx.issue_number, verdicts, is_jira=False)
+        return compose_run_body(ctx, "\n".join(lines))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: PR number must have been extracted."""

@@ -454,6 +454,40 @@ class TestTryLoadFromDBSyncBridge:
 
         assert load_config(tmp_path).github_repo == "user/repo"
 
+    def test_removed_commit_pattern_keys_stored_in_the_db_or_env_do_not_fail_the_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#1418 removed commit.owner_only_patterns and commit.ci_gated_patterns: old rows and env stay inert."""
+        from sqlalchemy import create_engine
+
+        from sova.config.loader import load_config
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        monkeypatch.setenv("SOVA_COMMIT_OWNER_ONLY_PATTERNS", '["owner"]')
+        monkeypatch.setenv("SOVA_COMMIT_CI_GATED_PATTERNS", "not json at all")
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        engine = create_engine(f"sqlite:///{claude_dir / 'sova.db'}")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                ProjectSetting.__table__.insert(),
+                [
+                    {"key": "github_repo", "value": '"user/repo"'},
+                    {"key": "commit.owner_only_patterns", "value": '["requires manual"]'},
+                    {"key": "commit.ci_gated_patterns", "value": "[]"},
+                    {"key": "commit.pr_body_timeout", "value": "200"},
+                ],
+            )
+        engine.dispose()
+
+        config = load_config(tmp_path)
+
+        assert config.github_repo == "user/repo"
+        assert config.commit.pr_body_timeout == 200
+        assert not hasattr(config.commit, "owner_only_patterns")
+        assert not hasattr(config.commit, "ci_gated_patterns")
+
 
 class TestFlattenTomlResourcesMigration:
     def test_migrates_resources_to_memory_guard(self) -> None:

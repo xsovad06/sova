@@ -23,26 +23,48 @@ def mask_fenced_blocks(text: str) -> str:
     closed by an inner line of exactly three).
     """
     lines = text.split("\n")
-    out_lines: list[str] = []
-    fence_char: str | None = None
-    fence_len = 0
+    flags, _ = _scan_fences(lines)
+    return "\n".join(" " * len(line) if fenced else line for line, fenced in zip(lines, flags, strict=True))
 
+
+def _scan_fences(lines: list[str]) -> tuple[list[bool], str]:
+    """Flag each line that belongs to a fenced block (fence lines included), per GFM rules.
+
+    Also returns the opener of a fence still open after the last line, leading indentation
+    included, or ``""`` when every fence is closed, so :func:`close_unterminated_fence` can
+    terminate it inside the same container (a list item) the fence was opened in.
+    """
+    flags: list[bool] = []
+    opener = ""
     for line in lines:
-        if fence_char is None:
-            match = _FENCE_OPEN_RE.match(line.lstrip())
+        if not opener:
+            body = line.lstrip()
+            match = _FENCE_OPEN_RE.match(body)
             if match:
-                marker = match.group(1)
-                fence_char, fence_len = marker[0], len(marker)
-                out_lines.append(" " * len(line))
-                continue
-            out_lines.append(line)
-        else:
-            stripped = line.strip()
-            if stripped and set(stripped) == {fence_char} and len(stripped) >= fence_len:
-                fence_char, fence_len = None, 0
-            out_lines.append(" " * len(line))
+                opener = line[: len(line) - len(body)] + match.group(1)
+            flags.append(bool(match))
+            continue
+        stripped = line.strip()
+        fence = opener.lstrip()
+        if stripped and set(stripped) == {fence[0]} and len(stripped) >= len(fence):
+            opener = ""
+        flags.append(True)
+    return flags, opener
 
-    return "\n".join(out_lines)
+
+def close_unterminated_fence(text: str) -> str:
+    """Append a closing fence when *text* ends inside a fenced code block.
+
+    Anything appended after an unterminated fence renders as code, and every helper
+    here masks it, so a section added after one is invisible to both GitHub and
+    :func:`upsert_section`. Text whose fences all close is returned unchanged. The closing
+    fence keeps the opener's indentation: a column-0 line would end a list item, and so the
+    fence in it, leaving the appended fence to open a new block that swallows what follows.
+    """
+    _, opener = _scan_fences(text.split("\n"))
+    if not opener:
+        return text
+    return text.rstrip("\n") + "\n" + opener
 
 
 # Kept for callers that imported the pre-rename private name.
