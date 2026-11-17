@@ -147,6 +147,12 @@ async def _load_suitability_check(run_id: int, project_dir: Path) -> str | None:
         return None
 
 
+# Key in TaskRun.assessment_json recording the tracker state the issue had when this run was launched, written
+# with the run itself (``_create_task_run(assessment=...)``) so a failed run restores exactly what it changed and
+# nothing it did not set, and no later read-modify-write can lose it.
+PRIOR_STATE_KEY = "prior_state"
+
+
 async def _create_task_run(
     issue: str | None,
     role: str,

@@ -270,6 +270,7 @@ class TestStartAgentSuitability:
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
             patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "fetch_launch_task", new_callable=AsyncMock, return_value=None),
         )
 
     async def _run(
@@ -319,7 +320,7 @@ class TestStartAgentSuitability:
     async def test_role_and_project_dir_reach_the_check(self, tmp_path: Path) -> None:
         check = AsyncMock(return_value=_BLOCKED)
         await self._run(check, project_dir=tmp_path, enforce_suitability=True)
-        check.assert_awaited_once_with("7", "developer", tmp_path)
+        check.assert_awaited_once_with("7", "developer", tmp_path, task=None)
 
     @pytest.mark.parametrize("override", [True, False])
     async def test_override_reaches_the_spawned_command_only_when_set(self, override: bool) -> None:
@@ -529,6 +530,229 @@ class TestOverrideRolePin:
         assert "--override-suitability" in cmd_parts
 
 
+class TestDeveloperStateCheck:
+    """A developer start on an issue its Gate 3 would refuse is refused before the spawn (#1418)."""
+
+    async def _check(
+        self, state: TaskState, *, fail: bool = False, override: bool = False, role: str | None = "developer"
+    ) -> dict | None:
+        p1, p2, p3, p4 = _tracker([], state=state, fail=fail)
+        with p1, p2, p3, p4:
+            return await agent_validation.check_developer_state(
+                "7", Path("/tmp/project"), role=role, override_suitability=override
+            )
+
+    async def test_a_triaged_issue_is_refused_and_names_the_researcher(self) -> None:
+        result = await self._check(TaskState.TRIAGED)
+
+        assert result is not None
+        assert result["code"] == agent_validation.STATE_NOT_READY
+        assert result["state"] == "triaged", "the state's value, not the enum's repr (TaskState.TRIAGED)"
+        assert result["next_role"] == "researcher"
+        assert result["error"].startswith("Issue #7 is triaged, not ready for development.")
+        assert "run the researcher first" in result["error"]
+
+    async def test_a_backlog_issue_names_triage(self) -> None:
+        result = await self._check(TaskState.BACKLOG)
+
+        assert result is not None
+        assert result["next_role"] == "triage"
+
+    async def test_a_state_no_agent_handles_has_no_next_role(self) -> None:
+        result = await self._check(TaskState.NEEDS_SPEC)
+
+        assert result is not None
+        assert result["next_role"] is None
+        assert "No agent handles it" in result["error"]
+
+    @pytest.mark.parametrize("state", [TaskState.RESEARCHED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW])
+    async def test_a_state_the_developer_accepts_proceeds(self, state: TaskState) -> None:
+        assert await self._check(state) is None
+
+    async def test_an_override_accepts_a_human_only_issue_as_the_gate_does(self) -> None:
+        """The role's gate takes a human-only issue under override_suitability, so the pre-check must too."""
+        assert await self._check(TaskState.HUMAN_ONLY) is not None
+        assert await self._check(TaskState.HUMAN_ONLY, override=True) is None
+        assert await self._check(TaskState.TRIAGED, override=True) is not None, "the override covers human-only only"
+
+    async def test_an_unreadable_issue_fails_open_to_the_roles_own_gate(self) -> None:
+        assert await self._check(TaskState.TRIAGED, fail=True) is None
+
+    @pytest.mark.parametrize(
+        "state", [TaskState.BACKLOG, TaskState.TRIAGED, TaskState.IN_REVIEW], ids=["triage", "researcher", "reviewer"]
+    )
+    async def test_a_role_less_start_dispatch_routes_elsewhere_is_not_refused(self, state: TaskState) -> None:
+        """dispatch() sends BACKLOG to triage, TRIAGED to the researcher and IN_REVIEW to the reviewer: those runs
+        must still start (a role-less start on a backlog issue is how the triage it needs happens)."""
+        assert await self._check(state, role=None) is None
+
+    async def test_a_role_less_human_only_override_agrees_with_the_override_path(self) -> None:
+        """The pre-check must not refuse the start `override_suitability` exists to allow."""
+        assert await self._check(TaskState.HUMAN_ONLY, role=None, override=True) is None
+
+    @pytest.mark.parametrize("state", [TaskState.RESEARCHED, TaskState.IN_PROGRESS], ids=["researched", "in_progress"])
+    async def test_a_role_less_start_that_dispatches_to_the_developer_passes_on_a_ready_state(
+        self, state: TaskState
+    ) -> None:
+        assert await self._check(state, role=None) is None
+
+    @pytest.mark.parametrize("state", [TaskState.NEEDS_SPEC, TaskState.HUMAN_ONLY], ids=["needs_spec", "human_only"])
+    async def test_a_role_less_start_in_a_state_no_role_handles_is_refused(self, state: TaskState) -> None:
+        """No role handles it, so dispatch() would fail the run after it was reported started."""
+        result = await self._check(state, role=None)
+
+        assert result is not None
+        assert result["next_role"] is None
+
+
+def _refused() -> dict:
+    """A fresh refusal per test: a dict shared across tests would carry one test's mutation into the next."""
+    return {
+        "code": agent_validation.STATE_NOT_READY,
+        "error": "Issue #7 is triaged, not ready for development.",
+        "state": "triaged",
+        "next_role": "researcher",
+    }
+
+
+class TestStartAgentDeveloperState:
+    async def _run(
+        self,
+        check: AsyncMock,
+        *,
+        developer_pr: int | None = None,
+        recovered_pr: int | None = None,
+        state: TaskState | None = TaskState.RESEARCHED,
+        **kwargs: object,
+    ) -> tuple[dict, dict[str, Any]]:
+        """Run start_agent with every collaborator patched by name; the budget check passes, so a start the
+        state check lets through reaches create and spawn. *state* is the tracker state the one launch read finds
+        (None: unreadable)."""
+        launch_task = Task(id="7", title="t", state=state) if state is not None else None
+        pa = ProjectAgents()
+        patches = {
+            "project_agents": patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            "suitability": patch.object(agent_lifecycle, "check_issue_suitability", AsyncMock(return_value=None)),
+            "recover_pr": patch.object(
+                agent_lifecycle, "_recover_last_pr_number", new_callable=AsyncMock, return_value=recovered_pr
+            ),
+            "worktree": patch.object(agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock),
+            "branch": patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
+            "budget": patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=None),
+            "memory": patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            "network": patch.object(agent_lifecycle, "check_network_connectivity", return_value=(None, None)),
+            "create": patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
+            "spawn": patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock),
+            "check": patch.object(agent_lifecycle, "check_developer_state", check),
+            "fetch": patch.object(
+                agent_lifecycle, "fetch_launch_task", new_callable=AsyncMock, return_value=launch_task
+            ),
+            "pr_number": patch.object(
+                agent_lifecycle, "_developer_pr_number", new_callable=AsyncMock, return_value=developer_pr
+            ),
+            "transition": patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+        }
+        with ExitStack() as stack:
+            mocks = {name: stack.enter_context(patch_) for name, patch_ in patches.items()}
+            mocks["spawn"].side_effect = RuntimeError("no spawn in tests")
+            result = await start_agent("7", **kwargs)  # type: ignore[arg-type]
+        return result, mocks
+
+    @pytest.mark.parametrize("role", ["developer", None])
+    async def test_a_refused_development_start_spawns_nothing_and_moves_no_label(self, role: str | None) -> None:
+        """A role-less start counts as a development start, so the same pre-check refuses it."""
+        check = AsyncMock(return_value=_refused())
+        result, mocks = await self._run(check, role=role)
+
+        assert result == _refused()
+        check.assert_awaited_once()
+        assert check.await_args.kwargs["role"] == role, "the check resolves a role-less start through dispatch()"
+        mocks["create"].assert_not_called()
+        mocks["spawn"].assert_not_called()
+        mocks["transition"].assert_not_called()
+
+    async def test_an_accepted_developer_start_awaits_the_check_and_reaches_the_spawn(self) -> None:
+        """Positive control: the same setup without force awaits the check, and a pass lets the start go on."""
+        check = AsyncMock(return_value=None)
+        _result, mocks = await self._run(check, role="developer")
+
+        check.assert_awaited_once()
+        mocks["create"].assert_awaited()
+        mocks["spawn"].assert_awaited()
+
+    async def test_the_issue_is_read_once_and_shared_by_both_checks(self) -> None:
+        check = AsyncMock(return_value=None)
+        suitability = AsyncMock(return_value=None)
+        with patch.object(agent_lifecycle, "check_issue_suitability", suitability):
+            _result, mocks = await self._run(check, role="developer", enforce_suitability=True)
+
+        mocks["fetch"].assert_awaited_once()
+        task = mocks["fetch"].return_value
+        assert check.await_args.kwargs["task"] is task
+        assert mocks["suitability"].await_args.kwargs["task"] is task
+
+    @pytest.mark.parametrize("role", ["developer", None])
+    async def test_a_developer_start_records_the_state_it_found_with_the_run(self, role: str | None) -> None:
+        """Recorded at creation, before the spawn, so a run that fails fast always finds it at rollback; a
+        role-less start that dispatch() routes to the developer records it too."""
+        _result, mocks = await self._run(AsyncMock(return_value=None), role=role, state=TaskState.RESEARCHED)
+
+        assessment = mocks["create"].await_args.kwargs["assessment"]
+        assert assessment["prior_state"] == "researched"
+        assert assessment["suitability_check"] == "skipped", "the run's other assessment keys are kept beside it"
+
+    @pytest.mark.parametrize("state", [TaskState.BACKLOG, TaskState.TRIAGED, TaskState.IN_REVIEW])
+    async def test_a_role_less_start_dispatch_routes_elsewhere_records_no_prior_state(self, state: TaskState) -> None:
+        """Triage, the researcher and the reviewer never move the issue to in progress, so a role-less start that
+        dispatches to one of them records nothing to restore."""
+        _result, mocks = await self._run(AsyncMock(return_value=None), role=None, state=state)
+
+        assert "prior_state" not in (mocks["create"].await_args.kwargs["assessment"] or {})
+
+    async def test_an_unreadable_issue_records_nothing(self) -> None:
+        """No state was read, so none is recorded and the label is left alone (nothing to strand)."""
+        _result, mocks = await self._run(AsyncMock(return_value=None), role="developer", state=None)
+
+        mocks["check"].assert_not_called()
+        mocks["create"].assert_awaited()
+        assert "prior_state" not in (mocks["create"].await_args.kwargs["assessment"] or {})
+
+    async def test_force_skips_the_check(self) -> None:
+        check = AsyncMock(return_value=_refused())
+        _result, mocks = await self._run(check, role="developer", force=True)
+
+        check.assert_not_called()
+        mocks["create"].assert_awaited()
+        mocks["spawn"].assert_awaited()
+
+    async def test_a_developer_start_with_a_pr_skips_the_check(self) -> None:
+        """A developer start addressing review on an in_review issue has a PR: the check would refuse that state,
+        so it must not run, and the start goes on to create and spawn."""
+        check = AsyncMock(return_value=_refused())
+        _result, mocks = await self._run(check, role="developer", developer_pr=70)
+
+        check.assert_not_called()
+        mocks["create"].assert_awaited()
+        mocks["spawn"].assert_awaited()
+
+    async def test_a_role_less_start_with_a_recovered_pr_skips_the_check(self) -> None:
+        check = AsyncMock(return_value=_refused())
+        _result, mocks = await self._run(check, role=None, recovered_pr=70)
+
+        check.assert_not_called()
+        mocks["create"].assert_awaited()
+        mocks["spawn"].assert_awaited()
+
+    @pytest.mark.parametrize("role", ["researcher", "reviewer"])
+    async def test_other_roles_are_not_checked(self, role: str) -> None:
+        check = AsyncMock(return_value=_refused())
+        _result, mocks = await self._run(check, role=role)
+
+        check.assert_not_called()
+        mocks["create"].assert_awaited()
+        mocks["spawn"].assert_awaited()
+
+
 @pytest.fixture
 async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
     app = dashboard_app
@@ -580,6 +804,24 @@ class TestRouters:
             "message": "over",
             "total_cost_usd": "5",
             "max_issue_budget": "4",
+        }
+
+    async def test_agents_start_state_refusal_is_a_structured_409(self, client: AsyncClient) -> None:
+        refused = {
+            "code": agent_validation.STATE_NOT_READY,
+            "error": "Issue #7 is triaged, not ready for development. It has no research or spec yet.",
+            "state": "triaged",
+            "next_role": "researcher",
+        }
+        with patch("sova.dashboard.services.control_service.start_agent", AsyncMock(return_value=refused)):
+            resp = await client.post("/api/agents/start", json={"issue": "7", "role": "developer"})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == {
+            "code": agent_validation.STATE_NOT_READY,
+            "message": refused["error"],
+            "state": "triaged",
+            "next_role": "researcher",
         }
 
     async def test_agents_start_without_issue_or_role_is_a_400(self, client: AsyncClient) -> None:
