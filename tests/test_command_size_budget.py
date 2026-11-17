@@ -47,10 +47,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # the union with the names `gh pr checks --required` reports (classic protection).
     # Phase 1b (SOVA verdict gate) added 2,400: a COMMENT review is never a GitHub block, so the merge path
     # asks the shared resolver for a standing REVISE or BLOCK on the head (issue #1436).
-    # Issue #1428 raised this by 700 for the Phase 5 `sova refresh-pr-body --only-if-unparseable --head` re-judge
-    # of a body whose verdicts could not be parsed: the shell time budget (two LLM calls) and the exit codes.
+    # Issue #1428's Phase 5 `sova refresh-pr-body` re-judge is gone: every PR closes its issue.
     # Issue #1361 lowered this by 1,000 by dropping the Phase 3 check for uncaptured review learnings.
-    "integrate-pr.md": 66_700,
+    "integrate-pr.md": 66_000,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     # Issue #1361 raised this by 1,000 for the push guard (the branch step 2 recorded must still be checked out
@@ -58,7 +57,7 @@ _COMMAND_CAPS: dict[str, int] = {
     # for the shared evidence read (step conclusions and annotations) that a canceled job gets before any re-run.
     # Review fixes added 700 more: the stop-before-fixing rule for a never-started or timed-out failed job, the
     # conditional push flags, and the literal PR_BRANCH rule that keeps the guard from always passing.
-    "pr.md": 38_500,
+    "pr.md": 37_800,
     # Issue #1383 took this over the default with the Test Coverage check that flags a diff adding far more
     # test lines than production lines, the main source of test-suite growth.
     # Issue #1361 added the most-repeated-rules pass, paid for by cutting the "Read related files as needed"
@@ -68,7 +67,9 @@ _COMMAND_CAPS: dict[str, int] = {
     "review.md": 12_500,
     # Issue #1361 raised this by 500 for the review-summary clause on the most-repeated-rules pass and the
     # double-dash check that runs before the review is posted.
-    "review-pr.md": 22_500,
+    # Issue #1418 raised this by 1,200 for the per-criterion acceptance check that replaced the PR body's
+    # closing verdicts.
+    "review-pr.md": 23_700,
 }
 # Skill directory name -> cap for its SKILL.md. Only skills over _DEFAULT_SKILL_CAP belong here.
 _SKILL_CAPS: dict[str, int] = {
