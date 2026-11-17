@@ -2129,19 +2129,22 @@ class TestRollbackIssueState:
         mock_adapter.transition_state.assert_awaited_once_with("72", TaskState.IN_REVIEW)
 
     async def test_developer_without_pr_rolls_back_to_researched(self, monkeypatch) -> None:
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
 
         from sova.adapters.base import TaskState
         from sova.dashboard.services.agent_recovery import rollback_issue_state
 
         session = await get_session()
         async with session.begin():
-            run = TaskRun(issue_number="73", role="developer", status="failed")
+            run = TaskRun(
+                issue_number="73", role="developer", status="failed", assessment_json={"prior_state": "researched"}
+            )
             session.add(run)
             await session.flush()
             run_id = run.id
 
         mock_adapter = AsyncMock()
+        mock_adapter.get_task.return_value = MagicMock(state=TaskState.IN_PROGRESS)
         monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 

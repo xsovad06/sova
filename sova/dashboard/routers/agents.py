@@ -26,6 +26,7 @@ from sova.dashboard.services import control_service
 from sova.dashboard.services.action_registry import tracked_action
 from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES, NO_FREE_SLOT
 from sova.dashboard.services.agent_validation import (
+    STATE_NOT_READY,
     classify_for_launch,
     suitability_blocked_detail,
 )
@@ -935,7 +936,7 @@ async def _validate_start_request(req: StartAgentRequest) -> None:
 
 
 def _start_error_detail(result: dict) -> dict | str:
-    """The 409 detail for a failed start: structured for a budget or suitability refusal, text otherwise."""
+    """The 409 detail for a failed start: structured for a budget, suitability, slot or state refusal, else text."""
     if result.get("code") == "budget_exceeded":
         return {
             "code": "budget_exceeded",
@@ -947,6 +948,13 @@ def _start_error_detail(result: dict) -> dict | str:
         return suitability_blocked_detail(result)
     if result.get("code") == NO_FREE_SLOT:
         return {"code": NO_FREE_SLOT, "message": result["error"], "running": result.get("running")}
+    if result.get("code") == STATE_NOT_READY:
+        return {
+            "code": STATE_NOT_READY,
+            "message": result["error"],
+            "state": result.get("state"),
+            "next_role": result.get("next_role"),
+        }
     return result.get("detail") or result.get("error") or "Command failed"
 
 

@@ -66,6 +66,7 @@ from sova.dashboard.services.agent_context import (
     with_check_worker_cap,
 )
 from sova.dashboard.services.agent_db import (
+    PRIOR_STATE_KEY,
     SUITABILITY_CHECK_KEY,
     SUITABILITY_OVERRIDDEN,
     SUITABILITY_RESUMABLE,
@@ -183,6 +184,9 @@ from sova.dashboard.services.agent_validation import (
     _transition_to_in_progress as _transition_to_in_progress,
 )
 from sova.dashboard.services.agent_validation import (
+    check_developer_state as check_developer_state,
+)
+from sova.dashboard.services.agent_validation import (
     check_issue_suitability as check_issue_suitability,
 )
 from sova.dashboard.services.agent_validation import (
@@ -193,6 +197,12 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.agent_validation import (
     check_stale_command as check_stale_command,
+)
+from sova.dashboard.services.agent_validation import (
+    dispatched_role as dispatched_role,
+)
+from sova.dashboard.services.agent_validation import (
+    fetch_launch_task as fetch_launch_task,
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.ipc.runtime import (
@@ -654,6 +664,25 @@ async def start_agent(
         # reviewer run on an IN_REVIEW issue) is left untouched: only a missing one is recovered.
         pr_number = await _recover_last_pr_number(issue, pa.project_dir)
 
+    # The issue is read once for a developer start (no PR): the state check, the suitability check and the prior
+    # state recorded on the run all use it. None when unreadable: both checks then fail open and the label is
+    # left alone, since the state to restore is unknown.
+    launch_task = None
+    if issue and role in (None, "developer") and not pr_number:
+        launch_task = await fetch_launch_task(issue, pa.project_dir)
+    if launch_task is not None and not force:
+        # Before any spawn: a developer refused by its own Gate 3 would still have moved the issue to in progress.
+        # A role-less start is checked only when dispatch() would route it to the developer; triage, the
+        # researcher and the reviewer are let through to run their own agent.
+        state_error = await check_developer_state(
+            issue, pa.project_dir, role=role, override_suitability=override_suitability, task=launch_task
+        )
+        if state_error:
+            return state_error
+    # Only a run that dispatches to the developer moves the issue to in progress, so only it records the state to
+    # restore: a role-less start routed to triage, research or review must not label the issue in progress.
+    developer_launch = launch_task is not None and dispatched_role(role, launch_task, None) == "developer"
+
     if not force:
         mem_block, mem_warn = check_memory_pressure(pa.project_dir)
         if mem_block:
@@ -683,7 +712,7 @@ async def start_agent(
             if conflict:
                 return conflict
             if enforce_suitability and not override_suitability:
-                suitability_error = await check_issue_suitability(issue, role, pa.project_dir)
+                suitability_error = await check_issue_suitability(issue, role, pa.project_dir, task=launch_task)
                 if suitability_error:
                     return suitability_error
             _evict_completed_for_issue(pa, issue)
@@ -716,12 +745,16 @@ async def start_agent(
             suitability_check = SUITABILITY_OVERRIDDEN
         elif issue and not enforce_suitability:
             suitability_check = SUITABILITY_SKIPPED
+        assessment: dict = {SUITABILITY_CHECK_KEY: suitability_check} if suitability_check else {}
+        if developer_launch:
+            # Recorded with the run, before the spawn, so a run that fails fast always finds it at rollback.
+            assessment[PRIOR_STATE_KEY] = launch_task.state.value
         run_id = await _create_task_run(
             issue or None,
             role or "developer",
             project_dir,
             pr_number=pr_number,
-            assessment={SUITABILITY_CHECK_KEY: suitability_check} if suitability_check else None,
+            assessment=assessment or None,
         )
         if run_id is None:
             return {"error": "Failed to create task run record"}
@@ -889,7 +922,7 @@ async def start_agent(
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
     hold_spawn_claim(project_dir, run_id, wait_task)
-    if issue and (role or "developer") == "developer" and not pr_number:
+    if developer_launch:
         transition_task = asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
         _background_tasks.add(transition_task)
         transition_task.add_done_callback(_background_tasks.discard)

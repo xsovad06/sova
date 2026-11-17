@@ -323,7 +323,9 @@ async def _classify_for_launch(
     return await classify_issue_suitability(issue, project_dir, task=task, cfg=cfg, graph=graph)
 
 
-async def check_issue_suitability(issue: str, role: str | None, project_dir: Path) -> dict | None:
+async def check_issue_suitability(
+    issue: str, role: str | None, project_dir: Path, *, task: Task | None = None
+) -> dict | None:
     """Refuse a manual launch on an epic or human-only issue.
 
     Returns an error dict (``code="suitability_blocked"``, with ``mode`` and ``reasons``) when the issue is
@@ -331,7 +333,8 @@ async def check_issue_suitability(issue: str, role: str | None, project_dir: Pat
     blocked: named directly, through a configured nickname, or (with no *role*) chosen by `dispatch()` from
     the tracker state. An issue whose classification or state cannot be read is let through: a tracker outage
     must not make every manual launch impossible, and the failure has already been logged. The whole check
-    (task fetch included) is bounded by one `_SUITABILITY_CHECK_TIMEOUT_S` deadline.
+    (task fetch included) is bounded by one `_SUITABILITY_CHECK_TIMEOUT_S` deadline. A caller that already read
+    the issue passes it as *task*, so the launch makes one tracker read, not two.
     """
     if not issue:
         return None
@@ -342,7 +345,7 @@ async def check_issue_suitability(issue: str, role: str | None, project_dir: Pat
         cfg = load_config(project_dir)
     except Exception:  # noqa: BLE001 (an unreadable config leaves nicknames unresolved and classify retries it)
         log.warning("issue_suitability_check.config_failed", issue=issue, exc_info=True)
-    suitability = await classify_for_launch(issue, role, project_dir, cfg=cfg)
+    suitability = await classify_for_launch(issue, role, project_dir, task=task, cfg=cfg)
     if suitability is None or suitability.mode not in _SUITABILITY_BLOCKING_MODES:
         return None
 
@@ -367,6 +370,77 @@ async def _fetch_launch_task(issue: str, project_dir: Path, cfg: ProjectConfig |
     except Exception:  # noqa: BLE001 (a tracker or config failure leaves the launch role unknown)
         log.warning("issue_suitability_check.task_fetch_failed", issue=issue, exc_info=True)
         return None
+
+
+async def fetch_launch_task(issue: str, project_dir: Path) -> Task | None:
+    """The tracker issue a launch is about to act on, or None (logged) when it is unreadable or the read times out.
+
+    Read once per launch under one `_SUITABILITY_CHECK_TIMEOUT_S` deadline and shared by the developer state
+    check, the suitability check and the prior-state record, so a stalled tracker costs one deadline.
+    """
+    try:
+        async with asyncio.timeout(_SUITABILITY_CHECK_TIMEOUT_S):
+            return await _fetch_launch_task(issue, project_dir, None)
+    except TimeoutError:
+        log.warning("launch_task_fetch.timeout", issue=issue)
+        return None
+
+
+STATE_NOT_READY = "state_not_ready"
+
+
+async def check_developer_state(
+    issue: str,
+    project_dir: Path,
+    *,
+    role: str | None = None,
+    override_suitability: bool = False,
+    task: Task | None = None,
+) -> dict | None:
+    """Refuse a developer start on an issue its Gate 3 would refuse, naming the agent the issue needs instead.
+
+    A start with no *role* runs whatever `dispatch()` picks from the issue's state (triage for BACKLOG, the
+    researcher for TRIAGED, the reviewer for IN_REVIEW), so only one that resolves to the developer, or to no
+    role at all, is checked: the others are let through to run their own agent. A caller that already read the
+    issue passes it as *task*; otherwise it is read here.
+
+    Called before the spawn, so a start that cannot pass the gate is never launched: a launched one moves the
+    issue to in progress and its failure rollback then has a state to undo that the run never earned. Returns
+    an error dict (``code=STATE_NOT_READY``, with the issue's ``state`` and the ``next_role`` its state calls
+    for, or None when no agent does) when the issue's state is not one ``DeveloperRole`` accepts, None when the
+    start may proceed. The acceptance is the role's own (``state_accepted()``), so *override_suitability* lets a
+    human-only issue through here exactly as it does at the gate. Fails open like the suitability check: an
+    unreadable tracker leaves the gate to the role.
+    """
+    from sova.adapters.base import TaskState
+    from sova.core.context import state_accepted
+    from sova.roles.developer import DeveloperRole
+    from sova.roles.dispatcher import role_for_state
+
+    if task is None:
+        task = await fetch_launch_task(issue, project_dir)
+    if task is None:
+        return None
+    launches_as = dispatched_role(role, task, None)
+    if launches_as not in (None, "developer") or state_accepted(
+        task.state, DeveloperRole.allowed_input_states, override_suitability=override_suitability
+    ):
+        return None
+    next_role = role_for_state(task.state)
+    state = task.state.value.replace("_", " ")
+    if task.state is TaskState.TRIAGED:
+        hint = "It has no research or spec yet: run the researcher first."
+    elif next_role:
+        hint = f"Run the {next_role} first."
+    else:
+        hint = "No agent handles it in this state."
+    log.info("developer_state_check.blocked", issue=issue, state=task.state.value, next_role=next_role)
+    return {
+        "code": STATE_NOT_READY,
+        "error": f"Issue #{issue} is {state}, not ready for development. {hint}",
+        "state": task.state.value,
+        "next_role": next_role,
+    }
 
 
 def suitability_blocked_detail(result: dict) -> dict:
@@ -489,14 +563,17 @@ def check_stale_command(project_dir: Path, command: str, run_dir: Path | None = 
 
 
 async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
-    """Move the issue to IN_PROGRESS on the configured tracker."""
+    """Move the issue to IN_PROGRESS on the configured tracker.
+
+    The state it had before is not read here: ``start_agent()`` records it on the run, from the read it already
+    made, before the spawn (``PRIOR_STATE_KEY``), so a run that fails fast cannot reach its rollback first.
+    """
     try:
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
         from sova.config.loader import load_config
 
-        cfg = load_config(project_dir)
-        adapter = create_adapter(cfg)
+        adapter = create_adapter(load_config(project_dir))
         await adapter.transition_state(issue, TaskState.IN_PROGRESS)
         log.info("issue.transitioned", issue=issue, state="in_progress")
     except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)

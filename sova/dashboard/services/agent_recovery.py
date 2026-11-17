@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from sova.utils.process import is_process_alive
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from sova.adapters.base import TaskAdapter, TaskState
     from sova.db.models import TaskRun
 
 log = get_logger(component="dashboard.control.recovery")
@@ -660,6 +662,51 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
         return []
 
 
+def _parse_task_state(raw: object) -> TaskState | None:
+    """The `TaskState` a recorded state string names, None for a missing or unrecognized value."""
+    from sova.adapters.base import TaskState
+
+    try:
+        return TaskState(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+async def _issue_in_progress(adapter: TaskAdapter, issue_number: str) -> bool | None:
+    """Whether the tracker shows the issue in progress: True or False, or None when its state could not be read."""
+    from sova.adapters.base import TaskState
+
+    try:
+        task = await adapter.get_task(issue_number)
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError, RuntimeError or ValueError; reported as unknown)
+        log.warning("rollback.state_read_failed", issue=issue_number, exc_info=True)
+        return None
+    return task.state is TaskState.IN_PROGRESS
+
+
+# Pause before the one retry of an unreadable tracker state in a failed run's rollback.
+_STATE_READ_RETRY_DELAY_S = 1.0
+
+
+def _emit_rollback_stranded_event(run_id: int, issue_number: str, reason: str) -> None:
+    """Surface an issue left in progress with no agent, with the *reason* the rollback left it (non-fatal)."""
+    try:
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        emit_safe(
+            f"#{issue_number} may be stuck in progress",
+            severity=FeedEventSeverity.warning,
+            detail=(
+                f"Run {run_id} failed and {reason}, so the in-progress label was left as it is. "
+                "Check the issue and relabel it if no agent is working on it."
+            ),
+            category="agent",
+            metadata={"run_id": run_id, "issue": issue_number},
+        )
+    except Exception:  # noqa: BLE001 (feed emission must never break the rollback it reports)
+        log.debug("rollback.stranded_emit_failed", exc_info=True)
+
+
 async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> None:
     """Roll back issue state on agent failure.
 
@@ -673,6 +720,10 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
     - Triage role: removes all agent: labels instead of transitioning
     - Command roles: extracts base role from command:X format
     - Developer with PR: rolls back to in_review (not in_progress)
+    - Developer without PR: restores the state the issue had before this run moved it to in progress
+      (``PRIOR_STATE_KEY``), and only while the tracker still shows in progress. A run that recorded no prior
+      state (a Resume on an issue already in progress, a refused or force-started run that never moved it) and
+      an unreadable tracker state (read twice, then surfaced as a feed event) both leave the issue alone.
     """
     try:
         from sqlalchemy import select
@@ -680,6 +731,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
         from sova.config.loader import load_config
+        from sova.dashboard.services.agent_db import PRIOR_STATE_KEY
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -696,6 +748,7 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
 
             role = task_run.role or ""
             pr_number = task_run.pr_number
+            prior_state_raw = (task_run.assessment_json or {}).get(PRIOR_STATE_KEY)
 
             # Check for concurrent runs on the same issue
             stmt = (
@@ -746,7 +799,38 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
 
         # Developer maps to different states based on PR existence
         if role_clean == "developer":
-            target_state = TaskState.IN_REVIEW if pr_number else TaskState.RESEARCHED
+            target_state = TaskState.IN_REVIEW if pr_number else None
+            if not pr_number:
+                # Undo only the in-progress state this run set, by restoring the state recorded before the
+                # transition. Nothing recorded means the run never moved the issue (a Gate 3 refusal, a Resume on
+                # an issue already in progress): "restoring" researched would promote a triaged issue past
+                # research it never had. An unreadable state is unknown, not "not in progress".
+                prior_state = _parse_task_state(prior_state_raw)
+                if prior_state is TaskState.IN_PROGRESS:
+                    log.info("rollback.skipped_already_in_progress", run_id=run_id, issue=issue_number)
+                    return
+                if prior_state is None:
+                    # No record: a run launched before the record existed, or one whose state was unreadable at
+                    # launch (so the label was never moved). Say so when the issue is nonetheless in progress,
+                    # rather than leave it without a word.
+                    log.info("rollback.skipped_no_prior_state", run_id=run_id, issue=issue_number)
+                    if await _issue_in_progress(adapter, issue_number):
+                        _emit_rollback_stranded_event(
+                            run_id, issue_number, "no tracker state was recorded before it started"
+                        )
+                    return
+                in_progress = await _issue_in_progress(adapter, issue_number)
+                if in_progress is None:
+                    await asyncio.sleep(_STATE_READ_RETRY_DELAY_S)
+                    in_progress = await _issue_in_progress(adapter, issue_number)
+                if in_progress is None:
+                    log.warning("rollback.skipped_state_unknown", run_id=run_id, issue=issue_number)
+                    _emit_rollback_stranded_event(run_id, issue_number, "the tracker state could not be read")
+                    return
+                if not in_progress:
+                    log.info("rollback.skipped_not_in_progress", run_id=run_id, issue=issue_number)
+                    return
+                target_state = prior_state
         else:
             target_state = rollback_state_map.get(role_clean)
 
