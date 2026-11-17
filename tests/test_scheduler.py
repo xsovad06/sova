@@ -6,6 +6,7 @@ import asyncio
 import os
 import signal
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ import pytest
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, WatchConfig
+from sova.scheduler.server import StopResult
 
 if TYPE_CHECKING:
     from click.testing import Result
@@ -24,6 +26,12 @@ if TYPE_CHECKING:
 # Every test in this module runs against the shared per-worker in-memory DB
 # (see ``tests/conftest.py:reset_db_rows``).
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_pid_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep default PID reads and writes away from the user's running server."""
+    monkeypatch.setattr("sova.scheduler.server._DEFAULT_PID_DIR", tmp_path / "global-pids")
 
 
 def _make_config(**overrides: object) -> ProjectConfig:
@@ -552,6 +560,7 @@ class TestServerCLI:
             patch("sova.scheduler.server._is_port_listening", return_value=False),
         ):
             result = runner.invoke(app, ["server", "status", "--project", str(tmp_path)])
+        # --project names the server, so only its own PID file is read (no global fallback).
         mock_read_pid.assert_called_once_with(ANY, project_dir=tmp_path)
         assert result.exit_code == 0, result.output
         assert result.exception is None
@@ -587,6 +596,333 @@ class TestServerCLI:
         assert result.exception is None
         assert "running" in result.output.lower()
         assert "12345" in result.output
+
+
+class TestMultiProjectPidDiscovery:
+    """status/stop/restart find a multi-project server, whose PID file is the global one (#1423)."""
+
+    @pytest.fixture
+    def dirs(self, tmp_path: Path) -> Iterator[tuple[Path, Path]]:
+        project = tmp_path / "proj"
+        (project / ".claude").mkdir(parents=True)
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        with patch("sova.scheduler.server._DEFAULT_PID_DIR", global_dir):
+            yield project, global_dir
+
+    @staticmethod
+    def _invoke(args: list[str], *, has_projects: bool) -> Result:
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        with (
+            patch("sova.config.registry.has_projects", return_value=has_projects),
+            patch("sova.scheduler.server._is_port_listening", return_value=False),
+        ):
+            return CliRunner().invoke(app, args)
+
+    def test_status_reports_global_pid_in_multi_mode(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = self._invoke(["status"], has_projects=True)
+        assert "running (PID 4242)" in _cli_output(result)
+        assert "orphaned" not in _cli_output(result)
+
+    def test_status_falls_back_to_global_pid_in_single_mode(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = self._invoke(["status"], has_projects=False)
+        assert "running (PID 4242)" in _cli_output(result)
+
+    def test_status_prefers_live_project_pid_and_keeps_it(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        project_pid = project / ".claude" / "sova-server.pid"
+        project_pid.write_text("1111", encoding="utf-8")
+        (global_dir / "sova-server.pid").write_text("2222", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", side_effect=lambda pid: pid == 1111),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = self._invoke(["status"], has_projects=False)
+        assert "running (PID 1111)" in _cli_output(result)
+        assert project_pid.exists()
+
+    def test_status_missing_global_dir_is_not_running_and_creates_nothing(self, dirs: tuple[Path, Path]) -> None:
+        # No --project and a registry: the global path is primary, read from a directory that does not exist.
+        # A read-only lookup must not create it (HOME may be read-only).
+        project, global_dir = dirs
+        absent = global_dir / "absent" / "sova"
+        with (
+            patch("sova.scheduler.server._DEFAULT_PID_DIR", absent),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = self._invoke(["status"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert result.exception is None
+        assert "not running" in _cli_output(result)
+        assert not absent.exists()
+        assert not absent.parent.exists()
+
+    def test_status_dead_global_pid_falls_through_to_port_probe(self, dirs: tuple[Path, Path]) -> None:
+        # The global file holds a dead PID and no per-project server runs: the stale file is cleared and the
+        # listening port is reported as an orphan.
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        project, global_dir = dirs
+        global_pid = global_dir / "sova-server.pid"
+        global_pid.write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.config.registry.has_projects", return_value=True),
+            patch("sova.scheduler.server.is_process_alive", return_value=False),
+            patch("sova.scheduler.server._is_port_listening", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = CliRunner().invoke(app, ["status"])
+        assert result.exit_code == 0, _cli_output(result)
+        assert "orphaned" in _cli_output(result)
+        assert "running (PID" not in _cli_output(result)
+        assert not global_pid.exists()
+
+    def test_status_clears_stale_global_pid_and_reports_live_project_pid(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        project_pid = project / ".claude" / "sova-server.pid"
+        global_pid = global_dir / "sova-server.pid"
+        project_pid.write_text("1111", encoding="utf-8")
+        global_pid.write_text("2222", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", side_effect=lambda pid: pid == 1111),
+            patch("pathlib.Path.cwd", return_value=project),
+        ):
+            result = self._invoke(["status"], has_projects=True)
+        assert "running (PID 1111)" in _cli_output(result)
+        assert project_pid.exists()
+        assert not global_pid.exists()
+
+    def test_stop_clears_stale_global_pid_and_stops_project_server(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (project / ".claude" / "sova-server.pid").write_text("1111", encoding="utf-8")
+        global_pid = global_dir / "sova-server.pid"
+        global_pid.write_text("2222", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", side_effect=lambda pid: pid == 1111),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
+        ):
+            result = self._invoke(["stop"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] == project
+        assert not global_pid.exists()
+
+    def test_stop_signals_global_server_not_project_one(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
+        ):
+            result = self._invoke(["stop"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] is None
+
+    def test_restart_keeps_multi_mode_of_stopped_server(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = self._invoke(["restart"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] is None
+        assert mock_start.call_args.args[-1] is True
+
+    def test_restart_does_not_adopt_global_pid_as_multi_without_registry(self, dirs: tuple[Path, Path]) -> None:
+        # A single-project server from before #1423 wrote the global file. Restart stops it there, but with
+        # no registered projects it must come back single-project, not as an empty multi-project server.
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = self._invoke(["restart"], has_projects=False)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] is None
+        assert mock_start.call_args.args[-1] is False
+
+    def test_restart_from_project_without_claude_dir_ignores_single_project_server_pid(self, tmp_path: Path) -> None:
+        # A single-project server in a project with no .claude/ used to write the global PID file, which
+        # restart then mistook for a multi-project server (#1423).
+        from sova.scheduler.server import SOVAServer
+
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        with (
+            patch("sova.scheduler.server._DEFAULT_PID_DIR", global_dir),
+            patch("pathlib.Path.cwd", return_value=bare),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING) as mock_stop,
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            server = SOVAServer(config=_make_config(), project_dir=bare)
+            with patch("sova.scheduler.server.os.getpid", return_value=4242):
+                server._write_pid_file()
+            assert not (global_dir / "sova-server.pid").exists()
+            assert server._pid_file_path().read_text(encoding="utf-8") == "4242"
+            result = self._invoke(["restart"], has_projects=False)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] == bare
+        assert mock_start.call_args.args[-1] is False
+
+    def test_single_project_start_from_subdirectory_creates_no_claude_dir(self, tmp_path: Path) -> None:
+        # A start from a directory with no .claude/ (a project subdirectory, a scratch dir) must not create
+        # one: it would turn that directory into a project root. The PID file goes to the global directory
+        # under a per-project name, and status from the same directory finds it.
+        from sova.scheduler.server import SOVAServer
+
+        project = tmp_path / "proj"
+        sub = project / "src"
+        sub.mkdir(parents=True)
+        (project / ".claude").mkdir()
+        global_dir = tmp_path / "global"
+        with (
+            patch("sova.scheduler.server._DEFAULT_PID_DIR", global_dir),
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=sub),
+        ):
+            server = SOVAServer(config=_make_config(), project_dir=sub)
+            with patch("sova.scheduler.server.os.getpid", return_value=4242):
+                server._write_pid_file()
+            pid_path = server._pid_file_path()
+            result = self._invoke(["status"], has_projects=False)
+        assert not (sub / ".claude").exists()
+        assert (project / ".claude").is_dir()
+        assert not (global_dir / "sova-server.pid").exists()
+        assert pid_path.parent == global_dir
+        assert "running (PID 4242)" in _cli_output(result)
+
+    def test_pid_files_of_projects_without_claude_dir_are_distinct(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import _resolve_default_pid_path
+
+        first, second = tmp_path / "a", tmp_path / "b"
+        first.mkdir()
+        second.mkdir()
+        with patch("sova.scheduler.server._DEFAULT_PID_DIR", tmp_path / "global"):
+            first_path = _resolve_default_pid_path(first)
+            first_again = _resolve_default_pid_path(first)
+            second_path = _resolve_default_pid_path(second)
+        assert first_path != second_path
+        assert first_path.name == first_again.name
+        assert first_path.parent == first_again.parent
+
+    def test_default_pid_path_resolution_creates_nothing(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import _resolve_default_pid_path
+
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        global_dir = tmp_path / "absent" / "global"
+        with patch("sova.scheduler.server._DEFAULT_PID_DIR", global_dir):
+            _resolve_default_pid_path(bare)
+            _resolve_default_pid_path(None)
+        assert not global_dir.parent.exists()
+
+    def test_lookup_without_claude_dir_does_not_report_global_pid_as_single(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server._DEFAULT_PID_DIR", global_dir),
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+        ):
+            assert read_pid_file(project_dir=bare) is None
+            assert read_pid_file() == 4242
+
+    def test_explicit_project_never_stops_global_server(self, dirs: tuple[Path, Path]) -> None:
+        # A second server for a named project (e.g. on another port) must not reach the multi-project one.
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING) as mock_stop,
+        ):
+            result = self._invoke(["stop", "--project", str(project)], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] == project
+
+    def test_explicit_project_start_is_not_blocked_by_global_server(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = self._invoke(["start", "--project", str(project), "--port", "8112"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        mock_start.assert_called_once()
+
+    def test_explicit_project_start_refuses_when_global_server_holds_the_port(self, dirs: tuple[Path, Path]) -> None:
+        # A same-port start would run the lifespan (and a scheduler) before failing to bind: refuse up front.
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.config.registry.has_projects", return_value=True),
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("sova.scheduler.server._is_port_listening", return_value=True),
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = CliRunner().invoke(app, ["start", "--project", str(project)])
+        assert result.exit_code == 1
+        assert "already running (PID 4242)" in _cli_output(result)
+        mock_start.assert_not_called()
+
+    def test_explicit_project_start_refuses_when_its_own_server_runs(self, dirs: tuple[Path, Path]) -> None:
+        project, _ = dirs
+        (project / ".claude" / "sova-server.pid").write_text("1111", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = self._invoke(["start", "--project", str(project), "--port", "8112"], has_projects=False)
+        assert result.exit_code == 1
+        mock_start.assert_not_called()
+
+    def test_start_from_project_dir_refuses_while_multi_server_runs(self, dirs: tuple[Path, Path]) -> None:
+        project, global_dir = dirs
+        (global_dir / "sova-server.pid").write_text("4242", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.cli.commands.server._start_server") as mock_start,
+        ):
+            result = self._invoke(["start"], has_projects=True)
+        assert result.exit_code == 1
+        assert "already running (PID 4242)" in _cli_output(result)
+        mock_start.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
