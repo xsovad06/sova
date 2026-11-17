@@ -24,7 +24,15 @@ class AdapterError(Exception):
 
 
 class PriorityUnavailableError(AdapterError):
-    """Raised when the tracker has no equivalent of a requested priority level; nothing was changed."""
+    """Raised when the tracker has no equivalent of a requested priority level; nothing was changed.
+
+    The message is written by the adapter (the issue key, the level and the names the tracker allows), never taken
+    from a tracker response body, so ``user_message`` is what a route may show a client as a 400.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.user_message = message
 
 
 class TaskState(StrEnum):
