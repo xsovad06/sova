@@ -404,6 +404,12 @@ def _run_actions_block() -> str:
     return _APP_JS[start : _APP_JS.index(_RUN_ACTIONS_END, start)]
 
 
+def _sova_color_block() -> str:
+    """The SOVA_COLORS fallback table and sovaColor(), which runActionColors() reads its hex from."""
+    start = _APP_JS.index("var _SOVA_COLOR_FALLBACK")
+    return _APP_JS[start : _APP_JS.index("\n}\n", _APP_JS.index("function sovaColor(", start)) + 3]
+
+
 def _run_node(tmp_path: Path, script: str, *, env: dict[str, str] | None = None) -> object:
     path = tmp_path / "run.mjs"
     path.write_text(script, encoding="utf-8")
@@ -435,7 +441,7 @@ class TestPageResolvesRunActionsFromTheTable:
         cases = [[role, variant] for role, variant, *_ in _TABLE] + [[None, None]]
         script = (
             f"globalThis.window = globalThis;\nwindow.SOVA_RUN_ACTIONS = {json.dumps(run_actions_payload())};\n"
-            f"window.SOVA_COLORS = {{}};\n{_run_actions_block()}\n"
+            f"window.SOVA_COLORS = {{}};\n{_sova_color_block()}\n{_run_actions_block()}\n"
             f"const cases = {json.dumps(cases)};\n"
             "const out = cases.map(([r, v]) => [runActionFor(r, v).key, formatRole(r, v), roleColor(r, v).text,"
             " typeof roleColor(r, v).hex]);\n"
@@ -528,6 +534,8 @@ const bar = '/* ============================================================\n  
 const start = appSrc.indexOf(bar + 'RUN ACTIONS');
 const end = appSrc.indexOf(bar + 'STEP PIPELINE BAR', start);
 window.SOVA_COLORS = {};
+const colorsStart = appSrc.indexOf('var _SOVA_COLOR_FALLBACK');
+(0, eval)(appSrc.slice(colorsStart, appSrc.indexOf('\n}\n', appSrc.indexOf('function sovaColor(')) + 2));
 window.SOVA_RUN_ACTIONS = JSON.parse(process.env.RUN_ACTIONS);
 (0, eval)(appSrc.slice(start, end) + '; globalThis.runActionColors = runActionColors;');
 globalThis.statusDot = (s) => 'dot-' + s;
