@@ -59,14 +59,18 @@ from sova.roles._review_comments import (
     _MAX_COMPACT_SPEC_CHARS,
     _SPEC_SECTIONS,
     _VERDICT_TO_LABEL,
+    CRITERIA_CATEGORY,
     DIFF_CHUNK_SIZE,
     ReviewFinding,
     ReviewResult,
+    _build_criteria_prompt,
     _build_review_comments,
     _build_review_prompt,
+    _cap_criteria_findings,
     _chunk_diff,
     _chunk_files,
     _compact_spec_ref,
+    _diff_file_excerpts,
     _extract_json,
     _extract_spec_sections,
     _format_addressed_findings,
@@ -74,6 +78,7 @@ from sova.roles._review_comments import (
     _format_findings_comment,
     _format_inline_comment,
     _format_review_body,
+    _has_acceptance_criteria,
     _make_incomplete_review_finding,
     _make_protected_path_finding,
     _parse_findings,
@@ -127,6 +132,9 @@ _DEFAULT_REVIEW_MODEL = "sonnet"
 # Pause before the one retry of a review post that failed every method (see ReviewerRole._post_review). A module
 # constant rather than a setting: no operator needs to tune it, and tests patch it to zero.
 _POST_RETRY_DELAY_SECONDS = 5.0
+
+# Schema-validation retries per review call: a call that returns an invalid payload is asked again this many times.
+_SCHEMA_MAX_RETRIES = 2
 
 # Synthetic leading key ``_load_spec_sections`` inserts into its returned dict
 # when the spec is not current, carrying a caveat for both the review prompt
@@ -796,6 +804,12 @@ class ReviewerRole(AgentRole):
         model = self._resolve_review_model(ctx)
 
         failed_chunks = 0
+        chunk_notes: list[tuple[str, list[ReviewFinding]]] = []
+        # The criteria pass takes its own share of the budget, reserved up front so the chunk reviews and the
+        # pass together stay within agent.max_budget.
+        runs_criteria_pass = len(chunks) > 1 and _has_acceptance_criteria(task)
+        budget_shares = len(chunks) + (1 if runs_criteria_pass else 0)
+        share_budget = ctx.config.agent.max_budget / budget_shares
 
         for i, chunk in enumerate(chunks):
             try:
@@ -812,9 +826,11 @@ class ReviewerRole(AgentRole):
                     addressed_findings=chunk_addressed,
                     revise_at=ctx.config.review.revise_severity,
                     repo_context=chunk_repo_context,
+                    whole_diff=len(chunks) == 1,
+                    block_at=ctx.config.review.block_severity,
                 )
                 findings, summary = await self._review_chunk_with_retry(
-                    ctx, prompt, chunk, i, model, ctx.config.agent.max_budget / len(chunks), result
+                    ctx, prompt, chunk, i, model, share_budget, result
                 )
             except Exception:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
@@ -824,9 +840,17 @@ class ReviewerRole(AgentRole):
                     result.summary = "LLM review unavailable: manual review recommended"
                 continue
 
+            if len(chunks) == 1:
+                # The whole-diff prompt asks for a revise-range severity, but only the prompt does: clamp here so
+                # an overscored unmet criterion cannot block just because the diff fit in one chunk.
+                _cap_criteria_findings(findings, ctx.config.review.revise_severity, ctx.config.review.block_severity)
             result.findings.extend(findings)
+            chunk_notes.append((summary, findings))
             if i == 0 or not result.summary:
                 result.summary = summary
+
+        if runs_criteria_pass:
+            await self._run_criteria_pass(ctx, task, files, chunks, chunk_notes, model, share_budget, result)
 
         if failed_chunks:
             log.warning(
@@ -837,6 +861,51 @@ class ReviewerRole(AgentRole):
             )
         return result
 
+    async def _run_criteria_pass(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        files: list[str],
+        chunks: list[str],
+        chunk_notes: list[tuple[str, list[ReviewFinding]]],
+        model: str,
+        budget: Decimal,
+        result: ReviewResult,
+    ) -> None:
+        """Check the issue's acceptance criteria once for a diff split into several chunks.
+
+        Each chunk prompt omits the criteria check (it cannot see a criterion another chunk meets), and every
+        PR closes its issue, so without this pass the largest PRs would merge unchecked. A failure of the pass
+        is logged and noted in the summary but never aborts the review.
+        """
+        if not _has_acceptance_criteria(task):
+            return
+        if not chunk_notes:
+            log.warning("review.criteria_check_skipped_chunked", reason="no chunk was reviewed", chunks=len(chunks))
+            return
+        excerpts = _diff_file_excerpts(chunks)
+        revise_at = ctx.config.review.revise_severity
+        block_at = ctx.config.review.block_severity
+        prompt = _build_criteria_prompt(
+            task, files, chunk_notes, revise_at=revise_at, file_excerpts=excerpts, block_at=block_at
+        )
+        notes = "\n\n".join(summary + "\n" + "\n".join(f.description for f in found) for summary, found in chunk_notes)
+        try:
+            findings, _summary = await self._review_chunk_with_retry(
+                ctx, prompt, f"{excerpts}\n\n{notes}", len(chunks), model, budget, result, label="criteria pass"
+            )
+        except Exception:  # noqa: BLE001 (the criteria pass is additive; a failure must not discard the chunk reviews)
+            log.warning(
+                "review.criteria_check_skipped_chunked", reason="pass failed", chunks=len(chunks), exc_info=True
+            )
+            result.summary = f"{result.summary} Acceptance criteria were not checked: the criteria pass failed.".strip()
+            return
+        # Every finding of this pass is an unmet criterion: it revises, it never blocks (as in /review-pr).
+        for finding in findings:
+            finding.category = CRITERIA_CATEGORY
+        _cap_criteria_findings(findings, revise_at, block_at)
+        result.findings.extend(findings)
+
     async def _review_chunk_with_retry(
         self,
         ctx: ExecutionContext,
@@ -846,21 +915,25 @@ class ReviewerRole(AgentRole):
         model: str,
         chunk_budget: Decimal,
         result: ReviewResult,
+        label: str = "",
     ) -> tuple[list[ReviewFinding], str]:
         """Review one chunk, retrying the whole attempt once on a transient failure.
 
         A ``PromptInjectionError`` is not retried: the guard is deterministic, so the same prompt
         would be rejected again. The retry spends only what is left of *chunk_budget*, so a chunk's
-        worst-case spend does not double. Raises the last error when both attempts fail.
+        worst-case spend does not double. Raises the last error when both attempts fail. *label* names a call
+        that is not one of the diff's chunks (the criteria pass) in logs and errors, in place of the chunk number.
         """
         first_call = len(result.llm_results)
         try:
-            return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call)
+            return await self._review_chunk(
+                ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call, label
+            )
         except PromptInjectionError:
             raise
         except Exception:  # noqa: BLE001 (any transient failure is retried once before the chunk is reported unreviewed)
-            log.warning("reviewer.chunk_retry", chunk=chunk_index + 1, exc_info=True)
-        return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call)
+            log.warning("reviewer.chunk_retry", chunk=label or chunk_index + 1, exc_info=True)
+        return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call, label)
 
     async def _review_chunk(
         self,
@@ -872,6 +945,7 @@ class ReviewerRole(AgentRole):
         chunk_budget: Decimal,
         result: ReviewResult,
         first_call: int,
+        label: str = "",
     ) -> tuple[list[ReviewFinding], str]:
         """One attempt at reviewing a chunk: the call, schema validation with retries, and parsing.
 
@@ -908,15 +982,17 @@ class ReviewerRole(AgentRole):
                 schema=get_review_schema(),
                 llm_invoke=call,
                 original_prompt=prompt,
-                max_retries=2,
+                max_retries=_SCHEMA_MAX_RETRIES,
             )
         except ValidationError as ve:
-            log.warning("reviewer.validation_failed", chunk=chunk_index + 1, error=str(ve), exc_info=True)
+            log.warning("reviewer.validation_failed", chunk=label or chunk_index + 1, error=str(ve), exc_info=True)
             recovered = _try_parse_findings(result.llm_results[-1].text)
             if recovered is None:
                 # No review payload survived the schema retries: raising sends the chunk through the retry
                 # path and, failing that, marks it unreviewed, rather than reading it as a clean review.
-                raise _UnparseableReviewError(f"chunk {chunk_index + 1}: no parseable review response") from ve
+                raise _UnparseableReviewError(
+                    f"{label or f'chunk {chunk_index + 1}'}: no parseable review response"
+                ) from ve
             return recovered
 
         findings = [

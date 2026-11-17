@@ -27,6 +27,7 @@ from sova.llm.models import LLMResult
 from sova.roles._review_comments import (
     ReviewFinding,
     ReviewResult,
+    _build_criteria_prompt,
     _build_review_comments,
     _build_review_prompt,
     _chunk_files,
@@ -38,7 +39,7 @@ from sova.roles._review_comments import (
 )
 from sova.roles._review_format import format_review_body
 from sova.roles.panel_review import _PanelState, run_panel_review
-from sova.roles.reviewer import DIFF_CHUNK_SIZE, ReviewerRole, _review_next_action
+from sova.roles.reviewer import _SCHEMA_MAX_RETRIES, DIFF_CHUNK_SIZE, ReviewerRole, _review_next_action
 from sova.utils.review_markers import (
     INCOMPLETE_REVIEW_CATEGORY,
     SOVA_INCOMPLETE_REVIEW_MARKER,
@@ -348,13 +349,166 @@ class TestTryParseFindings:
         assert _parse_findings("no json here") == ([], "Failed to parse review response")
 
 
+class TestSplitDiffCriteriaPass:
+    """#1418: every PR closes its issue, so a diff split into chunks still gets the acceptance-criteria check."""
+
+    @staticmethod
+    def _criteria_task() -> Task:
+        return Task(
+            id="42",
+            title="Test issue",
+            body="## Acceptance Criteria\n\n- [ ] Does the thing.\n",
+            state=TaskState.IN_REVIEW,
+        )
+
+    async def test_split_diff_gets_one_extra_criteria_pass_with_a_blocking_finding(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path)
+        unmet = {**REAL_FINDING, "severity": ctx.config.review.revise_severity, "category": "other"}
+        calls = [_ok(), _ok(), _ok([unmet])]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=calls) as mock_invoke:
+            result = await ReviewerRole()._run_single_review(
+                ctx, self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        assert mock_invoke.await_count == 3
+        chunk_prompts = [call.args[0] for call in mock_invoke.call_args_list[:2]]
+        assert all("**Acceptance criteria**" not in p for p in chunk_prompts)
+        criteria_prompt = mock_invoke.call_args_list[2].args[0]
+        assert "**Acceptance criteria**" in criteria_prompt
+        assert "Does the thing." in criteria_prompt
+        assert [f.description for f in result.blocking(ctx.config.review.revise_severity)] == ["Off by one"]
+
+    async def test_criteria_pass_sees_what_each_file_changed_not_only_chunk_notes(self, tmp_path: Path) -> None:
+        """Chunk notes describe defects, not coverage, so the pass also gets the head of every file's patch."""
+        calls = [_ok(), _ok(), _ok()]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=calls) as mock_invoke:
+            await ReviewerRole()._run_single_review(
+                _ctx(tmp_path), self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        criteria_prompt = mock_invoke.call_args_list[2].args[0]
+        assert "diff --git a/a.py b/a.py" in criteria_prompt
+        assert "diff --git a/b.py b/b.py" in criteria_prompt
+        assert "patch truncated" in criteria_prompt
+        assert "is not met: report it" in criteria_prompt
+
+    async def test_criteria_reply_severity_passes_through_to_blocking(self, tmp_path: Path) -> None:
+        """The pass's finding reaches result.blocking() at the severity the reply gave it."""
+        ctx = _ctx(tmp_path)
+        revise = ctx.config.review.revise_severity
+        missing = {"file": "unknown", "severity": revise, "category": "other", "description": "Does the thing: missing"}
+        with patch(
+            "sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=[_ok(), _ok(), _ok([missing])]
+        ) as mock_invoke:
+            result = await ReviewerRole()._run_single_review(
+                ctx, self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        blocking = result.blocking(revise)
+        assert [f.description for f in blocking] == ["Does the thing: missing"]
+        assert blocking[0].severity == revise
+        criteria_prompt = mock_invoke.call_args_list[2].args[0]
+        ceiling = ctx.config.review.block_severity - 1
+        assert f"at severity {revise} to {ceiling}" in criteria_prompt
+
+    async def test_criteria_pass_severity_is_capped_below_the_block_threshold(self, tmp_path: Path) -> None:
+        """An unmet criterion revises: a reply scored at or above block_severity is clamped so it never blocks."""
+        ctx = _ctx(tmp_path)
+        block = ctx.config.review.block_severity
+        overscored = {**REAL_FINDING, "severity": 10, "category": "other", "description": "Does the thing: missing"}
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=[_ok(), _ok(), _ok([overscored])]):
+            result = await ReviewerRole()._run_single_review(
+                ctx, self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        assert [f.severity for f in result.findings] == [block - 1]
+
+    async def test_whole_diff_criteria_finding_is_capped_below_the_block_threshold(self, tmp_path: Path) -> None:
+        """A one-chunk diff clamps an unmet criterion like the split-diff pass, and leaves other findings alone."""
+        ctx = _ctx(tmp_path)
+        block = ctx.config.review.block_severity
+        unmet = {**REAL_FINDING, "severity": 10, "category": "acceptance_criteria", "description": "Does the thing"}
+        critical_bug = {**REAL_FINDING, "severity": 10, "category": "bug", "description": "Real bug"}
+        with patch(
+            "sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=[_ok([unmet, critical_bug])]
+        ) as mock_invoke:
+            result = await ReviewerRole()._run_single_review(ctx, self._criteria_task(), ONE_FILE_DIFF, ["a.py"], None)
+
+        assert mock_invoke.call_count == 1
+        assert "acceptance_criteria" in mock_invoke.call_args_list[0].args[0]
+        by_description = {f.description: f.severity for f in result.findings}
+        assert by_description == {"Does the thing": block - 1, "Real bug": 10}
+
+    def test_severity_range_is_bounded_in_both_prompts_and_scored_at_revise_when_no_room(self) -> None:
+        whole = _build_review_prompt(self._criteria_task(), "diff", ["a.py"], revise_at=3, block_at=9, whole_diff=True)
+        assert "(3 to 8)" in whole
+        assert "never score it 9 or above" in whole
+        criteria = _build_criteria_prompt(self._criteria_task(), ["a.py"], [], revise_at=3, block_at=9)
+        assert "(3 to 8)" in criteria
+        # revise_at == block_at leaves no severity that revises without blocking: the command scores at revise_at.
+        tight = _build_review_prompt(self._criteria_task(), "diff", ["a.py"], revise_at=7, block_at=7, whole_diff=True)
+        assert "**Acceptance criteria** (7)" in tight
+
+    async def test_chunk_reviews_and_criteria_pass_stay_within_the_budget(self, tmp_path: Path) -> None:
+        """The pass's share is reserved up front: N chunks plus the pass split max_budget N+1 ways."""
+        ctx = _ctx(tmp_path)
+        with patch(
+            "sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=[_ok(), _ok(), _ok()]
+        ) as mock_invoke:
+            await ReviewerRole()._run_single_review(ctx, self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None)
+
+        budgets = [call.kwargs["max_budget_usd"] for call in mock_invoke.call_args_list]
+        assert len(budgets) == 3
+        assert sum(budgets) <= ctx.config.agent.max_budget
+
+    async def test_unparseable_criteria_reply_is_noted_not_read_as_all_met(self, tmp_path: Path) -> None:
+        """A garbled answer from the pass must say the check did not run, not look like every criterion met."""
+        # Two attempts, each the first call plus the schema retries, all garbled.
+        garbled = 2 * (1 + _SCHEMA_MAX_RETRIES)
+        calls = [_ok(), _ok(), *([GARBAGE] * garbled)]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=calls) as mock_invoke:
+            result = await ReviewerRole()._run_single_review(
+                _ctx(tmp_path), self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        assert mock_invoke.await_count == 2 + garbled
+        assert result.findings == []
+        assert "Acceptance criteria were not checked" in result.summary
+
+    async def test_split_diff_without_criteria_gets_no_extra_pass(self, tmp_path: Path) -> None:
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=_ok()) as mock_invoke:
+            await ReviewerRole()._run_single_review(_ctx(tmp_path), _task(), TWO_FILE_DIFF, ["a.py", "b.py"], None)
+
+        assert mock_invoke.await_count == 2
+
+    async def test_single_chunk_checks_criteria_in_its_own_prompt(self, tmp_path: Path) -> None:
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=_ok()) as mock_invoke:
+            await ReviewerRole()._run_single_review(
+                _ctx(tmp_path), self._criteria_task(), ONE_FILE_DIFF, ["a.py"], None
+            )
+
+        assert mock_invoke.await_count == 1
+        assert "**Acceptance criteria**" in mock_invoke.call_args.args[0]
+
+    async def test_failed_criteria_pass_keeps_chunk_findings_and_says_it_was_skipped(self, tmp_path: Path) -> None:
+        calls = [_ok([REAL_FINDING]), _ok(), RuntimeError("down"), RuntimeError("down")]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=calls):
+            result = await ReviewerRole()._run_single_review(
+                _ctx(tmp_path), self._criteria_task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        assert [f.description for f in result.findings] == ["Off by one"]
+        assert result.unreviewed_files == []
+        assert "Acceptance criteria were not checked" in result.summary
+
+
 class TestSingleReviewUnparseableResponse:
     async def test_unparseable_after_schema_retries_marks_the_chunk_unreviewed(self, tmp_path: Path) -> None:
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=GARBAGE) as mock_invoke:
             result = await ReviewerRole()._run_single_review(_ctx(tmp_path), _task(), ONE_FILE_DIFF, ["a.py"], None)
 
-        # Two attempts, each the first call plus two schema retries.
-        assert mock_invoke.await_count == 6
+        # Two attempts, each the first call plus the schema retries.
+        assert mock_invoke.await_count == 2 * (1 + _SCHEMA_MAX_RETRIES)
         assert result.findings == []
         assert result.unreviewed_files == ["a.py"]
         assert "unavailable" in result.summary
