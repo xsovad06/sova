@@ -295,10 +295,17 @@ class TestSupervisorPersonaEndpoints:
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
         ):
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                client.headers.update(_csrf_request_headers(client))
-                resp = await client.post("/api/supervisor/persona/open")
+            # The catch-all answers, then Starlette re-raises: only a test asserting the 500 turns that off.
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
+            with patch("sova.dashboard.app.log") as mock_log:
+                async with AsyncClient(transport=transport, base_url="http://test") as client:
+                    client.headers.update(_csrf_request_headers(client))
+                    resp = await client.post("/api/supervisor/persona/open")
 
             assert resp.status_code == 500
-            assert "Failed to load" in resp.json()["detail"]
+            assert resp.json() == {"detail": "Internal error"}
+            assert "bad config" not in resp.text
+            # The failure is recorded where the catch-all logs it, with its traceback.
+            mock_log.error.assert_called_once()
+            assert mock_log.error.call_args.args == ("dashboard.unhandled_exception",)
+            assert mock_log.error.call_args.kwargs["exc_info"] is True

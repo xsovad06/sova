@@ -1230,7 +1230,8 @@ def _milestone_adapter(by_milestone: dict[str, list[Task]], individually: dict[i
 async def client(reset_db_rows, dashboard_app):
 
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    # The app's catch-all handler answers an unexpected failure with a 500, and Starlette re-raises it after.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
@@ -1870,6 +1871,7 @@ class TestDependencyAPI:
         ):
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal error"}
 
     @pytest.mark.asyncio
     async def test_graph_endpoint_config_error(self, client: AsyncClient) -> None:

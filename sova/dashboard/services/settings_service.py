@@ -16,11 +16,14 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.context import resolve_project_dir_or_none
+from sova.dashboard.services import daemon_registry
+from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Iterable
 
     from sova.commands.distribution import DiffResult, ReverseDiffResult
     from sova.config.models import ProjectConfig
@@ -582,12 +585,14 @@ async def pin_short_names(
     Returns ``{"status": "ok", "pinned": {key: value}, "skipped": [{key, reason}]}`` or ``{"error": ...}``.
     """
     from sova.config.loader import load_config
+    from sova.dashboard.config_errors import CONFIG_LOAD_ERRORS
     from sova.dashboard.services.model_map_service import short_name_settings
 
     try:
         cfg = load_config(project_dir)
-    except Exception as exc:  # noqa: BLE001 (an unloadable config cannot be pinned; report it)
-        return {"error": f"Could not load the configuration: {exc}"}
+    except CONFIG_LOAD_ERRORS:  # a bug in the loader is not an outage: it reaches the catch-all handler
+        log.warning("settings.pin.config_unloadable", exc_info=True)
+        return {"error": "Could not load the configuration", "unavailable": True}
     pinned: dict[str, Any] = {}
     routes: dict[str, str] = {}
     updates: dict[str, str] = {}
@@ -727,7 +732,7 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
 
     meta = _META_BY_KEY.get(key)
     if meta is None:
-        return {"error": f"Unknown setting: '{key}'"}
+        return {"error": f"Unknown setting: '{key}'", "unknown": True}
 
     if meta.value_type == "secret" and _is_masked_secret(value):
         # The UI submitted the masked placeholder unchanged; do not overwrite
@@ -1541,3 +1546,243 @@ def build_installation_diff(project_dir: Path, cfg: ProjectConfig) -> Installati
         )
 
     return InstallationDiff(source_available=True, files=files)
+
+
+# Config reload dispatch: what a saved setting does to the running components.
+
+RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "database_url"})
+
+RELOAD_PREFIX_MAP: dict[str, str] = {
+    "supervisor.": "supervisor",
+    "oversight.": "oversight",
+    "watchdog.": "watchdog",
+    "memory_guard.": "watchdog",
+    "pr_monitor.": "pr_monitor",
+    "coderabbit_quota.": "coderabbit_quota",
+    "integration.": "integration",
+    "llm.": "llm",
+    "agent.runtime": "runtime",
+    "codex.": "runtime",
+}
+
+
+def match_reload_target(key: str) -> str | None:
+    """Match a config key to a reload target via prefix lookup."""
+    for prefix, target in RELOAD_PREFIX_MAP.items():
+        if key == prefix.rstrip(".") or key.startswith(prefix):
+            return target
+    return None
+
+
+async def _start_pr_throttle_if_enabled(cfg: ProjectConfig, project_dir: Path | None) -> None:
+    """Start the PR throttle loop for *project_dir* once the quota is enabled at runtime.
+
+    Enabling the quota after the server started leaves no loop to reload; without one, create_pr's
+    heartbeat check sends every PR down the direct path. *project_dir* and *cfg* are the ones
+    ``reload_all_configs`` resolved (a request scope, else the single-project default ``create_app()``
+    was given, which need not be the working directory), so the start, the reload and the daemon
+    components lookup all act on the same project. ``None`` is multi-project mode with no request scope:
+    the root config decides nothing there, so nothing starts (a loop already registered under the working
+    directory is still reloaded by the caller, since that is the config the request just wrote).
+    """
+    from sova.dashboard.services.daemon_registry import ensure_pr_throttle_loop
+
+    if project_dir is None:
+        log.debug("settings.pr_throttle_start_skipped", reason="no project in scope")
+        return
+    await ensure_pr_throttle_loop(project_dir, cfg)
+
+
+async def dispatch_config_reload(
+    target: str,
+    cfg: ProjectConfig,
+    components: dict,
+    project_dir: Path | None,
+) -> None:
+    """Execute the reload for a single target. Raises on failure."""
+    if target == "supervisor":
+        await daemon_registry.reload_daemon_config(project_dir)
+    elif target == "oversight":
+        await reload_oversight_config_with_cfg(cfg)
+    elif target == "watchdog":
+        wd = components.get("watchdog")
+        if wd is not None:
+            wd.reload_config(cfg.watchdog, cfg.memory_guard)
+    elif target == "pr_monitor":
+        for mon in components.get("pr_monitors", []):
+            mon.reload_config(cfg.pr_monitor, cfg.notification)
+    elif target == "coderabbit_quota":
+        # Reloading acts on whatever loop *components* holds, which the caller looked up under the resolved
+        # project (the working directory when no project is in scope, as for every other target). Starting
+        # a new loop is a decision about a named project, so it needs one.
+        for throttle in components.get("pr_throttles", []):
+            throttle.reload_config(cfg.coderabbit_quota)
+        await _start_pr_throttle_if_enabled(cfg, project_dir)
+    elif target == "integration":
+        for mqm in components.get("merge_queue_monitors", []):
+            mqm.reload_config(cfg.integration, cfg.notification)
+    elif target == "llm":
+        from sova.llm.client import reload_provider_async
+
+        await reload_provider_async(cfg, project_dir)
+    elif target == "runtime":
+        from sova.ipc.runtime import reload_runtime
+
+        reload_runtime(cfg)
+
+
+async def reload_all_configs(project_dir: Path | None, key: str) -> str | None:
+    """Dispatch config reload to the appropriate daemons based on key prefix.
+
+    Returns a lifecycle error message string, or None on success.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.services.daemon_registry import get_daemon_components
+
+    matched = match_reload_target(key)
+    if matched is None:
+        return None
+
+    try:
+        # Resolve the target once, the way the lifespan keyed its loops at startup, so the config, the
+        # daemon components lookup and the dispatch all name the same project. Without a request scope
+        # that is the single-project default, which need not be the working directory.
+        target_dir = resolve_project_dir_or_none(project_dir, default_project_dir=get_default_project_dir())
+        cfg = await asyncio.to_thread(load_config, target_dir)
+        resolved_key = str(target_dir.resolve()) if target_dir else str(Path.cwd().resolve())
+        components = get_daemon_components().get(resolved_key, {})
+        await dispatch_config_reload(matched, cfg, components, target_dir)
+    except Exception:  # noqa: BLE001 (reload spans config load, daemon lookup and per-component dispatch)
+        log.warning("settings.reload_failed", target=matched, exc_info=True)
+        return f"Config saved but {matched} reload failed"
+
+    return None
+
+
+async def reload_oversight_config_with_cfg(cfg: ProjectConfig) -> None:
+    """Trigger a config reload on the oversight agent using a pre-loaded config.
+
+    Manages lifecycle: stops when disabled, starts when enabled.
+    """
+    from sova.dashboard.services.daemon_registry import get_oversight_agent, get_oversight_lifecycle_lock
+
+    async with get_oversight_lifecycle_lock():
+        agent = get_oversight_agent()
+        if agent is not None:
+            agent.reload_config(cfg)
+            if not agent.enabled and agent.running:
+                await agent.stop()
+                log.info("settings.oversight_stopped_on_disable")
+            elif agent.enabled and not agent.running:
+                agent.start()
+
+
+def config_value_to_str(raw: object) -> str:
+    """Normalize a JSON boolean or number to the string form ``update_config`` expects."""
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    return str(raw)
+
+
+def key_requires_restart(key: str) -> bool:
+    """Return True when changing *key* only takes effect after a server restart."""
+    from sova.dashboard.settings_meta import get_meta
+
+    meta = get_meta(key)
+    if meta is not None and meta.requires_restart:
+        return True
+    return any(key == prefix or key.startswith(prefix) for prefix in RESTART_REQUIRED_PREFIXES)
+
+
+async def apply_config_update(project_dir: Path, key: str, result: dict) -> None:
+    """Propagate a saved setting to running components and annotate *result*."""
+    if key == "max_parallel_agents":
+        from sova.dashboard.services.agent_pool import sync_max_concurrent
+
+        sync_max_concurrent(project_dir)
+    lifecycle_error = await reload_all_configs(project_dir, key)
+    if lifecycle_error:
+        result["lifecycle_error"] = lifecycle_error
+    if key_requires_restart(key):
+        result["restart_required"] = True
+
+
+async def reload_pinned(project_dir: Path, keys: Iterable[str], result: dict) -> None:
+    """Apply the config update for each reload target the pinned *keys* belong to, once per target."""
+    reloaded: set[str] = set()
+    for key in keys:
+        setting = "llm.routing" if key.startswith("llm.routing.") else key
+        target = match_reload_target(setting) or setting
+        if target not in reloaded:
+            reloaded.add(target)
+            await apply_config_update(project_dir, setting, result)
+
+
+# Model map helpers.
+
+
+async def llm_catalog(project_dir: Path) -> list[str] | None:
+    """The LLM-layer model IDs ``GET /models/available`` lists, or None when there is no real list (the curated
+    fallback stands in for an unreachable provider, so it does not name this deployment's models)."""
+    from sova.dashboard.services import models_service
+
+    try:
+        data = await models_service.get_available_models(project_dir, layer="llm")
+    except Exception:  # noqa: BLE001 (no list means Pin leaves an ambiguous short name alone)
+        log.debug("settings.models.catalog_unavailable", exc_info=True)
+        return None
+    if data.get("source") == "curated":
+        return None
+    return [m["id"] for m in data.get("models", []) if isinstance(m, dict) and m.get("id")]
+
+
+async def catalog_if_needed(short_names: list[dict], project_dir: Path | None) -> list[str] | None:
+    """The model list, fetched only when one of *short_names* (``short_name_settings()`` without a list) is left
+    unresolved by ``resolve_alias()``: enumerating can take seconds, and on the usual first-party setup every short
+    name resolves without it."""
+    if all(item["pin_to"] is not None or item["env_var"] for item in short_names):
+        return None
+    return await llm_catalog(project_dir or Path.cwd())
+
+
+def runtime_honours_model(cfg: ProjectConfig) -> bool:
+    """Whether the configured agent runtime runs the model a step passes (Codex does not)."""
+    from sova.ipc.runtime import create_runtime
+
+    try:
+        return create_runtime(cfg.agent.runtime, codex=cfg.codex).honours_model_override
+    except Exception:  # noqa: BLE001 (an unbuildable runtime is reported elsewhere; assume the default behavior)
+        return True
+
+
+async def get_model_map_payload(project_dir: Path | None) -> dict:
+    """Which model each role and step runs on and why, with fallbacks, and the settings stored as a short name."""
+    from sova.config.loader import load_config
+    from sova.dashboard.services.model_map_service import build_model_map, short_name_settings
+
+    cfg = await asyncio.to_thread(load_config, project_dir)
+    honours = runtime_honours_model(cfg)
+    payload = build_model_map(cfg, runtime_honours_model=honours)
+    payload["runtime"] = {"name": cfg.agent.runtime, "honours_model": honours}
+    short_names = short_name_settings(cfg)
+    catalog = await catalog_if_needed(short_names, project_dir)
+    payload["short_names"] = short_names if catalog is None else short_name_settings(cfg, catalog)
+    return payload
+
+
+async def pin_catalog(project_dir: Path | None) -> list[str] | None:
+    """The model list ``pin_short_names()`` needs to resolve an ambiguous short name, or None.
+
+    None also covers a config that cannot be loaded (logged here): ``pin_short_names()`` reports that as its own
+    refusal, a 503 since a config the server cannot read is not a fault in the request.
+    """
+    from sova.config.loader import load_config
+    from sova.dashboard.config_errors import CONFIG_LOAD_ERRORS
+    from sova.dashboard.services.model_map_service import short_name_settings
+
+    try:
+        cfg = await asyncio.to_thread(load_config, project_dir)
+    except CONFIG_LOAD_ERRORS:  # pin_short_names() reports an unloadable config as a 503
+        log.warning("settings.pin.catalog_config_unloadable", exc_info=True)
+        return None
+    return await catalog_if_needed(short_name_settings(cfg), project_dir)

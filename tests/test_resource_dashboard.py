@@ -33,7 +33,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 async def client(dashboard_app):
 
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
@@ -547,7 +547,7 @@ class TestResourceRouterErrors:
         with patch(target, side_effect=RuntimeError("db down")):
             resp = await client.get(f"/api/resources/{seed_run_with_resources.id}/summary")
         assert resp.status_code == 500
-        assert "Failed to fetch resource summary" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
     @pytest.mark.asyncio
     async def test_samples_endpoint_500_on_service_error(self, client: AsyncClient, seed_run_with_resources) -> None:
@@ -557,7 +557,7 @@ class TestResourceRouterErrors:
         with patch(target, side_effect=RuntimeError("db down")):
             resp = await client.get(f"/api/resources/{seed_run_with_resources.id}/samples")
         assert resp.status_code == 500
-        assert "Failed to fetch resource samples" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
     @pytest.mark.asyncio
     async def test_samples_endpoint_422_on_zero_limit(self, client: AsyncClient) -> None:
@@ -577,7 +577,7 @@ class TestResourceRouterErrors:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/live/1")
         assert resp.status_code == 500
-        assert "Failed to fetch live metrics" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
     @pytest.mark.asyncio
     async def test_system_info_endpoint_500_on_service_error(self, client: AsyncClient) -> None:
@@ -587,7 +587,7 @@ class TestResourceRouterErrors:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/system")
         assert resp.status_code == 500
-        assert "Failed to fetch system info" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
 
 class TestWorkHistoryHelpers:
@@ -844,7 +844,7 @@ class TestSystemMetricsRouter:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/system/metrics")
         assert resp.status_code == 500
-        assert "Failed to fetch system metrics" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
 
 class TestSystemMetricsHistory:
@@ -976,7 +976,7 @@ class TestCapacityEndpoint:
         with patch(target, side_effect=RuntimeError("config fail")):
             resp = await client.get("/api/resources/capacity")
         assert resp.status_code == 500
-        assert "Failed to fetch capacity recommendation" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
 
 class TestEnergyTotalEndpoint:
@@ -1036,7 +1036,7 @@ class TestEnergyTotalEndpoint:
         with patch(target, side_effect=RuntimeError("db fail")):
             resp = await client.get("/api/resources/energy/total")
         assert resp.status_code == 500
-        assert "Failed to fetch total energy" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
 
 class TestComputeAndStoreEnergy:

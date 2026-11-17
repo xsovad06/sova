@@ -177,18 +177,35 @@ async function enhancePlannerCards(completed) {
   }
 }
 
-async function createPlannerIssues(tasks, issue) {
+async function createPlannerIssues(tasks, issue, proposalIdxs) {
   try {
     var res = await fetch(apiUrl('/agents/planner/create-issues'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks: tasks }),
     });
-    if (!res.ok) {
-      showToast(await getErrorDetail(res, 'Failed to create issues'), 'error');
-      return;
+    // A partial failure is a 502 whose structured detail carries a per-task results list; any other
+    // error detail (a string, or a validation list) is shown as is.
+    var data;
+    var createdIdxs = [];
+    if (res.ok) {
+      data = await res.json();
+    } else {
+      var body = null;
+      try { body = await res.clone().json(); } catch (_e) { /* not JSON: falls through to getErrorDetail() */ }
+      var results = body && body.detail && Array.isArray(body.detail.results) ? body.detail.results : null;
+      if (!results) {
+        showToast(await getErrorDetail(res, 'Failed to create issues'), 'error');
+        return;
+      }
+      data = {
+        created: results.filter(function(r) { return r.ok; }),
+        errors: results.filter(function(r) { return !r.ok; }),
+      };
+      // `results` is in request order, so result i answers the proposal at proposalIdxs[i].
+      createdIdxs = [];
+      results.forEach(function(r, i) { if (r.ok) createdIdxs.push(proposalIdxs[i]); });
     }
-    var data = await res.json();
     var createdCount = data.created ? data.created.length : 0;
     var errorCount = data.errors ? data.errors.length : 0;
 
@@ -210,12 +227,26 @@ async function createPlannerIssues(tasks, issue) {
       _plannerHandoffCache = null;
       _plannerStale = true;
       if (issue) dismissHandoff(issue);
+    } else if (createdCount > 0) {
+      // A partial batch already created some issues: drop them from the proposals so a retry
+      // submits only the failed ones and never duplicates a created issue.
+      _dropCreatedPlannerTasks(createdIdxs);
     }
     loadAgents();
     loadBoard();
   } catch (e) {
     showToast('Failed to create issues: ' + e.message, 'error');
   }
+}
+
+function _dropCreatedPlannerTasks(createdIdxs) {
+  if (!_plannerHandoffCache || !_plannerHandoffCache.details) return;
+  // By position in the cached proposals, never by title: the tracker's echo of a title can differ from the one
+  // submitted. The cache itself is kept (only `_plannerStale` is set), so the redraw shows the trimmed list.
+  _plannerHandoffCache.details.planned_tasks = _plannerHandoffCache.details.planned_tasks.filter(function(_t, i) {
+    return createdIdxs.indexOf(i) === -1;
+  });
+  _plannerStale = true;
 }
 
 function _submitPlannerIssues(runId, handoffIssue) {
@@ -231,6 +262,7 @@ function _submitPlannerIssues(runId, handoffIssue) {
 
   var checks = container.querySelectorAll('.planner-task-check');
   var selected = [];
+  var selectedIdxs = [];
   checks.forEach(function(cb) {
     if (cb.checked) {
       var idx = parseInt(cb.getAttribute('data-idx'), 10);
@@ -239,6 +271,7 @@ function _submitPlannerIssues(runId, handoffIssue) {
         // Labels are tracker-specific (Jira rejects space-containing labels),
         // so the server builds them from these raw fields rather than the
         // client constructing 'area: x' / 'priority: y' strings itself.
+        selectedIdxs.push(idx);
         selected.push({
           title: task.title,
           description: task.description,
@@ -254,7 +287,7 @@ function _submitPlannerIssues(runId, handoffIssue) {
     return;
   }
 
-  createPlannerIssues(selected, handoffIssue);
+  createPlannerIssues(selected, handoffIssue, selectedIdxs);
 }
 
 export function init() {

@@ -19,11 +19,11 @@ from pathlib import Path
 import pytest
 
 from sova.adapters.jira import JiraAdapter, _build_adf_doc
+from sova.adapters.label_catalog import REQUIRED_LABELS
 from sova.commands.catalog import get_canonical_dir, get_skills_dir
 from sova.commands.distribution import _collect_skills
 from sova.commands.templates import build_variables, render_command
 from sova.config.models import ProjectConfig
-from sova.dashboard.routers.settings import _REQUIRED_LABELS
 from sova.roles.triage import _LLM_LEAK_PATTERNS, compute_quality_score
 from sova.supervisor.dependency_graph import parse_dependencies
 
@@ -236,7 +236,7 @@ class TestDistributableRendersForAnyTracker:
 class TestLabelTaxonomy:
     """The SOVA copy enumerates the tracker's labels, so it must match the registry."""
 
-    _REGISTERED = {label["name"] for label in _REQUIRED_LABELS}
+    _REGISTERED = {label["name"] for label in REQUIRED_LABELS}
 
     def test_every_documented_label_name_is_registered(self) -> None:
         """Catches the spacing trap: `agent:human-only` has no space, `type: epic` does."""

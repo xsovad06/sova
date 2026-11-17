@@ -22,6 +22,7 @@ from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_
 from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, exclude_pathspecs, unstage_command
+from sova.llm.errors import ComponentMisconfiguredError
 from tests.conftest import DASHBOARD_DIR, agents_page_source
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -165,7 +166,19 @@ async def client(dashboard_app):
     GET request is unaffected since the guard no-ops for safe methods.
     """
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        ac.headers.update(_csrf_request_headers(ac))
+        yield ac
+
+
+@pytest.fixture
+async def client_no_raise(dashboard_app):
+    """`client`, except an unhandled exception comes back as the catch-all's 500 instead of being re-raised.
+
+    Only a test that asserts on that 500 takes this one: with the raising `client`, a real crash in any other
+    test fails with its traceback instead of passing as an opaque `{"detail": "Internal error"}`.
+    """
+    transport = ASGITransport(app=dashboard_app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
         yield ac
@@ -905,28 +918,24 @@ class TestCostsAPI:
 
 
 class TestCostsAPIErrorHandling:
-    """Cover the except branches in sova/dashboard/routers/costs.py."""
+    """A service failure reaches the app-level handler: a 500 with the fixed body."""
 
     @pytest.mark.parametrize(
-        ("service_method", "url", "detail"),
+        ("service_method", "url"),
         [
-            pytest.param("get_summary", "/api/costs/summary", "Failed to fetch cost summary", id="summary"),
-            pytest.param("get_daily", "/api/costs/daily", "Failed to fetch daily costs", id="daily"),
-            pytest.param("get_by_issue", "/api/costs/by-issue", "Failed to fetch costs by issue", id="by-issue"),
-            pytest.param("get_by_phase", "/api/costs/by-phase", "Failed to fetch costs by phase", id="by-phase"),
-            pytest.param("get_by_model", "/api/costs/by-model", "Failed to fetch costs by model", id="by-model"),
-            pytest.param(
-                "get_by_routing", "/api/costs/by-routing", "Failed to fetch costs by routing", id="by-routing"
-            ),
+            pytest.param("get_summary", "/api/costs/summary", id="summary"),
+            pytest.param("get_daily", "/api/costs/daily", id="daily"),
+            pytest.param("get_by_issue", "/api/costs/by-issue", id="by-issue"),
+            pytest.param("get_by_phase", "/api/costs/by-phase", id="by-phase"),
+            pytest.param("get_by_model", "/api/costs/by-model", id="by-model"),
+            pytest.param("get_by_routing", "/api/costs/by-routing", id="by-routing"),
         ],
     )
-    async def test_service_error_returns_500(
-        self, client: AsyncClient, service_method: str, url: str, detail: str
-    ) -> None:
+    async def test_service_error_returns_500(self, client_no_raise: AsyncClient, service_method: str, url: str) -> None:
         with patch(f"sova.dashboard.routers.costs.cost_service.{service_method}", side_effect=RuntimeError("db down")):
-            resp = await client.get(url)
+            resp = await client_no_raise.get(url)
         assert resp.status_code == 500
-        assert detail in resp.json()["detail"]
+        assert resp.json() == {"detail": "Internal error"}
 
 
 # ---------------------------------------------------------------------------
@@ -4673,7 +4682,7 @@ class TestAgentsAPI:
         assert resp.status_code == 503
         assert "tasks" not in resp.json()
 
-    async def test_next_tasks_graph_failure_is_500_not_an_empty_list(self, client: AsyncClient) -> None:
+    async def test_next_tasks_graph_failure_is_500_not_an_empty_list(self, client_no_raise: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
 
         with patch(
@@ -4681,9 +4690,9 @@ class TestAgentsAPI:
             new_callable=AsyncMock,
             side_effect=RuntimeError("tracker down"),
         ):
-            resp = await client.get("/api/agents/next-tasks")
+            resp = await client_no_raise.get("/api/agents/next-tasks")
         assert resp.status_code == 500
-        assert "tasks" not in resp.json()
+        assert resp.json() == {"detail": "Internal error"}
 
     async def test_agents_active_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/active")
@@ -5410,14 +5419,12 @@ class TestLLMSettingsAPI:
 
     async def test_test_connection_config_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         def boom(*_a, **_kw):
-            raise RuntimeError("bad config")
+            raise OSError("bad config")
 
         monkeypatch.setattr("sova.config.loader.load_config", boom)
         resp = await client.post("/api/settings/llm/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "Failed to load configuration" in data["detail"]
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Failed to load configuration"
 
     async def test_test_connection_provider_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
@@ -5425,14 +5432,30 @@ class TestLLMSettingsAPI:
         monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
 
         def boom(*_a, **_kw):
-            raise RuntimeError("provider misconfigured")
+            from sova.llm.errors import ComponentMisconfiguredError
+
+            raise ComponentMisconfiguredError("Unknown LLM provider 'x'")
 
         monkeypatch.setattr("sova.llm.provider.create_provider", boom)
         resp = await client.post("/api/settings/llm/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "provider misconfigured" in data["detail"]
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Unknown LLM provider 'x'"
+
+    async def test_test_connection_provider_unexpected_create_error_is_502(
+        self, client: AsyncClient, monkeypatch
+    ) -> None:
+        from sova.config.models import ProjectConfig
+
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("secret internals")
+
+        monkeypatch.setattr("sova.llm.provider.create_provider", boom)
+        resp = await client.post("/api/settings/llm/test-connection")
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "LLM provider check failed"
+        assert "secret internals" not in resp.text
 
     async def test_test_connection_success(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
@@ -5461,10 +5484,8 @@ class TestLLMSettingsAPI:
 
         monkeypatch.setattr("sova.llm.provider.create_provider", lambda *_a, **_kw: _FakeProvider())
         resp = await client.post("/api/settings/llm/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "network down" in data["detail"]
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "LLM provider unreachable"
 
     async def test_cost_projection_insufficient_data(self, client: AsyncClient) -> None:
         resp = await client.get("/api/settings/llm/cost-projection")
@@ -5643,9 +5664,11 @@ class TestLLMSettingsAPI:
         ):
             resp = await client.get("/api/settings/installation/diff")
         assert resp.status_code == 400
-        assert "Failed to load project config" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Failed to load project config"
 
-    async def test_installation_diff_unexpected_error(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+    async def test_installation_diff_unexpected_error(
+        self, client_no_raise: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
         from unittest.mock import patch
 
         monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
@@ -5653,9 +5676,9 @@ class TestLLMSettingsAPI:
             "sova.dashboard.services.settings_service.build_installation_diff",
             side_effect=RuntimeError("boom"),
         ):
-            resp = await client.get("/api/settings/installation/diff")
+            resp = await client_no_raise.get("/api/settings/installation/diff")
         assert resp.status_code == 500
-        assert "Failed to build installation diff" in resp.json()["detail"]
+        assert resp.json() == {"detail": "Internal error"}
 
 
 class TestAgentRuntimeSettingsAPI:
@@ -5663,14 +5686,12 @@ class TestAgentRuntimeSettingsAPI:
 
     async def test_test_connection_config_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         def boom(*_a, **_kw):
-            raise RuntimeError("bad config")
+            raise OSError("bad config")
 
         monkeypatch.setattr("sova.config.loader.load_config", boom)
         resp = await client.post("/api/settings/agent-runtime/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "Failed to load configuration" in data["detail"]
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Failed to load configuration"
 
     async def test_test_connection_runtime_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
@@ -5678,14 +5699,14 @@ class TestAgentRuntimeSettingsAPI:
         monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
 
         def boom(*_a, **_kw):
-            raise ValueError("unknown runtime")
+            from sova.llm.errors import ComponentMisconfiguredError
+
+            raise ComponentMisconfiguredError("Unknown agent runtime: 'x'")
 
         monkeypatch.setattr("sova.ipc.runtime.create_runtime", boom)
         resp = await client.post("/api/settings/agent-runtime/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "unknown runtime" in data["detail"]
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Unknown agent runtime: 'x'"
 
     async def test_test_connection_success(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
@@ -5717,10 +5738,8 @@ class TestAgentRuntimeSettingsAPI:
 
         monkeypatch.setattr("sova.ipc.runtime.create_runtime", lambda *_a, **_kw: _FakeRuntime())
         resp = await client.post("/api/settings/agent-runtime/test-connection")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "cli not found" in data["detail"]
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "Agent runtime unreachable"
 
 
 @pytest.mark.usefixtures("setup_root_tmp")
@@ -5923,7 +5942,7 @@ class TestSetupAPI:
         ):
             resp = await client.post("/api/setup/commands/sync")
         assert resp.status_code == 400
-        assert "Failed to load project config" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Failed to load project config"
 
     async def test_sync_commands_filenames_restricts_and_forces(
         self, client: AsyncClient, tmp_path, monkeypatch
@@ -12985,6 +13004,7 @@ class TestAuthStatusAPI:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
             resp = await client.get("/api/auth/status")
         assert resp.status_code == 503
+        assert "config unreadable" not in resp.text
 
     async def test_no_expires_at_or_models_fields(self, client: AsyncClient) -> None:
         """Neither the envelope nor the account carries expires_at/models.
@@ -14673,14 +14693,29 @@ class TestAvailableModelsAPI:
     async def test_misconfigured_provider_returns_200_curated(self, client: AsyncClient) -> None:
         with (
             patch("sova.config.loader.load_config", return_value=_fake_cfg()),
-            patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
+            patch(
+                "sova.llm.provider.create_provider",
+                side_effect=ComponentMisconfiguredError("Unknown LLM provider: 'nope'"),
+            ),
         ):
             resp = await client.get("/api/models/available", params={"layer": "llm"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["source"] == "curated"
-        assert "Unknown LLM provider" in data["detail"]
+        assert data["detail"] == "Unknown LLM provider: 'nope'"
         assert data["cached"] is False
+
+    async def test_a_provider_failure_that_is_not_author_written_never_reaches_the_detail(
+        self, client: AsyncClient
+    ) -> None:
+        with (
+            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.llm.provider.create_provider", side_effect=ValueError("bad key sk-SECRET")),
+        ):
+            resp = await client.get("/api/models/available", params={"layer": "llm"})
+        assert resp.status_code == 200
+        assert resp.json()["detail"] == "LLM provider is misconfigured or its SDK is not installed"
+        assert "sk-SECRET" not in resp.text
 
     async def test_enumeration_timeout_falls_back_to_curated_and_is_not_cached(self, client: AsyncClient) -> None:
         provider = _FakeModelsProvider([_model()], delay=0.2)
@@ -14699,6 +14734,7 @@ class TestAvailableModelsAPI:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
             resp = await client.get("/api/models/available", params={"layer": "llm"})
         assert resp.status_code == 503
+        assert "config unreadable" not in resp.text
 
     async def test_layer_runtime_reachable_returns_runtime_reported_models(self, client: AsyncClient) -> None:
         runtime = _FakeRuntimeForModels(["claude-sonnet-5-5"])
@@ -14845,7 +14881,8 @@ class TestAvailableModelsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["source"] == "curated"
-        assert "litellm not installed" in data["detail"]
+        assert data["detail"] == "LLM provider is misconfigured or its SDK is not installed"
+        assert "litellm not installed" not in str(data)
 
     async def test_refresh_allowance_not_consumed_when_config_load_fails(self, client: AsyncClient) -> None:
         """A refresh that fails before create_provider is even reached (the
@@ -18502,7 +18539,9 @@ class TestPlannerCreateIssues:
         from sova.adapters.base import Task, TaskState
 
         mock_adapter = AsyncMock()
-        mock_adapter.create_issue.return_value = Task(id="200", title="feat(cli): new cmd", state=TaskState.BACKLOG)
+        mock_adapter.create_issue.return_value = Task(
+            id="200", title="feat(cli): new cmd", state=TaskState.BACKLOG, url="https://example.test/issues/200"
+        )
 
         with patch("sova.adapters.create_adapter", return_value=mock_adapter):
             resp = await client.post(
@@ -18518,7 +18557,8 @@ class TestPlannerCreateIssues:
         data = resp.json()
         assert len(data["created"]) == 1
         assert data["created"][0]["number"] == "200"
-        assert data["errors"] == []
+        assert data["created"][0]["url"] == "https://example.test/issues/200"
+        assert "errors" not in data
 
     async def test_create_issues_empty_list(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -18528,7 +18568,6 @@ class TestPlannerCreateIssues:
         assert resp.status_code == 200
         data = resp.json()
         assert data["created"] == []
-        assert data["errors"] == []
 
     async def test_create_issues_partial_failure(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
@@ -18543,7 +18582,12 @@ class TestPlannerCreateIssues:
             call_count += 1
             if call_count == 2:
                 raise RuntimeError("Rate limited")
-            return Task(id=str(100 + call_count), title=title, state=TaskState.BACKLOG)
+            return Task(
+                id=str(100 + call_count),
+                title=title,
+                state=TaskState.BACKLOG,
+                url=f"https://example.test/issues/{100 + call_count}",
+            )
 
         mock_adapter.create_issue.side_effect = _create_issue
 
@@ -18559,11 +18603,18 @@ class TestPlannerCreateIssues:
                 },
             )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["created"]) == 2
-        assert len(data["errors"]) == 1
-        assert data["errors"][0]["title"] == "Task 2"
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert detail["message"] == "Some issues could not be created on the tracker"
+        results = detail["results"]
+        assert [r["ok"] for r in results] == [True, False, True]
+        assert results[1] == {"ok": False, "title": "Task 2", "error": "Issue creation failed"}
+        # The created entries carry the number and url so a caller can reconcile without re-creating them.
+        assert [(r["number"], r["url"]) for r in (results[0], results[2])] == [
+            ("101", "https://example.test/issues/101"),
+            ("103", "https://example.test/issues/103"),
+        ]
+        assert "Rate limited" not in resp.text
 
     async def test_create_issues_jira_project_sends_no_labels(self, client: AsyncClient) -> None:
         """Jira rejects any label containing a space; a Jira-configured project
@@ -18606,17 +18657,18 @@ class TestPlannerCreateIssues:
 
 
 class TestPlannerTaskLabels:
-    """Direct unit tests for _planner_task_labels(), the function that turns
+    """Direct unit tests for planner_task_labels(), the function that turns
     a planner-proposed task into GitHub label strings. Only the endpoint-level
     behavior (Jira sends no labels) was covered before; these pin the
     GitHub-side label construction and its validation against the catalog.
     """
 
     def test_github_component_and_priority(self) -> None:
-        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+        from sova.dashboard.routers.agents import PlannedTaskRequest
+        from sova.dashboard.services.planner_issue_service import planner_task_labels
 
         task = PlannedTaskRequest(title="t", component="dashboard", priority="high")
-        assert _planner_task_labels(task, is_github=True) == ["area: dashboard", "priority: high"]
+        assert planner_task_labels(task, is_github=True) == ["area: dashboard", "priority: high"]
 
     @pytest.mark.parametrize(
         ("component", "priority", "expected"),
@@ -18628,22 +18680,25 @@ class TestPlannerTaskLabels:
         ],
     )
     def test_github_unknown_value_dropped(self, component: str, priority: str, expected: list[str]) -> None:
-        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+        from sova.dashboard.routers.agents import PlannedTaskRequest
+        from sova.dashboard.services.planner_issue_service import planner_task_labels
 
         task = PlannedTaskRequest(title="t", component=component, priority=priority)
-        assert _planner_task_labels(task, is_github=True) == expected
+        assert planner_task_labels(task, is_github=True) == expected
 
     def test_github_no_fields_returns_none(self) -> None:
-        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+        from sova.dashboard.routers.agents import PlannedTaskRequest
+        from sova.dashboard.services.planner_issue_service import planner_task_labels
 
         task = PlannedTaskRequest(title="t")
-        assert _planner_task_labels(task, is_github=True) is None
+        assert planner_task_labels(task, is_github=True) is None
 
     def test_non_github_returns_none(self) -> None:
-        from sova.dashboard.routers.agents import PlannedTaskRequest, _planner_task_labels
+        from sova.dashboard.routers.agents import PlannedTaskRequest
+        from sova.dashboard.services.planner_issue_service import planner_task_labels
 
         task = PlannedTaskRequest(title="t", component="dashboard", priority="high")
-        assert _planner_task_labels(task, is_github=False) is None
+        assert planner_task_labels(task, is_github=False) is None
 
 
 class TestHandoffIssueFilter:
@@ -19385,6 +19440,34 @@ class TestComplexityEndpoint:
         data = resp.json()
         assert data["complexity"] == "moderate"
         assert data["suggested_model"] == "sonnet"
+
+    async def test_complexity_survives_a_failed_assessment_lookup(self, client: AsyncClient) -> None:
+        """A database failure on the stored-assessment lookup costs the shortcut, not the launch modal."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy.exc import OperationalError
+
+        mock_task = MagicMock()
+        mock_task.title = "Refactor the authentication module"
+        mock_task.description = "Large refactor across multiple files"
+        mock_task.labels = ["complex"]
+        mock_adapter = AsyncMock()
+        mock_adapter.get_task = AsyncMock(return_value=mock_task)
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(
+                "sova.dashboard.services.llm_suggestion_service.get_session",
+                new_callable=AsyncMock,
+                side_effect=OperationalError("select", {}, Exception("db is locked")),
+            ) as mock_get_session,
+        ):
+            resp = await client.get("/api/agents/issue/102/complexity")
+
+        # The "complex" label gives the same answer with or without the lookup, so only the call proves it failed.
+        mock_get_session.assert_awaited_once()
+        assert resp.status_code == 200
+        assert resp.json()["complexity"] == "complex"
 
     async def test_complexity_response_includes_confirm_model(self, client: AsyncClient, session: AsyncSession) -> None:
         from sova.db.models import TaskAssessmentRecord

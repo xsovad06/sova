@@ -55,6 +55,11 @@ class CIBudgetTracker:
         self._ttl_seconds = ttl_seconds
         self._cache: dict[str, tuple[float, CIBudget]] = {}
 
+    def is_cached(self, repo: str) -> bool:
+        """Whether a fresh entry for *repo* is cached, so the next ``get_budget()`` answers without a fetch."""
+        entry = self._cache.get(repo)
+        return entry is not None and (time.monotonic() - entry[0]) < self._ttl_seconds
+
     async def get_budget(self, repo: str, github_user: str = "") -> CIBudget:
         """Return the current CI budget, fetching from the API if the cache is stale."""
         if not repo:

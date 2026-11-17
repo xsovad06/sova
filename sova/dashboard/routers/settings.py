@@ -3,106 +3,37 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 
-from sova.adapters.label_catalog import REQUIRED_LABELS as _REQUIRED_LABELS
 from sova.config.context import get_project_dir, resolve_project_dir, resolve_project_dir_or_none
 from sova.config.models import ProjectConfig
+from sova.dashboard.config_errors import load_config_or_http, validation_detail
 from sova.dashboard.security import require_same_origin_csrf
-from sova.dashboard.services import settings_service
+from sova.dashboard.services import github_labels_service, settings_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.dashboard.services.settings_service import (
+    apply_config_update,
+    config_value_to_str,
+    reload_pinned,
+)
 from sova.dashboard.settings_meta import get_meta
+from sova.llm.errors import ComponentMisconfiguredError
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
 
-_daemon_lifecycle_locks: dict[str | None, asyncio.Lock] = {}
-_oversight_lifecycle_lock = asyncio.Lock()
-
-
-def _get_lifecycle_lock(project_dir: Path | None) -> asyncio.Lock:
-    """Return a per-project async lock for serializing daemon lifecycle transitions."""
-    key = str(project_dir.resolve()) if project_dir else None
-    if key not in _daemon_lifecycle_locks:
-        _daemon_lifecycle_locks[key] = asyncio.Lock()
-    return _daemon_lifecycle_locks[key]
-
-
-async def _reload_daemon_config(project_dir: Path | None) -> None:
-    """Hot-reload supervisor daemon config after settings update.
-
-    Lifecycle-aware: stops the daemon when ``supervisor.enabled`` becomes
-    False, starts a new one when it becomes True. Serialized per project
-    to prevent concurrent enable/disable races.
-
-    Raises on lifecycle failure so the caller can report it to the UI.
-    """
-    from sova.config.loader import load_config
-    from sova.dashboard.routers.supervisor import _daemon_registry, _get_daemon
-
-    async with _get_lifecycle_lock(project_dir):
-        cfg = load_config(project_dir)
-        daemon = _get_daemon(project_dir)
-
-        if not cfg.supervisor.enabled:
-            if daemon is not None and daemon.running:
-                await daemon.stop()
-                key = str(project_dir.resolve()) if project_dir else None
-                if key is None and len(_daemon_registry) == 1:
-                    key = next(iter(_daemon_registry))
-                if key is not None:
-                    _daemon_registry.pop(key, None)
-                log.info("settings.daemon_stopped_on_disable")
-            elif daemon is not None:
-                daemon.reload_config(cfg)
-        elif daemon is not None:
-            daemon.reload_config(cfg)
-        else:
-            from sova.db.session import get_session_factory
-            from sova.supervisor.daemon import SupervisorDaemon
-
-            resolved = project_dir or Path.cwd()
-            session_factory = await get_session_factory(resolved)
-            new_daemon = SupervisorDaemon(config=cfg, project_dir=resolved, session_factory=session_factory)
-            new_daemon.start()
-            _daemon_registry[str(resolved.resolve())] = new_daemon
-            log.info("settings.daemon_started_on_enable")
-
-
-# Maximum number of errors to include in label creation response
-_MAX_LABEL_ERRORS = 10
-
-# Maximum length of individual error messages to prevent unbounded response size
-_MAX_ERROR_MESSAGE_LENGTH = 200
-
-# Concurrency limit for parallel label creation requests
-_LABEL_CREATE_CONCURRENCY = 5
-
 
 def _extract_validation_detail(exc: Exception) -> str:
     """Extract a user-readable message from a Pydantic ValidationError, or fall back to generic."""
-    try:
-        from pydantic import ValidationError
-
-        if isinstance(exc, ValidationError) or (exc.__cause__ and isinstance(exc.__cause__, ValidationError)):
-            ve = exc if isinstance(exc, ValidationError) else exc.__cause__
-            fields = []
-            for err in ve.errors():
-                loc = ".".join(str(p) for p in err.get("loc", []))
-                msg = err.get("msg", "")
-                fields.append(f"{loc}: {msg}")
-            if fields:
-                return f"Invalid configuration: {'; '.join(fields[:3])}"
-    except ImportError:
-        pass
-    return "Failed to fetch configuration"
+    return validation_detail(exc) or "Failed to fetch configuration"
 
 
 def _validate_github_config(cfg: ProjectConfig) -> None:
@@ -142,6 +73,16 @@ def _settings_project_dir() -> Path | None:
     return resolve_project_dir_or_none(get_project_dir(), default_project_dir=get_default_project_dir())
 
 
+def _load_cfg(project_dir: Path | None = None) -> ProjectConfig:
+    """The (cached) config of *project_dir*, else of the project this router acts on.
+
+    ``load_config`` is imported at call time so a test patching ``sova.config.loader.load_config`` takes effect.
+    """
+    from sova.config.loader import load_config
+
+    return load_config(project_dir if project_dir is not None else _settings_project_dir())
+
+
 @router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
 async def get_config() -> dict:
     """Get the current project configuration (flat, for backward compat)."""
@@ -178,7 +119,7 @@ async def get_config_grouped() -> dict:
 
 @router.post(
     "/settings/config/migrate-secret",
-    responses={500: {"description": "Failed to migrate secret"}},
+    responses={500: {"description": "Internal error"}},
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def migrate_secret_to_keyring(req: SecretKeyRequest) -> dict:
@@ -187,12 +128,8 @@ async def migrate_secret_to_keyring(req: SecretKeyRequest) -> dict:
     Explicit action only, triggered by the settings page "Move to keychain"
     button; never run automatically.
     """
-    try:
-        project_dir = _settings_project_dir()
-        return await settings_service.migrate_secret_to_keyring(project_dir, req.key)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.config.migrate_secret.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to migrate secret") from exc
+    project_dir = _settings_project_dir()
+    return await settings_service.migrate_secret_to_keyring(project_dir, req.key)
 
 
 class _AvailabilityCheckable(Protocol):
@@ -206,45 +143,55 @@ async def _check_component_availability(
     log_prefix: str,
     resolve_name: Callable[[ProjectConfig], str],
     build: Callable[[ProjectConfig], _AvailabilityCheckable],
+    component_label: str,
 ) -> dict:
     """Shared body for the LLM-provider and agent-runtime connection tests.
 
     Both load the project config, build a component from it, and report that
-    component's ``check_available()`` result. Every failure (config load,
-    construction, or the probe itself) is returned inline as
-    ``{ok: false, <result_key>: ..., detail: ...}`` rather than as a 500.
+    component's ``check_available()`` result. A component that reports itself
+    unavailable is a normal answer (``{ok: false, <result_key>: ..., detail: ...}``).
+    A failure to run the check is reported by category, each with a fixed detail except a misconfiguration (the
+    real exception is logged). An unloadable project config is answered as ``config_errors.config_http_error()``
+    does (422 naming the fields, 400, or 503). A component the config cannot build is a 400 carrying the
+    ``ComponentMisconfiguredError`` message (author-written, such as an unknown provider), or a 502 for any other
+    build failure. A probe that fails is a 502 naming the component unreachable.
     """
-    from sova.config.loader import load_config
-
-    try:
-        cfg = load_config(_settings_project_dir())
-    except Exception as exc:  # noqa: BLE001 (report config errors inline, not as 500)
-        log.warning(f"{log_prefix}.config_error", exc_info=True)
-        return {"ok": False, result_key: None, "detail": f"Failed to load configuration: {exc}"}
+    cfg = load_config_or_http(_load_cfg, event=f"{log_prefix}.config_error")
 
     name = resolve_name(cfg)
     try:
         component = build(cfg)
-    except Exception as exc:  # noqa: BLE001 (misconfiguration must not 500)
+    except ComponentMisconfiguredError as exc:
         log.info(f"{log_prefix}.create_failed", name=name, exc_info=True)
-        return {"ok": False, result_key: name, "detail": str(exc)}
+        raise HTTPException(status_code=400, detail=exc.user_message) from exc
+    except Exception as exc:  # noqa: BLE001 (any other construction failure becomes the fixed 502 below, logged)
+        log.info(f"{log_prefix}.create_failed", name=name, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"{component_label} check failed") from exc
 
     try:
         available, detail = await component.check_available()
-    except Exception as exc:  # noqa: BLE001 (component errors must not 500)
+    except Exception as exc:  # noqa: BLE001 (any probe failure becomes the fixed 502 below, logged)
         log.info(f"{log_prefix}.check_failed", name=name, exc_info=True)
-        return {"ok": False, result_key: name, "detail": str(exc)}
+        raise HTTPException(status_code=502, detail=f"{component_label} unreachable") from exc
 
     return {"ok": bool(available), result_key: name, "detail": detail}
 
 
-@router.post("/settings/llm/test-connection")
+@router.post(
+    "/settings/llm/test-connection",
+    responses={
+        400: {"description": "LLM provider is misconfigured (the detail says what to fix)"},
+        422: {"description": "The project configuration failed validation"},
+        502: {"description": "LLM provider unreachable or its check failed"},
+        503: {"description": "Project configuration could not be loaded"},
+    },
+)
 async def test_llm_connection() -> dict:
     """Validate the configured LLM provider credentials.
 
     Routes through the provider abstraction (``create_provider`` +
-    ``check_available``) so it stays provider-agnostic. Any construction or
-    validation error is returned as ``{ok: false, detail}`` rather than a 500.
+    ``check_available``) so it stays provider-agnostic. A failure is reported by
+    category (see ``_check_component_availability``).
     """
     from sova.llm.provider import create_provider
 
@@ -253,17 +200,25 @@ async def test_llm_connection() -> dict:
         "settings.llm.test",
         lambda cfg: cfg.llm.provider,
         lambda cfg: create_provider(cfg.llm),
+        "LLM provider",
     )
 
 
-@router.post("/settings/agent-runtime/test-connection")
+@router.post(
+    "/settings/agent-runtime/test-connection",
+    responses={
+        400: {"description": "Agent runtime is misconfigured (the detail says what to fix)"},
+        422: {"description": "The project configuration failed validation"},
+        502: {"description": "Agent runtime unreachable or its check failed"},
+        503: {"description": "Project configuration could not be loaded"},
+    },
+)
 async def test_agent_runtime_connection() -> dict:
     """Validate the configured agent runtime CLI (claude-code, aider, or codex).
 
     Mirrors ``/settings/llm/test-connection``: routes through the runtime
     abstraction (``create_runtime`` + ``check_available``) so it stays
-    runtime-agnostic, and any construction or validation error is returned as
-    ``{ok: false, detail}`` rather than a 500.
+    runtime-agnostic, and a failure is reported by category (see ``_check_component_availability``).
     """
     from sova.ipc.runtime import create_runtime
 
@@ -272,6 +227,7 @@ async def test_agent_runtime_connection() -> dict:
         "settings.runtime.test",
         lambda cfg: cfg.agent.runtime,
         lambda cfg: create_runtime(cfg.agent.runtime, codex=cfg.codex),
+        "Agent runtime",
     )
 
 
@@ -290,17 +246,21 @@ def _decimal_to_float(obj: object) -> object:
 
 @router.get("/settings/llm/cost-projection")
 async def llm_cost_projection() -> dict:
-    """Return a lightweight monthly cost projection from recent usage."""
+    """Return a lightweight monthly cost projection from recent usage.
+
+    A database failure degrades to ``{"insufficient_data": true}`` (logged), so the widget always renders.
+    """
     from sova.dashboard.services import cost_service
     from sova.db.session import get_session
 
+    project_dir = _settings_project_dir()
     try:
-        project_dir = _settings_project_dir()
         async with await get_session(project_dir=project_dir) as session:
             projection = await cost_service.get_monthly_projection(session)
-    except Exception as exc:  # noqa: BLE001 (never 500 a widget)
+    except (SQLAlchemyError, OSError):
+        # A widget on the settings page: a database failure costs it its numbers, never the page a 500.
         log.warning("settings.llm.cost_projection.error", exc_info=True)
-        return {"insufficient_data": True, "detail": str(exc)}
+        return {"insufficient_data": True}
 
     return _decimal_to_float(
         {
@@ -314,185 +274,28 @@ async def llm_cost_projection() -> dict:
     )
 
 
-_RESTART_REQUIRED_PREFIXES = frozenset({"server.", "watch.", "database_url"})
-
-_RELOAD_PREFIX_MAP: dict[str, str] = {
-    "supervisor.": "supervisor",
-    "oversight.": "oversight",
-    "watchdog.": "watchdog",
-    "memory_guard.": "watchdog",
-    "pr_monitor.": "pr_monitor",
-    "coderabbit_quota.": "coderabbit_quota",
-    "integration.": "integration",
-    "llm.": "llm",
-    "agent.runtime": "runtime",
-    "codex.": "runtime",
-}
-
-
-def _match_reload_target(key: str) -> str | None:
-    """Match a config key to a reload target via prefix lookup."""
-    for prefix, target in _RELOAD_PREFIX_MAP.items():
-        if key == prefix.rstrip(".") or key.startswith(prefix):
-            return target
-    return None
-
-
-async def _start_pr_throttle_if_enabled(cfg: ProjectConfig, project_dir: Path | None) -> None:
-    """Start the PR throttle loop for *project_dir* once the quota is enabled at runtime.
-
-    Enabling the quota after the server started leaves no loop to reload; without one, create_pr's
-    heartbeat check sends every PR down the direct path. *project_dir* and *cfg* are the ones
-    ``_reload_all_configs`` resolved (a request scope, else the single-project default ``create_app()``
-    was given, which need not be the working directory), so the start, the reload and the daemon
-    components lookup all act on the same project. ``None`` is multi-project mode with no request scope:
-    the root config decides nothing there, so nothing starts (a loop already registered under the working
-    directory is still reloaded by the caller, since that is the config the request just wrote).
-    """
-    from sova.dashboard.app import ensure_pr_throttle_loop
-
-    if project_dir is None:
-        log.debug("settings.pr_throttle_start_skipped", reason="no project in scope")
-        return
-    await ensure_pr_throttle_loop(project_dir, cfg)
-
-
-async def _dispatch_config_reload(
-    target: str,
-    cfg: ProjectConfig,
-    components: dict,
-    project_dir: Path | None,
-) -> None:
-    """Execute the reload for a single target. Raises on failure."""
-    if target == "supervisor":
-        await _reload_daemon_config(project_dir)
-    elif target == "oversight":
-        await _reload_oversight_config_with_cfg(cfg)
-    elif target == "watchdog":
-        wd = components.get("watchdog")
-        if wd is not None:
-            wd.reload_config(cfg.watchdog, cfg.memory_guard)
-    elif target == "pr_monitor":
-        for mon in components.get("pr_monitors", []):
-            mon.reload_config(cfg.pr_monitor, cfg.notification)
-    elif target == "coderabbit_quota":
-        # Reloading acts on whatever loop *components* holds, which the caller looked up under the resolved
-        # project (the working directory when no project is in scope, as for every other target). Starting
-        # a new loop is a decision about a named project, so it needs one.
-        for throttle in components.get("pr_throttles", []):
-            throttle.reload_config(cfg.coderabbit_quota)
-        await _start_pr_throttle_if_enabled(cfg, project_dir)
-    elif target == "integration":
-        for mqm in components.get("merge_queue_monitors", []):
-            mqm.reload_config(cfg.integration, cfg.notification)
-    elif target == "llm":
-        from sova.llm.client import reload_provider_async
-
-        await reload_provider_async(cfg, project_dir)
-    elif target == "runtime":
-        from sova.ipc.runtime import reload_runtime
-
-        reload_runtime(cfg)
-
-
-async def _reload_all_configs(project_dir: Path | None, key: str) -> str | None:
-    """Dispatch config reload to the appropriate daemons based on key prefix.
-
-    Returns a lifecycle error message string, or None on success.
-    """
-    from sova.config.loader import load_config
-    from sova.dashboard.app import get_daemon_components
-
-    matched = _match_reload_target(key)
-    if matched is None:
-        return None
-
-    try:
-        # Resolve the target once, the way the lifespan keyed its loops at startup, so the config, the
-        # daemon components lookup and the dispatch all name the same project. Without a request scope
-        # that is the single-project default, which need not be the working directory.
-        target_dir = resolve_project_dir_or_none(project_dir, default_project_dir=get_default_project_dir())
-        cfg = await asyncio.to_thread(load_config, target_dir)
-        resolved_key = str(target_dir.resolve()) if target_dir else str(Path.cwd().resolve())
-        components = get_daemon_components().get(resolved_key, {})
-        await _dispatch_config_reload(matched, cfg, components, target_dir)
-    except Exception:  # noqa: BLE001 (reload spans config load, daemon lookup and per-component dispatch)
-        log.warning("settings.reload_failed", target=matched, exc_info=True)
-        return f"Config saved but {matched} reload failed"
-
-    return None
-
-
-async def _reload_oversight_config_with_cfg(cfg: ProjectConfig) -> None:
-    """Trigger a config reload on the oversight agent using a pre-loaded config.
-
-    Manages lifecycle: stops when disabled, starts when enabled.
-    """
-    from sova.dashboard.routers.oversight import get_oversight_agent
-
-    async with _oversight_lifecycle_lock:
-        agent = get_oversight_agent()
-        if agent is not None:
-            agent.reload_config(cfg)
-            if not agent._config.enabled and agent.running:
-                await agent.stop()
-                log.info("settings.oversight_stopped_on_disable")
-            elif agent._config.enabled and not agent.running:
-                agent.start()
-
-
-def _config_value_to_str(raw: object) -> str:
-    """Normalize a JSON boolean or number to the string form the settings service expects."""
-    if isinstance(raw, bool):
-        return "true" if raw else "false"
-    return str(raw)
-
-
-def _key_requires_restart(key: str) -> bool:
-    """Return True when changing *key* only takes effect after a server restart."""
-    meta = get_meta(key)
-    if meta is not None and meta.requires_restart:
-        return True
-    return any(key == prefix or key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES)
-
-
-async def _apply_config_update(project_dir: Path, key: str, result: dict) -> None:
-    """Propagate a saved setting to running components and annotate *result*."""
-    if key == "max_parallel_agents":
-        from sova.dashboard.services.agent_pool import sync_max_concurrent
-
-        sync_max_concurrent(project_dir)
-    lifecycle_error = await _reload_all_configs(project_dir, key)
-    if lifecycle_error:
-        result["lifecycle_error"] = lifecycle_error
-    if _key_requires_restart(key):
-        result["restart_required"] = True
-
-
 @router.post(
     "/settings/config",
     responses={
-        422: {"description": "The configured database cannot be read back, so the setting was not saved"},
-        500: {"description": "Failed to update configuration"},
+        404: {"description": "No such setting"},
+        409: {"description": "A SOVA_ environment variable sets this value"},
+        422: {"description": "The value was rejected, or the configured database cannot be read back"},
+        503: {"description": "The project database could not be written; retry"},
     },
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def update_config(req: ConfigUpdateRequest) -> dict:
     """Update a single configuration key."""
-    try:
-        project_dir = _settings_project_dir()
-        value_str = _config_value_to_str(req.value)
-        result = await settings_service.update_config(project_dir, key=req.key, value=value_str, provider=req.provider)
-        if result.get("unreadable_database"):
-            raise HTTPException(status_code=422, detail=result["error"])
-        if result.get("status") == "ok":
-            await _apply_config_update(project_dir, req.key, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.config.update.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
+    project_dir = _settings_project_dir()
+    value_str = config_value_to_str(req.value)
+    result = await settings_service.update_config(project_dir, key=req.key, value=value_str, provider=req.provider)
+    if result.get("unreadable_database"):
+        # Kept as a 422 (not the helper's 503): the stored values cannot be read back, retrying does not help.
+        raise HTTPException(status_code=422, detail=result["error"])
+    _raise_for_write_error(result)
+    if result.get("status") == "ok":
+        await apply_config_update(project_dir, req.key, result)
+    return result
 
 
 class ConfigResetRequest(BaseModel):
@@ -505,88 +308,36 @@ class ConfigResetRequest(BaseModel):
         404: {"description": "No such setting and no stored value under that key"},
         409: {"description": "A SOVA_ environment variable sets this value, so there is nothing to reset here"},
         422: {"description": "Not reset: the default would make the project config invalid"},
-        500: {"description": "Failed to reset the setting"},
+        500: {"description": "Internal error"},
         503: {"description": "The project database could not be read or written, so nothing was removed; retry"},
     },
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def reset_config(req: ConfigResetRequest) -> dict:
     """Delete the value stored for one setting, so its default applies again (Settings, "Changed only")."""
-    try:
-        project_dir = _settings_project_dir()
-        result = await settings_service.reset_config(project_dir, key=req.key)
-        if result.get("unknown"):
-            raise HTTPException(status_code=404, detail=result["error"])
-        if result.get("env_var"):
-            raise HTTPException(status_code=409, detail=result["error"])
-        if result.get("unavailable") or result.get("unreadable_database"):
-            raise HTTPException(status_code=503, detail=result["error"])
-        if "error" in result:
-            raise HTTPException(status_code=422, detail=result["error"])
-        if get_meta(req.key) is not None:
-            await _apply_config_update(project_dir, req.key, result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.config.reset.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to reset the setting") from exc
+    project_dir = _settings_project_dir()
+    result = await settings_service.reset_config(project_dir, key=req.key)
+    _raise_for_write_error(result)
+    if get_meta(req.key) is not None:
+        await apply_config_update(project_dir, req.key, result)
+    return result
 
 
-async def _llm_catalog(project_dir: Path) -> list[str] | None:
-    """The LLM-layer model IDs ``GET /models/available`` lists, or None when there is no real list (the curated
-    fallback stands in for an unreachable provider, so it does not name this deployment's models)."""
-    from sova.dashboard.services import models_service
-
-    try:
-        data = await models_service.get_available_models(project_dir, layer="llm")
-    except Exception:  # noqa: BLE001 (no list means Pin leaves an ambiguous short name alone)
-        log.debug("settings.models.catalog_unavailable", exc_info=True)
-        return None
-    if data.get("source") == "curated":
-        return None
-    return [m["id"] for m in data.get("models", []) if isinstance(m, dict) and m.get("id")]
-
-
-async def _catalog_if_needed(short_names: list[dict], project_dir: Path | None) -> list[str] | None:
-    """The model list, fetched only when one of *short_names* (``short_name_settings()`` without a list) is left
-    unresolved by ``resolve_alias()``: enumerating can take seconds, and on the usual first-party setup every short
-    name resolves without it."""
-    if all(item["pin_to"] is not None or item["env_var"] for item in short_names):
-        return None
-    return await _llm_catalog(project_dir or Path.cwd())
-
-
-def _runtime_honours_model(cfg: ProjectConfig) -> bool:
-    """Whether the configured agent runtime runs the model a step passes (Codex does not)."""
-    from sova.ipc.runtime import create_runtime
-
-    try:
-        return create_runtime(cfg.agent.runtime, codex=cfg.codex).honours_model_override
-    except Exception:  # noqa: BLE001 (an unbuildable runtime is reported elsewhere; assume the default behavior)
-        return True
-
-
-@router.get("/settings/models/map", responses={500: {"description": "Failed to build the model map"}})
+@router.get(
+    "/settings/models/map",
+    responses={
+        400: {"description": "The project config is missing or unparsable"},
+        422: {"description": "The project configuration failed validation (the detail names the fields)"},
+        500: {"description": "Internal error"},
+        503: {"description": "Project configuration could not be loaded"},
+    },
+)
 async def get_model_map() -> dict:
     """Which model each role and step runs on and why, with fallbacks, and the settings stored as a short name
-    (Settings, Models view)."""
-    from sova.config.loader import load_config
-    from sova.dashboard.services.model_map_service import build_model_map, short_name_settings
-
-    try:
-        project_dir = _settings_project_dir()
-        cfg = await asyncio.to_thread(load_config, project_dir)
-        honours = _runtime_honours_model(cfg)
-        payload = build_model_map(cfg, runtime_honours_model=honours)
-        payload["runtime"] = {"name": cfg.agent.runtime, "honours_model": honours}
-        short_names = short_name_settings(cfg)
-        catalog = await _catalog_if_needed(short_names, project_dir)
-        payload["short_names"] = short_names if catalog is None else short_name_settings(cfg, catalog)
-        return payload
-    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
-        log.warning("settings.models.map.error", exc_info=True)
-        raise HTTPException(status_code=500, detail=_extract_validation_detail(exc)) from None
+    (Settings, Models view). An invalid config is a 422 naming the fields, so the view shows what to fix."""
+    # The service loads the (cached) config itself; loading it here first turns a failure into the shared answer.
+    await asyncio.to_thread(load_config_or_http, _load_cfg, event="settings.models_map.config_load_failed")
+    return await settings_service.get_model_map_payload(_settings_project_dir())
 
 
 class StepModelRequest(BaseModel):
@@ -602,23 +353,17 @@ class StepModelRequest(BaseModel):
         409: {"description": "A SOVA_ environment variable sets llm.routing"},
         422: {"description": "The step's model was not saved"},
         503: {"description": "The database could not be written or read back; retry"},
-        500: {"description": "Failed to save the step's model"},
+        500: {"description": "Internal error"},
     },
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def set_step_model(req: StepModelRequest) -> dict:
     """Set the model one step runs on (writes ``llm.routing.<step>``), or with an empty model delete that row."""
-    try:
-        project_dir = _settings_project_dir()
-        result = await settings_service.set_step_model(project_dir, step=req.step, model=req.model)
-        _raise_for_write_error(result)
-        await _apply_config_update(project_dir, "llm.routing", result)
-        return result
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.models.step.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to save the step's model") from exc
+    project_dir = _settings_project_dir()
+    result = await settings_service.set_step_model(project_dir, step=req.step, model=req.model)
+    _raise_for_write_error(result)
+    await apply_config_update(project_dir, "llm.routing", result)
+    return result
 
 
 class PinRequest(BaseModel):
@@ -632,50 +377,23 @@ class PinRequest(BaseModel):
         409: {"description": "A setting changed since it was read; reload and retry"},
         422: {"description": "Nothing was pinned"},
         503: {"description": "The database could not be written or read back; retry"},
-        500: {"description": "Failed to pin"},
+        500: {"description": "Internal error"},
     },
     dependencies=[Depends(require_same_origin_csrf)],
 )
 async def pin_short_names(req: PinRequest) -> dict:
     """Replace settings stored as a short model name with the exact ID each runs as today (Pin, Pin all)."""
+    project_dir = _settings_project_dir()
+    catalog = await settings_service.pin_catalog(project_dir)
+    result = await settings_service.pin_short_names(project_dir, keys=req.keys, catalog=catalog)
     try:
-        project_dir = _settings_project_dir()
-        from sova.config.loader import load_config
-
-        try:
-            cfg = await asyncio.to_thread(load_config, project_dir)
-        except Exception:  # noqa: BLE001 (pin_short_names() reports an unloadable config as a 422 below)
-            cfg = None
-        catalog = None
-        if cfg is not None:
-            from sova.dashboard.services.model_map_service import short_name_settings
-
-            catalog = await _catalog_if_needed(short_name_settings(cfg), project_dir)
-        result = await settings_service.pin_short_names(project_dir, keys=req.keys, catalog=catalog)
-        try:
-            _raise_for_write_error(result)
-        except HTTPException:
-            # A routing write that failed after the other pins were stored: those reach their components anyway.
-            await _reload_pinned(project_dir, result.get("committed", ()), result)
-            raise
-        await _reload_pinned(project_dir, result.get("pinned", {}), result)
-        return result
+        _raise_for_write_error(result)
     except HTTPException:
+        # A routing write that failed after the other pins were stored: those reach their components anyway.
+        await reload_pinned(project_dir, result.get("committed", ()), result)
         raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.models.pin.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to pin the model names") from exc
-
-
-async def _reload_pinned(project_dir: Path, keys: Iterable[str], result: dict) -> None:
-    """Apply the config update for each reload target the pinned *keys* belong to, once per target."""
-    reloaded: set[str] = set()
-    for key in keys:
-        setting = "llm.routing" if key.startswith("llm.routing.") else key
-        target = _match_reload_target(setting) or setting
-        if target not in reloaded:
-            reloaded.add(target)
-            await _apply_config_update(project_dir, setting, result)
+    await reload_pinned(project_dir, result.get("pinned", {}), result)
+    return result
 
 
 def _raise_for_write_error(result: dict) -> None:
@@ -692,92 +410,78 @@ def _raise_for_write_error(result: dict) -> None:
 
 @router.get(
     "/settings/installation/status",
-    responses={500: {"description": "Failed to check installation status"}},
+    responses={
+        400: {"description": "The project config is missing or unparsable"},
+        422: {"description": "The project configuration failed validation"},
+        500: {"description": "Internal error"},
+        503: {"description": "Project configuration could not be loaded"},
+    },
 )
 async def installation_status() -> dict[str, object]:
     """Check for available SOVA command and guideline updates."""
     from sova.agents.claude_code import ClaudeCodeAdapter
     from sova.commands.catalog import get_canonical_dir
     from sova.commands.distribution import diff_commands
-    from sova.config.loader import load_config
 
     project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
 
-    try:
-        cfg = load_config(project_dir)
-    except (FileNotFoundError, ValueError, KeyError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to load project config: {exc}",
-        ) from exc
+    cfg = load_config_or_http(lambda: _load_cfg(project_dir), event="settings.installation.config_load_failed")
 
-    try:
-        from sova.commands.distribution import DiffResult
-        from sova.commands.manifest import read_manifest
+    from sova.commands.distribution import DiffResult
+    from sova.commands.manifest import read_manifest
 
-        claude_adapter = ClaudeCodeAdapter()
-        canonical_dir = get_canonical_dir()
-        commands_dir = claude_adapter.commands_dir(project_dir)
-        rules_dir = project_dir / ".claude" / "rules"
+    claude_adapter = ClaudeCodeAdapter()
+    canonical_dir = get_canonical_dir()
+    commands_dir = claude_adapter.commands_dir(project_dir)
+    rules_dir = project_dir / ".claude" / "rules"
 
-        cmd_diff = await asyncio.to_thread(diff_commands, canonical_dir, commands_dir, cfg, adapter=claude_adapter)
+    cmd_diff = await asyncio.to_thread(diff_commands, canonical_dir, commands_dir, cfg, adapter=claude_adapter)
 
-        # Only diff guidelines if they were previously installed (manifest exists)
-        if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
-            from sova.commands.catalog import get_guidelines_dir
-            from sova.commands.distribution import diff_guidelines
+    # Only diff guidelines if they were previously installed (manifest exists)
+    if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+        from sova.commands.catalog import get_guidelines_dir
+        from sova.commands.distribution import diff_guidelines
 
-            guidelines_dir = get_guidelines_dir()
-            guide_diff = await asyncio.to_thread(diff_guidelines, guidelines_dir, rules_dir, cfg)
-        else:
-            guide_diff = DiffResult()
+        guidelines_dir = get_guidelines_dir()
+        guide_diff = await asyncio.to_thread(diff_guidelines, guidelines_dir, rules_dir, cfg)
+    else:
+        guide_diff = DiffResult()
 
-        total = (
-            len(cmd_diff.changed)
-            + len(cmd_diff.new)
-            + len(cmd_diff.removed)
-            + len(guide_diff.changed)
-            + len(guide_diff.new)
-            + len(guide_diff.removed)
-        )
+    total = (
+        len(cmd_diff.changed)
+        + len(cmd_diff.new)
+        + len(cmd_diff.removed)
+        + len(guide_diff.changed)
+        + len(guide_diff.new)
+        + len(guide_diff.removed)
+    )
 
-        return {
-            "commands": asdict(cmd_diff),
-            "guidelines": asdict(guide_diff),
-            "total_updates": total,
-            "has_updates": total > 0,
-        }
-    except Exception as exc:  # noqa: BLE001 (route boundary translates unexpected failures to HTTP 500)
-        log.warning("settings.installation.status.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to check installation status") from exc
+    return {
+        "commands": asdict(cmd_diff),
+        "guidelines": asdict(guide_diff),
+        "total_updates": total,
+        "has_updates": total > 0,
+    }
 
 
 @router.get(
     "/settings/installation/diff",
     responses={
-        400: {"description": "No active project"},
-        500: {"description": "Failed to build installation diff"},
+        400: {"description": "No active project, or the project config is missing or unparsable"},
+        422: {"description": "The project configuration failed validation"},
+        500: {"description": "Internal error"},
+        503: {"description": "Project configuration could not be loaded"},
     },
 )
 async def installation_diff() -> dict[str, object]:
     """Build a per-file diff (forward + reverse) for the review-changes modal."""
-    from sova.config.loader import load_config
-    from sova.dashboard.services.settings_service import build_installation_diff
-
     project_dir = _settings_project_dir()
     if not project_dir or not project_dir.is_dir():
         raise HTTPException(status_code=400, detail="No active project")
 
-    try:
-        cfg = load_config(project_dir)
-    except (FileNotFoundError, ValueError, KeyError) as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to load project config: {exc}") from exc
+    cfg = load_config_or_http(lambda: _load_cfg(project_dir), event="settings.installation_diff.config_load_failed")
 
-    try:
-        diff = await asyncio.to_thread(build_installation_diff, project_dir, cfg)
-    except Exception as exc:  # noqa: BLE001 (route boundary translates unexpected failures to HTTP 500)
-        log.warning("settings.installation.diff.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to build installation diff") from exc
+    diff = await asyncio.to_thread(settings_service.build_installation_diff, project_dir, cfg)
 
     return {
         "source_available": diff.source_available,
@@ -785,48 +489,32 @@ async def installation_diff() -> dict[str, object]:
     }
 
 
-@router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
+@router.get("/settings/invariants", responses={500: {"description": "Internal error"}})
 async def list_invariants() -> dict:
     """List invariant scripts."""
-    try:
-        project_dir = _settings_project_dir()
-        return {"invariants": settings_service.list_invariants(project_dir)}
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.invariants.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch invariants")
+    project_dir = _settings_project_dir()
+    return {"invariants": settings_service.list_invariants(project_dir)}
 
 
-@router.get("/settings/detected-stack", responses={500: {"description": "Failed to detect the tech stack"}})
+@router.get("/settings/detected-stack", responses={500: {"description": "Internal error"}})
 async def get_detected_stack() -> dict:
     """Return the tech stack detected from the project's marker files."""
-    try:
-        project_dir = _settings_project_dir()
-        return {"detected": settings_service.get_detected_persona(project_dir)}
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.detected_stack.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to detect the tech stack")
+    project_dir = _settings_project_dir()
+    return {"detected": settings_service.get_detected_persona(project_dir)}
 
 
-@router.get("/settings/persona", responses={500: {"description": "Failed to fetch operations persona"}})
+@router.get("/settings/persona", responses={500: {"description": "Internal error"}})
 async def get_operations_persona():
     """Get the operations persona content and metadata."""
-    try:
-        from sova.config.loader import load_config
+    from sova.oversight.persona import get_persona_info
 
-        project_dir = _settings_project_dir()
-        cfg = load_config(project_dir)
-
-        from sova.oversight.persona import get_persona_info
-
-        return get_persona_info(cfg.oversight.persona_path)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.persona.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch operations persona")
+    cfg = load_config_or_http(_load_cfg, event="settings.persona.config_load_failed")
+    return get_persona_info(cfg.oversight.persona_path)
 
 
 @router.post(
     "/settings/persona/open",
-    responses={400: {"description": "Cannot open editor"}, 500: {"description": "Failed to open editor"}},
+    responses={400: {"description": "Cannot open editor"}, 500: {"description": "Internal error"}},
 )
 async def open_persona_in_editor():
     """Open the operations persona file in the OS default editor.
@@ -835,209 +523,67 @@ async def open_persona_in_editor():
     The response confirms the process was spawned, not that the editor opened
     successfully.
     """
-    from sova.config.loader import load_config
-    from sova.oversight.persona import ensure_persona_exists, get_open_command
+    from sova.dashboard.services.editor_service import open_path_in_editor
+    from sova.oversight.persona import ensure_persona_exists
 
-    try:
-        project_dir = _settings_project_dir()
-        cfg = load_config(project_dir)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.persona.open.config_error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to load project configuration")
-
-    path = ensure_persona_exists(cfg.oversight.persona_path)
-    cmd = get_open_command()
-    if cmd is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No editor command found for this OS. Edit manually: {path}",
-        )
-
-    try:
-        await asyncio.create_subprocess_exec(cmd, str(path))
-        return {"status": "spawned", "path": str(path)}
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"'{cmd}' not found. Edit the file manually: {path}",
-        )
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.persona.open.subprocess_error", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to open editor. Edit manually: {path}",
-        )
-
-
-async def _fetch_existing_labels(cfg) -> set[str] | dict:
-    """Fetch existing label names from GitHub, returning a set of names or error dict."""
-    from sova.utils.gh import resolve_gh_env
-    from sova.utils.shell import run
-
-    env = await resolve_gh_env(cfg.github_user)
-
-    try:
-        result = await run(
-            "gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", "--limit", "500", env=env
-        )
-    except FileNotFoundError:
-        return {"error": "GitHub CLI not available or not authenticated"}
-
-    if not result.success:
-        error_msg = result.stderr.strip()
-        if "not found" in error_msg or "not installed" in error_msg:
-            return {"error": "GitHub CLI not available or not authenticated"}
-        return {"error": f"Failed to fetch labels: {error_msg}"}
-
-    import json
-
-    try:
-        existing_labels = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return {"error": "Failed to parse GitHub CLI output"}
-
-    return {label["name"] for label in existing_labels}
-
-
-async def _create_single_label(label: dict, cfg, env) -> tuple[bool, str | None]:
-    """Create a single label, returning (success, error_msg)."""
-    import re
-
-    from sova.utils.shell import run
-
-    color = label.get("color", "")
-    if not re.match(r"^[0-9a-fA-F]{6}$", color):
-        return (False, f"{label['name']}: Invalid color format (expected 6-char hex)")
-
-    result = await run(
-        "gh",
-        "label",
-        "create",
-        label["name"],
-        "--repo",
-        cfg.github_repo,
-        "--color",
-        color,
-        "--description",
-        label.get("description", ""),
-        "--force",
-        env=env,
-    )
-
-    if result.success:
-        return (True, None)
-
-    error_msg = result.stderr.strip()[:_MAX_ERROR_MESSAGE_LENGTH]
-    if "403" in error_msg or "permission" in error_msg.lower():
-        return (False, f"{label['name']}: Permission denied (requires write access)")
-    return (False, f"{label['name']}: {error_msg}")
-
-
-def _build_label_response(results: list[tuple[bool, str | None]]) -> dict:
-    """Build response dict from label creation results."""
-    created = sum(1 for success, _ in results if success)
-    errors = [err for success, err in results if not success and err]
-
-    response = {"created": created}
-    if errors:
-        if len(errors) > _MAX_LABEL_ERRORS:
-            response["errors"] = errors[:_MAX_LABEL_ERRORS]
-            response["errors_truncated"] = len(errors) - _MAX_LABEL_ERRORS
-        else:
-            response["errors"] = errors
-
-    return response
-
-
-async def _compute_missing_labels(cfg) -> dict:
-    """Compute missing labels for a given config.
-
-    Returns a dict with either:
-    - {"missing": [...], "total_required": N} on success
-    - {"error": "...", "missing": []} on failure
-    """
-    existing_or_error = await _fetch_existing_labels(cfg)
-
-    if isinstance(existing_or_error, dict):
-        return {**existing_or_error, "missing": []}
-
-    existing_names = existing_or_error
-    missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
-
-    return {"missing": missing, "total_required": len(_REQUIRED_LABELS)}
+    cfg = load_config_or_http(_load_cfg, event="settings.persona_open.config_load_failed")
+    return await open_path_in_editor(ensure_persona_exists(cfg.oversight.persona_path))
 
 
 @router.get(
     "/settings/labels/audit",
     responses={
-        400: {"description": "GitHub adapter not configured"},
-        500: {"description": "Failed to audit labels"},
+        400: {"description": "GitHub adapter not configured, or the project config is unreadable"},
+        422: {"description": "The project configuration failed validation"},
+        502: {"description": "Failed to list labels"},
+        503: {"description": "Project configuration could not be loaded"},
     },
 )
 async def audit_labels() -> dict:
     """Audit repository labels against SOVA's required set.
 
-    Returns missing labels and error information if GitHub CLI is not available.
+    Returns the missing labels, or a 502 when the labels cannot be listed (GitHub CLI missing or failing).
     """
-    from sova.config.loader import load_config
+    cfg = load_config_or_http(_load_cfg, event="settings.labels.config_load_failed")
+    _validate_github_config(cfg)
 
-    try:
-        project_dir = _settings_project_dir()
-        cfg = load_config(project_dir)
-        _validate_github_config(cfg)
-
-        return await _compute_missing_labels(cfg)
-
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.labels.audit.error", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to audit labels: {exc}") from exc
+    result = await github_labels_service.compute_missing_labels(cfg)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
 
 
 @router.post(
     "/settings/labels/create",
     responses={
-        400: {"description": "GitHub adapter not configured"},
-        500: {"description": "Failed to create labels"},
+        400: {"description": "GitHub adapter not configured, or the project config is unreadable"},
+        422: {"description": "The project configuration failed validation"},
+        502: {"description": "Failed to list labels, or at least one label could not be created (see detail.errors)"},
+        503: {"description": "Project configuration could not be loaded"},
     },
 )
 async def create_missing_labels() -> dict:
     """Create all missing SOVA labels in the repository.
 
-    Returns the count of labels created and any errors encountered.
+    Returns the count of labels created. When the labels cannot be listed, or any creation fails, the answer is a
+    502: the list failure carries its fixed message as ``detail``, a creation failure a ``detail`` of
+    ``{message, created, errors, errors_truncated}`` (the labels that did get created stay created, so a client
+    reloads its status; each error is one of the service's fixed per-label reasons, never ``gh`` output).
     """
-    from sova.config.loader import load_config
-    from sova.utils.gh import resolve_gh_env
+    cfg = load_config_or_http(_load_cfg, event="settings.labels.config_load_failed")
+    _validate_github_config(cfg)
 
-    try:
-        project_dir = _settings_project_dir()
-        cfg = load_config(project_dir)
-        _validate_github_config(cfg)
-
-        # Compute missing labels
-        result = await _compute_missing_labels(cfg)
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
-
-        missing = result["missing"]
-        if not missing:
-            return {"created": 0, "message": "All required labels already exist"}
-
-        # Create missing labels in parallel with controlled concurrency
-        env = await resolve_gh_env(cfg.github_user)
-        semaphore = asyncio.Semaphore(_LABEL_CREATE_CONCURRENCY)
-
-        async def create_with_limit(label: dict) -> tuple[bool, str | None]:
-            async with semaphore:
-                return await _create_single_label(label, cfg, env)
-
-        results = await asyncio.gather(*[create_with_limit(label) for label in missing])
-
-        return _build_label_response(results)
-
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("settings.labels.create.error", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create labels: {exc}") from exc
+    result = await github_labels_service.create_missing_labels(cfg)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    if result.get("errors"):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Some labels could not be created",
+                "created": result["created"],
+                "errors": result["errors"],
+                "errors_truncated": result.get("errors_truncated", 0),
+            },
+        )
+    return result

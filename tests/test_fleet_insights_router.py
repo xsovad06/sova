@@ -58,7 +58,7 @@ def _mock_service(insights: FleetInsights) -> object:
 async def client(dashboard_app):
 
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
@@ -199,4 +199,6 @@ class TestFleetInsightsAPI:
         app.dependency_overrides[_get_fleet_service] = lambda: mock_svc
         resp = await client.get("/api/fleet-insights/data")
         assert resp.status_code == 503
+        assert resp.json() == {"detail": "Fleet insights temporarily unavailable"}
+        assert "db connection failed" not in resp.text
         app.dependency_overrides.pop(_get_fleet_service, None)

@@ -446,6 +446,11 @@ async def get_run(session: AsyncSession, run_id: int) -> dict | None:
     return _run_to_dict(run) if run else None
 
 
+async def get_run_status(session: AsyncSession, run_id: int) -> str | None:
+    """The status of a run, or None when it does not exist. One column, not the whole ``TaskRun`` entity."""
+    return (await session.execute(select(TaskRun.status).where(TaskRun.id == run_id))).scalar_one_or_none()
+
+
 async def get_run_steps(
     session: AsyncSession,
     run_id: int,

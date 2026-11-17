@@ -27,7 +27,7 @@ async def auth_status() -> dict:
     project_dir = _project_dir()
     try:
         return await setup_service.get_auth_status(project_dir)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
+    except Exception as exc:  # noqa: BLE001 (probes providers and reads the config: any failure is an unavailable status, a 503)
         log.warning("auth.status.error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to fetch provider auth status") from exc
 
@@ -39,7 +39,7 @@ async def connections_catalog(request: Request) -> dict:
     is_loopback_bind = bool(getattr(request.app.state, "is_loopback_bind", True))
     try:
         return await setup_service.get_connection_catalog(project_dir, is_loopback_bind=is_loopback_bind)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
+    except Exception as exc:  # noqa: BLE001 (probes providers and runtimes: any failure is an unavailable catalog, a 503)
         log.warning("auth.connections.catalog.error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to fetch connection catalog") from exc
 

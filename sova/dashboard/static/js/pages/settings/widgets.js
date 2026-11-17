@@ -451,12 +451,25 @@ async function loadLabelsStatus(el) {
   labelsState.loading = true;
   labelsState.reload = false;
   try {
-    const data = await fetchAPI(apiUrl('/settings/labels/audit'));
-    if (data.error) {
+    const res = await fetch(apiUrl('/settings/labels/audit'));
+    if (!res.ok) {
+      // 502: gh could not list the labels (the sign-in hint applies only when the detail says gh is missing or
+      // signed out); 400: a tracker without GitHub labels (the detail alone says why); anything else is an
+      // unexpected failure with no useful hint to give.
+      if (res.status !== 502 && res.status !== 400) {
+        failed(el, 'Could not check the tracker labels');
+        return;
+      }
+      const detail = (await getErrorDetail(res, 'Could not list the labels')).replace(/\.+$/, '');
+      const needsSignIn = res.status === 502 && /not available or not authenticated/i.test(detail);
+      const hint = needsSignIn ? '. Ensure the GitHub CLI is installed and signed in (<code>gh auth login</code>).' : '.';
       setState(el, 'warn');
       el.innerHTML = '<span class="sova-settings-status-title">Labels not checked</span>' +
-        '<span class="sova-settings-status-muted">' + escapeHtml(data.error) + '. Ensure the GitHub CLI is installed and signed in (<code>gh auth login</code>).</span>';
-    } else if (data.missing && data.missing.length) {
+        '<span class="sova-settings-status-muted">' + escapeHtml(detail) + hint + '</span>';
+      return;
+    }
+    const data = await res.json();
+    if (data.missing && data.missing.length) {
       setState(el, 'warn');
       el.innerHTML = `<span class="sova-settings-status-title">${escapeHtml(data.missing.length)} tracker label${data.missing.length !== 1 ? 's' : ''} missing</span>
         <span class="sova-settings-tags">${data.missing.map((l) => `<span class="sova-settings-tag">${escapeHtml(l.name)}</span>`).join('')}</span>
@@ -481,19 +494,25 @@ async function createMissingLabels(btn) {
   try {
     const res = await fetch(apiUrl('/settings/labels/create'), { method: 'POST', headers: jsonCsrfHeaders() });
     if (!res.ok) {
+      // A 502 whose detail is {message, created, errors, errors_truncated} is a partial failure: the labels that
+      // were created stay created, so the widget reloads its status and shows what is still missing.
+      const body = await res.clone().json().catch(() => ({}));
+      const detail = body && body.detail;
+      if (detail && typeof detail === 'object' && Array.isArray(detail.errors)) {
+        const failedCount = detail.errors.length + (detail.errors_truncated || 0);
+        const created = detail.created || 0;
+        showToast(created + ' label' + (created !== 1 ? 's' : '') + ' created, but ' + failedCount + ' failed (see console)', 'warning');
+        console.error('Label creation errors:', detail.errors);
+        loadLabelsStatus();
+        return;
+      }
       showToast(await getErrorDetail(res, 'Failed to create labels'), 'error');
       btn.disabled = false;
       btn.textContent = 'Retry';
       return;
     }
     const data = await res.json();
-    const message = data.created + ' label' + (data.created !== 1 ? 's' : '') + ' created';
-    if (data.errors && data.errors.length) {
-      showToast(message + ', but ' + (data.errors.length + (data.errors_truncated || 0)) + ' failed (see console)', 'warning');
-      console.error('Label creation errors:', data.errors);
-    } else {
-      showToast(message, 'success');
-    }
+    showToast(data.created + ' label' + (data.created !== 1 ? 's' : '') + ' created', 'success');
     loadLabelsStatus();
   } catch (e) {
     showToast('Failed to create labels: ' + e.message, 'error');

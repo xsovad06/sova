@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sova.adapters.base import AdapterError
 from sova.dashboard.routers.fleet_insights import _get_fleet_service
 from sova.dashboard.services.fleet_service import (
     STEP_AREA_MAP,
@@ -47,7 +48,7 @@ def _make_insights(
 async def client(dashboard_app):
 
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
         yield ac
@@ -233,6 +234,7 @@ class TestIssueDraftEndpoint:
         resp = await client.get("/api/fleet-insights/issue-draft?step_name=develop")
 
         assert resp.status_code == 503
+        assert "db down" not in resp.text
         app.dependency_overrides.pop(_get_fleet_service, None)
 
 
@@ -270,13 +272,24 @@ class TestProposeIssueEndpoint:
         assert data["issue_number"] == 433
         assert "github.com" in data["issue_url"]
 
-    async def test_adapter_error_returns_structured_error(self, client: AsyncClient) -> None:
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RuntimeError("gh auth: not logged in"),
+            AdapterError("gh auth: not logged in"),
+            OSError("gh auth: not logged in"),
+        ],
+        ids=["runtime", "adapter", "oserror"],
+    )
+    async def test_adapter_error_returns_502_without_exception_text(
+        self, client: AsyncClient, failure: Exception
+    ) -> None:
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
             patch("sova.config.context.get_project_dir", return_value=None),
         ):
             mock_adapter = AsyncMock()
-            mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError("gh auth: not logged in"))
+            mock_adapter.create_issue = AsyncMock(side_effect=failure)
             mock_adapter_cls.return_value = mock_adapter
 
             resp = await client.post(
@@ -288,10 +301,9 @@ class TestProposeIssueEndpoint:
                 },
             )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ok"] is False
-        assert "not logged in" in data["error"]
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Failed to create the issue on the tracker"}
+        assert "not logged in" not in resp.text
 
     async def test_uses_config_when_project_dir_available(self, client: AsyncClient, tmp_path: Path) -> None:
         from sova.adapters.base import Task
@@ -321,27 +333,3 @@ class TestProposeIssueEndpoint:
 
             assert resp.status_code == 200
             mock_adapter_cls.assert_called_once_with(repo="custom/repo", github_user="testuser")
-
-    async def test_error_message_truncated(self, client: AsyncClient) -> None:
-        long_error = "x" * 1000
-
-        with (
-            patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
-            patch("sova.config.context.get_project_dir", return_value=None),
-        ):
-            mock_adapter = AsyncMock()
-            mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError(long_error))
-            mock_adapter_cls.return_value = mock_adapter
-
-            resp = await client.post(
-                "/api/fleet-insights/propose-issue",
-                json={
-                    "title": "test",
-                    "body": "body",
-                    "labels": [],
-                },
-            )
-
-        data = resp.json()
-        assert data["ok"] is False
-        assert len(data["error"]) <= 500

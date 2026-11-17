@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.llm.errors import ComponentMisconfiguredError
 from sova.llm.models import ModelInfo
 from sova.utils.logging import get_logger
 
@@ -261,6 +262,14 @@ async def _resolve_llm_models(
     try:
         provider = create_provider(cfg.llm, project_dir)
     except (ValueError, ImportError) as exc:
+        # The detail is the factory's author-written message for a ComponentMisconfiguredError, else a fixed one
+        # (the exception's own text is logged, never returned).
+        detail = (
+            exc.user_message
+            if isinstance(exc, ComponentMisconfiguredError)
+            else "LLM provider is misconfigured or its SDK is not installed"
+        )
+        log.info("models.provider_unavailable", provider=provider_identity, exc_info=True)
         # A misconfigured/unknown provider type, or a configured provider
         # whose optional SDK extra (litellm, anthropic) isn't installed,
         # is a routine reportable state, mirroring
@@ -269,7 +278,7 @@ async def _resolve_llm_models(
         # The refresh allowance is deliberately not spent here (see
         # below): no refresh happened, so a retry should not be
         # throttled.
-        return _build_result(provider_identity, list(CURATED_MODELS), layer="llm", detail=str(exc))
+        return _build_result(provider_identity, list(CURATED_MODELS), layer="llm", detail=detail)
 
     if refresh:
         # The refresh allowance is consumed here, only once the config

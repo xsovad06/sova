@@ -112,7 +112,7 @@ def _validate_mcp_auth(
         return run_id
     except ValueError as e:
         log.warning("mcp.auth_failed", error=str(e))
-        raise HTTPException(status_code=401, detail=str(e)) from e
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from e
 
 
 @router.post("/mcp")

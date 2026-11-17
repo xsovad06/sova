@@ -169,7 +169,7 @@ class TestSupervisorRouter:
 
         mock_tracker = MagicMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1850, remaining=150, pct_used=92.5))
-        mock_tracker._cache = {"owner/repo": (0.0, CIBudget(total=2000, used=1850, remaining=150, pct_used=92.5))}
+        mock_tracker.is_cached.return_value = True
 
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
@@ -194,7 +194,7 @@ class TestSupervisorRouter:
 
         mock_tracker = MagicMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))
-        mock_tracker._cache = {"owner/repo": (0.0, CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))}
+        mock_tracker.is_cached.return_value = True
 
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
@@ -234,7 +234,7 @@ class TestSupervisorRouter:
 
         mock_tracker = MagicMock()
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=0, used=0, remaining=0, pct_used=0.0))
-        mock_tracker._cache = {}
+        mock_tracker.is_cached.return_value = False
 
         with patch("sova.config.loader.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
@@ -283,7 +283,7 @@ class TestSupervisorRouter:
             assert "visibleNodes.forEach" in resp.text
 
     async def test_get_status_with_daemon(self, app) -> None:
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_daemon = MagicMock()
         mock_daemon.get_status.return_value = {
@@ -311,7 +311,7 @@ class TestSupervisorRouter:
     async def test_trigger_poll_with_daemon(self, app) -> None:
         from unittest.mock import AsyncMock
 
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_daemon = MagicMock()
         mock_daemon.poll_once = AsyncMock(return_value={"progression": {"decisions": 0}})
@@ -344,7 +344,7 @@ class TestSupervisorRouter:
         assert resp.status_code == 404
 
     async def test_stop_supervisor_success(self, app) -> None:
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_daemon = MagicMock()
         mock_daemon.running = True
@@ -432,7 +432,7 @@ class TestSupervisorRouter:
 
     async def test_start_supervisor_already_running(self, app) -> None:
         """POST /supervisor/start returns started=False when daemon is already running."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_daemon = MagicMock()
         mock_daemon.running = True
@@ -460,7 +460,7 @@ class TestSupervisorRouter:
 
     async def test_start_supervisor_success(self, app) -> None:
         """POST /supervisor/start creates and starts a new daemon when config has it enabled."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.enabled = True
@@ -496,7 +496,7 @@ class TestSupervisorRouter:
 
     async def test_start_supervisor_no_project_context_falls_back(self, app) -> None:
         """POST /supervisor/start loads cwd config when context is unset."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.enabled = False
@@ -515,8 +515,8 @@ class TestSupervisorRouter:
             set_daemon_registry({})
 
     async def test_get_daemon_single_registry_entry_fallback(self, app) -> None:
-        """_get_daemon returns sole daemon when project_dir is None and one daemon registered."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        """get_daemon returns sole daemon when project_dir is None and one daemon registered."""
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_daemon = MagicMock()
         mock_daemon.get_status.return_value = {"enabled": True, "running": True}
@@ -533,7 +533,7 @@ class TestSupervisorRouter:
 
     async def test_resolve_project_dir_single_registry_fallback(self, app) -> None:
         """_resolve_project_dir returns sole registry key when context is unset."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.enabled = False
@@ -555,7 +555,7 @@ class TestSupervisorRouter:
 
     async def test_resolve_project_dir_cwd_fallback(self, app) -> None:
         """_resolve_project_dir falls back to cwd when registry is empty and agent_pool has no default."""
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.enabled = False
@@ -703,7 +703,7 @@ class TestSupervisorPlan:
         set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
-            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            "sova.dashboard.services.supervisor_service.execute_plan_decisions",
             new_callable=AsyncMock,
             return_value=[{"run_id": 1}],
         )
@@ -727,7 +727,7 @@ class TestSupervisorPlan:
         set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
-            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            "sova.dashboard.services.supervisor_service.execute_plan_decisions",
             new_callable=AsyncMock,
             return_value=[],
         )
@@ -742,8 +742,33 @@ class TestSupervisorPlan:
         assert len(remaining) == 1
         assert remaining[0].issue_number == 43
 
-    async def test_approve_partial_failure_returns_errors(self, app) -> None:
-        """approve_plan returns 200 with partial error info when some decisions fail."""
+    async def test_a_setup_failure_restores_the_plan_without_overwriting_a_newer_one(self, app) -> None:
+        """The plan is merged back, not replaced: a plan the daemon wrote while the engine was built is kept."""
+        from sova.dashboard.services.supervisor_service import PlanSetupError, get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        old = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
+        newer = ProgressionDecision(issue_number=50, action=ProgressionAction.SPAWN_DEVELOPER, role="developer")
+        set_pending_plan(old, project_slug="test/repo", reasoning="old plan")
+
+        async def daemon_writes_during_setup(*_args: object) -> list[dict]:
+            set_pending_plan([newer], project_slug="test/repo", reasoning="fresh plan")
+            raise PlanSetupError("no engine")
+
+        _mock_exec = patch(
+            "sova.dashboard.services.supervisor_service.execute_plan_decisions",
+            side_effect=daemon_writes_during_setup,
+        )
+        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.post("/api/supervisor/plan/approve", json={})
+        assert resp.status_code == 503
+        assert sorted(d.issue_number for d in get_pending_plan("test/repo")) == [42, 50]
+
+    async def test_approve_partial_failure_returns_502_with_results(self, app) -> None:
+        """approve_plan returns 502 with the per-decision results when some decisions fail."""
         from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
@@ -754,22 +779,56 @@ class TestSupervisorPlan:
         set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
-            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            "sova.dashboard.services.supervisor_service.execute_plan_decisions",
             new_callable=AsyncMock,
-            return_value=[{"run_id": 1}, {"error": "spawn failed", "issue_number": 43}],
+            return_value=[{"ok": True, "run_id": 1}, {"ok": False, "error": "spawn failed", "issue_number": 43}],
         )
         with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/plan/approve", json={})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["approved"] == 2
-        assert len(data["errors"]) == 1
-        assert data["errors"][0]["issue_number"] == 43
+        assert resp.status_code == 502
+        detail = resp.json()["detail"]
+        assert detail["message"] == "Some approved decisions failed to execute"
+        assert detail["results"] == [
+            {"ok": True, "run_id": 1},
+            {"ok": False, "error": "spawn failed", "issue_number": 43},
+        ]
         # Plan cleared regardless of partial failure
         assert get_pending_plan("test/repo") == []
+
+    @pytest.mark.parametrize("body", [{}, {"issue_numbers": [42]}], ids=["approve-all", "approve-one"])
+    async def test_an_engine_setup_failure_leaves_the_plan_unchanged(self, app, body: dict) -> None:
+        """Building the adapter, session factory or engine fails: a 503, and no approved decision is lost."""
+        from sova.dashboard.services.supervisor_service import (
+            get_pending_plan,
+            get_plan_deferred,
+            get_plan_reasoning,
+            set_pending_plan,
+        )
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+        set_pending_plan(decisions, project_slug="test/repo", reasoning="why", deferred=[{"issue": 9}])
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.adapters.create_adapter", side_effect=ValueError("no adapter /secret")),
+        ):
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.post("/api/supervisor/plan/approve", json=body)
+
+        assert resp.status_code == 503
+        assert "secret" not in resp.text
+        assert [d.issue_number for d in get_pending_plan("test/repo")] == [42, 43]
+        assert get_plan_reasoning("test/repo") == "why"
+        assert get_plan_deferred("test/repo") == [{"issue": 9}]
 
     async def test_skip_removes_from_plan(self, app) -> None:
         from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
@@ -800,24 +859,26 @@ class TestSupervisorPlan:
         assert resp.status_code == 404
 
     async def test_approve_with_config_load_failure(self, app) -> None:
-        """approve_plan propagates exception when load_config fails."""
-        import pytest
-
+        """approve_plan answers with the fixed 500 body when load_config fails."""
         with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
                 client.headers.update(_csrf_request_headers(client))
-                with pytest.raises(Exception, match="Config load failed"):
-                    await client.post("/api/supervisor/plan/approve", json={})
+                resp = await client.post("/api/supervisor/plan/approve", json={})
+                assert resp.status_code == 500
+                assert resp.json() == {"detail": "Internal error"}
 
     async def test_skip_with_config_load_failure(self, app) -> None:
-        """skip_plan_item propagates exception when load_config fails."""
-        import pytest
-
+        """skip_plan_item answers with the fixed 500 body when load_config fails."""
         with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
                 client.headers.update(_csrf_request_headers(client))
-                with pytest.raises(Exception, match="Config load failed"):
-                    await client.post("/api/supervisor/plan/skip/42")
+                resp = await client.post("/api/supervisor/plan/skip/42")
+                assert resp.status_code == 500
+                assert resp.json() == {"detail": "Internal error"}
 
 
 class TestSupervisorDaemonRequireApproval:
@@ -896,10 +957,10 @@ class TestSupervisorDaemonRequireApproval:
 
 
 class TestExecutePlanDecisions:
-    """Direct tests of _execute_plan_decisions to cover lines not reached via mocked approve_plan tests."""
+    """Direct tests of execute_plan_decisions to cover lines not reached via mocked approve_plan tests."""
 
     async def test_execute_plan_decisions_success(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.supervisor import _execute_plan_decisions
+        from sova.dashboard.services.supervisor_service import execute_plan_decisions
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
         decisions = [
@@ -920,13 +981,13 @@ class TestExecutePlanDecisions:
                 side_effect=_fake_execute_decision,
             ),
         ):
-            results = await _execute_plan_decisions(decisions, tmp_path)
+            results = await execute_plan_decisions(decisions, tmp_path)
 
         assert len(results) == 1
         assert results[0]["run_id"] == 1
 
     async def test_execute_plan_decisions_catches_per_decision_exception(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.supervisor import _execute_plan_decisions
+        from sova.dashboard.services.supervisor_service import execute_plan_decisions
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
         decisions = [
@@ -949,12 +1010,77 @@ class TestExecutePlanDecisions:
                 new_callable=AsyncMock,
                 side_effect=_fake_execute_decision,
             ),
+            patch("sova.dashboard.services.supervisor_service.log") as mock_log,
         ):
-            results = await _execute_plan_decisions(decisions, tmp_path)
+            results = await execute_plan_decisions(decisions, tmp_path)
 
+        # The cause is logged with its traceback (never returned), so a dropped log call cannot hide it.
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args == ("plan.execute_decision_failed",)
+        assert mock_log.warning.call_args.kwargs == {"issue_number": 43, "exc_info": True}
         assert len(results) == 2
-        assert results[0] == {"run_id": 1}
-        assert results[1] == {"error": "agent slot full", "issue_number": 43}
+        assert results[0] == {"run_id": 1, "ok": True, "issue_number": 42}
+        assert results[1] == {"ok": False, "error": "Decision failed", "issue_number": 43}
+        assert "agent slot full" not in str(results)
+
+    @pytest.mark.parametrize(
+        "engine_result",
+        [
+            pytest.param({"error": "boom: /secret/path token=abc", "issue": 43}, id="error-key"),
+            pytest.param({"status": "failed", "pr_number": None, "error": "git said /secret/path"}, id="rebase-failed"),
+            pytest.param({"status": "failed", "pr_number": 3}, id="failed-status-without-error"),
+        ],
+    )
+    async def test_an_engine_reported_failure_is_normalized_to_a_fixed_message(
+        self, tmp_path: Path, engine_result: dict
+    ) -> None:
+        """A failure the engine reports (not raises) is ``ok: False`` with the issue number and no engine text."""
+        from sova.dashboard.services.supervisor_service import execute_plan_decisions
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+
+        async def _fake_execute_decision(decision):
+            return {"run_id": 1} if decision.issue_number == 42 else engine_result
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.execute_decision",
+                new_callable=AsyncMock,
+                side_effect=_fake_execute_decision,
+            ),
+        ):
+            results = await execute_plan_decisions(decisions, tmp_path)
+
+        assert results == [
+            {"run_id": 1, "ok": True, "issue_number": 42},
+            {"ok": False, "error": "Decision failed", "issue_number": 43},
+        ]
+        assert "secret" not in str(results)
+
+    async def test_an_engine_setup_failure_raises_before_any_decision_runs(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.supervisor_service import PlanSetupError, execute_plan_decisions
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("Jira adapter requires jira_base_url")),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.execute_decision", new_callable=AsyncMock
+            ) as execute,
+            pytest.raises(PlanSetupError),
+        ):
+            await execute_plan_decisions(decisions, tmp_path)
+
+        execute.assert_not_called()
 
 
 class TestMultiProjectPlanIsolation:
@@ -1182,6 +1308,26 @@ class TestTaskQueueRouter:
             queue = await get_setting(session, "supervisor.task_queue")
         assert queue == [42]
 
+    async def test_a_concurrent_queue_write_is_a_409_not_a_server_error(self, app, project_dir) -> None:
+        """A save that lost a race to another writer is the client's to reload and retry: 409, logged below error."""
+        from sova.config.db_loader import TaskQueueConflictError
+
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch(
+                "sova.config.db_loader.save_task_queue",
+                new_callable=AsyncMock,
+                side_effect=TaskQueueConflictError("queue changed"),
+            ),
+            patch("sova.dashboard.services.supervisor_service.log") as log,
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 409
+        assert resp.json() == {"detail": "The queue changed; reload and retry"}
+        log.error.assert_not_called()
+
     async def test_concurrent_adds_no_duplicates(self, app, project_dir) -> None:
         """Concurrent add requests must not produce duplicate entries."""
         import asyncio
@@ -1228,17 +1374,17 @@ class TestTaskQueueDaemonNotify:
         """Context manager registering a mock daemon for project_dir, restored after."""
         from contextlib import contextmanager
 
-        from sova.dashboard.routers import supervisor as sup_mod
+        from sova.dashboard.services import daemon_registry as registry_mod
 
         @contextmanager
         def _cm():
             mock_daemon = MagicMock()
-            orig_registry = sup_mod._daemon_registry
-            sup_mod._daemon_registry = {str(project_dir.resolve()): mock_daemon}
+            orig_registry = registry_mod._daemon_registry
+            registry_mod._daemon_registry = {str(project_dir.resolve()): mock_daemon}
             try:
                 yield mock_daemon
             finally:
-                sup_mod._daemon_registry = orig_registry
+                registry_mod._daemon_registry = orig_registry
 
         return _cm()
 
@@ -1313,13 +1459,13 @@ class TestTaskQueueDaemonNotify:
 
     async def test_notify_only_touches_daemon_for_own_project(self, app, project_dir, tmp_path_factory) -> None:
         """A queue edit on project A must not refresh project B's daemon (multi-project isolation)."""
-        from sova.dashboard.routers import supervisor as sup_mod
+        from sova.dashboard.services import daemon_registry as registry_mod
 
         other_project_dir = tmp_path_factory.mktemp("other-project")
         mock_daemon_a = MagicMock()
         mock_daemon_b = MagicMock()
-        orig_registry = sup_mod._daemon_registry
-        sup_mod._daemon_registry = {
+        orig_registry = registry_mod._daemon_registry
+        registry_mod._daemon_registry = {
             str(project_dir.resolve()): mock_daemon_a,
             str(other_project_dir.resolve()): mock_daemon_b,
         }
@@ -1332,7 +1478,7 @@ class TestTaskQueueDaemonNotify:
             mock_daemon_a.reload_config.assert_called_once()
             mock_daemon_b.reload_config.assert_not_called()
         finally:
-            sup_mod._daemon_registry = orig_registry
+            registry_mod._daemon_registry = orig_registry
 
 
 class TestTaskQueueValidation:
@@ -1583,19 +1729,23 @@ class TestSupervisorPersonaEndpoints:
 
     async def test_get_persona_error_returns_500(self, app) -> None:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/persona")
         assert resp.status_code == 500
-        assert "Failed to fetch" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
     async def test_open_persona_config_error_returns_500(self, app) -> None:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 500
-        assert "Failed to load project configuration" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Internal error"
 
     async def test_open_persona_no_editor_returns_400(self, app, tmp_path: Path) -> None:
         with (
@@ -1624,19 +1774,23 @@ class TestSupervisorPersonaEndpoints:
         assert resp.status_code == 400
         assert "not found" in resp.json()["detail"]
 
-    async def test_open_persona_subprocess_error_returns_500(self, app, tmp_path: Path) -> None:
+    async def test_open_persona_subprocess_error_is_a_500_not_a_client_error(self, app, tmp_path: Path) -> None:
+        """A spawn failure other than a missing opener (permission, resources) is the host's fault."""
         with (
             patch("sova.config.loader.load_config") as mock_cfg,
             patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=OSError("spawn failed")),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=PermissionError("EPERM")),
         ):
             mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/supervisor/persona/open")
         assert resp.status_code == 500
-        assert "Failed to open editor" in resp.json()["detail"]
+        assert resp.json() == {"detail": "Internal error"}
+        assert "EPERM" not in resp.text
 
     async def test_open_persona_success(self, app, tmp_path: Path) -> None:
         with (
@@ -1664,7 +1818,7 @@ class TestAutoResearchDefault:
 
 
 class TestMaybeMigrateQueueFromToml:
-    """Tests for _maybe_migrate_queue_from_toml one-time migration."""
+    """Tests for maybe_migrate_queue_from_toml one-time migration."""
 
     @pytest.fixture
     def project_dir(self, tmp_path):
@@ -1672,75 +1826,75 @@ class TestMaybeMigrateQueueFromToml:
 
     @pytest.fixture(autouse=True)
     def _reset_flag(self):
-        import sova.dashboard.routers.supervisor as sup_mod
+        import sova.dashboard.services.supervisor_service as sup_mod
 
-        sup_mod._toml_migrated.clear()
+        sup_mod.reset_toml_migrated()
         yield
-        sup_mod._toml_migrated.clear()
+        sup_mod.reset_toml_migrated()
 
     async def test_skips_when_already_migrated(self) -> None:
-        import sova.dashboard.routers.supervisor as sup_mod
+        import sova.dashboard.services.supervisor_service as sup_mod
 
         project_dir = Path("/already-done")
         sup_mod._toml_migrated.add(str(project_dir))
         mock_read = AsyncMock()
-        with patch("sova.dashboard.routers.supervisor._read_queue", mock_read):
-            await sup_mod._maybe_migrate_queue_from_toml(project_dir)
+        with patch("sova.dashboard.services.supervisor_service.read_queue", mock_read):
+            await sup_mod.maybe_migrate_queue_from_toml(project_dir)
         mock_read.assert_not_called()
 
     async def test_skips_when_toml_queue_empty(self, project_dir) -> None:
-        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = []
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
-            await _maybe_migrate_queue_from_toml(project_dir)
+            await maybe_migrate_queue_from_toml(project_dir)
 
     async def test_migrates_toml_queue_to_db(self, project_dir) -> None:
         from sova.config.db_loader import load_task_queue
-        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [10, 20, 30]
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
-            await _maybe_migrate_queue_from_toml(project_dir)
+            await maybe_migrate_queue_from_toml(project_dir)
 
         loaded = await load_task_queue(project_dir)
         assert loaded == [10, 20, 30]
 
     async def test_does_not_overwrite_existing_db_value(self, project_dir) -> None:
         from sova.config.db_loader import load_task_queue, save_task_queue
-        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
 
         await save_task_queue(project_dir, [99])
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [10, 20]
         with patch("sova.config.loader.load_config", return_value=mock_cfg):
-            await _maybe_migrate_queue_from_toml(project_dir)
+            await maybe_migrate_queue_from_toml(project_dir)
 
         loaded = await load_task_queue(project_dir)
         assert loaded == [99]
 
     async def test_exception_is_swallowed(self) -> None:
-        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
-            await _maybe_migrate_queue_from_toml(Path("/nonexistent"))
+            await maybe_migrate_queue_from_toml(Path("/nonexistent"))
 
 
 class TestDeduplicate:
     def test_preserves_first_occurrence(self) -> None:
-        from sova.dashboard.routers.supervisor import _deduplicate
+        from sova.dashboard.services.supervisor_service import deduplicate
 
-        assert _deduplicate([3, 1, 2, 1, 3]) == [3, 1, 2]
+        assert deduplicate([3, 1, 2, 1, 3]) == [3, 1, 2]
 
     def test_empty_list(self) -> None:
-        from sova.dashboard.routers.supervisor import _deduplicate
+        from sova.dashboard.services.supervisor_service import deduplicate
 
-        assert _deduplicate([]) == []
+        assert deduplicate([]) == []
 
     def test_no_duplicates(self) -> None:
-        from sova.dashboard.routers.supervisor import _deduplicate
+        from sova.dashboard.services.supervisor_service import deduplicate
 
-        assert _deduplicate([1, 2, 3]) == [1, 2, 3]
+        assert deduplicate([1, 2, 3]) == [1, 2, 3]

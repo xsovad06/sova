@@ -157,12 +157,12 @@ class TestOversightLoopExit:
 
 
 class TestReloadDaemonConfigLifecycle:
-    """_reload_daemon_config stops/starts daemon based on enabled flag."""
+    """reload_daemon_config stops/starts daemon based on enabled flag."""
 
     @pytest.mark.asyncio
     async def test_stops_daemon_when_disabled(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         daemon = MagicMock()
         daemon.running = True
@@ -179,9 +179,9 @@ class TestReloadDaemonConfigLifecycle:
         try:
             with (
                 patch("sova.config.loader.load_config", return_value=cfg),
-                patch.object(sup_mod, "_get_daemon", return_value=daemon),
+                patch.object(sup_mod, "get_daemon", return_value=daemon),
             ):
-                await _reload_daemon_config(project_dir)
+                await reload_daemon_config(project_dir)
 
             daemon.stop.assert_awaited_once()
             assert resolved_key not in sup_mod._daemon_registry
@@ -190,8 +190,8 @@ class TestReloadDaemonConfigLifecycle:
 
     @pytest.mark.asyncio
     async def test_starts_daemon_when_enabled_and_none(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         cfg = MagicMock()
         cfg.supervisor.enabled = True
@@ -205,7 +205,7 @@ class TestReloadDaemonConfigLifecycle:
         try:
             with (
                 patch("sova.config.loader.load_config", return_value=cfg),
-                patch.object(sup_mod, "_get_daemon", return_value=None),
+                patch.object(sup_mod, "get_daemon", return_value=None),
                 patch(
                     "sova.db.session.get_session_factory",
                     new_callable=AsyncMock,
@@ -216,7 +216,7 @@ class TestReloadDaemonConfigLifecycle:
                     return_value=mock_daemon_instance,
                 ),
             ):
-                await _reload_daemon_config(tmp_path)
+                await reload_daemon_config(tmp_path)
 
             mock_daemon_instance.start.assert_called_once()
         finally:
@@ -224,8 +224,8 @@ class TestReloadDaemonConfigLifecycle:
 
     @pytest.mark.asyncio
     async def test_hot_reloads_when_enabled_and_running(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         daemon = MagicMock()
         daemon.running = True
@@ -235,77 +235,200 @@ class TestReloadDaemonConfigLifecycle:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch.object(sup_mod, "_get_daemon", return_value=daemon),
+            patch.object(sup_mod, "get_daemon", return_value=daemon),
         ):
-            await _reload_daemon_config(tmp_path)
+            await reload_daemon_config(tmp_path)
 
         daemon.reload_config.assert_called_once_with(cfg)
+
+    @pytest.mark.asyncio
+    async def test_no_project_and_several_daemons_starts_and_stops_nothing(self) -> None:
+        from sova.dashboard.services import daemon_registry as sup_mod
+
+        other = MagicMock()
+        other.running = True
+        other.stop = AsyncMock()
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {"/a": other, "/b": MagicMock()}
+        try:
+            cfg = MagicMock()
+            cfg.supervisor.enabled = True
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch.object(sup_mod, "get_project_dir", return_value=None),
+                patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
+                patch("sova.supervisor.daemon.SupervisorDaemon") as daemon_cls,
+            ):
+                await sup_mod.reload_daemon_config(None)
+
+            daemon_cls.assert_not_called()
+            other.stop.assert_not_awaited()
+            assert set(sup_mod._daemon_registry) == {"/a", "/b"}
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+    @pytest.mark.asyncio
+    async def test_no_project_leaves_the_sole_daemon_running_when_disabled(self, tmp_path: Path) -> None:
+        """A save that names no project (the root config) decides nothing about a project's daemon."""
+        from sova.dashboard.services import daemon_registry as sup_mod
+
+        daemon = MagicMock()
+        daemon.running = True
+        daemon.stop = AsyncMock()
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {str(tmp_path.resolve()): daemon}
+        try:
+            cfg = MagicMock()
+            cfg.supervisor.enabled = False
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch.object(sup_mod, "get_project_dir", return_value=None),
+                patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
+            ):
+                await sup_mod.reload_daemon_config(None)
+
+            daemon.stop.assert_not_awaited()
+            assert sup_mod._daemon_registry == {str(tmp_path.resolve()): daemon}
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+    @pytest.mark.asyncio
+    async def test_single_project_mode_unregisters_the_daemon_when_disabled(self, tmp_path: Path) -> None:
+        """With no project in the request, single-project mode falls back to the startup project."""
+        from sova.dashboard.services import daemon_registry as sup_mod
+
+        daemon = MagicMock()
+        daemon.running = True
+        daemon.stop = AsyncMock()
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {str(tmp_path.resolve()): daemon}
+        try:
+            cfg = MagicMock()
+            cfg.supervisor.enabled = False
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch.object(sup_mod, "get_project_dir", return_value=None),
+                patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path),
+            ):
+                await sup_mod.reload_daemon_config(None)
+
+            daemon.stop.assert_awaited_once()
+            assert sup_mod._daemon_registry == {}
+        finally:
+            sup_mod._daemon_registry = orig_registry
+
+    def test_lifecycle_locks_are_keyed_on_the_resolved_path_and_cleared(self, tmp_path: Path) -> None:
+        from sova.dashboard.services import daemon_registry as sup_mod
+
+        sup_mod.clear_registries()
+        first = sup_mod.get_lifecycle_lock(tmp_path)
+        assert sup_mod.get_lifecycle_lock(tmp_path / ".." / tmp_path.name) is first
+        sup_mod.clear_registries()
+        assert sup_mod.get_lifecycle_lock(tmp_path) is not first
+
+    @pytest.mark.asyncio
+    async def test_concurrent_start_route_and_settings_reload_start_exactly_one_daemon(self, tmp_path: Path) -> None:
+        """The start route and a settings save share one lifecycle lock, so only one of them builds a daemon."""
+        from sova.dashboard.routers import supervisor as sup_router
+        from sova.dashboard.services import daemon_registry as sup_mod
+
+        cfg = MagicMock()
+        cfg.supervisor.enabled = True
+        built: list[MagicMock] = []
+
+        def _make_daemon(**_kw: object) -> MagicMock:
+            daemon = MagicMock()
+            daemon.running = True
+            daemon.get_status.return_value = {}
+            built.append(daemon)
+            return daemon
+
+        async def _slow_session_factory(_project_dir: Path) -> MagicMock:
+            await asyncio.sleep(0.02)  # lets the other caller reach the registry check while this one is mid-start
+            return MagicMock()
+
+        orig_registry = sup_mod._daemon_registry
+        sup_mod._daemon_registry = {}
+        try:
+            with (
+                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.db.session.get_session_factory", side_effect=_slow_session_factory),
+                patch("sova.supervisor.daemon.SupervisorDaemon", side_effect=_make_daemon),
+                patch.object(sup_router, "_resolve_project_dir", return_value=tmp_path),
+                patch.object(sup_router, "_load_cfg", return_value=cfg),
+            ):
+                await asyncio.gather(sup_router.start_supervisor(), sup_mod.reload_daemon_config(tmp_path))
+
+            assert len(built) == 1
+            assert sup_mod._daemon_registry == {str(tmp_path.resolve()): built[0]}
+        finally:
+            sup_mod._daemon_registry = orig_registry
 
 
 class TestRestartRequiredFlag:
     """Settings update returns restart_required for non-hot-reloadable keys."""
 
     def test_server_key_returns_restart_required(self) -> None:
-        from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES
+        from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES
 
-        assert any("server." == p or "server.".startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
+        assert any("server." == p or "server.".startswith(p) for p in RESTART_REQUIRED_PREFIXES)
 
     def test_supervisor_key_no_restart_required(self) -> None:
-        from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES
+        from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES
 
         key = "supervisor.enabled"
-        assert not any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
+        assert not any(key == p or key.startswith(p) for p in RESTART_REQUIRED_PREFIXES)
 
     def test_llm_provider_key_no_restart_required(self) -> None:
         """llm.provider is now live-reloadable, not restart-required."""
-        from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES
+        from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES
 
         key = "llm.provider"
-        assert not any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
+        assert not any(key == p or key.startswith(p) for p in RESTART_REQUIRED_PREFIXES)
 
     def test_watch_key_returns_restart_required(self) -> None:
-        from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES
+        from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES
 
         key = "watch.poll_interval"
-        assert any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
+        assert any(key == p or key.startswith(p) for p in RESTART_REQUIRED_PREFIXES)
 
     def test_database_url_returns_restart_required(self) -> None:
-        from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES
+        from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES
 
         key = "database_url"
-        assert any(key == p or key.startswith(p) for p in _RESTART_REQUIRED_PREFIXES)
+        assert any(key == p or key.startswith(p) for p in RESTART_REQUIRED_PREFIXES)
 
     def test_key_requires_restart_from_prefix(self) -> None:
-        from sova.dashboard.routers.settings import _key_requires_restart
+        from sova.dashboard.services.settings_service import key_requires_restart
 
-        assert _key_requires_restart("server.port") is True
-        assert _key_requires_restart("database_url") is True
+        assert key_requires_restart("server.port") is True
+        assert key_requires_restart("database_url") is True
 
     def test_key_requires_restart_from_setting_meta(self) -> None:
-        from sova.dashboard.routers.settings import _key_requires_restart
+        from sova.dashboard.services.settings_service import key_requires_restart
 
-        assert _key_requires_restart("watch.interval_active") is True
+        assert key_requires_restart("watch.interval_active") is True
 
     def test_key_requires_restart_meta_flag_outside_prefixes(self) -> None:
-        from sova.dashboard.routers import settings as settings_router
+        from sova.dashboard.services import settings_service
 
         meta = MagicMock(requires_restart=True)
-        with patch.object(settings_router, "get_meta", return_value=meta):
-            assert settings_router._key_requires_restart("llm.provider") is True
+        with patch("sova.dashboard.settings_meta.get_meta", return_value=meta):
+            assert settings_service.key_requires_restart("llm.provider") is True
 
     def test_key_requires_restart_false_for_hot_reloadable_key(self) -> None:
-        from sova.dashboard.routers.settings import _key_requires_restart
+        from sova.dashboard.services.settings_service import key_requires_restart
 
-        assert _key_requires_restart("llm.provider") is False
-        assert _key_requires_restart("unknown.key") is False
+        assert key_requires_restart("llm.provider") is False
+        assert key_requires_restart("unknown.key") is False
 
     def test_supervisor_enabled_applies_without_restart(self) -> None:
-        """Saving supervisor.enabled starts or stops the daemon at once (_reload_daemon_config), so the
+        """Saving supervisor.enabled starts or stops the daemon at once (reload_daemon_config), so the
         save must not answer restart_required: the page switches would show a false warning (#1461)."""
-        from sova.dashboard.routers.settings import _key_requires_restart, _match_reload_target
+        from sova.dashboard.services.settings_service import key_requires_restart, match_reload_target
 
-        assert _match_reload_target("supervisor.enabled") == "supervisor"
-        assert _key_requires_restart("supervisor.enabled") is False
+        assert match_reload_target("supervisor.enabled") == "supervisor"
+        assert key_requires_restart("supervisor.enabled") is False
 
 
 class TestConfigValueToStr:
@@ -316,38 +439,38 @@ class TestConfigValueToStr:
         [(True, "true"), (False, "false"), (3, "3"), (2.5, "2.5"), ("main", "main")],
     )
     def test_config_value_to_str(self, raw: object, expected: str) -> None:
-        from sova.dashboard.routers.settings import _config_value_to_str
+        from sova.dashboard.services.settings_service import config_value_to_str
 
-        assert _config_value_to_str(raw) == expected
+        assert config_value_to_str(raw) == expected
 
 
 class TestApplyConfigUpdate:
     """A saved setting propagates to running components and annotates the result."""
 
     async def test_apply_config_update_syncs_pool_and_flags_restart(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import settings as settings_router
+        from sova.dashboard.services import settings_service
 
         result: dict = {"status": "ok"}
         with (
             patch("sova.dashboard.services.agent_pool.sync_max_concurrent") as sync,
-            patch.object(settings_router, "_reload_all_configs", AsyncMock(return_value=None)) as reload,
-            patch.object(settings_router, "_key_requires_restart", return_value=True),
+            patch.object(settings_service, "reload_all_configs", AsyncMock(return_value=None)) as reload,
+            patch.object(settings_service, "key_requires_restart", return_value=True),
         ):
-            await settings_router._apply_config_update(tmp_path, "max_parallel_agents", result)
+            await settings_service.apply_config_update(tmp_path, "max_parallel_agents", result)
 
         sync.assert_called_once_with(tmp_path)
         reload.assert_awaited_once_with(tmp_path, "max_parallel_agents")
         assert result == {"status": "ok", "restart_required": True}
 
     async def test_apply_config_update_records_lifecycle_error(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import settings as settings_router
+        from sova.dashboard.services import settings_service
 
         result: dict = {"status": "ok"}
         with (
             patch("sova.dashboard.services.agent_pool.sync_max_concurrent") as sync,
-            patch.object(settings_router, "_reload_all_configs", AsyncMock(return_value="boom")),
+            patch.object(settings_service, "reload_all_configs", AsyncMock(return_value="boom")),
         ):
-            await settings_router._apply_config_update(tmp_path, "llm.provider", result)
+            await settings_service.apply_config_update(tmp_path, "llm.provider", result)
 
         sync.assert_not_called()
         assert result == {"status": "ok", "lifecycle_error": "boom"}
@@ -358,8 +481,8 @@ class TestLifecycleErrorPropagation:
 
     @pytest.mark.asyncio
     async def test_daemon_stop_failure_raises(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         daemon = MagicMock()
         daemon.running = True
@@ -376,17 +499,17 @@ class TestLifecycleErrorPropagation:
         try:
             with (
                 patch("sova.config.loader.load_config", return_value=cfg),
-                patch.object(sup_mod, "_get_daemon", return_value=daemon),
+                patch.object(sup_mod, "get_daemon", return_value=daemon),
             ):
                 with pytest.raises(RuntimeError, match="stop failed"):
-                    await _reload_daemon_config(project_dir)
+                    await reload_daemon_config(project_dir)
         finally:
             sup_mod._daemon_registry = orig_registry
 
     @pytest.mark.asyncio
     async def test_daemon_start_failure_raises(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         cfg = MagicMock()
         cfg.supervisor.enabled = True
@@ -396,7 +519,7 @@ class TestLifecycleErrorPropagation:
         try:
             with (
                 patch("sova.config.loader.load_config", return_value=cfg),
-                patch.object(sup_mod, "_get_daemon", return_value=None),
+                patch.object(sup_mod, "get_daemon", return_value=None),
                 patch(
                     "sova.db.session.get_session_factory",
                     new_callable=AsyncMock,
@@ -404,7 +527,7 @@ class TestLifecycleErrorPropagation:
                 ),
             ):
                 with pytest.raises(RuntimeError, match="db unavailable"):
-                    await _reload_daemon_config(tmp_path)
+                    await reload_daemon_config(tmp_path)
         finally:
             sup_mod._daemon_registry = orig_registry
 
@@ -414,8 +537,8 @@ class TestLifecycleSerialization:
 
     @pytest.mark.asyncio
     async def test_concurrent_toggles_serialized(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers import supervisor as sup_mod
-        from sova.dashboard.routers.settings import _reload_daemon_config
+        from sova.dashboard.services import daemon_registry as sup_mod
+        from sova.dashboard.services.daemon_registry import reload_daemon_config
 
         call_order: list[str] = []
 
@@ -449,7 +572,7 @@ class TestLifecycleSerialization:
         try:
             with (
                 patch("sova.config.loader.load_config", side_effect=lambda _: next(configs)),
-                patch.object(sup_mod, "_get_daemon", side_effect=lambda _: sup_mod._daemon_registry.get(resolved_key)),
+                patch.object(sup_mod, "get_daemon", side_effect=lambda _: sup_mod._daemon_registry.get(resolved_key)),
                 patch(
                     "sova.db.session.get_session_factory",
                     new_callable=AsyncMock,
@@ -461,8 +584,8 @@ class TestLifecycleSerialization:
                 ),
             ):
                 await asyncio.gather(
-                    _reload_daemon_config(project_dir),
-                    _reload_daemon_config(project_dir),
+                    reload_daemon_config(project_dir),
+                    reload_daemon_config(project_dir),
                 )
 
             assert call_order[0] == "stop_start"
@@ -734,7 +857,7 @@ class TestSingletonReload:
     async def test_llm_hot_reload_honors_a_changed_alias_map(self, tmp_path: Path) -> None:
         """A settings save that only changes model_aliases must reach the new provider."""
         from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
         from sova.llm import client
 
         client.reset_provider()
@@ -747,7 +870,7 @@ class TestSingletonReload:
         provider.normalize_model_name = lambda m: m
         provider.invoke = AsyncMock(return_value=LLMResult(text="ok", model="ollama/llama3.1:70b"))
         with patch("sova.llm.client.create_provider", return_value=provider) as mock_create:
-            await _dispatch_config_reload("llm", cfg, {}, tmp_path)
+            await dispatch_config_reload("llm", cfg, {}, tmp_path)
 
         assert mock_create.call_args.args[0].model_aliases == {"smart": "ollama/llama3.1:70b"}
         assert client.get_provider() is provider
@@ -780,87 +903,87 @@ class TestSingletonReload:
 
 
 class TestMatchReloadTarget:
-    """_match_reload_target resolves config keys to reload targets."""
+    """match_reload_target resolves config keys to reload targets."""
 
     def test_exact_section_match(self) -> None:
-        from sova.dashboard.routers.settings import _match_reload_target
+        from sova.dashboard.services.settings_service import match_reload_target
 
-        assert _match_reload_target("supervisor") == "supervisor"
-        assert _match_reload_target("oversight") == "oversight"
-        assert _match_reload_target("watchdog") == "watchdog"
-        assert _match_reload_target("llm") == "llm"
+        assert match_reload_target("supervisor") == "supervisor"
+        assert match_reload_target("oversight") == "oversight"
+        assert match_reload_target("watchdog") == "watchdog"
+        assert match_reload_target("llm") == "llm"
 
     def test_dotted_key_match(self) -> None:
-        from sova.dashboard.routers.settings import _match_reload_target
+        from sova.dashboard.services.settings_service import match_reload_target
 
-        assert _match_reload_target("supervisor.enabled") == "supervisor"
-        assert _match_reload_target("pr_monitor.poll_interval") == "pr_monitor"
-        assert _match_reload_target("integration.merge_queue_timeout") == "integration"
-        assert _match_reload_target("memory_guard.runtime_action") == "watchdog"
+        assert match_reload_target("supervisor.enabled") == "supervisor"
+        assert match_reload_target("pr_monitor.poll_interval") == "pr_monitor"
+        assert match_reload_target("integration.merge_queue_timeout") == "integration"
+        assert match_reload_target("memory_guard.runtime_action") == "watchdog"
 
     def test_runtime_prefix(self) -> None:
-        from sova.dashboard.routers.settings import _match_reload_target
+        from sova.dashboard.services.settings_service import match_reload_target
 
-        assert _match_reload_target("agent.runtime") == "runtime"
-        assert _match_reload_target("codex.model") == "runtime"
-        assert _match_reload_target("codex.sandbox") == "runtime"
+        assert match_reload_target("agent.runtime") == "runtime"
+        assert match_reload_target("codex.model") == "runtime"
+        assert match_reload_target("codex.sandbox") == "runtime"
 
     def test_no_match_returns_none(self) -> None:
-        from sova.dashboard.routers.settings import _match_reload_target
+        from sova.dashboard.services.settings_service import match_reload_target
 
-        assert _match_reload_target("server.host") is None
-        assert _match_reload_target("unknown_section") is None
-        assert _match_reload_target("") is None
+        assert match_reload_target("server.host") is None
+        assert match_reload_target("unknown_section") is None
+        assert match_reload_target("") is None
 
 
 class TestReloadOversightConfigWithCfg:
-    """_reload_oversight_config_with_cfg manages lifecycle using pre-loaded config."""
+    """reload_oversight_config_with_cfg manages lifecycle using pre-loaded config."""
 
     @pytest.mark.asyncio
     async def test_stops_agent_when_disabled(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config_with_cfg
+        from sova.dashboard.services.settings_service import reload_oversight_config_with_cfg
 
         agent = MagicMock()
         agent.running = True
-        agent._config.enabled = False
+        agent.enabled = False
         agent.stop = AsyncMock()
 
         cfg = MagicMock()
 
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
-            await _reload_oversight_config_with_cfg(cfg)
+        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=agent):
+            await reload_oversight_config_with_cfg(cfg)
 
         agent.reload_config.assert_called_once_with(cfg)
         agent.stop.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_starts_agent_when_enabled_and_not_running(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config_with_cfg
+        from sova.dashboard.services.settings_service import reload_oversight_config_with_cfg
 
         agent = MagicMock()
         agent.running = False
-        agent._config.enabled = True
+        agent.enabled = True
 
         cfg = MagicMock()
 
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
-            await _reload_oversight_config_with_cfg(cfg)
+        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=agent):
+            await reload_oversight_config_with_cfg(cfg)
 
         agent.reload_config.assert_called_once_with(cfg)
         agent.start.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_hot_reloads_when_enabled_and_running(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config_with_cfg
+        from sova.dashboard.services.settings_service import reload_oversight_config_with_cfg
 
         agent = MagicMock()
         agent.running = True
-        agent._config.enabled = True
+        agent.enabled = True
 
         cfg = MagicMock()
 
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
-            await _reload_oversight_config_with_cfg(cfg)
+        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=agent):
+            await reload_oversight_config_with_cfg(cfg)
 
         agent.reload_config.assert_called_once_with(cfg)
         agent.stop.assert_not_called()
@@ -868,18 +991,18 @@ class TestReloadOversightConfigWithCfg:
 
     @pytest.mark.asyncio
     async def test_no_action_when_agent_is_none(self) -> None:
-        from sova.dashboard.routers.settings import _reload_oversight_config_with_cfg
+        from sova.dashboard.services.settings_service import reload_oversight_config_with_cfg
 
         cfg = MagicMock()
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=None):
-            await _reload_oversight_config_with_cfg(cfg)
+        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=None):
+            await reload_oversight_config_with_cfg(cfg)
 
 
 class TestDaemonComponentsAccessors:
     """get_daemon_components / set_daemon_components manage the global registry."""
 
     def test_get_returns_registry(self) -> None:
-        from sova.dashboard.app import get_daemon_components, set_daemon_components
+        from sova.dashboard.services.daemon_registry import get_daemon_components, set_daemon_components
 
         original = get_daemon_components()
         try:
@@ -890,7 +1013,7 @@ class TestDaemonComponentsAccessors:
             set_daemon_components(original)
 
     def test_set_replaces_registry(self) -> None:
-        from sova.dashboard.app import get_daemon_components, set_daemon_components
+        from sova.dashboard.services.daemon_registry import get_daemon_components, set_daemon_components
 
         original = get_daemon_components()
         try:
@@ -998,45 +1121,45 @@ class TestMergeQueueReloadWithNotification:
 
 
 class TestDispatchConfigReload:
-    """_dispatch_config_reload routes to the correct daemon."""
+    """dispatch_config_reload routes to the correct daemon."""
 
     @pytest.mark.asyncio
     async def test_watchdog_none_is_noop(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
-        await _dispatch_config_reload("watchdog", cfg, {}, tmp_path)
+        await dispatch_config_reload("watchdog", cfg, {}, tmp_path)
 
     @pytest.mark.asyncio
     async def test_empty_monitor_list_is_noop(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
-        await _dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
-        await _dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
+        await dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
+        await dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
 
     @pytest.mark.asyncio
     async def test_quota_change_starts_a_loop_when_none_is_registered(self, tmp_path: Path) -> None:
         """Enabling the quota after server start must start a loop; there is none to reload."""
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
-        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
-            await _dispatch_config_reload("coderabbit_quota", cfg, {}, tmp_path)
+        with patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+            await dispatch_config_reload("coderabbit_quota", cfg, {}, tmp_path)
         ensure.assert_awaited_once_with(tmp_path, cfg)
 
     @pytest.mark.asyncio
     async def test_quota_change_reloads_a_registered_loop_before_ensuring(self, tmp_path: Path) -> None:
         """The registered loop must take the new limits first: `ensure` returns early once a loop is registered."""
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
         throttle = MagicMock()
         parent = MagicMock()
         parent.attach_mock(throttle.reload_config, "reload")
-        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+        with patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
             parent.attach_mock(ensure, "ensure")
-            await _dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": [throttle]}, tmp_path)
+            await dispatch_config_reload("coderabbit_quota", cfg, {"pr_throttles": [throttle]}, tmp_path)
         assert parent.mock_calls == [call.reload(cfg.coderabbit_quota), call.ensure(tmp_path, cfg)]
 
     @pytest.mark.asyncio
@@ -1046,23 +1169,23 @@ class TestDispatchConfigReload:
         """A root-level request in multi-project mode names no project, so it cannot start a loop.
 
         The working directory is a real directory here on purpose: starting a loop for it is the bug.
-        Reloading is separate: it acts on the loops the caller found, see the `_reload_all_configs` tests.
+        Reloading is separate: it acts on the loops the caller found, see the `reload_all_configs` tests.
         """
-        from sova.dashboard.routers.settings import _dispatch_config_reload
+        from sova.dashboard.services.settings_service import dispatch_config_reload
 
         monkeypatch.chdir(tmp_path)
         cfg = MagicMock()
-        with patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
-            await _dispatch_config_reload("coderabbit_quota", cfg, {}, None)
+        with patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure:
+            await dispatch_config_reload("coderabbit_quota", cfg, {}, None)
         ensure.assert_not_awaited()
 
 
 class TestReloadAllConfigs:
-    """_reload_all_configs dispatches to correct daemons based on key prefix."""
+    """reload_all_configs dispatches to correct daemons based on key prefix."""
 
     @pytest.mark.asyncio
     async def test_watchdog_key_dispatches_to_watchdog(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         wd = MagicMock()
@@ -1073,18 +1196,18 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"watchdog": wd}},
             ),
         ):
-            err = await _reload_all_configs(project_dir, "watchdog.check_interval_seconds")
+            err = await reload_all_configs(project_dir, "watchdog.check_interval_seconds")
 
         assert err is None
         wd.reload_config.assert_called_once_with(cfg.watchdog, cfg.memory_guard)
 
     @pytest.mark.asyncio
     async def test_pr_monitor_key_dispatches_to_monitors(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         mon = MagicMock()
@@ -1095,18 +1218,18 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"pr_monitors": [mon]}},
             ),
         ):
-            err = await _reload_all_configs(project_dir, "pr_monitor.poll_interval")
+            err = await reload_all_configs(project_dir, "pr_monitor.poll_interval")
 
         assert err is None
         mon.reload_config.assert_called_once_with(cfg.pr_monitor, cfg.notification)
 
     @pytest.mark.asyncio
     async def test_coderabbit_key_dispatches_to_throttle(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         throttle = MagicMock()
@@ -1117,12 +1240,12 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"pr_throttles": [throttle]}},
             ),
-            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+            patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
         ):
-            err = await _reload_all_configs(project_dir, "coderabbit_quota.reviews_per_hour")
+            err = await reload_all_configs(project_dir, "coderabbit_quota.reviews_per_hour")
 
         assert err is None
         throttle.reload_config.assert_called_once_with(cfg.coderabbit_quota)
@@ -1137,7 +1260,7 @@ class TestReloadAllConfigs:
         The config, the daemon components lookup, the reload and the start must all use that directory.
         A lookup under the working directory finds no throttle, so the running loop would keep stale limits.
         """
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         app_project = tmp_path / "app-project"
         app_project.mkdir()
@@ -1148,15 +1271,15 @@ class TestReloadAllConfigs:
         throttle = MagicMock()
 
         with (
-            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
             patch("sova.config.loader.load_config", return_value=cfg) as load,
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(app_project.resolve()): {"pr_throttles": [throttle]}},
             ),
-            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+            patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
         ):
-            err = await _reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
+            err = await reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
 
         assert err is None
         load.assert_called_once_with(app_project)
@@ -1173,22 +1296,22 @@ class TestReloadAllConfigs:
         config it just loaded, since that is the config the request wrote. It starts no loop: the root
         config decides nothing in multi-project mode, and the working directory was never a named project.
         """
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         monkeypatch.chdir(tmp_path)
         cfg = MagicMock()
         throttle = MagicMock()
 
         with (
-            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=None),
+            patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=None),
             patch("sova.config.loader.load_config", return_value=cfg) as load,
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
             ),
-            patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+            patch("sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
         ):
-            err = await _reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
+            err = await reload_all_configs(None, "coderabbit_quota.reviews_per_hour")
 
         assert err is None
         load.assert_called_once_with(None)
@@ -1205,7 +1328,7 @@ class TestReloadAllConfigs:
         reload the wrong project's loop.
         """
         from sova.config.context import clear_project_context, set_project_context
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         scoped = tmp_path / "scoped"
         scoped.mkdir()
@@ -1223,12 +1346,14 @@ class TestReloadAllConfigs:
         set_project_context(scoped, "scoped")
         try:
             with (
-                patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=other),
+                patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=other),
                 patch("sova.config.loader.load_config", return_value=cfg) as load,
-                patch("sova.dashboard.app.get_daemon_components", return_value=components),
-                patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+                patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value=components),
+                patch(
+                    "sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock
+                ) as ensure,
             ):
-                err = await _reload_all_configs(None, "coderabbit_quota.enabled")
+                err = await reload_all_configs(None, "coderabbit_quota.enabled")
         finally:
             clear_project_context()
 
@@ -1249,8 +1374,8 @@ class TestReloadAllConfigs:
         on purpose: a reload that fell back to `load_config(project_dir)` would read the working
         directory's store, find `enabled=False`, and start no loop.
         """
-        from sova.dashboard.routers.settings import _reload_all_configs
         from sova.dashboard.services import settings_service
+        from sova.dashboard.services.settings_service import reload_all_configs
         from sova.db.session import close_db, init_db
 
         app_project = tmp_path / "app-project"
@@ -1262,11 +1387,13 @@ class TestReloadAllConfigs:
         await init_db(app_project)
         try:
             with (
-                patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
-                patch("sova.dashboard.app.ensure_pr_throttle_loop", new_callable=AsyncMock) as ensure,
+                patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
+                patch(
+                    "sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock
+                ) as ensure,
             ):
                 saved = await settings_service.update_config(None, key="coderabbit_quota.enabled", value="true")
-                err = await _reload_all_configs(None, "coderabbit_quota.enabled")
+                err = await reload_all_configs(None, "coderabbit_quota.enabled")
         finally:
             await close_db()
 
@@ -1283,7 +1410,7 @@ class TestReloadAllConfigs:
 
         Awaiting the start first would let a failed start keep a registered loop on its old limits.
         """
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         throttle = MagicMock()
@@ -1291,16 +1418,16 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
             ),
             patch(
-                "sova.dashboard.app.ensure_pr_throttle_loop",
+                "sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("database is locked"),
             ),
         ):
-            err = await _reload_all_configs(tmp_path, "coderabbit_quota.reviews_per_hour")
+            err = await reload_all_configs(tmp_path, "coderabbit_quota.reviews_per_hour")
 
         assert err is not None
         assert "coderabbit_quota" in err
@@ -1312,10 +1439,10 @@ class TestReloadAllConfigs:
     ) -> None:
         """Every unscoped target resolves the project the way the lifespan keyed it, not by working directory.
 
-        For the supervisor that is the directory `_reload_daemon_config` is handed: it keys the lifecycle
+        For the supervisor that is the directory `reload_daemon_config` is handed: it keys the lifecycle
         lock, the daemon lookup and where a new daemon is registered.
         """
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         app_project = tmp_path / "app-project"
         app_project.mkdir()
@@ -1325,12 +1452,14 @@ class TestReloadAllConfigs:
         cfg = MagicMock()
 
         with (
-            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
             patch("sova.config.loader.load_config", return_value=cfg) as load,
-            patch("sova.dashboard.app.get_daemon_components", return_value={}),
-            patch("sova.dashboard.routers.settings._reload_daemon_config", new_callable=AsyncMock) as reload_daemon,
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
+            patch(
+                "sova.dashboard.services.daemon_registry.reload_daemon_config", new_callable=AsyncMock
+            ) as reload_daemon,
         ):
-            err = await _reload_all_configs(None, "supervisor.enabled")
+            err = await reload_all_configs(None, "supervisor.enabled")
 
         assert err is None
         load.assert_called_once_with(app_project)
@@ -1340,7 +1469,7 @@ class TestReloadAllConfigs:
     async def test_watchdog_key_without_a_scope_looks_up_components_under_the_single_project_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         app_project = tmp_path / "app-project"
         app_project.mkdir()
@@ -1356,11 +1485,11 @@ class TestReloadAllConfigs:
         }
 
         with (
-            patch("sova.dashboard.routers.settings.get_default_project_dir", return_value=app_project),
+            patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.app.get_daemon_components", return_value=components),
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value=components),
         ):
-            err = await _reload_all_configs(None, "watchdog.check_interval_seconds")
+            err = await reload_all_configs(None, "watchdog.check_interval_seconds")
 
         assert err is None
         app_watchdog.reload_config.assert_called_once_with(cfg.watchdog, cfg.memory_guard)
@@ -1368,7 +1497,7 @@ class TestReloadAllConfigs:
 
     @pytest.mark.asyncio
     async def test_integration_key_dispatches_to_merge_queue(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         mqm = MagicMock()
@@ -1379,18 +1508,18 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"merge_queue_monitors": [mqm]}},
             ),
         ):
-            err = await _reload_all_configs(project_dir, "integration.merge_queue_timeout")
+            err = await reload_all_configs(project_dir, "integration.merge_queue_timeout")
 
         assert err is None
         mqm.reload_config.assert_called_once_with(cfg.integration, cfg.notification)
 
     @pytest.mark.asyncio
     async def test_llm_key_reloads_provider(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
 
@@ -1398,17 +1527,17 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.app.get_daemon_components", return_value={}),
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch("sova.llm.client.reload_provider") as mock_reload,
         ):
-            err = await _reload_all_configs(project_dir, "llm.model")
+            err = await reload_all_configs(project_dir, "llm.model")
 
         assert err is None
         mock_reload.assert_called_once_with(cfg, project_dir)
 
     @pytest.mark.asyncio
     async def test_runtime_key_reloads_runtime(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
 
@@ -1416,77 +1545,79 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.app.get_daemon_components", return_value={}),
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch("sova.ipc.runtime.reload_runtime") as mock_reload,
         ):
-            err = await _reload_all_configs(project_dir, "agent.runtime")
+            err = await reload_all_configs(project_dir, "agent.runtime")
 
         assert err is None
         mock_reload.assert_called_once_with(cfg)
 
     @pytest.mark.asyncio
     async def test_supervisor_key_dispatches_to_daemon_config(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.app.get_daemon_components", return_value={}),
-            patch("sova.dashboard.routers.settings._reload_daemon_config", new_callable=AsyncMock) as mock_reload,
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
+            patch(
+                "sova.dashboard.services.daemon_registry.reload_daemon_config", new_callable=AsyncMock
+            ) as mock_reload,
         ):
-            err = await _reload_all_configs(project_dir, "supervisor.enabled")
+            err = await reload_all_configs(project_dir, "supervisor.enabled")
 
         assert err is None
         mock_reload.assert_called_once_with(project_dir)
 
     @pytest.mark.asyncio
     async def test_oversight_key_dispatches_to_oversight_reload(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         project_dir = tmp_path
 
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
-            patch("sova.dashboard.app.get_daemon_components", return_value={}),
+            patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch(
-                "sova.dashboard.routers.settings._reload_oversight_config_with_cfg",
+                "sova.dashboard.services.settings_service.reload_oversight_config_with_cfg",
                 new_callable=AsyncMock,
             ) as mock_reload,
         ):
-            err = await _reload_all_configs(project_dir, "oversight.wake_interval_minutes")
+            err = await reload_all_configs(project_dir, "oversight.wake_interval_minutes")
 
         assert err is None
         mock_reload.assert_called_once_with(cfg)
 
     @pytest.mark.asyncio
     async def test_unmatched_key_returns_none(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         project_dir = tmp_path
 
-        with patch("sova.dashboard.app.get_daemon_components", return_value={}):
-            err = await _reload_all_configs(project_dir, "some_unknown_key")
+        with patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}):
+            err = await reload_all_configs(project_dir, "some_unknown_key")
 
         assert err is None
 
     @pytest.mark.asyncio
     async def test_load_config_failure_returns_error_message(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         project_dir = tmp_path
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("config parse error")):
-            err = await _reload_all_configs(project_dir, "watchdog.enabled")
+            err = await reload_all_configs(project_dir, "watchdog.enabled")
 
         assert err is not None
         assert "watchdog" in err
 
     @pytest.mark.asyncio
     async def test_reload_failure_returns_error_message(self, tmp_path: Path) -> None:
-        from sova.dashboard.routers.settings import _reload_all_configs
+        from sova.dashboard.services.settings_service import reload_all_configs
 
         cfg = MagicMock()
         wd = MagicMock()
@@ -1498,11 +1629,11 @@ class TestReloadAllConfigs:
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch(
-                "sova.dashboard.app.get_daemon_components",
+                "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"watchdog": wd}},
             ),
         ):
-            err = await _reload_all_configs(project_dir, "watchdog.enabled")
+            err = await reload_all_configs(project_dir, "watchdog.enabled")
 
         assert err is not None
         assert "watchdog" in err

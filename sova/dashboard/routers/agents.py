@@ -6,28 +6,24 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from sova.adapters.label_catalog import AREA_CHOICES
-from sova.adapters.priority import Priority
 from sova.config.context import set_project_context
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.security import validate_websocket_origin
-from sova.dashboard.services import control_service
+from sova.dashboard.services import control_service, llm_suggestion_service, planner_issue_service, work_service
 from sova.dashboard.services.action_registry import tracked_action
 from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES, NO_FREE_SLOT
 from sova.dashboard.services.agent_validation import (
     STATE_NOT_READY,
-    classify_for_launch,
     suitability_blocked_detail,
 )
 from sova.dashboard.services.feed_service import get_feed_service
@@ -37,11 +33,9 @@ from sova.dashboard.services.snapshot_service import (
     refresh_snapshot,
     set_change_listener,
 )
-from sova.dashboard.services.work_item_service import load_classification_graph
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
-from sova.supervisor.suitability import AGENT_ELIGIBLE_MODES, Suitability
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
@@ -373,7 +367,7 @@ class StartAgentRequest(BaseModel):
 
         The launch modal's Model select offers the active runtime's own catalog
         IDs (#1039), which this check alone cannot verify, so it hands them to
-        ``_validate_runtime_model()`` in the endpoint instead of rejecting them.
+        ``validate_runtime_model()`` in the endpoint instead of rejecting them.
         """
         if v is None:
             return v
@@ -404,218 +398,34 @@ class DismissInterruptedRequest(BaseModel):
     superseded_by_relaunch: bool = False
 
 
-def _planner_task_labels(task: PlannedTaskRequest, *, is_github: bool) -> list[str] | None:
-    """Build tracker-specific labels for a planner-proposed task.
-
-    GitHub-style 'area: x' / 'priority: y' labels contain spaces Jira
-    rejects outright, and Jira derives priority from its own native field,
-    so only a GitHub-backed project gets labels built here at all.
-    """
-    if not is_github:
-        return None
-    labels = []
-    if task.component:
-        component = task.component.strip().lower()
-        if component in AREA_CHOICES:
-            labels.append(f"area: {component}")
-        else:
-            log.warning("planner.unknown_component", component=task.component)
-    if task.priority:
-        try:
-            labels.append(Priority(task.priority.strip().lower()).github_label)
-        except ValueError:
-            log.warning("planner.unknown_priority", priority=task.priority)
-    return labels or None
-
-
-@router.post("/agents/planner/create-issues")
+@router.post(
+    "/agents/planner/create-issues",
+    responses={502: {"description": "Some issues could not be created on the tracker"}},
+)
 async def create_planner_issues(req: CreateIssuesRequest) -> dict:
-    """Create GitHub issues from planner-proposed tasks."""
-    from sova.adapters import create_adapter
-    from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
+    """Create GitHub issues from planner-proposed tasks.
 
-    if not req.tasks:
-        return {"created": [], "errors": []}
-
-    project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-    adapter = create_adapter(cfg)
-    is_github = cfg.task_source.type == "github"
-
-    sem = asyncio.Semaphore(4)
-
-    async def _create_one(task: PlannedTaskRequest) -> dict:
-        try:
-            async with sem:
-                result = await adapter.create_issue(
-                    title=task.title,
-                    body=task.description,
-                    labels=_planner_task_labels(task, is_github=is_github),
-                )
-            return {
-                "ok": True,
-                "number": result.id,
-                "title": result.title,
-                "dropped_labels": result.metadata.get("dropped_labels", []),
-            }
-        except Exception as exc:  # noqa: BLE001 (one failed issue must not abort the rest of the batch)
-            log.warning("planner.create_issue_failed", title=task.title, error=str(exc), exc_info=True)
-            return {"ok": False, "title": task.title, "error": str(exc)}
-
-    results = await asyncio.gather(*[_create_one(t) for t in req.tasks])
-    created = [
-        {"number": r["number"], "title": r["title"], "dropped_labels": r["dropped_labels"]} for r in results if r["ok"]
-    ]
-    errors = [{"title": r["title"], "error": r["error"]} for r in results if not r["ok"]]
-
-    return {"created": created, "errors": errors}
-
-
-# The launch modal's warning waits this long for the tracker, the dependency graph and the classification
-# together, so a slow tracker delays the modal by at most this and only loses the warning.
-_SUITABILITY_DISPLAY_TIMEOUT_S = 5.0
-
-
-async def _fetch_task_or_none(cfg: Any, issue_number: str) -> Any:
-    """The tracker issue for the launch modal, or None (logged) when it cannot be read."""
-    from sova.adapters import create_adapter
-
-    try:
-        return await create_adapter(cfg).get_task(issue_number)
-    except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
-        log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
-        return None
-
-
-async def _display_suitability(
-    issue_number: str, role: str | None, project_dir: Path, cfg: Any, task_future: asyncio.Future
-) -> Suitability | None:
-    """The issue's classification for the launch modal, dependencies included, or None when unknown.
-
-    Runs concurrently with the complexity resolution, sharing its task fetch (*task_future*, shielded so this
-    wait running out does not cancel the fetch the complexity step still needs). The dependency graph comes
-    from the shared work-items build; with none available the classification falls back to labels only, rather
-    than failing closed to a `blocked` that says nothing about the issue.
+    A 502 here may carry side effects: ``detail.results`` lists every task in request order, the created ones with
+    their ``number`` and ``url``, so a caller reconciles instead of re-submitting the whole batch.
     """
-    try:
-        async with asyncio.timeout(_SUITABILITY_DISPLAY_TIMEOUT_S):
-            task = await asyncio.shield(task_future)
-            if task is None:
-                return None
-            graph = await load_classification_graph(project_dir)
-            return await classify_for_launch(
-                issue_number,
-                role,
-                project_dir,
-                task=task,
-                cfg=cfg,
-                graph=graph,
-                timeout_s=_SUITABILITY_DISPLAY_TIMEOUT_S,
-            )
-    except TimeoutError:
-        log.warning("complexity.suitability_timed_out", issue=issue_number, timeout_s=_SUITABILITY_DISPLAY_TIMEOUT_S)
-        return None
-    except Exception:  # noqa: BLE001 (a warning must never fail the launch modal)
-        log.warning("complexity.suitability_failed", issue=issue_number, exc_info=True)
-        return None
+    results = await planner_issue_service.create_planner_issues(req.tasks)
+    if any(not r["ok"] for r in results):
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Some issues could not be created on the tracker", "results": results},
+        )
+    return {
+        "created": [
+            {"number": r["number"], "url": r["url"], "title": r["title"], "dropped_labels": r["dropped_labels"]}
+            for r in results
+        ],
+    }
 
 
 @router.get("/agents/issue/{issue_number}/complexity")
 async def get_issue_complexity(issue_number: str, role: str | None = None) -> dict:
-    """Return complexity tier and suggested model for an issue.
-
-    Checks TaskAssessmentRecord first; falls back to on-the-fly assessment
-    via ``assess_complexity()`` using issue metadata from the adapter. ``suitability`` is the issue's
-    classification (``mode`` and ``reasons``, open dependencies included) when it is anything but autonomous or
-    unclassified, so the launch modal can warn before the user starts a run; null when the issue is fit or
-    could not be classified within ``_SUITABILITY_DISPLAY_TIMEOUT_S``. It is resolved concurrently with the
-    complexity, so a slow tracker costs the modal at most that timeout.
-    The optional *role* names the run being launched: a triage or reviewer run is never refused, so for those
-    (or a nickname of them, or no role on an issue the dispatcher would route to one) ``suitability`` is null.
-    """
-    from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
-    from sova.db.models import TaskAssessmentRecord
-    from sova.llm.complexity import ComplexityTier, assess_complexity
-    from sova.llm.routing import route_model
-
-    project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-
-    # One tracker read serves the complexity fallback and the suitability warning, started up front so the
-    # DB lookup below overlaps it.
-    task_future = asyncio.ensure_future(_fetch_task_or_none(cfg, issue_number))
-    suitability_future = asyncio.ensure_future(_display_suitability(issue_number, role, project_dir, cfg, task_future))
-    try:
-        # 1. Check DB for existing assessment
-        complexity_str: str | None = None
-        async with await get_session(project_dir) as session:
-            row = (
-                await session.execute(
-                    select(TaskAssessmentRecord.estimated_complexity)
-                    .where(TaskAssessmentRecord.issue_number == issue_number)
-                    .order_by(TaskAssessmentRecord.assessed_at.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if row:
-                complexity_str = row
-
-        # 2. Compute on-the-fly if no DB record
-        if complexity_str is None:
-            complexity_str = ComplexityTier.MODERATE.value
-            task = await task_future
-            if task is not None:
-                try:
-                    complexity_str = assess_complexity(
-                        task.title,
-                        task.description or "",
-                        labels=list(task.labels or []),
-                    ).value
-                except Exception:  # noqa: BLE001 (complexity assessment falls back to the moderate tier)
-                    log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
-
-        suitability = await suitability_future
-    finally:
-        for pending in (suitability_future, task_future):
-            if not pending.done():
-                pending.cancel()
-
-    try:
-        tier = ComplexityTier(complexity_str)
-    except ValueError:
-        log.debug("complexity.invalid_db_value", value=complexity_str, issue=issue_number)
-        tier = ComplexityTier.MODERATE
-    model_alias, reason = route_model(tier, llm_config=cfg.llm)
-
-    # The runtime catalog lists concrete IDs ("claude-opus-5"), never a bare
-    # tier alias ("opus"), so the modal can only preselect the suggestion once
-    # it is resolved the way the pipeline resolves it. A resolution failure
-    # leaves the alias, which simply matches nothing and falls back to "no
-    # override" in the modal.
-    try:
-        from sova.llm.client import resolve_alias
-
-        suggested_model_id = resolve_alias(model_alias, cfg.llm)
-    except Exception:  # noqa: BLE001 (a suggestion must never fail the launch modal)
-        log.debug("complexity.resolve_alias_failed", alias=model_alias, exc_info=True)
-        suggested_model_id = model_alias
-
-    warn = suitability is not None and suitability.mode not in AGENT_ELIGIBLE_MODES
-
-    # No per-tier option list: the launch modal's Model select is populated
-    # from runtime-layer discovery (GET /api/models/available?layer=runtime,
-    # #1039) and reads only the suggestion below, as the default it
-    # preselects when that model is in the active runtime's catalog.
-    return {
-        "complexity": tier.value,
-        "suggested_model": model_alias,
-        "suggested_model_id": suggested_model_id,
-        "reason": reason,
-        "confirm_model": cfg.dashboard.confirm_model,
-        "suitability": {"mode": suitability.mode.value, "reasons": suitability.reasons} if warn else None,
-    }
+    """Return complexity tier, suggested model and suitability warning for an issue (see the service)."""
+    return await llm_suggestion_service.get_issue_complexity(issue_number, role)
 
 
 @router.get("/agents/work-items")
@@ -661,9 +471,6 @@ async def get_next_tasks(limit: Annotated[int, Query(ge=1, le=50)] = 5) -> dict:
     except GraphConfigError:
         log.error("agents.next_tasks_config_failed", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.error("agents.next_tasks_failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to rank next tasks")
 
 
 @router.get("/agents/active")
@@ -763,107 +570,11 @@ async def _check_run_terminal(run_id: int) -> bool:
     """Check whether a run has reached a terminal status."""
     try:
         async with await get_session() as session:
-            row = await session.execute(select(TaskRun.status).where(TaskRun.id == run_id))
-            status = row.scalar()
+            status = await work_service.get_run_status(session, run_id)
             return status in TASK_RUN_TERMINAL if status else True
     except (OSError, RuntimeError, SQLAlchemyError):
         log.warning("output_stream.terminal_check_failed", run_id=run_id, exc_info=True)
         return False
-
-
-async def _validate_llm_model_override(role: str | None, model_id: str) -> None:
-    """Reject an override the run could not honor, before anything is spawned.
-
-    Checked against a fresh read of the same ``layer="llm"`` discovery the
-    launch modal populated from, so an ID that stopped being valid between
-    page load and submit (e.g. the provider config changed) is caught here
-    rather than at the first model call.
-
-    A ``source: "curated"`` payload is treated as no answer at all, not as a
-    catalog to validate against: it is ``models_service``'s Anthropic-only
-    static fallback, returned while the provider is unauthenticated,
-    misconfigured, or timed out. The launch modal already refuses to offer
-    any model in that state, so accepting one here would let only a stale
-    page or a scripted call through, with an ID the configured provider
-    cannot serve.
-    """
-    from sova.config.context import resolve_project_dir
-    from sova.dashboard.services import models_service
-    from sova.dashboard.services.agent_lifecycle import llm_model_override_role_error
-    from sova.dashboard.services.agent_pool import get_default_project_dir
-
-    role_error = llm_model_override_role_error(role)
-    if role_error:
-        raise HTTPException(status_code=400, detail=role_error)
-
-    try:
-        available = await models_service.get_available_models(
-            resolve_project_dir(default_project_dir=get_default_project_dir()), layer="llm"
-        )
-    except Exception as exc:  # noqa: BLE001 (any discovery failure means the override cannot be verified)
-        log.warning("agents.llm_model_override_discovery_failed", model=model_id, exc_info=True)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not verify the internal LLM model override: model discovery is unavailable",
-        ) from exc
-
-    if available.get("source") == "curated":
-        log.warning("agents.llm_model_override_discovery_curated", model=model_id)
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Could not verify the internal LLM model override: the current provider's model "
-                "discovery is unavailable (serving a curated fallback list)"
-            ),
-        )
-
-    known_ids = {entry.get("id") for entry in available.get("models", [])}
-    if model_id not in known_ids:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown internal LLM model {model_id!r}: not offered by the current provider's model discovery",
-        )
-
-
-async def _validate_runtime_model(model_id: str) -> None:
-    """Reject a runtime model the run could not honor, before anything is spawned.
-
-    The ``layer="runtime"`` counterpart of ``_validate_llm_model_override()``,
-    against a fresh read of the discovery the launch modal populated from. A
-    runtime that ignores a caller-supplied model (``honours_model_override``
-    false, e.g. Codex) is a 400, not a silent no-op; an ``"unavailable"``
-    catalog cannot vouch for any ID, so it is a 503 like a failed fetch.
-    """
-    from sova.config.context import resolve_project_dir
-    from sova.dashboard.services import models_service
-    from sova.dashboard.services.agent_pool import get_default_project_dir
-
-    try:
-        available = await models_service.get_available_models(
-            resolve_project_dir(default_project_dir=get_default_project_dir()), layer="runtime"
-        )
-    except Exception as exc:  # noqa: BLE001 (any discovery failure means the model cannot be verified)
-        log.warning("agents.runtime_model_discovery_failed", model=model_id, exc_info=True)
-        raise HTTPException(
-            status_code=503, detail="Could not verify the runtime model: model discovery is unavailable"
-        ) from exc
-
-    if available.get("source") == "unavailable":
-        log.warning("agents.runtime_model_discovery_unavailable", model=model_id)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not verify the runtime model: the agent runtime is unavailable or unauthenticated",
-        )
-    if available.get("honours_model_override") is False:
-        raise HTTPException(
-            status_code=400,
-            detail=f"The {available.get('provider_identity')} runtime does not support choosing a model",
-        )
-    known_ids = {entry.get("id") for entry in available.get("models", [])}
-    if model_id not in known_ids:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown runtime model {model_id!r}: not in the active runtime's catalog"
-        )
 
 
 @router.post(
@@ -927,12 +638,15 @@ async def _validate_start_request(req: StartAgentRequest) -> None:
     """Raise the 400 (or the discovery 503) for a start request the run could not honor."""
     if not req.issue and not req.role:
         raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
-    if req.model is not None and req.model not in TIER_NAMES:
-        effective_role = req.role or "developer"
-        if effective_role in RUNTIME_MODEL_PIN_ROLES or effective_role not in LLM_MODEL_OVERRIDE_ROLES:
-            await _validate_runtime_model(req.model)
-    if req.llm_model_override is not None:
-        await _validate_llm_model_override(req.role, req.llm_model_override)
+    try:
+        if req.model is not None and req.model not in TIER_NAMES:
+            effective_role = req.role or "developer"
+            if effective_role in RUNTIME_MODEL_PIN_ROLES or effective_role not in LLM_MODEL_OVERRIDE_ROLES:
+                await llm_suggestion_service.validate_runtime_model(req.model)
+        if req.llm_model_override is not None:
+            await llm_suggestion_service.validate_llm_model_override(req.role, req.llm_model_override)
+    except llm_suggestion_service.ModelOverrideError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 def _start_error_detail(result: dict) -> dict | str:

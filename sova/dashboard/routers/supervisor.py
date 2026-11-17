@@ -6,19 +6,18 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-if TYPE_CHECKING:
-    from sova.supervisor.progression import ProgressionDecision
-
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from sova.config.context import get_project_dir, resolve_project_dir
 from sova.config.db_loader import task_queue_lock
+from sova.dashboard.services import daemon_registry, supervisor_service
 from sova.utils.logging import get_logger
 
-log = get_logger(component="dashboard.api.supervisor")
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
-_QUEUE_SETTING_KEY = "supervisor.task_queue"
+log = get_logger(component="dashboard.api.supervisor")
 
 
 class ApproveRequest(BaseModel):
@@ -45,31 +44,18 @@ class QueueAddRequest(BaseModel):
 
 router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 
-_daemon_registry: dict = {}
 _background_tasks: set[asyncio.Task] = set()
-_start_lock = asyncio.Lock()
 _queue_lock = task_queue_lock
 
 
-def _get_daemon(project_dir: Path | None = None) -> Any | None:
-    """Get the daemon instance for the current project, if any.
+def _load_cfg(project_dir: Path | None = None) -> ProjectConfig:
+    """The (cached) project config for *project_dir*, else for the request's project.
 
-    In single-project mode get_project_dir() returns None because no
-    multi-project middleware sets the context var.  Fall back to the sole
-    registry entry when exactly one daemon is registered.
+    ``load_config`` is imported at call time so a test patching ``sova.config.loader.load_config`` takes effect.
     """
-    pd = project_dir or get_project_dir()
-    if pd is not None:
-        return _daemon_registry.get(str(pd.resolve()))
-    if len(_daemon_registry) == 1:
-        return next(iter(_daemon_registry.values()))
-    return None
+    from sova.config.loader import load_config
 
-
-def set_daemon_registry(registry: dict) -> None:
-    """Called by app.py lifespan to share the daemon registry."""
-    global _daemon_registry
-    _daemon_registry = registry
+    return load_config(project_dir if project_dir is not None else get_project_dir())
 
 
 def _resolve_project_dir() -> Path:
@@ -80,17 +66,16 @@ def _resolve_project_dir() -> Path:
     """
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
-    return resolve_project_dir(daemon_registry=_daemon_registry, default_project_dir=get_default_project_dir())
+    return resolve_project_dir(
+        daemon_registry=daemon_registry.get_registry(), default_project_dir=get_default_project_dir()
+    )
 
 
 def _project_dir_and_slug() -> tuple[Path, str | None]:
     """Return the active project dir and its github_repo slug (None on any config load failure)."""
-    from sova.config.loader import load_config
-
     project_dir = get_project_dir()
     try:
-        cfg = load_config(project_dir)
-        project_slug = cfg.github_repo or None
+        project_slug = _load_cfg(project_dir).github_repo or None
     except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.warning("supervisor.config_load_failed", project_dir=str(project_dir), exc_info=True)
         project_slug = None
@@ -100,7 +85,7 @@ def _project_dir_and_slug() -> tuple[Path, str | None]:
 @router.get("/status")
 async def get_status() -> dict:
     """Return supervisor daemon status."""
-    daemon = _get_daemon()
+    daemon = daemon_registry.get_daemon()
     if daemon is None:
         return {"enabled": False, "running": False}
     return daemon.get_status()
@@ -109,7 +94,7 @@ async def get_status() -> dict:
 @router.post("/poll", status_code=202, responses={404: {"description": "Supervisor daemon is not running"}})
 async def trigger_poll() -> dict:
     """Trigger a manual poll cycle (fire-and-forget)."""
-    daemon = _get_daemon()
+    daemon = daemon_registry.get_daemon()
     if daemon is None:
         raise HTTPException(status_code=404, detail="Supervisor daemon is not running")
     task = asyncio.create_task(daemon.poll_once())
@@ -125,10 +110,8 @@ async def get_decisions(
     event_type: str | None = None,
 ) -> dict:
     """Return recent supervisor decisions."""
-    from sova.dashboard.services.supervisor_service import get_recent_decisions
-
     project_dir, project_slug = _project_dir_and_slug()
-    decisions = await get_recent_decisions(
+    decisions = await supervisor_service.get_recent_decisions(
         project_dir,
         project_slug=project_slug,
         limit=limit,
@@ -145,25 +128,24 @@ async def start_supervisor() -> dict[str, Any]:
     Safe to call after enabling supervisor.enabled in settings without a server restart.
     Returns the daemon status after starting (or the existing status if already running).
     """
-    from sova.config.loader import load_config
     from sova.db.session import get_session_factory
     from sova.supervisor.daemon import SupervisorDaemon
 
     project_dir = _resolve_project_dir()
 
-    async with _start_lock:
-        daemon = _get_daemon(project_dir)
+    async with daemon_registry.get_lifecycle_lock(project_dir):
+        daemon = daemon_registry.get_daemon(project_dir)
         if daemon is not None and daemon.running:
             return {"started": False, "reason": "already running", **daemon.get_status()}
 
-        cfg = load_config(project_dir)
+        cfg = _load_cfg(project_dir)
         if not cfg.supervisor.enabled:
             raise HTTPException(status_code=409, detail="supervisor.enabled is false in config, enable it first")
 
         session_factory = await get_session_factory(project_dir)
         new_daemon = SupervisorDaemon(config=cfg, project_dir=project_dir, session_factory=session_factory)
         new_daemon.start()
-        _daemon_registry[str(project_dir.resolve())] = new_daemon
+        daemon_registry.register_daemon(project_dir, new_daemon)
         log.info("supervisor.started_via_api", project_dir=str(project_dir))
         return {"started": True, **new_daemon.get_status()}
 
@@ -177,86 +159,42 @@ async def stop_supervisor() -> dict[str, Any]:
     """
     project_dir = _resolve_project_dir()
 
-    async with _start_lock:
-        daemon = _get_daemon(project_dir)
+    async with daemon_registry.get_lifecycle_lock(project_dir):
+        daemon = daemon_registry.get_daemon(project_dir)
         if daemon is None or not daemon.running:
             raise HTTPException(status_code=404, detail="Supervisor daemon is not running")
         await daemon.stop()
-        _daemon_registry.pop(str(project_dir.resolve()), None)
+        daemon_registry.unregister_daemon(project_dir)
         log.info("supervisor.stopped_via_api", project_dir=str(project_dir))
         return {"stopped": True, "running": False}
-
-
-_CI_BUDGET_ZERO = {
-    "total": 0,
-    "used": 0,
-    "remaining": 0,
-    "pct_used": 0.0,
-    "warn": False,
-    "block": False,
-    "cached": False,
-}
 
 
 @router.get("/ci-budget")
 async def get_ci_budget() -> dict:
     """Return current GitHub Actions CI minutes usage and threshold status."""
-    from sova.config.loader import load_config
-    from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, get_ci_budget_tracker
-
-    project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-    if not cfg.github_repo:
-        return dict(_CI_BUDGET_ZERO)
-
-    try:
-        tracker = get_ci_budget_tracker(cfg.github_user)
-        budget = await tracker.get_budget(cfg.github_repo, cfg.github_user)
-    except Exception:  # noqa: BLE001 (budget display falls back to zero state on any failure)
-        log.warning("ci_budget.endpoint_failed", exc_info=True)
-        return dict(_CI_BUDGET_ZERO)
-
-    if budget.total == 0 and budget.remaining == 0:
-        return dict(_CI_BUDGET_ZERO)
-
-    warn = budget.remaining < cfg.supervisor.ci_warn_minutes and budget.remaining < _UNLIMITED_SENTINEL
-    block = budget.remaining < cfg.supervisor.ci_block_minutes and budget.remaining < _UNLIMITED_SENTINEL
-    return {
-        "total": budget.total,
-        "used": budget.used,
-        "remaining": budget.remaining,
-        "pct_used": budget.pct_used,
-        "warn": warn,
-        "block": block,
-        "cached": bool(tracker._cache),
-    }
+    return await supervisor_service.get_ci_budget_payload(_load_cfg())
 
 
 @router.get("/counts")
 async def get_counts() -> dict:
     """Return per-component decision counts."""
-    from sova.dashboard.services.supervisor_service import get_decision_counts
-
     project_dir, project_slug = _project_dir_and_slug()
-    counts = await get_decision_counts(project_dir, project_slug=project_slug)
+    counts = await supervisor_service.get_decision_counts(project_dir, project_slug=project_slug)
     return {"counts": counts}
 
 
 @router.get("/planner-health")
 async def get_planner_health_endpoint() -> dict:
     """Return planner success/failure counts and last-seen timestamps for the dashboard widget."""
-    from sova.config.loader import load_config
-    from sova.dashboard.services.supervisor_service import get_planner_health, resolve_project_slug
-
     project_dir = get_project_dir()
     try:
-        cfg = load_config(project_dir)
-        project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+        cfg = _load_cfg(project_dir)
+        project_slug = supervisor_service.resolve_project_slug(cfg.github_repo, project_dir)
     except (FileNotFoundError, PermissionError, ValueError):
         log.exception("Config load failed for project dir %s", project_dir)
-        return get_planner_health(None)
+        return supervisor_service.get_planner_health(None)
 
-    return get_planner_health(project_slug)
+    return supervisor_service.get_planner_health(project_slug)
 
 
 @router.get("/plan")
@@ -267,25 +205,17 @@ async def get_plan() -> dict:
     decisions here instead of executing them immediately.  The frontend polls
     this endpoint to render the "Pending Actions" panel.
     """
-    from sova.config.loader import load_config
-    from sova.dashboard.services.supervisor_service import (
-        get_pending_plan,
-        get_plan_deferred,
-        get_plan_reasoning,
-        resolve_project_slug,
-    )
-
     project_dir = get_project_dir()
     try:
-        cfg = load_config(project_dir)
-        project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+        cfg = _load_cfg(project_dir)
+        project_slug = supervisor_service.resolve_project_slug(cfg.github_repo, project_dir)
     except (FileNotFoundError, PermissionError, ValueError):
         log.exception("Config load failed for project dir %s", project_dir)
         return {"reasoning": None, "pending": [], "deferred": []}
 
-    plan = get_pending_plan(project_slug)
+    plan = supervisor_service.get_pending_plan(project_slug)
     return {
-        "reasoning": get_plan_reasoning(project_slug),
+        "reasoning": supervisor_service.get_plan_reasoning(project_slug),
         "pending": [
             {
                 "issue_number": d.issue_number,
@@ -295,42 +225,17 @@ async def get_plan() -> dict:
             }
             for d in plan
         ],
-        "deferred": get_plan_deferred(project_slug),
+        "deferred": supervisor_service.get_plan_deferred(project_slug),
     }
 
 
-async def _execute_plan_decisions(decisions: list[ProgressionDecision], project_dir: Path) -> list[dict]:
-    """Execute a list of ProgressionDecision objects via the engine.
-
-    Isolated into its own function so tests can patch it without touching
-    the entire engine lifecycle.
-    """
-    from sova.adapters import create_adapter
-    from sova.config.loader import load_config
-    from sova.db.session import get_session_factory
-    from sova.supervisor.progression import TaskProgressionEngine
-
-    cfg = load_config(project_dir)
-    adapter = create_adapter(cfg)
-    session_factory = await get_session_factory(project_dir)
-    engine = TaskProgressionEngine(
-        config=cfg,
-        adapter=adapter,
-        project_dir=project_dir,
-        session_factory=session_factory,
-    )
-    results: list[dict] = []
-    for decision in decisions:
-        try:
-            result = await engine.execute_decision(decision)
-            results.append(result)
-        except Exception as exc:  # noqa: BLE001 (one failed decision must not abort the rest of the plan)
-            log.warning("plan.execute_decision_failed", issue_number=decision.issue_number, exc_info=True)
-            results.append({"error": str(exc), "issue_number": decision.issue_number})
-    return results
-
-
-@router.post("/plan/approve")
+@router.post(
+    "/plan/approve",
+    responses={
+        502: {"description": "Some approved decisions failed to execute (the plan is already consumed)"},
+        503: {"description": "The decisions could not be prepared; nothing ran and the plan is unchanged"},
+    },
+)
 async def approve_plan(body: ApproveRequest) -> dict:
     """Execute approved decisions from the pending plan.
 
@@ -338,44 +243,48 @@ async def approve_plan(body: ApproveRequest) -> dict:
     executed; the rest remain in the plan.  When omitted or empty, all pending
     decisions are approved and the plan is cleared.
     """
-    from sova.config.loader import load_config
-    from sova.dashboard.services.supervisor_service import (
-        get_pending_plan,
-        remove_plan_items,
-        resolve_project_slug,
-        set_pending_plan,
-    )
-
     project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-    project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+    project_slug = supervisor_service.resolve_project_slug(_load_cfg(project_dir).github_repo, project_dir)
 
-    plan = get_pending_plan(project_slug)
+    plan = supervisor_service.get_pending_plan(project_slug)
     if not plan:
         return {"approved": 0, "results": []}
 
+    # Kept so the plan can be put back whole if the engine cannot be built, before any decision has run.
+    reasoning = supervisor_service.get_plan_reasoning(project_slug)
+    deferred = supervisor_service.get_plan_deferred(project_slug)
+
     if body.issue_numbers:
-        to_execute = remove_plan_items(set(body.issue_numbers), project_slug)
+        to_execute = supervisor_service.remove_plan_items(set(body.issue_numbers), project_slug)
     else:
         to_execute = plan
-        set_pending_plan([], project_slug=project_slug)
+        supervisor_service.set_pending_plan([], project_slug=project_slug)
 
-    results = await _execute_plan_decisions(to_execute, project_dir)
-    errors = [r for r in results if "error" in r]
-    return {"approved": len(to_execute), "results": results, "errors": errors}
+    try:
+        results = await supervisor_service.execute_plan_decisions(to_execute, project_dir)
+    except supervisor_service.PlanSetupError as exc:
+        # Merged back, not replaced: the daemon or another request may have written the plan while the engine was built.
+        supervisor_service.restore_plan_items(
+            to_execute, project_slug=project_slug, reasoning=reasoning, deferred=deferred
+        )
+        raise HTTPException(status_code=503, detail="Failed to prepare the decisions; the plan is unchanged") from exc
+    # Every result carries an explicit ``ok`` (execute_plan_decisions() guarantees it), so only a False is a failure.
+    if any(r.get("ok") is False for r in results):
+        # The plan items are already consumed, so the detail carries every per-decision result for the caller.
+        raise HTTPException(
+            status_code=502,
+            detail={"message": "Some approved decisions failed to execute", "results": results},
+        )
+    return {"approved": len(to_execute), "results": results}
 
 
 @router.post("/plan/skip/{issue_number}", responses={404: {"description": "Issue not in pending plan"}})
 async def skip_plan_item(issue_number: int) -> dict:
     """Remove a single issue from the pending plan without executing it."""
-    from sova.config.loader import load_config
-    from sova.dashboard.services.supervisor_service import remove_plan_items, resolve_project_slug
-
     project_dir = get_project_dir()
-    cfg = load_config(project_dir)
-    project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+    project_slug = supervisor_service.resolve_project_slug(_load_cfg(project_dir).github_repo, project_dir)
 
-    removed = remove_plan_items({issue_number}, project_slug)
+    removed = supervisor_service.remove_plan_items({issue_number}, project_slug)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the pending plan")
     return {"skipped": issue_number}
@@ -384,86 +293,14 @@ async def skip_plan_item(issue_number: int) -> dict:
 # Task Queue CRUD
 
 
-def _deduplicate(items: list[int]) -> list[int]:
-    """Deduplicate preserving first occurrence order."""
-    return list(dict.fromkeys(items))
-
-
 async def _persist_queue(project_dir: Path | None, queue: list[int], *, based_on: list[int] | None = None) -> list[int]:
-    """Persist task_queue via the shared DB helper and return what was saved.
-
-    ``based_on`` (the queue the edit was computed from) rebases a single-entry edit onto the stored queue, so
-    a write another process saved in between (the CLI's post-merge prune, the daemon) is kept. Catches
-    DB-layer exceptions and raises HTTPException 503.
-    """
-    from sqlalchemy.exc import DBAPIError, SQLAlchemyError
-
-    from sova.config.db_loader import TaskQueueConflictError, save_task_queue
-
+    """Save the queue, answering a concurrent write with a 409 and a persistence failure with a 503."""
     try:
-        return await save_task_queue(project_dir, queue, based_on=based_on)
-    except (SQLAlchemyError, DBAPIError, TaskQueueConflictError):
-        log.error("supervisor.queue.persist_failed", exc_info=True)
-        raise HTTPException(status_code=503, detail="Failed to persist queue to database")
-
-
-async def _read_queue(project_dir: Path | None) -> list[int]:
-    """Read the current task queue from DB (async)."""
-    from sova.config.db_loader import load_task_queue
-
-    return await load_task_queue(project_dir)
-
-
-async def _notify_daemon_queue_change(project_dir: Path | None) -> None:
-    """Refresh a running daemon's config snapshot after a queue edit.
-
-    Non-fatal: no registered daemon (supervisor disabled, or the dashboard
-    running without the scheduler) is a no-op. Does not wake the daemon
-    early (``wake=False``): ``_poll_once()`` already reloads config fresh
-    every cycle, so the edit lands on the next natural cycle rather than
-    triggering a burst of premature polls on rapid successive edits (e.g.
-    drag-to-reorder).
-    """
-    daemon = _get_daemon(project_dir)
-    if daemon is None:
-        return
-    try:
-        from sova.config.loader import load_config
-
-        cfg = await asyncio.to_thread(load_config, project_dir)
-        daemon.reload_config(cfg, wake=False)
-    except Exception:  # noqa: BLE001 (best-effort daemon notify; queue mutation must not fail on it)
-        log.debug("supervisor.queue.daemon_notify_failed", exc_info=True)
-
-
-_toml_migrated: set[str] = set()
-
-
-async def _maybe_migrate_queue_from_toml(project_dir: Path | None) -> None:
-    """One-time migration: copy task_queue from sova.toml to DB if DB is empty.
-
-    Must be called under _queue_lock to prevent races with concurrent writes.
-    """
-    cache_key = str(project_dir) if project_dir else "__default__"
-    if cache_key in _toml_migrated:
-        return
-
-    db_queue = await _read_queue(project_dir)
-    if db_queue:
-        _toml_migrated.add(cache_key)
-        return
-
-    try:
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
-        toml_queue = cfg.supervisor.task_queue
-        if toml_queue:
-            log.info("supervisor.queue.toml_migration", count=len(toml_queue))
-            await _persist_queue(project_dir, toml_queue)
-        _toml_migrated.add(cache_key)
-    except Exception:  # noqa: BLE001 (one-time migration is best-effort; the queue works without it)
-        log.debug("supervisor.queue.toml_migration_skipped", exc_info=True)
+        return await supervisor_service.persist_queue(project_dir, queue, based_on=based_on)
+    except supervisor_service.QueueConflictError as exc:
+        raise HTTPException(status_code=409, detail="The queue changed; reload and retry") from exc
+    except supervisor_service.QueuePersistError as exc:
+        raise HTTPException(status_code=503, detail="Failed to persist queue to database") from exc
 
 
 @router.get("/queue")
@@ -471,19 +308,25 @@ async def get_queue() -> dict:
     """Return the current task queue."""
     project_dir = _resolve_project_dir()
     async with _queue_lock:
-        await _maybe_migrate_queue_from_toml(project_dir)
-    return {"queue": await _read_queue(project_dir)}
+        await supervisor_service.maybe_migrate_queue_from_toml(project_dir)
+    return {"queue": await supervisor_service.read_queue(project_dir)}
 
 
-@router.put("/queue", responses={503: {"description": "Failed to save queue to database"}})
+@router.put(
+    "/queue",
+    responses={
+        409: {"description": "The queue changed since it was read; reload and retry"},
+        503: {"description": "Failed to save queue to database"},
+    },
+)
 async def set_queue(body: QueueSetRequest) -> dict:
     """Replace the entire task queue (supports reordering)."""
     async with _queue_lock:
         project_dir = _resolve_project_dir()
-        queue = _deduplicate(body.issue_numbers)
-        based_on = _deduplicate(body.based_on) if body.based_on is not None else None
+        queue = supervisor_service.deduplicate(body.issue_numbers)
+        based_on = supervisor_service.deduplicate(body.based_on) if body.based_on is not None else None
         saved = await _persist_queue(project_dir, queue, based_on=based_on)
-        await _notify_daemon_queue_change(project_dir)
+        await supervisor_service.notify_daemon_queue_change(project_dir)
         return {"queue": saved}
 
 
@@ -491,7 +334,7 @@ async def set_queue(body: QueueSetRequest) -> dict:
     "/queue",
     status_code=201,
     responses={
-        409: {"description": "Issue already in queue"},
+        409: {"description": "Issue already in queue, or the queue changed since it was read"},
         503: {"description": "Failed to save queue to database"},
     },
 )
@@ -499,13 +342,13 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
     """Add a single issue to the end of the queue."""
     async with _queue_lock:
         project_dir = _resolve_project_dir()
-        queue = await _read_queue(project_dir)
+        queue = await supervisor_service.read_queue(project_dir)
 
         if body.issue_number in queue:
             raise HTTPException(status_code=409, detail=f"Issue #{body.issue_number} is already in the queue")
 
         queue = await _persist_queue(project_dir, [*queue, body.issue_number], based_on=queue)
-        await _notify_daemon_queue_change(project_dir)
+        await supervisor_service.notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
 
@@ -513,6 +356,7 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
     "/queue/{issue_number}",
     responses={
         404: {"description": "Issue not in queue"},
+        409: {"description": "The queue changed since it was read; reload and retry"},
         503: {"description": "Failed to save queue to database"},
     },
 )
@@ -520,83 +364,53 @@ async def remove_from_queue(issue_number: int) -> dict:
     """Remove a single issue from the queue."""
     async with _queue_lock:
         project_dir = _resolve_project_dir()
-        queue = await _read_queue(project_dir)
+        queue = await supervisor_service.read_queue(project_dir)
 
         if issue_number not in queue:
             raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the queue")
 
         queue = await _persist_queue(project_dir, [i for i in queue if i != issue_number], based_on=queue)
-        await _notify_daemon_queue_change(project_dir)
+        await supervisor_service.notify_daemon_queue_change(project_dir)
         return {"queue": queue}
 
 
-@router.delete("/queue", responses={503: {"description": "Failed to save queue to database"}})
+@router.delete(
+    "/queue",
+    responses={
+        409: {"description": "The queue changed since it was read; reload and retry"},
+        503: {"description": "Failed to save queue to database"},
+    },
+)
 async def clear_queue() -> dict:
     """Clear the entire task queue."""
     async with _queue_lock:
         project_dir = _resolve_project_dir()
         await _persist_queue(project_dir, [])
-        await _notify_daemon_queue_change(project_dir)
+        await supervisor_service.notify_daemon_queue_change(project_dir)
         return {"queue": []}
 
 
 # Supervisor Persona
 
 
-@router.get("/persona", responses={500: {"description": "Failed to fetch supervisor persona"}})
+@router.get("/persona", responses={500: {"description": "Internal error"}})
 async def get_supervisor_persona() -> dict:
     """Get the supervisor persona content and metadata."""
-    try:
-        from sova.config.loader import load_config
-        from sova.supervisor.persona import get_persona_info
+    from sova.supervisor.persona import get_persona_info
 
-        project_dir = get_project_dir()
-        cfg = load_config(project_dir)
-        return get_persona_info(cfg.supervisor.persona_path)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("supervisor.persona.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch supervisor persona")
+    return get_persona_info(_load_cfg().supervisor.persona_path)
 
 
 @router.post(
     "/persona/open",
-    responses={400: {"description": "Cannot open editor"}, 500: {"description": "Failed to open editor"}},
+    responses={400: {"description": "Cannot open editor"}, 500: {"description": "Internal error"}},
 )
 async def open_supervisor_persona_in_editor() -> dict:
     """Open the supervisor persona file in the OS default editor.
 
     Fire-and-forget: spawns the editor process without waiting for it to exit.
     """
-    from sova.config.loader import load_config
-    from sova.oversight.persona import get_open_command
+    from sova.dashboard.services.editor_service import open_path_in_editor
     from sova.supervisor.persona import ensure_persona_exists
 
-    try:
-        project_dir = get_project_dir()
-        cfg = load_config(project_dir)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("supervisor.persona.open.config_error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to load project configuration")
-
-    path = ensure_persona_exists(cfg.supervisor.persona_path)
-    cmd = get_open_command()
-    if cmd is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No editor command found for this OS. Edit manually: {path}",
-        )
-
-    try:
-        await asyncio.create_subprocess_exec(cmd, str(path))
-        return {"status": "spawned", "path": str(path)}
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"'{cmd}' not found. Edit the file manually: {path}",
-        )
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("supervisor.persona.open.subprocess_error", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to open editor. Edit manually: {path}",
-        )
+    return await open_path_in_editor(ensure_persona_exists(_load_cfg().supervisor.persona_path))

@@ -2266,17 +2266,18 @@ class TestPRThrottleLoopHeartbeat:
 async def clean_throttle_registry() -> AsyncIterator[ModuleType]:
     """Isolate the daemon registry and throttle tasks, and stop any loop a test started."""
     from sova.dashboard import app as app_module
+    from sova.dashboard.services import daemon_registry
 
-    previous = app_module.get_daemon_components()
-    app_module.set_daemon_components({})
-    app_module._pr_throttle_tasks.clear()
+    previous = daemon_registry.get_daemon_components()
+    daemon_registry.set_daemon_components({})
+    daemon_registry._pr_throttle_tasks.clear()
     yield app_module
-    tasks = list(app_module._pr_throttle_tasks)
+    tasks = list(daemon_registry._pr_throttle_tasks)
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
-    app_module._pr_throttle_tasks.clear()
-    app_module.set_daemon_components(previous)
+    daemon_registry._pr_throttle_tasks.clear()
+    daemon_registry.set_daemon_components(previous)
 
 
 def _project_cfg(*, enabled: bool, repo: str = "o/r") -> ProjectConfig:
@@ -2292,7 +2293,7 @@ class TestEnsurePRThrottleLoop:
         assert started is True
         registered = app_module.get_daemon_components()[str(tmp_path.resolve())]["pr_throttles"]
         assert len(registered) == 1
-        assert len(app_module._pr_throttle_tasks) == 1
+        assert len(app_module.get_pr_throttle_tasks()) == 1
 
     async def test_second_call_for_the_same_project_is_a_noop(
         self, tmp_path: Path, clean_throttle_registry: ModuleType
@@ -2303,14 +2304,14 @@ class TestEnsurePRThrottleLoop:
         assert await app_module.ensure_pr_throttle_loop(tmp_path, cfg) is True
         assert await app_module.ensure_pr_throttle_loop(tmp_path, cfg) is False
         assert await app_module.ensure_pr_throttle_loop(tmp_path / ".", cfg) is False
-        assert len(app_module._pr_throttle_tasks) == 1
+        assert len(app_module.get_pr_throttle_tasks()) == 1
 
     async def test_concurrent_calls_start_one_loop(self, tmp_path: Path, clean_throttle_registry: ModuleType) -> None:
         app_module = clean_throttle_registry
         cfg = _project_cfg(enabled=True)
         results = await asyncio.gather(*(app_module.ensure_pr_throttle_loop(tmp_path, cfg) for _ in range(3)))
         assert results.count(True) == 1
-        assert len(app_module._pr_throttle_tasks) == 1
+        assert len(app_module.get_pr_throttle_tasks()) == 1
 
     async def test_failed_recovery_unregisters_the_loop_so_a_retry_can_start_it(
         self, tmp_path: Path, clean_throttle_registry: ModuleType
@@ -2327,10 +2328,10 @@ class TestEnsurePRThrottleLoop:
         ):
             await app_module.ensure_pr_throttle_loop(tmp_path, cfg)
         assert not app_module.get_daemon_components()[str(tmp_path.resolve())]["pr_throttles"]
-        assert app_module._pr_throttle_tasks == []
+        assert app_module.get_pr_throttle_tasks() == []
 
         assert await app_module.ensure_pr_throttle_loop(tmp_path, cfg) is True
-        assert len(app_module._pr_throttle_tasks) == 1
+        assert len(app_module.get_pr_throttle_tasks()) == 1
 
     async def test_concurrent_start_during_recovery_does_not_start_a_second_loop(
         self, tmp_path: Path, clean_throttle_registry: ModuleType
@@ -2352,13 +2353,13 @@ class TestEnsurePRThrottleLoop:
             assert await app_module.ensure_pr_throttle_loop(tmp_path, cfg) is False
             release.set()
             assert await first is True
-        assert len(app_module._pr_throttle_tasks) == 1
+        assert len(app_module.get_pr_throttle_tasks()) == 1
 
     async def test_disabled_quota_starts_nothing(self, tmp_path: Path, clean_throttle_registry: ModuleType) -> None:
         app_module = clean_throttle_registry
         assert await app_module.ensure_pr_throttle_loop(tmp_path, _project_cfg(enabled=False)) is False
         assert app_module.get_daemon_components() == {}
-        assert app_module._pr_throttle_tasks == []
+        assert app_module.get_pr_throttle_tasks() == []
 
     async def test_loop_serves_the_project_it_was_started_for(
         self, tmp_path: Path, clean_throttle_registry: ModuleType
@@ -2484,7 +2485,7 @@ class TestStartPRThrottleLoops:
     ) -> None:
         app_module = clean_throttle_registry
         await app_module._start_pr_throttle_loops(tmp_path, _project_cfg(enabled=False), is_multi=False)
-        assert app_module._pr_throttle_tasks == []
+        assert app_module.get_pr_throttle_tasks() == []
 
     async def test_multi_project_starts_loops_even_when_the_root_config_has_the_quota_off(
         self, tmp_path: Path, clean_throttle_registry: ModuleType

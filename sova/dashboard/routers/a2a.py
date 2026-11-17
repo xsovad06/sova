@@ -120,7 +120,7 @@ def _validate_a2a_cancel_auth(
         token_run_id = validate_mcp_token(token, secret)
     except ValueError as e:
         log.warning("a2a.cancel_auth_failed", error=str(e), exc_info=True)
-        raise HTTPException(status_code=401, detail=str(e)) from e
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from e
 
     if token_run_id != run_id:
         raise HTTPException(status_code=403, detail=f"Token does not authorize task {task_id}")

@@ -137,6 +137,11 @@ class OversightAgent:
             log.warning("oversight.error_record_failed", exc_info=True)
 
     @property
+    def enabled(self) -> bool:
+        """Return True if the agent's current config has oversight enabled."""
+        return self._config.enabled
+
+    @property
     def running(self) -> bool:
         """Return True if the background loop task is alive."""
         return self._task is not None and not self._task.done()

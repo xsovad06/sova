@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from sova.config.models import MemoryGuardConfig
     from sova.monitoring.collector import ResourceCollector
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.dashboard.services.agent_pool import _get_project_agents
@@ -272,82 +272,57 @@ def get_cross_project_metrics(project_dir: Path | None = None) -> dict:
     return read_cross_project_metrics(resolved)
 
 
-async def get_total_energy(project_dir: Path | None = None) -> dict:
+async def get_total_energy(session: AsyncSession) -> dict:
     """Get total energy consumption across all runs with energy data."""
-    from sova.db.session import get_session
-
-    try:
-        async with await get_session(project_dir=project_dir) as session:
-            from sqlalchemy import func
-
-            result = await session.execute(
-                select(
-                    func.sum(ResourceSummaryRecord.energy_wh),
-                    func.sum(ResourceSummaryRecord.co2_grams),
-                    func.count(ResourceSummaryRecord.id),
-                ).where(ResourceSummaryRecord.energy_wh.isnot(None))
-            )
-            row = result.one()
-            total = Decimal(str(row[0])) if row[0] is not None else Decimal("0")
-            total_co2 = Decimal(str(row[1])) if row[1] is not None else Decimal("0")
-            count = row[2]
-        return {
-            "total_energy_wh": str(round(total, 4)),
-            "total_co2_grams": str(round(total_co2, 4)),
-            "run_count": count,
-        }
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("total_energy.query_failed", exc_info=True)
-        raise
+    result = await session.execute(
+        select(
+            func.sum(ResourceSummaryRecord.energy_wh),
+            func.sum(ResourceSummaryRecord.co2_grams),
+            func.count(ResourceSummaryRecord.id),
+        ).where(ResourceSummaryRecord.energy_wh.isnot(None))
+    )
+    row = result.one()
+    total = Decimal(str(row[0])) if row[0] is not None else Decimal("0")
+    total_co2 = Decimal(str(row[1])) if row[1] is not None else Decimal("0")
+    return {
+        "total_energy_wh": str(round(total, 4)),
+        "total_co2_grams": str(round(total_co2, 4)),
+        "run_count": row[2],
+    }
 
 
-async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
+async def get_capacity_recommendation(session: AsyncSession, project_dir: Path | None = None) -> dict:
     """Get a capacity recommendation based on historical resource data."""
     from dataclasses import asdict
 
     from sova.config.loader import load_config
-    from sova.db.session import get_session
     from sova.monitoring.advisor import recommend_capacity
 
-    try:
-        cfg = load_config(project_dir)
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("capacity.config_load_failed", exc_info=True)
-        raise
-
+    cfg = load_config(project_dir)
     current_max = getattr(cfg, "max_parallel_agents", 3)
     safety_margin = cfg.monitoring.safety_margin
 
     # Fetch historical summaries from DB
-    summaries: list[dict] = []
-    latest_time = None
-    try:
-        async with await get_session(project_dir=project_dir) as session:
-            stmt = (
-                select(ResourceSummaryRecord)
-                .where(
-                    ResourceSummaryRecord.sample_count > 0,
-                    ResourceSummaryRecord.avg_cpu_percent.isnot(None),
-                    ResourceSummaryRecord.peak_cpu_percent.isnot(None),
-                )
-                .order_by(ResourceSummaryRecord.created_at.desc())
-                .limit(50)
-            )
-            result = await session.execute(stmt)
-            records = result.scalars().all()
-            for r in records:
-                summaries.append(
-                    {
-                        "avg_cpu_percent": float(r.avg_cpu_percent),
-                        "peak_cpu_percent": float(r.peak_cpu_percent),
-                        "peak_memory_rss_bytes": r.peak_memory_rss_bytes,
-                    }
-                )
-            if records:
-                latest_time = records[0].created_at
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("capacity.db_query_failed", exc_info=True)
-        raise
+    stmt = (
+        select(ResourceSummaryRecord)
+        .where(
+            ResourceSummaryRecord.sample_count > 0,
+            ResourceSummaryRecord.avg_cpu_percent.isnot(None),
+            ResourceSummaryRecord.peak_cpu_percent.isnot(None),
+        )
+        .order_by(ResourceSummaryRecord.created_at.desc())
+        .limit(50)
+    )
+    records = (await session.execute(stmt)).scalars().all()
+    summaries = [
+        {
+            "avg_cpu_percent": float(r.avg_cpu_percent),
+            "peak_cpu_percent": float(r.peak_cpu_percent),
+            "peak_memory_rss_bytes": r.peak_memory_rss_bytes,
+        }
+        for r in records
+    ]
+    latest_time = records[0].created_at if records else None
 
     # System metrics
     try:

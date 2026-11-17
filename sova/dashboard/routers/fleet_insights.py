@@ -8,6 +8,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from sova.adapters.base import AdapterError
 from sova.dashboard.services.fleet_service import FleetService, build_issue_draft
 from sova.utils.logging import get_logger
 
@@ -47,7 +48,7 @@ def _decimal_to_float(obj: object) -> object:
     return obj
 
 
-@router.get("/data")
+@router.get("/data", responses={503: {"description": "Fleet insights temporarily unavailable"}})
 async def get_fleet_insights(
     force: bool = False,
     service: FleetService = Depends(_get_fleet_service),
@@ -55,16 +56,19 @@ async def get_fleet_insights(
     """Return aggregated fleet insights across all registered projects."""
     try:
         insights = await service.get_insights(force_refresh=force)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
-        log.error("Failed to load fleet insights", exc_info=True)
-        raise HTTPException(
-            status_code=503,
-            detail="Fleet insights temporarily unavailable",
-        ) from exc
+    except Exception as exc:  # noqa: BLE001 (the scan reads every registered project and telemetry: any failure is an upstream outage, a 503)
+        log.error("fleet_insights.unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail="Fleet insights temporarily unavailable") from exc
     return _decimal_to_float(asdict(insights))
 
 
-@router.get("/issue-draft")
+@router.get(
+    "/issue-draft",
+    responses={
+        404: {"description": "No draft for this step"},
+        503: {"description": "Fleet insights temporarily unavailable"},
+    },
+)
 async def get_issue_draft(
     step_name: str,
     service: FleetService = Depends(_get_fleet_service),
@@ -72,8 +76,8 @@ async def get_issue_draft(
     """Return a pre-filled issue draft for a fleet failure pattern."""
     try:
         insights = await service.get_insights()
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
-        log.error("Failed to load fleet insights for draft", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 (the scan reads every registered project and telemetry: any failure is an upstream outage, a 503)
+        log.error("fleet_insights.draft_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Fleet insights temporarily unavailable") from exc
 
     draft = build_issue_draft(step_name, insights)
@@ -87,9 +91,12 @@ async def get_issue_draft(
     )
 
 
-@router.post("/propose-issue")
+@router.post("/propose-issue", responses={502: {"description": "Failed to create the issue on the tracker"}})
 async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
-    """Create a GitHub issue on the SOVA repo from fleet failure data."""
+    """Create a GitHub issue on the SOVA repo from fleet failure data.
+
+    A tracker failure is a 502 with a fixed detail; the exception is logged.
+    """
     from sova.adapters.github import GitHubAdapter
     from sova.config.context import get_project_dir
     from sova.config.loader import load_config
@@ -115,10 +122,9 @@ async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
             body=req.body,
             labels=req.labels,
         )
-    except RuntimeError as exc:
-        error_msg = str(exc)[:500]
-        log.warning("propose_issue.create_failed", error=error_msg, exc_info=True)
-        return {"ok": False, "error": error_msg}
+    except (AdapterError, RuntimeError, OSError) as exc:
+        log.warning("propose_issue.create_failed", exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to create the issue on the tracker") from exc
 
     return {
         "ok": True,

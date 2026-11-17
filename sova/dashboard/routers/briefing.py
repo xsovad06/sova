@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from sova.config.context import get_project_dir
 from sova.dashboard.services import awareness_service
@@ -29,14 +29,10 @@ async def get_briefing() -> dict:
         return awareness_service.empty_briefing()
 
 
-@router.get("/providers", responses={500: {"description": "Failed to fetch provider status"}})
+@router.get("/providers", responses={500: {"description": "Internal error"}})
 async def get_providers() -> dict:
-    try:
-        statuses = await awareness_service.get_provider_statuses(get_project_dir())
-        return {"providers": statuses}
-    except Exception:  # noqa: BLE001 (health-check aggregation over arbitrary provider plugins)
-        log.warning("briefing.providers.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch provider status")
+    statuses = await awareness_service.get_provider_statuses(get_project_dir())
+    return {"providers": statuses}
 
 
 @router.post("/{item_id}/dismiss")

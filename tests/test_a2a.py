@@ -291,6 +291,8 @@ class TestA2ARouter:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/a2a/tasks/sova-run-999/cancel", headers={"Authorization": "Bearer garbage"})
             assert resp.status_code == 401
+            # A fixed detail: the token decoder's own error text never reaches the client.
+            assert resp.json() == {"detail": "Invalid or expired token"}
 
     @pytest.mark.asyncio
     async def test_cancel_wrong_run_token_returns_403(self, app, project_dir):

@@ -28,6 +28,13 @@ def _broken_session(exc: Exception | None = None):
     return _raise
 
 
+def _broken_db_session() -> MagicMock:
+    """An injected session whose every query raises, for query services that take a session."""
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=SQLAlchemyError("db unavailable"))
+    return session
+
+
 def _agent(project_dir: Path, **overrides) -> MagicMock:
     agent = MagicMock()
     agent.run_id = 1
@@ -292,11 +299,8 @@ class TestResourceServiceFailurePaths:
     async def test_total_energy_reraises_db_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services import resource_service
 
-        with (
-            patch("sova.db.session.get_session", _broken_session()),
-            pytest.raises(SQLAlchemyError),
-        ):
-            await resource_service.get_total_energy(tmp_path)
+        with pytest.raises(SQLAlchemyError):
+            await resource_service.get_total_energy(_broken_db_session())
 
     async def test_capacity_reraises_config_load_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services import resource_service
@@ -305,21 +309,21 @@ class TestResourceServiceFailurePaths:
             patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
             pytest.raises(RuntimeError, match="bad config"),
         ):
-            await resource_service.get_capacity_recommendation(tmp_path)
+            await resource_service.get_capacity_recommendation(_broken_db_session(), tmp_path)
 
     async def test_capacity_reraises_db_query_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services import resource_service
 
         with (
             patch("sova.config.loader.load_config", return_value=MagicMock(max_parallel_agents=3)),
-            patch("sova.db.session.get_session", _broken_session()),
             pytest.raises(SQLAlchemyError),
         ):
-            await resource_service.get_capacity_recommendation(tmp_path)
+            await resource_service.get_capacity_recommendation(_broken_db_session(), tmp_path)
 
     @pytest.mark.usefixtures("initialized_db")
     async def test_capacity_system_metrics_failure_falls_back_to_zero(self, tmp_path: Path) -> None:
         from sova.dashboard.services import resource_service
+        from sova.db.session import get_session
 
         cfg = MagicMock()
         cfg.max_parallel_agents = 3
@@ -330,13 +334,15 @@ class TestResourceServiceFailurePaths:
             patch("psutil.cpu_count", side_effect=OSError("no cpu info")),
             patch.object(resource_service, "get_cross_project_metrics", return_value={}),
         ):
-            result = await resource_service.get_capacity_recommendation(tmp_path)
+            async with await get_session() as session:
+                result = await resource_service.get_capacity_recommendation(session, tmp_path)
 
         assert result is not None
 
     @pytest.mark.usefixtures("initialized_db")
     async def test_capacity_cross_project_failure_is_non_fatal(self, tmp_path: Path) -> None:
         from sova.dashboard.services import resource_service
+        from sova.db.session import get_session
 
         cfg = MagicMock()
         cfg.max_parallel_agents = 3
@@ -346,7 +352,8 @@ class TestResourceServiceFailurePaths:
             patch("sova.config.loader.load_config", return_value=cfg),
             patch.object(resource_service, "get_cross_project_metrics", side_effect=RuntimeError("registry gone")),
         ):
-            result = await resource_service.get_capacity_recommendation(tmp_path)
+            async with await get_session() as session:
+                result = await resource_service.get_capacity_recommendation(session, tmp_path)
 
         assert result is not None
 

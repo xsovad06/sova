@@ -23,9 +23,16 @@ from urllib.parse import quote
 
 import httpx
 
+from sova.config import loader
+from sova.config.context import resolve_project_dir_or_none
+from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.utils.dedup_log import FileVersion, forget_under, warn_once_per_version
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.dependency_health")
+
+# resolved path -> (mtime, size) of the unreadable manifest version already warned about
+_warned_manifests: dict[str, FileVersion] = {}
 
 _STALE_DAYS = 365
 _MAX_CONCURRENT_REQUESTS = 10
@@ -717,6 +724,51 @@ async def get_snapshot(
         async with _cache_lock:
             _lru_set(_cache, project_dir, (time.monotonic(), snapshot))
         return snapshot
+
+
+class NoProjectSelectedError(Exception):
+    """No project is selected for this request, so there is no manifest to scan."""
+
+
+def _note_unreadable_manifest(path: Path) -> None:
+    """Warn once per version of an undecodable manifest, then log at debug on repeats.
+
+    The failure is not cached, so every page load rescans and reaches this again for the same file.
+    A new save is a new version (mtime and size), so a still-broken re-save warns again. No traceback: the
+    path and the exception's message already say everything, and the frames hold the manifest text.
+    """
+    warn_once_per_version(log, "dependency_health.manifest_unreadable", path, _warned_manifests)
+
+
+async def get_project_snapshot(*, force_refresh: bool = False) -> DependencyHealthSnapshot:
+    """Resolve the request's project, load its config and return its snapshot.
+
+    The per-request project is only set by the multi-project middleware from a `/p/{slug}/`
+    prefix; in single-project mode the single-project default (set at startup) is the fallback
+    before treating this as "no project selected".
+
+    Raises ``NoProjectSelectedError`` when no project resolves, and ``ManifestUnreadableError``
+    (after noting it once per manifest version) when a manifest is not valid UTF-8. Any other failure
+    propagates to the app's catch-all handler.
+    """
+    project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    if project_dir is None:
+        raise NoProjectSelectedError
+    dh_cfg = loader.load_config(project_dir).dependency_health
+    try:
+        snapshot = await get_snapshot(
+            project_dir,
+            enabled=dh_cfg.enabled,
+            cache_ttl_minutes=dh_cfg.cache_ttl_minutes,
+            registry_timeout_seconds=dh_cfg.registry_timeout_seconds,
+            force_refresh=force_refresh,
+        )
+    except ManifestUnreadableError as exc:
+        _note_unreadable_manifest(exc.path)
+        raise
+    # Every manifest scanned cleanly, so none of this project's warned versions is current any more.
+    forget_under(project_dir, _warned_manifests)
+    return snapshot
 
 
 def snapshot_to_dict(snapshot: DependencyHealthSnapshot) -> dict:
