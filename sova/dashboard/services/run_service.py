@@ -7,6 +7,7 @@ from sova.dashboard.services.work_service import (
 )
 from sova.dashboard.services.work_service import (
     get_run,
+    get_run_status,
     get_run_steps,
     list_runs,
     mark_run_failed,
@@ -18,6 +19,7 @@ from sova.dashboard.services.work_service import (
 __all__ = [
     "_TERMINAL_STATUSES",
     "get_run",
+    "get_run_status",
     "get_run_steps",
     "get_run_summary",
     "list_runs",

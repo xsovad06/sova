@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
 
 from sova.adapters.base import PriorityUnavailableError, Task, TaskState
 from sova.adapters.priority import Priority
@@ -22,6 +23,16 @@ NO_CSRF = {"origin": "", "x-csrf-token": ""}
 @pytest.fixture
 async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=ASGITransport(app=dashboard_app), base_url="http://test") as ac:
+        ac.headers.update(csrf_request_headers(ac))
+        yield ac
+
+
+@pytest.fixture
+async def error_client(dashboard_app) -> AsyncIterator[AsyncClient]:
+    """A client for tests that assert a 500: the catch-all answers, then Starlette re-raises, which this ignores."""
+    async with AsyncClient(
+        transport=ASGITransport(app=dashboard_app, raise_app_exceptions=False), base_url="http://test"
+    ) as ac:
         ac.headers.update(csrf_request_headers(ac))
         yield ac
 
@@ -60,11 +71,12 @@ class TestBoardRoute:
 
         assert resp.status_code == 503
 
-    async def test_any_other_failure_is_a_500(self, client: AsyncClient) -> None:
+    async def test_any_other_failure_is_a_500(self, error_client: AsyncClient) -> None:
         with patch.object(work_board_service, "build_board", AsyncMock(side_effect=RuntimeError("boom"))):
-            resp = await client.get("/api/work/board")
+            resp = await error_client.get("/api/work/board")
 
         assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal error"}
 
 
 class TestSearchRoute:
@@ -104,11 +116,12 @@ class TestSearchRoute:
 
         assert resp.status_code == 503
 
-    async def test_any_other_failure_is_a_500_not_an_empty_list(self, client: AsyncClient) -> None:
+    async def test_any_other_failure_is_a_500_not_an_empty_list(self, error_client: AsyncClient) -> None:
         with patch.object(work_board_service, "search_issues", AsyncMock(side_effect=RuntimeError("boom"))):
-            resp = await client.get("/api/work/search", params={"q": "x"})
+            resp = await error_client.get("/api/work/search", params={"q": "x"})
 
         assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal error"}
 
 
 class TestHiddenRoutes:
@@ -128,11 +141,30 @@ class TestHiddenRoutes:
             assert (await client.delete("/api/work/hidden/9")).json() == {"hidden": [5]}
             assert (await client.delete("/api/work/hidden/5")).json() == {"hidden": []}
 
-    async def test_a_save_failure_is_a_503(self, client: AsyncClient) -> None:
-        with patch("sova.dashboard.routers.work.set_issue_hidden", AsyncMock(side_effect=RuntimeError("db"))):
-            resp = await client.post("/api/work/hidden/5")
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            OperationalError("stmt", {}, Exception("database is locked")),
+            OSError("disk full"),
+        ],
+        ids=["sqlalchemy", "oserror"],
+    )
+    async def test_a_save_failure_is_a_fixed_503(self, error_client: AsyncClient, failure: Exception) -> None:
+        with patch("sova.dashboard.routers.work.set_issue_hidden", AsyncMock(side_effect=failure)):
+            resp = await error_client.post("/api/work/hidden/5")
 
         assert resp.status_code == 503
+        assert resp.json() == {"detail": "Failed to save hidden issues"}
+        assert "locked" not in resp.text
+        assert "disk full" not in resp.text
+
+    async def test_an_unexpected_save_failure_reaches_the_catch_all(self, error_client: AsyncClient) -> None:
+        with patch("sova.dashboard.routers.work.set_issue_hidden", AsyncMock(side_effect=RuntimeError("db"))):
+            resp = await error_client.post("/api/work/hidden/5")
+
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal error"}
+        assert "db" not in resp.json()["detail"]
 
     @pytest.mark.parametrize("number", ["0", "-3", "abc"])
     async def test_a_number_that_is_not_an_issue_is_rejected(self, client: AsyncClient, number: str) -> None:
@@ -278,7 +310,7 @@ class TestPriorityRoute:
         assert (await client.put("/api/issues/1/priority", json={"priority": "urgent"})).status_code == 422
 
     async def test_a_config_failure_is_a_503(self, client: AsyncClient) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.config.loader.load_config", side_effect=OSError("no config")):
             resp = await client.put("/api/issues/1/priority", json={"priority": "high"})
 
         assert resp.status_code == 503

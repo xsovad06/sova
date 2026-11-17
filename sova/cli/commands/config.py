@@ -176,20 +176,20 @@ def _warn_if_reload_required(key: str, meta: SettingMeta | None) -> None:
     Unlike the dashboard's `POST /settings/config`, this command runs in its own
     process and has no way to dispatch a reload into an already-running server:
     the daemons, the LLM provider singleton, and the agent runtime all live in
-    that other process's memory. Reuses the dashboard router's own
+    that other process's memory. Reuses the dashboard settings service's own
     classification (never a second copy of it) so this warning cannot drift
     from what the dashboard actually treats as live-reloadable.
     """
-    from sova.dashboard.routers.settings import _RESTART_REQUIRED_PREFIXES, _match_reload_target
+    from sova.dashboard.services.settings_service import RESTART_REQUIRED_PREFIXES, match_reload_target
 
     requires_restart = (meta is not None and meta.requires_restart) or any(
-        key == prefix.rstrip(".") or key.startswith(prefix) for prefix in _RESTART_REQUIRED_PREFIXES
+        key == prefix.rstrip(".") or key.startswith(prefix) for prefix in RESTART_REQUIRED_PREFIXES
     )
     if requires_restart:
         console.print(
             "[yellow]Restart a running `sova server`/dashboard for this project for this to take effect.[/yellow]"
         )
-    elif _match_reload_target(key) is not None or key == "max_parallel_agents":
+    elif match_reload_target(key) is not None or key == "max_parallel_agents":
         console.print(
             "[yellow]If `sova server`/dashboard is running for this project, restart it (or use the dashboard "
             "settings page instead) for this change to take effect immediately.[/yellow]"

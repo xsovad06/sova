@@ -57,7 +57,8 @@ async function getErrorDetail(res, fallback) {
     }
     // A structured detail (budget_exceeded, suitability_blocked) carries its readable text as `message`.
     if (typeof body.detail === 'object' && body.detail.message) return body.detail.message;
-    return body.detail;
+    // An object detail without a `message` has no readable text: never render it as '[object Object]'.
+    return typeof body.detail === 'string' ? body.detail : withStatus;
   }
   catch (_e) { return withStatus; }
 }

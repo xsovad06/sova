@@ -957,7 +957,7 @@ class TestSettingsRouterErrors:
         from httpx import ASGITransport, AsyncClient
 
         app = dashboard_app
-        transport = ASGITransport(app=app)
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
 
@@ -1007,9 +1007,9 @@ class TestSettingsRouterErrors:
             "/api/settings/config", json={"key": "a.b", "value": "1"}, headers=_csrf_request_headers(client)
         )
         assert resp.status_code == 500
-        assert resp.json()["detail"] == "Failed to update configuration"
+        assert resp.json()["detail"] == "Internal error"
 
-    async def test_update_config_validation_rejection(self, client, monkeypatch) -> None:
+    async def test_update_config_validation_rejection_is_a_422(self, client, monkeypatch) -> None:
         async def reject_validation(*_a, **_kw):
             return {"error": "'x' expects a number, got 'abc'"}
 
@@ -1020,10 +1020,8 @@ class TestSettingsRouterErrors:
         resp = await client.post(
             "/api/settings/config", json={"key": "x", "value": "abc"}, headers=_csrf_request_headers(client)
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "error" in data
-        assert "number" in data["error"]
+        assert resp.status_code == 422
+        assert "number" in resp.json()["detail"]
 
     async def test_get_config_grouped_reports_keyring_available(self, client, monkeypatch) -> None:
         from sova.llm import keyring_store
@@ -1073,7 +1071,7 @@ class TestSettingsRouterErrors:
             headers=_csrf_request_headers(client),
         )
         assert resp.status_code == 500
-        assert resp.json()["detail"] == "Failed to migrate secret"
+        assert resp.json()["detail"] == "Internal error"
 
 
 class TestGetConfigAndPersona:

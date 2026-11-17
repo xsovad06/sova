@@ -19,15 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from sova.config.loader import ProjectConfig
     from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
     from sova.monitoring.cross_project import MetricsSnapshotWriter
     from sova.oversight.agent import OversightAgent
     from sova.supervisor.daemon import SupervisorDaemon
     from sova.supervisor.pr_monitor import PRMonitor
-    from sova.supervisor.pr_throttle import PRThrottleLoop
     from sova.supervisor.watchdog import AgentWatchdog
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -85,6 +82,13 @@ from sova.dashboard.security import (
 )
 from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
 from sova.dashboard.services.control_service import recover_stale_runs
+from sova.dashboard.services.daemon_registry import (
+    clear_registries,
+    ensure_pr_throttle_loop,
+    get_daemon_components,
+    get_pr_throttle_tasks,
+)
+from sova.dashboard.services.editor_service import EditorUnavailableError
 from sova.dashboard.services.work_service import _TERMINAL
 from sova.dashboard.services.work_state import run_actions_payload
 from sova.dashboard.settings_meta import GROUPS as SETTING_GROUPS
@@ -149,29 +153,6 @@ _CONTENT_SECURITY_POLICY = (
 )
 
 
-class _DaemonComponents(TypedDict, total=False):
-    """Per-project registry of background daemon instances for config reload."""
-
-    watchdog: AgentWatchdog
-    pr_monitors: list[PRMonitor]
-    pr_throttles: list[PRThrottleLoop]
-    merge_queue_monitors: list[MergeQueueMonitor]
-
-
-_daemon_components: dict[str, _DaemonComponents] = {}
-
-
-def get_daemon_components() -> dict[str, _DaemonComponents]:
-    """Return the daemon component registry (keyed by resolved project path)."""
-    return _daemon_components
-
-
-def set_daemon_components(registry: dict[str, _DaemonComponents]) -> None:
-    """Replace the daemon component registry."""
-    global _daemon_components  # noqa: PLW0603
-    _daemon_components = registry
-
-
 def _try_load_config(project_path: Path) -> ProjectConfig | None:
     """Load config for a project, returning None on failure."""
     from sova.config.loader import load_config
@@ -181,68 +162,6 @@ def _try_load_config(project_path: Path) -> ProjectConfig | None:
     except Exception:  # noqa: BLE001 (one unloadable project must not abort multi-project startup)
         log.warning("supervisor.config_load_failed", project=str(project_path), exc_info=True)
         return None
-
-
-# Throttle loop tasks started by ensure_pr_throttle_loop(), from the lifespan scan or a later settings
-# change. Module level because the settings router starts loops long after the lifespan's locals are fixed.
-_pr_throttle_tasks: list[asyncio.Task] = []
-
-
-async def ensure_pr_throttle_loop(project_dir: Path, cfg: ProjectConfig) -> bool:
-    """Start *project_dir*'s PR throttle loop from its own config, unless one is already registered.
-
-    The one start path for the lifespan scan and for the settings router when ``coderabbit_quota.enabled``
-    is switched on at runtime. Idempotent: two loops on one project could pick the same pending entry
-    and open a duplicate PR, so a registered loop for the resolved project directory makes this a no-op.
-    Returns True when a loop was started.
-
-    The loop is registered before the first ``await`` rather than guarded by a lock: the check and the
-    registration then cannot interleave with a concurrent call, and a module-level ``asyncio.Lock`` would
-    bind to whichever event loop first contended it. A start that fails (or is cancelled) while recovering
-    entries unregisters the loop again, so a later call can retry.
-
-    Startup recovery (``creating`` entries back to ``pending``) runs only when no other live process is
-    already serving the project (``sibling_loop_alive``). A sibling (a ``make dev`` dashboard whose lifespan
-    restarts on every reload, next to the daemon) may be inside ``gh pr create`` for such an entry, and
-    resetting it would let this loop open the same PR a second time. A crashed process's leftover heartbeat
-    does not count, so a restart after a crash still recovers.
-    """
-    if not cfg.coderabbit_quota.enabled:
-        return False
-
-    from sova.db.session import get_session
-    from sova.supervisor.pr_throttle import PRThrottleLoop as _PRThrottleLoop
-    from sova.supervisor.pr_throttle import recover_creating_entries, sibling_loop_alive
-
-    key = str(project_dir.resolve())
-    if _daemon_components.get(key, {}).get("pr_throttles"):
-        return False
-
-    async def _session_factory() -> AsyncSession:
-        return await get_session(project_dir=project_dir)
-
-    throttle = _PRThrottleLoop(
-        _session_factory,
-        cfg.coderabbit_quota,
-        project_slug=cfg.github_repo,
-        project_dir=project_dir,
-    )
-    # Read before this loop's first beat overwrites the file.
-    sibling_alive = sibling_loop_alive(project_dir)
-    registered = _daemon_components.setdefault(key, {}).setdefault("pr_throttles", [])
-    registered.append(throttle)
-    try:
-        if sibling_alive:
-            log.info("pr_throttle.recovery_skipped_sibling_alive", project=key)
-        else:
-            async with await get_session(project_dir=project_dir) as session, session.begin():
-                await recover_creating_entries(session)
-    except BaseException:
-        registered.remove(throttle)
-        raise
-    _pr_throttle_tasks.append(asyncio.create_task(throttle.run()))
-    log.info("pr_throttle.loop_started", project=key)
-    return True
 
 
 async def _start_pr_throttle_loops(resolved: Path, cfg: ProjectConfig, *, is_multi: bool) -> None:
@@ -741,6 +660,32 @@ def _import_error_handler(request: Request, exc: Exception) -> Response:
     return JSONResponse({"detail": detail}, status_code=503)
 
 
+def _editor_unavailable_handler(_request: Request, exc: EditorUnavailableError) -> JSONResponse:
+    """A persona editor that cannot be launched is the request's problem (400), with the file to edit by hand."""
+    return JSONResponse({"detail": exc.user_message}, status_code=400)
+
+
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+    """Log any exception no route handled and answer with a fixed 500 body.
+
+    Routes let unexpected failures propagate instead of each catching, logging and re-raising an
+    ``HTTPException``. More specific handlers (``HTTPException``, request validation, rate limiting,
+    the registry and import errors) are dispatched first, so this only sees genuinely unexpected
+    failures. The body never carries exception text; the traceback goes to the log only.
+
+    ``async`` on purpose: ``ServerErrorMiddleware`` awaits an async handler inside its ``except`` block, where
+    ``sys.exc_info()`` is set, so ``exc_info=True`` logs the traceback (a sync handler would run in a threadpool
+    where it is empty).
+    """
+    log.error(
+        "dashboard.unhandled_exception",
+        method=request.method,
+        route=request.url.path,
+        exc_info=True,
+    )
+    return JSONResponse({"detail": "Internal error"}, status_code=500)
+
+
 def create_app(
     *,
     project_dir: Path | None = None,
@@ -845,8 +790,8 @@ def create_app(
                 pr_monitor_instances.append(monitor)
                 pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
                 _key = str(monitor.project_dir.resolve())
-                _daemon_components.setdefault(_key, {})
-                _daemon_components[_key].setdefault("pr_monitors", []).append(monitor)
+                get_daemon_components().setdefault(_key, {})
+                get_daemon_components()[_key].setdefault("pr_monitors", []).append(monitor)
         elif cfg.pr_monitor.enabled and cfg.github_repo:
             from sova.supervisor.pr_monitor import PRMonitor as _PRMonitor
 
@@ -859,8 +804,8 @@ def create_app(
             )
             pr_monitor_instances.append(monitor)
             pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
-            _daemon_components.setdefault(str(resolved), {})
-            _daemon_components[str(resolved)].setdefault("pr_monitors", []).append(monitor)
+            get_daemon_components().setdefault(str(resolved), {})
+            get_daemon_components()[str(resolved)].setdefault("pr_monitors", []).append(monitor)
 
         # Merge queue monitor background loop
         merge_queue_tasks: list[asyncio.Task] = []
@@ -872,8 +817,8 @@ def create_app(
                 merge_queue_instances.append(mq_monitor)
                 merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
                 _key = str(mq_monitor.project_dir.resolve())
-                _daemon_components.setdefault(_key, {})
-                _daemon_components[_key].setdefault("merge_queue_monitors", []).append(mq_monitor)
+                get_daemon_components().setdefault(_key, {})
+                get_daemon_components()[_key].setdefault("merge_queue_monitors", []).append(mq_monitor)
         elif cfg.integration.merge_queue_enabled != "false" and cfg.github_repo:
             from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor as _MergeQueueMonitor
 
@@ -886,8 +831,8 @@ def create_app(
             )
             merge_queue_instances.append(mq_monitor)
             merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
-            _daemon_components.setdefault(str(resolved), {})
-            _daemon_components[str(resolved)].setdefault("merge_queue_monitors", []).append(mq_monitor)
+            get_daemon_components().setdefault(str(resolved), {})
+            get_daemon_components()[str(resolved)].setdefault("merge_queue_monitors", []).append(mq_monitor)
 
         # Start agent watchdog
         from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
@@ -896,8 +841,8 @@ def create_app(
         if cfg.watchdog.enabled and not is_multi:
             watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved, memory_guard=cfg.memory_guard)
             watchdog.start()
-            _daemon_components.setdefault(str(resolved), {})
-            _daemon_components[str(resolved)]["watchdog"] = watchdog
+            get_daemon_components().setdefault(str(resolved), {})
+            get_daemon_components()[str(resolved)]["watchdog"] = watchdog
 
         # Start cross-project metrics snapshot writer
         from sova.monitoring.cross_project import MetricsSnapshotWriter
@@ -913,7 +858,7 @@ def create_app(
             metrics_writer.start()
 
         # Start oversight agent
-        from sova.dashboard.routers.oversight import set_oversight_agent
+        from sova.dashboard.services.daemon_registry import set_oversight_agent
         from sova.oversight.agent import OversightAgent as _OversightAgent
         from sova.oversight.persona import ensure_persona_exists
 
@@ -925,7 +870,7 @@ def create_app(
         set_oversight_agent(oversight_agent)
 
         # Start supervisor daemons
-        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.dashboard.services.daemon_registry import set_daemon_registry
         from sova.supervisor.daemon import SupervisorDaemon as _SupervisorDaemon
 
         supervisor_daemons: list[SupervisorDaemon] = []
@@ -957,7 +902,7 @@ def create_app(
                 await asyncio.wait_for(
                     _shutdown_tasks(
                         sweep_task,
-                        list(_pr_throttle_tasks),
+                        get_pr_throttle_tasks(),
                         pr_monitor_tasks,
                         metrics_writer,
                         watchdog,
@@ -971,8 +916,7 @@ def create_app(
                 )
             except TimeoutError:
                 log.warning("lifespan.shutdown_timeout", exc_info=True)
-            _daemon_components.clear()
-            _pr_throttle_tasks.clear()
+            clear_registries()
             try:
                 await asyncio.wait_for(get_feed_service().drain_persist(), timeout=3.0)
             except TimeoutError:
@@ -1050,6 +994,8 @@ def create_app(
 
     app.add_exception_handler(RegistryUnreadableError, _registry_unreadable_handler)
     app.add_exception_handler(ImportError, _import_error_handler)
+    app.add_exception_handler(EditorUnavailableError, _editor_unavailable_handler)
+    app.add_exception_handler(Exception, _unhandled_exception_handler)
     # First call wins, so this is the checkout the process loaded its code from, for SOVAServer too.
     record_startup_code_sha()
 
@@ -1262,9 +1208,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             except SystemExit:
                 removed = unregister_project(slug)
                 return {"removed": removed, "files_cleaned": False}
-            except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-                log.exception("Uninstall failed for %s", slug)
-                raise HTTPException(status_code=500, detail="Failed to uninstall project") from None
             return {"removed": True, "files_cleaned": len(failures) == 0}
 
         removed = unregister_project(slug)

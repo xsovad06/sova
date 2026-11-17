@@ -437,6 +437,34 @@ class TestPersonaEndpoints:
             assert "not found" in resp.json()["detail"]
 
     @pytest.mark.asyncio
+    async def test_open_persona_spawn_permission_error_is_a_500(self, tmp_path: Path) -> None:
+        """A spawn failure other than a missing opener is the host's fault, not a 400 about the request."""
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=tmp_path)
+        persona_file = tmp_path / "persona.md"
+
+        with (
+            patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
+            ),
+            patch("sova.oversight.persona.get_open_command", return_value="code"),
+            patch("sova.oversight.persona.ensure_persona_exists", return_value=persona_file),
+            patch("asyncio.create_subprocess_exec", side_effect=PermissionError("EACCES")),
+        ):
+            transport = ASGITransport(app=app, raise_app_exceptions=False)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.post("/api/settings/persona/open")
+
+            assert resp.status_code == 500
+            assert resp.json() == {"detail": "Internal error"}
+
+    @pytest.mark.asyncio
     async def test_open_persona_config_error(self, tmp_path: Path) -> None:
         from httpx import ASGITransport, AsyncClient
 
@@ -446,12 +474,13 @@ class TestPersonaEndpoints:
 
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.config.loader.load_config", side_effect=OSError("bad config")),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.post("/api/settings/persona/open")
 
-            assert resp.status_code == 500
-            assert "Failed to load" in resp.json()["detail"]
+            assert resp.status_code == 503
+            assert resp.json()["detail"] == "Failed to load configuration"
+            assert "bad config" not in resp.text

@@ -1696,6 +1696,17 @@ function _hidePlan() {
   document.getElementById('pending-plan').classList.add('hidden');
 }
 
+/* A failed approval. A 502 whose detail carries `results` is a partial failure: the plan is already consumed, so the
+   message says how many decisions ran and which failed. Any other error shows its own detail. */
+async function _approvalFailure(res) {
+  const body = await res.clone().json().catch(() => ({}));
+  const results = body.detail && Array.isArray(body.detail.results) ? body.detail.results : null;
+  if (!results) return { partial: false, message: await getErrorDetail(res, 'Approval failed') };
+  const failed = results.filter(r => r.ok === false);
+  const list = failed.map(e => `#${e.issue_number}: ${e.error}`).join(', ');
+  return { partial: true, message: `${results.length - failed.length} started, ${failed.length} failed: ${list}` };
+}
+
 async function approvePlan() {
   const btn = document.getElementById('approve-all-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Approving...'; }
@@ -1706,23 +1717,20 @@ async function approvePlan() {
       body: JSON.stringify({}),
     });
     if (!res.ok) {
-      const detail = await res.text().catch(() => res.statusText);
-      console.error('approvePlan failed:', detail);
-      if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
-      showToast(`Approval failed: ${detail}`, 'error');
-      return;
-    }
-    const data = await res.json().catch(() => ({}));
-    if (data.errors && data.errors.length) {
-      const msg = data.errors.map(e => `#${e.issue_number}: ${e.error}`).join(', ');
-      showToast(`Partial failure: ${msg}`, 'error');
+      const failure = await _approvalFailure(res);
+      console.error('approvePlan failed:', failure.message);
+      showToast(failure.partial ? `Partial failure: ${failure.message}` : `Approval failed: ${failure.message}`, 'error');
+      if (!failure.partial) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
+        return;
+      }
     }
   } catch (e) {
     console.error('approvePlan failed:', e);
     if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
     return;
   }
-  await loadPlan();
+  await Promise.all([loadPlan(), loadDecisions()]);
   if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
 }
 
@@ -1739,12 +1747,13 @@ document.getElementById('pending-plan').addEventListener('click', async e => {
         body: JSON.stringify({ issue_numbers: [issue] }),
       });
       if (!res.ok) {
-        const detail = await res.text().catch(() => res.statusText);
-        console.error('approveItem failed:', detail);
-        showToast(`Approval failed: ${detail}`, 'error');
+        const failure = await _approvalFailure(res);
+        console.error('approveItem failed:', failure.message);
+        showToast(failure.partial ? `Partial failure: ${failure.message}` : `Approval failed: ${failure.message}`, 'error');
       }
     } catch (e) { console.error('approveItem failed:', e); }
-    await loadPlan();
+    // The plan item is consumed whatever the outcome, so the plan and decisions are reloaded either way.
+    await Promise.all([loadPlan(), loadDecisions()]);
     return;
   }
   const skipBtn = e.target.closest('.plan-skip-btn');

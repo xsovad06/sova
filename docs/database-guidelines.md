@@ -34,6 +34,36 @@ async with await get_session(project_dir=project_dir) as session:
     ...
 ```
 
+## Session Ownership
+
+Every dashboard service is one of two kinds, and a service never mixes them.
+
+- **Query service**: pure database reads and writes for one request (for example `resource_service`'s
+  `get_resource_summary()`, `get_total_energy()` and `get_capacity_recommendation()`). It takes an injected
+  `AsyncSession` as its first parameter and never opens its own; the router owns the session and its lifetime.
+  A route opens it with the project it acts on and passes it in:
+
+  ```python
+  project_dir = get_project_dir()
+  async with await get_session(project_dir=project_dir) as session:
+      return await resource_service.get_capacity_recommendation(session, project_dir)
+  ```
+
+  Always pass `project_dir`, so the session binds to the database of the project being reported on.
+- **Orchestration service**: spans subprocess, PID or filesystem work, or slow external calls (for example
+  `agent_recovery` and `agent_status`). It opens short-lived sessions itself, closes them before the slow step
+  (`async with await get_session(project_dir=project_dir) as session:`), and never accepts an injected session,
+  so no connection is held open across a subprocess call, a PID probe or a network wait. No helper inside an
+  orchestration service takes a `session` parameter: one that only builds a query returns the statement for
+  the open session to run (`agent_recovery._newer_run_count()`), and one that runs on its own opens its session
+  after the caller's has closed (`agent_status._fetch_step_averages()`), so no second session opens while the
+  first is still open. `agent_status.get_all_agent_statuses()` reads its runs and steps in one session, closes
+  it, then walks them (step progress, live process data) and opens one more short session per pipeline variant
+  for the history averages. The listing is a best-effort snapshot, not one transaction.
+
+A service that both accepts a `session` argument and opens its own is a bug: the caller cannot tell which
+transaction a write lands in, and the injected session can outlive the work it was meant to cover.
+
 ## ORM Model Conventions
 
 24 models in `sova/db/models.py`: `TaskRun`, `OutputLine`, `StepExecution`, `FailureRecord`, `CostRecord`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`, `CodeRabbitEvent`, `ResourceSampleRecord`, `ResourceSummaryRecord`, `ActionFeedback`, `OversightRun`, `OversightFinding`, `PRCreationQueue`, `TelemetryEvent`, `SupervisorDecision`, `PREvent`, `ProjectSetting`, `MergeQueueEntry`, `FeedEventRecord`, `BudgetOverride`.

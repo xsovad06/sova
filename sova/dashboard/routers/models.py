@@ -29,9 +29,9 @@ async def available_models(layer: Literal["llm", "runtime"], refresh: bool = Fal
     except models_service.ModelsRefreshRateLimitedError as exc:
         raise HTTPException(
             status_code=429,
-            detail=str(exc),
+            detail=f"Refresh rate-limited; retry after {exc.retry_after_seconds}s",
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 503)
+    except Exception as exc:  # noqa: BLE001 (enumeration calls provider SDKs and the network: any failure is an upstream outage, a 503)
         log.warning("models.available.error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to fetch available models") from exc

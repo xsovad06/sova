@@ -483,7 +483,7 @@ class TestCrossProjectRouter:
     async def client(self, dashboard_app):
 
         app = dashboard_app
-        transport = ASGITransport(app=app)
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
 
@@ -502,4 +502,4 @@ class TestCrossProjectRouter:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/cross-project")
         assert resp.status_code == 500
-        assert "cross-project" in resp.json()["detail"]
+        assert resp.json() == {"detail": "Internal error"}

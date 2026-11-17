@@ -2,75 +2,49 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 from sova.dashboard.services import cost_service
 from sova.db.session import get_session
-from sova.utils.logging import get_logger
 
 router = APIRouter()
-log = get_logger(component="dashboard.costs")
 
 
-@router.get("/costs/summary", response_model=None, responses={500: {"description": "Failed to fetch cost summary"}})
+@router.get("/costs/summary", response_model=None, responses={500: {"description": "Internal error"}})
 async def cost_summary() -> dict:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_summary(session)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.summary.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch cost summary")
+    async with await get_session() as session:
+        return await cost_service.get_summary(session)
 
 
-@router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
+@router.get("/costs/daily", responses={500: {"description": "Internal error"}})
 async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list[dict]:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_daily(session, days)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.daily.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch daily costs")
+    async with await get_session() as session:
+        return await cost_service.get_daily(session, days)
 
 
-@router.get("/costs/by-issue", response_model=None, responses={500: {"description": "Failed to fetch costs by issue"}})
+@router.get("/costs/by-issue", response_model=None, responses={500: {"description": "Internal error"}})
 async def costs_by_issue() -> list[dict]:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_by_issue(session)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.by_issue.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by issue")
+    async with await get_session() as session:
+        return await cost_service.get_by_issue(session)
 
 
-@router.get("/costs/by-phase", response_model=None, responses={500: {"description": "Failed to fetch costs by phase"}})
+@router.get("/costs/by-phase", response_model=None, responses={500: {"description": "Internal error"}})
 async def costs_by_phase() -> list[dict]:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_by_phase(session)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.by_phase.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by phase")
+    async with await get_session() as session:
+        return await cost_service.get_by_phase(session)
 
 
-@router.get("/costs/by-model", response_model=None, responses={500: {"description": "Failed to fetch costs by model"}})
+@router.get("/costs/by-model", response_model=None, responses={500: {"description": "Internal error"}})
 async def costs_by_model() -> list[dict]:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_by_model(session)
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.by_model.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by model")
+    async with await get_session() as session:
+        return await cost_service.get_by_model(session)
 
 
 @router.get(
     "/costs/by-routing",
     response_model=None,
-    responses={500: {"description": "Failed to fetch costs by routing"}},
+    responses={500: {"description": "Internal error"}},
 )
 async def costs_by_routing() -> list[dict]:
-    try:
-        async with await get_session() as session:
-            return await cost_service.get_by_routing(session)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("costs.by_routing.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by routing") from exc
+    async with await get_session() as session:
+        return await cost_service.get_by_routing(session)

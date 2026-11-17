@@ -30,7 +30,7 @@ async def session() -> AsyncIterator[AsyncSession]:
 async def client(dashboard_app):
 
     app = dashboard_app
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
         yield ac
@@ -358,7 +358,8 @@ class TestRunNow:
         assert resp.status_code == 404
 
     async def test_run_now_with_agent(self, client: AsyncClient) -> None:
-        from sova.dashboard.routers.oversight import _background_tasks, set_oversight_agent
+        from sova.dashboard.routers.oversight import _background_tasks
+        from sova.dashboard.services.daemon_registry import set_oversight_agent
 
         mock_agent = AsyncMock()
         mock_agent.running = True
@@ -376,7 +377,8 @@ class TestRunNow:
             set_oversight_agent(None)
 
     async def test_run_now_rejects_while_pending(self, client: AsyncClient) -> None:
-        from sova.dashboard.routers.oversight import _background_tasks, set_oversight_agent
+        from sova.dashboard.routers.oversight import _background_tasks
+        from sova.dashboard.services.daemon_registry import set_oversight_agent
 
         pending_future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
 
@@ -426,7 +428,7 @@ class TestCancelRunNowTasks:
 
 class TestStatusNextWake:
     async def test_status_next_wake_when_running(self, client: AsyncClient, seed_runs: dict) -> None:
-        from sova.dashboard.routers.oversight import set_oversight_agent
+        from sova.dashboard.services.daemon_registry import set_oversight_agent
 
         mock_agent = AsyncMock()
         mock_agent.running = True
@@ -479,6 +481,27 @@ class TestRouterErrorPaths:
         ):
             resp = await client.post(f"/api/oversight/findings/{finding.id}/create-issue")
             assert resp.status_code == 500
+
+
+class TestCreateIssueTrackerFailure:
+    async def test_a_tracker_failure_is_a_fixed_502_and_links_nothing(
+        self, client: AsyncClient, seed_runs: dict
+    ) -> None:
+        finding = seed_runs["findings"][0]
+        mock_adapter = AsyncMock()
+        mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError("gh: token ghp_SECRET expired"))
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            resp = await client.post(f"/api/oversight/findings/{finding.id}/create-issue")
+
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Failed to create the issue on the tracker"}
+        assert "ghp_SECRET" not in resp.text
+        created = (await client.get("/api/oversight/findings?status=created")).json()["findings"]
+        assert finding.title not in {f["title"] for f in created}
 
 
 class TestRunCycleOnce:

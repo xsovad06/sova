@@ -371,15 +371,14 @@ async function submitProposal() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({title, body, labels}),
     });
-    const result = await res.json();
-
-    if (!result.ok) {
-      errorEl.textContent = result.error || 'Unknown error';
+    if (!res.ok) {
+      errorEl.textContent = await getErrorDetail(res, 'Failed to create the issue');
       errorEl.classList.remove('hidden');
       submitBtn.disabled = false;
       submitBtn.textContent = 'Create Issue';
       return;
     }
+    const result = await res.json();
 
     document.getElementById('propose-form').classList.add('hidden');
     const successEl = document.getElementById('propose-success');

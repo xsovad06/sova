@@ -2,27 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from sova.dashboard.services import cost_service, run_service
 from sova.db.session import get_session
-from sova.utils.logging import get_logger
 
 router = APIRouter()
-log = get_logger(component="dashboard.overview")
 
 
-@router.get("/overview", response_model=None, responses={500: {"description": "Failed to fetch overview data"}})
+@router.get("/overview", response_model=None, responses={500: {"description": "Internal error"}})
 async def overview() -> dict:
-    try:
-        async with await get_session() as session:
-            runs = await run_service.get_run_summary(session)
-            costs = await cost_service.get_summary(session)
+    async with await get_session() as session:
+        runs = await run_service.get_run_summary(session)
+        costs = await cost_service.get_summary(session)
 
-        return {
-            "runs": runs,
-            "costs": costs,
-        }
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.warning("overview.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch overview data")
+    return {
+        "runs": runs,
+        "costs": costs,
+    }

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -150,7 +151,8 @@ class TestResetRoute:
         async def _record(_project_dir: Path, key: str, _result: dict) -> None:
             seen.append(key)
 
-        monkeypatch.setattr(settings_router, "_apply_config_update", _record)
+        # The reset route calls the name it imported, so the patch goes where the router looks it up.
+        monkeypatch.setattr(settings_router, "apply_config_update", _record)
         res = await client.post(
             "/api/settings/config/reset", json={"key": "max_parallel_agents"}, headers=_csrf_request_headers(client)
         )
@@ -160,6 +162,31 @@ class TestResetRoute:
 
 
 class TestResetFailureStatuses:
+    @pytest.mark.parametrize(
+        ("flags", "status"),
+        [
+            pytest.param({"unknown": True}, 404, id="unknown"),
+            pytest.param({"env_var": "SOVA_X"}, 409, id="env-var"),
+            pytest.param({"unavailable": True}, 503, id="unavailable"),
+            pytest.param({"unreadable_database": True}, 503, id="unreadable-database"),
+            pytest.param({}, 422, id="refused-by-the-consistency-check"),
+        ],
+    )
+    async def test_each_refusal_flag_keeps_its_status_and_detail(
+        self, startup: tuple[AsyncClient, Path], flags: dict, status: int
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        client, _project = startup
+        refusal = {"error": "refused for a reason", **flags}
+        with patch("sova.dashboard.services.settings_service.reset_config", AsyncMock(return_value=refusal)):
+            res = await client.post(
+                "/api/settings/config/reset", json={"key": "max_parallel_agents"}, headers=_csrf_request_headers(client)
+            )
+
+        assert res.status_code == status
+        assert res.json() == {"detail": "refused for a reason"}
+
     async def test_a_database_failure_is_a_503_a_client_may_retry(self, startup: tuple[AsyncClient, Path]) -> None:
         from unittest.mock import patch
 
@@ -212,7 +239,7 @@ class TestModelsView:
         async def no_catalog(_project_dir: Path) -> None:
             raise AssertionError("the model list was fetched although every short name resolves")
 
-        monkeypatch.setattr("sova.dashboard.routers.settings._llm_catalog", no_catalog)
+        monkeypatch.setattr("sova.dashboard.services.settings_service.llm_catalog", no_catalog)
         for name in ("CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK"):
             monkeypatch.delenv(name, raising=False)
 
@@ -286,6 +313,32 @@ class TestModelsView:
         assert res.json()["pinned"]["roles.reviewer_model"] == "claude-sonnet-5-5"
         assert (await client.get("/api/settings/models/map")).json()["short_names"] == []
 
+    async def test_an_unloadable_config_is_a_logged_503_not_a_422(self, startup: tuple[AsyncClient, Path]) -> None:
+        """A config the server cannot read is its fault, not the request's: a 503 with a fixed detail, logged."""
+        client, _project = startup
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=OSError("config unreadable")),
+            patch("sova.dashboard.services.settings_service.log") as log,
+        ):
+            res = await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))
+
+        assert res.status_code == 503
+        assert res.json() == {"detail": "Could not load the configuration"}
+        assert "config unreadable" not in res.text
+        logged = [call for call in log.warning.call_args_list if call.kwargs.get("exc_info") is True]
+        assert {call.args[0] for call in logged} >= {"settings.pin.config_unloadable"}
+
+    async def test_a_loader_bug_is_not_an_unloadable_config(self, startup: tuple[AsyncClient, Path]) -> None:
+        """Only the expected load failures are a 503; a RuntimeError from the loader is a bug (the catch-all)."""
+        client, _project = startup
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("loader bug")),
+            pytest.raises(RuntimeError, match="loader bug"),
+        ):
+            await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))
+
     async def test_a_failed_routing_write_still_reloads_the_pins_that_were_stored(
         self, startup: tuple[AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -304,7 +357,8 @@ class TestModelsView:
             reloaded.append(key)
 
         monkeypatch.setattr("sova.dashboard.routers.settings.settings_service.pin_short_names", partial)
-        monkeypatch.setattr("sova.dashboard.routers.settings._apply_config_update", record)
+        # The pin route reloads through ``settings_service.reload_pinned()``, which looks the name up in its own module.
+        monkeypatch.setattr("sova.dashboard.services.settings_service.apply_config_update", record)
 
         res = await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))
 

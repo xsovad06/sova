@@ -244,7 +244,7 @@ def _enrich_with_queue_position(graph_dict: dict, project_dir: str | Path) -> No
 @router.get(
     "/graph",
     responses={
-        500: {"description": "Failed to build dependency graph"},
+        500: {"description": "Internal error"},
         503: {"description": "Project configuration unavailable"},
     },
 )
@@ -280,15 +280,12 @@ async def get_graph(milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.error("Failed to build dependency graph", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to build dependency graph")
 
 
 @router.get(
     "/ready",
     responses={
-        500: {"description": "Failed to get ready tasks"},
+        500: {"description": "Internal error"},
         503: {"description": "Project configuration unavailable"},
     },
 )
@@ -316,16 +313,13 @@ async def get_ready(milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for ready tasks", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.error("Failed to get ready tasks", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to get ready tasks")
 
 
 @router.get(
     "/chain/{issue_number}",
     responses={
         404: {"description": "Issue not found in graph"},
-        500: {"description": "Failed to get chain"},
+        500: {"description": "Internal error"},
         503: {"description": "Project configuration unavailable"},
     },
 )
@@ -336,9 +330,6 @@ async def get_chain(issue_number: int, milestone: str = "") -> dict:
     except _ConfigError:
         log.error("Project config/adapter error for chain #%d", issue_number, exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.error("Failed to get chain for #%d", issue_number, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get chain for #{issue_number}")
 
     if not graph.has_task(issue_number):
         raise HTTPException(status_code=404, detail=f"Issue #{issue_number} not found in graph")

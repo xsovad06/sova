@@ -786,14 +786,14 @@ class TestAgainstDashboardApp:
         self, served_app: Any, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from sova.config.loader import load_config
-        from sova.dashboard.routers import supervisor as supervisor_router
+        from sova.dashboard.services import supervisor_service
         from sova.dashboard.services.supervisor_service import resolve_project_slug, set_pending_plan
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
         async def no_execution(decisions: list[Any], _project_dir: Path) -> list[dict]:
             return [{"issue": d.issue_number} for d in decisions]
 
-        monkeypatch.setattr(supervisor_router, "_execute_plan_decisions", no_execution)
+        monkeypatch.setattr(supervisor_service, "execute_plan_decisions", no_execution)
         slug = resolve_project_slug(load_config(project).github_repo, None)  # the route passes no dir
         decisions = [ProgressionDecision(issue_number=n, action=ProgressionAction.SPAWN_DEVELOPER) for n in (7, 8, 9)]
         set_pending_plan(decisions, project_slug=slug)

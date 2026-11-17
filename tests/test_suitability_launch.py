@@ -852,7 +852,9 @@ class TestComplexityEndpointSuitability:
     @pytest.fixture(autouse=True)
     def _no_graph(self) -> Any:
         # The shared graph build would call the mocked adapter's list_tasks; no graph is the tracker-down case.
-        with patch("sova.dashboard.routers.agents.load_classification_graph", new=AsyncMock(return_value=None)) as m:
+        with patch(
+            "sova.dashboard.services.llm_suggestion_service.load_classification_graph", new=AsyncMock(return_value=None)
+        ) as m:
             self.load_graph = m
             yield
 
@@ -952,9 +954,12 @@ class TestComplexityEndpointSuitability:
             p2,
             p3,
             p4,
-            patch("sova.dashboard.routers.agents._SUITABILITY_DISPLAY_TIMEOUT_S", 0.05),
-            patch("sova.dashboard.routers.agents._fetch_task_or_none", _stall),
-            patch("sova.dashboard.routers.agents.get_session", new=AsyncMock(side_effect=lambda *_a, **_k: _stored())),
+            patch("sova.dashboard.services.llm_suggestion_service._SUITABILITY_DISPLAY_TIMEOUT_S", 0.05),
+            patch("sova.dashboard.services.llm_suggestion_service._fetch_task_or_none", _stall),
+            patch(
+                "sova.dashboard.services.llm_suggestion_service.get_session",
+                new=AsyncMock(side_effect=lambda *_a, **_k: _stored()),
+            ),
         ):
             started = loop.time()
             resp = await client.get("/api/agents/issue/7/complexity")

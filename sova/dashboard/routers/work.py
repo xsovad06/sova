@@ -8,6 +8,7 @@ from pathlib import Path as PathType
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.context import get_project_dir
 from sova.config.db_loader import set_issue_hidden
@@ -96,7 +97,7 @@ async def get_issue_runs(issue_number: str) -> dict:
 @router.get(
     "/work/board",
     responses={
-        500: {"description": "Failed to build the board"},
+        500: {"description": "Internal error"},
         503: {"description": "Project configuration unavailable"},
     },
 )
@@ -111,15 +112,12 @@ async def get_board(milestone: str = "", owner: Literal["all", "mine"] = "all") 
     except GraphConfigError:
         log.error("work.board_config_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary, any internal failure becomes a 500)
-        log.error("work.board_failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to build the board")
 
 
 @router.get(
     "/work/search",
     responses={
-        500: {"description": "Failed to search the issues"},
+        500: {"description": "Internal error"},
         503: {"description": "Project configuration unavailable"},
     },
 )
@@ -133,9 +131,6 @@ async def search_issues(q: Annotated[str, Query(max_length=200)] = "") -> dict:
     except GraphConfigError:
         log.error("work.search_config_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary, any internal failure becomes a 500)
-        log.error("work.search_failed", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to search the issues")
 
 
 @router.post("/work/hidden/{number}", responses={503: {"description": "Failed to save hidden issues"}})
@@ -153,9 +148,9 @@ async def unhide_issue(number: _IssueNumber) -> dict:
 async def _set_hidden(number: int, *, hidden: bool) -> dict:
     try:
         return {"hidden": await set_issue_hidden(get_project_dir(), number, hidden=hidden)}
-    except Exception:  # noqa: BLE001 (HTTP boundary: a settings write failure becomes a 503)
+    except (OSError, SQLAlchemyError) as exc:
         log.error("work.hidden_issues_save_failed", issue=number, hidden=hidden, exc_info=True)
-        raise HTTPException(status_code=503, detail="Failed to save hidden issues")
+        raise HTTPException(status_code=503, detail="Failed to save hidden issues") from exc
 
 
 @router.get("/work/actions")

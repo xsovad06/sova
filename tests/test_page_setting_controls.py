@@ -186,7 +186,7 @@ class TestPageKeysSave:
     ) -> None:
         from unittest.mock import patch
 
-        with patch("sova.dashboard.routers.settings._reload_all_configs", return_value=None):
+        with patch("sova.dashboard.services.settings_service.reload_all_configs", return_value=None):
             resp = await client.post("/api/settings/config", json={"key": key, "value": value})
 
         assert resp.status_code == 200
@@ -205,14 +205,14 @@ class TestPageKeysSave:
         agent.running = False
         agent.stop = AsyncMock(side_effect=lambda: setattr(agent, "running", False))
         agent.start = MagicMock(side_effect=lambda: setattr(agent, "running", True))
-        agent.reload_config = MagicMock(side_effect=lambda cfg: setattr(agent, "_config", cfg.oversight))
+        agent.reload_config = MagicMock(side_effect=lambda cfg: setattr(agent, "enabled", cfg.oversight.enabled))
 
         def config_with(enabled: bool) -> ProjectConfig:
             cfg = ProjectConfig()
             cfg.oversight.enabled = enabled
             return cfg
 
-        with patch("sova.dashboard.routers.oversight.get_oversight_agent", return_value=agent):
+        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=agent):
             with patch("sova.config.loader.load_config", return_value=config_with(True)):
                 on = await client.post("/api/settings/config", json={"key": "oversight.enabled", "value": True})
             assert agent.running is True
@@ -262,11 +262,11 @@ class TestSingleProjectResolution:
             get_config=MagicMock(side_effect=lambda project_dir, **_: seen.append(project_dir) or {}),
             _get_raw_config=MagicMock(side_effect=lambda project_dir: seen.append(project_dir) or {}),
             get_secret_locations=MagicMock(return_value={}),
-            update_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"error": "x"}),
+            update_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"status": "ok"}),
             get_grouped_settings=MagicMock(side_effect=lambda project_dir: seen.append(project_dir) or {"groups": []}),
             reset_config=AsyncMock(side_effect=lambda project_dir, **kw: seen.append(project_dir) or {"status": "ok"}),
         )
-        monkeypatch.setattr("sova.dashboard.routers.settings._apply_config_update", AsyncMock())
+        monkeypatch.setattr("sova.dashboard.routers.settings.apply_config_update", AsyncMock())
         monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", service)
         monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: None, raising=False)
         monkeypatch.setattr("sova.dashboard.routers.settings.get_default_project_dir", lambda: startup_project)

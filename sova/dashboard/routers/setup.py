@@ -14,6 +14,7 @@ from sova.config.context import get_project_dir, resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.config.models import DashboardConfig
 from sova.config.registry import register_project
+from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.services import setup_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.utils.logging import get_logger
@@ -206,7 +207,7 @@ async def scan_project(req: ScanRequest) -> dict:
         403: {"description": "Path is outside the allowed setup roots"},
         404: {"description": "Directory not found"},
         409: {"description": "Installed, but the project registry is unreadable"},
-        500: {"description": "Installation failed"},
+        500: {"description": "Internal error"},
     },
 )
 async def install_project(req: InstallRequest) -> dict:
@@ -218,13 +219,13 @@ async def install_project(req: InstallRequest) -> dict:
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
-    try:
-        await _install(path=project, no_dashboard=True, update=req.update_only)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
-        log.exception("setup.install.error", project=str(project))
-        raise HTTPException(status_code=500, detail="Installation failed") from exc
-    # Outside the try: a finished install must not be reported as "Installation failed" when only the
-    # registration fails. An unreadable registry reaches the client as a 409 through the app's handler.
+    # Logged before the install so a failure that reaches the catch-all handler can be tied to this directory.
+    log.info("setup.install.start", project=str(project), update_only=req.update_only)
+    await _install(path=project, no_dashboard=True, update=req.update_only)
+    # Only an unreadable registry (RegistryUnreadableError) is answered as a 409 by the app's handler, so a
+    # finished install is not reported as a failed one for that case. Any other registration failure is a 500,
+    # hence the line below ties it to this project in the log.
+    log.info("setup.install.done", project=str(project))
     slug = register_project(project)
     return {"status": "ok", "slug": slug}
 
@@ -343,10 +344,7 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
         raise HTTPException(status_code=400, detail="No active project")
 
     canonical_dir = get_canonical_dir()
-    try:
-        cfg = load_config(project_dir)
-    except (FileNotFoundError, ValueError, KeyError) as e:
-        raise HTTPException(status_code=400, detail=f"Failed to load project config: {e}") from e
+    cfg = load_config_or_http(lambda: load_config(project_dir), event="setup.sync_commands.config_load_failed")
 
     cmd_filenames = req.filenames if req is not None else None
     guideline_filenames = req.guideline_filenames if req is not None else None
