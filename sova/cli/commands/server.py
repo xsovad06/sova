@@ -30,14 +30,12 @@ _PRIVATE_TMP_ROOTS = (Path("/tmp").resolve(), Path("/var/tmp").resolve())  # NOS
 def _start_server(project: Path | None, host: str, port: int, no_scheduler: bool, multi: bool | None) -> None:
     """Common server startup logic."""
     from sova.config.loader import load_config
-    from sova.config.registry import has_projects
-    from sova.scheduler.server import SOVAServer
+    from sova.scheduler.server import SOVAServer, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    if multi is None:
-        multi = project is None and has_projects()
+    multi = resolve_multi_mode(project, multi)
 
     if no_scheduler:
         config.server.scheduler_enabled = False
@@ -76,13 +74,19 @@ def start(
 ) -> None:
     """Start the SOVA server (dashboard + scheduler)."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import read_pid_file
+    from sova.scheduler.server import _is_port_listening, locate_running_server, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    existing_pid = read_pid_file(config, project_dir=resolved_dir)
-    if existing_pid is not None:
+    # Refusing to start stops nothing, so the lookup always reaches the other mode's PID file too.
+    primary_multi = resolve_multi_mode(project, multi)
+    found_multi, existing_pid = locate_running_server(config, resolved_dir, primary_multi, fallback=True)
+    # A named --project or --multi/--no-multi may deliberately run a second server on another port, so a
+    # server found only through the fallback blocks it when it holds this host:port (uvicorn runs the
+    # lifespan, and so the scheduler, before it binds: a same-port start must fail here, not there).
+    named = project is not None or multi is not None
+    if existing_pid is not None and (not named or found_multi == primary_multi or _is_port_listening(host, port)):
         console.print(f"[yellow]Server already running (PID {existing_pid}).[/yellow]")
         raise typer.Exit(code=1)
 
@@ -95,12 +99,20 @@ def stop(
 ) -> None:
     """Stop the running SOVA server."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import StopResult, _is_port_listening, stop_server
+    from sova.scheduler.server import (
+        StopResult,
+        _is_port_listening,
+        locate_running_server,
+        pid_scope_dir,
+        resolve_multi_mode,
+        stop_server,
+    )
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    result = stop_server(config, project_dir=resolved_dir)
+    found_multi, _ = locate_running_server(config, resolved_dir, resolve_multi_mode(project), fallback=project is None)
+    result = stop_server(config, project_dir=pid_scope_dir(resolved_dir, found_multi))
     if result is StopResult.STOPPED:
         console.print("[green]Server stopped.[/green]")
     elif result is StopResult.FAILED:
@@ -119,11 +131,11 @@ def status(
 ) -> None:
     """Show the SOVA server status."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import _is_port_listening, read_pid_file
+    from sova.scheduler.server import _is_port_listening, locate_running_server, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
-    pid = read_pid_file(config, project_dir=resolved_dir)
+    _, pid = locate_running_server(config, resolved_dir, resolve_multi_mode(project), fallback=project is None)
 
     if pid is not None:
         console.print(f"[green]Server is running (PID {pid}).[/green]")
@@ -149,12 +161,27 @@ def restart(
 ) -> None:
     """Restart the SOVA server (stop, then start)."""
     from sova.config.loader import load_config
-    from sova.scheduler.server import StopResult, _is_port_listening, stop_server
+    from sova.scheduler.server import (
+        StopResult,
+        _is_port_listening,
+        locate_running_server,
+        pid_scope_dir,
+        resolve_multi_mode,
+        stop_server,
+    )
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    result = stop_server(config, project_dir=resolved_dir)
+    # Restart in the mode of the server it stops, unless the caller named a mode explicitly. A multi-project
+    # server is adopted only while the mode is still inferable as multi-project (no --project, a registry):
+    # a single-project server from before #1423 wrote the global file, and must not come back as multi.
+    found_multi, _ = locate_running_server(
+        config, resolved_dir, resolve_multi_mode(project, multi), fallback=project is None and multi is None
+    )
+    if multi is None:
+        multi = found_multi and resolve_multi_mode(project)
+    result = stop_server(config, project_dir=pid_scope_dir(resolved_dir, found_multi))
     if result is StopResult.STOPPED:
         console.print("[yellow]Stopped running server.[/yellow]")
     elif result is StopResult.FAILED:
