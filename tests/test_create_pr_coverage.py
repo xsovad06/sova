@@ -11,7 +11,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
-from sova.core.steps._pr_body import UNPARSEABLE_NOTE, _closing_keyword_re
+from sova.core.steps._pr_body import _closing_keyword_re
 from sova.llm.models import LLMResult
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -418,8 +418,8 @@ class TestCreatePRStepJiraBodyCleaning:
         assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
 
 
-class TestCreatePRStepAcceptanceCriteria:
-    """Test the acceptance-criteria-driven Closes/Part of decision."""
+class TestCreatePRStepClosingSection:
+    """Every PR closes its issue: the ``## Issue`` section never depends on the issue text or the model answer."""
 
     @staticmethod
     def _ctx(tmp_path: Path, *, issue_body: str) -> ExecutionContext:
@@ -430,303 +430,91 @@ class TestCreatePRStepAcceptanceCriteria:
         )
 
     @staticmethod
-    def _wire(mock_run, mock_invoke, mock_create_pr, llm_text: str) -> None:
+    def _wire(mock_run, mock_invoke, mock_create_pr, llm_text: str, *, git_ok: bool = True) -> None:
         """Wire the four git calls, the LLM body response, and the created PR."""
         mock_run.side_effect = [
             MagicMock(success=True, stdout="sova/core/x.py\n"),
-            MagicMock(success=True, stdout="abc123 feat: add widget\n"),
-            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
-            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+            MagicMock(success=git_ok, stdout="abc123 feat: add widget\n" if git_ok else ""),
+            MagicMock(success=git_ok, stdout=" src/app.py | 1 +\n" if git_ok else ""),
+            MagicMock(success=git_ok, stdout="diff --git a/src/app.py\n+change\n" if git_ok else ""),
         ]
         mock_invoke.return_value = LLMResult(text=llm_text, model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_no_acceptance_criteria_heading_is_unconditional_closes(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(mock_run, mock_invoke, mock_create_pr, "## Summary\n- stuff")
-
-        ctx = self._ctx(tmp_path, issue_body="Plain description, no criteria section.")
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Closes #42" in body_arg
-        assert "Part of #42" not in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_empty_acceptance_criteria_list_is_unconditional_closes(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(mock_run, mock_invoke, mock_create_pr, "## Summary\n- stuff")
-
-        ctx = self._ctx(tmp_path, issue_body="## Acceptance Criteria\n\n## Out of Scope\nNothing.\n")
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        assert "Closes #42" in mock_create_pr.call_args.kwargs["body"]
-
     @pytest.mark.parametrize(
-        ("second_call", "expected_marker", "expected_keyword"),
+        ("issue_body", "llm_text", "git_ok"),
         [
+            pytest.param("Plain description, no criteria section.", "## Summary\n- stuff", True, id="no-criteria"),
             pytest.param(
-                LLMResult(
-                    text="## Summary\n- stuff\n\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] Works",
-                    model="s",
-                    cost_usd=Decimal(0),
-                ),
-                False,
-                "Closes #42",
-                id="retry-parses",
+                "## Acceptance Criteria\n- [ ] First\n- [ ] Second\n", "## Summary\n- stuff", True, id="criteria"
             ),
             pytest.param(
-                LLMResult(text="## Summary\n- stuff\n\nno verdicts", model="s", cost_usd=Decimal(0)),
+                "## Acceptance Criteria\n- [ ] First\n- [ ] Second\n",
+                "## Summary\n- stuff\n\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] First\n- [unmet] Second",
                 True,
-                "Part of #42",
-                id="retry-unparseable-falls-back-conservatively",
+                id="model-verdict-block-is-description-only",
             ),
+            pytest.param(
+                "## Acceptance Criteria\n- [ ] First\n",
+                "## Summary\n- stuff\n\n## Review guidance\nThis is Part of #42, the rest is left undone.",
+                True,
+                id="model-part-of-phrase-is-description-only",
+            ),
+            pytest.param("## Acceptance Criteria\n- [ ] First\n", "## Summary\n- stuff", False, id="git-unavailable"),
         ],
     )
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_timed_out_verdict_call_is_retried_once(
-        self, mock_create_pr, mock_run, mock_invoke, _find, second_call, expected_marker, expected_keyword, tmp_path
+    async def test_issue_section_always_reads_closes(
+        self, mock_create_pr, mock_run, mock_invoke, _find, issue_body, llm_text, git_ok, tmp_path: Path
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.utils.gh import parse_issue_links
+        from sova.utils.markdown import extract_section
+
+        self._wire(mock_run, mock_invoke, mock_create_pr, llm_text, git_ok=git_ok)
+
+        result = await CreatePRStep().execute(self._ctx(tmp_path, issue_body=issue_body))
+
+        assert result.success
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert extract_section(body_arg, "Issue") == "Closes #42"
+        assert parse_issue_links(body_arg).closes == ("42",)
+        assert "Not done in this PR:" not in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    @pytest.mark.parametrize("retry_times_out", [False, True], ids=["retry-succeeds", "both-attempts-time-out"])
+    async def test_timed_out_body_call_still_closes_the_issue(
+        self, mock_create_pr, mock_run, mock_invoke, _find, retry_times_out: bool, tmp_path: Path
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.errors import LLMTimeoutError
+        from sova.utils.gh import parse_issue_links
+        from sova.utils.markdown import extract_section
 
         self._wire(mock_run, mock_invoke, mock_create_pr, "")
-        mock_invoke.side_effect = [LLMTimeoutError("timed out"), second_call]
+        retry = (
+            LLMTimeoutError("timed out again")
+            if retry_times_out
+            else LLMResult(text="## Summary\n- stuff\n\nno verdicts", model="s", cost_usd=Decimal(0))
+        )
+        mock_invoke.side_effect = [LLMTimeoutError("timed out"), retry]
 
         ctx = self._ctx(tmp_path, issue_body="## Acceptance Criteria\n- Works\n")
         result = await CreatePRStep().execute(ctx)
 
         assert result.success
         assert mock_invoke.await_count == 2
-        assert mock_invoke.call_args_list[0].kwargs["timeout"] == ctx.config.commit.pr_body_timeout == 300
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert expected_keyword in body_arg
-        assert (UNPARSEABLE_NOTE in body_arg) is expected_marker
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_all_criteria_met_closes(self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(
-            mock_run,
-            mock_invoke,
-            mock_create_pr,
-            "## Summary\n- stuff\n"
-            "<!-- ACCEPTANCE_VERDICTS -->\n"
-            "- [met] First thing works\n"
-            "- [met] Second thing works\n",
-        )
-
-        issue_body = "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n"
-        ctx = self._ctx(tmp_path, issue_body=issue_body)
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Closes #42" in body_arg
-        assert "ACCEPTANCE_VERDICTS" not in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_unmet_criterion_produces_part_of_with_not_done_list(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(
-            mock_run,
-            mock_invoke,
-            mock_create_pr,
-            "## Summary\n- stuff\n"
-            "<!-- ACCEPTANCE_VERDICTS -->\n"
-            "- [met] First thing works\n"
-            "- [unmet] Second thing works\n",
-        )
-
-        issue_body = "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n"
-        ctx = self._ctx(tmp_path, issue_body=issue_body)
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Part of #42" in body_arg
-        assert "Not done in this PR:" in body_arg
-        assert "Second thing works" in body_arg
-        assert "Closes #42" not in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_met_verdict_demoted_to_unknown_when_diff_unavailable(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        """A "met" verdict must not be credited when the log/diff calls that
-        would have provided evidence for it all failed: the model answered
-        from the issue text alone, which violates the fail-toward-"Part of"
-        rule just as much as an unparseable block does."""
-        from sova.core.steps.create_pr import CreatePRStep
-
-        mock_run.side_effect = [
-            MagicMock(success=True, stdout="sova/core/x.py\n"),
-            MagicMock(success=False, stdout=""),
-            MagicMock(success=False, stdout=""),
-            MagicMock(success=False, stdout=""),
-        ]
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- stuff\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] First thing works\n",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
-
-        issue_body = "## Acceptance Criteria\n- [ ] First thing works\n"
-        ctx = self._ctx(tmp_path, issue_body=issue_body)
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Part of #42" in body_arg
-        assert "Closes #42" not in body_arg
-        assert "(unverified)" in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_ci_gated_criterion_survives_the_diff_unavailable_demotion(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        """The demotion distrusts verdicts drawn from a diff the model never saw; a CI-gated
-        criterion never came from the diff, so it stays met, as in the no-LLM fallback body."""
-        from sova.core.steps.create_pr import CreatePRStep
-
-        mock_run.side_effect = [
-            MagicMock(success=True, stdout="sova/core/x.py\n"),
-            MagicMock(success=False, stdout=""),
-            MagicMock(success=False, stdout=""),
-            MagicMock(success=False, stdout=""),
-        ]
-        mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- stuff\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] First thing works\n"
-                "- [met] All existing tests pass (`make check`)\n"
-            ),
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
-
-        issue_body = "## Acceptance Criteria\n- [ ] First thing works\n- [ ] All existing tests pass (`make check`)\n"
-        result = await CreatePRStep().execute(self._ctx(tmp_path, issue_body=issue_body))
-
-        assert result.success
-        issue_section = mock_create_pr.call_args.kwargs["body"].split("## Issue", 1)[1]
-        assert "Part of #42" in issue_section
-        assert "- First thing works (unverified)" in issue_section
-        assert "make check" not in issue_section
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_unparseable_verdict_block_falls_back_to_part_of_listing_all(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        """An unparseable verdict block must never be read as 'all met'."""
-        from sova.core.steps.create_pr import CreatePRStep
-
-        # Model ignores the verdict instructions entirely.
-        self._wire(mock_run, mock_invoke, mock_create_pr, "## Summary\n- stuff")
-
-        issue_body = "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n"
-        ctx = self._ctx(tmp_path, issue_body=issue_body)
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Part of #42" in body_arg
-        assert "First thing works" in body_arg
-        assert "Second thing works" in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_owner_only_criterion_forces_part_of_even_if_llm_says_met(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(
-            mock_run,
-            mock_invoke,
-            mock_create_pr,
-            "## Summary\n- stuff\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] Deploy to staging (owner verification)\n",
-        )
-
-        issue_body = "## Acceptance Criteria\n- [ ] Deploy to staging (owner verification)\n"
-        ctx = self._ctx(tmp_path, issue_body=issue_body)
-        result = await CreatePRStep().execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Part of #42" in body_arg
-        assert "requires owner/manual action" in body_arg
-        assert "Closes #42" not in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_ci_gated_criteria_reported_unmet_still_close(
-        self, mock_create_pr, mock_run, mock_invoke, _find, tmp_path: Path
-    ) -> None:
-        """The body is written before monitor_ci, so the model cannot see the test result and
-        reports the template check criteria unmet; the merge gate guarantees them instead."""
-        from sova.core.steps.create_pr import CreatePRStep
-
-        self._wire(
-            mock_run,
-            mock_invoke,
-            mock_create_pr,
-            "## Summary\n- stuff\n<!-- ACCEPTANCE_VERDICTS -->\n- [met] Widget renders\n"
-            "- [unmet] All existing tests pass (`make check`)\n- [unmet] No new lint warnings (`make lint`)\n",
-        )
-
-        issue_body = (
-            "## Acceptance Criteria\n- [ ] Widget renders\n"
-            "- [ ] All existing tests pass (`make check`)\n- [ ] No new lint warnings (`make lint`)\n"
-        )
-        result = await CreatePRStep().execute(self._ctx(tmp_path, issue_body=issue_body))
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "Closes #42" in body_arg
-        assert "Part of #42" not in body_arg
+        assert mock_invoke.call_args_list[0].kwargs["timeout"] == ctx.config.commit.pr_body_timeout
+        assert ctx.config.commit.pr_body_timeout == 300
+        body = mock_create_pr.call_args.kwargs["body"]
+        assert extract_section(body, "Issue") == "Closes #42"
+        assert parse_issue_links(body).closes == ("42",)
 
 
 class TestCreatePRStepAdoptedPRTrackerUpdate:
@@ -1265,35 +1053,19 @@ class TestCreatePRStepDiffTruncation:
         assert "x" * 8000 not in prompt_arg
 
 
-class TestCreatePRStepFallbackBodyFailsTowardPartOf:
-    """The fallback body (no LLM ran) must still fail toward 'Part of #N' for
-    an issue with acceptance criteria, matching every other generation path:
-    an unverified criterion must never be credited as met just because the
-    LLM call itself failed."""
+class TestCreatePRStepFallbackBody:
+    """The fallback body (no LLM ran) closes the issue like every other generation path."""
 
-    def test_criteria_present_yields_part_of_not_closes(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "issue_body",
+        [
+            pytest.param("## Acceptance Criteria\n- [ ] Do the thing\n", id="criteria"),
+            pytest.param("No acceptance criteria heading here.", id="no-criteria"),
+        ],
+    )
+    def test_issue_section_reads_closes(self, tmp_path: Path, issue_body: str) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
-        ctx = _make_ctx(
-            tmp_path,
-            task=Task(id="42", title="Fix the bug", body="## Acceptance Criteria\n- [ ] Do the thing\n"),
-            issue_number="42",
-            branch_name="feat/issue-42",
-        )
-        body = CreatePRStep._build_fallback_body(ctx, "Fix the bug", "abc feat", "x.py | 3 +++")
-        assert "Part of #42" in body
-        assert "Closes #42" not in body
-        assert "- Do the thing" in body
-        # "unknown", not "unmet": no LLM ran to actually check the criterion.
-        assert "(unverified)" in body
-
-    def test_ci_gated_criteria_are_not_listed_as_undone(self, tmp_path: Path) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        issue_body = (
-            "## Acceptance Criteria\n- [ ] Do the thing\n"
-            "- [ ] All existing tests pass (`make check`)\n- [ ] Verify the thing in an interactive session\n"
-        )
         ctx = _make_ctx(
             tmp_path,
             task=Task(id="42", title="Fix the bug", body=issue_body),
@@ -1301,37 +1073,9 @@ class TestCreatePRStepFallbackBodyFailsTowardPartOf:
             branch_name="feat/issue-42",
         )
         body = CreatePRStep._build_fallback_body(ctx, "Fix the bug", "abc feat", "x.py | 3 +++")
-        issue_section = body.split("## Issue", 1)[1]
-        assert "Part of #42" in issue_section
-        assert "- Do the thing (unverified)" in issue_section
-        assert "- Verify the thing in an interactive session (requires owner/manual action)" in issue_section
-        assert "make check" not in issue_section
-
-    def test_only_ci_gated_criteria_close(self, tmp_path: Path) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        ctx = _make_ctx(
-            tmp_path,
-            task=Task(id="42", title="Fix the bug", body="## Acceptance Criteria\n- [ ] All existing tests pass\n"),
-            issue_number="42",
-            branch_name="feat/issue-42",
-        )
-        body = CreatePRStep._build_fallback_body(ctx, "Fix the bug", "abc feat", "x.py | 3 +++")
-        assert "Closes #42" in body
+        assert body.split("## Issue", 1)[1].strip() == "Closes #42"
         assert "Part of #42" not in body
-
-    def test_no_criteria_keeps_unconditional_closes(self, tmp_path: Path) -> None:
-        from sova.core.steps.create_pr import CreatePRStep
-
-        ctx = _make_ctx(
-            tmp_path,
-            task=Task(id="42", title="Fix the bug", body="No acceptance criteria heading here."),
-            issue_number="42",
-            branch_name="feat/issue-42",
-        )
-        body = CreatePRStep._build_fallback_body(ctx, "Fix the bug", "abc feat", "x.py | 3 +++")
-        assert "Closes #42" in body
-        assert "Part of #42" not in body
+        assert "Not done in this PR:" not in body
 
 
 class TestCreatePRStepJiraFallbackBody:

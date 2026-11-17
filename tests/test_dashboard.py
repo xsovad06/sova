@@ -19657,7 +19657,7 @@ class TestCrashRecoveryCleanup:
             patch(
                 "sova.dashboard.services.agent_finalize.handle_merged_pr_issues",
                 new_callable=AsyncMock,
-                return_value=MergedIssues(commented=["42"]),
+                return_value=MergedIssues(part_of=["42"]),
             ) as mock_merged,
             patch(
                 "sova.dashboard.services.agent_finalize.handle_post_merge_state",
@@ -19667,6 +19667,7 @@ class TestCrashRecoveryCleanup:
                 "sova.dashboard.services.agent_finalize._resolve_issue_from_pr",
                 new_callable=AsyncMock,
             ) as mock_resolve,
+            patch("sova.dashboard.services.agent_finalize.log") as mock_log,
         ):
             mock_cfg = MagicMock()
             mock_cfg.github_repo = "owner/repo"
@@ -19687,6 +19688,8 @@ class TestCrashRecoveryCleanup:
         assert kwargs["github_user"] == "testuser"
         mock_post_merge.assert_not_awaited()
         mock_resolve.assert_not_awaited()
+        handled = [c for c in mock_log.info.call_args_list if c.args == ("finalize.crash_recovery_issues_handled",)]
+        assert [c.kwargs["actions"] for c in handled] == [["issue #42 left open (Part of): unchanged"]]
 
     async def test_continues_when_branch_deletion_fails(self) -> None:
         """State transition still runs even when branch deletion returns False."""

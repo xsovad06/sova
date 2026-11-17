@@ -405,6 +405,43 @@ class TestStripFencedBlocks:
         assert "before" in result
 
 
+class TestCloseUnterminatedFence:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("a\n```python\nx = 1\n", "a\n```python\nx = 1\n```", id="backtick"),
+            pytest.param("a\n~~~~\nx\n```", "a\n~~~~\nx\n```\n~~~~", id="tilde-with-inner-backticks"),
+            pytest.param("a\n```\n", "a\n```\n```", id="trailing-newline-after-open-fence"),
+            pytest.param("a\n```python", "a\n```python\n```", id="info-string-without-trailing-newline"),
+            pytest.param("a\n````\nx\n```\ny", "a\n````\nx\n```\ny\n````", id="four-backtick-opener-inner-three"),
+            pytest.param("a\n  ```\nx", "a\n  ```\nx\n  ```", id="indented-opener"),
+            pytest.param(
+                "- item\n  ```python\n  x = 1",
+                "- item\n  ```python\n  x = 1\n  ```",
+                id="fence-inside-list-item",
+            ),
+        ],
+    )
+    def test_closes_open_fence_with_its_opener(self, text: str, expected: str) -> None:
+        from sova.utils.markdown import close_unterminated_fence
+
+        assert close_unterminated_fence(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("plain\ntext", id="no-fence"),
+            pytest.param("a\n```\nx\n```\nb", id="closed-fence"),
+            pytest.param("a\n````\nx\n```\ny\n````", id="four-backtick-fence-closed-by-four"),
+            pytest.param("a\n~~~\nx\n~~~\n", id="closed-tilde-fence-with-trailing-newline"),
+        ],
+    )
+    def test_closed_text_is_unchanged(self, text: str) -> None:
+        from sova.utils.markdown import close_unterminated_fence
+
+        assert close_unterminated_fence(text) == text
+
+
 # ---------------------------------------------------------------------------
 # resolve_gh_env tests
 # ---------------------------------------------------------------------------

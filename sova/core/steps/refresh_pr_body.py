@@ -8,11 +8,10 @@ from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     _ISSUE_SECTION_HEADING,
     _closing_keyword_re,
-    _jira_ticket_link,
+    _neutralize_inline_closing_keyword,
     apply_sections,
-    compose_body,
+    compose_run_body,
     generate_pr_body_text,
-    process_llm_result,
     split_sections,
     split_title_tail,
     title_from_branch,
@@ -22,7 +21,7 @@ from sova.git.pr import get_pr_body, update_pr_body
 from sova.llm.client import invoke
 from sova.utils.gh import parse_issue_links
 from sova.utils.logging import get_logger
-from sova.utils.markdown import extract_section
+from sova.utils.markdown import extract_section, strip_preamble
 from sova.utils.shell import run
 
 log = get_logger(component="step.refresh_pr_body")
@@ -30,11 +29,6 @@ log = get_logger(component="step.refresh_pr_body")
 
 class RefreshPrBodyStep(BaseStep):
     name = "refresh_pr_body"
-
-    def __init__(self, *, closing_only: bool = False) -> None:
-        # True re-judges the acceptance criteria and rewrites only the "## Issue" section: a body a
-        # human has edited since create_pr keeps its Summary, Review guidance and Test plan as they are.
-        self.closing_only = closing_only
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.refresh_pr_body", pr=ctx.pr_number)
@@ -52,8 +46,8 @@ class RefreshPrBodyStep(BaseStep):
 
         mismatch = self._issue_section_mismatch(current_body, ctx.issue_number) if ctx.has_issue else []
         if mismatch:
-            # The existing section was written by /pr or create_pr with the
-            # correct closing decision; the run's own issue is the value in
+            # The existing section was written by /pr or create_pr for the
+            # PR's issue; the run's own issue is the value in
             # doubt (the resolver can pick the wrong one of several closed
             # issues). The fresh sections would be generated from that
             # issue's title and criteria (PR #1351's "Scope gap against
@@ -73,13 +67,12 @@ class RefreshPrBodyStep(BaseStep):
                 ),
             )
 
-        task_title, issue_body, resolved = await self._resolve_task(ctx)
-        if self.closing_only and ctx.has_issue and not resolved:
-            # No evidence to judge from: skip the LLM call, and leave create_pr's decision as it stands.
-            log.warning("step.refresh_pr_body.closing_only_unresolved", pr=ctx.pr_number)
-            return StepResult(
-                success=True, summary="PR body refresh skipped: issue body unavailable; closing decision left unchanged"
-            )
+        # A body that links the run's issue only as "Part of" (hand-written, or opened before every PR closed its
+        # issue) is left as it stands: SOVA cannot tell the two apart, and "Part of" is inert at merge, so
+        # refreshing must not flip it to "Closes".
+        kept_part_of = ctx.has_issue and self._links_issue_only_as_part_of(current_body, ctx.issue_number)
+
+        task_title, issue_body = await self._resolve_task(ctx)
 
         diffs = await self._collect_diff(ctx)
         if diffs is None:
@@ -87,7 +80,7 @@ class RefreshPrBodyStep(BaseStep):
         commit_log, diff_stat, full_diff = diffs
 
         try:
-            result, criteria = await generate_pr_body_text(
+            result = await generate_pr_body_text(
                 ctx,
                 invoke,
                 task_title=task_title,
@@ -97,31 +90,39 @@ class RefreshPrBodyStep(BaseStep):
                 full_diff=full_diff,
                 diff_succeeded=True,
                 request_title=False,
-                verdict_only=self.closing_only,
             )
         except Exception as exc:  # noqa: BLE001 (advisory step; a provider or guard failure must not abort the round)
             log.warning("step.refresh_pr_body.llm_failed", pr=ctx.pr_number, exc_info=True)
             return StepResult(success=True, summary=f"PR body refresh skipped (non-fatal): {exc}")
 
         ctx.add_usage(result)
-        # This step only refreshes the PR body, never the title (a separate
-        # concern, untouched here): the title candidate build_prompt() also
-        # requested is discarded, after stripping its marker+line so it
-        # cannot leak into the regenerated body sections below.
+        # This step only refreshes the PR body, never the title: the prompt
+        # asks for no title (request_title=False), but a title block the model
+        # emits anyway is stripped so it cannot leak into the sections below.
         llm_text, _title_candidate = split_title_tail(result.text)
-        sections = self._build_sections(ctx, llm_text, criteria, resolved=resolved)
-        if self.closing_only:
-            sections = {h: c for h, c in sections.items() if h == _ISSUE_SECTION_HEADING}
+        sections = self._build_sections(ctx, llm_text)
         if not sections:
             log.warning("step.refresh_pr_body.no_sections", pr=ctx.pr_number)
             return StepResult(success=True, summary="PR body refresh skipped: LLM output had no sections")
+
+        if kept_part_of:
+            sections.pop(_ISSUE_SECTION_HEADING, None)
+            # GitHub honors a closing keyword anywhere in the body, so the refreshed prose must not carry one
+            # for the issue the person marked partial.
+            sections = {
+                heading: _neutralize_inline_closing_keyword(content, ctx.issue_number)
+                for heading, content in sections.items()
+            }
+            log.info("step.refresh_pr_body.part_of_kept", pr=ctx.pr_number, issue=ctx.issue_number)
+            if not sections:
+                return StepResult(success=True, summary="PR body refresh skipped: LLM output had no sections")
 
         try:
             if _ISSUE_SECTION_HEADING in sections:
                 # Strip any closing keyword the existing body carries outside a
                 # "## Issue" heading (pre-migration bodies, or a round whose
                 # heading casing drifted and orphaned the old section), so the
-                # fresh decision below is never left sitting beside a stale one.
+                # fresh closing line below is never left sitting beside a stale one.
                 current_body = _closing_keyword_re(ctx.issue_number).sub("", current_body)
             new_body = apply_sections(current_body, sections)
             await update_pr_body(ctx.pr_number, body=new_body, repo=ctx.repo, github_user=ctx.config.github_user)
@@ -129,7 +130,21 @@ class RefreshPrBodyStep(BaseStep):
             log.warning("step.refresh_pr_body.update_failed", pr=ctx.pr_number, exc_info=True)
             return StepResult(success=True, summary="PR body refresh skipped (non-fatal): could not update PR body")
 
-        return StepResult(success=True, summary=f"Refreshed PR #{ctx.pr_number} body")
+        summary = f"Refreshed PR #{ctx.pr_number} body"
+        if kept_part_of:
+            summary += f" (kept existing Part of #{ctx.issue_number})"
+        return StepResult(success=True, summary=summary)
+
+    @staticmethod
+    def _links_issue_only_as_part_of(current_body: str, issue_number: str) -> bool:
+        """True when the body marks the run's issue ``Part of`` and nothing closes it.
+
+        Reads the body with ``parse_issue_links()``, which scans the ``## Issue`` section for a
+        "Part of" link and falls back to the whole body when there is none, so a heading-less
+        "Part of #N" counts too.
+        """
+        links = parse_issue_links(current_body)
+        return str(issue_number) in links.part_of and str(issue_number) not in links.closes
 
     @staticmethod
     def _issue_section_mismatch(current_body: str, issue_number: str) -> list[str]:
@@ -188,45 +203,19 @@ class RefreshPrBodyStep(BaseStep):
         return commit_log, diff_stat, diff_content_result.stdout.strip()
 
     @staticmethod
-    def _build_sections(ctx: ExecutionContext, llm_text: str, criteria: list[str], *, resolved: bool) -> dict[str, str]:
-        """Build the refreshed section map, applying the closing decision.
-
-        ``resolved`` is False when no task (fresh or cached) could be
-        obtained: the verdicts were not computed from real evidence, so the
-        closing-decision section is dropped rather than overwrite
-        create_pr's correct decision with an unconditional "Closes #N" (or a
-        false "Part of #N") derived from no evidence at all.
-        """
-        sections_markdown, verdicts = process_llm_result(llm_text, criteria, ctx.config.commit)
-
-        if ctx.has_issue:
-            ts = ctx.config.task_source
-            jira_link = _jira_ticket_link(ts, ctx.issue_number) if ts.is_jira else ""
-            fresh_body = compose_body(
-                sections_markdown, ctx.issue_number, verdicts, is_jira=ts.is_jira, jira_link=jira_link
-            )
-        else:
-            fresh_body = sections_markdown
-
-        sections = split_sections(fresh_body)
-        if not resolved and ctx.has_issue:
-            sections.pop(_ISSUE_SECTION_HEADING, None)
-        return sections
+    def _build_sections(ctx: ExecutionContext, llm_text: str) -> dict[str, str]:
+        """Build the refreshed section map, with the closing ``## Issue`` section composed by code."""
+        return split_sections(compose_run_body(ctx, strip_preamble(llm_text).strip()))
 
     @staticmethod
-    async def _resolve_task(ctx: ExecutionContext) -> tuple[str, str, bool]:
-        """Return (task_title, issue_body, resolved), re-fetched from the adapter.
+    async def _resolve_task(ctx: ExecutionContext) -> tuple[str, str]:
+        """Return (task_title, issue_body), re-fetched from the adapter.
 
-        Address-review rounds can span enough time that the issue's
-        acceptance criteria were themselves edited since ``create_pr`` ran;
-        a cached ``ctx.task`` would miss that. Falls back to the cached task,
-        then the branch name, on a fetch failure.
-
-        ``resolved`` is False when no task (fresh or cached) could be
-        obtained at all: the caller must then skip the closing-decision
-        update rather than read the resulting empty issue body as "no
-        acceptance criteria" and emit an unconditional ``Closes #N``, which
-        would re-arm auto-close on a PR this code never actually judged.
+        Address-review rounds can span enough time that the issue was edited
+        since ``create_pr`` ran; a cached ``ctx.task`` would miss that. Falls
+        back to the cached task, then the branch name, on a fetch failure. The
+        closing ``## Issue`` section never depends on the result, so an
+        unresolved task only thins the prompt.
         """
         task = ctx.task
         if ctx.has_issue:
@@ -238,8 +227,8 @@ class RefreshPrBodyStep(BaseStep):
                 task = ctx.task
 
         if task:
-            return task.title, task.body or "", True
-        return title_from_branch(ctx.branch_name), "", False
+            return task.title, task.body or ""
+        return title_from_branch(ctx.branch_name), ""
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: always passes. Advisory step, like ConfidenceScoreStep: a

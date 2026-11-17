@@ -496,52 +496,8 @@ class CommitConfig(BaseSettings):
     pr_auto_link_issues: bool = True
     types: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_TYPES))
     scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_SCOPES))
-    # Substrings (case-insensitive, not regexes) that force an acceptance
-    # criterion's verdict to "owner" regardless of what the LLM reports,
-    # since such a criterion can never be satisfied by an autonomous agent.
-    # Deliberately excludes the bare nouns "interactive" and "manually": both
-    # are pervasive in ordinary feature prose (this repo's own
-    # "agent:interactive-recommended" label, "suitability.mode =
-    # 'interactive'", "Users can manually override the setting") and would
-    # force a fully-automatable, fully-implemented criterion to "owner" with
-    # no recovery path. Only requirement-phrased forms ("requires manual",
-    # "requires interactive", ...) assert that the criterion itself demands
-    # human action, rather than merely mentioning interactivity or a manual
-    # option as part of what was built.
-    owner_only_patterns: list[str] = Field(
-        default_factory=lambda: [
-            "(interactive",
-            "(owner",
-            "(manual",
-            "human-only",
-            "owner-only",
-            "requires human",
-            "requires manual",
-            "requires interactive",
-            "manual step",
-            "interactive session",
-            "interactive confirmation",
-        ]
-    )
-    # Substrings (case-insensitive, not regexes) that force an acceptance
-    # criterion's verdict to "met": criteria the merge gate settles (required
-    # CI checks, /integrate-pr waiting for green CI) but that the PR body is
-    # written too early to see, since create_pr and refresh_pr_body run before
-    # monitor_ci. A closing keyword only acts at merge, so these hold by then.
-    # The defaults match the issue template's two closing criteria; a project
-    # whose merges are not gated on CI sets this to an empty list.
-    ci_gated_patterns: list[str] = Field(
-        default_factory=lambda: [
-            "`make check`",
-            "`make lint`",
-            "all existing tests pass",
-            "no new lint warnings",
-        ]
-    )
-
-    # Time budget of one PR-body LLM call (the acceptance-criteria verdicts ride on it). A timed-out first
-    # call is retried once with half the diff it first sent (at most half of pr_body_diff_cap). 120s used to cut
-    # off a real diff at ~114s and left the PR on "Part of #N" with an unparseable-verdict note.
+    # Time budget of one PR-body LLM call. A timed-out first call is retried once with half the diff it
+    # first sent (at most half of pr_body_diff_cap). 120s used to cut off a real diff at ~114s.
     pr_body_timeout: int = Field(300, gt=0)
     # Largest diff (characters) the PR-body prompt carries; a longer one is cut to this size after the diff stat.
     pr_body_diff_cap: int = Field(8000, gt=0)

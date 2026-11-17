@@ -26,7 +26,6 @@ from sova.utils.gh import (
     choose_pr_issue,
     github_title_or_branch_issue,
     parse_issue_links,
-    parse_not_done_items,
 )
 from sova.utils.shell import ShellResult
 
@@ -155,85 +154,6 @@ class TestParseIssueLinks:
         assert parse_issue_links(body) == IssueLinks(closes=closes, part_of=())
 
 
-class TestParseNotDoneItems:
-    def test_lists_the_writer_output_verbatim(self) -> None:
-        body = (
-            "## Summary\nwork\n\n## Issue\n\nPart of #42\n\nNot done in this PR:\n"
-            "- rollout (requires owner/manual action)\n- `check` closes #9 (unverified)\n"
-        )
-        assert parse_not_done_items(body) == (
-            "rollout (requires owner/manual action)",
-            "`check` closes #9 (unverified)",
-        )
-
-    def test_finds_the_list_after_the_unparseable_note(self) -> None:
-        body = "## Issue\nPart of #42\n\nThe verdict could not be parsed.\n\nNot done in this PR:\n- a (unverified)"
-        assert parse_not_done_items(body) == ("a (unverified)",)
-
-    def test_normalizes_marker_and_trailing_whitespace_only(self) -> None:
-        body = "## Issue\nPart of #42\n\nNot done in this PR:\n* first   \n+ second  x\n"
-        assert parse_not_done_items(body) == ("first", "second  x")
-
-    def test_round_trips_render_closing_block(self) -> None:
-        from sova.core.steps._pr_body import render_closing_block
-
-        verdicts = [("done", "met"), ("rollout", "owner"), ("check", "unknown"), ("x", "unmet")]
-        block = render_closing_block("42", verdicts)
-        assert parse_not_done_items(f"## Summary\nwork\n\n## Issue\n\n{block}\n") == (
-            "rollout (requires owner/manual action)",
-            "check (unverified)",
-            "x",
-        )
-
-    def test_skips_blank_lines_before_the_first_bullet(self) -> None:
-        body = "## Issue\nPart of #42\n\nNot done in this PR:\n\n- a\n- b\n"
-        assert parse_not_done_items(body) == ("a", "b")
-
-    def test_stops_at_the_first_non_bullet_line(self) -> None:
-        body = "## Issue\nPart of #42\n\nNot done in this PR:\n- a\n- b\n\n- c after a blank\nprose\n"
-        assert parse_not_done_items(body) == ("a", "b")
-
-    def test_keeps_wrapped_lines_and_sub_bullets_with_their_item(self) -> None:
-        body = (
-            "## Issue\nPart of #42\n\nNot done in this PR:\n- first item that\n  wraps\n"
-            "- second\n  - nested sub-bullet\n\t- tab-indented\n- third\nprose\n"
-        )
-        assert parse_not_done_items(body) == (
-            "first item that\n  wraps",
-            "second\n  - nested sub-bullet\n\t- tab-indented",
-            "third",
-        )
-
-    def test_stops_at_a_heading_outside_the_item_and_keeps_one_nested_in_it(self) -> None:
-        stops = "## Issue\nPart of #42\n\nNot done in this PR:\n- rollout\n ## References\n- architecture diagram\n"
-        assert parse_not_done_items(stops) == ("rollout",)
-        nested = "## Issue\nPart of #42\n\nNot done in this PR:\n- rollout\n  ### Detail\n- next\n"
-        assert parse_not_done_items(nested) == ("rollout\n  ### Detail", "next")
-
-    def test_does_not_attach_an_indented_line_before_the_first_bullet(self) -> None:
-        body = "## Issue\nPart of #42\n\nNot done in this PR:\n  indented prose\n- a\n"
-        assert parse_not_done_items(body) is None
-
-    def test_skips_an_empty_label_for_a_later_list(self) -> None:
-        body = "## Issue\nPart of #42\n\nNot done in this PR:\n\nprose\n\nNot done in this PR:\n- a\n- b\n"
-        assert parse_not_done_items(body) == ("a", "b")
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "## Issue\nPart of #42\n\nNot done in this PR:\n\nprose",
-            "## Issue\nPart of #42\n\nNot done in this PR:",
-            "## Issue\nPart of #42\n",
-            "Part of #42\n\nNot done in this PR:\n- a",
-            "## Summary\nNot done in this PR:\n- a\n\n## Issue\nPart of #42\n",
-            "## Issue\nPart of #42\n\n```text\nNot done in this PR:\n- a\n```\n",
-            "",
-        ],
-    )
-    def test_returns_none_when_there_is_no_usable_list(self, body: str) -> None:
-        assert parse_not_done_items(body) is None
-
-
 def _invoke(*args: str) -> object:
     return runner.invoke(app, ["linked-issues", *args])
 
@@ -281,7 +201,7 @@ class TestLinkedIssuesCli:
         assert result.exit_code == 1
 
     def test_apply_prints_one_line_per_issue(self) -> None:
-        outcome = MergedIssues(transitioned=["1340"], commented=["1228"])
+        outcome = MergedIssues(transitioned=["1340", "1228"])
         handle = AsyncMock(return_value=outcome)
         result = _run_with(_patched(handle_merged_pr_issues=handle), "884", "--apply")
 
@@ -289,6 +209,13 @@ class TestLinkedIssuesCli:
         assert result.stdout.splitlines() == outcome.describe("done")
         assert handle.await_args.args == (884,)
         assert handle.await_args.kwargs["post_merge_state"] == "done"
+
+    def test_apply_names_a_part_of_issue_it_left_open(self) -> None:
+        handle = AsyncMock(return_value=MergedIssues(part_of=["7"]))
+        result = _run_with(_patched(handle_merged_pr_issues=handle), "884", "--apply")
+
+        assert result.exit_code == 0
+        assert result.stdout.splitlines() == ["issue #7 left open (Part of): unchanged"]
 
     def test_apply_with_nothing_linked_says_so(self) -> None:
         handle = AsyncMock(return_value=MergedIssues())
@@ -424,7 +351,6 @@ class TestCommandsCloseOnlyOnClosingKeywords:
     def test_integrate_pr_phase_6_applies_the_cli(self, path: str) -> None:
         phase_6 = _PHASE_6.search(_read(path)).group(0)
         assert "sova linked-issues <PR_NUMBER> --apply" in phase_6
-        assert "`Part of #N`**: the issue stays open" in phase_6
 
     @pytest.mark.parametrize(
         "path", ["sova/commands/data/commands/integrate-pr.md", ".claude/commands/integrate-pr.md"]
@@ -490,28 +416,51 @@ class TestCommandsCloseOnlyOnClosingKeywords:
         assert "sova linked-issues <PR_NUMBER> --apply" in text
         assert "gh issue close" not in text
 
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "sova/commands/data/commands/after-merge.md",
-            ".claude/commands/after-merge.md",
-            "sova/commands/data/commands/integrate-pr.md",
-            ".claude/commands/integrate-pr.md",
-        ],
-    )
-    def test_part_of_issue_loses_its_workflow_labels(self, path: str) -> None:
-        """#1266: a merged "Part of" PR strips the four workflow labels without closing the issue."""
-        text = _read(path)
-        assert "`agent:in-review`, `agent:in-progress`, `sova:revise` and `sova:block`" in text, (
-            "the command must say a Part of issue loses its workflow labels"
-        )
-
     @pytest.mark.parametrize("path", ["sova/commands/data/commands/after-merge.md", ".claude/commands/after-merge.md"])
     def test_after_merge_reports_a_failed_label_edit(self, path: str) -> None:
         """#1266: a failed label edit is named, never discarded by `2>/dev/null || true`."""
         text = _read(path)
         assert "2>/dev/null || true" not in text
         assert "FAILED: could not remove the workflow labels" in text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/integrate-pr.md",
+            ".claude/commands/integrate-pr.md",
+            "sova/commands/data/commands/after-merge.md",
+            ".claude/commands/after-merge.md",
+        ],
+    )
+    def test_a_part_of_issue_is_left_unchanged(self, path: str) -> None:
+        """#1418: a `Part of #N` issue gets no comment and no label change, so no command may say otherwise."""
+        text = _read(path)
+        part_of_lines = [line for line in text.splitlines() if "Part of #N" in line]
+        assert part_of_lines
+        assert any("no comment and no label change" in line for line in part_of_lines)
+        for line in part_of_lines:
+            assert "--remove-label" not in line
+            assert "gh issue comment" not in line
+        assert "gh issue comment" not in text
+        assert "sova-part-of" not in text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "sova/commands/data/commands/integrate-pr.md",
+            ".claude/commands/integrate-pr.md",
+            ".agents/skills/sova-integrate-pr/SKILL.md",
+        ],
+    )
+    def test_integrate_pr_runs_no_re_judge_before_merging(self, path: str) -> None:
+        text = _read(path)
+        assert "refresh-pr-body" not in text
+        assert "--only-if-unparseable" not in text
+
+    def test_refresh_pr_body_command_is_gone(self) -> None:
+        result = runner.invoke(app, ["refresh-pr-body", "7"])
+        assert result.exit_code == 2
+        assert "No such command" in result.output
 
 
 _PY_HEREDOC = re.compile(r"<<'PY'\n(.*?)\n\s*PY\n", re.DOTALL)
@@ -588,305 +537,3 @@ class TestPrCommandStopsOnStrayClosingReference:
         assert result.returncode == 2
         assert result.stdout == ""
         assert result.stderr.startswith("SKIP:")
-
-
-class TestRefreshPrBodyCli:
-    """`sova refresh-pr-body`: /integrate-pr runs it before merging (#1428)."""
-
-    def test_body_without_the_unparseable_note_is_not_re_judged(self, tmp_path: Path) -> None:
-        config = MagicMock()
-        config.task_source.type = "github"
-        step = patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", new_callable=AsyncMock)
-        with (
-            patch("sova.config.loader.load_config", return_value=config),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nPart of #42\n"),
-            step as execute,
-        ):
-            result = runner.invoke(app, ["refresh-pr-body", "7", "--only-if-unparseable", "--project", str(tmp_path)])
-
-        assert result.exit_code == 0
-        execute.assert_not_awaited()
-
-    def test_body_still_unparseable_after_the_re_judge_exits_1(self, tmp_path: Path) -> None:
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE
-        from sova.core.steps.base import StepResult
-
-        config = MagicMock()
-        config.task_source.type = "github"
-        config.base_branch = "main"
-        body = f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n"
-        git = AsyncMock(return_value=ShellResult(returncode=0, stdout="", stderr=""))
-        with (
-            patch("sova.config.loader.load_config", return_value=config),
-            patch("sova.adapters.create_adapter"),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value=body),
-            patch("sova.utils.shell.run", git),
-            patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as cleanup,
-            patch(
-                "sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute",
-                new_callable=AsyncMock,
-                return_value=StepResult(success=True, summary="PR body refresh skipped"),
-            ) as execute,
-        ):
-            result = runner.invoke(app, ["refresh-pr-body", "7", "--only-if-unparseable", "--project", str(tmp_path)])
-
-        assert result.exit_code == 1
-        execute.assert_awaited_once()
-        assert execute.await_args.args[0].issue_number == "42"
-        cleanup.assert_awaited_once()
-        commands = [call.args for call in git.await_args_list]
-        # The PR head is fetched into a private ref (never FETCH_HEAD, which other processes overwrite)
-        # and that ref is checked out and deleted afterwards.
-        fetch = next(c for c in commands if c[:3] == ("git", "fetch", "origin"))
-        head_ref = fetch[-1].split(":", 1)[1]
-        assert re.fullmatch(r"refs/sova/refresh-pr-body/7-[0-9a-f]{8}", head_ref)
-        assert fetch == ("git", "fetch", "origin", "main", f"+pull/7/head:{head_ref}")
-        assert any(c[:4] == ("git", "worktree", "add", "--detach") and c[-1] == head_ref for c in commands)
-        assert ("git", "worktree", "prune") in commands
-        assert commands[-1] == ("git", "update-ref", "-d", head_ref)
-
-
-class TestRefreshPrBodyCliErrorPaths:
-    """Each early exit of `sova refresh-pr-body`, and the clean re-judge that exits 0 (#1428)."""
-
-    @staticmethod
-    def _config(source: str = "github") -> MagicMock:
-        config = MagicMock()
-        config.task_source.type = source
-        config.base_branch = "main"
-        return config
-
-    @staticmethod
-    def _invoke(tmp_path: Path, *extra: str):
-        return runner.invoke(app, ["refresh-pr-body", "7", "--project", str(tmp_path), *extra])
-
-    def test_refresh_pr_body_non_github_source_exits_2(self, tmp_path: Path) -> None:
-        get_body = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config("jira")),
-            patch("sova.git.pr.get_pr_body", get_body),
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 2
-        get_body.assert_not_awaited()
-
-    def test_refresh_pr_body_unreadable_body_exits_4(self, tmp_path: Path) -> None:
-        git = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, side_effect=RuntimeError("gh down")),
-            patch("sova.utils.shell.run", git),
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 4
-        assert "gh down" in result.output
-        git.assert_not_awaited()
-
-    def test_refresh_pr_body_body_linking_no_issue_exits_1(self, tmp_path: Path) -> None:
-        git = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Summary\n- a change\n"),
-            patch("sova.utils.shell.run", git),
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 1
-        assert "links no issue" in result.output
-        git.assert_not_awaited()
-
-    def test_refresh_pr_body_fetch_failure_exits_4_without_a_worktree(self, tmp_path: Path) -> None:
-        git = AsyncMock(return_value=ShellResult(returncode=128, stdout="", stderr="no such ref\n"))
-        execute = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nPart of #42\n"),
-            patch("sova.utils.shell.run", git),
-            patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", execute),
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 4
-        assert "no such ref" in result.output
-        assert not any(c.args[:3] == ("git", "worktree", "add") for c in git.await_args_list)
-        execute.assert_not_awaited()
-
-    def test_refresh_pr_body_worktree_add_failure_deletes_the_private_ref(self, tmp_path: Path) -> None:
-        ok = ShellResult(returncode=0, stdout="", stderr="")
-        failed = ShellResult(returncode=128, stdout="", stderr="already checked out\n")
-        git = AsyncMock(side_effect=lambda *a, **k: failed if a[:3] == ("git", "worktree", "add") else ok)
-        execute = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nCloses #42\n"),
-            patch("sova.utils.shell.run", git),
-            patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as cleanup,
-            patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", execute),
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 4
-        assert "already checked out" in result.output
-        last = git.await_args_list[-1].args
-        assert last[:3] == ("git", "update-ref", "-d")
-        assert re.fullmatch(r"refs/sova/refresh-pr-body/7-[0-9a-f]{8}", last[3])
-        execute.assert_not_awaited()
-        cleanup.assert_not_awaited()
-
-    def test_refresh_pr_body_parsed_verdicts_exit_0(self, tmp_path: Path) -> None:
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE
-        from sova.core.steps.base import StepResult
-
-        before = f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n"
-        get_body = AsyncMock(side_effect=[before, "## Issue\nCloses #42\n"])
-        git = AsyncMock(return_value=ShellResult(returncode=0, stdout="", stderr=""))
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.adapters.create_adapter"),
-            patch("sova.git.pr.get_pr_body", get_body),
-            patch("sova.utils.shell.run", git),
-            patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock),
-            patch(
-                "sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute",
-                new_callable=AsyncMock,
-                return_value=StepResult(success=True, summary="Refreshed PR #7 body"),
-            ),
-        ):
-            result = self._invoke(tmp_path, "--only-if-unparseable")
-
-        assert result.exit_code == 0
-        assert "Refreshed PR #7 body" in result.output
-        assert get_body.await_count == 2
-
-    def test_refresh_pr_body_judges_the_issue_section_not_a_stray_closing_keyword(self, tmp_path: Path) -> None:
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE
-        from sova.core.steps.base import StepResult
-
-        body = f"## Summary\nFixes #99 in passing.\n\n## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n"
-        git = AsyncMock(return_value=ShellResult(returncode=0, stdout="", stderr=""))
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.adapters.create_adapter"),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, side_effect=[body, "## Issue\nCloses #42\n"]),
-            patch("sova.utils.shell.run", git),
-            patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock),
-            patch(
-                "sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute",
-                new_callable=AsyncMock,
-                return_value=StepResult(success=True, summary="ok"),
-            ) as execute,
-        ):
-            result = self._invoke(tmp_path)
-
-        assert result.exit_code == 0
-        assert execute.await_args.args[0].issue_number == "42"
-
-    def test_refresh_pr_body_head_mismatch_exits_3_without_a_worktree(self, tmp_path: Path) -> None:
-        ok = ShellResult(returncode=0, stdout="", stderr="")
-        moved = ShellResult(returncode=0, stdout="bbbbbbbbbbbb\n", stderr="")
-        git = AsyncMock(side_effect=lambda *a, **k: moved if a[:2] == ("git", "rev-parse") else ok)
-        execute = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nPart of #42\n"),
-            patch("sova.utils.shell.run", git),
-            patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", execute),
-        ):
-            result = self._invoke(tmp_path, "--head", "aaaaaaa")
-
-        assert result.exit_code == 3
-        assert "not the expected aaaaaaa" in result.output
-        assert git.await_args_list[-1].args[:3] == ("git", "update-ref", "-d")
-        assert not any(c.args[:3] == ("git", "worktree", "add") for c in git.await_args_list)
-        execute.assert_not_awaited()
-
-    def test_refresh_pr_body_unreadable_fetched_head_exits_4_not_3(self, tmp_path: Path) -> None:
-        ok = ShellResult(returncode=0, stdout="", stderr="")
-        broken = ShellResult(returncode=128, stdout="", stderr="bad object\n")
-        git = AsyncMock(side_effect=lambda *a, **k: broken if a[:2] == ("git", "rev-parse") else ok)
-        execute = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nPart of #42\n"),
-            patch("sova.utils.shell.run", git),
-            patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", execute),
-        ):
-            result = self._invoke(tmp_path, "--head", "aaaaaaa")
-
-        assert result.exit_code == 4
-        assert git.await_args_list[-1].args[:3] == ("git", "update-ref", "-d")
-        execute.assert_not_awaited()
-
-    @pytest.mark.parametrize("bad_head", [" ", "", "abc", "abcdef", "g" * 8, "a" * 41])
-    def test_refresh_pr_body_malformed_head_exits_2_before_any_work(self, tmp_path: Path, bad_head: str) -> None:
-        git = AsyncMock()
-        get_body = AsyncMock()
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", get_body),
-            patch("sova.utils.shell.run", git),
-        ):
-            result = self._invoke(tmp_path, "--head", bad_head)
-
-        assert result.exit_code == 2
-        assert "7 to 40 hex" in result.output
-        get_body.assert_not_awaited()
-        git.assert_not_awaited()
-
-    def test_refresh_pr_body_drops_stale_refs_of_a_killed_run_first(self, tmp_path: Path) -> None:
-        stale = "refs/sova/refresh-pr-body/7-deadbeef"
-        listing = ShellResult(returncode=0, stdout=f"{stale}\n", stderr="")
-        ok = ShellResult(returncode=0, stdout="", stderr="")
-        git = AsyncMock(side_effect=lambda *a, **k: listing if a[:2] == ("git", "for-each-ref") else ok)
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.git.pr.get_pr_body", new_callable=AsyncMock, return_value="## Issue\nPart of #42\n"),
-            patch("sova.utils.shell.run", git),
-            patch("sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute", AsyncMock()),
-        ):
-            self._invoke(tmp_path)
-
-        commands = [call.args for call in git.await_args_list]
-        assert ("git", "for-each-ref", "--format=%(refname)", "refs/sova/refresh-pr-body/7-*") == commands[0]
-        assert ("git", "update-ref", "-d", stale) in commands
-        fetch_index = next(i for i, c in enumerate(commands) if c[:3] == ("git", "fetch", "origin"))
-        assert commands.index(("git", "update-ref", "-d", stale)) < fetch_index
-        assert ("git", "worktree", "prune") in commands[:fetch_index]
-
-    def test_refresh_pr_body_head_match_proceeds(self, tmp_path: Path) -> None:
-        from sova.core.steps.base import StepResult
-
-        git = AsyncMock(return_value=ShellResult(returncode=0, stdout="abc1234def\n", stderr=""))
-        with (
-            patch("sova.config.loader.load_config", return_value=self._config()),
-            patch("sova.adapters.create_adapter"),
-            patch(
-                "sova.git.pr.get_pr_body",
-                new_callable=AsyncMock,
-                side_effect=["## Issue\nPart of #42\n", "## Issue\nCloses #42\n"],
-            ),
-            patch("sova.utils.shell.run", git),
-            patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock),
-            patch(
-                "sova.core.steps.refresh_pr_body.RefreshPrBodyStep.execute",
-                new_callable=AsyncMock,
-                return_value=StepResult(success=True, summary="ok"),
-            ) as execute,
-        ):
-            result = self._invoke(tmp_path, "--head", "ABC1234")
-
-        assert result.exit_code == 0
-        execute.assert_awaited_once()
-
-    def test_refresh_pr_body_without_project_uses_the_primary_worktree(self, tmp_path: Path) -> None:
-        with (
-            patch("sova.git.worktree.get_primary_worktree_root", new_callable=AsyncMock, return_value=tmp_path) as root,
-            patch("sova.config.loader.load_config", return_value=self._config("jira")) as load,
-        ):
-            result = runner.invoke(app, ["refresh-pr-body", "7"])
-
-        assert result.exit_code == 2
-        root.assert_awaited_once()
-        load.assert_called_once_with(tmp_path)

@@ -1,5 +1,5 @@
-"""Tests for the shared PR-body helpers: acceptance-criteria extraction,
-verdict parsing, owner-only overrides, and section-based body assembly.
+"""Tests for the shared PR-body helpers: prompt assembly, the closing ``## Issue`` section,
+and section-based body assembly.
 """
 
 from __future__ import annotations
@@ -15,30 +15,17 @@ from sova.config.models import CommitConfig, ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     TITLE_MARKER,
-    VERDICT_MARKER,
-    apply_ci_gated_overrides,
-    apply_owner_overrides,
     apply_sections,
     compose_body,
-    extract_acceptance_criteria,
     generate_pr_body_text,
-    parse_verdicts,
-    process_llm_result,
-    render_closing_block,
     split_sections,
     split_title_tail,
-    split_verdict_tail,
     truncate_diff,
 )
 from sova.core.steps._pr_body import build_prompt as build_pr_body_prompt
 from sova.llm.errors import LLMInvocationError, LLMTimeoutError
 from sova.llm.models import LLMResult
 from sova.utils.gh import IssueLinks, parse_issue_links
-
-
-def _commit(*, owner: list[str] | None = None, ci_gated: list[str] | None = None) -> CommitConfig:
-    """A CommitConfig with only the given override patterns (none by default)."""
-    return CommitConfig(owner_only_patterns=owner or [], ci_gated_patterns=ci_gated or [])
 
 
 def _ctx(tmp_path: Path, issue_number: str = "42") -> ExecutionContext:
@@ -51,325 +38,9 @@ def _ctx(tmp_path: Path, issue_number: str = "42") -> ExecutionContext:
     )
 
 
-class TestExtractAcceptanceCriteria:
-    @pytest.mark.parametrize(
-        ("body", "expected"),
-        [
-            pytest.param("## Objective\nDo the thing.\n", [], id="no-heading-returns-empty"),
-            pytest.param("", [], id="empty-body-returns-empty"),
-            pytest.param(
-                "## Acceptance Criteria\n\n## Out of Scope\nNothing.\n", [], id="heading-with-no-items-returns-empty"
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] First thing works\n- [ ] Second thing works\n",
-                ["First thing works", "Second thing works"],
-                id="extracts-checkbox-items",
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n- [x] Done already\n- Bare dash item\n",
-                ["Done already", "Bare dash item"],
-                id="tolerant-of-checked-boxes-and-bare-dashes",
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] Only this one\n\n## Out of Scope\n- [ ] Not a criterion\n",
-                ["Only this one"],
-                id="stops-at-next-heading",
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] Only this one\n",
-                ["Only this one"],
-                id="stops-at-end-of-body-when-last-section",
-            ),
-            pytest.param(
-                "## Acceptance criteria\n- [ ] Lowercase c\n", ["Lowercase c"], id="heading-is-case-insensitive"
-            ),
-            pytest.param(
-                "##  Acceptance Criteria\n- [ ] Extra space before heading text\n",
-                ["Extra space before heading text"],
-                id="heading-tolerates-extra-whitespace",
-            ),
-            # A "## " line and a "- " line inside a fenced example must not be mistaken for the section boundary
-            # or for a criterion: either would truncate the real section early or invent a bogus criterion.
-            pytest.param(
-                (
-                    "## Acceptance Criteria\n"
-                    "- Do X\n"
-                    "The config reads like this:\n"
-                    "```toml\n"
-                    "- not_a_criterion = 1\n"
-                    "## fake heading inside fence\n"
-                    "```\n"
-                    "- Do Z\n"
-                    "\n"
-                    "## Out of Scope\n"
-                    "- Do Y (not in scope)\n"
-                ),
-                ["Do X", "Do Z"],
-                id="fenced-block-does-not-truncate-section-or-leak-lines",
-            ),
-            # A "---" horizontal rule has no whitespace after its marker, so it must not be parsed as a
-            # criterion with text "--".
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] real one\n\n---\n", ["real one"], id="horizontal-rule-is-not-a-criterion"
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n* [ ] Star bullet\n+ [ ] Plus bullet\n",
-                ["Star bullet", "Plus bullet"],
-                id="accepts-asterisk-and-plus-bullets",
-            ),
-            # A nested sub-bullet or continuation line must never be promoted to a top-level criterion, even
-            # when it uses checkbox syntax itself.
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] Top level thing\n  - [ ] sub detail one\n  - sub detail two\n",
-                ["Top level thing"],
-                id="indented-sub-bullet-is-not-promoted-to-a-criterion",
-            ),
-        ],
-    )
-    def test_extract_acceptance_criteria(self, body: str, expected: list[str]) -> None:
-        assert extract_acceptance_criteria(body) == expected
-
-
-class TestParseVerdicts:
-    @pytest.mark.parametrize(
-        ("tail", "criteria", "expected"),
-        [
-            pytest.param(
-                "- [met] First\n- [unmet] Second\n",
-                ["First", "Second"],
-                [("First", "met"), ("Second", "unmet")],
-                id="parses-matching-count",
-            ),
-            pytest.param("- [met] Only one\n", ["First", "Second"], None, id="count-mismatch-is-unparseable"),
-            pytest.param("- [maybe] First\n", ["First"], None, id="invalid-verdict-token-is-unparseable"),
-            pytest.param("First is met\n", ["First"], None, id="malformed-line-is-unparseable"),
-            pytest.param("", [], [], id="empty-criteria-and-empty-tail-parses-to-empty-list"),
-            # A cosmetic LLM deviation (a trailing summary sentence after the verdict list) must not degrade
-            # correctly-reported "met" verdicts to "all unmet": only lines shaped like a verdict are counted.
-            pytest.param(
-                "- [met] First\n- [met] Second\n\nAll criteria satisfied.\n",
-                ["First", "Second"],
-                [("First", "met"), ("Second", "met")],
-                id="tolerates-trailing-prose-after-well-formed-verdicts",
-            ),
-        ],
-    )
-    def test_parse_verdicts(self, tail: str, criteria: list[str], expected: list[tuple[str, str]] | None) -> None:
-        assert parse_verdicts(tail, criteria) == expected
-
-
-class TestApplyOwnerOverrides:
-    def test_default_patterns_match_plain_prose_criteria(self) -> None:
-        """Acceptance criteria are usually written as plain sentences, not as
-        a parenthetical annotation; the default pattern list must catch both,
-        as long as the sentence actually asserts a requirement."""
-        from sova.config.models import CommitConfig
-
-        defaults = CommitConfig().owner_only_patterns
-        verdicts = [
-            ("This requires manual verification by the owner", "met"),
-            ("Requires interactive confirmation before deploy", "met"),
-            ("Automated fix works end to end", "met"),
-        ]
-        result = apply_owner_overrides(verdicts, defaults)
-        assert result[0] == ("This requires manual verification by the owner", "owner")
-        assert result[1] == ("Requires interactive confirmation before deploy", "owner")
-        assert result[2] == ("Automated fix works end to end", "met")
-
-    def test_default_patterns_do_not_match_incidental_prose(self) -> None:
-        """Bare "interactive"/"manually" are too common in ordinary feature
-        prose (this repo's own "interactive" suitability label, "manually
-        override a setting") to use as owner-only defaults: only a
-        requirement-phrased pattern should force the override, never a bare
-        substring that merely co-occurs with a fully automatable criterion."""
-        from sova.config.models import CommitConfig
-
-        defaults = CommitConfig().owner_only_patterns
-        verdicts = [
-            ("Users can manually override the setting in the dashboard", "met"),
-            ("The settings page updates interactively without a reload", "met"),
-        ]
-        assert apply_owner_overrides(verdicts, defaults) == verdicts
-
-    @pytest.mark.parametrize(
-        ("verdicts", "patterns", "expected"),
-        [
-            pytest.param(
-                [("Deploy manually (owner only)", "met")],
-                ["(owner"],
-                [("Deploy manually (owner only)", "owner")],
-                id="matching-pattern-forces-owner",
-            ),
-            pytest.param(
-                [("Needs HUMAN-ONLY review", "unmet")],
-                ["human-only"],
-                [("Needs HUMAN-ONLY review", "owner")],
-                id="case-insensitive-match",
-            ),
-            pytest.param(
-                [("Automated fix works", "met")],
-                ["(owner", "(manual"],
-                [("Automated fix works", "met")],
-                id="no-match-leaves-verdict-unchanged",
-            ),
-            pytest.param([("Something", "unmet")], [], [("Something", "unmet")], id="empty-patterns-is-noop"),
-        ],
-    )
-    def test_explicit_patterns(
-        self, verdicts: list[tuple[str, str]], patterns: list[str], expected: list[tuple[str, str]]
-    ) -> None:
-        assert apply_owner_overrides(verdicts, patterns) == expected
-
-
-class TestApplyCiGatedOverrides:
-    def test_default_patterns_match_the_template_check_criteria(self) -> None:
-        """The issue template's two closing criteria are settled by the merge gate (required CI
-        checks, and /integrate-pr waiting for green CI), not by anything the PR-body LLM can see."""
-        from sova.config.models import CommitConfig
-
-        defaults = CommitConfig().ci_gated_patterns
-        verdicts = [
-            ("All existing tests pass (`make check`)", "unmet"),
-            ("No new lint warnings (`make lint`)", "unknown"),
-            ("The resolver returns 1340", "unmet"),
-        ]
-        assert apply_ci_gated_overrides(verdicts, defaults) == [
-            ("All existing tests pass (`make check`)", "met"),
-            ("No new lint warnings (`make lint`)", "met"),
-            ("The resolver returns 1340", "unmet"),
-        ]
-
-    def test_default_patterns_do_not_match_a_criterion_about_the_make_target(self) -> None:
-        from sova.config.models import CommitConfig
-
-        verdicts = [("Add a coverage threshold to the make check target", "unmet")]
-        assert apply_ci_gated_overrides(verdicts, CommitConfig().ci_gated_patterns) == verdicts
-
-    def test_case_insensitive_match(self) -> None:
-        verdicts = [("ALL EXISTING TESTS PASS", "unmet")]
-        assert apply_ci_gated_overrides(verdicts, ["all existing tests pass"]) == [("ALL EXISTING TESTS PASS", "met")]
-
-    def test_empty_patterns_is_noop(self) -> None:
-        verdicts = [("All existing tests pass (`make check`)", "unmet")]
-        assert apply_ci_gated_overrides(verdicts, []) == verdicts
-
-    def test_whitespace_only_patterns_are_ignored(self) -> None:
-        verdicts = [("All existing tests pass (`make check`)", "unmet")]
-        assert apply_ci_gated_overrides(verdicts, [" ", "\t"]) == verdicts
-
-    def test_pattern_whitespace_is_trimmed_before_matching(self) -> None:
-        verdicts = [("All existing tests pass", "unmet"), ("Something else", "unmet")]
-        assert apply_ci_gated_overrides(verdicts, ["  all existing tests pass "]) == [
-            ("All existing tests pass", "met"),
-            ("Something else", "unmet"),
-        ]
-
-
-class TestProcessLlmResult:
-    def test_unparseable_verdict_block_becomes_unknown_not_unmet(self) -> None:
-        """An unparseable block must degrade to a distinct "unknown" token,
-        not the model-reportable "unmet", so a human reviewer can tell the
-        two apart in the rendered closing block."""
-        raw = "## Summary\n- stuff\n"  # no verdict block at all
-        _, verdicts = process_llm_result(raw, ["First", "Second"], _commit())
-        assert verdicts == [("First", "unknown"), ("Second", "unknown")]
-
-    def test_owner_patterns_still_apply_on_the_unparseable_path(self) -> None:
-        raw = "## Summary\n- stuff\n"
-        _, verdicts = process_llm_result(raw, ["Deploy it (owner only)"], _commit(owner=["(owner"]))
-        assert verdicts == [("Deploy it (owner only)", "owner")]
-
-    def test_ci_gated_criteria_are_met_on_the_unparseable_path(self) -> None:
-        raw = "## Summary\n- stuff\n"
-        _, verdicts = process_llm_result(
-            raw, ["Feature works", "All existing tests pass"], _commit(ci_gated=["tests pass"])
-        )
-        assert verdicts == [("Feature works", "unknown"), ("All existing tests pass", "met")]
-
-    def test_owner_pattern_wins_over_a_ci_gated_one(self) -> None:
-        raw = f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [unmet] Run make check in an interactive session\n"
-        _, verdicts = process_llm_result(
-            raw,
-            ["Run make check in an interactive session"],
-            _commit(owner=["interactive session"], ci_gated=["make check"]),
-        )
-        assert verdicts == [("Run make check in an interactive session", "owner")]
-
-    def test_only_ci_gated_criteria_unmet_renders_closes(self) -> None:
-        """PR #1364 implemented all of #1354 yet rendered "Part of #1354", listing only the two
-        check criteria as not done, because the model cannot see test results when it writes the body."""
-        criteria = ["Resolver picks the branch issue", "All existing tests pass (`make check`)"]
-        raw = (
-            f"## Summary\n- stuff\n{VERDICT_MARKER}\n"
-            "- [met] Resolver picks the branch issue\n- [unmet] All existing tests pass (`make check`)\n"
-        )
-        _, verdicts = process_llm_result(raw, criteria, CommitConfig())
-        assert render_closing_block("1354", verdicts) == "Closes #1354"
-
-
-class TestRenderClosingBlock:
-    def test_no_verdicts_is_unconditional_closes(self) -> None:
-        assert render_closing_block("42", None) == "Closes #42"
-
-    def test_all_met_is_closes(self) -> None:
-        verdicts = [("A", "met"), ("B", "met")]
-        assert render_closing_block("42", verdicts) == "Closes #42"
-
-    def test_some_unmet_is_part_of_with_list(self) -> None:
-        verdicts = [("A", "met"), ("B", "unmet")]
-        result = render_closing_block("42", verdicts)
-        assert result.startswith("Part of #42")
-        assert "Not done in this PR:" in result
-        assert "- B" in result
-        assert "- A" not in result
-
-    def test_owner_verdict_is_annotated_and_listed(self) -> None:
-        verdicts = [("Deploy it manually", "owner")]
-        result = render_closing_block("42", verdicts)
-        assert "Part of #42" in result
-        assert "- Deploy it manually (requires owner/manual action)" in result
-
-    def test_multiple_unmet_and_owner_each_listed_once(self) -> None:
-        verdicts = [("A", "met"), ("B", "unmet"), ("C", "owner"), ("D", "unmet")]
-        result = render_closing_block("42", verdicts)
-        assert result.count("- B") == 1
-        assert result.count("- C") == 1
-        assert result.count("- D") == 1
-        assert "- A" not in result
-
-    def test_unknown_verdict_gets_distinguishing_note_and_suffix(self) -> None:
-        """An "unknown" verdict (unparseable LLM output) must read differently
-        from a genuine "unmet", so a reviewer is not told two criteria were
-        checked and failed when they were never actually verdicted."""
-        verdicts = [("A", "unknown"), ("B", "unknown")]
-        result = render_closing_block("42", verdicts)
-        assert "could not be parsed" in result
-        assert "- A (unverified)" in result
-        assert "- B (unverified)" in result
-
-    def test_genuine_unmet_has_no_unparseable_note(self) -> None:
-        verdicts = [("A", "unmet")]
-        result = render_closing_block("42", verdicts)
-        assert "could not be parsed" not in result
-        assert "(unverified)" not in result
-
-
-class TestSplitVerdictTail:
-    def test_no_marker_returns_whole_text_as_body(self) -> None:
-        body, tail = split_verdict_tail("## Summary\n- stuff\n")
-        assert body == "## Summary\n- stuff"
-        assert tail == ""
-
-    def test_marker_splits_body_from_tail(self) -> None:
-        raw = f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [met] First\n"
-        body, tail = split_verdict_tail(raw)
-        assert body == "## Summary\n- stuff"
-        assert "- [met] First" in tail
-
-
 class TestComposeBody:
-    def test_github_no_verdicts_appends_closes(self) -> None:
-        body = compose_body("## Summary\n- stuff", "42", None, is_jira=False)
+    def test_github_appends_closes(self) -> None:
+        body = compose_body("## Summary\n- stuff", "42", is_jira=False)
         assert body == "## Summary\n- stuff\n\n## Issue\n\nCloses #42\n"
 
     @pytest.mark.parametrize(
@@ -386,40 +57,55 @@ class TestComposeBody:
         ],
     )
     def test_github_strips_stray_closing_keyword(self, summary: str) -> None:
-        body = compose_body(summary, "42", None, is_jira=False)
+        body = compose_body(summary, "42", is_jira=False)
         assert body.count("#42") == 1
         assert "Closes #42" in body
 
     def test_github_does_not_strip_inline_mention_of_the_issue(self) -> None:
         """A sentence that merely mentions the issue inline must survive untouched:
         only a line that is *only* a closing reference is a stray echo."""
-        body = compose_body("## Summary\n- This PR fixes #42 by rewiring the parser.", "42", None, is_jira=False)
+        body = compose_body("## Summary\n- This PR fixes #42 by rewiring the parser.", "42", is_jira=False)
         assert "This PR fixes #42 by rewiring the parser." in body
         assert "## Issue" in body
         assert "Closes #42" in body
 
-    def test_github_unmet_criteria_neutralizes_inline_mention(self) -> None:
-        """A "Part of" decision must never leave a live inline closing-keyword
-        mention the LLM wrote in prose: GitHub auto-closes on an inline
-        mention just as readily as on a standalone line."""
-        verdicts = [("A", "unmet")]
-        body = compose_body("## Summary\n- This PR fixes #42 by rewiring the parser.", "42", verdicts, is_jira=False)
-        assert "closes #42" not in body.lower()
-        assert "fixes #42" not in body.lower()
-        assert "This PR addresses #42 by rewiring the parser." in body
-        assert "Part of #42" in body
+    def test_model_text_with_verdict_lines_or_part_of_still_closes(self) -> None:
+        """The closing section is rendered independently of the model text, so verdict-style
+        lines and a "Part of" phrase in it are description only."""
+        sections = (
+            "## Summary\n- stuff\n\n<!-- ACCEPTANCE_VERDICTS -->\n- [unmet] First thing\n\n"
+            "## Review guidance\nThis is Part of #42 and the rest is left undone."
+        )
+        body = compose_body(sections, "42", is_jira=False)
+        assert split_sections(body)["Issue"] == "Closes #42"
+        # The prose "Part of #42" sits outside the ## Issue section, which is the only place a "Part of"
+        # link is read from, so it does not become a second, conflicting link.
+        assert parse_issue_links(body) == IssueLinks(closes=("42",), part_of=())
+        # Leftover verdict output from the model is published as description text, unchanged.
+        assert "<!-- ACCEPTANCE_VERDICTS -->" in body
 
-    def test_github_unmet_criteria_produces_part_of(self) -> None:
-        verdicts = [("A", "unmet")]
-        body = compose_body("## Summary\n- stuff", "42", verdicts, is_jira=False)
-        assert "Part of #42" in body
-        assert "Closes #42" not in body
+    @pytest.mark.parametrize(
+        "summary",
+        [
+            pytest.param("## Summary\n- stuff\n\n```python\nx = 1", id="backtick-fence-no-trailing-newline"),
+            pytest.param("## Summary\n- stuff\n\n```\n", id="backtick-fence-trailing-newline"),
+            pytest.param("## Summary\n- stuff\n\n~~~text\nx", id="tilde-fence"),
+            pytest.param("## Summary\n- stuff\n\n````\nx\n```\ny", id="four-backtick-opener-inner-three"),
+            pytest.param("## Summary\n- stuff\n\n  ```\nx", id="indented-opener"),
+            pytest.param("## Summary\n- item\n  ```python\n  x = 1", id="fence-inside-list-item"),
+        ],
+    )
+    def test_model_output_ending_inside_an_open_fence_still_closes(self, summary: str) -> None:
+        """An unterminated fence would swallow the ``## Issue`` section into a code block."""
+        body = compose_body(summary, "42", is_jira=False)
+        assert split_sections(body)["Issue"] == "Closes #42"
+        assert parse_issue_links(body).closes == ("42",)
 
-    def test_closing_decision_is_its_own_addressable_section(self) -> None:
-        """The closing decision lives under its own ``## Issue`` heading, not as
+    def test_closing_line_is_its_own_addressable_section(self) -> None:
+        """The closing line lives under its own ``## Issue`` heading, not as
         trailing text inside whichever section happens to be last, so a refresh
         can always find and replace it regardless of other heading drift."""
-        body = compose_body("## Summary\n- stuff\n\n## Review guidance\n- more stuff", "42", None, is_jira=False)
+        body = compose_body("## Summary\n- stuff\n\n## Review guidance\n- more stuff", "42", is_jira=False)
         sections = split_sections(body)
         assert sections["Issue"] == "Closes #42"
 
@@ -427,28 +113,26 @@ class TestComposeBody:
         """PR #1364's generated Test plan said "its original text closes #12 and #1340", so GitHub
         listed the PR as closing #12 and the dashboard showed it as issue 12's PR."""
         sections = "## Test plan\n- cases for the PR #1351 body (its original text closes #12 and #1340)"
-        body = compose_body(sections, "1354", [("A", "unmet")], is_jira=False)
+        body = compose_body(sections, "1354", is_jira=False)
         assert "(its original text `closes #12` and #1340)" in body
-        assert parse_issue_links(body) == IssueLinks(closes=(), part_of=("1354",))
+        assert parse_issue_links(body) == IssueLinks(closes=("1354",), part_of=())
 
-    def test_closing_keyword_for_another_issue_is_defused_under_a_closes_decision(self) -> None:
-        body = compose_body("## Summary\n- Also fixes: #7, and Resolves\n#8.", "42", None, is_jira=False)
+    def test_closing_keyword_for_another_issue_is_defused(self) -> None:
+        body = compose_body("## Summary\n- Also fixes: #7, and Resolves\n#8.", "42", is_jira=False)
         assert "Also `fixes: #7`, and `Resolves #8`." in body
         assert parse_issue_links(body).closes == ("42",)
 
     def test_closing_keyword_already_in_code_is_left_alone(self) -> None:
         sections = "## Summary\n- quotes `Closes #7` verbatim\n\n```text\nCloses #8\n```"
-        body = compose_body(sections, "42", None, is_jira=False)
+        body = compose_body(sections, "42", is_jira=False)
         assert "- quotes `Closes #7` verbatim\n\n```text\nCloses #8\n```" in body
 
     def test_jira_adds_link_once(self) -> None:
-        body = compose_body("## Summary\n- stuff", "42", None, is_jira=True, jira_link="JIRA: https://x/42")
+        body = compose_body("## Summary\n- stuff", "42", is_jira=True, jira_link="JIRA: https://x/42")
         assert body.count("JIRA: https://x/42") == 1
 
     def test_jira_strips_closing_keyword_llm_wrote(self) -> None:
-        body = compose_body(
-            "## Summary\n- stuff\n\nCloses #42", "42", None, is_jira=True, jira_link="JIRA: https://x/42"
-        )
+        body = compose_body("## Summary\n- stuff\n\nCloses #42", "42", is_jira=True, jira_link="JIRA: https://x/42")
         assert "Closes #42" not in body
         assert "JIRA: https://x/42" in body
 
@@ -459,7 +143,6 @@ class TestComposeBody:
         body = compose_body(
             "## Summary\n- This change fixes #123 in the dashboard parser.",
             "123",
-            None,
             is_jira=True,
             jira_link="JIRA: https://x/123",
         )
@@ -467,6 +150,23 @@ class TestComposeBody:
         assert "closes #123" not in body.lower()
         assert "This change addresses #123 in the dashboard parser." in body
         assert "JIRA: https://x/123" in body
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            pytest.param("## Summary\n- item\n  ```python\n  x = 1", id="fence-open-in-list-item"),
+            pytest.param("## Summary\n```python\nx = 1", id="fence-open-at-top-level"),
+            pytest.param("## Summary\n1. step\n   ~~~\n   y", id="tilde-fence-open-in-numbered-item"),
+        ],
+    )
+    def test_closing_line_is_never_inside_a_code_block(self, description: str) -> None:
+        """GitHub ignores a closing keyword inside a code block, so a description cut off mid-fence must not
+        swallow the ``## Issue`` section."""
+        markdown_it = pytest.importorskip("markdown_it")
+        body = compose_body(description, "42", is_jira=False)
+        tokens = markdown_it.MarkdownIt().parse(body)
+        assert not [t for t in tokens if t.type == "fence" and "Closes #42" in t.content]
+        assert any(t.type == "inline" and "Closes #42" in t.content for t in tokens)
 
 
 class TestSplitAndApplySections:
@@ -525,10 +225,10 @@ class TestSplitAndApplySections:
 
 
 class TestBuildPrompt:
-    """The prompt's issue section, and when a verdict block is requested."""
+    """The prompt's issue section: it never asks for acceptance verdicts."""
 
-    def test_github_issue_prompt_asks_for_verdicts(self, tmp_path: Path) -> None:
-        prompt, criteria = build_pr_body_prompt(
+    def test_github_issue_prompt_carries_the_issue_and_no_verdict_request(self, tmp_path: Path) -> None:
+        prompt = build_pr_body_prompt(
             _ctx(tmp_path),
             task_title="Fix the bug",
             issue_body="## Acceptance Criteria\n- [ ] First thing works\n",
@@ -537,37 +237,17 @@ class TestBuildPrompt:
             diff_content="diff --git a/src/app.py",
         )
 
-        assert criteria == ["First thing works"]
         assert 'Do NOT use "Closes #42"' in prompt
-        assert VERDICT_MARKER in prompt
-        assert "- First thing works" in prompt
-        # The bare "Output ONLY the markdown body ... no preamble" sentence
-        # must not appear verbatim when a trailing verdict block is also
-        # requested: it contradicts the later instruction in the same prompt.
+        assert "Fix the bug" in prompt
+        assert "ACCEPTANCE_VERDICTS" not in prompt
+        # The bare "Output ONLY the markdown body ... no preamble" sentence must not appear verbatim
+        # when a trailing title block is also requested: it contradicts the later instruction.
         assert "no preamble). Start directly" not in prompt
         assert "and nothing else" in prompt
 
-    def test_issue_without_criteria_omits_verdict_block(self, tmp_path: Path) -> None:
-        prompt, criteria = build_pr_body_prompt(
-            _ctx(tmp_path),
-            task_title="Fix the bug",
-            issue_body="## Objective\nJust do it.\n",
-            commit_log="abc123 fix: thing",
-            diff_stat="",
-            diff_content="",
-        )
-
-        assert criteria == []
-        assert VERDICT_MARKER not in prompt
-        # A title block is still requested for a non-JIRA project even with
-        # no verdict block, so the bare "Start directly" instruction (which
-        # would contradict that trailing title request) must not appear.
-        assert "no preamble). Start directly" not in prompt
-        assert TITLE_MARKER in prompt
-
-    def test_issueless_run_has_no_closing_keyword_and_no_criteria(self, tmp_path: Path) -> None:
-        """An issue-less run has nothing to close and nothing to verdict."""
-        prompt, criteria = build_pr_body_prompt(
+    def test_issueless_run_has_no_closing_keyword(self, tmp_path: Path) -> None:
+        """An issue-less run has nothing to close."""
+        prompt = build_pr_body_prompt(
             _ctx(tmp_path, issue_number=""),
             task_title="Ad-hoc cleanup",
             issue_body="## Acceptance Criteria\n- [ ] Ignored for an issue-less run\n",
@@ -576,10 +256,8 @@ class TestBuildPrompt:
             diff_content="",
         )
 
-        assert criteria == []
         assert "Task: Ad-hoc cleanup" in prompt
         assert "Closes #" not in prompt
-        assert VERDICT_MARKER not in prompt
         assert TITLE_MARKER in prompt
 
 
@@ -587,7 +265,7 @@ class TestBuildPromptTitleRequest:
     """A PR title is requested for a non-JIRA project, never for JIRA."""
 
     def test_github_project_requests_a_title_scoped_to_configured_lists(self, tmp_path: Path) -> None:
-        prompt, _criteria = build_pr_body_prompt(
+        prompt = build_pr_body_prompt(
             _ctx(tmp_path),
             task_title="Fix the bug",
             issue_body="",
@@ -614,7 +292,7 @@ class TestBuildPromptTitleRequest:
             issue_number="42",
             role="developer",
         )
-        prompt, _criteria = build_pr_body_prompt(
+        prompt = build_pr_body_prompt(
             ctx,
             task_title="Fix the bug",
             issue_body="",
@@ -629,7 +307,7 @@ class TestBuildPromptTitleRequest:
         """A caller that discards the title (RefreshPrBodyStep) must be able
         to opt out of requesting it at all, not just strip it after the
         fact: the flag's own effect is what this test locks in."""
-        prompt, _criteria = build_pr_body_prompt(
+        prompt = build_pr_body_prompt(
             _ctx(tmp_path),
             task_title="Fix the bug",
             issue_body="",
@@ -661,84 +339,27 @@ class TestSplitTitleTail:
         assert body == "## Summary\n- stuff"
         assert title is None
 
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            pytest.param(
-                f"## Summary\n- stuff\n{VERDICT_MARKER}\n- [met] First thing\n{TITLE_MARKER}\nfeat(core): add widget",
-                id="title-tail-after-verdict-tail",
-            ),
-            # Only the marker and the title line are removed, not the rest of the response: a model that emits
-            # the title block before the verdict block must not lose the verdicts, which drive `Closes #N`.
-            pytest.param(
-                f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget\n{VERDICT_MARKER}\n- [met] First thing",
-                id="title-block-emitted-before-verdict-block",
-            ),
-        ],
-    )
-    def test_title_and_verdict_tails_both_survive(self, raw: str) -> None:
-        remainder, title = split_title_tail(raw)
+    def test_text_after_the_title_line_survives(self) -> None:
+        """Only the marker and the title line are removed, not the rest of the response."""
+        remainder, title = split_title_tail(
+            f"## Summary\n- stuff\n{TITLE_MARKER}\nfeat(core): add widget\n## Test plan\n- t"
+        )
         assert title == "feat(core): add widget"
-        body, tail = split_verdict_tail(remainder)
-        assert body == "## Summary\n- stuff"
-        assert "- [met] First thing" in tail
+        assert remainder == "## Summary\n- stuff\n\n## Test plan\n- t"
 
-    def test_rejects_a_candidate_that_is_itself_the_verdict_marker(self) -> None:
-        """A model that emits the title block before the verdict block and
-        omits the title line entirely leaves the verdict marker as the next
-        non-blank line. Consuming that as the "title" would destroy the
-        whole verdict block it immediately precedes; it must be rejected and
-        left for split_verdict_tail() instead, which still finds and parses
-        it correctly (the stray, unconsumed title marker text is cosmetic
-        noise left in the body, not a parsing failure)."""
-        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\n\n{VERDICT_MARKER}\n- [met] First thing"
+    def test_rejects_a_candidate_that_is_itself_another_marker(self) -> None:
+        """A model that omits the title line leaves the next marker as the next non-blank line;
+        consuming that as the "title" would destroy it."""
+        raw = f"## Summary\n- stuff\n{TITLE_MARKER}\n\n<!-- OTHER -->\n- kept"
         remainder, title = split_title_tail(raw)
 
         assert title is None
         assert remainder == raw
-        _, tail = split_verdict_tail(remainder)
-        assert "- [met] First thing" in tail
 
 
 class TestLineParsingIsWhitespaceTolerant:
-    """The criterion, verdict, and heading patterns are matched without
-    lazy-quantifier backtracking, so each one's whitespace handling is
-    pinned here rather than left to the regex's shape."""
-
-    @pytest.mark.parametrize(
-        ("body", "expected"),
-        [
-            pytest.param(
-                "## Acceptance Criteria\n- [ ] First thing works   \n-    Second thing works\t\n",
-                ["First thing works", "Second thing works"],
-                id="criterion-line-tolerates-trailing-whitespace",
-            ),
-            pytest.param(
-                "## Acceptance Criteria\n-   \n- [ ] Real one\n",
-                ["Real one"],
-                id="dash-with-only-whitespace-is-not-a-criterion",
-            ),
-        ],
-    )
-    def test_criterion_line_whitespace(self, body: str, expected: list[str]) -> None:
-        assert extract_acceptance_criteria(body) == expected
-
-    @pytest.mark.parametrize(
-        ("tail", "criteria", "expected"),
-        [
-            pytest.param(
-                "-  [MET]   First thing works  \n- [unmet]Second thing works\n",
-                ["First", "Second"],
-                [("First", "met"), ("Second", "unmet")],
-                id="verdict-line-tolerates-padding-around-the-token",
-            ),
-            pytest.param("- [met]\n", ["First"], None, id="verdict-line-with-no-text-is-unparseable"),
-        ],
-    )
-    def test_verdict_line_whitespace(
-        self, tail: str, criteria: list[str], expected: list[tuple[str, str]] | None
-    ) -> None:
-        assert parse_verdicts(tail, criteria) == expected
+    """The heading pattern is matched without lazy-quantifier backtracking, so its
+    whitespace handling is pinned here rather than left to the regex's shape."""
 
     def test_split_sections_strips_heading_whitespace(self) -> None:
         sections = split_sections("## Summary   \n- a\n\n##\tTest plan\n- b\n")
@@ -779,7 +400,7 @@ class TestTruncateDiff:
         assert truncate_diff("", True, 100) == "(no changes detected)"
 
     def test_stat_only_input_still_builds_a_valid_prompt(self, tmp_path: Path) -> None:
-        prompt, _ = build_pr_body_prompt(
+        prompt = build_pr_body_prompt(
             _ctx(tmp_path),
             task_title="Rename",
             issue_body="",
@@ -789,39 +410,6 @@ class TestTruncateDiff:
         )
         assert "a.png => b.png" in prompt
         assert "(no changes detected)" in prompt
-
-
-class TestVerdictOnlyPrompt:
-    def test_asks_for_the_verdict_block_and_no_body_sections(self, tmp_path: Path) -> None:
-        prompt, criteria = build_pr_body_prompt(
-            _ctx(tmp_path),
-            task_title="T",
-            issue_body="## Acceptance Criteria\n- Works\n",
-            commit_log="log",
-            diff_stat="stat",
-            diff_content="diff",
-            request_title=False,
-            verdict_only=True,
-        )
-        assert criteria == ["Works"]
-        assert VERDICT_MARKER in prompt
-        assert "- Works" in prompt
-        assert "## Review guidance" not in prompt
-        assert "## Test plan" not in prompt
-
-    def test_without_criteria_the_full_prompt_is_kept(self, tmp_path: Path) -> None:
-        prompt, criteria = build_pr_body_prompt(
-            _ctx(tmp_path),
-            task_title="T",
-            issue_body="no criteria here",
-            commit_log="log",
-            diff_stat="stat",
-            diff_content="diff",
-            request_title=False,
-            verdict_only=True,
-        )
-        assert criteria == []
-        assert "## Review guidance" in prompt
 
 
 class TestGeneratePrBodyText:

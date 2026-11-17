@@ -981,27 +981,9 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
-        "commit.owner_only_patterns",
-        "Owner-only criteria patterns",
-        "Plain, case-insensitive substrings (not regexes) marking an acceptance criterion as owner/manual-only, "
-        "forcing 'Part of #N' over 'Closes #N'. A short pattern like 'owner' alone will also match incidental "
-        "prose, so prefer a more specific phrase",
-        "commit",
-        "list",
-    ),
-    SettingMeta(
-        "commit.ci_gated_patterns",
-        "CI-gated criteria patterns",
-        "Plain, case-insensitive substrings (not regexes) marking an acceptance criterion the merge gate settles "
-        "(required CI checks), so the PR body counts it as met instead of listing it as not done. "
-        "Set an empty list when merges are not gated on CI; owner-only patterns win over these",
-        "commit",
-        "list",
-    ),
-    SettingMeta(
         "commit.pr_body_timeout",
         "PR body timeout (seconds)",
-        "Time budget of the LLM call that writes the PR description and its acceptance-criteria verdicts. "
+        "Time budget of the LLM call that writes the PR description. "
         "A call that times out is retried once with half the diff it first sent (at most half of the diff cap)",
         "commit",
         "number",
@@ -1749,7 +1731,7 @@ _REGISTRY: list[SettingMeta] = [
         "integration.post_merge_state",
         "Post-merge state",
         "State for each issue a merged PR closes with a closing keyword: done (close) or on_qa (add label, keep open). "
-        "A Part of issue stays open with a comment. Jira accepts arbitrary state names.",
+        "Jira accepts arbitrary state names.",
         "integration",
     ),
     # RTK

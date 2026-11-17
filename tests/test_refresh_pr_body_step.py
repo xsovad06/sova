@@ -4,9 +4,12 @@ Confidence Score)."""
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig
@@ -15,6 +18,7 @@ from sova.core.steps.base import StepResult
 from sova.core.steps.create_pr import _title_from_branch
 from sova.core.steps.refresh_pr_body import RefreshPrBodyStep
 from sova.llm.models import LLMResult
+from sova.utils.gh import parse_issue_links
 
 
 def _mock_adapter() -> AsyncMock:
@@ -117,28 +121,23 @@ class TestRefreshPrBodyStepSuccess:
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_refetches_issue_body_for_up_to_date_criteria(
+    async def test_refetches_the_issue_for_the_prompt(
         self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
     ) -> None:
-        """Acceptance criteria may have been edited since create_pr ran; the
-        step must re-fetch the issue rather than trust a stale ctx.task."""
+        """The issue may have been edited since create_pr ran; the step must
+        re-fetch it rather than trust a stale ctx.task."""
         mock_run.side_effect = _git_results(
             "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
         )
         mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- stuff\n\n## Review guidance\n- stuff\n\n## Test plan\n- stuff\n"
-                "<!-- ACCEPTANCE_VERDICTS -->\n- [met] Updated criterion"
-            ),
+            text="## Summary\n- stuff\n\n## Review guidance\n- stuff\n\n## Test plan\n- stuff\n",
             model="sonnet",
             cost_usd=Decimal("0.01"),
         )
         mock_get_body.return_value = "## Summary\nold\n\n## Review guidance\nold\n\n## Test plan\nold\n\nCloses #42\n"
 
         adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(
-            id="42", title="Fix the bug", body="## Acceptance Criteria\n- [ ] Updated criterion\n"
-        )
+        adapter.get_task.return_value = Task(id="42", title="Fix the bug", body="Updated issue body")
         ctx = _make_ctx(tmp_path, adapter=adapter)
         ctx.task = Task(id="42", title="stale cached title", body="stale body with no criteria")
 
@@ -146,46 +145,33 @@ class TestRefreshPrBodyStepSuccess:
 
         assert result.success
         adapter.get_task.assert_awaited_once_with("42")
-        new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Closes #42" in new_body
+        prompt = mock_invoke.call_args[0][0]
+        assert "Updated issue body" in prompt
+        assert "stale body with no criteria" not in prompt
+        assert "Closes #42" in mock_update_body.call_args.kwargs["body"]
 
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_reduced_change_set_flips_closes_to_part_of(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
+    @pytest.mark.parametrize(
+        "section",
+        [
+            "Part of #42\n\nPer-criterion verdicts could not be parsed; every criterion is listed below.\n",
+            "Part of #42\n\nNot done in this PR:\n- B (requires owner/manual action)\n",
+            "Part of #42\n\nNot done in this PR:\n- B (unverified)\n",
+            "Part of #42\n\nNot done in this PR:\n- B\n",
+        ],
+    )
+    async def test_every_pre_change_part_of_shape_is_kept_like_a_hand_written_one(
+        self, section: str, tmp_path: Path
     ) -> None:
-        """An address-review round that *reduces* the change set can turn a
-        previously-met criterion unmet; the refreshed body must flip from
-        Closes to Part of, with no stale Closes reference left behind."""
-        mock_run.side_effect = _git_results(
-            "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
+        """Retired verdict-path output (marked or not) cannot be told from a hand-written body, and "Part of"
+        is inert at merge for both: the refresh leaves the link as it stands."""
+        result, update, _ = await TestRefreshPrBodyStepIssueSectionMismatch._run_step(
+            tmp_path, f"## Summary\nold\n\n## Issue\n\n{section}"
         )
-        mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- stuff\n\n## Review guidance\n- stuff\n\n## Test plan\n- stuff\n"
-                "<!-- ACCEPTANCE_VERDICTS -->\n- [met] A\n- [unmet] B"
-            ),
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_get_body.return_value = "## Summary\nold\n\n## Review guidance\nold\n\n## Test plan\nold\n\nCloses #42\n"
 
-        adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(
-            id="42", title="Fix the bug", body="## Acceptance Criteria\n- [ ] A\n- [ ] B\n"
-        )
-        ctx = _make_ctx(tmp_path, adapter=adapter)
-
-        result = await RefreshPrBodyStep().execute(ctx)
-
-        assert result.success
-        new_body = mock_update_body.call_args.kwargs["body"]
+        new_body = update.call_args.kwargs["body"]
+        assert parse_issue_links(new_body).closes == ()
         assert "Part of #42" in new_body
-        assert "Not done in this PR:" in new_body
-        assert "- B" in new_body
-        assert "Closes #42" not in new_body
+        assert result.summary == "Refreshed PR #99 body (kept existing Part of #42)"
 
     @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
@@ -233,87 +219,39 @@ class TestRefreshPrBodyStepSuccess:
         text inside whatever section happens to be last, not under its own
         heading. Combined with heading-case drift that orphans that old
         section rather than replacing it, the stray keyword must still be
-        removed rather than surviving next to the fresh "Part of #42"."""
+        removed rather than surviving next to the fresh one."""
         mock_run.side_effect = _git_results(
             "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
         )
         mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- new\n\n## Review guidance\n- new\n\n## Test Plan\n- new plan\n"
-                "<!-- ACCEPTANCE_VERDICTS -->\n- [unmet] A"
-            ),
+            text="## Summary\n- new\n\n## Review guidance\n- new\n\n## Test Plan\n- new plan\n",
             model="sonnet",
             cost_usd=Decimal("0.01"),
         )
         mock_get_body.return_value = "## Summary\nold\n\n## Test plan\nold plan\n\nCloses #42\n"
 
-        adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(id="42", title="Fix the bug", body="## Acceptance Criteria\n- [ ] A\n")
-        ctx = _make_ctx(tmp_path, adapter=adapter)
-
-        result = await RefreshPrBodyStep().execute(ctx)
+        result = await RefreshPrBodyStep().execute(_make_ctx(tmp_path))
 
         assert result.success
         new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Closes #42" not in new_body
-        assert new_body.count("Part of #42") == 1
-
-
-class TestRefreshPrBodyStepCiGatedCriteria:
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_ci_gated_criteria_reported_unmet_keep_closes(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
-    ) -> None:
-        """PR #1364's refresh turned a complete PR into "Part of #1354" over the two check criteria."""
-        mock_run.side_effect = _git_results(
-            "abc123 fix: address review\n", " src/app.py | 2 ++\n", "diff --git a/src/app.py\n+change\n"
-        )
-        mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- stuff\n\n## Review guidance\n- stuff\n\n## Test plan\n- stuff\n"
-                "<!-- ACCEPTANCE_VERDICTS -->\n- [met] Fix works\n- [unmet] No new lint warnings (`make lint`)"
-            ),
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_get_body.return_value = "## Summary\nold\n\n## Review guidance\nold\n\n## Test plan\nold\n\nCloses #42\n"
-        adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(
-            id="42",
-            title="Fix the bug",
-            body="## Acceptance Criteria\n- [ ] Fix works\n- [ ] No new lint warnings (`make lint`)\n",
-        )
-
-        result = await RefreshPrBodyStep().execute(_make_ctx(tmp_path, adapter=adapter))
-
-        assert result.success
-        new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Closes #42" in new_body
-        assert "Part of #42" not in new_body
+        assert new_body.count("Closes #42") == 1
 
 
 class TestRefreshPrBodyStepUnresolvedTask:
-    """An unresolvable issue body must never flip an existing "Part of #N"
-    decision back to an unconditional "Closes #N": that is the exact
-    failure this step exists to prevent."""
+    """An unresolvable issue only thins the prompt: the closing section never depends on it."""
 
     @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
     @patch("sova.core.steps.refresh_pr_body.invoke")
     @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_no_cached_task_and_fetch_failure_preserves_existing_decision(
+    async def test_no_cached_task_and_fetch_failure_still_writes_closes(
         self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
     ) -> None:
         mock_run.side_effect = _git_results("abc123 fix: thing\n", " src/app.py | 1 +\n", "diff --git a/x\n")
         mock_invoke.return_value = LLMResult(
             text="## Summary\n- new\n\n## Review guidance\n- new\n\n## Test plan\n- new", model="sonnet"
         )
-        mock_get_body.return_value = (
-            "## Summary\nold\n\n## Test plan\nold\n\n## Issue\n\nPart of #42\n\nNot done in this PR:\n- A\n"
-        )
+        mock_get_body.return_value = "## Summary\nold\n\n## Test plan\nold\n\n## Issue\n\nCloses #42\n"
 
         adapter = _mock_adapter()
         adapter.get_task.side_effect = RuntimeError("gh issue view failed")
@@ -324,41 +262,8 @@ class TestRefreshPrBodyStepUnresolvedTask:
 
         assert result.success
         new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Part of #42" in new_body
-        assert "Closes #42" not in new_body
-
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_fetch_failure_with_cached_task_still_computes_verdicts(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
-    ) -> None:
-        """The cached task fallback still carries acceptance criteria, so the
-        step is "resolved" and computes a fresh decision, rather than being
-        treated the same as a total fetch failure."""
-        mock_run.side_effect = _git_results("abc123 fix: thing\n", " src/app.py | 1 +\n", "diff --git a/x\n")
-        mock_invoke.return_value = LLMResult(
-            text=(
-                "## Summary\n- new\n\n## Review guidance\n- new\n\n## Test plan\n- new\n"
-                "<!-- ACCEPTANCE_VERDICTS -->\n- [unmet] A"
-            ),
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_get_body.return_value = "## Summary\nold\n\n## Test plan\nold\n\n## Issue\n\nCloses #42\n"
-
-        adapter = _mock_adapter()
-        adapter.get_task.side_effect = RuntimeError("gh issue view failed")
-        ctx = _make_ctx(tmp_path, adapter=adapter)
-        ctx.task = Task(id="42", title="Cached title", body="## Acceptance Criteria\n- [ ] A\n")
-
-        result = await RefreshPrBodyStep().execute(ctx)
-
-        assert result.success
-        new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Part of #42" in new_body
-        assert "Closes #42" not in new_body
+        assert new_body.count("Closes #42") == 1
+        assert "- new" in new_body
 
 
 class TestRefreshPrBodyStepGitFailure:
@@ -562,10 +467,9 @@ class TestRefreshPrBodyStepResolveTask:
         ctx = _make_ctx(tmp_path, adapter=adapter)
         ctx.task = Task(id="42", title="Cached title", body="Cached body")
 
-        title, body, resolved = await RefreshPrBodyStep._resolve_task(ctx)
+        title, body = await RefreshPrBodyStep._resolve_task(ctx)
 
         assert (title, body) == ("Cached title", "Cached body")
-        assert resolved is True
 
     async def test_no_task_at_all_falls_back_to_branch_name(self, tmp_path: Path) -> None:
         adapter = _mock_adapter()
@@ -573,11 +477,10 @@ class TestRefreshPrBodyStepResolveTask:
         ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/make-it-work")
         ctx.task = None
 
-        title, body, resolved = await RefreshPrBodyStep._resolve_task(ctx)
+        title, body = await RefreshPrBodyStep._resolve_task(ctx)
 
         assert body == ""
         assert title == _title_from_branch("feat/make-it-work")
-        assert resolved is False
 
 
 class TestRefreshPrBodyStepIssueSectionMismatch:
@@ -587,7 +490,12 @@ class TestRefreshPrBodyStepIssueSectionMismatch:
 
     @staticmethod
     async def _run_step(
-        tmp_path: Path, existing_body: str, *, issue_number: str = "42", **ctx_kwargs
+        tmp_path: Path,
+        existing_body: str,
+        *,
+        issue_number: str = "42",
+        llm_text: str = "## Summary\n- new\n\n## Review guidance\n- new\n\n## Test plan\n- new",
+        **ctx_kwargs,
     ) -> tuple[StepResult, AsyncMock, MagicMock]:
         with (
             patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock) as mock_update_body,
@@ -596,9 +504,7 @@ class TestRefreshPrBodyStepIssueSectionMismatch:
             patch("sova.core.steps.refresh_pr_body.run") as mock_run,
         ):
             mock_run.side_effect = _git_results("abc123 fix: thing\n", " src/app.py | 1 +\n", "diff --git a/x\n")
-            mock_invoke.return_value = LLMResult(
-                text="## Summary\n- new\n\n## Review guidance\n- new\n\n## Test plan\n- new", model="sonnet"
-            )
+            mock_invoke.return_value = LLMResult(text=llm_text, model="sonnet")
             mock_get_body.return_value = existing_body
             ctx = _make_ctx(tmp_path, issue_number=issue_number, **ctx_kwargs)
             result = await RefreshPrBodyStep().execute(ctx)
@@ -640,6 +546,59 @@ class TestRefreshPrBodyStepIssueSectionMismatch:
         assert "Closes #42" in new_body
         assert "Closes #12" not in new_body
         assert result.summary == "Refreshed PR #99 body"
+
+    async def test_part_of_section_for_the_run_issue_is_kept_and_reported(self, tmp_path: Path) -> None:
+        result, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nPart of #42\n")
+
+        new_body = update.call_args.kwargs["body"]
+        assert "Part of #42" in new_body
+        assert "Closes #42" not in new_body
+        assert "- new" in new_body
+        assert result.summary == "Refreshed PR #99 body (kept existing Part of #42)"
+
+    async def test_hand_written_part_of_with_a_plain_not_done_list_is_kept(self, tmp_path: Path) -> None:
+        """/pr used to teach people to write ``Part of #N`` plus a ``Not done in this PR:`` list: the refresh
+        leaves it."""
+        result, update, _ = await self._run_step(
+            tmp_path, "## Summary\nold\n\n## Issue\n\nPart of #42\n\nNot done in this PR:\n- the migration\n"
+        )
+
+        new_body = update.call_args.kwargs["body"]
+        assert parse_issue_links(new_body).closes == ()
+        assert "Part of #42" in new_body
+        assert "- the migration" in new_body
+        assert result.summary == "Refreshed PR #99 body (kept existing Part of #42)"
+
+    async def test_heading_less_part_of_is_kept_too(self, tmp_path: Path) -> None:
+        """parse_issue_links() reads the whole body when there is no ``## Issue`` section, so the guard does too."""
+        result, update, _ = await self._run_step(
+            tmp_path, "Part of #42, the rest follows in a later PR.\n\n## Summary\nold\n"
+        )
+
+        new_body = update.call_args.kwargs["body"]
+        assert "Part of #42" in new_body
+        assert parse_issue_links(new_body).closes == ()
+        assert "Closes #42" not in new_body
+        assert "kept existing Part of #42" in result.summary
+
+    async def test_kept_part_of_neutralizes_a_closing_keyword_in_the_refreshed_prose(self, tmp_path: Path) -> None:
+        """GitHub honors a closing keyword anywhere in the body: refreshed prose must not close the issue."""
+        result, update, _ = await self._run_step(
+            tmp_path,
+            "## Summary\nold\n\n## Issue\n\nPart of #42\n",
+            llm_text="## Summary\n- This PR fixes #42 by rewiring the parser\n\n## Test plan\n- Resolves #42 in tests",
+        )
+
+        new_body = update.call_args.kwargs["body"]
+        # GitHub honors a closing keyword anywhere in the body, not only in the ``## Issue`` section that
+        # parse_issue_links() reads here, so the assertion covers the whole body.
+        assert re.search(r"(?i)\b(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\s*:?\s*#42\b", new_body) is None
+        assert "rewiring the parser" in new_body
+
+    async def test_section_that_also_closes_the_run_issue_is_rewritten(self, tmp_path: Path) -> None:
+        _, update, _ = await self._run_step(tmp_path, "## Summary\nold\n\n## Issue\n\nPart of #42\nCloses #42\n")
+
+        assert "Closes #42" in update.call_args.kwargs["body"]
 
     async def test_jira_only_section_is_not_a_mismatch(self, tmp_path: Path) -> None:
         result, update, _ = await self._run_step(
@@ -684,92 +643,6 @@ class TestRefreshPrBodyStepIssueSectionMismatch:
 
         assert result.summary == "Refreshed PR #99 body"
         update.assert_awaited_once()
-
-
-class TestRefreshPrBodyStepClosingOnly:
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_rewrites_only_the_issue_section(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
-    ) -> None:
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE, VERDICT_MARKER
-
-        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
-        mock_invoke.return_value = LLMResult(
-            text=f"## Summary\n- llm summary\n\n{VERDICT_MARKER}\n- [met] Works",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
-        mock_get_body.return_value = (
-            "## Summary\nhand-edited summary\n\n"
-            f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n\nNot done in this PR:\n- Works (unverified)\n"
-        )
-        adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(id="42", title="Fix", body="## Acceptance Criteria\n- Works\n")
-
-        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
-
-        assert result.success
-        new_body = mock_update_body.call_args.kwargs["body"]
-        assert "hand-edited summary" in new_body
-        assert "llm summary" not in new_body
-        assert "Closes #42" in new_body
-        assert UNPARSEABLE_NOTE not in new_body
-        # Only the verdicts are asked for: no Summary, Review guidance or Test plan is paid for.
-        assert "## Review guidance" not in mock_invoke.call_args.args[0]
-
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_headingless_verdict_only_answer_is_applied(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
-    ) -> None:
-        """The verdict-only prompt asks for no headings: exactly that answer must still update the body."""
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE, VERDICT_MARKER
-
-        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
-        mock_invoke.return_value = LLMResult(
-            text=f"{VERDICT_MARKER}\n- [met] Works", model="sonnet", cost_usd=Decimal("0.01")
-        )
-        mock_get_body.return_value = (
-            "## Summary\nhand-edited summary\n\n"
-            f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n\nNot done in this PR:\n- Works (unverified)\n"
-        )
-        adapter = _mock_adapter()
-        adapter.get_task.return_value = Task(id="42", title="Fix", body="## Acceptance Criteria\n- Works\n")
-
-        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
-
-        assert result.summary == "Refreshed PR #99 body"
-        mock_update_body.assert_awaited_once()
-        new_body = mock_update_body.call_args.kwargs["body"]
-        assert "Closes #42" in new_body
-        assert "hand-edited summary" in new_body
-        assert UNPARSEABLE_NOTE not in new_body
-
-    @patch("sova.core.steps.refresh_pr_body.update_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.get_pr_body", new_callable=AsyncMock)
-    @patch("sova.core.steps.refresh_pr_body.invoke")
-    @patch("sova.core.steps.refresh_pr_body.run")
-    async def test_unresolved_issue_skips_the_call_and_leaves_the_decision(
-        self, mock_run, mock_invoke, mock_get_body, mock_update_body, tmp_path: Path
-    ) -> None:
-        from sova.core.steps._pr_body import UNPARSEABLE_NOTE
-
-        mock_run.side_effect = _git_results("abc fix\n", " a.py | 1 +\n", "+x\n")
-        mock_get_body.return_value = f"## Issue\nPart of #42\n\n{UNPARSEABLE_NOTE}\n"
-        adapter = _mock_adapter()
-        adapter.get_task.side_effect = RuntimeError("tracker down")
-
-        result = await RefreshPrBodyStep(closing_only=True).execute(_make_ctx(tmp_path, adapter=adapter))
-
-        assert result.success
-        assert "issue body unavailable" in result.summary
-        mock_invoke.assert_not_called()
-        mock_update_body.assert_not_awaited()
 
 
 class TestRefreshPrBodyStepNonFatalFailures:
