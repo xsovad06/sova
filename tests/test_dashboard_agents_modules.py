@@ -1226,10 +1226,13 @@ class TestStateDisplayHasOneSource:
         hex_keys = _APP_JS[
             _APP_JS.index("var _STATE_HEX_KEYS") : _APP_JS.index("\n}\n", _APP_JS.index("function stateHex("))
         ]
+        colors = _APP_JS[
+            _APP_JS.index("var _SOVA_COLOR_FALLBACK") : _APP_JS.index("\n}\n", _APP_JS.index("function sovaColor("))
+        ]
         script = (
             f"globalThis.window = globalThis; const vars = {json.dumps(variables)};"
             "\nfunction getCSSVar(name) { return vars[name] || ''; }"
-            f"\n{init}\n}}\n{hex_keys}\n}}\ninitColors();"
+            f"\n{colors}\n}}\n{init}\n}}\n{hex_keys}\n}}\ninitColors();"
             f"\nconsole.log(JSON.stringify({json.dumps(tokens)}.map(stateHex)));"
         )
         proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
@@ -1463,9 +1466,22 @@ class TestStatePayloads:
             assert details["state_color"] == "lavender"
 
 
+# The component helpers (#1053), JS twins of the _components.html macros, plus the color-token accessor.
+_COMPONENT_HELPERS = ("sovaBtn", "badgeHtml", "emptyStateHtml", "statCardHtml", "sovaColor")
+
+
 class TestSharedHelpersHaveOneDefinition:
     @pytest.mark.parametrize(
-        "name", ["escapeHtml", "timeAgo", "setText", "renderSectionError", "statusBadge", "formatCpuPercent"]
+        "name",
+        [
+            "escapeHtml",
+            "timeAgo",
+            "setText",
+            "renderSectionError",
+            "statusBadge",
+            "formatCpuPercent",
+            *_COMPONENT_HELPERS,
+        ],
     )
     def test_defined_once_in_app_js_and_nowhere_else(self, name: str) -> None:
         assert len(re.findall(rf"^function {name}\(", _APP_JS, re.MULTILINE)) == 1
@@ -1485,7 +1501,17 @@ class TestSharedHelpersHaveOneDefinition:
             assert not re.search(r"function\s+esc\b", source), f"{path.name} redefines esc"
 
     @pytest.mark.parametrize(
-        "name", ["esc", "escapeHtml", "timeAgo", "setText", "renderSectionError", "statusBadge", "safeStorageGet"]
+        "name",
+        [
+            "esc",
+            "escapeHtml",
+            "timeAgo",
+            "setText",
+            "renderSectionError",
+            "statusBadge",
+            "safeStorageGet",
+            *_COMPONENT_HELPERS,
+        ],
     )
     def test_no_script_redeclares_an_app_js_global_lexically(self, name: str) -> None:
         """app.js is a classic script, so its top-level names are globals. A `const`/`let`/`class` of the same
@@ -1736,16 +1762,40 @@ class TestSupervisorGraphLegend:
 
     def test_node_renderer_reads_state_colors_from_the_shared_palette(self) -> None:
         """Human, Interactive, Queued and the run-status dots are drawn in colors the legend also shows, so they
-        come from stateHex()/SOVA_COLORS like the legend's. Priority colors and the milestone lane palette are
-        not state colors and keep their literals; a state hex anywhere else fails here."""
+        come from stateHex()/SOVA_COLORS like the legend's. The milestone lane palette is not a state color and
+        keeps its literals; a state hex anywhere else fails here."""
         state_hexes = ("#f38ba8", "#fab387", "#a6e3a1", "#74c7ec")
-        not_state = re.compile(r"^\s*(?:blocker|critical|high|medium|low|undefined):\s*\{ color: |^\s*\{ bg: '#")
+        not_state = re.compile(r"^\s*\{ bg: '#")
         offenders = [
             line.strip()
             for line in self._SOURCE.splitlines()
             if any(h in line.lower() for h in state_hexes) and not not_state.match(line)
         ]
         assert offenders == []
+
+    def test_every_hex_in_the_page_is_a_palette_tint_or_the_blocker_color(self) -> None:
+        """Priority colors, edge strokes and arrow markers read SOVA_COLORS; only the milestone PALETTE bg/border
+        tints and blocker's orange-red (no token outranks critical's red) are literals."""
+        allowed = re.compile(r"^\s*(?:\{ bg: '#|blocker:\s*\{ hex: '#ff5630')")
+        offenders = [
+            line.strip()
+            for line in self._SOURCE.splitlines()
+            if re.search(r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", line)
+            and not allowed.match(line)
+        ]
+        assert offenders == []
+
+    def test_priority_config_edge_strokes_and_markers_read_the_shared_palette(self) -> None:
+        priority = self._SOURCE[self._SOURCE.index("const PRIORITY_CONFIG = {") :]
+        priority = priority[: priority.index("};")]
+        assert [line for line in priority.splitlines() if "colorKey:" in line and "sovaColor" in line] == []
+        assert priority.count("colorKey:") == 5
+        assert "return cfg.hex || sovaColor(cfg.colorKey);" in self._SOURCE
+        edges = re.search(r"const EDGE_COLORS = \{[^}]*\};", self._SOURCE)
+        assert edges
+        assert edges.group().count("sovaColor(") == 4
+        assert "addMarker('arr-" in self._SOURCE
+        assert "marker').attr('id', id)" not in self._SOURCE or "fill', color" in self._SOURCE
 
     def test_pulse_keyframes_use_theme_variables(self) -> None:
         keyframes = self._SOURCE[self._SOURCE.index("@keyframes graph-node-pulse") :]

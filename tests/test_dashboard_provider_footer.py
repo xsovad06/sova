@@ -275,6 +275,7 @@ class TestFooterStyles:
     def test_app_js_feeds_each_hovered_sidebar_element_its_tooltip_position(self) -> None:
         body = _APP_JS[_APP_JS.index("function initSidebarTooltips()") : _APP_JS.index("function toggleSidebar()")]
         assert "addEventListener('mouseover'" in body
+        assert "addEventListener('focusin'" in body  # the tooltip also shows on keyboard focus
         assert "getBoundingClientRect()" in body
         assert "setProperty('--sidebar-tip-y'" in body
         assert re.search(r"^initSidebarTooltips\(\);$", _APP_JS, re.MULTILINE)
