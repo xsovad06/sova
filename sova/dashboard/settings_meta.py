@@ -187,6 +187,14 @@ _REGISTRY: list[SettingMeta] = [
         "Full CI-equivalent command (e.g. make check). If empty, commands fall back to lint_cmd + test_cmd",
         "project",
     ),
+    SettingMeta(
+        "fast_check_cmd",
+        "Fast check command",
+        "Quicker check the develop, simplify and review commands run instead of the full check, which the "
+        "pipeline runs once in the develop step (e.g. make ci-fast). Set it to get that single full run: "
+        "if empty, they run the check command (or lint + test when that is empty too)",
+        "project",
+    ),
     SettingMeta("persona_map", "Persona map", "Path to a custom persona mapping file", "project"),
     SettingMeta("invariants_dir", "Invariants dir", "Directory containing invariant check scripts", "project"),
     SettingMeta(

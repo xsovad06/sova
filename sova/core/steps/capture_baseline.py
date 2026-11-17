@@ -10,13 +10,32 @@ Non-fatal: a failed capture does not block the pipeline.
 
 from __future__ import annotations
 
-from sova.core.check_cache import clear_marker
+from pathlib import Path
+
+from sova.core.check_cache import clear_marker, seed_outputs, snapshot_untracked
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.test_baseline import baseline_path, run_test_suite, save_baseline
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.capture_baseline")
+
+
+async def _snapshot_untracked(worktree: Path) -> set[str] | None:
+    """The untracked paths before the baseline run, or None when they cannot be read (advisory)."""
+    try:
+        return await snapshot_untracked(worktree)
+    except Exception:  # noqa: BLE001 (the snapshot is advisory; without it nothing is seeded)
+        log.warning("step.capture_baseline.snapshot_failed", exc_info=True)
+        return None
+
+
+async def _seed_outputs(worktree: Path, pre_untracked: set[str] | None) -> None:
+    """Note the baseline run's untracked outputs for the check cache (advisory)."""
+    try:
+        await seed_outputs(worktree, pre_untracked)
+    except Exception:  # noqa: BLE001 (seeding is advisory; a baseline run's outputs only cost a later reuse)
+        log.warning("step.capture_baseline.seed_failed", exc_info=True)
 
 
 class CaptureBaselineStep(BaseStep):
@@ -41,12 +60,14 @@ class CaptureBaselineStep(BaseStep):
             return StepResult(success=True, summary="No test command configured, skipping baseline")
 
         try:
+            pre_untracked = await _snapshot_untracked(ctx.worktree_dir)
             snapshot = await run_test_suite(
                 test_cmd=test_cmd,
                 cwd=ctx.worktree_dir,
                 cmd_timeout=ctx.config.testing.baseline_timeout,
                 config=ctx.config,
             )
+            await _seed_outputs(ctx.worktree_dir, pre_untracked)
             path = save_baseline(snapshot, ctx.worktree_dir)
             ctx.test_baseline_path = path
 

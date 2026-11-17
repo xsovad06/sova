@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -36,6 +36,13 @@ class MockLLMResult:
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+@pytest.fixture(autouse=True)
+def _no_untracked_snapshot():
+    """The loop's pre-check snapshot runs real git, whose asyncio subprocess reads the clock these tests script."""
+    with patch("sova.core.steps.develop.snapshot_untracked", AsyncMock(return_value=None)):
+        yield
 
 
 @pytest.fixture
