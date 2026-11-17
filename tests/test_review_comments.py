@@ -5,14 +5,18 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
+import pytest
+
 from sova.adapters.base import Task
 from sova.roles._review_comments import (
     ReviewFinding,
     ReviewResult,
+    _build_criteria_prompt,
     _build_review_comments,
     _build_review_prompt,
     _chunk_diff,
     _compact_spec_ref,
+    _diff_file_excerpts,
     _extract_issue_criteria_block,
     _extract_json,
     _extract_spec_sections,
@@ -706,6 +710,93 @@ class TestBuildReviewPrompt:
         prompt = _build_review_prompt(_task(body=body), "diff", ["f.py"])
         assert "Issue Description" not in prompt
         assert "issue_description" not in prompt
+
+    @pytest.mark.parametrize(("spec", "number"), [(None, 9), ({"Solution": "X"}, 10)])
+    def test_unmet_acceptance_criterion_is_a_blocking_finding(self, spec: dict | None, number: int) -> None:
+        """#1418: every PR closes its issue, so the pipeline reviewer must block on an unmet criterion."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        prompt = _build_review_prompt(
+            _task(body=body), "diff", ["f.py"], spec_sections=spec, revise_at=4, whole_diff=True
+        )
+        assert f"{number}. **Acceptance criteria** (4 to 6)" in prompt
+
+    def test_acceptance_item_tells_address_review_to_escalate_owner_only_criteria(self) -> None:
+        """An owner-only or manual criterion cannot be fixed by the address-review agent, so it must not block."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        prompt = _build_review_prompt(_task(body=body), "diff", ["f.py"], revise_at=4, whole_diff=True)
+        assert "owner-only, manual or interactive" in prompt
+        assert "severity 3 or below" in prompt
+        assert "escalate it to the issue owner, not retry it" in prompt
+
+    def test_extra_checklist_items_continue_the_base_numbering_without_duplicates(self) -> None:
+        """Spec alignment and the acceptance item are numbered from the base list's last item, once each."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        prompt = _build_review_prompt(
+            _task(body=body), "diff", ["f.py"], spec_sections={"Solution": "X"}, revise_at=4, whole_diff=True
+        )
+        numbers = re.findall(r"^(\d+)\. \*\*", prompt.split("## Review Checklist")[1], re.MULTILINE)
+        assert numbers == [str(n) for n in range(1, 11)]
+
+    def test_base_checklist_has_eight_items(self) -> None:
+        """Guards the constant the extra items are numbered from."""
+        prompt = _build_review_prompt(_task(body="No criteria."), "diff", ["f.py"])
+        numbers = re.findall(r"^(\d+)\. \*\*", prompt.split("## Review Checklist")[1], re.MULTILINE)
+        assert numbers == [str(n) for n in range(1, 9)]
+
+    def test_owner_only_criterion_records_no_finding_when_revise_severity_is_one(self) -> None:
+        """Severity 1 already blocks, so there is no non-blocking severity to record a needs-owner criterion at."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        prompt = _build_review_prompt(_task(body=body), "diff", ["f.py"], revise_at=1, whole_diff=True)
+        assert "record no finding for it" in prompt
+        assert "severity 0 or below" not in prompt
+        assert "severity 1 or below" not in prompt
+
+    def test_acceptance_check_is_opt_in(self) -> None:
+        """A caller that passes a partial or incremental diff must not get unmet-criterion findings by default."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        assert "**Acceptance criteria**" not in _build_review_prompt(_task(body=body), "diff", ["f.py"])
+
+    def test_no_acceptance_checklist_item_for_one_chunk_of_a_split_diff(self) -> None:
+        """A chunk cannot see a criterion met in another chunk, so it must not report it unmet."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        prompt = _build_review_prompt(_task(body=body), "diff", ["f.py"], whole_diff=False)
+        assert "**Acceptance criteria**" not in prompt
+        assert "Does the thing." in prompt
+
+    def test_criteria_prompt_carries_criteria_files_and_chunk_notes(self) -> None:
+        """A split diff is checked by one criteria-only prompt over what each chunk reported."""
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        notes = [
+            ("Chunk one is fine.", []),
+            ("Chunk two is risky.", [ReviewFinding(file="b.py", severity=6, category="bug", description="Off by one")]),
+        ]
+        prompt = _build_criteria_prompt(_task(body=body), ["a.py", "b.py"], notes, revise_at=4)
+
+        assert "Does the thing." in prompt
+        assert "- a.py" in prompt and "- b.py" in prompt
+        assert "Chunk two is risky." in prompt
+        assert "b.py: Off by one" in prompt
+        assert "1. **Acceptance criteria** (4 to 6)" in prompt
+        assert "escalate it to the issue owner, not retry it" in prompt
+
+    def test_criteria_prompt_carries_the_head_of_each_files_patch(self) -> None:
+        body = "## Acceptance Criteria\n\n- [ ] Does the thing.\n"
+        excerpts = _diff_file_excerpts(["diff --git a/a.py b/a.py\n+alpha\ndiff --git a/b.py b/b.py\n+beta\n"])
+        prompt = _build_criteria_prompt(_task(body=body), ["a.py", "b.py"], [("ok", [])], file_excerpts=excerpts)
+        assert "+alpha" in prompt and "+beta" in prompt
+
+    def test_diff_file_excerpts_caps_each_file_and_the_total(self) -> None:
+        chunk = "diff --git a/a.py b/a.py\n" + "+" * 5000 + "\ndiff --git a/b.py b/b.py\n+b\n"
+        capped = _diff_file_excerpts([chunk], per_file=100, total=1000)
+        assert "[... patch truncated ...]" in capped
+        assert "diff --git a/b.py b/b.py" in capped
+        omitted = _diff_file_excerpts([chunk], per_file=100, total=120)
+        assert "remaining files omitted" in omitted
+
+    def test_no_acceptance_checklist_item_without_criteria(self) -> None:
+        body = "## Out of Scope\n\n- Not this.\n"
+        prompt = _build_review_prompt(_task(body=body), "diff", ["f.py"])
+        assert "**Acceptance criteria**" not in prompt
 
     def test_no_issue_criteria_block_when_body_has_no_matching_sections(self) -> None:
         prompt = _build_review_prompt(_task(body="Just prose, no headings."), "diff", ["f.py"])
