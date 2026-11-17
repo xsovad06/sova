@@ -638,3 +638,97 @@ class TestDependencyOrder:
         graph = DependencyGraph(tasks)
 
         assert board._dependency_order({1, 2, 3}, graph) == [1, 2, 3]
+
+
+class TestStartAction:
+    async def test_each_entry_carries_the_run_its_stage_calls_for(self) -> None:
+        """Start on a triaged card runs the researcher, not a developer its Gate 3 would refuse (#1418)."""
+        items = [_item(1, "triaged"), _item(2, "researched"), _item(3, "triaged", run_status="failed")]
+        tasks = [_task(1, state=TaskState.TRIAGED), _task(2), _task(3, state=TaskState.TRIAGED)]
+        with _sources(items=items, tasks=tasks):
+            result = await board.build_board(PROJECT)
+
+        roles = {e["number"]: (e["start"] or {}).get("handler_args", {}).get("role") for e in result["up_next"]}
+        assert roles == {1: "researcher", 2: "developer"}
+        failed = result["needs"][0]
+        assert failed["number"] == 3
+        assert failed["start"]["handler_args"]["role"] == "researcher"
+
+    async def test_an_entry_with_a_pr_has_no_start(self) -> None:
+        items = [_item(4, "pr_ci_running", pr_number=40)]
+        with _sources(items=items, tasks=[_task(4)]):
+            result = await board.build_board(PROJECT)
+
+        assert result["review"][0]["start"] is None
+
+
+class TestSearchIssues:
+    @staticmethod
+    def _graph_tasks() -> list[Task]:
+        tasks = [_task(n) for n in (14, 141, 1418, 1500)]
+        tasks[2] = Task(
+            id="1418",
+            title="Close the issue with every PR",
+            state=TaskState.TRIAGED,
+            labels=["agent:triaged"],
+            priority=Priority.from_labels([]),
+            url="https://example.test/1418",
+        )
+        tasks.append(_task(1419, state=TaskState.DONE))
+        return tasks
+
+    async def _search(self, query: str, limit: int = board.SEARCH_LIMIT) -> dict:
+        with _sources(tasks=self._graph_tasks()):
+            return await board.search_issues(PROJECT, query, limit)
+
+    async def test_a_number_matches_that_issue_first_then_the_numbers_it_starts(self) -> None:
+        result = await self._search("#14")
+
+        assert _numbers(result["results"]) == [14, 1418, 141], "the exact number, then the rest newest first"
+
+    async def test_words_match_titles_ignoring_case_and_skip_closed_issues(self) -> None:
+        result = await self._search("close EVERY")
+
+        assert _numbers(result["results"]) == [1418]
+        entry = result["results"][0]
+        assert entry["state"] == "triaged"
+        assert entry["start"]["handler_args"]["role"] == "researcher"
+        assert entry["actions"] == [entry["start"]]
+        assert "stage" not in entry, "the state alone cannot place an issue the way the board does"
+        assert entry["depends_on"] == []
+        assert entry["dependents"] == []
+
+    @pytest.mark.parametrize(
+        "labels",
+        [("type: epic",), ("agent:human-only",)],
+        ids=["epic", "human"],
+    )
+    async def test_an_epic_or_human_issue_has_no_start_even_in_a_state_that_would_offer_one(
+        self, labels: tuple[str, ...]
+    ) -> None:
+        """The issues a search uniquely surfaces are the ones the board leaves out: the drawer must not offer
+        Research or Develop on them, as the board offers none."""
+        tasks = [_task(1500, state=TaskState.TRIAGED, labels=labels), _task(1501, state=TaskState.TRIAGED)]
+        with _sources(tasks=tasks):
+            result = await board.search_issues(PROJECT, "Issue")
+
+        by_number = {entry["number"]: entry for entry in result["results"]}
+        assert by_number[1500]["start"] is None
+        assert by_number[1500]["actions"] == []
+        assert by_number[1501]["start"] is not None, "a plain triaged issue still offers its stage's run"
+
+    async def test_a_closed_issue_never_matches(self) -> None:
+        assert (await self._search("1419"))["results"] == []
+
+    async def test_the_limit_counts_what_it_leaves_out(self) -> None:
+        result = await self._search("Issue", limit=2)
+
+        assert _numbers(result["results"]) == [1500, 1418], "every title holding the word, newest first"
+        assert result["more"] == 2
+
+    async def test_an_empty_query_reads_nothing(self) -> None:
+        with _sources(tasks=self._graph_tasks()) as sources:
+            result = await board.search_issues(PROJECT, "  # ")
+
+        assert result == {"results": [], "more": 0}
+        sources.loaded.assert_not_awaited()

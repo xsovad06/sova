@@ -31,6 +31,10 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
         # 2. running outranks review, needs and yours
         ({"state": "agent_running", "mode": "epic", "run_status": "failed", "queued": True}, "running"),
         ({"state": "in_progress"}, "running"),
+        ({"state": "in_progress", "run_status": "done"}, "running"),
+        # an in-progress issue whose latest run failed has no agent: it needs the user (Resume), not Running
+        ({"state": "in_progress", "run_status": "failed"}, "needs"),
+        ({"state": "agent_running", "run_status": "failed"}, "running"),
         # 3. review outranks a failed run and the queue
         ({"state": "pr_ci_failed", "run_status": "failed", "queued": True}, "review"),
         ({"state": "in_review", "mode": "unclassified"}, "review"),
@@ -67,3 +71,34 @@ def test_precedence(kwargs: dict, expected: str) -> None:
 
 def test_stage_order_is_the_board_column_order() -> None:
     assert [s.value for s in WorkStage] == ["next", "queued", "running", "review", "needs", "yours", "blocked", "done"]
+
+
+class TestStartAction:
+    """start_action(): the run a card's Start button launches is the one the issue's stage calls for (#1418)."""
+
+    @pytest.mark.parametrize(
+        ("state", "role", "label"),
+        [
+            ("backlog", "triage", "Triage"),
+            ("triaged", "researcher", "Research"),
+            ("researched", "developer", "Develop"),
+            ("in_progress", "developer", "Resume"),
+        ],
+    )
+    def test_a_pre_pr_state_starts_the_agent_its_stage_needs(self, state: str, role: str, label: str) -> None:
+        from sova.dashboard.services.work_state import start_action
+
+        action = start_action(state, 1418)
+
+        assert action is not None
+        assert action["handler"] == "start_agent"
+        assert action["handler_args"] == {"role": role, "issue": "1418"}
+        assert action["label"] == label
+
+    @pytest.mark.parametrize(
+        "state", ["needs_spec", "human_only", "done", "agent_running", "pr_ci_running", "pr_ready_to_merge", "", "?"]
+    )
+    def test_no_run_starts_from_a_parked_pr_or_unknown_state(self, state: str) -> None:
+        from sova.dashboard.services.work_state import start_action
+
+        assert start_action(state, 7) is None

@@ -58,7 +58,17 @@
   </div>
 </section>
 <p id="work-board-error" class="hidden text-xs text-accent-yellow mb-2" role="status"></p>
-<p class="text-xs text-gray-500 mb-2">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card.</p>
+<div class="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
+  <!-- Find any open issue, on the board or not, and open its details (static/js/pages/work/search.js) -->
+  <div id="work-search" class="sova-work-search">
+    {{ icon("search", "w-4 h-4") }}
+    <input id="work-search-input" type="search" class="sova-input" autocomplete="off" spellcheck="false"
+           placeholder="Find any open issue by number or title" aria-label="Find any open issue by number or title"
+           role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="work-search-results">
+    <div id="work-search-results" class="sova-work-search-results" role="listbox" aria-label="Matching issues" hidden></div>
+  </div>
+  <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, or anywhere outside the details, to close them.</p>
+</div>
 
 <!-- Board: columns, labels and colors come from GET /api/work/board (static/js/pages/work/board.js) -->
 <div id="work-board" class="sova-work-board mb-6" aria-label="Work board">
@@ -287,6 +297,7 @@ import { init as initSelection } from '/static/js/pages/work/selection.js';
 import { init as initBoard } from '/static/js/pages/work/board.js';
 import { init as initChains } from '/static/js/pages/work/chains.js';
 import { init as initDrawer } from '/static/js/pages/work/drawer.js';
+import { init as initSearch } from '/static/js/pages/work/search.js';
 import { init as initWorkActions } from '/static/js/pages/work/actions.js';
 
 // Each init runs on its own: one module throwing (an id renamed in this template, a restricted browser
@@ -305,6 +316,7 @@ import { init as initWorkActions } from '/static/js/pages/work/actions.js';
   ['work-actions', initWorkActions],
   ['chains', initChains],
   ['drawer', initDrawer],
+  ['search', initSearch],
   ['board', initBoard],
 ].forEach(([name, init]) => {
   try {

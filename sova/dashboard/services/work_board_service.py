@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.adapters.base import TaskState
+from sova.adapters.base import Task, TaskState
 from sova.config.db_loader import load_hidden_issues, load_task_queue, remove_from_task_queue
 from sova.dashboard.services.work_item_service import (
     _parse_issue_number,
@@ -31,6 +31,7 @@ from sova.dashboard.services.work_state import (
     WorkStage,
     stage_color,
     stage_label,
+    start_action,
     state_color,
     state_label,
     work_stage,
@@ -38,7 +39,7 @@ from sova.dashboard.services.work_state import (
 from sova.git.pr import list_merged_prs_since
 from sova.supervisor.labels import is_epic
 from sova.supervisor.queue_maintenance import prune_closed
-from sova.supervisor.suitability import unblock_count, unsatisfied_dependencies
+from sova.supervisor.suitability import assess_suitability, unblock_count, unsatisfied_dependencies
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -79,6 +80,7 @@ def _issue_entry(
         "state_label": state_label(state) if state else "",
         "state_color": state_color(state) if state else "",
         "priority": priority,
+        "start": start_action(state, number),
     }
 
 
@@ -709,6 +711,70 @@ def _apply_done_precedence(board: _Classified, done_today: list[dict] | None) ->
     for issue in merged:
         if issue in board.stage_of:
             board.stage_of[issue] = WorkStage.DONE
+
+
+SEARCH_LIMIT = 20
+
+# Suitability modes of an issue no agent is meant to start: the board offers it no start action either.
+_NO_START_MODES = frozenset({"epic", "human"})
+
+
+def _search_matches(number: int, title: str, query: str, words: list[str]) -> int | None:
+    """How well an issue matches: 0 for its exact number, 1 for a number it starts with, 2 for a title holding
+    every word; None when it does not match."""
+    if query.isdigit():
+        if str(number) == query:
+            return 0
+        return 1 if str(number).startswith(query) else None
+    lowered = title.lower()
+    return 2 if all(word in lowered for word in words) else None
+
+
+async def search_issues(project_dir: Path | None, query: str, limit: int = SEARCH_LIMIT) -> dict:
+    """Open issues matching *query*, on the board or not: ``{"results": [entry, ...], "more": int}``.
+
+    A number (``1418`` or ``#1418``) matches that issue first, then the issues whose number starts with it; words
+    match the issues whose title holds every one, ignoring case. Newest first within each kind of match. Each entry
+    has the board entry's fields except ``stage`` (``start`` included, so the drawer can offer the run the issue's
+    state calls for, and ``None`` for an epic or human issue, as on the board), plus its relations and
+    milestone. Reads the dependency graph the board uses, which lists every open issue, so a search makes no
+    tracker call of its own; a graph failure raises, like the board's.
+    """
+    q = query.strip().lstrip("#").strip()
+    if not q:
+        return {"results": [], "more": 0}
+    words = q.lower().split()
+    graph = await load_ranking_graph(project_dir)
+    scored: list[tuple[int, int, Task]] = []
+    for number in graph.nodes:
+        task = graph.get_task(number)
+        if task is None or task.state is TaskState.DONE:
+            continue
+        score = _search_matches(number, task.title, q, words)
+        if score is not None:
+            scored.append((score, number, task))
+    scored.sort(key=lambda match: (match[0], -match[1]))
+    open_nodes = _open_chain_nodes(graph)
+    results = []
+    for _, number, task in scored[:limit]:
+        state = task.state.value
+        entry = _issue_entry(
+            number,
+            title=task.title,
+            url=task.url,
+            stage=work_stage(state),
+            state=state,
+            priority=task.priority.value,
+        )
+        # The state alone cannot place an issue the way the board does (queue, hidden list, suitability mode and
+        # run status all count), so a search result carries no stage: the board's own columns are the authority.
+        entry.pop("stage", None)
+        if assess_suitability(task, graph).mode.value in _NO_START_MODES:
+            entry["start"] = None
+        entry["actions"] = [entry["start"]] if entry["start"] else []
+        entry.update(_relations(number, graph, open_nodes))
+        results.append(entry)
+    return {"results": results, "more": max(0, len(scored) - limit)}
 
 
 async def build_board(project_dir: Path | None, milestone: str = "", *, now: datetime | None = None) -> dict:

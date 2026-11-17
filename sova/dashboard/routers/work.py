@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path as PathType
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query
 
 from sova.config.context import get_project_dir
 from sova.config.db_loader import set_issue_hidden
@@ -111,9 +111,31 @@ async def get_board(milestone: str = "") -> dict:
     except GraphConfigError:
         log.error("work.board_config_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
-    except Exception:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 500)
+    except Exception:  # noqa: BLE001 (HTTP boundary, any internal failure becomes a 500)
         log.error("work.board_failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to build the board")
+
+
+@router.get(
+    "/work/search",
+    responses={
+        500: {"description": "Failed to search the issues"},
+        503: {"description": "Project configuration unavailable"},
+    },
+)
+async def search_issues(q: Annotated[str, Query(max_length=200)] = "") -> dict:
+    """Open issues matching ``q`` (a number or words of the title), on the board or not, newest first.
+
+    Declared before ``/work/{run_id}`` so ``search`` is not parsed as a run id.
+    """
+    try:
+        return await work_board_service.search_issues(get_project_dir(), q)
+    except GraphConfigError:
+        log.error("work.search_config_unavailable", exc_info=True)
+        raise HTTPException(status_code=503, detail="Project configuration unavailable")
+    except Exception:  # noqa: BLE001 (HTTP boundary, any internal failure becomes a 500)
+        log.error("work.search_failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to search the issues")
 
 
 @router.post("/work/hidden/{number}", responses={503: {"description": "Failed to save hidden issues"}})

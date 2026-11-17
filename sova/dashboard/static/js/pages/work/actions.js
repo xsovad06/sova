@@ -1,7 +1,7 @@
 import { registerActions } from '../agents/actions.js';
 import { openLog } from '../agents/log-viewer.js';
 import { loadBoard, setDragging, toggleGroup, toggleHidden } from './board.js';
-import { select } from './selection.js';
+import { isSelected, select } from './selection.js';
 
 // Every button on the Work board, and the drag from Up next into Queued or onto Running.
 //
@@ -50,12 +50,15 @@ export async function queueIssue(issue) {
   return { position: queue.indexOf(Number(issue)) + 1, length: queue.length };
 }
 
-// Start a developer agent on an issue. With no free slot the server refuses with code no_free_slot, and the
-// issue is queued instead; the returned message says which happened.
-export async function startOrQueue(issue) {
+// Start the agent an issue's stage calls for: `role` is its board entry's `start` action's role (the server's
+// work_state.start_action()), so a triaged issue gets the researcher and a researched one the developer. With no
+// free slot the server refuses with code no_free_slot, and the issue is queued instead; the returned message
+// says which happened.
+export async function startOrQueue(issue, role) {
+  if (!role) throw new Error('No agent runs on #' + issue + ' in its current state');
   try {
-    await _send('POST', '/agents/start', { issue: String(issue), role: 'developer' }, 'Could not start #' + issue);
-    return 'Started a developer agent on #' + issue;
+    await _send('POST', '/agents/start', { issue: String(issue), role: role }, 'Could not start #' + issue);
+    return 'Started the ' + role + ' agent on #' + issue;
   } catch (e) {
     if (e.code !== _NO_FREE_SLOT) throw e;
     var queued = await queueIssue(issue);
@@ -64,8 +67,8 @@ export async function startOrQueue(issue) {
   }
 }
 
-function _start(issue) {
-  return _track(issue, 'Starting', function() { return startOrQueue(issue); });
+function _start(issue, role) {
+  return _track(issue, 'Starting', function() { return startOrQueue(issue, role); });
 }
 
 function _queue(issue) {
@@ -123,10 +126,11 @@ function _runCommand(issue, command, args) {
   }, args.pr);
 }
 
-function _integrate(issue, prNumber) {
+// A command on the card's PR (/integrate-pr, /address-pr), with its issue when it has one.
+function _prCommand(issue, prNumber, command) {
   var args = { pr: Number(prNumber) };
   if (issue != null) args.issue = String(issue);
-  return _runCommand(issue, 'integrate-pr', args);
+  return _runCommand(issue, command, args);
 }
 
 // One of the work item's own actions (the board entry's `actions`, from work_state on the server): its
@@ -188,12 +192,17 @@ function _clearDropMarks() {
   document.querySelectorAll('.sova-work-col-drop').forEach(function(c) { c.classList.remove('sova-work-col-drop'); });
 }
 
+// The dragged card's Start role (its data-start-role) travels in the drag's own data under this type, so a drop
+// that did not start from a card (text dragged in from another window) carries none and starts nothing.
+var _DRAG_ROLE_TYPE = 'application/x-sova-start-role';
+
 function _initDrag(host) {
   host.addEventListener('dragstart', function(e) {
     var card = e.target.closest && e.target.closest('[data-drag-issue]');
     if (!card) return;
     setDragging(true);
     e.dataTransfer.setData('text/plain', card.getAttribute('data-drag-issue'));
+    e.dataTransfer.setData(_DRAG_ROLE_TYPE, card.getAttribute('data-start-role') || '');
     e.dataTransfer.effectAllowed = 'move';
   });
   host.addEventListener('dragend', function() {
@@ -223,21 +232,29 @@ function _initDrag(host) {
     var issue = Number(e.dataTransfer.getData('text/plain'));
     if (!issue) return;
     if (col.getAttribute('data-drop') === 'queued') _queue(issue);
-    else if (col.getAttribute('data-drop') === 'running') _start(issue);
+    else if (col.getAttribute('data-drop') === 'running') {
+      // Only a drag a card of this page began carries the role type (empty when its stage runs no agent, which
+      // _start() then reports on the card); any other drop is ignored.
+      if (Array.from(e.dataTransfer.types || []).indexOf(_DRAG_ROLE_TYPE) !== -1) {
+        _start(issue, e.dataTransfer.getData(_DRAG_ROLE_TYPE));
+      }
+    }
   });
 }
 
 export function init() {
   registerActions({
-    'work-select': function(el, e, issue) { select(issue); },
-    'work-start': function(el, e, issue) { _start(issue); },
+    // A second click on the selected card closes its details, as a click outside them does.
+    'work-select': function(el, e, key) { select(isSelected(key) ? null : key); },
+    'work-start': function(el, e, issue, role) { _start(issue, role); },
     'work-queue': function(el, e, issue) { _queue(issue); },
     'work-unqueue': function(el, e, issue) { _unqueue(issue); },
     'work-queue-move': function(el, e, issue, delta) { _moveInQueue(issue, delta); },
     'work-stop': function(el, e, runId, issue, pr) { _stop(runId, issue, pr); },
     'work-view-log': function(el, e, runId, status) { openLog(runId, status); },
     'work-review': function(el, e, issue, prNumber) { _startRole(issue, 'reviewer', prNumber, 'Starting the review'); },
-    'work-integrate': function(el, e, issue, prNumber) { _integrate(issue, prNumber); },
+    'work-integrate': function(el, e, issue, prNumber) { _prCommand(issue, prNumber, 'integrate-pr'); },
+    'work-address': function(el, e, issue, prNumber) { _prCommand(issue, prNumber, 'address-pr'); },
     'work-run-action': function(el, e, issue, action) { _runServerAction(issue, action); },
     'work-approve': function(el, e, runId, issue) { _approve(runId, issue); },
     'work-retry': function(el, e, issue, role, prNumber) { _startRole(issue, role, prNumber, 'Retrying'); },

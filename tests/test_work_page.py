@@ -416,21 +416,345 @@ if (scenario === 'start-no-slot') {
     }],
     'POST /api/supervisor/queue': [201, { queue: [5, 42] }],
   };
-  out.message = await actions.startOrQueue(42);
+  out.message = await actions.startOrQueue(42, 'developer');
   out.requests = requests.map(r => r.key);
   out.queued = requests.find(r => r.key === 'POST /api/supervisor/queue').body;
 
   routes['POST /api/agents/start'] = [200, { run_id: 9 }];
   requests.length = 0;
-  out.startedMessage = await actions.startOrQueue(43);
+  out.startedMessage = await actions.startOrQueue(43, 'developer');
   out.startedRequests = requests.map(r => r.key);
 
   routes['POST /api/agents/start'] = [409, {
     detail: { code: 'suitability_blocked', message: 'Epic: not for an agent' },
   }];
   requests.length = 0;
-  try { await actions.startOrQueue(44); out.otherError = null; } catch (e) { out.otherError = e.message; }
+  try { await actions.startOrQueue(44, 'developer'); out.otherError = null; } catch (e) { out.otherError = e.message; }
   out.otherRequests = requests.map(r => r.key);
+
+  // A developer start refused for the issue's state is not a full pool: queueing it would reproduce #1418
+  // through the supervisor, so it is reported (naming the agent the issue needs) and never queued.
+  routes['POST /api/agents/start'] = [409, {
+    detail: {
+      code: 'state_not_ready', state: 'triaged', next_role: 'researcher',
+      message: 'Issue #45 is triaged, not ready for development. '
+        + 'It has no research or spec yet: run the researcher first.',
+    },
+  }];
+  requests.length = 0;
+  try {
+    await actions.startOrQueue(45, 'developer');
+    out.notReadyError = null;
+  } catch (e) { out.notReadyError = e.message; }
+  out.notReadyRequests = requests.map(r => r.key);
+} else if (scenario === 'card-start') {
+  document.getElementById = () => null;  // no icon template: buttons render their labels alone
+  const board = await work('board');
+  const start = (role, label) => ({ id: label.toLowerCase(), label, style: 'primary', handler: 'start_agent',
+    handler_args: { role, issue: '1418' } });
+  const research = start('researcher', 'Research');
+  const develop = start('developer', 'Develop');
+  out.nextTriaged = board.cardParts({ number: 1418, rank: 1, start: research }, 'next');
+  out.nextNoStart = board.cardParts({ number: 7, rank: 2, start: null }, 'next');
+  out.queuedResearched = board.cardParts({ number: 1418, start: develop }, 'queued');
+  const failed = (next) => ({ number: 1418, kind: 'failed_run', role: 'developer', run_id: 5, start: next });
+  out.failedRefused = board.cardParts(failed(research), 'needs');
+  out.failedSame = board.cardParts(failed(develop), 'needs');
+  const stale = { number: 1029, kind: 'stale_label', reason: 'PR no longer open, issue still labeled in review' };
+  out.longReason = board.cardParts(stale, 'needs').body;
+} else if (scenario === 'pr-card') {
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-drawer': { innerHTML: '', hidden: true, querySelector: () => null },
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  const command = (name) => ({
+    id: name, label: name, style: 'neutral', handler: 'run_command', handler_args: { command: name, pr: 1495 },
+  });
+  const prEntry = {
+    number: null, pr_number: 1495, title: 'A PR with no issue',
+    state: 'pr_sova_changes', state_label: 'Changes Requested',
+    pr: {
+      number: 1495, url: 'https://github.com/o/r/pull/1495', ci_state: 'passed', threads_total: 8, threads_resolved: 2,
+    },
+    actions: [command('review-pr'), command('address-pr')],
+  };
+  routes = { 'GET /api/work/board': [200, {
+    columns: [{ stage: 'review', label: 'In review', color: 'purple', entries: 'review', column: 'review' }],
+    review: [prEntry], chains: [], hidden: [],
+  }] };
+  const selection = await work('selection');
+  const board = await work('board');
+  const drawer = await work('drawer');
+  drawer.init();
+  await board.loadBoard();
+  out.boardHtml = els['work-board'].innerHTML;
+  out.key = selection.selectionKey(prEntry);
+  selection.select(out.key);
+  out.selected = selection.getSelected();
+  out.drawerHidden = els['work-drawer'].hidden;
+  out.drawerHtml = els['work-drawer'].innerHTML;
+  out.selectedAgain = selection.isSelected('pr:1495');
+  const parts = board.cardParts(prEntry, 'review');
+  out.reviewButtons = parts.buttons;
+  out.reviewCovers = parts.covers;
+  const issueCard = (pr) => ({ number: 7, pr_number: 70, pr: Object.assign({ number: 70 }, pr), actions: [] });
+  out.fallbackButtons = board.cardParts(issueCard({ threads_total: 3, threads_resolved: 1 }), 'review').buttons;
+  const resolved = board.cardParts(issueCard({ threads_total: 3, threads_resolved: 3 }), 'review');
+  out.resolvedButtons = resolved.buttons;
+  out.resolvedCovers = resolved.covers;
+  out.noThreadsButtons = board.cardParts(issueCard({ threads_total: 0, threads_resolved: 0 }), 'review').buttons;
+  // A PR title is the tracker's text: the PR-only drawer header must escape it.
+  const hostile = Object.assign({}, prEntry, { pr_number: 1496, title: '<img src=x onerror=alert(1)>',
+    pr: Object.assign({}, prEntry.pr, { number: 1496, url: 'https://github.com/o/r/pull/1496' }) });
+  routes['GET /api/work/board'][1].review = [hostile];
+  await board.loadBoard();
+  selection.select('pr:1496');
+  out.hostilePrDrawer = els['work-drawer'].innerHTML;
+} else if (scenario === 'drawer-redraw') {
+  // The drawer's priority picker is "busy" while its menu is open or its save runs: a board refresh must not
+  // replace it then, and the redraw lands once the picker is idle again.
+  let busy = false;
+  let writes = 0;
+  let html = '';
+  const drawerEl = {
+    hidden: true,
+    querySelector: () => (busy ? {} : null),
+    get innerHTML() { return html; },
+    set innerHTML(v) { html = v; writes += 1; },
+  };
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-drawer': drawerEl,
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  const entry = (title) => ({ number: 7, title, state: 'triaged', priority: 'high', actions: [] });
+  const serve = (title) => {
+    routes = { 'GET /api/work/board': [200, {
+      columns: [{ stage: 'next', label: 'Next', color: 'gray', entries: 'up_next', column: 'next' }],
+      up_next: [entry(title)], chains: [], hidden: [],
+    }] };
+  };
+  const selection = await work('selection');
+  const board = await work('board');
+  const drawer = await work('drawer');
+  drawer.init();
+  serve('First title');
+  await board.loadBoard();
+  selection.select(7);
+  out.drawnFirst = html.includes('First title');
+  const before = writes;
+  busy = true;
+  serve('Second title');
+  await board.loadBoard();
+  out.heldWrites = writes - before;
+  out.heldHtmlKept = html.includes('First title');
+  busy = false;
+  serve('Third title');
+  await board.loadBoard();
+  out.idleRedrawn = html.includes('Third title');
+} else if (scenario === 'drawer-close') {
+  // With no board loaded the drawer's render would hide it; on the page it is shown while an issue is selected.
+  const drawerEl = { innerHTML: '', contains: (t) => !!(t && t.inDrawer), querySelector: () => null };
+  Object.defineProperty(drawerEl, 'hidden', { get: () => false, set() {} });
+  document.getElementById = (id) => (id === 'work-drawer' ? drawerEl : null);
+  const selection = await work('selection');
+  const drawer = await work('drawer');
+  drawer.init();
+  // A fake event target: `matches` lists the selectors closest() finds it inside.
+  const target = (matches, opts = {}) => ({
+    isConnected: opts.detached ? false : true,
+    inDrawer: !!opts.inDrawer,
+    closest(sel) { return sel.split(',').some((s) => matches.includes(s.trim())) ? this : null; },
+  });
+  const fire = (type, t) => docListeners.filter(([kind]) => kind === type).forEach(([, fn]) => fn({ target: t }));
+  const click = (t, pressTarget) => { fire('pointerdown', pressTarget || t); fire('click', t); };
+  const after = (t, pressTarget) => { selection.select(5); click(t, pressTarget); return selection.getSelected(); };
+  out.outside = after(target([]));
+  out.card = after(target(['[data-action="work-select"]']));
+  out.search = after(target(['#work-search']));
+  out.dialog = after(target(['.sova-modal-backdrop']));
+  out.logViewer = after(target(['#log-viewer']));
+  out.toast = after(target(['.sova-toast']));
+  out.ariaDialog = after(target(['[role="dialog"]']));
+  out.optIn = after(target(['[data-keeps-drawer]']));
+  out.inside = after(target(['#work-drawer'], { inDrawer: true }));
+  out.detached = after(target([], { detached: true }));
+  out.pressBeganInside = after(target([]), target(['#work-drawer'], { inDrawer: true }));
+  out.closeButton = after(target(['#work-drawer-close', '#work-drawer'], { inDrawer: true }));
+  selection.select(null);
+  click(target([]));
+  out.nothingSelected = selection.getSelected();
+} else if (scenario === 'drawer-offboard') {
+  // The search's entry stands in for a card only while it is current: another selection, a column of the board
+  // showing the issue, or a re-read from the search replaces it, so its `start` never outlives its state.
+  let html = '';
+  const drawerEl = { hidden: true, querySelector: () => null,
+    get innerHTML() { return html; }, set innerHTML(v) { html = v; } };
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-drawer': drawerEl,
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  const action = (label) => ({ id: label, label, style: 'primary', handler: 'start_agent',
+    handler_args: { role: label.toLowerCase(), issue: '2' } });
+  const searched = (label) => ({
+    number: 2, title: 'Searched two', state: 'triaged', start: action(label), actions: [action(label)],
+  });
+  const nextEntry = (n) => ({
+    number: n, title: 'Next ' + n, state: 'researched', priority: 'high', start: null, actions: [],
+  });
+  const serve = (upNext) => {
+    routes['GET /api/work/board'] = [200, {
+      columns: [{ stage: 'next', label: 'Next', color: 'gray', entries: 'up_next', column: 'next' }],
+      up_next: upNext, chains: [{ issues: [{ number: 2, title: 'Chain two', stage: 'blocked' }] }], hidden: [],
+    }];
+  };
+  const selection = await work('selection');
+  const board = await work('board');
+  const drawer = await work('drawer');
+  drawer.init();
+  serve([nextEntry(1)]);
+  await board.loadBoard();
+
+  drawer.showOffBoard(searched('Research'));
+  selection.select(2);
+  out.shownWhileSelected = html.includes('Research');
+
+  selection.select(1);
+  selection.select(2);
+  out.droppedOnOtherSelection = !html.includes('Research');
+  out.chainShownInstead = html.includes('Chain two');
+
+  drawer.showOffBoard(searched('Research'));
+  selection.select(null);
+  selection.select(2);
+  serve([nextEntry(1), nextEntry(2)]);
+  await board.loadBoard();
+  await tick();
+  out.droppedWhenBoardShowsIt = !html.includes('Research');
+  out.boardEntryShownInstead = html.includes('Next 2');
+
+  serve([nextEntry(1)]);
+  await board.loadBoard();
+  drawer.showOffBoard(searched('Research'));
+  selection.select(null);
+  selection.select(2);
+  routes['GET /api/work/search'] = [200, { results: [searched('Develop')], more: 0 }];
+  await board.loadBoard();
+  await tick();
+  await tick();
+  out.refreshedFromSearch = html.includes('Develop') && !html.includes('Research');
+
+  routes['GET /api/work/search'] = [200, { results: [], more: 0 }];
+  await board.loadBoard();
+  await tick();
+  await tick();
+  out.droppedWhenSearchNoLongerReturnsIt = !html.includes('Develop');
+  out.chainShownAfterSearchDrops = html.includes('Chain two');
+  drawer.showOffBoard(searched('Research'));
+  out.savedPriorityReachesTheEntry = drawer.applySavedPriority(2, 'low').priority;
+  out.savedPriorityOfAnotherIssueIgnored = drawer.applySavedPriority(9, 'low');
+} else if (scenario === 'drawer-entry') {
+  const drawer = await work('drawer');
+  const board = { entry: { number: 1, start: 'board' }, stage: 'next' };
+  const chain = { entry: { number: 2, stage: 'blocked' }, stage: 'blocked', chain: true };
+  const index = new Map([[1, board], [2, chain]]);
+  const searched = (n) => ({ number: n, start: 'search', priority: 'high' });
+  out.boardWins = drawer.resolveEntry(index, 1, searched(1));
+  out.chainReplaced = drawer.resolveEntry(index, 2, searched(2));
+  out.chainKeptForOther = drawer.resolveEntry(index, 2, searched(9));
+  out.offBoardAlone = drawer.resolveEntry(index, 3, searched(3));
+  out.nothing = drawer.resolveEntry(index, 4, null);
+} else if (scenario === 'search-input') {
+  const listeners = {};
+  const input = {
+    value: '', hasAttribute: () => false,
+    addEventListener(type, fn) { listeners[type] = fn; }, setAttribute() {}, removeAttribute() {},
+  };
+  const list = { hidden: true, innerHTML: '', addEventListener() {}, querySelectorAll: () => [] };
+  document.getElementById = (id) => (id === 'work-search-input' ? input : id === 'work-search-results' ? list : null);
+  document.querySelector = () => null;
+  const selection = await work('selection');
+  const search = await work('search');
+  search.init();
+  const answers = [];
+  globalThis.fetchAPI = () => new Promise((resolve) => answers.push(resolve));
+  const type = (text) => { input.value = text; listeners.input(); };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const settle = () => wait(search.debounceMs() + 50);
+  type('123');
+  await settle();
+  answers[0]({ results: [{ number: 123, title: 'Old search', state: 'triaged' }], more: 0 });
+  await tick();
+  out.shown = !list.hidden;
+  type('456');
+  out.hiddenOnEdit = list.hidden;
+  out.clearedOnEdit = list.innerHTML;
+  listeners.keydown({ key: 'Enter', preventDefault() {}, stopPropagation() {} });
+  out.selectedAfterEnter = selection.getSelected();
+  type('789');
+  await settle();
+  type('78');
+  answers[1]({ results: [{ number: 789, title: 'Late answer', state: 'triaged' }], more: 0 });
+  await tick();
+  out.hiddenAfterLateAnswer = list.hidden;
+  out.htmlAfterLateAnswer = list.innerHTML;
+  // Two requests in flight, the older one answered last.
+  await settle();
+  type('7890');
+  await settle();
+  const older = answers.length - 1;
+  type('7891');
+  await settle();
+  const newer = answers.length - 1;
+  answers[newer]({ results: [{ number: 7891, title: 'Newer answer', state: 'triaged' }], more: 0 });
+  await tick();
+  answers[older]({ results: [{ number: 7890, title: 'Older answer', state: 'triaged' }], more: 0 });
+  await tick();
+  out.raceHidden = list.hidden;
+  out.raceHtml = list.innerHTML;
+  // A title is the tracker's text, so anyone who can open an issue controls it.
+  type('hostile');
+  await settle();
+  answers[answers.length - 1]({
+    results: [{ number: 5, title: '<img src=x onerror=alert(1)>', state: 'triaged' }], more: 0,
+  });
+  await tick();
+  out.hostileResults = list.innerHTML;
+} else if (scenario === 'search-index-once') {
+  const listeners = {};
+  const input = {
+    value: '', hasAttribute: () => false,
+    addEventListener(type, fn) { listeners[type] = fn; }, setAttribute() {}, removeAttribute() {},
+  };
+  const list = { hidden: true, innerHTML: '', addEventListener() {}, querySelectorAll: () => [] };
+  document.getElementById = (id) => (id === 'work-search-input' ? input : id === 'work-search-results' ? list : null);
+  document.querySelector = () => null;
+  routes['GET /api/work/board'] = [200, {
+    columns: [{ stage: 'next', label: 'Up next', color: 'blue', entries: 'up_next', column: 'next' }],
+    up_next: [{ number: 1, title: 'One', state: 'researched', actions: [] }], chains: [], hidden: [],
+  }];
+  const board = await work('board');
+  const search = await work('search');
+  await board.loadBoard();
+  let builds = 0;
+  // The board's index reads `hidden` once per build.
+  Object.defineProperty(board.getBoard(), 'hidden', { get() { builds += 1; return []; } });
+  search.init();
+  globalThis.fetchAPI = async () => ({
+    results: [1, 2, 3, 4].map((n) => ({ number: n, title: 'Issue ' + n, state: 'triaged' })), more: 0,
+  });
+  input.value = '12';
+  listeners.input();
+  await new Promise((resolve) => setTimeout(resolve, search.debounceMs() + 50));
+  out.builds = builds;
+  out.rows = (list.innerHTML.match(/data-search-index=/g) || []).length;
+  out.onBoardPill = list.innerHTML.includes('Up next');
+  out.offBoardNote = list.innerHTML.includes('not on the board');
 } else if (scenario === 'board-socket') {
   const subs = [];
   globalThis.subscribeSovaSocket = (o) => { subs.push(o); return { unsubscribe() {} }; };
@@ -605,6 +929,182 @@ def _run_node(tmp_path: Path, scenario: str) -> dict:
     return json.loads(proc.stdout)
 
 
+class TestStartRunsTheAgentTheStageNeeds:
+    """Start, Start now and a failed card's button run the issue's `start` action, not always a developer (#1418)."""
+
+    def test_start_is_named_for_and_runs_the_stages_agent(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start")
+
+        triaged = out["nextTriaged"]
+        assert "Research</button>" in triaged["buttons"]
+        assert 'data-args="[1418,&quot;researcher&quot;]"' in triaged["buttons"]
+        assert triaged["covers"] == ["start_agent:researcher"]
+        assert "Develop now</button>" in out["queuedResearched"]["buttons"]
+
+    def test_a_card_with_no_run_for_its_state_has_no_start(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start")
+
+        assert "work-start" not in out["nextNoStart"]["buttons"]
+        assert "Queue</button>" in out["nextNoStart"]["buttons"]
+
+    def test_a_failed_run_of_the_wrong_agent_offers_the_right_one_instead_of_retry(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start")
+
+        refused = out["failedRefused"]
+        assert "Research</button>" in refused["buttons"]
+        assert "Retry" not in refused["buttons"]
+        assert "View log" in refused["buttons"]
+        assert sorted(refused["covers"]) == ["start_agent:developer", "start_agent:researcher"]
+
+    def test_a_failed_run_of_the_right_agent_still_offers_retry(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start")
+
+        assert "Retry</button>" in out["failedSame"]["buttons"]
+        assert "work-start" not in out["failedSame"]["buttons"]
+
+    def test_a_long_reason_wraps_inside_the_card(self, tmp_path: Path) -> None:
+        body = _run_node(tmp_path, "card-start")["longReason"]
+
+        assert "PR no longer open, issue still labeled in review" in body
+        assert "break-words" in body
+        assert "whitespace-nowrap" not in body
+
+
+class TestPrOnlyCards:
+    """A PR with no issue opens the drawer like an issue does, and In review cards offer Address PR."""
+
+    def test_a_pr_with_no_issue_selects_by_its_pr_and_opens_a_pr_drawer(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "pr-card")
+
+        assert out["key"] == "pr:1495"
+        assert 'data-action="work-select" data-args="[&quot;pr:1495&quot;]"' in out["boardHtml"]
+        assert 'role="button"' in out["boardHtml"]
+        assert out["selected"] == "pr:1495"
+        assert out["selectedAgain"] is True, "a second click on the card toggles it off through isSelected()"
+        assert out["drawerHidden"] is False
+        drawer = out["drawerHtml"]
+        assert "PR #1495" in drawer
+        assert "A PR with no issue" in drawer
+        assert "https://github.com/o/r/pull/1495" in drawer, "the header links the PR when there is no issue URL"
+        for issue_only in ("Priority", "Waits for", "Unblocks", "Milestone", "Context"):
+            assert issue_only not in drawer, issue_only
+
+    def test_review_cards_offer_address_pr_through_the_server_action_or_the_command(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "pr-card")
+
+        assert "Review</button>" in out["reviewButtons"]
+        assert "Address PR</button>" in out["reviewButtons"]
+        assert 'data-action="work-run-action"' in out["reviewButtons"], "the work item's own action when it has one"
+        assert "run_command:address-pr" in out["reviewCovers"], "so the drawer does not list it twice"
+        assert 'data-action="work-address" data-args="[7,70]"' in out["fallbackButtons"]
+
+    def test_the_fallback_address_pr_needs_an_unresolved_review_thread(self, tmp_path: Path) -> None:
+        """A click spends a full agent run, so a PR with every thread resolved (or none) is not offered one."""
+        out = _run_node(tmp_path, "pr-card")
+
+        assert "Address PR" not in out["resolvedButtons"]
+        assert "Address PR" not in out["noThreadsButtons"]
+        assert "run_command:address-pr" not in out["resolvedCovers"], "so the drawer can still list a server action"
+
+
+class TestDrawerHoldsARedrawWhileThePriorityPickerIsBusy:
+    def test_a_board_refresh_waits_for_an_open_picker_and_lands_when_it_is_idle(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "drawer-redraw")
+
+        assert out["drawnFirst"] is True
+        assert out["heldWrites"] == 0, "a refresh must not replace a picker whose menu is open or save is running"
+        assert out["heldHtmlKept"] is True
+        assert out["idleRedrawn"] is True, "an idle picker lets the refreshed board redraw the drawer"
+
+
+class TestDrawerClosesOnAClickOutside:
+    def test_only_a_click_outside_the_drawer_and_its_keep_open_targets_closes_it(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "drawer-close")
+
+        assert out["outside"] is None, "a click on the page outside the drawer closes it"
+        assert out["closeButton"] is None
+        assert out["card"] == 5, "a card click selects instead (the card's own handler toggles)"
+        assert out["search"] == 5
+        assert out["dialog"] == 5, "a confirm the drawer opened must not close it"
+        assert out["logViewer"] == 5, "the log viewer View log opens is part of the drawer's work"
+        assert out["toast"] == 5, "a toast's dismiss button must not close the drawer behind it"
+        assert out["ariaDialog"] == 5
+        assert out["optIn"] == 5, "an overlay marked data-keeps-drawer keeps it open"
+        assert out["inside"] == 5
+        assert out["detached"] == 5, "a target a redraw removed was inside the drawer"
+        assert out["pressBeganInside"] == 5, "a text selection released outside is not a click outside"
+        assert out["nothingSelected"] is None
+
+
+class TestDrawerOffBoardEntryStaysCurrent:
+    def test_the_search_entry_is_dropped_or_refreshed_instead_of_outliving_its_state(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "drawer-offboard")
+
+        assert out["shownWhileSelected"] is True
+        assert out["droppedOnOtherSelection"] is True, "another selection clears it"
+        assert out["chainShownInstead"] is True, "and the chain's own record takes over, not an empty drawer"
+        assert out["droppedWhenBoardShowsIt"] is True, "a column of the board is authoritative"
+        assert out["boardEntryShownInstead"] is True, "and its board entry is what the drawer shows"
+        assert out["refreshedFromSearch"] is True, "an issue only a chain shows is re-read on a board reload"
+        assert out["droppedWhenSearchNoLongerReturnsIt"] is True
+        assert out["chainShownAfterSearchDrops"] is True, "what the board still knows of it is drawn"
+
+    def test_a_priority_saved_for_the_searched_issue_updates_its_entry(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "drawer-offboard")
+
+        assert out["savedPriorityReachesTheEntry"] == "low"
+        assert out["savedPriorityOfAnotherIssueIgnored"] is None
+
+
+class TestSearchIndexesTheBoardOnce:
+    def test_the_results_share_one_board_lookup(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "search-index-once")
+
+        assert out["rows"] == 4
+        assert out["builds"] == 1, "the board is indexed once per render, then asked for each row"
+        assert out["onBoardPill"] is True, "a result the board shows names its column"
+        assert out["offBoardNote"] is True, "one it does not show says so"
+
+
+class TestDrawerEntryChoice:
+    def test_a_chain_entry_gives_way_to_the_search_entry_that_carries_the_stage_action(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "drawer-entry")
+
+        assert out["boardWins"]["entry"]["start"] == "board", "a board entry stays the first choice"
+        assert out["chainReplaced"]["entry"]["start"] == "search"
+        assert out["chainReplaced"]["stage"] == "blocked", "the chain's stage is kept"
+        assert "start" not in out["chainKeptForOther"]["entry"], "a search entry for another issue is ignored"
+        assert out["offBoardAlone"]["entry"]["start"] == "search"
+        assert out["nothing"] is None
+
+
+class TestSearchRetiresStaleAnswers:
+    def test_an_edit_drops_the_earlier_results_and_refuses_a_late_reply(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "search-input")
+
+        assert out["shown"] is True
+        assert out["hiddenOnEdit"] is True, "the old results are not selectable while the new text is pending"
+        assert out["selectedAfterEnter"] is None, "Enter cannot open an issue from the earlier search"
+        assert out["hiddenAfterLateAnswer"] is True, "a reply to text that has since changed is refused"
+        assert "Late answer" not in out["htmlAfterLateAnswer"]
+
+    def test_the_newest_request_wins_when_an_older_reply_lands_after_it(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "search-input")
+
+        assert out["raceHidden"] is False
+        assert "Newer answer" in out["raceHtml"]
+        assert "Older answer" not in out["raceHtml"], "two requests in flight: the older reply must not overwrite"
+
+    def test_a_title_from_the_tracker_is_escaped_in_the_results_and_the_pr_drawer(self, tmp_path: Path) -> None:
+        search = _run_node(tmp_path, "search-input")
+        pr = _run_node(tmp_path, "pr-card")
+
+        assert "&lt;img" in search["hostileResults"]
+        assert "<img" not in search["hostileResults"]
+        assert "&lt;img" in pr["hostilePrDrawer"]
+        assert "<img" not in pr["hostilePrDrawer"]
+
+
 class TestBoardRefreshUnderNode:
     def test_the_board_reloads_on_socket_events_and_starts_no_timer(self, tmp_path: Path) -> None:
         out = _run_node(tmp_path, "board-socket")
@@ -679,13 +1179,19 @@ class TestStartWithNoFreeSlot:
         out = _run_node(tmp_path, "start-no-slot")
 
         assert out["startedRequests"] == ["POST /api/agents/start"]
-        assert out["startedMessage"] == "Started a developer agent on #43"
+        assert out["startedMessage"] == "Started the developer agent on #43"
 
     def test_any_other_refusal_is_reported_and_does_not_queue(self, tmp_path: Path) -> None:
         out = _run_node(tmp_path, "start-no-slot")
 
         assert out["otherError"] == "Epic: not for an agent"
         assert out["otherRequests"] == ["POST /api/agents/start"]
+
+    def test_a_state_not_ready_refusal_names_the_agent_and_never_queues(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "start-no-slot")
+
+        assert "run the researcher first" in out["notReadyError"]
+        assert out["notReadyRequests"] == ["POST /api/agents/start"], "queueing a developer reproduces #1418"
 
     async def test_the_server_marks_a_full_pool_refusal_with_its_code(self, client: AsyncClient) -> None:
         refused = {"error": "Maximum concurrent agents reached (3)", "code": "no_free_slot", "running": 3}

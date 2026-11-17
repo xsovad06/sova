@@ -4,20 +4,23 @@ import {
   queuePosition, sizeHtml, statePill, threadsHtml,
 } from './board.js';
 import { createPriorityPicker } from './priority-picker.js';
-import { clearSelection, downstreamOf, getSelected, onSelectionChange } from './selection.js';
+import { clearSelection, downstreamOf, getSelected, onSelectionChange, selectionKey } from './selection.js';
 
 // The issue drawer: why an issue is where it is, what it waits for, what it unblocks, its PR and last run,
 // its buttons (the same as on its card, then the work item's other actions from the server) and the priority
 // picker. It opens when a card or chain node is
-// selected and closes with Escape or its close button, which also clears the highlight.
+// selected and closes with Escape, its close button, a click outside it, or a second click on the selected card,
+// each of which also clears the highlight.
 
 // Every issue the board knows, with the stage it is in: column entries first, then hidden ones, then chain
-// members (which carry less detail and are used only when the issue is nowhere else).
+// members (which carry less detail and are used only when the issue is nowhere else). A column entry for a PR
+// with no issue is keyed 'pr:N' (selectionKey()), the key its card selects by.
 function _index(board) {
   var byNumber = new Map();
   (board.columns || []).forEach(function(col) {
     (board[col.entries] || []).forEach(function(entry) {
-      if (entry.number != null && !byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: col.stage });
+      var key = selectionKey(entry);
+      if (key != null && !byNumber.has(key)) byNumber.set(key, { entry: entry, stage: col.stage });
     });
   });
   (board.hidden || []).forEach(function(entry) {
@@ -25,14 +28,70 @@ function _index(board) {
   });
   (board.chains || []).forEach(function(chain) {
     (chain.issues || []).forEach(function(entry) {
-      if (!byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: entry.stage || '' });
+      if (!byNumber.has(entry.number)) byNumber.set(entry.number, { entry: entry, stage: entry.stage || '', chain: true });
     });
   });
   return byNumber;
 }
 
+// The issue last opened from the search, as the search's entry: it stands in for a card while the board does not
+// show the issue (a start puts it in Running), and a board entry always wins over it. It is dropped when another
+// issue is selected or a column of the board shows this one, and re-read from the search on every board reload
+// while the issue stays off the board, so its `start` never outlives the state it was offered for.
+var _offBoard = null;
+
+async function _refreshOffBoard() {
+  var held = _offBoard;
+  var board = getBoard();
+  if (!held || !board || getSelected() !== held.number) return;
+  var known = _index(board).get(held.number);
+  if (known && !known.chain) return;
+  try {
+    var data = await fetchAPI(apiUrl('/work/search?q=' + encodeURIComponent(held.number)));
+    if (_offBoard !== held) return;
+    // An issue the search no longer returns (closed) leaves only what the board knows of it.
+    _offBoard = (data.results || []).filter(function(r) { return r.number === held.number; })[0] || null;
+    _renderUnlessBusy();
+  } catch (_e) { /* keep what is drawn: the next board reload tries again */ }
+}
+
+export function showOffBoard(entry) { _offBoard = entry || null; }
+
+// An issue the board does not show is drawn from the search's entry, which a board reload never refreshes, so a
+// saved priority is written into it. Returns that entry, or null when the saved issue is not the searched one.
+export function applySavedPriority(number, saved) {
+  if (!_offBoard || _offBoard.number !== number) return null;
+  _offBoard.priority = saved;
+  return _offBoard;
+}
+
+// What the drawer draws for an issue: a board entry (a column or Hidden) first. A chain entry carries no `start` or
+// `actions`, so the search's entry for the same issue replaces it (keeping the chain's stage); with no board
+// record at all the search's entry stands alone.
+export function resolveEntry(index, number, offBoard) {
+  var known = index.get(number) || null;
+  var searched = offBoard && offBoard.number === number ? offBoard : null;
+  if (!searched) return known;
+  if (!known) return { entry: searched, stage: '' };
+  return known.chain ? { entry: searched, stage: known.stage } : known;
+}
+
 function _column(board, stage) {
   return (board.columns || []).filter(function(c) { return c.stage === stage; })[0] || null;
+}
+
+// A lookup of the column an issue sits in on the current board (its label and color token), null when the board
+// does not show it. A hidden issue reads as Hidden. The board is indexed once per call, so a caller with many
+// issues to place (the search results) builds one lookup and asks it for each.
+export function boardColumns() {
+  var board = getBoard();
+  var index = board ? _index(board) : null;
+  return function(number) {
+    var known = index ? index.get(number) : null;
+    if (!known) return null;
+    if (known.stage === 'hidden') return { label: 'Hidden', color: 'gray' };
+    return _column(board, known.stage);
+  };
 }
 
 function _pill(board, stage) {
@@ -110,14 +169,17 @@ var _ACTION_BUTTON = { primary: 'sova-btn-primary', success: 'sova-btn-success',
 
 // The work item's own actions (from the server, for its state) that its card buttons do not already offer:
 // for a PR whose review budget ran out, Review PR and Address PR beside Integrate.
+// With no card buttons (an issue off the board, or a card whose stage offers none), they are its only buttons: no
+// "Also", and the first is primary.
 function _moreActions(entry, parts, busy) {
   var covered = parts.covers || [];
   var actions = (entry.actions || []).filter(function(a) { return covered.indexOf(actionSignature(a)) === -1; });
   if (!actions.length) return '';
+  var only = !parts.buttons;
   return '<div class="flex flex-wrap items-center gap-1">' +
-    '<span class="text-xs text-gray-500 mr-1">Also</span>' +
-    actions.map(function(a) {
-      var variant = _ACTION_BUTTON[a.style];
+    (only ? '' : '<span class="text-xs text-gray-500 mr-1">Also</span>') +
+    actions.map(function(a, i) {
+      var variant = only && i === 0 ? _ACTION_BUTTON.primary : _ACTION_BUTTON[a.style];
       var cls = variant ? 'sova-btn ' + variant : 'sova-btn sova-work-btn-quiet bg-surface-hover text-gray-300 hover:text-white';
       return '<button type="button" class="' + cls + '"' + actionAttrs('work-run-action', [entry.number, a]) + (busy ? ' disabled' : '') + '>' +
         iconHtml('play') + escapeHtml(a.label) + '</button>';
@@ -143,8 +205,14 @@ function _render() {
     return;
   }
   var index = _index(board);
-  var known = index.get(number);
-  var entry = known ? known.entry : { number: number, title: '' };
+  if (_offBoard) {
+    var held = index.get(_offBoard.number);
+    if (_offBoard.number !== number || (held && !held.chain)) _offBoard = null;
+  }
+  var known = resolveEntry(index, number, _offBoard);
+  // A selection the board no longer shows keeps its key's shape: an issue number, or a PR with no issue.
+  var entry = known ? known.entry
+    : typeof number === 'string' ? { number: null, pr_number: Number(number.slice(3)), title: '' } : { number: number, title: '' };
   var stage = known ? known.stage : '';
   var parts = known ? cardParts(entry, stage) : { buttons: '' };
   var waits = entry.depends_on || [];
@@ -155,16 +223,27 @@ function _render() {
 
   var busy = actionIsRunning(entryKey(entry));
   var col = _column(board, stage);
+  // A PR with no issue (selected as 'pr:N') has no priority, relations or milestone: the drawer shows its PR only.
+  var prOnly = typeof number === 'string';
+  var ref = prOnly ? 'PR #' + number.slice(3) : '#' + number;
+  var link = entry.url || (prOnly && pr && /^https:\/\//.test(pr.url || '') ? pr.url : '');
+  // Empty for a PR with no issue and no run yet, which then shows no Context heading at all.
+  var context = _kv([
+    ['Milestone', prOnly ? '' : (entry.milestone ? _tag(entry.milestone) : '<span class="text-gray-500">None</span>')],
+    ['Agent fit', entry.mode ? _tag(entry.mode.replace(/_/g, ' ')) : ''],
+    ['Last run', last ? '<span class="flex flex-wrap items-center gap-1">' + lastRunHtml(entry, true) +
+      '<a class="text-accent hover:underline" href="' + (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work/' + last.run_id + '">details</a></span>' : ''],
+  ]);
   var html = '<div class="flex flex-col gap-2 px-4 pt-4 pb-3 border-b border-gray-700/50">' +
       '<div class="flex flex-wrap items-center gap-1.5">' +
-        (entry.priority != null && stage !== 'done' ? '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(priorityDisplayName(entry.priority)) + ' priority" width="16" height="16">' : '') +
-        '<span class="text-sm font-bold text-accent tabular-nums">#' + number + '</span>' + _pill(board, stage) + statePill(entry) +
+        (!prOnly && entry.priority != null && stage !== 'done' ? '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(priorityDisplayName(entry.priority)) + ' priority" width="16" height="16">' : '') +
+        '<span class="text-sm font-bold text-accent tabular-nums">' + escapeHtml(ref) + '</span>' + _pill(board, stage) + statePill(entry) +
         '<span class="ml-auto flex items-center gap-1">' +
-          (entry.url ? '<a href="' + escapeHtml(entry.url) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open #' + number + ' on GitHub">' + iconHtml('external-link') + '</a>' : '') +
+          (link ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open ' + escapeHtml(ref) + ' on GitHub">' + iconHtml('external-link') + '</a>' : '') +
           '<button type="button" id="work-drawer-close" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Close the details">' + iconHtml('close') + '</button>' +
         '</span>' +
       '</div>' +
-      '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || 'Issue #' + number) + '</h3>' +
+      '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || (prOnly ? ref : 'Issue #' + number)) + '</h3>' +
       actionStatusHtml(entryKey(entry)) +
       (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
       _moreActions(entry, parts, busy) +
@@ -173,14 +252,14 @@ function _render() {
       _section('Why it is here', '<p class="flex items-start gap-2 text-sm text-gray-300">' +
         '<span class="w-2 h-2 mt-1.5 rounded-full shrink-0" style="background:' + stateHex(col ? col.color : 'gray') + '"></span>' +
         '<span>' + escapeHtml(_why(entry, stage)) + '</span></p>') +
-      _section('Priority', '<div id="work-drawer-priority"></div>') +
-      _section('Waits for',
-        waits.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing open.</p>',
-        _count(waits.length, 'sova-work-chip-up')) +
-      _section('Unblocks',
-        direct.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing waits for it.</p>',
-        _count(direct.length, 'sova-work-chip-unblocks') +
-          (total > direct.length ? '<span class="normal-case tracking-normal text-gray-500">' + total + ' in total</span>' : '')) +
+      (prOnly ? '' : _section('Priority', '<div id="work-drawer-priority"></div>') +
+        _section('Waits for',
+          waits.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing open.</p>',
+          _count(waits.length, 'sova-work-chip-up')) +
+        _section('Unblocks',
+          direct.map(function(n) { return _depRow(board, index, n); }).join('') || '<p class="text-xs text-gray-500">Nothing waits for it.</p>',
+          _count(direct.length, 'sova-work-chip-unblocks') +
+            (total > direct.length ? '<span class="normal-case tracking-normal text-gray-500">' + total + ' in total</span>' : ''))) +
       (pr ? _section('Pull request', _kv([
         ['PR', '<span class="flex flex-wrap items-center gap-1">' + prPill(pr) +
           (pr.state_label ? _tag(pr.state_label, stateBadgeClasses(pr.state_color)) : '') + prFlags(pr) + '</span>'],
@@ -188,12 +267,7 @@ function _render() {
         ['Threads', threadsHtml(pr, true)],
         ['Size', sizeHtml(pr, true)],
       ])) : '') +
-      _section('Context', _kv([
-        ['Milestone', entry.milestone ? _tag(entry.milestone) : '<span class="text-gray-500">None</span>'],
-        ['Agent fit', entry.mode ? _tag(entry.mode.replace(/_/g, ' ')) : ''],
-        ['Last run', last ? '<span class="flex flex-wrap items-center gap-1">' + lastRunHtml(entry, true) +
-          '<a class="text-accent hover:underline" href="' + (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work/' + last.run_id + '">details</a></span>' : ''],
-      ])) +
+      (context ? _section('Context', context) : '') +
     '</div>';
   el.innerHTML = html;
   el.hidden = false;
@@ -204,8 +278,9 @@ function _render() {
       value: entry.priority,
       iconHtml: iconHtml,
       error: _priorityError && _priorityError.issue === number ? _priorityError.message : '',
-      onSaved: function() {
+      onSaved: function(saved) {
         _priorityError = null;
+        applySavedPriority(number, saved);
         loadBoard();
       },
       onFailed: function(message) { _priorityError = { issue: number, message: message }; },
@@ -235,11 +310,37 @@ function _replayRedraw() {
   _renderUnlessBusy();
 }
 
+// What a click outside the drawer may land on without closing it: a card or chain node (it selects, or toggles
+// the selected one off), the search box and its results, and every overlay the page can open over it: a dialog (a
+// confirm the drawer's button opened), the log viewer View log opens, and a toast with its dismiss button. An overlay
+// added later opts in with data-keeps-drawer.
+var _KEEP_OPEN = '#work-drawer, [data-action="work-select"], #work-search, #log-viewer, .sova-modal-backdrop, ' +
+  '#launch-modal, .sova-toast, [role="dialog"], [aria-modal="true"], [data-keeps-drawer]';
+
+// A press that began inside the drawer (selecting its text, then releasing outside) is not a click outside it.
+var _pressInside = false;
+
+function _closesDrawer(e) {
+  if (getSelected() === null || _pressInside) return false;
+  var target = e.target;
+  // A target a redraw already removed (the priority menu's option) was inside the drawer when it was clicked.
+  if (!target || !target.isConnected || !target.closest) return false;
+  return !target.closest(_KEEP_OPEN);
+}
+
 export function init() {
   onSelectionChange(_render);
-  onBoard(_renderUnlessBusy);
+  onBoard(function() {
+    _refreshOffBoard();
+    _renderUnlessBusy();
+  });
   onActionStateChange(_renderUnlessBusy);
+  document.addEventListener('pointerdown', function(e) {
+    var drawer = document.getElementById('work-drawer');
+    _pressInside = !!(drawer && !drawer.hidden && e.target && drawer.contains(e.target));
+  }, true);
   document.addEventListener('click', function(e) {
     if (e.target.closest && e.target.closest('#work-drawer-close')) clearSelection();
+    else if (_closesDrawer(e)) clearSelection();
   });
 }
