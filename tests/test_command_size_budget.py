@@ -63,7 +63,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # test lines than production lines, the main source of test-suite growth.
     # Issue #1361 added the most-repeated-rules pass, paid for by cutting the "Read related files as needed"
     # line, the "missing tests" bullet, and the "These lists exist" sentence, and by shortening Step 9.
-    "review.md": 12_400,
+    # Issue #1455 raised this by 100 for the sentence naming both the full and the fast check, which lets the
+    # agent tell from the rendered text whether to run the fast check alone.
+    "review.md": 12_500,
     # Issue #1361 raised this by 500 for the review-summary clause on the most-repeated-rules pass and the
     # double-dash check that runs before the review is posted.
     "review-pr.md": 22_500,

@@ -251,6 +251,26 @@ class TestTemplates:
         variables = build_variables(cfg)
         assert variables["check_cmd"] == "ruff check . && pytest"
 
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"fast_check_cmd": "make ci-fast", "check_cmd": "make ci"}, "make ci-fast"),
+            ({"check_cmd": "make ci"}, "make ci"),
+            ({"lint_cmd": "ruff check .", "test_cmd": "pytest"}, "ruff check . && pytest"),
+            ({"fast_check_cmd": "   ", "check_cmd": "make ci"}, "make ci"),
+            (
+                {"fast_check_cmd": "  ", "check_cmd": " ", "lint_cmd": "ruff check .", "test_cmd": "pytest"},
+                "ruff check . && pytest",
+            ),
+        ],
+    )
+    def test_build_variables_fast_check_cmd(self, kwargs: dict[str, str], expected: str) -> None:
+        """fast_check_cmd renders as configured, else falls back to the resolved check_cmd."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        assert build_variables(ProjectConfig(**kwargs))["fast_check_cmd"] == expected
+
     def test_build_variables_includes_scopes(self) -> None:
         """build_variables() includes scopes from config when available."""
         from sova.commands.templates import build_variables

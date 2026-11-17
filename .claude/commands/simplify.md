@@ -40,15 +40,17 @@ For each changed file, read the **entire file** and check:
 
 ### Step 3: Apply Simplifications
 
-Apply each simplification directly. After changes, verify tests still pass, skipping only when an identical check already passed earlier in this autonomous pipeline cycle for this exact worktree state (a no-op outside the autonomous pipeline: `sova checks should-skip` only ever reports a skip there). Here that can only happen when no simplification was applied, since any edit changes the state the skip is keyed to:
+Apply each simplification directly. After changes, verify tests still pass with the project's fast check, skipping only when an identical check already passed earlier in this autonomous pipeline cycle for this exact worktree state (a no-op outside the autonomous pipeline: `sova checks should-skip` only ever reports a skip there). Here that can only happen when no simplification was applied, since any edit changes the state the skip is keyed to:
 
 ```bash
 if sova checks should-skip "make check"; then
-  echo "Full check already passed for this worktree state earlier in the pipeline cycle; skipping re-run."
+  echo "Check already passed for this worktree state earlier in the pipeline cycle; skipping re-run."
 else
   make check && { sova checks record "make check" --passed || true; }
 fi
 ```
+
+If `make check` differs from `make check`, run only `make check`; the autonomous pipeline runs `make check` once in its own gate. If they match, run it and, when it is not the target CI runs, also run the CI steps it omits (read the CI workflow file).
 
 If a simplification is risky, skip it. Only apply safe, clear improvements.
 

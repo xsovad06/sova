@@ -43,6 +43,7 @@ log = get_logger(component="commands.self_render")
 # which only substitutes placeholders it actually finds.
 SELF_VARIABLES: dict[str, str] = {
     "check_cmd": "make check",
+    "fast_check_cmd": "make check",
     "test_cmd": "make test",
     "lint_cmd": "make lint",
     "format_cmd": "make format",
