@@ -2,7 +2,7 @@ import { actionAttrs } from '../agents/actions.js';
 import { _updateApiHealthBanner } from '../agents/live-status.js';
 import { diffSizeColor, diffSizeLabel, formatAgeBadge } from '../agents/render-utils.js';
 import { renderHeader } from './header.js';
-import { onSelectionChange, relationChip, relationClass, setSelectionBoard } from './selection.js';
+import { onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
 
 // The Work board: GET /api/work/board, drawn in the order of the payload's `columns`, with each column's
 // label and color token and the payload key holding its entries. A stage whose `column` names another stage
@@ -155,6 +155,12 @@ export function statePill(entry) {
     escapeHtml(entry.state_label) + '</span>';
 }
 
+// A sentence-long note (why an issue needs you, why it is yours) as a pill that wraps inside the card instead of
+// running past its edge: a 13rem column cannot fit "PR no longer open, issue still labeled in review" on one line.
+function _notePill(text, cls) {
+  return '<span class="px-1.5 rounded-md text-xs leading-snug break-words min-w-0 ' + cls + '">' + escapeHtml(text) + '</span>';
+}
+
 function _pill(text, cls, tooltip) {
   return '<span class="px-1.5 rounded-full text-xs whitespace-nowrap ' + cls + '"' +
     (tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' : '') + '>' + escapeHtml(text) + '</span>';
@@ -260,6 +266,19 @@ function _localTime(iso) {
 
 function _humanStep(name) { return (name || '').replace(/_/g, ' '); }
 
+// The role the issue's stage runs next (its `start` action, from work_state.start_action() on the server):
+// researcher on a triaged issue, developer on a researched one; '' when no agent runs on it in its state.
+function _startRole(entry) {
+  return (entry.start && entry.start.handler_args && entry.start.handler_args.role) || '';
+}
+
+// The button that starts that agent, named for it (Research, Develop, Triage, Resume), '' when there is none.
+function _startBtn(entry, variant, suffix, off) {
+  var role = _startRole(entry);
+  if (!role) return '';
+  return _btn(variant, entry.start.label + (suffix || ''), 'work-start', [entry.number, role], Object.assign({ icon: 'play' }, off));
+}
+
 // What a server action does, as `handler:command` or `handler:role`: how the drawer leaves out an action a
 // card button already offers, without the page knowing which state offers which action.
 export function actionSignature(action) {
@@ -294,21 +313,21 @@ export function cardParts(entry, stage) {
   var buttons = '';
   var covers = [];  // the server actions (actionSignature) these buttons already offer
   if (stage === 'next') {
-    covers = ['start_agent:developer'];
+    covers = entry.start ? [actionSignature(entry.start)] : [];
     right = entry.rank != null
       ? '<span class="px-1.5 rounded text-xs font-bold text-accent bg-accent/15 tabular-nums" aria-label="Rank ' + entry.rank + '">' + entry.rank + '</span>'
       : '';
     body = _chips([statePill(entry), entry.unblocks > 0 ? _chip('Unblocks ' + entry.unblocks, 'sova-work-chip-unblocks') : '',
       entry.milestone ? _chip(entry.milestone) : '', _age(entry)]) + _prStrip(entry);
-    buttons = _btn('primary', 'Start', 'work-start', [n], Object.assign({ icon: 'play' }, off)) +
+    buttons = _startBtn(entry, 'primary', '', off) +
       _btn('', 'Queue', 'work-queue', [n], Object.assign({ icon: 'queue' }, off)) +
       _btn('', 'Hide', 'work-hide', [n], off);
   } else if (stage === 'queued') {
     var pos = queuePosition(n);
-    covers = ['start_agent:developer'];
+    covers = entry.start ? [actionSignature(entry.start)] : [];
     right = pos[0] ? pos[0] + ' of ' + pos[1] : '';
     body = _chips([statePill(entry), entry.milestone ? _chip(entry.milestone) : '', _age(entry)]) + _prStrip(entry);
-    buttons = _btn('primary', 'Start now', 'work-start', [n], Object.assign({ icon: 'play' }, off)) +
+    buttons = _startBtn(entry, 'primary', ' now', off) +
       _btn('', '', 'work-queue-move', [n, -1], { icon: 'arrow-up', ariaLabel: 'Move #' + n + ' up', disabled: busy || pos[0] <= 1 }) +
       _btn('', '', 'work-queue-move', [n, 1], { icon: 'arrow-down', ariaLabel: 'Move #' + n + ' down', disabled: busy || pos[0] >= pos[1] }) +
       _btn('', '', 'work-unqueue', [n], Object.assign({ icon: 'close', ariaLabel: 'Remove #' + n + ' from the queue' }, off));
@@ -332,10 +351,24 @@ export function cardParts(entry, stage) {
     covers = ['start_agent:reviewer', 'run_command:review-pr', 'trigger_rebase:'];
     right = statePill(entry);
     body = _prStrip(entry) + _sub([entry.pr && !entry.pr.threads_total ? _span('No review threads yet') : '', lastRunHtml(entry)]);
-    if (entry.pr_number) buttons = _btn('primary', 'Review', 'work-review', [n, entry.pr_number], Object.assign({ icon: 'play' }, off));
+    if (entry.pr_number) {
+      buttons = _btn('primary', 'Review', 'work-review', [n, entry.pr_number], Object.assign({ icon: 'play' }, off));
+      // Address PR beside Review: the work item's own action when the server offers one (it applies its own
+      // conditions), else the command itself, but only while the PR has an unresolved review thread, so a click
+      // never spends a full agent run on a PR with nothing to address.
+      var address = _serverAction(entry, 'run_command:address-pr');
+      var unresolved = entry.pr && entry.pr.threads_total > (entry.pr.threads_resolved || 0);
+      if (address) {
+        covers.push('run_command:address-pr');
+        buttons += _btn('', 'Address PR', 'work-run-action', [n, address], Object.assign({ icon: 'play' }, off));
+      } else if (unresolved) {
+        covers.push('run_command:address-pr');
+        buttons += _btn('', 'Address PR', 'work-address', [n, entry.pr_number], Object.assign({ icon: 'play' }, off));
+      }
+    }
     if (entry.pr && entry.pr.mergeable === 'CONFLICTING') buttons += _btn('warning', 'Rebase', 'work-rebase', [n], off);
   } else if (stage === 'needs') {
-    body = _chips([entry.reason ? _pill(entry.reason, 'bg-accent-peach/15 text-accent-peach') : '']) +
+    body = _chips([entry.reason ? _notePill(entry.reason, 'bg-accent-peach/15 text-accent-peach') : '']) +
       _prStrip(entry) + _sub([lastRunHtml(entry)]);
     if (entry.kind === 'merge' || entry.kind === 'review_budget') {
       covers = ['run_command:integrate-pr'];
@@ -346,14 +379,23 @@ export function cardParts(entry, stage) {
       if (entry.run_id) buttons = _btn('success', 'Approve and start', 'work-approve', [entry.run_id, n], Object.assign({ icon: 'check' }, off));
       if (n != null) buttons += '<a class="sova-btn text-gray-400 hover:text-gray-200 hover:bg-surface-hover" href="' + _PREFIX + '/spec/' + n + '" data-action="stop">Read spec</a>';
     } else if (entry.kind === 'failed_run') {
-      covers = ['start_agent:' + (entry.role || 'developer')];
-      buttons = _btn('warning', 'Retry', 'work-retry', [n, entry.role || 'developer', entry.pr_number || null], Object.assign({ icon: 'play' }, off));
+      // When the issue's stage calls for another agent than the one that failed (a developer refused on a triaged
+      // issue), that agent is the way on, and retrying the failed one would only be refused again.
+      var failedRole = entry.role || 'developer';
+      var nextRole = _startRole(entry);
+      if (nextRole && nextRole !== failedRole) {
+        covers = ['start_agent:' + failedRole, actionSignature(entry.start)];
+        buttons = _startBtn(entry, 'primary', '', off);
+      } else {
+        covers = ['start_agent:' + failedRole];
+        buttons = _btn('warning', 'Retry', 'work-retry', [n, failedRole, entry.pr_number || null], Object.assign({ icon: 'play' }, off));
+      }
       if (entry.run_id) buttons += _btn('', 'View log', 'work-view-log', [entry.run_id, 'failed'], {});
     }
   } else if (stage === 'yours') {
     var source = entry.reason_source && entry.reason_source !== 'label' ? entry.reason_source + ': ' : '';
     covers = ['start_agent:triage'];
-    body = _chips([entry.reason ? _pill(source + entry.reason, 'bg-accent-purple/15 text-accent-purple') : '', statePill(entry), _age(entry)]) +
+    body = _chips([entry.reason ? _notePill(source + entry.reason, 'bg-accent-purple/15 text-accent-purple') : '', statePill(entry), _age(entry)]) +
       _prStrip(entry);
     if (entry.session_command) {
       buttons = _btn('', 'Copy session command', 'work-copy-command', [n, entry.session_command], {});
@@ -374,12 +416,16 @@ function _card(entry, stage) {
   var parts = cardParts(entry, stage);
   var n = entry.number;
   var ref = n != null ? '#' + n : (entry.pr_number ? 'PR #' + entry.pr_number : '');
-  var rel = n != null ? relationClass(n) : '';
-  var selectable = n != null;
-  var draggable = stage === 'next' ? ' draggable="true" data-drag-issue="' + n + '"' : '';
+  // A PR with no issue selects by 'pr:N', so its card opens the drawer too.
+  var key = selectionKey(entry);
+  var rel = key != null ? relationClass(key) : '';
+  var selectable = key != null;
+  var draggable = stage === 'next'
+    ? ' draggable="true" data-drag-issue="' + n + '" data-start-role="' + escapeHtml(_startRole(entry)) + '"'
+    : '';
   var status = actionStatusHtml(entryKey(entry));
   return '<div class="sova-work-card ' + rel + '"' + draggable +
-    (selectable ? actionAttrs('work-select', [n]) + ' tabindex="0" role="button" aria-label="' + escapeHtml(ref + ': ' + (entry.title || '')) + ', show details"' : '') + '>' +
+    (selectable ? actionAttrs('work-select', [key]) + ' tabindex="0" role="button" aria-label="' + escapeHtml(ref + ': ' + (entry.title || '')) + ', show details"' : '') + '>' +
     '<div class="flex items-center gap-1.5 min-w-0">' +
       _priorityIcon(entry, stage) +
       '<span class="text-xs font-bold text-accent tabular-nums shrink-0">' + escapeHtml(ref) + '</span>' +

@@ -2,8 +2,8 @@
 //
 // Selecting an issue marks its open blockers (everything it waits for, through any number of steps) and its
 // dependents (everything waiting for it), and dims the rest. The relations come from the board payload: every
-// entry's depends_on and dependents, and each chain issue's depends_on. Escape or the drawer's close button
-// clears the selection.
+// entry's depends_on and dependents, and each chain issue's depends_on. Escape, the drawer's close button, a click
+// outside the drawer and a second click on the selected card clear the selection.
 
 var _selected = null;
 var _up = new Set();
@@ -12,6 +12,23 @@ var _listeners = [];
 var _board = null;
 
 export function getSelected() { return _selected; }
+
+// What a card or the drawer selects: the issue number, or 'pr:N' for a PR with no issue (it has no relations, so
+// selecting it highlights only its own card). null for an entry with neither.
+export function selectionKey(entry) {
+  if (!entry) return null;
+  if (entry.number != null) return Number(entry.number);
+  var pr = entry.pr_number || (entry.pr && entry.pr.number);
+  return pr ? 'pr:' + pr : null;
+}
+
+// A key as select() stores it: a number for an issue, the 'pr:N' string for a PR with no issue.
+function _normalize(key) {
+  if (key == null) return null;
+  return typeof key === 'string' && key.indexOf('pr:') === 0 ? key : Number(key);
+}
+
+export function isSelected(key) { return _selected !== null && _normalize(key) === _selected; }
 export function onSelectionChange(fn) { _listeners.push(fn); }
 
 function _notify() {
@@ -82,7 +99,7 @@ export function setSelectionBoard(board) {
 }
 
 export function select(number) {
-  _selected = number == null ? null : Number(number);
+  _selected = _normalize(number);
   document.body.classList.toggle('sova-work-drawer-open', _selected !== null);
   _recompute();
   _notify();

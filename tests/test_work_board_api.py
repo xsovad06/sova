@@ -60,6 +60,50 @@ class TestBoardRoute:
         assert resp.status_code == 500
 
 
+class TestSearchRoute:
+    async def test_search_is_not_parsed_as_a_run_id(self, client: AsyncClient) -> None:
+        payload = {"results": [{"number": 1418}], "more": 0}
+        with patch.object(work_board_service, "search_issues", AsyncMock(return_value=payload)) as search:
+            resp = await client.get("/api/work/search", params={"q": "#1418"})
+
+        assert resp.status_code == 200
+        assert resp.json() == payload
+        assert search.await_args.args[1] == "#1418"
+
+    async def test_a_missing_or_empty_q_is_an_empty_result_without_a_search(self, client: AsyncClient) -> None:
+        empty = {"results": [], "more": 0}
+        with patch.object(work_board_service, "search_issues", AsyncMock(return_value=empty)) as search:
+            missing = await client.get("/api/work/search")
+            blank = await client.get("/api/work/search", params={"q": ""})
+
+        assert missing.status_code == blank.status_code == 200
+        assert missing.json() == blank.json() == empty
+        assert [call.args[1] for call in search.await_args_list] == ["", ""]
+
+    async def test_an_over_long_q_is_a_422_and_reads_nothing(self, client: AsyncClient) -> None:
+        with patch.object(
+            work_board_service, "search_issues", AsyncMock(return_value={"results": [], "more": 0})
+        ) as search:
+            at_limit = await client.get("/api/work/search", params={"q": "x" * 200})
+            too_long = await client.get("/api/work/search", params={"q": "x" * 201})
+
+        assert at_limit.status_code == 200
+        assert too_long.status_code == 422
+        assert search.await_count == 1
+
+    async def test_a_graph_config_failure_is_a_503(self, client: AsyncClient) -> None:
+        with patch.object(work_board_service, "search_issues", AsyncMock(side_effect=GraphConfigError("no repo"))):
+            resp = await client.get("/api/work/search", params={"q": "x"})
+
+        assert resp.status_code == 503
+
+    async def test_any_other_failure_is_a_500_not_an_empty_list(self, client: AsyncClient) -> None:
+        with patch.object(work_board_service, "search_issues", AsyncMock(side_effect=RuntimeError("boom"))):
+            resp = await client.get("/api/work/search", params={"q": "x"})
+
+        assert resp.status_code == 500
+
+
 class TestHiddenRoutes:
     async def test_hide_and_unhide_return_the_new_list_and_are_idempotent(self, client: AsyncClient) -> None:
         saved: list[int] = []

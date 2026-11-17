@@ -47,6 +47,7 @@ _PAGE_MODULE_ENTRIES = [
     ("work-actions", "work/actions"),
     ("chains", "work/chains"),
     ("drawer", "work/drawer"),
+    ("search", "work/search"),
     ("board", "work/board"),
 ]
 _PAGE_MODULES = [path for _label, path in _PAGE_MODULE_ENTRIES]
@@ -1063,8 +1064,9 @@ class TestPollingUsesVisibilityAwarePoll:
 
     def test_the_only_raw_timeouts_are_the_documented_exceptions(self) -> None:
         """Every poll goes through visibilityAwarePoll except pollLogs()'s backoff chain. The other raw
-        timeouts are one-shot debounces and a fetch abort, none of which reschedules itself. A new
-        self-rescheduling setTimeout elsewhere fails here instead of passing as an undocumented poller."""
+        timeouts are one-shot debounces (the Work page's issue search among them) and a fetch abort, none of
+        which reschedules itself. A new self-rescheduling setTimeout elsewhere fails here instead of passing as
+        an undocumented poller."""
         found = {
             (name, line.strip())
             for name, source in _all_page_sources().items()
@@ -1078,6 +1080,7 @@ class TestPollingUsesVisibilityAwarePoll:
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
             ("work/board", "var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);"),
+            ("work/search", "_timer = setTimeout(function() { _search(query); }, _DEBOUNCE_MS);"),
             ("history", "_refreshTimer = setTimeout(function() {"),
             (
                 "history",

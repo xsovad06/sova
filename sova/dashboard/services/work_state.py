@@ -198,7 +198,6 @@ class WorkStage(StrEnum):
 
 
 _DONE_STAGE_STATES = frozenset({WorkItemState.MERGED, WorkItemState.DONE, TaskState.ON_QA})
-_RUNNING_STAGE_STATES = frozenset({WorkItemState.AGENT_RUNNING, WorkItemState.IN_PROGRESS})
 _REVIEW_STAGE_STATES = frozenset(
     {
         WorkItemState.PR_DRAFT,
@@ -240,7 +239,8 @@ def work_stage(
     one stage takes the first that applies:
 
     1. ``done``: the state is merged, done or on_qa.
-    2. ``running``: an agent is running or the issue is in progress.
+    2. ``running``: an agent is running or the issue is in progress (an in-progress issue whose latest run failed
+       has no agent, so it falls through to ``needs`` and its card offers the resume).
     3. ``review``: a PR is open and not yet merge-ready (draft, conflicts, CI, awaiting or changes requested).
     4. ``needs``: a merge-ready PR, an exhausted review budget, a spec awaiting approval, an in-review label
        whose PR is no longer open, or a latest run that failed (a later successful run replaces the latest run,
@@ -255,7 +255,9 @@ def work_stage(
     """
     if state in _DONE_STAGE_STATES:
         return WorkStage.DONE
-    if state in _RUNNING_STAGE_STATES:
+    if state == WorkItemState.AGENT_RUNNING:
+        return WorkStage.RUNNING
+    if state == WorkItemState.IN_PROGRESS and run_status != _FAILED_RUN_STATUS:
         return WorkStage.RUNNING
     if state in _REVIEW_STAGE_STATES:
         return WorkStage.REVIEW
@@ -486,6 +488,29 @@ def _get_actions(
         S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
     }
     return actions.get(state, (None, []))
+
+
+# The states an issue is in before it has a PR: its next step is an agent run (triage, research, develop, resume).
+_START_STATES = frozenset(
+    {WorkItemState.BACKLOG, WorkItemState.TRIAGED, WorkItemState.RESEARCHED, WorkItemState.IN_PROGRESS}
+)
+
+
+def start_action(state: str, issue_number: int | str | None) -> dict | None:
+    """The agent run that moves an issue in *state* on, as a ``start_agent`` action, or None when no run does.
+
+    The same action ``_get_actions()`` gives the state, so a card's Start button runs the agent the issue's stage
+    calls for (Research on a triaged issue) instead of always a developer. None for a state with a PR, a parked
+    one (needs_spec), a human-only or a done issue, and an unknown state.
+    """
+    try:
+        item_state = WorkItemState(state)
+    except ValueError:
+        return None
+    if item_state not in _START_STATES:
+        return None
+    primary, _ = _get_actions(item_state, issue_number=str(issue_number) if issue_number else None, pr_number=None)
+    return primary if primary and primary.get("handler") == "start_agent" else None
 
 
 @dataclass(frozen=True, kw_only=True)
