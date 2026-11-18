@@ -67,6 +67,13 @@
            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="work-search-results">
     <div id="work-search-results" class="sova-work-search-results" role="listbox" aria-label="Matching issues" hidden></div>
   </div>
+  <div id="work-owner-filter" class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Filter board by owner">
+    <button type="button" data-owner-filter="mine" aria-pressed="false"
+            data-tooltip="Issues assigned to your configured GitHub user or Jira display name, and PRs you authored or are assigned"
+            class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">Mine</button>
+    <button type="button" data-owner-filter="all" aria-pressed="true"
+            class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">All</button>
+  </div>
   <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, or anywhere outside the details, to close them.</p>
 </div>
 

@@ -478,7 +478,7 @@ async def list_merged_prs_since(*, repo: str, since: date, github_user: str = ""
         "--search",
         f"merged:>={since.isoformat()}",
         "--json",
-        "number,title,url,mergedAt,body,headRefName,closingIssuesReferences",
+        "number,title,url,mergedAt,body,headRefName,closingIssuesReferences,author,assignees",
         "--limit",
         str(MERGED_PR_LIST_LIMIT),
         env=env,

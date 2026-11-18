@@ -126,7 +126,7 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | Page | Purpose |
 |------|---------|
 | **Home** | Project list (command center) for multi-project installations |
-| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, queue, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer, the dependency chains, open PRs and run history. `/agents` redirects here |
+| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, queue, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history. `/agents` redirects here |
 | **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
 | **Lifecycle** | Issue lifecycle rail (development through post-merge) |
 | **Costs** | Per-task and per-model cost tracking and aggregation |
@@ -135,6 +135,8 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | **Settings** | Runtime configuration management |
 | **Setup** | Project onboarding wizard with directory browser |
 | **Style Guide** | Design system reference with live component examples |
+
+On the Work board, **Up next** ranks issues ready for an agent. **Queued** is the saved order the supervisor starts when it is on and a slot is free. **Running** includes active runs, rebases, and issues marked in progress. **In review** contains open PRs still in draft, CI, review, or changes requested, plus issues marked in review by the tracker; it does not imply unresolved review findings. The PR's thread count shows resolved/total, so the difference is unresolved. **Needs you** contains merge decisions, approvals, and failed runs. Mine matches an issue assignee to the configured identity for that issue's tracker, or a PR author or assignee to the GitHub user. The header totals remain project wide.
 
 ## Configuration
 

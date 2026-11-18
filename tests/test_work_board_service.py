@@ -34,6 +34,8 @@ def _task(
     labels: tuple[str, ...] = ("agent:ready",),
     body: str = "",
     milestone: str = "",
+    assignees: tuple[str, ...] = (),
+    jira_key: str = "",
 ) -> Task:
     return Task(
         id=str(number),
@@ -43,6 +45,8 @@ def _task(
         priority=Priority.from_labels(list(labels)),
         body=body,
         milestone=milestone,
+        assignees=list(assignees),
+        metadata={"key": jira_key} if jira_key else {},
         url=f"https://example.test/{number}",
     )
 
@@ -87,6 +91,8 @@ def _sources(
     done_today: list[dict] | None = (),  # type: ignore[assignment]
     running: set[int] | None = None,
     ranking_graph: DependencyGraph | None = None,
+    github_user: str = "",
+    jira_display_name: str = "",
 ):
     graph = DependencyGraph(tasks or [])
     ranking = ranking_graph or graph
@@ -94,7 +100,17 @@ def _sources(
     remove = AsyncMock(return_value=[])
     with (
         patch.object(board, "load_ranking_graph", loaded),
-        patch.object(board, "get_work_items", AsyncMock(return_value={"items": items or []})),
+        patch.object(
+            board,
+            "get_work_items",
+            AsyncMock(
+                return_value={
+                    "items": items or [],
+                    "github_user": github_user,
+                    "jira_display_name": jira_display_name,
+                }
+            ),
+        ),
         patch.object(board, "next_task_exclusions", AsyncMock(return_value=(running or set(), set()))),
         patch.object(board, "load_task_queue", AsyncMock(return_value=list(queue or []))),
         patch.object(board, "load_hidden_issues", AsyncMock(return_value=list(hidden or []))),
@@ -115,6 +131,74 @@ COLUMNS = ("up_next", "queued", "running", "review", "needs", "yours", "blocked"
 
 
 class TestColumns:
+    async def test_default_project_is_used_for_every_board_source(self) -> None:
+        project = Path("/tmp/configured-checkout")
+        with (
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=project),
+            _sources() as sources,
+        ):
+            result = await board.build_board(None)
+
+        assert result["columns"]
+        sources.loaded.assert_awaited_with(project)
+
+    async def test_rebase_run_moves_its_issue_to_running_without_an_extra_card(self) -> None:
+        item = _item(1066, "pr_conflicted", pr_number=1105, pr_details={"number": 1105})
+        item["running_agent"] = {"run_id": 6, "role": "developer", "elapsed_seconds": 90}
+        run = {
+            "id": 7,
+            "issue_number": "1066",
+            "role": "supervisor:rebase",
+            "status": "running",
+            "current_step": "rebase",
+            "elapsed_seconds": 70,
+            "started_at": "2026-11-18T10:00:00Z",
+        }
+        done = {"number": 1066, "stage": "done", "title": "Earlier merged PR"}
+        with _sources(items=[item], tasks=[_task(1066)], runs={"run:7": run, "issue:1066": run}, done_today=[done]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["running"]) == [1066]
+        assert result["review"] == result["other_runs"] == result["done_today"] == []
+        assert (result["running"][0]["run_id"], result["running"][0]["role"]) == (7, "supervisor:rebase")
+        assert result["running"][0]["elapsed_seconds"] == 70
+
+    async def test_a_run_without_a_work_item_keeps_its_owner_and_leaves_up_next(self) -> None:
+        run = {
+            "id": 7,
+            "issue_number": "5",
+            "role": "developer",
+            "status": "running",
+            "current_step": "develop",
+            "started_at": "2026-11-18T10:00:00Z",
+        }
+        with _sources(
+            tasks=[_task(5, assignees=("Damian Sova",))],
+            runs={"run:7": run, "issue:5": run},
+            jira_display_name="Damian Sova",
+        ):
+            result = await board.build_board(PROJECT, owner="mine")
+
+        assert result["up_next"] == []
+        assert len(result["other_runs"]) == 1
+        assert result["other_runs"][0]["assignees"] == ["Damian Sova"]
+
+    async def test_queued_issue_without_a_work_item_moves_to_its_active_run(self) -> None:
+        run = {
+            "id": 7,
+            "issue_number": "5",
+            "role": "supervisor:rebase",
+            "status": "running",
+            "current_step": "rebase",
+            "started_at": "2026-11-18T10:00:00Z",
+        }
+        with _sources(tasks=[_task(5)], queue=[5], runs={"run:7": run, "issue:5": run}):
+            result = await board.build_board(PROJECT)
+
+        assert result["queued"] == result["other_runs"] == []
+        assert _numbers(result["running"]) == [5]
+        assert result["running"][0]["run_id"] == 7
+
     async def test_every_issue_is_in_exactly_one_column_with_its_stage_and_state_display(self) -> None:
         items = [
             _item(1),  # next
@@ -221,6 +305,46 @@ class TestColumns:
 
 
 class TestUpNext:
+    async def test_mine_picks_assigned_issues_beyond_the_first_five_ranked(self) -> None:
+        tasks = [
+            _task(n, assignees=("Damian Sova",) if n in {6, 8} else (), jira_key=f"ARVAC-{n}") for n in range(1, 9)
+        ]
+        with _sources(tasks=tasks, jira_display_name="Damian Sova"):
+            result = await board.build_board(PROJECT, owner="mine")
+
+        assert set(_numbers(result["up_next"])) == {6, 8}
+        assert result["more_ready"] == 0
+        assert result["jira_display_name"] == "Damian Sova"
+
+    async def test_mine_keeps_graph_assignee_when_queue_snapshot_is_stale(self) -> None:
+        item = _item(6)
+        item["assignees"] = ["Other person"]
+        task = _task(6, assignees=("Straße",), jira_key="ARVAC-6")
+        with _sources(items=[item], tasks=[task], github_user="Other person", jira_display_name="STRASSE"):
+            result = await board.build_board(PROJECT, owner="mine")
+
+        assert _numbers(result["up_next"]) == [6]
+        assert result["up_next"][0]["assignees"] == ["Straße"]
+        assert result["up_next"][0]["mine"] is True
+
+    async def test_jira_assignee_does_not_match_the_github_login(self) -> None:
+        task = _task(6, assignees=("alex",), jira_key="ARVAC-6")
+        with _sources(tasks=[task], github_user="alex", jira_display_name="Sam Rivera"):
+            result = await board.build_board(PROJECT, owner="mine")
+
+        assert result["up_next"] == []
+
+    async def test_mine_shows_only_dependency_chains_touching_my_work(self) -> None:
+        mine = _item(1, "pr_ci_failed", pr_number=10)
+        mine["assignees"] = ["Damian Sova"]
+        mine["jira_key"] = "ARVAC-1"
+        other = _item(3, "pr_ci_failed", pr_number=30)
+        tasks = [_task(1), _task(2, body="## Dependencies\n- #1\n"), _task(3), _task(4, body="## Dependencies\n- #3\n")]
+        with _sources(items=[mine, other], tasks=tasks, jira_display_name="Damian Sova"):
+            result = await board.build_board(PROJECT, owner="mine")
+
+        assert [[entry["number"] for entry in chain["issues"]] for chain in result["chains"]] == [[1, 2]]
+
     def _pool(self, count: int) -> tuple[list[dict], list[Task]]:
         return [_item(n) for n in range(1, count + 1)], [_task(n) for n in range(1, count + 1)]
 
@@ -410,6 +534,37 @@ class TestQueue:
 class TestDoneToday:
     NOW = datetime(2026, 11, 13, 15, 30, tzinfo=timezone.utc)
 
+    async def test_closed_jira_issue_keeps_its_assignee_for_mine(self) -> None:
+        task = _task(42, state=TaskState.DONE, assignees=("Damian Sova",), jira_key="ARVAC-42")
+        entry = {"number": 42, "jira_key": "ARVAC-42", "pr_author": "teammate"}
+        adapter = SimpleNamespace(get_task=AsyncMock(return_value=task))
+        with (
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.adapters.close_adapter", AsyncMock()),
+            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+        ):
+            await board._enrich_done_assignees(PROJECT, DependencyGraph([]), [entry])
+            again = {"number": 42, "jira_key": "ARVAC-42"}
+            await board._enrich_done_assignees(PROJECT, DependencyGraph([]), [again])
+
+        assert entry["assignees"] == ["Damian Sova"]
+        assert again["assignees"] == ["Damian Sova"]
+        adapter.get_task.assert_awaited_once_with("ARVAC-42")
+        assert board._entry_is_mine(entry, "github-user", "Damian Sova") is True
+
+    async def test_failed_jira_assignee_lookup_is_reported_as_unavailable(self) -> None:
+        entry = {"number": 42, "jira_key": "ARVAC-42"}
+        adapter = SimpleNamespace(get_task=AsyncMock(side_effect=RuntimeError("offline")))
+        with (
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.adapters.close_adapter", AsyncMock()),
+            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+        ):
+            complete = await board._enrich_done_assignees(PROJECT, DependencyGraph([]), [entry])
+
+        assert complete is False
+        assert "assignees" not in entry
+
     @staticmethod
     def _merged(number: int, merged_at: datetime, body: str = "", closing: list[int] | None = None) -> dict:
         return {
@@ -453,6 +608,32 @@ class TestDoneToday:
             entries = await board._done_today(PROJECT, self.NOW)
 
         assert sorted(e["number"] for e in entries) == [21, 22]
+
+    async def test_jira_board_uses_project_key_and_ignores_another_projects_pr(self) -> None:
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        midnight = board._local_midnight(self.NOW)
+        prs = [
+            self._merged(1, midnight, body="JIRA: https://jira.example.test/browse/RHCLOUD-42", closing=[42]),
+            self._merged(2, midnight, body="JIRA: https://jira.example.test/browse/ARVAC-7", closing=[99]),
+        ]
+        prs[1]["author"] = {"login": "dsova"}
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            ),
+        )
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch.object(board, "list_merged_prs_since", AsyncMock(return_value=prs)),
+        ):
+            entries = await board._done_today(PROJECT, self.NOW)
+
+        assert [(entry["number"], entry["pr_number"]) for entry in entries] == [(7, 2)]
+        assert entries[0]["jira_key"] == "ARVAC-7"
+        assert entries[0]["url"] == "https://jira.example.test/browse/ARVAC-7"
+        assert entries[0]["pr_author"] == "dsova"
 
     async def test_an_issue_two_merged_prs_link_appears_once_with_the_latest_merge(self) -> None:
         midnight = board._local_midnight(self.NOW)
@@ -553,7 +734,7 @@ class TestChains:
 
 class TestActiveRuns:
     async def test_runs_are_indexed_by_run_and_issue_with_the_newest_winning(self) -> None:
-        runs = [{"id": 9, "issue_number": "5"}, {"id": 3, "issue_number": "5"}]  # newest first
+        runs = [{"id": 9, "issue_number": "005"}, {"id": 3, "issue_number": "5"}]  # newest first
         session = MagicMock()
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)

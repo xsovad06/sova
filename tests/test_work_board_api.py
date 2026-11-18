@@ -47,6 +47,13 @@ class TestBoardRoute:
         assert resp.json() == payload
         assert build.await_args.args[1] == "M1"
 
+    async def test_board_passes_mine_filter_to_the_service(self, client: AsyncClient) -> None:
+        with patch.object(work_board_service, "build_board", AsyncMock(return_value={})) as build:
+            resp = await client.get("/api/work/board", params={"owner": "mine"})
+
+        assert resp.status_code == 200
+        assert build.await_args.kwargs["owner"] == "mine"
+
     async def test_a_graph_config_failure_is_a_503_not_an_empty_board(self, client: AsyncClient) -> None:
         with patch.object(work_board_service, "build_board", AsyncMock(side_effect=GraphConfigError("no repo"))):
             resp = await client.get("/api/work/board")

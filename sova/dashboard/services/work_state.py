@@ -232,6 +232,7 @@ def work_stage(
     run_status: str | None = None,
     *,
     queued: bool = False,
+    active_run: bool = False,
 ) -> WorkStage:
     """The one board stage for an issue, from its state, suitability mode and latest run status.
 
@@ -239,9 +240,10 @@ def work_stage(
     one stage takes the first that applies:
 
     1. ``done``: the state is merged, done or on_qa.
-    2. ``running``: an agent is running or the issue is in progress (an in-progress issue whose latest run failed
-       has no agent, so it falls through to ``needs`` and its card offers the resume).
-    3. ``review``: a PR is open and not yet merge-ready (draft, conflicts, CI, awaiting or changes requested).
+    2. ``running``: an agent or tracked run is running, or the issue is in progress. An in-progress issue
+       whose latest run failed has no agent, so it falls through to ``needs`` and its card offers the resume.
+    3. ``review``: a PR is open and not yet merge-ready (draft, conflicts, CI, awaiting or changes requested),
+       or the tracker issue is labeled in review.
     4. ``needs``: a merge-ready PR, an exhausted review budget, a spec awaiting approval, an in-review label
        whose PR is no longer open, or a latest run that failed (a later successful run replaces the latest run,
        so it clears this).
@@ -255,6 +257,8 @@ def work_stage(
     """
     if state in _DONE_STAGE_STATES:
         return WorkStage.DONE
+    if active_run:
+        return WorkStage.RUNNING
     if state == WorkItemState.AGENT_RUNNING:
         return WorkStage.RUNNING
     if state == WorkItemState.IN_PROGRESS and run_status != _FAILED_RUN_STATUS:
