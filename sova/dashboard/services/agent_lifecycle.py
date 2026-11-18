@@ -1007,12 +1007,16 @@ async def start_command(
 
     # The slash command asks the coding agent to fetch, rewrite and push Git
     # history. Codex's workspace sandbox protects the shared .git directory,
-    # so use the existing host-owned address-review pipeline for this runtime.
-    # Its coding step remains sandboxed; SOVA performs the Git and test steps.
-    if command == "address-pr" and get_runtime().name == "codex":
-        if pr_number is None:
-            return {"error": "Address PR requires a PR number"}
-        return await start_agent(issue, role="developer", pr_number=pr_number, slug=slug)
+    # so use the host-owned address-review pipeline for this project. A
+    # multi-project dashboard has one shared runtime, which may belong to a
+    # different project, so routing must read this project's configuration.
+    if command == "address-pr":
+        from sova.config.loader import load_config
+
+        if load_config(pa.project_dir).agent.runtime == "codex":
+            if pr_number is None:
+                return {"error": "Address PR requires a PR number"}
+            return await start_agent(issue, role="developer", pr_number=pr_number, slug=slug)
 
     mem_block, mem_warn = check_memory_pressure(pa.project_dir)
     if mem_block:

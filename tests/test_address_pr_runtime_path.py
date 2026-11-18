@@ -9,17 +9,20 @@ import pytest
 
 
 class TestCodexAddressPrDispatch:
-    async def test_pr_command_uses_developer_pipeline(self, tmp_path: Path) -> None:
+    async def test_pr_command_uses_project_runtime_in_multi_project_server(self, tmp_path: Path) -> None:
         from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.agent_pool import ProjectAgents
 
         pa = ProjectAgents()
         pa.project_dir = tmp_path
-        runtime = MagicMock()
-        runtime.name = "codex"
+        server_runtime = MagicMock()
+        server_runtime.name = "claude-code"
+        project_config = MagicMock()
+        project_config.agent.runtime = "codex"
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(agent_lifecycle, "get_runtime", return_value=runtime),
+            patch.object(agent_lifecycle, "get_runtime", return_value=server_runtime),
+            patch("sova.config.loader.load_config", return_value=project_config),
             patch.object(
                 agent_lifecycle, "_resolve_command_context", new_callable=AsyncMock, return_value=(1496, "1418")
             ),
@@ -38,11 +41,11 @@ class TestCodexAddressPrDispatch:
 
         pa = ProjectAgents()
         pa.project_dir = tmp_path
-        runtime = MagicMock()
-        runtime.name = "codex"
+        project_config = MagicMock()
+        project_config.agent.runtime = "codex"
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(agent_lifecycle, "get_runtime", return_value=runtime),
+            patch("sova.config.loader.load_config", return_value=project_config),
             patch.object(
                 agent_lifecycle, "_resolve_command_context", new_callable=AsyncMock, return_value=(None, "1418")
             ),
