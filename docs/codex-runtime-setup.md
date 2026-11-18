@@ -232,16 +232,18 @@ and adds that the key is only checked when a request is sent, so doctor
 reports `(API key configured)`: a revoked key still surfaces on the first
 real `codex exec`, not here.
 
-## No Network Inside the Sandbox
+## Network Access for Dashboard Commands
 
-`workspace-write` and `read-only` both run `codex exec` without network access, so an
-agent cannot call `gh` or reach the tracker. SOVA does those calls itself: it passes
-`/develop` the issue title, body and comments when there is no approved spec, runs
-research on a text-only provider as a read-only agent whose section SOVA writes to the
-issue, and pushes and opens PRs from its own process. A command that still tells the
-agent to fetch something over the network will see `error connecting to api.github.com`
-in the agent transcript. For a full OpenAI-only run, see
-[openai-only-runbook.md](openai-only-runbook.md).
+Pipeline role agents keep network access disabled in both Codex sandboxes. SOVA performs
+their tracker calls, pushes and PR creation from its own process. Dashboard command
+agents, started through `POST /api/agents/command`, run workflows such as
+`/integrate-pr` that call `gh` directly. For these runs SOVA passes
+`--config sandbox_workspace_write.network_access=true` to `codex exec`, allowing
+GitHub and the local MCP endpoint while retaining the `workspace-write` filesystem
+sandbox. A dashboard command with `codex.sandbox = "read-only"` fails at spawn with a
+configuration error because that sandbox cannot provide the required network access.
+The reviewer's read-only repo-context sub-call stays offline. For a full OpenAI-only
+run, see [openai-only-runbook.md](openai-only-runbook.md).
 
 ## Rollback to Claude Code
 
@@ -280,7 +282,7 @@ refresh inside a single `codex exec` invocation triggered by SOVA.
 
 ## CLI Version Drift
 
-`codex exec`'s flag names (`--sandbox`, `--model`, `--json`) are hardcoded
+`codex exec`'s flag names (`--sandbox`, `--config`, `--model`, `--json`) are hardcoded
 in `_codex_exec_args()` (`sova/ipc/runtime.py`), so a CLI release that
 renames or drops one of them surfaces as a failing `codex exec` invocation
 at spawn time, with the CLI's own usage error in the agent's stderr; the fix

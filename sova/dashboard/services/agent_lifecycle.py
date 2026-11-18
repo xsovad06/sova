@@ -1098,6 +1098,7 @@ async def start_command(
                 fallback_model=fallback_model,
                 output_dir=output_dir,
                 run_label=str(pre_run_id),
+                network_access=True,
             )
         except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)

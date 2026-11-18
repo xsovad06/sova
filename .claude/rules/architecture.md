@@ -70,7 +70,7 @@ Deep-dive per-module notes (what each `sova/` subpackage does, and the non-obvio
 - `sova/llm/`
 - `sova/git/`
 - `sova/ipc/`
-- Codex gets the neutral half of the headless guardrail preamble, and `read_only` is enforced by the sandbox, not the prompt
+- Codex gets the neutral half of the headless guardrail preamble; dashboard commands get network inside workspace-write, while pipeline roles stay offline (docs/codex-runtime-setup.md).
 - `sova/agents/`
 - `sova/knowledge/`
 - `sova/utils/`

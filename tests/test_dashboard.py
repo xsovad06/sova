@@ -2785,6 +2785,7 @@ class TestStartCommandWorktreeResolution:
         assert result.get("status") == "started"
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == worktree, f"Expected worktree {worktree}, got {spawn_cwd}"
+        assert mock_runtime.spawn.call_args.kwargs["network_access"] is True
 
     async def test_a_command_agent_is_leased_for_its_lifetime(self, tmp_path: Path) -> None:
         """`claude -p /<command>` is not a `sova run`, so the dashboard leases on its behalf and releases on reap."""

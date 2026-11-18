@@ -165,6 +165,7 @@ class MockRuntime(AgentRuntime):
         output_dir: Path | None = None,
         run_label: str | None = None,
         read_only: bool = False,
+        network_access: bool = False,
     ) -> MockAgentProcess:
         self._last_prompt = prompt
         self._last_read_only = read_only
