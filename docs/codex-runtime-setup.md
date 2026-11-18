@@ -242,6 +242,10 @@ agents, started through `POST /api/agents/command`, run workflows such as
 GitHub and the local MCP endpoint while retaining the `workspace-write` filesystem
 sandbox. A dashboard command with `codex.sandbox = "read-only"` fails at spawn with a
 configuration error because that sandbox cannot provide the required network access.
+When the configured runtime is Codex, dashboard `/address-pr` launches the native
+address-review pipeline instead. Codex edits files in its workspace sandbox; SOVA
+fetches, stages, amends, validates and pushes from the host process. This keeps
+shared Git metadata and process-level tests outside the coding agent's sandbox.
 The reviewer's read-only repo-context sub-call stays offline. For a full OpenAI-only
 run, see [openai-only-runbook.md](openai-only-runbook.md).
 

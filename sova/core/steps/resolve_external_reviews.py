@@ -109,25 +109,27 @@ class ResolveExternalReviewsStep(BaseStep):
 
         summary = f"{dismissed_count} bot reviews dismissed" if dismissed_count else "No bot reviews to dismiss"
         fallback = await self._finish_unrecorded_cycle(ctx)
-        if fallback:
-            summary = f"{summary}; {fallback}"
+        if fallback is not None:
+            if not fallback.success:
+                return fallback
+            summary = f"{summary}; {fallback.summary}"
         return StepResult(success=True, summary=summary)
 
     @staticmethod
-    async def _finish_unrecorded_cycle(ctx: ExecutionContext) -> str:
+    async def _finish_unrecorded_cycle(ctx: ExecutionContext) -> StepResult | None:
         """Run ``resolve_review_threads``' logic when the pipeline did not (or its summary post failed).
 
         A no-op in the default pipeline, where ``resolve_review_threads`` already posted the summary and set
-        ``address_summary_posted``. Returns the fallback's summary, or "" when nothing ran.
+        ``address_summary_posted``. Returns the fallback result, or None when nothing ran.
         """
         if ctx.pipeline_variant != "address_review" or not ctx.address_cycle_recorded or ctx.address_summary_posted:
-            return ""
+            return None
         log.warning("step.resolve_external_reviews.address_cycle_fallback", pr=ctx.pr_number)
         try:
-            return (await finish_address_cycle(ctx)).summary
-        except Exception:  # noqa: BLE001 (best effort; the bot-review dismissal above already succeeded)
+            return await finish_address_cycle(ctx)
+        except Exception:  # noqa: BLE001 (external adapter failures must not look like success)
             log.warning("step.resolve_external_reviews.address_cycle_fallback_failed", exc_info=True)
-            return ""
+            return StepResult(success=False, summary="Could not finish address review cycle")
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         return GateCheckResult(passed=True)

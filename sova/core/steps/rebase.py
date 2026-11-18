@@ -26,6 +26,7 @@ class RebaseStep(BaseStep):
             result, cost = await rebase_with_conflict_resolution(
                 ctx.base_branch,
                 cwd=ctx.working_dir,
+                project_dir=ctx.project_dir,
                 model=ctx.config.agent.model,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )

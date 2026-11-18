@@ -491,6 +491,32 @@ class TestDispatchPrompt:
         assert runtime.spawn_calls[0]["prompt"] == "fix the failing checks"
         assert runtime.spawn_calls[0]["model"] == "routed-model"
 
+    async def test_runtime_prompt_reads_project_config_while_editing_worktree(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "project"
+        worktree = project_dir / ".claude" / "worktrees" / "1418"
+        worktree.mkdir(parents=True)
+        global_runtime = _StubRuntime(_StubProcess())
+        project_runtime = _StubRuntime(_StubProcess(stdout=["__RESULT__"]))
+        cfg = ProjectConfig(agent=AgentConfig(runtime="codex"))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=global_runtime),
+            patch("sova.core.agent_dispatch.create_runtime", return_value=project_runtime) as create,
+            patch(
+                "sova.core.agent_dispatch.client.prepare_invocation",
+                new_callable=AsyncMock,
+                return_value=(cfg, "routed-model", 60.0),
+            ) as preflight,
+        ):
+            result = await dispatch_runtime_prompt(
+                _ToolStep(), "resolve conflicts", cwd=worktree, config_dir=project_dir
+            )
+
+        assert result.text == "done"
+        assert preflight.await_args.kwargs["cwd"] == project_dir
+        create.assert_called_once_with("codex", codex=cfg.codex)
+        assert not global_runtime.spawn_calls
+        assert project_runtime.spawn_calls[0]["cwd"] == worktree
+
     @pytest.mark.parametrize(("enforced", "warns"), [(False, True), (True, False)])
     async def test_read_only_warns_when_runtime_does_not_enforce_it(
         self, enforced: bool, warns: bool, tmp_path: Path

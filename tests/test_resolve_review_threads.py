@@ -535,8 +535,8 @@ class TestStepExecute:
         with git, fetch, reply, resolve:
             result = await ResolveReviewThreadsStep().execute(ctx)
 
-        assert result.success is True
-        assert result.summary == "1 threads resolved"
+        assert result.success is False
+        assert result.summary == "Could not post address summary"
 
     @pytest.mark.asyncio
     async def test_missing_working_dir_posts_unanchored_and_resolves_nothing(self, tmp_path: Path) -> None:
@@ -696,6 +696,21 @@ class TestOverrideWithoutTheStep:
         ctx.adapter.post_pr_review.assert_awaited_once()
         assert ctx.adapter.post_pr_review.call_args.kwargs["body"].startswith("<!-- sova-addressed")
         resolve.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fallback_fails_when_summary_post_fails(self, tmp_path: Path) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _ctx([], tmp_path)
+        ctx.adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("GitHub unavailable"))
+        with (
+            patch(f"{_MOD}.run", new=_git()),
+            patch("sova.core.steps.resolve_external_reviews._dismiss_bot_reviews", new=AsyncMock(return_value=0)),
+        ):
+            result = await ResolveExternalReviewsStep().execute(ctx)
+
+        assert result.success is False
+        assert result.summary == "Could not post address summary"
 
     @pytest.mark.asyncio
     async def test_default_pipeline_does_not_post_a_second_marker(self, tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -20,7 +21,7 @@ from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, normalize_signal_exit
 from sova.llm.phase_usage import PhaseTally
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
-from sova.utils.review_markers import SOVA_VERDICT_MARKER_RE
+from sova.utils.review_markers import SOVA_ADDRESSED_MARKER_RE, SOVA_VERDICT_MARKER_RE
 
 if TYPE_CHECKING:
     from sova.core.pr_diff_guard import PinDowngrade
@@ -602,8 +603,8 @@ def _track_connectivity_safe(result: object) -> None:
 async def _capture_pr_head_sha(pr_number: int, project_dir: Path) -> str | None:
     """Capture the current headRefOid of a PR before an agent run starts.
 
-    Returns None on any error (API failure, timeout, missing PR) so callers
-    can fall through to existing validation logic.
+    Returns None on any error (API failure, timeout, missing PR). Address PR
+    validation treats a missing baseline as unverified.
     """
     sha, _ = await _fetch_pr_fields(pr_number, project_dir, "headRefOid", ".headRefOid")
     if sha:
@@ -637,8 +638,8 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> tuple[bool | None, bool
 
     Returns ``(answer, network_blocked)`` where answer is:
         True: SHA changed (agent pushed) or PR is merged
-        None: inconclusive (no pre_run_sha, API error, or SHAs match)
-        Never returns False; matching SHAs fall through as inconclusive.
+        False: the PR head is unchanged
+        None: inconclusive (no pre_run_sha or API error)
     """
     if agent.pre_run_sha is None or not agent.pr_number:
         return None, False
@@ -671,7 +672,37 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> tuple[bool | None, bool
         return True, False
 
     log.debug("check_pr_pushed_via_sha.unchanged", pr=agent.pr_number)
-    return None, False
+    return False, False
+
+
+async def _check_address_summary(agent: AgentState) -> tuple[bool | None, bool]:
+    """Check for an addressed review posted during this command run."""
+    output, network_blocked = await _fetch_pr_fields(agent.pr_number, agent.project_dir, "reviews", ".reviews")
+    if output is None:
+        return None, network_blocked
+    try:
+        reviews = json.loads(output)
+    except json.JSONDecodeError:
+        return None, False
+    if not isinstance(reviews, list):
+        return None, False
+
+    started = agent.started_at_utc
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    for review in reviews:
+        if not isinstance(review, dict) or not SOVA_ADDRESSED_MARKER_RE.search(review.get("body") or ""):
+            continue
+        submitted = review.get("submittedAt")
+        if not isinstance(submitted, str):
+            continue
+        try:
+            submitted_at = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if submitted_at.tzinfo is not None and submitted_at >= started:
+            return True, False
+    return False, False
 
 
 class OutcomeValidation(NamedTuple):
@@ -870,17 +901,10 @@ async def _check_pr_diff_guard(agent: AgentState) -> OutcomeValidation:
 async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidation:
     """Check that address-pr actually committed and pushed changes.
 
-    Fail-closed: requires at least one tier to positively confirm the push.
-    Tiers checked in order (short-circuits on first positive):
-      0. Output lines exist (agent produced meaningful output)
-      1. PR headRefOid changed (SHA comparison)
-      2. Branch has no unpushed commits (git fetch + rev-list)
-      3. Output text contains push keywords (requires 2+ distinct matches)
-
-    Fail-closed is right for an answer, but not for the absence of one: tiers
-    1 and 2 both need GitHub, so during an outage both go inconclusive and the
-    fallback used to report that the agent "completed without pushing changes".
-    A network-blocked verification is reported as such instead.
+    A branch being synchronized with its remote is not proof that this run
+    pushed anything: it is also true before a failed run. Output prose is not
+    evidence either. Require a captured pre-run PR head and a changed remote
+    head before accepting completion.
 
     A confirmed push also runs the silent-revert diff guard
     (`_check_pr_diff_guard`) before the outcome is accepted as valid.
@@ -888,33 +912,31 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> OutcomeValidat
     if agent.pr_number is None:
         return OutcomeValidation("address-pr run has no associated PR number")
 
-    # Tier 0: output must exist (agent actually ran)
+    # Output must exist (agent actually ran).
     lines = await _fetch_output_lines(run_id, agent.project_dir)
     if lines is None:
         return OutcomeValidation("address-pr produced no output (agent never ran meaningfully)")
 
-    # Tier 1: SHA comparison (most reliable)
+    if agent.pre_run_sha is None:
+        return OutcomeValidation(
+            "address-pr outcome unverified: PR head baseline was unavailable", network_blocked=True
+        )
+
     sha_pushed, sha_blocked = await _check_pr_pushed_via_sha(agent)
     if sha_pushed is True:
+        summary_posted, summary_blocked = await _check_address_summary(agent)
+        if summary_posted is False:
+            return OutcomeValidation(f"address-pr exited before posting the address summary for PR #{agent.pr_number}")
+        if summary_posted is None:
+            return OutcomeValidation(
+                f"address-pr outcome unverified: could not check PR #{agent.pr_number} reviews",
+                network_blocked=summary_blocked,
+            )
         return await _check_pr_diff_guard(agent)
-
-    # Tier 2: branch ref check
-    pushed, branch_blocked = await _check_pr_branch_pushed(agent)
-    if pushed is True:
-        return await _check_pr_diff_guard(agent)
-    if pushed is False:
-        return OutcomeValidation("address-pr completed without pushing changes")
-
-    # Tier 3: text scan (require 2+ distinct keyword matches to reduce false positives)
-    lowered = [line.lower() for line in lines]
-    matched_keywords = {kw for kw in _PUSH_KEYWORDS if any(kw in line for line in lowered)}
-    if len(matched_keywords) >= 2:
-        return await _check_pr_diff_guard(agent)
-
-    if sha_blocked or branch_blocked:
+    if sha_blocked or sha_pushed is None:
         return OutcomeValidation(
-            f"address-pr outcome unverified: GitHub was unreachable while checking PR #{agent.pr_number}",
-            network_blocked=True,
+            f"address-pr outcome unverified: could not check PR #{agent.pr_number} head",
+            network_blocked=sha_blocked,
         )
 
     return OutcomeValidation("address-pr completed without pushing changes")
@@ -958,8 +980,6 @@ async def _check_pr_branch_pushed(agent: AgentState) -> tuple[bool | None, bool]
         log.debug("check_pr_branch_pushed.failed", pr=agent.pr_number, exc_info=True)
     return None, False
 
-
-_PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
 
 _VERDICT_TO_NEXT_ACTION = {
     "approve": "approve",
@@ -1165,8 +1185,10 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> OutcomeVa
 
     try:
         return await validator_fn(run_id, agent)
-    except Exception:  # noqa: BLE001 (a raising validator must not fail the run it is validating)
+    except Exception:  # noqa: BLE001 (external validation can raise unexpectedly)
         log.debug("validate_command.failed", run_id=run_id, cmd=cmd_name, exc_info=True)
+        if cmd_name == "address-pr":
+            return OutcomeValidation("address-pr outcome unverified: validation failed")
         return _VALID
 
 

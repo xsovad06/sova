@@ -382,7 +382,9 @@ is marked `interrupted`. Neither is ever signalled. An adopted agent's exit code
 status, its handoff or the final `result` line in its `.stdout`; when none of them says
 how it ended, the run is recorded `interrupted` rather than `failed`. The previous server's pre-run baseline is gone, so an adopted
 `address-pr`, `rearrange-commits` or `integrate-pr` run is not diff-guarded (no silent-revert or pin-downgrade
-check; `adopt.diff_guard_baseline_unavailable` is logged) and falls back to the weaker push checks. Set `recovery.kill_orphans = true` to kill identity-matched orphans at
+check; `adopt.diff_guard_baseline_unavailable` is logged). An `address-pr` command without its pre-run PR head
+baseline is recorded as interrupted rather than being accepted from a synchronized branch or output text.
+Set `recovery.kill_orphans = true` to kill identity-matched orphans at
 startup instead. Agents are left running only when a service manager runs the server
 (systemd, or the launchd plist): because of `KillMode=process`, `systemctl --user stop` also
 leaves agents running until the next start adopts them, so stop them from the dashboard first,

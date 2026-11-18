@@ -8954,9 +8954,9 @@ class TestCommandOutcomeValidation:
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
         assert result.failure_reason is not None
-        assert "without pushing" in result.failure_reason
+        assert "baseline was unavailable" in result.failure_reason
 
-    async def test_address_pr_passes_with_push_evidence(self) -> None:
+    async def test_address_pr_output_claim_is_not_push_evidence(self) -> None:
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_command_outcome
@@ -8980,13 +8980,14 @@ class TestCommandOutcomeValidation:
         agent.pre_run_sha = None
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
-        assert result.failure_reason is None
+        assert result.failure_reason is not None
+        assert "baseline was unavailable" in result.failure_reason
 
-    async def test_address_pr_passes_when_git_confirms_pushed(self) -> None:
-        """Git ref comparison confirms push, skips text scanning entirely."""
+    async def test_address_pr_passes_when_pr_head_changed(self) -> None:
+        """A changed remote PR head confirms that this run pushed."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_db import _VALID, _validate_command_outcome
         from sova.dashboard.services.agent_pool import AgentState
 
         async with await get_session() as session:
@@ -8999,7 +9000,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 102
-        agent.pre_run_sha = None
+        agent.pre_run_sha = "aaa111"
         agent.project_dir = None
         with (
             patch(
@@ -9008,16 +9009,22 @@ class TestCommandOutcomeValidation:
                 return_value=["some output"],
             ),
             patch(
-                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
                 new_callable=AsyncMock,
                 return_value=(True, False),
             ),
+            patch(
+                "sova.dashboard.services.agent_db._check_address_summary",
+                new_callable=AsyncMock,
+                return_value=(True, False),
+            ),
+            patch("sova.dashboard.services.agent_db._check_pr_diff_guard", new_callable=AsyncMock, return_value=_VALID),
         ):
             result = await _validate_command_outcome(run_id, agent)
         assert result.failure_reason is None
 
-    async def test_address_pr_fails_when_git_confirms_unpushed(self) -> None:
-        """Git ref comparison detects unpushed commits."""
+    async def test_address_pr_fails_when_pr_head_unchanged(self) -> None:
+        """An unchanged remote PR head proves this run made no push."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_db import _validate_command_outcome
@@ -9033,7 +9040,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 103
-        agent.pre_run_sha = None
+        agent.pre_run_sha = "aaa111"
         agent.project_dir = None
         with (
             patch(
@@ -9042,7 +9049,7 @@ class TestCommandOutcomeValidation:
                 return_value=["some output"],
             ),
             patch(
-                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
                 new_callable=AsyncMock,
                 return_value=(False, False),
             ),
@@ -10920,7 +10927,7 @@ class TestCheckPrPushedViaSha:
         [
             pytest.param("aaa111", True, "bbb222\tOPEN\n", (True, False), id="true-when-sha-changed"),
             pytest.param("aaa111", True, "aaa111\tMERGED\n", (True, False), id="true-when-pr-merged"),
-            pytest.param("aaa111", True, "aaa111\tOPEN\n", (None, False), id="none-when-sha-unchanged"),
+            pytest.param("aaa111", True, "aaa111\tOPEN\n", (False, False), id="false-when-sha-unchanged"),
             pytest.param("aaa111", False, "", (None, False), id="none-on-api-failure"),
             pytest.param("abc123", True, "\tOPEN\n", (None, False), id="none-when-sha-empty"),
             pytest.param("abc123", True, "deadbeef\t\n", (None, False), id="none-when-state-empty"),
@@ -10974,7 +10981,7 @@ class TestCheckPrPushedViaSha:
 
 
 class TestValidateAddressPrWithSha:
-    """Tests that _validate_address_pr uses fail-closed tiered validation."""
+    """Tests that _validate_address_pr requires a changed remote PR head."""
 
     async def test_pr_number_none_returns_error(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock
@@ -11032,6 +11039,11 @@ class TestValidateAddressPrWithSha:
                 return_value=(True, False),
             ) as sha_mock,
             patch(
+                "sova.dashboard.services.agent_db._check_address_summary",
+                new_callable=AsyncMock,
+                return_value=(True, False),
+            ),
+            patch(
                 "sova.dashboard.services.agent_db._check_pr_branch_pushed",
                 new_callable=AsyncMock,
             ) as branch_mock,
@@ -11046,7 +11058,7 @@ class TestValidateAddressPrWithSha:
         sha_mock.assert_awaited_once_with(agent)
         branch_mock.assert_not_awaited()
 
-    async def test_falls_through_to_branch_check_when_sha_inconclusive(self, tmp_path: Path) -> None:
+    async def test_inconclusive_sha_cannot_pass_from_synchronized_branch(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_db import _VALID, _validate_address_pr
@@ -11080,10 +11092,11 @@ class TestValidateAddressPrWithSha:
             ),
         ):
             result = await _validate_address_pr(1, agent)
-        assert result.failure_reason is None
+        assert result.failure_reason is not None
+        assert "unverified" in result.failure_reason
 
     async def test_all_tiers_inconclusive_returns_error(self, tmp_path: Path) -> None:
-        """Fail-closed: when SHA and branch checks return None and text scan has <2 matches."""
+        """An unknown PR head cannot prove that the command pushed fixes."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_db import _validate_address_pr
@@ -11113,7 +11126,7 @@ class TestValidateAddressPrWithSha:
         ):
             result = await _validate_address_pr(1, agent)
         assert result.failure_reason is not None
-        assert "without pushing" in result.failure_reason
+        assert "unverified" in result.failure_reason
 
     async def test_text_scan_single_keyword_not_enough(self, tmp_path: Path) -> None:
         """One keyword match is not sufficient (reduces false positives)."""
@@ -11146,10 +11159,10 @@ class TestValidateAddressPrWithSha:
         ):
             result = await _validate_address_pr(1, agent)
         assert result.failure_reason is not None
-        assert "without pushing" in result.failure_reason
+        assert "unverified" in result.failure_reason
 
-    async def test_text_scan_two_keywords_passes(self, tmp_path: Path) -> None:
-        """Two distinct keyword matches is sufficient evidence."""
+    async def test_text_scan_two_keywords_does_not_prove_push(self, tmp_path: Path) -> None:
+        """A model's text cannot prove that a remote ref moved."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_db import _VALID, _validate_address_pr
@@ -11183,7 +11196,7 @@ class TestValidateAddressPrWithSha:
             ),
         ):
             result = await _validate_address_pr(1, agent)
-        assert result.failure_reason is None
+        assert result.failure_reason is not None
 
     async def test_branch_check_false_returns_error(self, tmp_path: Path) -> None:
         """Branch check returning False (unpushed commits exist) fails immediately."""
@@ -11206,7 +11219,7 @@ class TestValidateAddressPrWithSha:
             patch(
                 "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
                 new_callable=AsyncMock,
-                return_value=(None, False),
+                return_value=(False, False),
             ),
             patch(
                 "sova.dashboard.services.agent_db._check_pr_branch_pushed",
@@ -11257,7 +11270,7 @@ class TestValidateAddressPrWithSha:
 
         assert result.network_blocked is True
         assert "unverified" in result.failure_reason
-        assert "unreachable" in result.failure_reason
+        assert "could not check" in result.failure_reason
         assert "without pushing" not in result.failure_reason
 
     async def test_inconclusive_without_network_failure_still_fails_closed(self, tmp_path: Path) -> None:
@@ -11292,7 +11305,7 @@ class TestValidateAddressPrWithSha:
             result = await _validate_address_pr(1, agent)
 
         assert result.network_blocked is False
-        assert "without pushing" in result.failure_reason
+        assert "unverified" in result.failure_reason
 
 
 class TestCheckPrDiffGuard:

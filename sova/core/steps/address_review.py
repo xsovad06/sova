@@ -786,7 +786,7 @@ def _format_findings_prompt(
                 suggestion = _fence_if_high_risk(suggestion, source=source, loc=loc, threshold=prompt_guard_threshold)
                 lines.append(f"   Fix: {suggestion}")
             lines.append("")
-        lines.append("After fixing all issues, make sure all tests still pass.")
+        lines.append("After fixing all issues, run focused tests. SOVA runs the full validation gate afterward.")
         lines.append("")
         lines.extend(
             [
@@ -818,9 +818,8 @@ def _format_findings_prompt(
     lines.extend(
         [
             "",
-            "IMPORTANT: Do NOT commit your changes. Fix the code, run tests, then stop.",
-            "Leave all changes staged or unstaged. A commit reorganization step runs",
-            "immediately after this to fold your fixes cleanly into the existing commits.",
+            "IMPORTANT: Do NOT stage or commit your changes. Fix the code, run focused tests, then stop.",
+            "Leave changes unstaged. SOVA folds them into the branch before validation and push.",
         ]
     )
     return "\n".join(lines)

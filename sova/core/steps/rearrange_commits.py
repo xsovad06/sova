@@ -1,9 +1,8 @@
 """Step: Rearrange commits. Reorganize branch history into clean, logical commits.
 
-Invokes /rearrange-commits in the working directory so that review fixes are
-folded back into the original commits rather than appended as separate
-"address review" commits. The result is a history that reads as if the code
-was written correctly from the start.
+For Claude, invokes /rearrange-commits in the working directory so review fixes
+are folded into logical commits. For Codex, SOVA amends the PR tip from its host
+process because the coding agent cannot write shared Git metadata.
 
 Used in the address-review pipeline in place of CommitStep.
 """
@@ -12,9 +11,13 @@ from __future__ import annotations
 
 from sova.core.agent_dispatch import dispatch_command
 from sova.core.context import ExecutionContext
+from sova.core.steps._commit_fold import _changed_paths, _resolve_base_ref
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.commit import is_agent_artifact
 from sova.git.artifact_exclusions import EXCLUDED_PATHSPECS as _EXCLUDED_PATHSPECS
 from sova.git.artifact_exclusions import IGNORABLE_UNTRACKED_RE as _IGNORABLE_UNTRACKED_RE
+from sova.git.safety import unstage_suspicious_files
+from sova.utils.env import scrub_check_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -28,6 +31,9 @@ class RearrangeCommitsStep(BaseStep):
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.rearrange_commits", branch=ctx.branch_name, base=ctx.base_branch)
+
+        if ctx.config.agent.runtime == "codex":
+            return await self._amend_from_host(ctx)
 
         try:
             result = await dispatch_command(
@@ -49,6 +55,43 @@ class RearrangeCommitsStep(BaseStep):
             )
         except RuntimeError as exc:
             return StepResult(success=False, summary="Commit reorganization failed", error=str(exc))
+
+    @staticmethod
+    async def _amend_from_host(ctx: ExecutionContext) -> StepResult:
+        """Fold Codex's file edits into the PR tip without giving it Git metadata access."""
+        cwd = ctx.working_dir
+        status = await run("git", "status", "--porcelain=v1", "-z", "--untracked-files=all", cwd=cwd)
+        if not status.success:
+            return StepResult(success=False, summary="Could not inspect worktree", error=status.stderr)
+
+        changed = [path for path in await _changed_paths(cwd) if not is_agent_artifact(path)]
+        if not changed:
+            return StepResult(success=True, summary="No file changes to fold into the PR")
+
+        base_ref = await _resolve_base_ref(cwd, ctx.base_branch)
+        if base_ref is None:
+            return StepResult(success=False, summary="Could not resolve PR base", error=ctx.base_branch)
+        on_base = await run("git", "merge-base", "--is-ancestor", "HEAD", base_ref, cwd=cwd)
+        if on_base.returncode != 1:
+            return StepResult(success=False, summary="Refusing to amend a base commit", error=on_base.stderr)
+
+        staged = await run("git", "diff", "--cached", "--name-only", "-z", cwd=cwd)
+        if not staged.success or any(is_agent_artifact(path) for path in staged.stdout.split("\0") if path):
+            return StepResult(success=False, summary="Unexpected staged files", error=staged.stderr)
+
+        added = await run("git", "add", "--", *changed, cwd=cwd)
+        if not added.success:
+            return StepResult(success=False, summary="Could not stage review fixes", error=added.stderr)
+        scan = await unstage_suspicious_files(cwd)
+        if not scan.checked or scan.unstaged or scan.still_staged:
+            return StepResult(success=False, summary="Unsafe files found in staged changes")
+
+        amended = await run(
+            "git", "commit", "--amend", "--no-edit", cwd=cwd, env=scrub_check_env(config=ctx.config, quiet=True)
+        )
+        if not amended.success:
+            return StepResult(success=False, summary="Could not amend PR commit", error=amended.stderr)
+        return StepResult(success=True, summary="Review fixes folded into the PR tip")
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: branch must have at least one commit ahead of base with no uncommitted changes."""
