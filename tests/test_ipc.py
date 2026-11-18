@@ -2368,6 +2368,34 @@ class TestCodexRuntime:
         assert args[model_idx + 1] == "gpt-5-codex"
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
         assert "--full-auto" not in args
+        assert "sandbox_workspace_write.network_access=true" not in args
+
+    async def test_spawn_can_allow_network_for_command_agents(self, tmp_path: Path) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 60
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = CodexRuntime(config=CodexConfig(sandbox="workspace-write"))
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await rt.spawn("integrate the PR", tmp_path, network_access=True)
+
+        args = mock_exec.call_args[0]
+        assert args[args.index("--sandbox") + 1] == "workspace-write"
+        assert args[args.index("--config") + 1] == "sandbox_workspace_write.network_access=true"
+
+    async def test_network_command_rejects_read_only_sandbox(self, tmp_path: Path) -> None:
+        from sova.config.models import CodexConfig
+        from sova.ipc.runtime import CodexRuntime
+        from sova.llm.errors import ConfigurationError
+
+        rt = CodexRuntime(config=CodexConfig(sandbox="read-only"))
+        with pytest.raises(ConfigurationError, match="workspace-write"):
+            await rt.spawn("integrate the PR", tmp_path, network_access=True)
 
     async def test_spawn_without_model_omits_flag(self, tmp_path: Path) -> None:
         from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime

@@ -136,6 +136,8 @@ Prevents shell metacharacters, path traversal sequences, and spaces in branch na
 
 `POST /api/agents/command`'s `command` field names a file resolved relative to the project's own and SOVA's own `.claude/commands/`/`sova/commands/data/commands/` directories (`sova/dashboard/services/agent_context.py:_resolve_command_prompt()`); an unvalidated value is both a path-traversal vector (building a filesystem path from it) and a prompt-injection vector (its fallback sends a bare `/{command}` to the headless, tool-using agent for anything it cannot resolve to a real file). `known_command_names()` mirrors `_resolve_command_prompt()`'s own lookup order via `sova.commands.catalog.discover()`, and the router rejects (`400`) any `command` not in that set.
 
+Dashboard command agents need network access for GitHub and tracker operations. The Codex runtime grants it only when `start_command()` requests it and only inside the `workspace-write` filesystem sandbox. Pipeline role agents and read-only repo-context calls remain offline; `codex.sandbox = "read-only"` rejects a networked command before spawn.
+
 ### Multi-Project Slug Validation
 
 `sova/dashboard/middleware.py` validates project slugs against `^[a-z0-9-]+$` before path resolution, preventing directory traversal via URL segments.

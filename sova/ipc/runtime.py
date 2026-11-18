@@ -397,6 +397,7 @@ class AgentRuntime(ABC):
         output_dir: Path | None = None,
         run_label: str | None = None,
         read_only: bool = False,
+        network_access: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         """Spawn a coding agent process.
 
@@ -436,6 +437,9 @@ class AgentRuntime(ABC):
                 role that needs a sandboxed read-only spawn; there is
                 currently no live enforcement path exercising it outside
                 tests.
+            network_access: Whether this run needs external services. Codex
+                enables network within its workspace-write sandbox only for
+                these runs; pipeline roles leave it disabled by default.
 
         Returns:
             An AgentProcess (pipe-based) or FileAgentProcess (file-based).
@@ -636,6 +640,7 @@ class ClaudeCodeRuntime(AgentRuntime):
         output_dir: Path | None = None,
         run_label: str | None = None,
         read_only: bool = False,
+        network_access: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         # Claude Code has no sandboxed read-only mode; read_only is advisory
         # only (the caller's prompt is the sole enforcement).
@@ -779,6 +784,7 @@ class AiderRuntime(AgentRuntime):
         output_dir: Path | None = None,
         run_label: str | None = None,
         read_only: bool = False,
+        network_access: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         # Aider has no sandboxed read-only mode; read_only is advisory only
         # (the caller's prompt is the sole enforcement).
@@ -904,8 +910,11 @@ def _resolve_codex_cost_source(billing_mode: str = "unknown") -> CostSource:
     return CostSource.SUBSCRIPTION if billing_mode == "subscription" else CostSource.UNKNOWN
 
 
-def _codex_exec_args(prompt: str | None, *, model: str | None, sandbox: str) -> list[str]:
+def _codex_exec_args(prompt: str | None, *, model: str | None, sandbox: str, network_access: bool = False) -> list[str]:
     """Build the ``codex exec --json --sandbox ... [--model M] [-- PROMPT]`` argv.
+
+    A networked command gets a Codex config override while retaining the
+    workspace-write filesystem sandbox. A read-only sandbox cannot opt in.
 
     Shared by ``CodexRuntime.spawn()`` and ``ReviewerRole._gather_repo_context()``
     (the reviewer's optional read-only repo-context sub-call) so the two
@@ -928,6 +937,10 @@ def _codex_exec_args(prompt: str | None, *, model: str | None, sandbox: str) -> 
     unrecognized option.
     """
     args: list[str] = ["codex", "exec", "--json", "--sandbox", sandbox]
+    if network_access:
+        if sandbox != "workspace-write":
+            raise ConfigurationError("Codex network commands require the workspace-write sandbox")
+        args.extend(["--config", "sandbox_workspace_write.network_access=true"])
     if model:
         args.extend(["--model", model])
     if prompt is not None:
@@ -1400,6 +1413,7 @@ class CodexRuntime(AgentRuntime):
         output_dir: Path | None = None,
         run_label: str | None = None,
         read_only: bool = False,
+        network_access: bool = False,
     ) -> AgentProcess | FileAgentProcess:
         if fallback_model is not None:
             log.warning(
@@ -1442,10 +1456,12 @@ class CodexRuntime(AgentRuntime):
         if stdin_capable:
             # No PROMPT positional at all: the probe confirmed this CLI reads
             # it from stdin when omitted, so the prompt never touches argv.
-            args = _codex_exec_args(None, model=codex_model, sandbox=sandbox)
+            args = _codex_exec_args(None, model=codex_model, sandbox=sandbox, network_access=network_access)
             stdin_payload = transformed_prompt
         else:
-            args = _codex_exec_args(transformed_prompt, model=codex_model, sandbox=sandbox)
+            args = _codex_exec_args(
+                transformed_prompt, model=codex_model, sandbox=sandbox, network_access=network_access
+            )
 
         log.info(
             "codex.spawn",
@@ -1454,6 +1470,7 @@ class CodexRuntime(AgentRuntime):
             prompt_len=len(transformed_prompt),
             read_only=read_only,
             sandbox=sandbox,
+            network_access=network_access,
             prompt_delivery="stdin" if stdin_capable else "argv",
         )
 
