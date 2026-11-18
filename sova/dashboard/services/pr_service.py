@@ -20,6 +20,7 @@ from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
 from sova.utils.gh import TITLE_ISSUE_RE as _TITLE_ISSUE_RE
 from sova.utils.gh import choose_pr_issue, get_active_gh_user, parse_issue_links
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section, mask_fenced_blocks
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -28,10 +29,49 @@ if TYPE_CHECKING:
 
 log = get_logger(component="dashboard.pr_service")
 
-_JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
-_JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
-_TITLE_JIRA_KEY_RE = re.compile(r"\[[A-Z]+-(\d+)\]")
-_BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
+_JIRA_LINK_KEY_RE = re.compile(
+    r"\[([A-Z][A-Z0-9]*-\d+)\]\(https?://[^\s)]+/browse/([A-Z][A-Z0-9]*-\d+)\)", re.IGNORECASE
+)
+_JIRA_PLAIN_KEY_RE = re.compile(r"JIRA:\s*https?://\S+/browse/([A-Z][A-Z0-9]*-\d+)\b", re.IGNORECASE)
+_JIRA_KEY_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d{1,100})\b", re.IGNORECASE)
+_TITLE_JIRA_MARKER_RE = re.compile(r"\[([A-Z][A-Z0-9]*-\d{1,100})\]", re.IGNORECASE)
+_BRANCH_JIRA_MARKER_RE = re.compile(r"(?:^|/)([A-Z][A-Z0-9]*-\d{1,100})(?=$|[-_/])")
+
+
+def _explicit_jira_link_key(body: str) -> str | None:
+    """Return a Jira browse link's key, empty when absent, or None when malformed."""
+    for match in _JIRA_LINK_KEY_RE.finditer(body):
+        if match.group(1).upper() == match.group(2).upper() and _JIRA_KEY_RE.fullmatch(match.group(2)):
+            return match.group(2).upper()
+        return None
+    if match := _JIRA_PLAIN_KEY_RE.search(body):
+        return match.group(1).upper() if _JIRA_KEY_RE.fullmatch(match.group(1)) else None
+    return ""
+
+
+def extract_jira_key(raw: dict) -> str:
+    """The Jira issue a PR explicitly links, preferring its Issue section."""
+    body = mask_fenced_blocks(raw.get("body") or "")
+    section = extract_section(body, "Issue")
+    if section and (link := _JIRA_LINK_KEY_RE.search(section)):
+        if link.group(1).upper() == link.group(2).upper() and _JIRA_KEY_RE.fullmatch(link.group(2)):
+            return link.group(2).upper()
+        return ""
+    if section and (match := _JIRA_KEY_RE.search(section)):
+        return match.group(1).upper()
+    linked = _explicit_jira_link_key(body)
+    if linked is None:
+        return ""
+    if linked:
+        return linked
+    for pattern, source in (
+        (_TITLE_JIRA_MARKER_RE, raw.get("title") or ""),
+        (_BRANCH_JIRA_MARKER_RE, raw.get("headRefName") or ""),
+    ):
+        if match := pattern.search(source):
+            return match.group(1).upper()
+    return ""
+
 
 _PR_CACHE_TTL = 120  # seconds (shared across supervisor, PR monitor, dashboard)
 _pr_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
@@ -107,12 +147,8 @@ def parse_linked_issue(body: str | None, branch: str = "") -> int | None:
     primary = choose_pr_issue(body, branch).primary
     if primary is not None and parse_issue_links(body).closes:
         return int(primary)
-    m = _JIRA_MARKDOWN_RE.search(body)
-    if m:
-        return int(m.group(1).split("-")[-1])
-    m = _JIRA_PLAIN_RE.search(body)
-    if m:
-        return int(m.group(1))
+    if jira_key := _explicit_jira_link_key(mask_fenced_blocks(body)):
+        return int(jira_key.rsplit("-", 1)[1])
     return int(primary) if primary is not None else None
 
 
@@ -129,16 +165,14 @@ def _title_or_branch_linked_issue(raw: dict) -> int | None:
     m = _TITLE_ISSUE_RE.search(title)
     if m:
         return int(m.group(1))
-    m = _TITLE_JIRA_KEY_RE.search(title)
-    if m:
-        return int(m.group(1))
+    if jira_key := extract_jira_key({"title": title}):
+        return int(jira_key.rsplit("-", 1)[1])
     branch = raw.get("headRefName") or ""
     m = _BRANCH_ISSUE_RE.search(branch)
     if m:
         return int(m.group(1))
-    m = _BRANCH_JIRA_KEY_RE.search(branch)
-    if m:
-        return int(m.group(1))
+    if jira_key := extract_jira_key({"headRefName": branch}):
+        return int(jira_key.rsplit("-", 1)[1])
     return None
 
 
@@ -578,6 +612,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "is_draft": is_draft,
         "author": author.get("login", ""),
         "linked_issue": linked_issues[0] if linked_issues else None,
+        "linked_jira_key": extract_jira_key(raw),
         "linked_issues": linked_issues,
         "age_seconds": _age_seconds(raw.get("createdAt") or "", now),
         "updated_at": raw.get("updatedAt") or "",

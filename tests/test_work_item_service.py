@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
+from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.dashboard.services.work_item_service import (
     GraphConfigError,
     PRFacts,
@@ -27,6 +28,7 @@ from sova.dashboard.services.work_item_service import (
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
+    _jira_project_prs,
     _load_graph_or_none,
     _parse_issue_number,
     _sort_items,
@@ -1723,6 +1725,112 @@ class TestGetWorkItems:
         # PR_APPROVED is superseded by PR_READY_TO_MERGE as the sole integrate-bound state (#991).
         assert result["items"][0]["state"] == "pr_ready_to_merge"
 
+    async def test_jira_prs_use_full_project_key_and_link_to_the_correct_issue(
+        self, _mock_sources: tuple[AsyncMock, MagicMock, AsyncMock]
+    ) -> None:
+        mock_fetch, *_ = _mock_sources
+        queue = [
+            {
+                "issue": "42",
+                "title": "ARVAC issue",
+                "state": "in_review",
+                "labels": [],
+                "priority": 1,
+                "jira_key": "ARVAC-42",
+            }
+        ]
+        prs = [
+            {
+                "number": 300,
+                "linked_issue": 42,
+                "linked_jira_key": "RHCLOUD-42",
+                "computed_state": "ci_failed",
+                "state": "OPEN",
+            },
+            {
+                "number": 301,
+                "linked_issue": 99,
+                "linked_jira_key": "ARVAC-42",
+                "computed_state": "ci_failed",
+                "state": "OPEN",
+            },
+        ]
+        mock_fetch.return_value = (queue, prs, [], {"agents": [], "completed": []})
+        cfg = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            )
+        )
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            result = await get_work_items()
+
+        assert [(item["issue_number"], item["pr_number"]) for item in result["items"]] == [("42", 301)]
+        assert result["items"][0]["title"] == "ARVAC issue"
+
+    async def test_unrelated_jira_pr_does_not_exclude_an_up_next_issue(self) -> None:
+        cfg = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            )
+        )
+        prs = [
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-7"},
+        ]
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs)),
+            patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={"agents": []})),
+        ):
+            running, open_prs = await next_task_exclusions(Path("/tmp/jira-project"))
+
+        assert running == set()
+        assert open_prs == {7}
+
+    async def test_jira_scope_does_not_shrink_lifecycle_pr_snapshot(self) -> None:
+        from sova.dashboard.services.work_item_service import _safe_prs
+
+        prs = [
+            {"number": 300, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 301, "linked_jira_key": "ARVAC-7"},
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs)):
+            assert await _safe_prs(Path("/tmp/jira-project")) == prs
+
+    async def test_default_project_is_resolved_before_pr_fetch_and_config(self) -> None:
+        project = Path("/tmp/configured-checkout")
+        fetched = AsyncMock(return_value=[])
+        loaded = MagicMock(return_value=ProjectConfig())
+        with (
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=project),
+            patch("sova.dashboard.services.pr_service.list_open_prs_with_state", fetched),
+            patch("sova.config.loader.load_config", loaded),
+            patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={"agents": []})),
+        ):
+            await next_task_exclusions(None)
+
+        fetched.assert_awaited_once_with(project, raise_on_error=True)
+        loaded.assert_called_once_with(project)
+
+    def test_jira_scope_uses_the_key_even_if_github_mentions_another_number(self) -> None:
+        prs = [
+            {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-42"},
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 302, "linked_issue": 42},
+        ]
+
+        assert _jira_project_prs(prs, "ARVAC") == [
+            {"number": 301, "linked_issue": 42, "linked_jira_key": "ARVAC-42", "linked_issues": [42]}
+        ]
+
+    def test_one_oversized_jira_key_does_not_drop_other_prs(self) -> None:
+        prs = [
+            {"number": 300, "linked_jira_key": f"ARVAC-{'9' * 4301}"},
+            {"number": 301, "linked_jira_key": "ARVAC-42"},
+        ]
+
+        assert [pr["number"] for pr in _jira_project_prs(prs, "ARVAC")] == [301]
+
     @pytest.mark.asyncio()
     async def test_standalone_pr_appears(self, _mock_sources) -> None:
         mock_fetch, *_ = _mock_sources
@@ -1888,6 +1996,50 @@ class TestGetWorkItems:
 
 
 class TestAppendStandalonePrItems:
+    def test_jira_linked_pr_without_a_graph_task_links_to_the_jira_issue(self) -> None:
+        items: list[dict] = []
+        prs = [
+            {
+                "number": 100,
+                "linked_issue": 42,
+                "linked_jira_key": "ARVAC-42",
+                "title": "PR title",
+                "computed_state": "ci_failed",
+                "state": "OPEN",
+            }
+        ]
+
+        _append_standalone_pr_items(items, prs, set(), {}, {}, jira_base_url="https://jira.example.test")
+
+        assert items[0]["jira_key"] == "ARVAC-42"
+        assert items[0]["url"] == "https://jira.example.test/browse/ARVAC-42"
+
+    def test_linked_pr_outside_queue_uses_the_trackers_issue_title(self) -> None:
+        task = Task(
+            id="42",
+            title="Actual Jira issue",
+            url="https://jira.example.test/browse/ARVAC-42",
+            state=TaskState.IN_REVIEW,
+            metadata={"key": "ARVAC-42"},
+            assignees=["Damian Sova"],
+        )
+        items: list[dict] = []
+        prs = [
+            {
+                "number": 100,
+                "linked_issue": 42,
+                "linked_jira_key": "ARVAC-42",
+                "title": "PR title",
+                "computed_state": "ci_failed",
+                "state": "OPEN",
+            }
+        ]
+
+        _append_standalone_pr_items(items, prs, set(), {}, {}, graph=DependencyGraph([task]), is_jira=True)
+
+        assert (items[0]["title"], items[0]["url"], items[0]["jira_key"]) == (task.title, task.url, "ARVAC-42")
+        assert items[0]["assignees"] == ["Damian Sova"]
+
     def test_adds_unlinked_pr(self) -> None:
         items: list[dict] = []
         prs = [{"number": 100, "linked_issue": None, "computed_state": "awaiting_review", "state": "OPEN"}]
