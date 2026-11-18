@@ -130,7 +130,8 @@ sova run <issue> --role developer --force   # skip the researched-state entry ga
 | Text-only calls (triage, PR body, self-review, extraction) | LiteLLM to OpenAI, in the SOVA process | yes | none |
 | `develop`, fix loop, `simplify` and other tool-using steps | `codex exec`, `workspace-write` sandbox | no | the worktree only |
 | `research` on a provider without the `runs_commands_with_tools` capability (every provider except `claude-code`: `litellm`, `hybrid`, `anthropic`, `openai`, `ollama`, `vertex`) | the configured agent runtime, read-only (`codex exec` read-only sandbox for Codex) | no | none; SOVA appends the section to the issue |
-| Dashboard command agents (`/integrate-pr`, `/address-pr`, and other user-started commands) | `codex exec`, `workspace-write` sandbox with network enabled | yes | worktree and authorized external operations |
+| Dashboard commands such as `/integrate-pr` | `codex exec`, `workspace-write` sandbox with network enabled | yes | worktree and authorized external operations |
+| Dashboard `/address-pr` with Codex | Native address-review pipeline; Codex edits files, SOVA runs Git and validation | SOVA process only | worktree edits and controlled host Git operations |
 | Push, PR creation, labels, board, issue body | SOVA process (`git`, `gh`) | yes | GitHub |
 
 Pipeline role agents have no network, so they cannot run `gh`. SOVA therefore hands
@@ -140,6 +141,10 @@ within the Codex workspace sandbox because their commands call GitHub directly. 
 10 newest comments are inlined for `/develop`, newest first, each of the title, body and
 comments in a nonce-delimited block, and the whole context is capped at 12k characters
 (comments trimmed first).
+
+Dashboard `/address-pr` takes the native pipeline path when Codex is configured.
+The coding step stays offline and leaves edits unstaged. SOVA handles rebase,
+staging, amending, the full validation gate, push and review thread updates.
 
 Only Codex enforces `read_only`. The Claude Code and Aider runtimes treat it as advisory, so
 research on a text-only provider under `agent.runtime = "claude-code"` is kept read-only by

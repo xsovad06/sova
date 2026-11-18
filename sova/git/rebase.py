@@ -309,6 +309,7 @@ async def _resolve_conflicts_with_llm(
     conflicted_files: list[str],
     *,
     cwd: Path,
+    project_dir: Path | None = None,
     model: str | None = None,
     max_budget_usd: Decimal | None = None,
 ) -> LLMResult:
@@ -319,9 +320,32 @@ async def _resolve_conflicts_with_llm(
         "Resolve each conflict by choosing the correct code or merging both sides as appropriate. "
         "Keep the code correct and all tests passing. Do NOT leave any conflict markers.\n\n"
         f"Conflicted files:\n{file_list}\n\n"
-        "After resolving, stage each file with `git add`."
+        "After resolving, leave the files unstaged. SOVA stages verified resolutions."
     )
+    if project_dir is not None:
+        from sova.core.agent_dispatch import dispatch_runtime_prompt
+        from sova.core.steps.rebase import RebaseStep
+
+        return await dispatch_runtime_prompt(
+            RebaseStep(),
+            prompt,
+            model=model,
+            task_type="rebase",
+            cwd=cwd,
+            config_dir=project_dir,
+            max_budget_usd=max_budget_usd,
+        )
     return await invoke_command(prompt, model=model, task_type="rebase", cwd=cwd, max_budget_usd=max_budget_usd)
+
+
+async def _stage_resolved_conflicts(files: list[str], *, cwd: Path) -> None:
+    """Stage marker-free conflict resolutions from SOVA's host process."""
+    for rel_path in files:
+        if _file_has_conflict(cwd / rel_path):
+            continue
+        result = await run("git", "add", "--", rel_path, cwd=cwd)
+        if not result.success:
+            log.warning("git.rebase.stage_failed", file=rel_path, stderr=(result.stderr or "")[:200])
 
 
 async def _try_consensus_resolution(
@@ -378,6 +402,7 @@ async def rebase_with_conflict_resolution(
     base: str,
     *,
     cwd: Path,
+    project_dir: Path | None = None,
     model: str | None = None,
     max_budget_usd: Decimal | None = None,
     max_attempts: int = 3,
@@ -402,7 +427,7 @@ async def rebase_with_conflict_resolution(
     """
     cost = Decimal("0")
 
-    cr_models, cr_threshold, cr_templates, cr_timeout = _load_consensus_config(cwd)
+    cr_models, cr_threshold, cr_templates, cr_timeout = _load_consensus_config(project_dir or cwd)
     use_consensus = len(cr_models) >= 2
     providers: dict[str, LLMProvider] | None = None
 
@@ -547,6 +572,7 @@ async def rebase_with_conflict_resolution(
                     llm_result = await _resolve_conflicts_with_llm(
                         conflicted,
                         cwd=cwd,
+                        project_dir=project_dir,
                         model=model,
                         max_budget_usd=max_budget_usd,
                     )
@@ -557,6 +583,8 @@ async def rebase_with_conflict_resolution(
                     await _pop_stash()
                     return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
 
+                if project_dir is not None:
+                    await _stage_resolved_conflicts(conflicted, cwd=cwd)
                 verified = await _unresolved_paths(conflicted, cwd=cwd)
                 if verified is None:
                     # A failed check means a structural fault (missing worktree, unreadable

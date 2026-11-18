@@ -253,6 +253,27 @@ class TestAgainstRealGit:
         assert "MERGED" in head.stdout
         assert not _has_unresolved_conflict(head.stdout)
 
+    async def test_codex_resolution_is_staged_by_host(self, tmp_path: Path) -> None:
+        """A sandboxed coding agent may edit the file but cannot write the Git index."""
+        repo = await self._build_conflicting_repo(tmp_path)
+
+        async def edit_without_staging(*_args: object, **kwargs: object) -> MagicMock:
+            assert kwargs["config_dir"] == repo
+            (repo / "f.txt").write_text("line1\nMERGED\nline3\n", encoding="utf-8")
+            return MagicMock(text="resolved", cost_usd=Decimal("0.01"))
+
+        with (
+            patch("sova.git.rebase._load_consensus_config", return_value=([], 0.66, {}, None)),
+            # _resolve_conflicts_with_llm imports this helper inside the function.
+            patch("sova.core.agent_dispatch.dispatch_runtime_prompt", side_effect=edit_without_staging),
+        ):
+            result, _cost = await rebase_with_conflict_resolution("main", cwd=repo, project_dir=repo, max_attempts=1)
+
+        assert result.success is True
+        head = await run("git", "show", "HEAD:f.txt", cwd=repo)
+        assert "MERGED" in head.stdout
+        assert not _has_unresolved_conflict(head.stdout)
+
 
 @pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseVerificationIntegration:

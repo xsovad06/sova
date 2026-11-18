@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 
 from sova.commands.catalog import parse_frontmatter
 from sova.core.check_cache import PIPELINE_STAGE_ENV_KEY
-from sova.ipc.runtime import AgentRuntime, get_runtime, resolve_runtime_model_pin
+from sova.ipc.runtime import AgentRuntime, create_runtime, get_runtime, resolve_runtime_model_pin
 from sova.llm import client
 from sova.llm.cli_output_parsing import extract_claude_cli_failure_detail
 from sova.llm.egress import scan_and_redact
@@ -232,7 +232,7 @@ _runtime_availability_cache: weakref.WeakKeyDictionary[AgentRuntime, tuple[float
 )
 
 
-async def _require_runtime(step: BaseStep) -> AgentRuntime:
+async def _require_runtime(step: BaseStep, runtime: AgentRuntime | None = None) -> AgentRuntime:
     """Return the configured runtime, or raise if it cannot actually run.
 
     The no-implicit-fallback rule: a tool-using step whose runtime is not
@@ -246,7 +246,7 @@ async def _require_runtime(step: BaseStep) -> AgentRuntime:
     passes this gate and fails later, inside the spawned process, which is
     outside this function's reach.
     """
-    runtime = get_runtime()
+    runtime = runtime if runtime is not None else get_runtime()
     cached = _runtime_availability_cache.get(runtime)
     if cached is not None and cached[0] > time.monotonic():
         _, available, detail = cached
@@ -986,6 +986,7 @@ async def dispatch_runtime_prompt(
     fallback_model: str | None = None,
     task_type: str | None = None,
     cwd: Path | str | None = None,
+    config_dir: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = None,
     ctx: ExecutionContext | None = None,
@@ -999,7 +1000,18 @@ async def dispatch_runtime_prompt(
     runtime to deny writes (and, for Codex, network) to the whole process tree,
     for an analysis whose result the calling step persists itself.
     """
-    runtime = await _require_runtime(step)
+    if config_dir is not None:
+        cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
+            model=model, task_type=task_type, timeout=timeout, cwd=config_dir
+        )
+        if cfg is None:
+            raise RuntimeError(f"Cannot load agent runtime configuration from {config_dir}")
+        runtime = await _require_runtime(step, create_runtime(cfg.agent.runtime, codex=cfg.codex))
+    else:
+        runtime = await _require_runtime(step)
+        cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
+            model=model, task_type=task_type, timeout=timeout, cwd=cwd
+        )
     if read_only and not runtime.enforces_read_only:
         log.warning(
             "agent_dispatch.read_only_unenforced",
@@ -1007,10 +1019,6 @@ async def dispatch_runtime_prompt(
             runtime=runtime.name,
             message=f"{runtime.name} treats read_only as advisory: the prompt alone keeps the agent from writing",
         )
-    cfg, resolved_model, resolved_timeout = await client.prepare_invocation(
-        model=model, task_type=task_type, timeout=timeout, cwd=cwd
-    )
-
     _guard_prompt_or_raise(prompt)
     original_prompt = prompt
     prompt = client.maybe_compress(prompt, cwd, cfg=cfg)

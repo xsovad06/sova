@@ -144,8 +144,7 @@ async def _post_address_summary(ctx: ExecutionContext, head_sha: str | None, *, 
     ``address_summary_posted`` flag, and by a marker already on the pushed head when the head moved. Without
     a move the head is not new and a marker on it may belong to a previous cycle, so only the flag applies.
 
-    Never raises: a failed post is logged and returns False, which does leave the cycle uncounted (an
-    accepted gap: no local record of it survives).
+    Never raises: a failed post is logged and returns False so the caller can fail the pipeline step.
     """
     if ctx.address_summary_posted:
         log.info("step.resolve_review_threads.summary_already_posted", pr=ctx.pr_number)
@@ -212,6 +211,8 @@ async def finish_address_cycle(ctx: ExecutionContext) -> StepResult:
         log.info("step.resolve_review_threads.threads_resolved", replied=replied, resolved=resolved)
 
     summary_posted = await _post_address_summary(ctx, head_sha, head_moved=head_moved)
+    if not summary_posted:
+        return StepResult(success=False, summary="Could not post address summary")
 
     parts = []
     if resolved:
