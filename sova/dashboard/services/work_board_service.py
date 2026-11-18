@@ -52,11 +52,13 @@ UP_NEXT_LIMIT = 5
 # One `gh pr list` per window, not per board refresh: the board reloads on every live-update event.
 _MERGED_CACHE_TTL = 60.0
 _merged_cache: dict[tuple[str, date], tuple[float, list[dict]]] = {}
+_done_assignees_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
 
 
 def reset_board_cache() -> None:
     """Forget the cached merged-PR lists. Test-only, like ``reset_graph_load_state()``."""
     _merged_cache.clear()
+    _done_assignees_cache.clear()
 
 
 # Issue entries ---------------------------------------------------------------
@@ -113,7 +115,27 @@ def _item_extras(item: dict) -> dict:
         "pr": _pr_summary(item),
         "last_run": _last_run_summary(item),
         "actions": _item_actions(item),
+        "assignees": item.get("assignees") or [],
+        "jira_key": item.get("jira_key") or "",
     }
+
+
+def _entry_is_mine(entry: dict, github_user: str, jira_display_name: str) -> bool:
+    assignees = {name.casefold() for name in entry.get("assignees") or []}
+    pr = entry.get("pr") or {}
+    pr_assignees = {name.casefold() for name in pr.get("assignees") or entry.get("pr_assignees") or []}
+    github = github_user.casefold()
+    jira = jira_display_name.casefold()
+    if entry.get("jira_key") and jira and jira in assignees:
+        return True
+    return bool(
+        github
+        and (
+            (not entry.get("jira_key") and github in assignees)
+            or github in pr_assignees
+            or github == (pr.get("author") or entry.get("pr_author") or "").casefold()
+        )
+    )
 
 
 # The handlers the Work page can run. A work-item action with another handler is left out, never shown dead.
@@ -155,6 +177,8 @@ def _pr_summary(item: dict) -> dict | None:
         "additions": pr.get("additions", 0),
         "deletions": pr.get("deletions", 0),
         "changed_files": pr.get("changed_files", 0),
+        "author": pr.get("author", ""),
+        "assignees": pr.get("assignees") or [],
     }
 
 
@@ -176,9 +200,11 @@ def _fallback_entry(number: int, graph: DependencyGraph | None, stage: WorkStage
     task = graph.get_task(number) if graph is not None else None
     if task is None:
         return _issue_entry(number, title="", url="", stage=stage, state="", priority="")
-    return _issue_entry(
+    entry = _issue_entry(
         number, title=task.title, url=task.url, stage=stage, state=task.state.value, priority=task.priority.value
     )
+    entry.update(assignees=list(task.assignees), jira_key=task.metadata.get("key", ""))
+    return entry
 
 
 def _reason_for_needs(state: str) -> tuple[str, str]:
@@ -213,15 +239,21 @@ def _session_command(item: dict) -> str:
 
 def _running_details(item: dict, runs: dict[str, dict]) -> dict:
     agent = item.get("running_agent") or {}
-    run = runs.get(f"run:{agent.get('run_id')}") or runs.get(f"issue:{item.get('issue_number')}") or {}
+    issue = _parse_issue_number(item.get("issue_number"))
+    run = runs.get(f"issue:{issue}") if issue is not None else None
+    run = run or runs.get(f"run:{agent.get('run_id')}") or {}
+    same_agent = bool(run and agent.get("run_id") == run.get("id", agent.get("run_id")))
+    role = (agent.get("role") if same_agent else None) or run.get("role")
+    if not run:
+        role = agent.get("role")
     return {
-        "run_id": agent.get("run_id") or run.get("id"),
-        "role": agent.get("role") or run.get("role"),
+        "run_id": run.get("id") or agent.get("run_id"),
+        "role": role,
         "step_name": run.get("current_step"),
         "step_index": run.get("step_index"),
         "total_steps": run.get("total_steps"),
         "ci_state": (item.get("pr_details") or {}).get("ci_status", ""),
-        "elapsed_seconds": agent.get("elapsed_seconds", run.get("elapsed_seconds")),
+        "elapsed_seconds": agent.get("elapsed_seconds") if same_agent else run.get("elapsed_seconds"),
         "cost_usd": run.get("total_cost_usd"),
     }
 
@@ -257,7 +289,9 @@ async def _active_runs(project_dir: Path | None) -> dict[str, dict] | None:
     indexed: dict[str, dict] = {}
     for run in reversed(runs):  # get_active_work() is newest first, so the newest is written last
         indexed[f"run:{run['id']}"] = run
-        indexed[f"issue:{run['issue_number']}"] = run
+        issue = _parse_issue_number(run.get("issue_number"))
+        if issue is not None:
+            indexed[f"issue:{issue}"] = run
     return indexed
 
 
@@ -311,7 +345,7 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
     ``_MERGED_CACHE_TTL`` seconds, so a failure is never cached as an empty day.
     """
     from sova.config.loader import load_config
-    from sova.dashboard.services.pr_service import extract_all_linked_issues
+    from sova.dashboard.services.pr_service import extract_all_linked_issues, extract_jira_key
 
     midnight = _local_midnight(now)
     since_day = midnight.astimezone(timezone.utc).date()
@@ -333,20 +367,44 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
         return None
 
     entries: list[tuple[datetime, dict]] = []
+    task_source = getattr(cfg, "task_source", None)
     for pr in merged:
+        issue_numbers = extract_all_linked_issues(pr) or [None]
+        jira_key = ""
+        if task_source is not None and task_source.type == "jira" and task_source.jira_project_key:
+            jira_key = extract_jira_key(pr).upper()
+            prefix = f"{task_source.jira_project_key.upper()}-"
+            if not jira_key.startswith(prefix):
+                continue
+            issue_numbers = [int(jira_key.removeprefix(prefix))]
         merged_at = _parse_merged_at(pr.get("mergedAt"))
         if merged_at is None or merged_at < midnight:
             continue
-        for number in extract_all_linked_issues(pr) or [None]:
+        for number in issue_numbers:
             entry = _issue_entry(
                 number,
                 title=pr.get("title", ""),
-                url=pr.get("url", ""),
+                url=(
+                    f"{task_source.jira_base_url.rstrip('/')}/browse/{jira_key}"
+                    if jira_key and task_source.jira_base_url
+                    else pr.get("url", "")
+                ),
                 stage=WorkStage.DONE,
                 state=WorkItemState.MERGED.value,
                 priority="",
             )
-            entry.update({"pr_number": pr.get("number"), "merged_at": merged_at.isoformat()})
+            author = (pr.get("author") or {}).get("login", "")
+            assignees = [a["login"] for a in pr.get("assignees") or [] if a.get("login")]
+            entry.update(
+                {
+                    "pr_number": pr.get("number"),
+                    "merged_at": merged_at.isoformat(),
+                    "pr_author": author,
+                    "pr_assignees": assignees,
+                }
+            )
+            if jira_key:
+                entry["jira_key"] = jira_key
             entries.append((merged_at, entry))
     entries.sort(key=lambda pair: pair[0], reverse=True)
     seen: set[int] = set()
@@ -359,6 +417,51 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
             seen.add(number)
         unique.append(entry)
     return unique
+
+
+async def _enrich_done_assignees(project_dir: Path | None, graph: DependencyGraph, entries: list[dict]) -> bool:
+    """Attach Jira assignees to merged issues. Return false when any lookup failed."""
+    missing = []
+    for entry in entries:
+        if not entry.get("jira_key"):
+            continue
+        task = graph.get_task(entry["number"])
+        if task is not None:
+            entry["assignees"] = list(task.assignees)
+        else:
+            cache_key = (str(project_dir), entry["jira_key"])
+            cached = _done_assignees_cache.get(cache_key)
+            if cached is not None and time.monotonic() - cached[0] < _MERGED_CACHE_TTL:
+                entry["assignees"] = list(cached[1])
+            else:
+                missing.append(entry)
+    if not missing:
+        return True
+    from sova.adapters import close_adapter, create_adapter
+    from sova.config.loader import load_config
+
+    try:
+        adapter = create_adapter(await asyncio.to_thread(load_config, project_dir))
+    except Exception:  # noqa: BLE001 (merged entries still show without optional assignees)
+        log.warning("work_board.done_assignees_adapter_failed", exc_info=True)
+        return False
+    try:
+        results = await asyncio.gather(
+            *(adapter.get_task(entry["jira_key"]) for entry in missing), return_exceptions=True
+        )
+    finally:
+        await close_adapter(adapter)
+    complete = True
+    for entry, result in zip(missing, results, strict=True):
+        if isinstance(result, Task):
+            entry["assignees"] = list(result.assignees)
+            if len(_done_assignees_cache) >= 256:
+                _done_assignees_cache.clear()
+            _done_assignees_cache[(str(project_dir), entry["jira_key"])] = (time.monotonic(), entry["assignees"])
+        else:
+            log.warning("work_board.done_assignees_lookup_failed", issue=entry["jira_key"], error=repr(result))
+            complete = False
+    return complete
 
 
 # Queue pruning ---------------------------------------------------------------
@@ -556,6 +659,20 @@ _STAGE_LAYOUT: dict[WorkStage, tuple[str, WorkStage | None]] = {
     WorkStage.DONE: ("done_today", WorkStage.DONE),
 }
 
+_STAGE_HELP: dict[WorkStage, str] = {
+    WorkStage.NEXT: "Ranked issues ready for an agent. Queue one to let the supervisor start it later.",
+    WorkStage.QUEUED: "Issues in the saved supervisor queue. It starts them in order when enabled and a slot is free.",
+    WorkStage.RUNNING: "Active runs, including rebases, and issues marked in progress.",
+    WorkStage.REVIEW: (
+        "Open PRs in draft, CI, review, or changes requested, plus issues labeled in review. "
+        "Review threads show findings."
+    ),
+    WorkStage.NEEDS: "A decision or retry needs you, including merge-ready PRs and failed runs.",
+    WorkStage.YOURS: "Issues marked for human or interactive work.",
+    WorkStage.BLOCKED: "Issues waiting on another issue.",
+    WorkStage.DONE: "Issues with a PR merged today.",
+}
+
 
 def _columns() -> list[dict]:
     """Every stage in board order, with its label, color token, payload key and the column that shows it.
@@ -568,6 +685,7 @@ def _columns() -> list[dict]:
             "stage": stage.value,
             "label": stage_label(stage),
             "color": stage_color(stage),
+            "description": _STAGE_HELP[stage],
             "entries": _STAGE_LAYOUT[stage][0],
             "column": column.value if (column := _STAGE_LAYOUT[stage][1]) is not None else None,
         }
@@ -586,6 +704,9 @@ def _up_next(
     hidden: set[int],
     queued: set[int],
     stage_of: dict[int, WorkStage],
+    owner: str = "all",
+    github_user: str = "",
+    jira_display_name: str = "",
 ) -> tuple[list[dict], int]:
     """The first ``UP_NEXT_LIMIT`` ranked issues still in the ``next`` stage and not hidden, and how many more.
 
@@ -598,10 +719,19 @@ def _up_next(
         number = entry["id"]
         if number in hidden or number in queued or stage_of.get(number, WorkStage.NEXT) is not WorkStage.NEXT:
             continue
+        if owner == "mine":
+            task = graph.get_task(number)
+            if task is None or not _entry_is_mine(
+                {"assignees": task.assignees, "jira_key": task.metadata.get("key", "")},
+                github_user,
+                jira_display_name,
+            ):
+                continue
         entries.append(entry)
     shown = []
     for entry in entries[:UP_NEXT_LIMIT]:
         number = entry["id"]
+        task = graph.get_task(number)
         shown.append(
             {
                 **_issue_entry(
@@ -614,6 +744,8 @@ def _up_next(
                 ),
                 "rank": entry["rank"],
                 "milestone": entry["milestone"],
+                "assignees": list(task.assignees) if task is not None else [],
+                "jira_key": task.metadata.get("key", "") if task is not None else "",
                 "unblocks": unblock_count(number, graph),
                 "why": entry["why"],
             }
@@ -662,7 +794,14 @@ def _classify_items(items: list[dict], queue_set: set[int], runs: dict[str, dict
     board = _Classified()
     for item in items:
         number = _parse_issue_number(item.get("issue_number"))
-        stage = work_stage(item.get("state", ""), _item_mode(item), _item_run_status(item), queued=number in queue_set)
+        active = runs.get(f"issue:{number}") if number is not None else None
+        stage = work_stage(
+            item.get("state", ""),
+            _item_mode(item),
+            _item_run_status(item),
+            queued=number in queue_set,
+            active_run=bool(active and active.get("status") == "running"),
+        )
         entry = _item_entry(item, stage)
         entry.update(_stage_details(item, stage, runs))
         if number is not None:
@@ -687,7 +826,10 @@ def _classify_queue_fallbacks(
             continue
         task = graph.get_task(issue)
         state = task.state.value if task is not None else ""
-        stage = work_stage(state, None, None, queued=True)
+        active = runs.get(f"issue:{issue}")
+        stage = work_stage(
+            state, None, None, queued=True, active_run=bool(active and active.get("status") == "running")
+        )
         entry = _fallback_entry(issue, graph, stage)
         entry.update(_stage_details({"issue_number": issue, "state": state}, stage, runs))
         board.stage_of[issue] = stage
@@ -696,13 +838,20 @@ def _classify_queue_fallbacks(
             board.columns[stage].append(entry)
 
 
-def _apply_done_precedence(board: _Classified, done_today: list[dict] | None) -> None:
-    """Take an issue merged today out of every other column: ``done`` is the first stage that applies.
+def _apply_done_precedence(board: _Classified, done_today: list[dict] | None, runs: dict[str, dict]) -> None:
+    """Take an issue merged today out of other columns unless a current run owns it.
 
     The work items are cached and can lag a merge (still ``pr_ready_to_merge``), so ``done_today``, built from
     the merged PRs, is the fresher source for these issues.
     """
     merged = {entry["number"] for entry in done_today or [] if entry["number"] is not None}
+    merged -= {
+        issue
+        for issue in merged
+        if board.stage_of.get(issue) is WorkStage.RUNNING
+        and (run := runs.get(f"issue:{issue}")) is not None
+        and run.get("status") == "running"
+    }
     if not merged:
         return
     for stage, entries in board.columns.items():
@@ -769,6 +918,7 @@ async def search_issues(project_dir: Path | None, query: str, limit: int = SEARC
         # The state alone cannot place an issue the way the board does (queue, hidden list, suitability mode and
         # run status all count), so a search result carries no stage: the board's own columns are the authority.
         entry.pop("stage", None)
+        entry["jira_key"] = task.metadata.get("key", "")
         if assess_suitability(task, graph).mode.value in _NO_START_MODES:
             entry["start"] = None
         entry["actions"] = [entry["start"]] if entry["start"] else []
@@ -777,7 +927,9 @@ async def search_issues(project_dir: Path | None, query: str, limit: int = SEARC
     return {"results": results, "more": max(0, len(scored) - limit)}
 
 
-async def build_board(project_dir: Path | None, milestone: str = "", *, now: datetime | None = None) -> dict:
+async def build_board(
+    project_dir: Path | None, milestone: str = "", *, owner: str = "all", now: datetime | None = None
+) -> dict:
     """The Work board: ``{stages, columns, agents, api_health, milestones, up_next, more_ready, queued, queue_order,
     running, other_runs, review, needs, yours, blocked, done_today, chains, other_blocked, hidden, unavailable}``.
 
@@ -792,6 +944,10 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
     A dependency graph failure raises, since an empty board must not look like an idle project; the sources that
     only enrich the board fail open, and the ones that did are named in ``unavailable``.
     """
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
     now = now or datetime.now(timezone.utc)
     # The graph first: a cold build is awaited without the work-items poll's short wait, so the items that
     # follow classify from this graph rather than from none (a just-changed priority is only in a fresh one).
@@ -808,41 +964,80 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
     queue, prune_failed = await _prune_closed_queue(project_dir, queue, graph)
     queue_set = set(queue)
     hidden = set(hidden_list)
+    running = running | {
+        number
+        for run in (runs or {}).values()
+        if run.get("status") == "running"
+        if (number := _parse_issue_number(run.get("issue_number"))) is not None
+    }
+    done_assignees_failed = False
+    if done_today is not None:
+        done_today = [
+            entry
+            for entry in done_today
+            if not (run := (runs or {}).get(f"issue:{entry['number']}")) or run.get("status") != "running"
+        ]
+        done_assignees_failed = not await _enrich_done_assignees(project_dir, graph, done_today)
 
     board = _classify_items(items_data["items"], queue_set, runs or {})
     _classify_queue_fallbacks(board, queue, graph, runs or {})
-    _apply_done_precedence(board, done_today)
+    _apply_done_precedence(board, done_today, runs or {})
     columns, stage_of = board.columns, board.stage_of
 
     queued = [board.entries[issue] for issue in queue if stage_of.get(issue) is WorkStage.QUEUED]
     up_next, more_ready = _up_next(
-        ranking_graph, running=running, open_prs=open_prs, hidden=hidden, queued=queue_set, stage_of=stage_of
+        ranking_graph,
+        running=running,
+        open_prs=open_prs,
+        hidden=hidden,
+        queued=queue_set,
+        stage_of=stage_of,
+        owner=owner,
+        github_user=items_data.get("github_user") or "",
+        jira_display_name=items_data.get("jira_display_name") or "",
     )
     for entry in up_next:  # the ranking knows no runs or PRs: take them from the issue's work item
         item = board.by_number.get(entry["number"])
         if item is not None:
             entry.update(_item_extras(item))
+        task = graph.get_task(entry["number"])
+        if task is not None:
+            entry.update(assignees=list(task.assignees), jira_key=task.metadata.get("key", ""))
     hidden_entries = [
         _item_entry(board.by_number[n], stage_of[n])
         if n in board.by_number
         else _fallback_entry(n, graph, WorkStage.NEXT)
         for n in hidden_list
     ]
+    other_runs = _other_runs(runs, columns[WorkStage.RUNNING])
+    for run in other_runs:
+        issue = _parse_issue_number(run.get("issue_number"))
+        task = graph.get_task(issue) if issue is not None else None
+        if task is not None:
+            run.update(assignees=list(task.assignees), jira_key=task.metadata.get("key", ""))
 
-    on_board = {
-        entry["number"]
-        for entry in [
-            *up_next,
-            *queued,
-            *columns[WorkStage.RUNNING],
-            *columns[WorkStage.REVIEW],
-            *columns[WorkStage.NEEDS],
-            *columns[WorkStage.YOURS],
-            *columns[WorkStage.BLOCKED],
-            *(done_today or []),
+    on_board_entries = [
+        *up_next,
+        *queued,
+        *columns[WorkStage.RUNNING],
+        *columns[WorkStage.REVIEW],
+        *columns[WorkStage.NEEDS],
+        *columns[WorkStage.YOURS],
+        *columns[WorkStage.BLOCKED],
+        *(done_today or []),
+        *({"number": _parse_issue_number(run.get("issue_number")), **run} for run in other_runs),
+    ]
+    for entry in [*on_board_entries, *other_runs, *hidden_entries]:
+        entry["mine"] = _entry_is_mine(
+            entry, items_data.get("github_user") or "", items_data.get("jira_display_name") or ""
+        )
+    if owner == "mine":
+        on_board_entries = [
+            entry
+            for entry in on_board_entries
+            if _entry_is_mine(entry, items_data.get("github_user") or "", items_data.get("jira_display_name") or "")
         ]
-        if entry["number"] is not None
-    }
+    on_board = {entry["number"] for entry in on_board_entries if entry["number"] is not None}
     chains, other_blocked = _chains(graph, on_board, stage_of)
     open_nodes = _open_chain_nodes(graph)
     for entry in [
@@ -858,13 +1053,15 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
         "columns": _columns(),
         "agents": {"running": items_data.get("agents_running"), "limit": items_data.get("max_concurrent")},
         "api_health": items_data.get("api_health") or {"status": "ok"},
+        "github_user": items_data.get("github_user") or "",
+        "jira_display_name": items_data.get("jira_display_name") or "",
         "milestones": _milestones(graph, running=running, open_prs=open_prs),
         "up_next": up_next,
         "more_ready": more_ready,
         "queued": queued,
         "queue_order": queue,
         "running": columns[WorkStage.RUNNING],
-        "other_runs": _other_runs(runs, columns[WorkStage.RUNNING]),
+        "other_runs": other_runs,
         "review": columns[WorkStage.REVIEW],
         "needs": columns[WorkStage.NEEDS],
         "yours": columns[WorkStage.YOURS],
@@ -877,6 +1074,7 @@ async def build_board(project_dir: Path | None, milestone: str = "", *, now: dat
             name
             for name, failed in (
                 ("done_today", done_today is None),
+                ("done_assignees", done_assignees_failed),
                 ("active_runs", runs is None),
                 ("queue_prune", prune_failed),
             )

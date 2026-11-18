@@ -266,6 +266,7 @@ class TestListMergedPrsSince:
         args = mock_run.await_args.args
         assert args[args.index("--state") + 1] == "merged"
         assert args[args.index("--search") + 1] == "merged:>=2026-11-13"
+        assert "author,assignees" in args[args.index("--json") + 1]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

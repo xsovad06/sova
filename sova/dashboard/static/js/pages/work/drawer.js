@@ -130,7 +130,9 @@ function _why(entry, stage) {
     var of = steps ? ', step ' + (entry.step_index + 1) + ' of ' + entry.total_steps : '';
     return (entry.role ? formatRole(entry.role) : 'An agent') + step + of + '.';
   }
-  if (stage === 'review') return 'PR #' + entry.pr_number + ' is open and waits on CI or a review.';
+  if (stage === 'review') return entry.pr_number
+    ? 'PR #' + entry.pr_number + ' is open and waits on CI or a review.'
+    : 'The tracker marks this issue in review, but no open PR is linked.';
   if (stage === 'needs') return (entry.reason || 'It needs you') + (entry.pr_number ? ' (PR #' + entry.pr_number + ').' : '.');
   if (stage === 'yours') return 'Agents skip it: ' + (entry.reason || 'no agent label yet') + '.';
   if (stage === 'blocked') return 'It waits for ' + (entry.depends_on || []).map(function(n) { return '#' + n; }).join(', ') + ' to close.';
@@ -225,7 +227,7 @@ function _render() {
   var col = _column(board, stage);
   // A PR with no issue (selected as 'pr:N') has no priority, relations or milestone: the drawer shows its PR only.
   var prOnly = typeof number === 'string';
-  var ref = prOnly ? 'PR #' + number.slice(3) : '#' + number;
+  var ref = prOnly ? 'PR #' + number.slice(3) : (entry.jira_key || '#' + number);
   var link = entry.url || (prOnly && pr && /^https:\/\//.test(pr.url || '') ? pr.url : '');
   // Empty for a PR with no issue and no run yet, which then shows no Context heading at all.
   var context = _kv([
@@ -239,7 +241,7 @@ function _render() {
         (!prOnly && entry.priority != null && stage !== 'done' ? '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(priorityDisplayName(entry.priority)) + ' priority" width="16" height="16">' : '') +
         '<span class="text-sm font-bold text-accent tabular-nums">' + escapeHtml(ref) + '</span>' + _pill(board, stage) + statePill(entry) +
         '<span class="ml-auto flex items-center gap-1">' +
-          (link ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open ' + escapeHtml(ref) + ' on GitHub">' + iconHtml('external-link') + '</a>' : '') +
+          (link ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open ' + escapeHtml(ref) + '">' + iconHtml('external-link') + '</a>' : '') +
           '<button type="button" id="work-drawer-close" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Close the details">' + iconHtml('close') + '</button>' +
         '</span>' +
       '</div>' +

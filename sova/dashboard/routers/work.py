@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path as PathType
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
@@ -100,14 +100,14 @@ async def get_issue_runs(issue_number: str) -> dict:
         503: {"description": "Project configuration unavailable"},
     },
 )
-async def get_board(milestone: str = "") -> dict:
+async def get_board(milestone: str = "", owner: Literal["all", "mine"] = "all") -> dict:
     """Every issue in exactly one column: up next, queued, running, review, needs, yours, blocked, done today.
 
     Declared before ``/work/{run_id}`` so ``board`` is not parsed as a run id. ``milestone`` limits the
     ranking behind ``up_next`` only. A failure is an error status, never an empty board.
     """
     try:
-        return await work_board_service.build_board(get_project_dir(), milestone)
+        return await work_board_service.build_board(get_project_dir(), milestone, owner=owner)
     except GraphConfigError:
         log.error("work.board_config_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")

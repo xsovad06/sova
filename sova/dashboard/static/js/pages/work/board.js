@@ -2,7 +2,7 @@ import { actionAttrs } from '../agents/actions.js';
 import { _updateApiHealthBanner } from '../agents/live-status.js';
 import { diffSizeColor, diffSizeLabel, formatAgeBadge } from '../agents/render-utils.js';
 import { renderHeader } from './header.js';
-import { onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
+import { clearSelection, onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
 
 // The Work board: GET /api/work/board, drawn in the order of the payload's `columns`, with each column's
 // label and color token and the payload key holding its entries. A stage whose `column` names another stage
@@ -16,7 +16,9 @@ import { onSelectionChange, relationChip, relationClass, selectionKey, setSelect
 // module starts no timer of its own.
 
 var _board = null;
+var _boardOwner = null;
 var _milestone = safeStorageGet('sova-work-milestone') || '';
+var _ownerFilter = safeStorageGet('sova-work-owner-filter') === 'mine' ? 'mine' : 'all';
 var _listeners = [];
 var _openGroups = {};      // stage -> true while its collapsed group is open
 var _showHidden = false;
@@ -56,11 +58,21 @@ async function _fetchBoard() {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);
   var savesBefore = settingSaveCount();
+  var requestedOwner = _ownerFilter;
   try {
-    var url = '/work/board' + (_milestone ? '?milestone=' + encodeURIComponent(_milestone) : '');
+    var params = new URLSearchParams();
+    if (_milestone) params.set('milestone', _milestone);
+    if (_ownerFilter === 'mine') params.set('owner', 'mine');
+    var url = '/work/board' + (params.toString() ? '?' + params.toString() : '');
     var res = await fetch(apiUrl(url), { signal: ctrl.signal });
     if (!res.ok) throw new Error(await getErrorDetail(res, 'Failed to load the board'));
-    _board = await res.json();
+    var response = await res.json();
+    if (requestedOwner !== _ownerFilter) {
+      _reloadAfter = true;
+      return;
+    }
+    _board = response;
+    _boardOwner = requestedOwner;
     _setError(_board.unavailable && _board.unavailable.length
       ? 'Some details could not be loaded (' + _board.unavailable.join(', ').replace(/_/g, ' ') + ')'
       : '');
@@ -78,7 +90,7 @@ async function _fetchBoard() {
   } catch (e) {
     // A failed refresh keeps the last good board on screen and says so; it never shows an empty board.
     var message = e && e.name === 'AbortError' ? 'Loading the board timed out' : (e && e.message) || 'Failed to load the board';
-    _setError(_board ? message + '. Showing the last board loaded.' : message);
+    _setError(_board && _boardOwner === _ownerFilter ? message + '. Showing the last board loaded.' : message);
     if (!_board) {
       var host = document.getElementById('work-board');
       if (host) host.innerHTML = '<p class="text-accent-red text-sm py-6">' + escapeHtml(message) + '</p>';
@@ -256,6 +268,45 @@ function _sub(parts) {
   return html ? '<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-400">' + html + '</div>' : '';
 }
 
+function _ownedByMe(entry) {
+  if (_ownerFilter === 'all') return true;
+  if (typeof entry.mine === 'boolean') return entry.mine;
+  var github = ((_board && _board.github_user) || '').toLowerCase();
+  var jira = ((_board && _board.jira_display_name) || '').toLowerCase();
+  var assignees = entry.assignees || [];
+  var pr = entry.pr || {};
+  return !!(entry.jira_key && jira && assignees.some(function(name) { return (name || '').toLowerCase() === jira; }) ||
+    github && ((!entry.jira_key && assignees.some(function(name) { return (name || '').toLowerCase() === github; })) ||
+      (pr.author || entry.pr_author || '').toLowerCase() === github ||
+      (pr.assignees || entry.pr_assignees || []).some(function(name) { return (name || '').toLowerCase() === github; })));
+}
+
+function _contributors(entry) {
+  var pr = entry.pr || {};
+  var people = [];
+  function add(login, role) {
+    if (login && !people.some(function(p) { return p.login.toLowerCase() === login.toLowerCase(); })) {
+      people.push({ login: login, role: role });
+    }
+  }
+  add(pr.author || entry.pr_author, 'PR author');
+  (pr.assignees || entry.pr_assignees || []).forEach(function(login) { add(login, 'PR assignee'); });
+  if (!entry.jira_key) (entry.assignees || []).forEach(function(login) { add(login, 'Issue assignee'); });
+  var jiraAssignee = entry.jira_key && (entry.assignees || [])[0];
+  if (!people.length && !jiraAssignee) return '';
+  return '<div class="flex items-center gap-1.5 text-xs text-gray-500 min-w-0">' +
+    (jiraAssignee ? '<span class="truncate" data-tooltip="Jira assignee: ' + escapeHtml(jiraAssignee) + '">' +
+      escapeHtml(jiraAssignee) + '</span>' : '') +
+    '<span class="inline-flex items-center gap-1 ml-auto shrink-0" aria-label="GitHub contributors">' +
+    people.slice(0, 3).map(function(p) {
+      return '<span tabindex="0" data-tooltip="' + escapeHtml(p.role + ': ' + p.login) + '">' +
+        '<img src="https://avatars.githubusercontent.com/' + encodeURIComponent(p.login) + '?size=32"' +
+        ' alt="' + escapeHtml(p.role + ': ' + p.login) + '" width="20" height="20" loading="lazy"' +
+        ' class="w-5 h-5 rounded-full" data-hide-on-error></span>';
+    }).join('') + (people.length > 3 ? '<span class="text-xs text-gray-500">+' + (people.length - 3) + '</span>' : '') +
+    '</span></div>';
+}
+
 function _span(text) { return '<span>' + escapeHtml(text) + '</span>'; }
 
 function _localTime(iso) {
@@ -344,8 +395,10 @@ export function cardParts(entry, stage) {
       _sub([entry.elapsed_seconds != null ? '<span>' + liveElapsed(entry.elapsed_seconds) + ' running</span>' : '',
         entry.cost_usd != null ? _span('$' + parseFloat(entry.cost_usd || 0).toFixed(2) + ' so far') : '']);
     if (entry.run_id) {
-      buttons = _btn('', 'Stop', 'work-stop', [entry.run_id, n, entry.pr_number || null], Object.assign({ icon: 'stop' }, off)) +
-        _btn('', 'View log', 'work-view-log', [entry.run_id, 'running'], {});
+      if (entry.role !== 'supervisor:rebase') {
+        buttons = _btn('', 'Stop', 'work-stop', [entry.run_id, n, entry.pr_number || null], Object.assign({ icon: 'stop' }, off));
+      }
+      buttons += _btn('', 'View log', 'work-view-log', [entry.run_id, 'running'], {});
     }
   } else if (stage === 'review') {
     covers = ['start_agent:reviewer', 'run_command:review-pr', 'trigger_rebase:'];
@@ -415,7 +468,7 @@ export function cardParts(entry, stage) {
 function _card(entry, stage) {
   var parts = cardParts(entry, stage);
   var n = entry.number;
-  var ref = n != null ? '#' + n : (entry.pr_number ? 'PR #' + entry.pr_number : '');
+  var ref = n != null ? (entry.jira_key || '#' + n) : (entry.pr_number ? 'PR #' + entry.pr_number : '');
   // A PR with no issue selects by 'pr:N', so its card opens the drawer too.
   var key = selectionKey(entry);
   var rel = key != null ? relationClass(key) : '';
@@ -433,15 +486,18 @@ function _card(entry, stage) {
       '<span class="ml-auto flex items-center gap-1.5 text-xs text-gray-500 shrink-0">' + parts.right + '</span>' +
     '</div>' +
     '<div class="text-sm text-gray-200 line-clamp-2">' + escapeHtml(entry.title || '') + '</div>' +
-    parts.body + status +
+    _contributors(entry) + parts.body + status +
     (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
   '</div>';
 }
 
 function _colHeader(col, count, extra) {
-  return '<div class="flex items-center gap-1.5 px-0.5 min-h-[1.5rem] text-xs font-semibold uppercase tracking-wider text-gray-400">' +
+  return '<div class="flex items-center gap-1.5 px-0.5 min-h-[1.5rem] text-xs font-semibold uppercase tracking-wider text-gray-400"' +
+    '>' +
     '<span class="w-2 h-2 rounded-full shrink-0" style="background:' + stateHex(col.color) + '"></span>' +
     '<span class="whitespace-nowrap">' + escapeHtml(col.label) + '</span> <span class="font-medium text-gray-500">' + count + '</span>' +
+    (col.description ? '<span tabindex="0" role="note" aria-label="' + escapeHtml(col.label + ': ' + col.description) +
+      '" data-tooltip="' + escapeHtml(col.description) + '" class="normal-case text-gray-500">?</span>' : '') +
     (extra ? '<span class="ml-auto min-w-0 normal-case tracking-normal font-normal">' + extra + '</span>' : '') +
   '</div>';
 }
@@ -479,7 +535,7 @@ function _columnExtra(col) {
 // A running run no card shows (a planner, or an issue the work items leave out): what it is, its step and
 // elapsed time, with View log and Stop, so every running agent can be stopped from this page.
 function _otherRunCard(run) {
-  var ref = run.issue_number ? '#' + run.issue_number : (run.pr_number ? 'PR #' + run.pr_number : '');
+  var ref = run.issue_number ? (run.jira_key || '#' + run.issue_number) : (run.pr_number ? 'PR #' + run.pr_number : '');
   var key = actionKey(run.issue_number, run.pr_number, run.run_id);
   var busy = actionIsRunning(key);
   return '<div class="sova-work-card">' +
@@ -489,10 +545,12 @@ function _otherRunCard(run) {
       (run.elapsed_seconds != null ? '<span class="ml-auto text-xs text-gray-500 shrink-0">' + liveElapsed(run.elapsed_seconds) + '</span>' : '') +
     '</div>' +
     (run.run_label ? '<div class="text-sm text-gray-200 line-clamp-2">' + escapeHtml(run.run_label) + '</div>' : '') +
+    _contributors(run) +
     _sub([run.step_name ? _span(_humanStep(run.step_name)) : '']) +
     actionStatusHtml(key) +
     '<div class="flex flex-wrap items-center gap-0.5">' +
-      _btn('', 'Stop', 'work-stop', [run.run_id, run.issue_number || null, run.pr_number || null], { icon: 'stop', disabled: busy }) +
+      (run.role === 'supervisor:rebase' ? '' :
+        _btn('', 'Stop', 'work-stop', [run.run_id, run.issue_number || null, run.pr_number || null], { icon: 'stop', disabled: busy })) +
       _btn('', 'View log', 'work-view-log', [run.run_id, 'running'], {}) +
     '</div>' +
   '</div>';
@@ -500,13 +558,15 @@ function _otherRunCard(run) {
 
 function _columnFooter(col) {
   var html = '';
-  if (col.stage === 'running') html += (_board.other_runs || []).map(_otherRunCard).join('');
+  if (col.stage === 'running') html += (_board.other_runs || []).filter(function(run) {
+    return _ownerFilter === 'all' || _ownedByMe(run);
+  }).map(_otherRunCard).join('');
   if (col.stage === 'next') {
     if (_board.more_ready > 0) {
       html += '<a class="text-xs text-accent hover:underline px-1" href="' + _PREFIX + '/supervisor">' +
         _board.more_ready + ' more ready: dependency graph</a>';
     }
-    var hidden = _board.hidden || [];
+    var hidden = (_board.hidden || []).filter(_ownedByMe);
     if (hidden.length) {
       html += '<button type="button" class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors px-1"' +
         actionAttrs('work-toggle-hidden') + ' aria-expanded="' + _showHidden + '">' +
@@ -518,7 +578,7 @@ function _columnFooter(col) {
 }
 
 function _group(col) {
-  var entries = _board[col.entries] || [];
+  var entries = (_board[col.entries] || []).filter(_ownedByMe);
   var open = !!_openGroups[col.stage];
   var html = '<button type="button" class="flex items-center gap-1.5 w-full px-0.5 pt-1 text-xs font-semibold uppercase tracking-wider text-gray-400 hover:text-gray-200 transition-colors"' +
     actionAttrs('work-toggle-group', [col.stage]) + ' aria-expanded="' + open + '">' +
@@ -531,19 +591,28 @@ function _group(col) {
 export function renderBoard() {
   var host = document.getElementById('work-board');
   if (!host || !_board) return;
+  if (_boardOwner !== _ownerFilter) {
+    host.innerHTML = '<p class="text-sm text-gray-400 py-6">Loading ' + (_ownerFilter === 'mine' ? 'your work' : 'all work') + '...</p>';
+    return;
+  }
   if (_dragging) {
     _redrawAfterDrag = true;
     return;
   }
+  if (_ownerFilter === 'mine' && !_board.github_user && !_board.jira_display_name) {
+    host.innerHTML = '<p class="text-sm text-gray-400 py-6">Set the project GitHub user or Jira display name to show your work.</p>';
+    return;
+  }
   var cols = _board.columns || [];
   var html = cols.filter(function(col) { return col.column === col.stage; }).map(function(col) {
-    var entries = _board[col.entries] || [];
+    var entries = (_board[col.entries] || []).filter(_ownedByMe);
+    var otherRunCount = col.stage === 'running' ? (_board.other_runs || []).filter(_ownedByMe).length : 0;
     var groups = cols.filter(function(g) { return g.column === col.stage && g.stage !== col.stage; });
     var drop = col.stage === 'queued' || col.stage === 'running' ? ' data-drop="' + col.stage + '"' : '';
     return '<div class="sova-work-col"' + drop + ' aria-label="' + escapeHtml(col.label) + '">' +
-      _colHeader(col, entries.length, _columnExtra(col)) +
+      _colHeader(col, entries.length + otherRunCount, _columnExtra(col)) +
       (entries.map(function(e) { return _card(e, col.stage); }).join('') ||
-        (col.stage === 'running' && (_board.other_runs || []).length ? '' : _empty(_EMPTY[col.stage] || 'Nothing here.'))) +
+        (otherRunCount ? '' : _empty(_EMPTY[col.stage] || 'Nothing here.'))) +
       _columnFooter(col) +
       groups.map(_group).join('') +
     '</div>';
@@ -607,6 +676,21 @@ export function setMilestone(value) {
   return loadBoard();
 }
 
+export function setOwnerFilter(value) {
+  var next = value === 'mine' ? 'mine' : 'all';
+  if (next !== _ownerFilter) clearSelection();
+  _ownerFilter = next;
+  safeStorageSet('sova-work-owner-filter', _ownerFilter);
+  document.querySelectorAll('#work-owner-filter [data-owner-filter]').forEach(function(button) {
+    var active = button.getAttribute('data-owner-filter') === _ownerFilter;
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    button.classList.toggle('bg-gray-700', active);
+    button.classList.toggle('text-white', active);
+  });
+  renderBoard();
+  if (_board || _load) loadBoard();
+}
+
 // Socket ----------------------------------------------------------------------
 
 // The runs a status_update reports, as one string: a run starting, ending or changing status changes it.
@@ -634,6 +718,12 @@ function _catchUp() {
 }
 
 export function init() {
+  setOwnerFilter(_ownerFilter);
+  var ownerFilter = document.getElementById('work-owner-filter');
+  if (ownerFilter) ownerFilter.addEventListener('click', function(event) {
+    var button = event.target.closest('[data-owner-filter]');
+    if (button) setOwnerFilter(button.getAttribute('data-owner-filter'));
+  });
   onActionStateChange(renderBoard);
   onSelectionChange(renderBoard);
   var host = document.getElementById('work-board');

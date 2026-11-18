@@ -26,7 +26,10 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
     ("kwargs", "expected"),
     [
         # 1. done outranks everything
-        ({"state": "merged", "mode": "unclassified", "run_status": "failed", "queued": True}, "done"),
+        (
+            {"state": "merged", "mode": "unclassified", "run_status": "failed", "queued": True, "active_run": True},
+            "done",
+        ),
         ({"state": "on_qa", "mode": "human"}, "done"),
         # 2. running outranks review, needs and yours
         ({"state": "agent_running", "mode": "epic", "run_status": "failed", "queued": True}, "running"),
@@ -35,6 +38,7 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
         # an in-progress issue whose latest run failed has no agent: it needs the user (Resume), not Running
         ({"state": "in_progress", "run_status": "failed"}, "needs"),
         ({"state": "agent_running", "run_status": "failed"}, "running"),
+        ({"state": "pr_conflicted", "active_run": True}, "running"),
         # 3. review outranks a failed run and the queue
         ({"state": "pr_ci_failed", "run_status": "failed", "queued": True}, "review"),
         ({"state": "in_review", "mode": "unclassified"}, "review"),
@@ -64,7 +68,13 @@ def test_every_input_gets_exactly_one_stage(state: str) -> None:
 )
 def test_precedence(kwargs: dict, expected: str) -> None:
     assert (
-        work_stage(kwargs["state"], kwargs.get("mode"), kwargs.get("run_status"), queued=kwargs.get("queued", False))
+        work_stage(
+            kwargs["state"],
+            kwargs.get("mode"),
+            kwargs.get("run_status"),
+            queued=kwargs.get("queued", False),
+            active_run=kwargs.get("active_run", False),
+        )
         == expected
     )
 

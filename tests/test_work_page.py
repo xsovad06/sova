@@ -230,6 +230,8 @@ class TestEntryFields:
             "additions": 900,
             "deletions": 300,
             "changed_files": 12,
+            "author": "octocat",
+            "assignees": ["dsova"],
         }
         items = [_item(1, "pr_review_exhausted", pr_number=9, pr_details=pr, created_at="2026-11-01T10:00:00Z")]
         board = await _build(items, [_task(1)])
@@ -250,6 +252,8 @@ class TestEntryFields:
             "additions": 900,
             "deletions": 300,
             "changed_files": 12,
+            "author": "octocat",
+            "assignees": ["dsova"],
         }
 
     async def test_an_entry_carries_its_work_items_runnable_actions_primary_first(self) -> None:
@@ -398,7 +402,7 @@ const response = (status, body) => ({
 });
 globalThis.fetch = async (url, opts) => {
   const key = ((opts && opts.method) || 'GET') + ' ' + url.split('?')[0];
-  requests.push({ key, body: opts && opts.body ? JSON.parse(opts.body) : null });
+  requests.push({ key, url, body: opts && opts.body ? JSON.parse(opts.body) : null });
   const answer = routes[key];
   if (!answer) return response(404, { detail: 'no route ' + key });
   return response(answer[0], answer[1]);
@@ -462,6 +466,7 @@ if (scenario === 'start-no-slot') {
   out.failedSame = board.cardParts(failed(develop), 'needs');
   const stale = { number: 1029, kind: 'stale_label', reason: 'PR no longer open, issue still labeled in review' };
   out.longReason = board.cardParts(stale, 'needs').body;
+  out.rebaseRunning = board.cardParts({ number: 1066, role: 'supervisor:rebase', run_id: 7 }, 'running').buttons;
 } else if (scenario === 'pr-card') {
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
@@ -512,6 +517,61 @@ if (scenario === 'start-no-slot') {
   await board.loadBoard();
   selection.select('pr:1496');
   out.hostilePrDrawer = els['work-drawer'].innerHTML;
+} else if (scenario === 'owner-filter') {
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  const entries = [
+    { number: 42, jira_key: 'ARVAC-42', title: 'Assigned Jira issue', assignees: ['Damian Sova'],
+      pr: { number: 100, author: 'teammate' } },
+    { number: 43, title: 'My PR', assignees: [], pr: { number: 101, author: 'dsova' } },
+    { number: 44, title: 'Unrelated', assignees: ['teammate'], pr: { number: 102, author: 'teammate' } },
+  ];
+  routes = { 'GET /api/work/board': [200, {
+    columns: [{ stage: 'review', column: 'review', label: 'In review', color: 'purple', entries: 'review' }],
+    review: entries, github_user: 'dsova', jira_display_name: 'Damian Sova',
+  }] };
+  const board = await work('board');
+  await board.loadBoard();
+  out.allHtml = els['work-board'].innerHTML;
+  board.setOwnerFilter('mine');
+  await board.loadBoard();
+  out.mineHtml = els['work-board'].innerHTML;
+  out.mineRequest = requests.filter(r => r.key === 'GET /api/work/board').at(-1).url;
+} else if (scenario === 'owner-filter-race') {
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  let releaseAll;
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls++;
+    if (calls === 1) return new Promise((resolve) => { releaseAll = () => resolve(response(200, {
+      columns: [{ stage: 'review', column: 'review', label: 'In review', color: 'purple', entries: 'review' }],
+      review: [{ number: 1, title: 'All only', mine: false }], github_user: 'dsova',
+    })); });
+    if (url.includes('owner=mine')) return response(200, {
+      columns: [{ stage: 'review', column: 'review', label: 'In review', color: 'purple', entries: 'review' }],
+      review: [{ number: 2, title: 'Mine only', mine: true }], github_user: 'dsova',
+    });
+    return response(500, { detail: 'offline' });
+  };
+  const board = await work('board');
+  const first = board.loadBoard();
+  await tick();
+  board.setOwnerFilter('mine');
+  releaseAll();
+  await first;
+  out.mineHtml = els['work-board'].innerHTML;
+  board.setOwnerFilter('all');
+  out.loadingHtml = els['work-board'].innerHTML;
+  await board.loadBoard();
+  out.afterFailure = els['work-board'].innerHTML;
+  out.error = els['work-board-error'].textContent;
 } else if (scenario === 'drawer-redraw') {
   // The drawer's priority picker is "busy" while its menu is open or its save runs: a board refresh must not
   // replace it then, and the redraw lands once the picker is idle again.
@@ -969,6 +1029,12 @@ class TestStartRunsTheAgentTheStageNeeds:
         assert "break-words" in body
         assert "whitespace-nowrap" not in body
 
+    def test_a_rebase_run_has_its_log_without_an_unavailable_stop_button(self, tmp_path: Path) -> None:
+        buttons = _run_node(tmp_path, "card-start")["rebaseRunning"]
+
+        assert "View log" in buttons
+        assert "Stop" not in buttons
+
 
 class TestPrOnlyCards:
     """A PR with no issue opens the drawer like an issue does, and In review cards offer Address PR."""
@@ -1005,6 +1071,28 @@ class TestPrOnlyCards:
         assert "Address PR" not in out["resolvedButtons"]
         assert "Address PR" not in out["noThreadsButtons"]
         assert "run_command:address-pr" not in out["resolvedCovers"], "so the drawer can still list a server action"
+
+
+class TestBoardOwnerFilter:
+    def test_mine_shows_the_jira_assignee_and_github_pr_author_with_avatars(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "owner-filter")
+
+        assert "Unrelated" in out["allHtml"]
+        assert "Assigned Jira issue" in out["mineHtml"]
+        assert "ARVAC-42" in out["mineHtml"]
+        assert "My PR" in out["mineHtml"]
+        assert "avatars.githubusercontent.com/dsova" in out["mineHtml"]
+        assert "Unrelated" not in out["mineHtml"]
+        assert "owner=mine" in out["mineRequest"]
+
+    def test_filter_change_during_first_load_and_failed_refresh_never_mislabels_cards(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "owner-filter-race")
+
+        assert "Mine only" in out["mineHtml"]
+        assert "All only" not in out["mineHtml"]
+        assert "Loading all work" in out["loadingHtml"]
+        assert "Mine only" not in out["afterFailure"]
+        assert "offline" in out["error"]
 
 
 class TestDrawerHoldsARedrawWhileThePriorityPickerIsBusy:
