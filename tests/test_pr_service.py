@@ -25,6 +25,7 @@ from sova.dashboard.services.pr_service import (
     _should_unblock_bot_reviews,
     _summarize_ci,
     compute_pr_state,
+    extract_jira_key,
     get_unresolved_thread_count,
     list_open_prs_with_state,
     parse_linked_issue,
@@ -49,6 +50,79 @@ def _state(**kwargs: object) -> str:
 _BOT_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}
 _HUMAN_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}
 _COMMENTED = {"state": "COMMENTED", "author": {"login": "reviewer"}}
+
+
+def test_pr_jira_key_comes_from_body_before_title_or_branch() -> None:
+    raw = {
+        "body": "JIRA: https://jira.example.test/browse/ARVAC-42",
+        "title": "[RHCLOUD-9] change",
+        "headRefName": "fix/OTHER-7",
+    }
+
+    assert extract_jira_key(raw) == "ARVAC-42"
+    assert _enrich_pr({"number": 10, **raw}, 0)["linked_jira_key"] == "ARVAC-42"
+
+
+def test_pr_jira_key_prefers_the_issue_section_to_other_body_mentions() -> None:
+    raw = {"body": "## Summary\nRHCLOUD-9 is related\n\n## Issue\n\nARVAC-42\n\n## Test plan\nDone"}
+
+    assert extract_jira_key(raw) == "ARVAC-42"
+
+
+def test_pr_jira_key_reads_the_issue_section_at_end_of_body() -> None:
+    raw = {"body": "## Summary\nRHCLOUD-9 is related\n\n## Issue\nARVAC-42"}
+
+    assert extract_jira_key(raw) == "ARVAC-42"
+
+
+def test_pr_jira_key_ignores_fenced_issue_section() -> None:
+    raw = {"body": "```markdown\n## Issue\nRHCLOUD-9\n```\n## Issue\nARVAC-42"}
+
+    assert extract_jira_key(raw) == "ARVAC-42"
+
+
+def test_pr_jira_key_rejects_conflicting_link_label() -> None:
+    raw = {"body": "## Issue\n[ARVAC-42](https://jira.example.test/browse/RHCLOUD-42)"}
+
+    assert extract_jira_key(raw) == ""
+    assert extract_jira_key({"body": raw["body"].removeprefix("## Issue\n"), "title": "[ARVAC-42] Change"}) == ""
+
+
+def test_pr_jira_key_normalizes_lowercase_link() -> None:
+    raw = {"body": "JIRA: https://jira.example.test/browse/arvac-42"}
+
+    assert extract_jira_key(raw) == "ARVAC-42"
+
+
+def test_pr_jira_key_rejects_incidental_title_and_oversized_number() -> None:
+    assert extract_jira_key({"title": "Allow TLS-13 cipher configuration"}) == ""
+    assert extract_jira_key({"body": f"## Issue\nARVAC-{'9' * 4301}"}) == ""
+    assert parse_linked_issue(f"JIRA: https://jira.example.test/browse/ARVAC-{'9' * 4301}") is None
+
+
+def test_bare_jira_key_in_issue_section_does_not_link_a_github_issue() -> None:
+    body = "## Issue\nARVAC-42"
+
+    assert extract_jira_key({"body": body}) == "ARVAC-42"
+    assert parse_linked_issue(body) is None
+
+
+def test_pr_jira_key_ignores_a_body_mention_without_a_link() -> None:
+    raw = {"body": "## Summary\nThis also affects RHCLOUD-9.", "title": "Update dependencies"}
+
+    assert extract_jira_key(raw) == ""
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"body": "[ARVAC-42](https://jira.example.test/browse/ARVAC-42)"},
+        {"title": "[ARVAC-42] Update the Work board"},
+        {"headRefName": "fix/ARVAC-42-work-board"},
+    ],
+)
+def test_pr_jira_key_accepts_explicit_links_title_or_branch(raw: dict) -> None:
+    assert extract_jira_key(raw) == "ARVAC-42"
 
 
 class TestComputePrState:

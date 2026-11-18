@@ -584,7 +584,7 @@ def _build_pr_item(
         last_run=None,
         created_at="",
         assignees=pr.get("assignees", []),
-        jira_key="",
+        jira_key=pr.get("linked_jira_key", ""),
         issue_type="",
         last_failed=False,
         story_points=None,
@@ -606,6 +606,9 @@ def _append_standalone_pr_items(
     running_by_issue: dict[str, dict],
     handoffs_by_issue: dict[str, dict],
     verdicts_by_issue: dict[str, dict] | None = None,
+    graph: DependencyGraph | None = None,
+    jira_base_url: str = "",
+    is_jira: bool = False,
     *,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
@@ -627,17 +630,28 @@ def _append_standalone_pr_items(
                 verdict = verdicts_by_issue.get(f"pr:{pr['number']}")
         else:
             verdict = None
-        items.append(
-            _build_pr_item(
-                pr,
-                running,
-                handoff,
-                issue_num,
-                sova_verdict=verdict,
-                external_reviews_enabled=external_reviews_enabled,
-                max_address_cycles=max_address_cycles,
-            )
+        item = _build_pr_item(
+            pr,
+            running,
+            handoff,
+            issue_num,
+            sova_verdict=verdict,
+            external_reviews_enabled=external_reviews_enabled,
+            max_address_cycles=max_address_cycles,
         )
+        # A linked issue outside the actionable queue still has its own tracker title and URL.
+        task = graph.get_task(int(issue_num)) if graph is not None and issue_num and issue_num.isdigit() else None
+        if task is not None and is_jira:
+            item.update(
+                title=task.title,
+                url=task.url,
+                assignees=list(task.assignees),
+                issue_priority=task.priority.value,
+                jira_key=task.metadata.get("key", ""),
+            )
+        elif item["jira_key"] and jira_base_url:
+            item["url"] = f"{jira_base_url.rstrip('/')}/browse/{item['jira_key']}"
+        items.append(item)
 
 
 # Merge blockers -------------------------------------------------------------
@@ -689,7 +703,10 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     api_health: {status: "ok"}, {status: "unreachable", detail, down_seconds},
     or {status: "rate_limited", detail, cooldown_seconds, hits}
     """
-    from sova.dashboard.services.agent_pool import _get_project_agents
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import _get_project_agents, get_default_project_dir
+
+    project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
     slug = None
     if project_dir:
@@ -716,6 +733,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     last_run_prs = [pr for task in queue if (pr := (task.get("last_run") or {}).get("pr_number"))]
     open_pr_numbers = await confirm_open_pr_numbers(known_open_pr_numbers(fetched_prs, cfg), last_run_prs, cfg)
     prs = fetched_prs if fetched_prs is not None else []
+    if cfg and cfg.task_source.type == "jira" and cfg.task_source.jira_project_key:
+        prs = _jira_project_prs(prs, cfg.task_source.jira_project_key)
 
     running_by_issue = _index_running_agents(agents_data)
     handoffs_by_issue = _index_handoffs(handoffs)
@@ -753,6 +772,9 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         running_by_issue,
         handoffs_by_issue,
         verdicts_by_issue=verdicts_by_issue,
+        graph=graph,
+        jira_base_url=cfg.task_source.jira_base_url if cfg and cfg.task_source.type == "jira" else "",
+        is_jira=bool(cfg and cfg.task_source.type == "jira"),
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
     )
@@ -909,6 +931,26 @@ def _open_pr_issues(prs: list[dict]) -> set[int]:
     return issues
 
 
+def _jira_project_prs(prs: list[dict], project_key: str) -> list[dict]:
+    """Keep PRs with this Jira project's full key and use that key as their issue link.
+
+    A shared GitHub repository may contain PRs for several Jira projects. A numeric suffix or an
+    unlinked PR cannot identify the project, so neither can become a card or exclude an Up next issue.
+    """
+    prefix = f"{project_key.upper()}-"
+    scoped = []
+    for pr in prs:
+        key = (pr.get("linked_jira_key") or "").upper()
+        if not key.startswith(prefix):
+            continue
+        suffix = key.removeprefix(prefix)
+        if not suffix.isascii() or not suffix.isdigit() or len(suffix) > 100:
+            continue
+        issue = int(suffix)
+        scoped.append({**pr, "linked_issue": issue, "linked_issues": [issue]})
+    return scoped
+
+
 async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[int]]:
     """The issues the ranker must skip: ``(running, open_prs)``, from the explicit project.
 
@@ -917,8 +959,20 @@ async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[
     degrades to no exclusions and is logged), leaving the ``triaged``/``researched`` state
     filter as the only exclusion.
     """
-    slug = project_dir.name if project_dir else None
+    from sova.config.context import resolve_project_dir
+    from sova.config.loader import load_config
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
+    slug = project_dir.name
     prs, agents_data = await asyncio.gather(_safe_prs(project_dir), _safe_agents(slug))
+    try:
+        cfg = load_config(project_dir)
+        if prs is not None and cfg.task_source.type == "jira" and cfg.task_source.jira_project_key:
+            prs = _jira_project_prs(prs, cfg.task_source.jira_project_key)
+    except Exception:  # noqa: BLE001 (exclusions fail open when config is unavailable)
+        log.warning("work_items.exclusions_config_failed", exc_info=True)
+        prs = None
     return _running_issues(agents_data), _open_pr_issues(prs or [])
 
 
