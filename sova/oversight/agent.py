@@ -14,7 +14,9 @@ import asyncio
 import contextlib
 import time
 import uuid
+from collections.abc import Awaitable
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -122,8 +124,9 @@ class OversightAgent:
         duration_ms: int,
         started_at: datetime,
         error: str,
+        snapshot: dict | None = None,
     ) -> None:
-        """Record an error run, swallowing DB failures."""
+        """Record an error run, swallowing DB failures. *snapshot* is kept when observation completed."""
         try:
             await self._record_run(
                 run_id,
@@ -131,6 +134,7 @@ class OversightAgent:
                 OversightRunStatus.ERROR,
                 duration_ms,
                 started_at=started_at,
+                snapshot=snapshot,
                 error=error,
             )
         except (SQLAlchemyError, OSError):
@@ -146,8 +150,34 @@ class OversightAgent:
         """Return True if the background loop task is alive."""
         return self._task is not None and not self._task.done()
 
+    @property
+    def _db_scope(self) -> Path | None:
+        """The project database every write of a cycle goes to: the agent's own, never the caller's contextvar.
+
+        ``None`` (an agent built without ``project_dir``) keeps ``get_session()``'s default resolution.
+        """
+        return Path(self._project_dir) if self._project_dir else None
+
+    @staticmethod
+    async def _shielded(awaitable: Awaitable[None]) -> None:
+        """Run a DB write to completion even when the cycle task is cancelled meanwhile.
+
+        The write is retained as its own task and shielded, so a cancellation (or a second one) during it
+        neither abandons the transaction (SQLite would keep its write lock) nor leaves the run row RUNNING.
+        The cancellation propagates once the write has finished.
+        """
+        write = asyncio.ensure_future(awaitable)
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            while not write.done():
+                # Another cancellation must not abandon the write: keep waiting, then re-raise below.
+                with contextlib.suppress(asyncio.CancelledError):  # NOSONAR(S7497)
+                    await asyncio.shield(write)
+            raise
+
     async def run_cycle_once(self) -> None:
-        """Execute a single wake cycle (observe, analyze, propose, record).
+        """Execute a single wake cycle (open the run row, observe, analyze, propose, finish the row).
 
         Extracted from the loop body so the dashboard "Run Now" button can
         trigger an immediate cycle without waiting for the sleep interval.
@@ -165,8 +195,10 @@ class OversightAgent:
             cycle = self._cycle_number
             started_at = datetime.now(timezone.utc)
             t0 = time.monotonic()
+            snapshot: dict | None = None
             try:
                 log.debug("oversight.cycle_start", cycle=cycle, run_id=run_id)
+                await self._shielded(self._start_run(run_id, cycle, started_at))
                 self._persona = load_persona(self._config.persona_path)
                 snapshot = await self._observe()
                 analysis_error: str | None = None
@@ -177,24 +209,30 @@ class OversightAgent:
                     await self._propose_issues(findings)
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 status, error = self._determine_outcome(snapshot, analysis_error)
-                await self._record_run(
-                    run_id,
-                    cycle,
-                    status,
-                    duration_ms,
-                    started_at=started_at,
-                    snapshot=snapshot,
-                    error=error,
+                await self._shielded(
+                    self._record_run(
+                        run_id,
+                        cycle,
+                        status,
+                        duration_ms,
+                        started_at=started_at,
+                        snapshot=snapshot,
+                        error=error,
+                    )
                 )
                 log.debug("oversight.cycle_done", cycle=cycle, run_id=run_id, duration_ms=duration_ms)
             except asyncio.CancelledError:
                 duration_ms = int((time.monotonic() - t0) * 1000)
-                await self._record_error_safe(run_id, cycle, duration_ms, started_at, "cancelled")
+                await self._shielded(
+                    self._record_error_safe(run_id, cycle, duration_ms, started_at, "cancelled", snapshot)
+                )
                 raise
             except Exception as exc:  # noqa: BLE001 (daemon loop must survive any single-cycle error)
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 log.warning("oversight.cycle_error", cycle=cycle, run_id=run_id, exc_info=True)
-                await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
+                await self._shielded(
+                    self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc), snapshot)
+                )
 
     async def _run_loop(self) -> None:
         """Main loop: execute a wake cycle, then sleep for the configured interval.
@@ -231,6 +269,7 @@ class OversightAgent:
                 model=self._config.analysis_model,
                 dedup_window_days=self._config.dedup_window_days,
                 analysis_timeout=self._config.analysis_timeout_seconds,
+                project_dir=self._db_scope,
             )
             return findings, error
         except Exception as exc:  # noqa: BLE001 (LLM analysis failure is reported as a cycle error, not a crash)
@@ -272,6 +311,7 @@ class OversightAgent:
                 sova_adapter,
                 project_adapters,
                 confidence_threshold=self._config.confidence_threshold,
+                project_dir=self._db_scope,
             )
 
             if created and self._config.auto_triage:
@@ -326,6 +366,26 @@ class OversightAgent:
             log.warning("oversight.observe_failed", exc_info=True)
             return None
 
+    async def _start_run(self, run_id: str, cycle: int, started_at: datetime) -> None:
+        """Insert the run row as ``running`` so findings written during the cycle satisfy their foreign key.
+
+        Non-fatal: on a DB failure ``_record_run`` inserts the row at the end of the cycle instead.
+        """
+        from sova.db.session import get_session
+
+        try:
+            async with await get_session(project_dir=self._db_scope) as session, session.begin():
+                session.add(
+                    OversightRun(
+                        id=run_id,
+                        status=OversightRunStatus.RUNNING,
+                        cycle_number=cycle,
+                        started_at=started_at,
+                    )
+                )
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.warning("oversight.start_run_failed", run_id=run_id, cycle=cycle, exc_info=True)
+
     async def _record_run(
         self,
         run_id: str,
@@ -337,23 +397,20 @@ class OversightAgent:
         error: str | None = None,
         snapshot: dict | None = None,
     ) -> None:
-        """Persist a wake cycle record to the DB."""
+        """Finish the wake cycle's record: update the row inserted at cycle start, or insert it if missing."""
         from sova.db.session import get_session
 
         try:
-            async with await get_session() as session:
-                async with session.begin():
-                    now = datetime.now(timezone.utc)
-                    record = OversightRun(
-                        id=run_id,
-                        status=status,
-                        cycle_number=cycle,
-                        duration_ms=duration_ms,
-                        error=error,
-                        snapshot_json=snapshot,
-                        started_at=started_at or now,
-                        ended_at=now,
-                    )
+            async with await get_session(project_dir=self._db_scope) as session, session.begin():
+                now = datetime.now(timezone.utc)
+                record = await session.get(OversightRun, run_id)
+                if record is None:
+                    record = OversightRun(id=run_id, cycle_number=cycle, started_at=started_at or now)
                     session.add(record)
+                record.status = status
+                record.duration_ms = duration_ms
+                record.error = error
+                record.snapshot_json = snapshot
+                record.ended_at = now
         except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("oversight.record_failed", run_id=run_id, cycle=cycle, exc_info=True)
