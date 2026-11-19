@@ -22,6 +22,7 @@ from pydantic_settings import BaseSettings
 from sova.config.models import (
     ProjectConfig,
 )
+from sova.config.root import owning_config_dir, resolve_config_root
 from sova.utils.logging import get_logger
 
 try:
@@ -83,6 +84,9 @@ def invalidate_config_cache(project_dir: Path | None = None) -> None:
 
     if project_dir is not None:
         touch_settings_stamp(project_dir.resolve())
+        # A write through a worktree can create its own settings database, which changes what
+        # owning_config_dir() answers for it: forget the cached worktree-to-primary mapping.
+        resolve_config_root.cache_clear()
     with _cache_lock:
         if project_dir is None:
             _generation += 1
@@ -104,7 +108,9 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
     if project_dir is None:
         project_dir = Path.cwd()
 
-    project_dir = project_dir.resolve()
+    # A linked worktree has no settings database: use the primary checkout's, so the cache entry, the stored
+    # settings and the Keychain entry scoped by directory all belong to the same checkout.
+    project_dir = owning_config_dir(project_dir)
 
     from sova.config.db_loader import (
         config_fingerprint,
@@ -190,6 +196,20 @@ def _build_config(project_dir: Path) -> ProjectConfig:
         merged = toml_flat
 
     _apply_env_overrides(merged)
+
+    task_source = merged.get("task_source")
+    if isinstance(task_source, dict):
+        # The database stores only a marker for a Keychain-backed Jira token.
+        # Resolve it here because the adapter, diagnostics and command scripts
+        # all consume cfg.task_source.jira_api_token directly.
+        from sova.llm import keyring_store
+
+        if task_source.get("jira_api_token") == keyring_store.SENTINEL:
+            name = keyring_store.scoped_secret_name(keyring_store.JIRA_TOKEN_KEY, project_dir, keyring_store.JIRA_SCOPE)
+            resolved = keyring_store.resolve_secret(name, keyring_store.SENTINEL)
+            if not resolved:
+                logger.warning("loader.jira_token_keychain_entry_missing", keychain_entry=name)
+            task_source["jira_api_token"] = resolved
 
     try:
         return ProjectConfig(**merged) if merged else ProjectConfig()

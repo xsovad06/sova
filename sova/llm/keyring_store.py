@@ -8,15 +8,11 @@ Secret Service, where ``keyring.get_keyring()`` returns the null
 the caller falls back to plaintext database storage. No exception escapes
 this module.
 
-Only settings named in ``RESOLVED_SECRET_KEYS`` are actually moved into the
-keyring by the settings layer (``sova/dashboard/services/settings_service.py``):
-every ``value_type="secret"`` setting is masked on display, but moving a
-setting's storage here is only safe once its one read site calls
-``resolve_secret()`` instead of reading the config field directly (see
-``sova/llm/provider.py:create_provider``'s anthropic branch, and
-``sova/ipc/notifications.py:send_ntfy_notification`` for the ntfy token). Adding a new name to this set without
-updating its consumption site would silently replace a working credential with the
-literal ``SENTINEL`` string.
+Only settings named in ``RESOLVED_SECRET_KEYS`` are moved into the keyring by
+the settings layer (``sova/dashboard/services/settings_service.py``). Their
+read paths must resolve the sentinel before use: the LLM provider and
+notifications resolve at consumption, while the Jira token is resolved by
+``load_config()`` because several consumers read that config field directly.
 """
 
 from __future__ import annotations
@@ -48,13 +44,15 @@ SERVICE_NAME = "sova"
 SENTINEL = "keyring:stored"
 
 NTFY_TOKEN_KEY = "notification.ntfy_token"
+JIRA_TOKEN_KEY = "task_source.jira_api_token"
 # Fixed scope segment for NTFY_TOKEN_KEY: unlike llm.api_key it does not depend on the active LLM provider.
 NTFY_SCOPE = "ntfy"
+JIRA_SCOPE = "jira"
 
-RESOLVED_SECRET_KEYS = frozenset({"llm.api_key", NTFY_TOKEN_KEY})
+RESOLVED_SECRET_KEYS = frozenset({"llm.api_key", NTFY_TOKEN_KEY, JIRA_TOKEN_KEY})
 
 # Keys whose keyring scope segment is fixed; every other key is scoped by the LLM provider.
-_FIXED_SCOPES: dict[str, str] = {NTFY_TOKEN_KEY: NTFY_SCOPE}
+_FIXED_SCOPES: dict[str, str] = {NTFY_TOKEN_KEY: NTFY_SCOPE, JIRA_TOKEN_KEY: JIRA_SCOPE}
 
 _backend_usable: bool | None = None
 
@@ -137,6 +135,11 @@ def scoped_secret_name(name: str, project_dir: str | Path, provider: str) -> str
     (project, provider) pair gets its own keyring entry. The bare ``name``
     remains the legacy, unscoped entry that ``resolve_secret()`` can still
     read as a read-only fallback via its ``legacy_name`` parameter.
+
+    *provider* is the LLM provider id for ``llm.api_key``, or a fixed scope
+    for a key in ``_FIXED_SCOPES``: ``NTFY_SCOPE`` for the ntfy token and
+    ``JIRA_SCOPE`` for the Jira API token (``JIRA_TOKEN_KEY``). *project_dir*
+    must be the checkout that owns the settings database holding the marker.
     """
     resolved_dir = str(Path(project_dir).resolve())
     return f"{name}:{provider}:{resolved_dir}"

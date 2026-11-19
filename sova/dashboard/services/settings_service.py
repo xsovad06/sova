@@ -95,6 +95,16 @@ def _get_raw_config(project_dir: Path | None = None) -> dict:
     # Flatten the config into displayable key-value pairs
     result: dict = {}
     _flatten_dict("", cfg.model_dump(), result)
+    # load_config resolves this token for callers, but the settings page needs
+    # the stored marker to identify Keychain storage and avoid migrating it twice.
+    from sova.config.db_loader import read_stored_settings
+    from sova.config.root import owning_config_dir
+    from sova.llm import keyring_store
+
+    # The same directory load_config() read, so a worktree sees the primary checkout's marker.
+    stored = read_stored_settings(owning_config_dir(project_dir if project_dir is not None else Path.cwd()))
+    if stored and stored.get(keyring_store.JIRA_TOKEN_KEY) == keyring_store.SENTINEL:
+        result[keyring_store.JIRA_TOKEN_KEY] = keyring_store.SENTINEL
     return result
 
 

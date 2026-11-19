@@ -76,22 +76,30 @@ jira_project_key = "MYPROJ"
 
 ### API token
 
-Store the API token as an environment variable (never in SOVA config):
+Enter the token in the project's dashboard settings page. SOVA stores it in the
+OS Keychain when available and keeps only a marker in the project settings
+database. `load_config()` resolves the marker, so every Jira consumer gets the
+token. In a linked worktree with neither a `sova.toml` nor a settings database of its
+own, `load_config()` reads the primary checkout's settings and looks the Keychain
+entry up under that checkout's path (`sova/config/root.py`). A worktree that
+carries its own `sova.toml` is a config source in its own right and keeps
+resolving to itself, so it reads its own settings and Keychain entry. The lookup happens only when the config
+is (re)loaded, since `load_config()` is cached, so a token added to the Keychain
+after a process started is picked up on the next settings change or restart.
+
+An environment variable also works for a CLI run started from that shell:
 
 ```bash
 export SOVA_TASK_JIRA_API_TOKEN="your-api-token-here"
 ```
 
-Verify it is set correctly:
+Verify that it is present without printing it:
 
 ```bash
-echo $SOVA_TASK_JIRA_API_TOKEN
-# Should output your token, not an empty line
+test -n "$SOVA_TASK_JIRA_API_TOKEN" && echo "Jira token set"
 ```
 
-Or add it to `.env` in your project root (already in `.gitignore`).
-
-The `jira_api_token` field in SOVA config uses `repr=False` to prevent accidental logging, but environment variables are the recommended approach.
+The `jira_api_token` field uses `repr=False` to prevent accidental logging.
 
 ### Required fields
 
@@ -100,7 +108,7 @@ The `jira_api_token` field in SOVA config uses `repr=False` to prevent accidenta
 | `type` | Must be `"jira"` | `"jira"` |
 | `jira_base_url` | Your Jira Cloud instance URL | `"https://acme.atlassian.net"` |
 | `jira_email` | Email for API authentication | `"dev@acme.com"` |
-| `jira_api_token` | API token (prefer env var `SOVA_TASK_JIRA_API_TOKEN`) | |
+| `jira_api_token` | API token (dashboard Keychain storage or `SOVA_TASK_JIRA_API_TOKEN`) | |
 | `jira_project_key` | Jira project key | `"MYPROJ"` |
 
 ### Optional fields

@@ -16,11 +16,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
 from sova.config.models import LLMConfig, RolesConfig
+from sova.config.root import resolve_config_root
 from sova.llm.backends import (
     TIER_NAMES,
     Backend,
@@ -939,22 +939,7 @@ def record_compression_savings(result: LLMResult, original: str, compressed: str
     result.pre_compression_input_tokens = result.input_tokens + result.tokens_saved
 
 
-@lru_cache(maxsize=256)
-def _resolve_config_root(start: Path) -> Path:
-    """Walk *start* up to the checkout that owns its config.
-
-    Cached because config is loaded once per LLM call and ``_resolve_primary_root``
-    shells out to git. The cache is bounded because worktree paths are ephemeral
-    (one per issue, removed on cleanup), so an unbounded map would only ever grow.
-    Process-local, so a config source created after the first lookup is not
-    picked up until restart.
-    """
-    if (start / "sova.toml").exists() or (start / ".claude" / "sova.db").exists():
-        return start
-
-    from sova.llm.provider import _resolve_primary_root
-
-    return _resolve_primary_root(start) or start
+_resolve_config_root = resolve_config_root
 
 
 def _config_root(cwd: Path | str | None) -> Path | None:
