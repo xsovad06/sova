@@ -274,6 +274,47 @@ class TestAgainstRealGit:
         assert "MERGED" in head.stdout
         assert not _has_unresolved_conflict(head.stdout)
 
+    async def test_conflict_resolution_edits_worktree_with_settings_from_project(self, tmp_path: Path) -> None:
+        """With a distinct project_dir, config comes from it while the agent, staging and checks use cwd."""
+        repo = await self._build_conflicting_repo(tmp_path)
+        project = tmp_path / "parent-project"
+        project.mkdir()
+        dispatch_calls: list[dict[str, object]] = []
+
+        async def edit_without_staging(*_args: object, **kwargs: object) -> MagicMock:
+            dispatch_calls.append(kwargs)
+            (repo / "f.txt").write_text("line1\nMERGED\nline3\n", encoding="utf-8")
+            return MagicMock(text="resolved", cost_usd=Decimal("0.01"))
+
+        with (
+            patch("sova.git.rebase._load_consensus_config", return_value=([], 0.66, {}, None)) as load,
+            patch("sova.core.agent_dispatch.dispatch_runtime_prompt", side_effect=edit_without_staging),
+        ):
+            result, _cost = await rebase_with_conflict_resolution("main", cwd=repo, project_dir=project, max_attempts=1)
+
+        load.assert_called_once_with(project)
+        assert len(dispatch_calls) == 1
+        assert dispatch_calls[0]["cwd"] == repo
+        assert dispatch_calls[0]["config_dir"] == project
+        # Host-owned staging and verification ran in the worktree: the rebase completed there.
+        assert result.success is True
+        head = await run("git", "show", "HEAD:f.txt", cwd=repo)
+        assert "MERGED" in head.stdout
+        assert not (project / ".git").exists()
+
+
+async def test_settings_come_from_project_dir_not_worktree(tmp_path: Path) -> None:
+    """Edits happen in cwd (the worktree) but config is loaded from the parent project."""
+    worktree, project = tmp_path / "wt", tmp_path / "project"
+    with (
+        patch("sova.git.rebase._load_consensus_config", return_value=([], 0.66, {}, None)) as load,
+        patch("sova.git.rebase.run", new_callable=AsyncMock, return_value=MagicMock(success=False, stderr="x")),
+    ):
+        result, _cost = await rebase_with_conflict_resolution("main", cwd=worktree, project_dir=project)
+
+    assert result.success is False
+    load.assert_called_once_with(project)
+
 
 @pytest.mark.usefixtures("stub_collision_cleanup")
 class TestRebaseVerificationIntegration:

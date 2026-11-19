@@ -128,7 +128,7 @@ sova run <issue> --role developer --force   # skip the researched-state entry ga
 | Step kind | Executor | Network | Writes |
 |---|---|---|---|
 | Text-only calls (triage, PR body, self-review, extraction) | LiteLLM to OpenAI, in the SOVA process | yes | none |
-| `develop`, fix loop, `simplify` and other tool-using steps | `codex exec`, `workspace-write` sandbox | no | the worktree only |
+| `develop`, fix loop, `simplify`, rebase conflict resolution and other tool-using steps | `codex exec`, `workspace-write` sandbox | no | the worktree only |
 | `research` on a provider without the `runs_commands_with_tools` capability (every provider except `claude-code`: `litellm`, `hybrid`, `anthropic`, `openai`, `ollama`, `vertex`) | the configured agent runtime, read-only (`codex exec` read-only sandbox for Codex) | no | none; SOVA appends the section to the issue |
 | Dashboard commands such as `/integrate-pr` | `codex exec`, `workspace-write` sandbox with network enabled | yes | worktree and authorized external operations |
 | Dashboard `/address-pr` with Codex | Native address-review pipeline; Codex edits files, SOVA runs Git and validation | SOVA process only | worktree edits and controlled host Git operations |
@@ -145,6 +145,20 @@ comments in a nonce-delimited block, and the whole context is capped at 12k char
 Dashboard `/address-pr` takes the native pipeline path when Codex is configured.
 The coding step stays offline and leaves edits unstaged. SOVA handles rebase,
 staging, amending, the full validation gate, push and review thread updates.
+
+Rebase conflict resolution runs inside a worktree but reads model and runtime settings from
+the parent project's database. The coding runtime edits the conflicted files, and SOVA stages
+verified resolutions.
+The dashboard's Rebase action can retry a failed attempt at the same PR head; the scheduler
+still deduplicates failed attempts until the head changes. A rebase for the same PR that is
+still running makes a manual Rebase skip instead of starting a second one, in either the
+dashboard or the supervisor daemon. The run writes its `running` row first and then backs off if an
+earlier fresh `running` row exists for the same PR, so of two simultaneous starts exactly one proceeds.
+The skipped card shows `Rebase for PR #N is already running (started HH:MM UTC)`, which is distinct
+from `Already attempted rebase for PR #N at HEAD <sha>` (a finished attempt at this head). A row counts
+as running until it is older than five times `llm.cli_timeout` plus the 300 s pre-push hook and a
+10 minute margin (about 90 minutes by default); an older row is treated as orphaned by a crash and
+ignored.
 
 Only Codex enforces `read_only`. The Claude Code and Aider runtimes treat it as advisory, so
 research on a text-only provider under `agent.runtime = "claude-code"` is kept read-only by

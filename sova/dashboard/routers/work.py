@@ -215,7 +215,7 @@ async def _run_rebase(issue_number: int, project_dir: PathType, action_id: str) 
 
     try:
         session_factory = await get_session_factory(project_dir)
-        result = await attempt_auto_rebase(issue_number, project_dir, session_factory)
+        result = await attempt_auto_rebase(issue_number, project_dir, session_factory, retry_failed=True)
     except Exception as exc:  # noqa: BLE001 (background task: the failure is recorded on the card, never lost)
         log.error("work.rebase_failed", issue=issue_number, exc_info=True)
         await action_registry.finish(project_dir, action_id, ok=False, message=f"Rebase failed: {exc}")
