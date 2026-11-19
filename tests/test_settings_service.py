@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import call, patch
@@ -1495,6 +1496,168 @@ def _entry(payload: dict, key: str) -> dict:
             if setting["key"] == key:
                 return setting
     raise AssertionError(f"{key} missing from the grouped payload")
+
+
+def _make_linked_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    """A git repository plus a linked worktree of it, isolated from the caller's git environment."""
+    import os
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
+    git = ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+    main = tmp_path.resolve() / "main"
+    main.mkdir()
+    subprocess.run([*git, "init", "-q"], cwd=main, check=True, env=env)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], cwd=main, check=True, env=env)
+    worktree = main / ".claude" / "worktrees" / "1"
+    subprocess.run([*git, "worktree", "add", "-q", "-b", "wt", str(worktree)], cwd=main, check=True, env=env)
+    return main, worktree
+
+
+@pytest.mark.usefixtures("_dispose_project_engines")
+class TestJiraKeychainCredential:
+    async def test_saved_jira_token_loads_from_project_keychain_for_adapter(self, tmp_path: Path) -> None:
+        from sqlalchemy import select
+
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import get_secret_locations, update_config
+        from sova.db.models import ProjectSetting
+        from sova.db.session import get_session
+        from sova.llm.keyring_store import SENTINEL, scoped_secret_name
+
+        project_dir = tmp_path / "jira-project"
+        await _store_rows(
+            project_dir,
+            {
+                "task_source.type": "jira",
+                "task_source.jira_base_url": "https://jira.example.com",
+                "task_source.jira_email": "user@example.com",
+                "task_source.jira_project_key": "TEST",
+            },
+        )
+        key = "task_source.jira_api_token"
+        scoped_name = scoped_secret_name(key, project_dir, "jira")
+        with (
+            patch("sova.llm.keyring_store.set_secret", return_value=True) as set_secret,
+            patch(
+                "sova.llm.keyring_store.get_secret",
+                side_effect=lambda name: "token" if name == scoped_name else None,
+            ),
+        ):
+            result = await update_config(project_dir, key=key, value="token")
+            assert result["status"] == "ok"
+            assert get_secret_locations(project_dir)[key] == "keyring"
+            config = load_config(project_dir)
+            assert config.task_source.jira_api_token == "token"
+            assert create_adapter(config).project_key == "TEST"
+
+        set_secret.assert_called_once_with(scoped_name, "token")
+        async with await get_session(project_dir=project_dir) as session:
+            stored = await session.scalar(select(ProjectSetting.value).where(ProjectSetting.key == key))
+        assert json.loads(stored) == SENTINEL
+
+    async def test_missing_keychain_entry_does_not_pass_marker_to_jira(self, tmp_path: Path) -> None:
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+        from sova.llm.keyring_store import SENTINEL
+
+        project_dir = tmp_path / "jira-project"
+        await _store_rows(
+            project_dir,
+            {
+                "task_source.type": "jira",
+                "task_source.jira_base_url": "https://jira.example.com",
+                "task_source.jira_email": "user@example.com",
+                "task_source.jira_project_key": "TEST",
+                "task_source.jira_api_token": SENTINEL,
+            },
+        )
+        with patch("sova.llm.keyring_store.get_secret", return_value=None):
+            config = load_config(project_dir)
+        assert config.task_source.jira_api_token == ""
+        with pytest.raises(ValueError, match="jira_api_token"):
+            create_adapter(config)
+
+    async def test_worktree_resolves_token_through_primary_checkout(self, tmp_path: Path) -> None:
+        """A linked worktree carries no settings database: load_config() uses the primary checkout's."""
+        from sova.config.loader import load_config
+        from sova.config.root import resolve_config_root
+        from sova.llm.keyring_store import SENTINEL, scoped_secret_name
+
+        main, worktree = _make_linked_worktree(tmp_path)
+        await _store_rows(
+            main,
+            {"task_source.type": "jira", "task_source.jira_api_token": SENTINEL},
+        )
+        scoped_name = scoped_secret_name("task_source.jira_api_token", main, "jira")
+        resolve_config_root.cache_clear()
+        try:
+            with patch(
+                "sova.llm.keyring_store.get_secret",
+                side_effect=lambda name: "token" if name == scoped_name else None,
+            ):
+                assert load_config(worktree).task_source.jira_api_token == "token"
+                from sova.dashboard.services.settings_service import _get_raw_config
+
+                assert _get_raw_config(worktree)["task_source.jira_api_token"] == SENTINEL
+        finally:
+            resolve_config_root.cache_clear()
+
+    async def test_invalidation_after_worktree_write_stops_resolving_to_primary(self, tmp_path: Path) -> None:
+        """A settings write that gives a worktree its own database must not stay shadowed by the cached mapping."""
+        from sova.config.loader import invalidate_config_cache, load_config
+        from sova.config.root import resolve_config_root
+
+        main, worktree = _make_linked_worktree(tmp_path)
+        await _store_rows(main, {"task_source.type": "jira", "task_source.jira_project_key": "MAIN"})
+        resolve_config_root.cache_clear()
+        try:
+            assert load_config(worktree).task_source.jira_project_key == "MAIN"
+            await _store_rows(worktree, {"task_source.type": "jira", "task_source.jira_project_key": "WT"})
+            invalidate_config_cache(worktree)
+            assert load_config(worktree).task_source.jira_project_key == "WT"
+        finally:
+            resolve_config_root.cache_clear()
+
+    async def test_env_token_beats_stored_marker_without_keychain_lookup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.config.loader import load_config
+        from sova.llm.keyring_store import SENTINEL
+
+        project_dir = tmp_path / "jira-project"
+        await _store_rows(project_dir, {"task_source.type": "jira", "task_source.jira_api_token": SENTINEL})
+        monkeypatch.setenv("SOVA_TASK_JIRA_API_TOKEN", "env-token")
+        with patch("sova.llm.keyring_store.get_secret") as get_secret:
+            config = load_config(project_dir)
+        assert config.task_source.jira_api_token == "env-token"
+        get_secret.assert_not_called()
+
+    async def test_raw_config_reports_marker_not_resolved_token(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.settings_service import _get_raw_config
+        from sova.llm.keyring_store import SENTINEL
+
+        project_dir = tmp_path / "jira-project"
+        await _store_rows(project_dir, {"task_source.type": "jira", "task_source.jira_api_token": SENTINEL})
+        with patch("sova.llm.keyring_store.get_secret", return_value="real-secret"):
+            raw = _get_raw_config(project_dir)
+        assert raw["task_source.jira_api_token"] == SENTINEL
+
+    async def test_missing_keychain_entry_logs_warning_without_token(self, tmp_path: Path) -> None:
+        from sova.config import loader
+        from sova.llm.keyring_store import SENTINEL
+
+        project_dir = tmp_path / "jira-project"
+        await _store_rows(project_dir, {"task_source.type": "jira", "task_source.jira_api_token": SENTINEL})
+        with (
+            patch("sova.llm.keyring_store.get_secret", return_value=None),
+            patch.object(loader.logger, "warning") as warning,
+        ):
+            loader.load_config(project_dir)
+        warning.assert_called_once()
+        assert warning.call_args.args[0] == "loader.jira_token_keychain_entry_missing"
 
 
 @pytest.mark.usefixtures("_dispose_project_engines")
