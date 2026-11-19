@@ -12,7 +12,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.config.loader import load_config
+from sova.core.state import TaskStatus
 from sova.db.models import TaskRun
 from sova.git.pr import PRLookupError, find_pr_for_issue_checked
 from sova.git.rebase import rebase_with_conflict_resolution
@@ -34,6 +35,27 @@ from sova.utils.shell import run
 log = get_logger(component="supervisor.rebase")
 
 ROLE_SUPERVISOR_REBASE = "supervisor:rebase"
+
+# Bounds on one rebase run, used both to run it and to age a `running` row: a row younger than the bound
+# is a live run in another process (the supervisor daemon and the dashboard each hold their own asyncio
+# lock), an older one is treated as orphaned by a crash so a manual retry can still go through.
+REBASE_MAX_COMMITS = 5
+PRE_PUSH_HOOK_TIMEOUT = 300
+DEFAULT_RESOLUTION_TIMEOUT = 900.0
+RUNNING_REBASE_MARGIN = timedelta(minutes=10)
+
+
+def running_rebase_stale_after(cfg: Any) -> timedelta:
+    """How long a `running` rebase row counts as live: the worst case of one run plus a margin.
+
+    One run resolves up to `REBASE_MAX_COMMITS` commits, each bounded by `llm.cli_timeout` (the timeout
+    `_load_consensus_config()` hands the resolver), then runs the pre-push hook.
+    """
+    try:
+        per_commit = float(cfg.llm.cli_timeout) or DEFAULT_RESOLUTION_TIMEOUT
+    except (AttributeError, TypeError, ValueError):
+        per_commit = DEFAULT_RESOLUTION_TIMEOUT
+    return timedelta(seconds=REBASE_MAX_COMMITS * per_commit + PRE_PUSH_HOOK_TIMEOUT) + RUNNING_REBASE_MARGIN
 
 
 @dataclass
@@ -55,6 +77,7 @@ class RebaseOperations:
     cleanup_worktree: Callable[..., Any]
     rebase_with_conflict_resolution: Callable[..., Any]
     create_rebase_run: Callable[..., Any]
+    find_running_rival: Callable[..., Any]
     update_run_cost: Callable[..., Any]
     finalize_run: Callable[..., Any]
     run_pre_push_hook: Callable[..., Any]
@@ -84,9 +107,14 @@ async def attempt_auto_rebase(
     project_dir: Path,
     session_factory: async_sessionmaker,
     *,
+    retry_failed: bool = False,
     ops: RebaseOperations | None = None,
 ) -> dict[str, Any]:
-    """Attempt to auto-rebase a PR branch onto the base branch."""
+    """Attempt to auto-rebase a PR branch onto the base branch.
+
+    A user-triggered retry may revisit a failed attempt at the same HEAD;
+    scheduler calls keep the default deduplication to avoid repeated failures.
+    """
     ops = ops if ops is not None else _default_ops()
     try:
         cfg = ops.load_config(project_dir)
@@ -123,6 +151,7 @@ async def attempt_auto_rebase(
             project_dir=project_dir,
             cfg=cfg,
             session_factory=session_factory,
+            retry_failed=retry_failed,
             ops=ops,
         )
 
@@ -137,6 +166,7 @@ async def _run_locked_rebase(
     project_dir: Path,
     cfg: Any,
     session_factory: async_sessionmaker,
+    retry_failed: bool,
     ops: RebaseOperations,
 ) -> dict[str, Any]:
     """Run the already-attempted check through the rebase-and-push flow.
@@ -148,13 +178,30 @@ async def _run_locked_rebase(
     reused_worktree = False
     task_run: TaskRun | None = None
     try:
-        if await ops.already_attempted(pr_number, head_sha, session_factory):
+        if await ops.already_attempted(pr_number, head_sha, session_factory, retry_failed=retry_failed):
             return {
                 "status": "skipped",
                 "reason": f"Already attempted rebase for PR #{pr_number} at HEAD {head_sha[:8]}",
             }
 
+        # Claim first, then look for a rival: the asyncio lock only serializes one process, so a check
+        # followed by an insert would let the daemon and a dashboard click both pass it. With the row
+        # already written, of any two overlapping runs the one with the higher id sees the other and backs off.
         task_run = await ops.create_rebase_run(issue_number, pr_number, branch, session_factory)
+        rival = await ops.find_running_rival(
+            task_run.id, pr_number, session_factory, stale_after=running_rebase_stale_after(cfg)
+        )
+        if rival is not None:
+            reason = f"Rebase for PR #{pr_number} is already running{_started_at_suffix(rival.started_at)}"
+            await ops.finalize_run(task_run.id, TaskStatus.FAILED, reason, head_sha, session_factory, attempted=False)
+            return {"status": "skipped", "pr_number": pr_number, "reason": reason}
+
+        # A rival that finalized between the first check and the claim is no longer running, so the rival
+        # check cannot see it. Re-run the attempted check now that the claim is written.
+        if await ops.already_attempted(pr_number, head_sha, session_factory, retry_failed=retry_failed):
+            reason = f"Already attempted rebase for PR #{pr_number} at HEAD {head_sha[:8]}"
+            await ops.finalize_run(task_run.id, TaskStatus.FAILED, reason, head_sha, session_factory, attempted=False)
+            return {"status": "skipped", "pr_number": pr_number, "reason": reason}
 
         resolution = await _resolve_rebase_worktree(
             issue_number=issue_number,
@@ -325,7 +372,9 @@ async def _run_rebase_and_push(
     ops: RebaseOperations,
 ) -> dict[str, Any]:
     """Run the rebase, validate via pre-push hook, and push. Always returns a result dict."""
-    result, cost = await ops.rebase_with_conflict_resolution(base_branch, cwd=worktree_path, max_commits=5)
+    result, cost = await ops.rebase_with_conflict_resolution(
+        base_branch, cwd=worktree_path, project_dir=project_dir, max_commits=REBASE_MAX_COMMITS
+    )
     await ops.update_run_cost(task_run.id, cost, session_factory)
 
     if not result.success:
@@ -415,14 +464,21 @@ async def _get_pr_info(issue_number: int, repo: str, github_user: str) -> dict[s
     }
 
 
-async def _already_attempted(pr_number: int, head_sha: str, session_factory: async_sessionmaker) -> bool:
+async def _already_attempted(
+    pr_number: int, head_sha: str, session_factory: async_sessionmaker, *, retry_failed: bool = False
+) -> bool:
     """Check if we already attempted a rebase for this PR at this HEAD SHA.
 
     Ignores safety skips (busy worktree, dirty-or-unreadable worktree, a
-    failed safety check, or the branch sitting in the main checkout): those
-    are transient conditions that can clear before the next poll, and
-    counting them as an attempt would strand the PR until a new commit
-    changes head_sha, since none of them ever ran the actual rebase.
+    failed safety check, a rival run already in progress, or the branch
+    sitting in the main checkout): those are transient conditions that can
+    clear before the next poll, and counting them as an attempt would strand
+    the PR until a new commit changes head_sha, since none of them ever ran
+    the actual rebase.
+    A dashboard click may also retry a failed run, while automated callers
+    retain the failed attempt as a guard against repeated retries. A run still
+    ``running`` has no ``head_sha`` yet and is not an attempt here;
+    `_find_running_rival()` handles it.
     """
     async with session_factory() as session:
         stmt = select(TaskRun).where(TaskRun.role == ROLE_SUPERVISOR_REBASE, TaskRun.pr_number == pr_number)
@@ -432,8 +488,57 @@ async def _already_attempted(pr_number: int, head_sha: str, session_factory: asy
             if not r.handoff_json or r.handoff_json.get("head_sha") != head_sha:
                 continue
             if r.handoff_json.get("attempted", True):
+                if retry_failed and r.status == TaskStatus.FAILED:
+                    continue
                 return True
     return False
+
+
+async def _find_running_rival(
+    run_id: int, pr_number: int, session_factory: async_sessionmaker, *, stale_after: timedelta
+) -> TaskRun | None:
+    """Return the earliest fresh `running` rebase row of this PR that started before *run_id*, if any.
+
+    Called after *run_id* is committed, so two overlapping claims always see each other and only the
+    lowest id proceeds. Rows older than *stale_after* are orphans of a crash and ignored.
+    """
+    now = datetime.now(timezone.utc)
+    async with session_factory() as session:
+        stmt = (
+            select(TaskRun)
+            .where(
+                TaskRun.role == ROLE_SUPERVISOR_REBASE,
+                TaskRun.pr_number == pr_number,
+                TaskRun.status == TaskStatus.RUNNING,
+                TaskRun.id < run_id,
+            )
+            .order_by(TaskRun.id)
+        )
+        for r in (await session.execute(stmt)).scalars().all():
+            if _is_fresh_running(r.started_at, now, stale_after):
+                return r
+    return None
+
+
+def _is_fresh_running(started_at: datetime | None, now: datetime, stale_after: timedelta) -> bool:
+    """True when a running row started within *stale_after*, so it is not an orphan.
+
+    A missing start time cannot be aged, so it counts as in progress.
+    """
+    if started_at is None:
+        return True
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return now - started_at < stale_after
+
+
+def _started_at_suffix(started_at: datetime | None) -> str:
+    """Render ` (started HH:MM UTC)` for a skip reason, or nothing when the start time is unknown."""
+    if started_at is None:
+        return ""
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return f" (started {started_at.astimezone(timezone.utc):%H:%M} UTC)"
 
 
 async def _create_rebase_run(
@@ -447,7 +552,7 @@ async def _create_rebase_run(
         task_run = TaskRun(
             issue_number=str(issue_number),
             role=ROLE_SUPERVISOR_REBASE,
-            status="running",
+            status=TaskStatus.RUNNING,
             current_step="rebase",
             branch_name=branch,
             pr_number=pr_number,
@@ -501,7 +606,9 @@ async def _run_pre_push_hook(worktree_path: Path, project_dir: Path | None = Non
     if not hook_path.exists():
         return {"passed": True, "output": ""}
 
-    result = await run(str(hook_path), cwd=worktree_path, timeout=300, env=scrub_check_env(project_dir=project_dir))
+    result = await run(
+        str(hook_path), cwd=worktree_path, timeout=PRE_PUSH_HOOK_TIMEOUT, env=scrub_check_env(project_dir=project_dir)
+    )
     return {"passed": result.success, "output": (result.stdout or "") + (result.stderr or "")}
 
 
@@ -556,6 +663,7 @@ def _default_ops() -> RebaseOperations:
         cleanup_worktree=cleanup_worktree,
         rebase_with_conflict_resolution=rebase_with_conflict_resolution,
         create_rebase_run=_create_rebase_run,
+        find_running_rival=_find_running_rival,
         update_run_cost=_update_run_cost,
         finalize_run=_finalize_run,
         run_pre_push_hook=_run_pre_push_hook,

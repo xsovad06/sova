@@ -1448,7 +1448,8 @@ class TestRebaseInTheBackground:
     ) -> None:
         gate = asyncio.Event()
 
-        async def slow_rebase(issue: int, _project: object, _factory: object) -> dict:
+        async def slow_rebase(issue: int, _project: object, _factory: object, *, retry_failed: bool = False) -> dict:
+            assert retry_failed is True
             await gate.wait()
             return {"status": "success", "pr_number": 40}
 

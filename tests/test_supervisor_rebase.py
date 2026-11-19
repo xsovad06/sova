@@ -3,25 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.core.state import TaskStatus
+from sova.db.models import Base, TaskRun
 from sova.git.pr import PRLookupError
 from sova.supervisor import rebase as rebase_module
 from sova.supervisor.rebase import (
+    PRE_PUSH_HOOK_TIMEOUT,
+    REBASE_MAX_COMMITS,
     ROLE_SUPERVISOR_REBASE,
     RebaseOperations,
     _already_attempted,
     _create_rebase_run,
     _finalize_run,
+    _find_running_rival,
     _get_pr_info,
     _run_pre_push_hook,
     _update_run_cost,
     _write_manual_handoff,
     attempt_auto_rebase,
+    running_rebase_stale_after,
 )
 
 
@@ -42,6 +49,7 @@ def _make_ops(**overrides: object) -> RebaseOperations:
         cleanup_worktree=AsyncMock(),
         rebase_with_conflict_resolution=AsyncMock(),
         create_rebase_run=AsyncMock(),
+        find_running_rival=AsyncMock(return_value=None),
         update_run_cost=AsyncMock(),
         finalize_run=AsyncMock(),
         run_pre_push_hook=AsyncMock(return_value={"passed": True, "output": ""}),
@@ -97,6 +105,32 @@ class TestAlreadyAttempted:
         mock_result.scalars.return_value.all.return_value = [mock_run]
         session.execute = AsyncMock(return_value=mock_result)
         assert await _already_attempted(55, "abc123", factory) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "blocked"), [(TaskStatus.FAILED, False), (TaskStatus.DONE, True)])
+    async def test_explicit_retry_ignores_only_failed_attempts(self, status: str, blocked: bool) -> None:
+        factory, session = _mock_session_factory()
+        mock_run = MagicMock(status=status)
+        mock_run.handoff_json = {"head_sha": "abc123", "attempted": True}
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_run]
+        session.execute = AsyncMock(return_value=mock_result)
+
+        assert await _already_attempted(55, "abc123", factory) is True
+        assert await _already_attempted(55, "abc123", factory, retry_failed=True) is blocked
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retry_failed", [False, True])
+    async def test_running_run_is_not_an_attempt(self, retry_failed: bool) -> None:
+        """A running row has no head_sha yet; `_find_running_rival()` owns that case."""
+        factory, session = _mock_session_factory()
+        mock_run = MagicMock(status=TaskStatus.RUNNING)
+        mock_run.handoff_json = None
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_run]
+        session.execute = AsyncMock(return_value=mock_result)
+
+        assert await _already_attempted(55, "abc123", factory, retry_failed=retry_failed) is False
 
     @pytest.mark.asyncio
     async def test_different_sha_returns_false(self) -> None:
@@ -231,6 +265,45 @@ class TestAttemptAutoRebase:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "skipped"
         assert "Already attempted" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_running_rival_skips_with_in_progress_reason(self) -> None:
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.load_config.return_value.base_branch = "main"
+        ops.get_pr_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
+        ops.create_rebase_run.return_value = MagicMock(id=2)
+        ops.find_running_rival.return_value = MagicMock(started_at=datetime(2026, 11, 19, 9, 30, tzinfo=timezone.utc))
+        factory, _ = _mock_session_factory()
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, retry_failed=True, ops=ops)
+        assert result["status"] == "skipped"
+        assert result["reason"] == "Rebase for PR #55 is already running (started 09:30 UTC)"
+        assert "Already attempted" not in result["reason"]
+        ops.finalize_run.assert_awaited_once()
+        assert ops.finalize_run.await_args.args[1] == TaskStatus.FAILED
+        assert ops.finalize_run.await_args.kwargs["attempted"] is False
+        ops.create_worktree.assert_not_called()
+        ops.rebase_with_conflict_resolution.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_attempt_finalized_between_check_and_claim_skips(self) -> None:
+        """A rival that finishes after the first check but before the claim is caught by the re-check."""
+        ops = _make_ops()
+        ops.load_config.return_value.github_repo = "owner/repo"
+        ops.load_config.return_value.github_user = "user"
+        ops.load_config.return_value.base_branch = "main"
+        ops.get_pr_info.return_value = {"number": 55, "branch": "feat/x", "head_sha": "abc123", "base_branch": "main"}
+        ops.already_attempted.side_effect = [False, True]
+        ops.create_rebase_run.return_value = MagicMock(id=2)
+        ops.find_running_rival.return_value = None
+        factory, _ = _mock_session_factory()
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert result["status"] == "skipped"
+        assert "Already attempted" in result["reason"]
+        assert ops.finalize_run.await_args.kwargs["attempted"] is False
+        ops.create_worktree.assert_not_called()
+        ops.rebase_with_conflict_resolution.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_setup_exception_returns_dict(self) -> None:
@@ -477,10 +550,29 @@ class TestAttemptAutoRebaseExecution:
             MagicMock(success=True, conflicts_resolved=2),
             Decimal("0.05"),
         )
-        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, retry_failed=True, ops=ops)
         assert result["status"] == "success"
         assert result["pr_number"] == 55
+        assert ops.already_attempted.await_args.kwargs["retry_failed"] is True
+        assert ops.rebase_with_conflict_resolution.await_args.kwargs["project_dir"] == Path("/fake")
         ops.cleanup_worktree.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_default_call_does_not_retry_failed_attempts(self, tmp_path: Path) -> None:
+        factory, session, mock_task_run, pr_info = self._setup_mocks()
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        ops.already_attempted.return_value = True
+        await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+        assert ops.already_attempted.await_args.kwargs["retry_failed"] is False
+
+    def test_default_ops_accept_the_keywords_the_orchestration_passes(self) -> None:
+        import inspect
+
+        ops = rebase_module._default_ops()
+        assert "project_dir" in inspect.signature(ops.rebase_with_conflict_resolution).parameters
+        assert "retry_failed" in inspect.signature(ops.already_attempted).parameters
 
     @pytest.mark.asyncio
     async def test_empty_pr_base_branch_falls_back_to_config(self, tmp_path: Path) -> None:
@@ -841,3 +933,207 @@ class TestAttemptAutoRebaseExecution:
         # create_worktree, proving the lock wasn't released until cleanup
         # finished.
         assert events == ["create_worktree", "cleanup", "create_worktree", "cleanup"]
+
+
+class TestRunningRebaseStaleAfter:
+    def test_scales_with_the_configured_timeout(self) -> None:
+        short, long = MagicMock(), MagicMock()
+        short.llm.cli_timeout = 300
+        long.llm.cli_timeout = 1800
+        assert running_rebase_stale_after(long) > running_rebase_stale_after(short)
+        assert running_rebase_stale_after(short) > timedelta(seconds=REBASE_MAX_COMMITS * 300 + PRE_PUSH_HOOK_TIMEOUT)
+
+    @pytest.mark.parametrize("value", [0, None, "bad"])
+    def test_unusable_timeout_falls_back_to_the_default(self, value: object) -> None:
+        cfg = MagicMock()
+        cfg.llm.cli_timeout = value
+        default = MagicMock()
+        default.llm.cli_timeout = rebase_module.DEFAULT_RESOLUTION_TIMEOUT
+        assert running_rebase_stale_after(cfg) == running_rebase_stale_after(default)
+
+
+@pytest.fixture
+async def real_session_factory(tmp_path: Path):
+    """A file-backed SQLite session factory, so two callers hold separate connections as two processes would."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rebase.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+def _real_ops(pr_info: dict, **overrides: object) -> RebaseOperations:
+    """Mocked collaborators except the DB-backed ones, which run against the real session factory."""
+    ops = _make_ops(
+        already_attempted=_already_attempted,
+        create_rebase_run=_create_rebase_run,
+        find_running_rival=_find_running_rival,
+        update_run_cost=_update_run_cost,
+        finalize_run=_finalize_run,
+        **overrides,
+    )
+    ops.load_config.return_value.github_repo = "owner/repo"
+    ops.load_config.return_value.github_user = "user"
+    ops.load_config.return_value.base_branch = "main"
+    ops.load_config.return_value.worktree.copy_files = []
+    ops.get_pr_info.return_value = pr_info
+    return ops
+
+
+_PR_INFO = {"number": 55, "branch": "feat/x", "head_sha": "abc123def", "base_branch": "main"}
+
+
+class TestRebaseWithRealDatabase:
+    @pytest.fixture
+    def worktree(self, tmp_path: Path) -> MagicMock:
+        info = MagicMock()
+        info.path = tmp_path / "wt"
+        return info
+
+    @pytest.mark.asyncio
+    async def test_failed_rebase_blocks_scheduler_but_not_manual_retry(
+        self, real_session_factory, worktree: MagicMock
+    ) -> None:
+        failing = MagicMock(success=False, error="unresolved conflict", conflicts_resolved=0)
+        ops = _real_ops(
+            _PR_INFO,
+            create_worktree=AsyncMock(return_value=worktree),
+            rebase_with_conflict_resolution=AsyncMock(return_value=(failing, Decimal("0.01"))),
+        )
+
+        first = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, ops=ops)
+        assert first["status"] == "failed"
+        async with real_session_factory() as session:
+            row = (await session.execute(TaskRun.__table__.select())).one()
+        assert row.status == TaskStatus.FAILED
+        assert row.handoff_json == {"head_sha": "abc123def", "attempted": True}
+
+        scheduler = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=False, ops=ops)
+        assert scheduler["status"] == "skipped"
+        assert "Already attempted" in scheduler["reason"]
+        assert ops.rebase_with_conflict_resolution.await_count == 1
+
+        manual = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=True, ops=ops)
+        assert manual["status"] == "failed"
+        assert ops.rebase_with_conflict_resolution.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param({"hook": {"passed": False, "output": "lint failed"}}, id="pre_push_failure"),
+            pytest.param({"push": MagicMock(success=False, stderr="denied")}, id="push_failure"),
+            pytest.param({"raises": RuntimeError("boom")}, id="exception"),
+        ],
+    )
+    async def test_every_failure_path_persists_a_retryable_failed_run(
+        self, real_session_factory, worktree: MagicMock, failure: dict
+    ) -> None:
+        ok = MagicMock(success=True, conflicts_resolved=1)
+        rebase = AsyncMock(return_value=(ok, Decimal("0")))
+        if "raises" in failure:
+            rebase = AsyncMock(side_effect=failure["raises"])
+        ops = _real_ops(
+            _PR_INFO,
+            create_worktree=AsyncMock(return_value=worktree),
+            rebase_with_conflict_resolution=rebase,
+            run_pre_push_hook=AsyncMock(return_value=failure.get("hook", {"passed": True, "output": ""})),
+        )
+        ops.run = AsyncMock(
+            side_effect=lambda *a, **k: (
+                failure.get("push", MagicMock(success=True, stdout="", stderr=""))
+                if "push" in a
+                else MagicMock(success=True, stdout="", stderr="")
+            )
+        )
+
+        result = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, ops=ops)
+        assert result["status"] == "failed"
+        async with real_session_factory() as session:
+            row = (await session.execute(TaskRun.__table__.select())).one()
+        assert row.status == TaskStatus.FAILED
+        assert row.handoff_json["attempted"] is True
+
+        blocked = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=False, ops=ops)
+        assert blocked["status"] == "skipped"
+        retried = await attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=True, ops=ops)
+        assert "Already attempted" not in retried.get("reason", "")
+
+    @pytest.mark.asyncio
+    async def test_two_concurrent_callers_with_separate_locks_run_one_rebase(
+        self, real_session_factory, worktree: MagicMock
+    ) -> None:
+        """The daemon and the dashboard each hold their own lock registry: only the DB claim can stop the second."""
+        gate = asyncio.Event()
+
+        async def slow_rebase(*args: object, **kwargs: object):
+            await gate.wait()
+            return MagicMock(success=True, conflicts_resolved=0), Decimal("0")
+
+        def make_ops() -> RebaseOperations:
+            return _real_ops(
+                _PR_INFO,
+                create_worktree=AsyncMock(return_value=worktree),
+                rebase_with_conflict_resolution=AsyncMock(side_effect=slow_rebase),
+            )
+
+        ops_a, ops_b = make_ops(), make_ops()
+        # Separate lock registries: each call sees its own lock, as two processes would.
+        locks = {"a": asyncio.Lock(), "b": asyncio.Lock()}
+        callers = iter(["a", "b"])
+
+        def fake_lock(_pr: int) -> asyncio.Lock:
+            return locks[next(callers)]
+
+        with patch.object(rebase_module, "_get_rebase_lock", side_effect=fake_lock):
+            task_a = asyncio.create_task(
+                attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=True, ops=ops_a)
+            )
+            task_b = asyncio.create_task(
+                attempt_auto_rebase(42, Path("/fake"), real_session_factory, retry_failed=True, ops=ops_b)
+            )
+            # Let both reach the claim before either rebase may finish.
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                async with real_session_factory() as session:
+                    rows = (await session.execute(TaskRun.__table__.select())).all()
+                if len(rows) == 2 and any(r.status != TaskStatus.RUNNING for r in rows):
+                    break
+            gate.set()
+            results = await asyncio.gather(task_a, task_b)
+
+        statuses = sorted(r["status"] for r in results)
+        assert statuses == ["skipped", "success"]
+        skipped = next(r for r in results if r["status"] == "skipped")
+        assert "already running" in skipped["reason"]
+        assert (
+            ops_a.rebase_with_conflict_resolution.await_count + ops_b.rebase_with_conflict_resolution.await_count == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_stale_running_row_does_not_block(self, real_session_factory) -> None:
+        old = datetime.now(timezone.utc) - running_rebase_stale_after(MagicMock()) - timedelta(minutes=1)
+        async with real_session_factory() as session:
+            session.add(TaskRun(role=ROLE_SUPERVISOR_REBASE, pr_number=55, status=TaskStatus.RUNNING, started_at=old))
+            await session.commit()
+        newer = await _create_rebase_run(42, 55, "feat/x", real_session_factory)
+        assert (
+            await _find_running_rival(
+                newer.id, 55, real_session_factory, stale_after=running_rebase_stale_after(MagicMock())
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_fresh_running_row_blocks_a_later_claim_only(self, real_session_factory) -> None:
+        stale_after = running_rebase_stale_after(MagicMock())
+        first = await _create_rebase_run(42, 55, "feat/x", real_session_factory)
+        second = await _create_rebase_run(42, 55, "feat/x", real_session_factory)
+        assert await _find_running_rival(first.id, 55, real_session_factory, stale_after=stale_after) is None
+        rival = await _find_running_rival(second.id, 55, real_session_factory, stale_after=stale_after)
+        assert rival is not None
+        assert rival.id == first.id
+        # A different PR is never a rival.
+        assert await _find_running_rival(second.id, 56, real_session_factory, stale_after=stale_after) is None
