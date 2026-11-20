@@ -2,6 +2,8 @@
 
 Exposes SOVA capabilities as MCP (Model Context Protocol) tools that any
 compliant agent runtime can discover and invoke.
+
+Allowed imports: sova.config, sova.dashboard, sova.llm, sova.utils (not a layer; chains through it are checked).
 """
 
 from __future__ import annotations

@@ -1,4 +1,7 @@
-"""Task source adapter plugins for SOVA."""
+"""Task source adapter plugins for SOVA.
+
+Allowed imports: sova.config, sova.db, sova.utils, and the sibling layers sova.llm, sova.git, sova.ipc.
+"""
 
 from __future__ import annotations
 

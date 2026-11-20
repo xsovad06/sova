@@ -1,4 +1,7 @@
-"""JSON Schema definitions for structured LLM outputs."""
+"""JSON Schema definitions for structured LLM outputs.
+
+Allowed imports: none inside sova (JSON Schema data and its loader only).
+"""
 
 from __future__ import annotations
 

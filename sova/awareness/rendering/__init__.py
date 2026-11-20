@@ -1,4 +1,7 @@
-"""Rendering utilities for awareness briefings."""
+"""Rendering utilities for awareness briefings.
+
+Allowed imports: sova.awareness (not a layer; chains through it are checked).
+"""
 
 from sova.awareness.rendering.cli_renderer import render_briefing_cli
 

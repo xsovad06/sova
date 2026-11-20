@@ -25,7 +25,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/api-contracts-guidelines.md` | Dashboard API, adapter ABC, LLM output formats |
 | `docs/database-guidelines.md` | ORM models, session management, migrations |
 | `docs/testing-guidelines.md` | pytest patterns, fixtures, mocking, test isolation |
-| `docs/deferred-consolidation.md` | Work an audit-driven consolidation pass deferred (import-layering contract, Codex runtime split, `sova/workflow/`), and the behaviour changes of the slices that landed |
+| `docs/deferred-consolidation.md` | Work an audit-driven consolidation pass deferred (`sova/workflow/`, god-module splits, the layering baseline), and the behaviour changes of the slices that landed |
 | `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
 | `docs/jira-configuration-guide.md` | Jira Cloud setup, JQL filters, status mapping, troubleshooting |
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
@@ -42,9 +42,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 Top level only (full tree, full entry: docs/ARCHITECTURE.md, "Project Structure"; components: `.claude/rules/architecture.md`).
 
 ```
-sova/                  # Python package: cli, core, roles, adapters, llm, git, ipc, agents, knowledge,
-                       # scheduler, dashboard, a2a, mcp, awareness, oversight, supervisor, commands,
-                       # config, monitoring, db, utils
+sova/                  # Python package under an import-linter contract (docs/architecture-deep-dive.md, "Target layout")
 sova/commands/data/    # canonical commands, skills, guidelines, personas: edit here, then re-render
 .claude/commands/      # rendered copy Claude Code loads (make commands-render)
 .agents/skills/        # rendered copy Codex loads (make skills-render)
@@ -87,6 +85,7 @@ This project uses **GitHub Issues** with a project board.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
 - **Never clamp an explicit config value against a broader default**: `min(develop.step_timeout, agent.step_timeout)` silently discards the operator's specific override. Let the more specific value win; if a hard ceiling is genuinely required, log when it fires.
+- **Import layering**: `sova/` is layered by an import-linter contract in `pyproject.toml` (`make lint`, CI). Never add an upward import or a baseline entry (it only shrinks): invert the dependency. Every `sova/` `__init__.py` states its `Allowed imports:`.
 - **Failure must not look like success**: a helper that swallows an error returns a sentinel or a multi-state result, never a value in its success range (`0`, `[]`, `False`). See `docs/error-handling-guidelines.md` "Failure Must Not Look Like Success".
 - **Pass context explicitly into deferred work**: anything queued, scheduled, or run in a background task receives `project_dir` and `github_user` as arguments rather than reading an ambient contextvar or the current working directory, which belong to whoever happens to run it later.
 - **Falsy-default trap**: never use `x or default` when `x` can be a legitimate falsy non-`None` value (`0`, `""`, `[]`, `False`). It silently discards the real value. Use `x if x is not None else default` or an explicit membership/identity check instead.

@@ -1,4 +1,7 @@
-"""A2A (Agent-to-Agent) protocol implementation for SOVA."""
+"""A2A (Agent-to-Agent) protocol implementation for SOVA.
+
+Allowed imports: sova.core, sova.db, sova.roles (not a layer; chains through it are checked).
+"""
 
 from __future__ import annotations
 

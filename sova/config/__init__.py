@@ -1,4 +1,7 @@
-"""Configuration management for SOVA."""
+"""Configuration management for SOVA.
+
+Allowed imports: sova.utils.
+"""
 
 from __future__ import annotations
 

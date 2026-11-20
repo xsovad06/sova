@@ -184,9 +184,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Ruff
+      # import-linter and its graph builder grimp are pinned to the versions locked in uv.lock: the contract
+      # relies on version-specific semantics (":" sibling layers, unmatched ignore alerting, function-level
+      # import edges). Bump both together with `uv lock`; tests/test_import_baseline.py checks they agree.
+      - name: Install Ruff and import-linter
         if: needs.changes.outputs.code != 'false'
-        run: pip install ruff
+        run: pip install ruff 'import-linter==2.17' 'grimp==3.20'
 
       - name: Ruff check
         if: needs.changes.outputs.code != 'false'
@@ -195,6 +198,11 @@ jobs:
       - name: Ruff format check
         if: needs.changes.outputs.code != 'false'
         run: ruff format --check sova/ tests/
+
+      # The layers contract lives in pyproject.toml ([tool.importlinter]); `make lint` runs the same command.
+      - name: Import layering contract
+        if: needs.changes.outputs.code != 'false'
+        run: lint-imports
 
   # Real work is skipped ONLY on an explicit docs-only signal
   # (needs.changes.outputs.code == 'false'). If the `changes` gate is skipped

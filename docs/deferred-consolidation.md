@@ -14,19 +14,31 @@ is recorded here instead.
 The first slice landed process liveness, the shared fence stripper, closing-keyword pattern and duration
 helpers, `resolve_project_dir()`, explicit UTF-8 text I/O with the `file-encoding` invariant, unreadable
 handoff reporting, the structlog migration, timezone-aware awareness timestamps and the event-loop fixes.
-The issue stays open for the items below. A pull request for the first slice references the issue as
+The second slice landed the import-layering contract (`import-linter`, `[tool.importlinter]` in
+`pyproject.toml`, run by `make lint` and CI; layout in `docs/architecture-deep-dive.md`, "Target layout"),
+the hoist of the lazy `load_config` and `get_session` imports that guard no cycle, the move of the Codex
+runtime to `sova/ipc/codex_runtime.py`, and an `Allowed imports:` line in every `sova/` `__init__.py`.
+The issue stays open for the items below. A pull request for a slice references the issue as
 `Part of #1213`, never `Closes #1213`.
 
 ### Deferred items
 
 | Item | Why it is deferred | What closes it |
 |------|--------------------|----------------|
-| Import-layering contract in CI with a baseline (`utils < config < db < llm/git/ipc < core < roles < supervisor < dashboard < cli`) | Adding `import-linter` is a dev dependency change, which AGENTS.md lists under "Ask first" | Explicit approval to add the dependency, a layers contract in `pyproject.toml`, the current violations (the module-scope `sova.dashboard.services` imports in `supervisor/gates/budget.py`, `supervisor/planner.py`, `supervisor/progression.py`, `supervisor/watchdog.py` and `supervisor/pr_monitor.py`) listed as the allowed baseline, and a CI step |
-| Hoist the function-level `load_config` and `get_session` imports that have no import cycle | Only meaningful once the layering contract exists to keep them hoisted | The same change as the contract, one import at a time, each checked for a real cycle first |
-| Move the Codex runtime from `sova/ipc/runtime.py` to `sova/ipc/codex_runtime.py` | A mechanical but large split (about 700 lines) that deserves its own reviewable change | A pure move with no behaviour change, `runtime.py` keeping the `AgentRuntime` ABC and the registry, and re-exports only where an importer cannot be updated |
-| Consolidate `feed_service`, `work_state`, `work_verdict` and `pr_service` into a `sova/workflow/` package | A package move touching many importers and patch targets | A separate change that migrates the importers and deletes the old paths |
-| Split the remaining god modules: `llm/client.py`, `dashboard/services/agent_recovery.py`, `core/workflow.py`, `dashboard/services/setup_service.py`, `git/worktree.py` | Each split needs its own seam analysis | One change per module |
-| Decide the permanent status of `dashboard/services/control_service.py` | It is a thin re-export facade with 36 patch targets in tests | Either document it as the official API or migrate the importers and delete it |
+| Consolidate `feed_service`, `work_state`, `work_verdict` and `pr_service` into a workflow package | A package move touching many importers and patch targets | #1272, as `sova/work/`: a separate change that migrates the importers and deletes the old paths |
+| Remove the upward imports left in the `ignore_imports` baseline | Most are `supervisor`, `roles` and `core` importing `dashboard.services`, which only the package move above untangles | #1274: delete each baseline entry as its import goes (an entry that no longer matches fails CI, so the baseline can only shrink) |
+| Split the remaining god modules: `llm/client.py`, `dashboard/services/agent_recovery.py`, `core/workflow.py`, `dashboard/services/setup_service.py`, `git/worktree.py` | Each split needs its own seam analysis | One change per module; #1386 covers `agent_recovery.py` and the `agent_*` decomposition |
+| Delete `dashboard/services/control_service.py` | It is a thin re-export facade with 36 patch targets in tests; the decision is to delete it, not document it as an API | #1273: migrate the importers to the owning modules and delete the facade |
+| Give the underscore-private `sova.ipc` names other packages import public names: the Codex helpers `sova/roles/reviewer.py` imports (`_codex_exec_args`, `_resolve_codex_api_key`, `_resolve_codex_cost_source`), `_codex_extra_env` from `sova.ipc.codex_runtime` and `_PIPELINE_ROLES` from `sova.ipc.runtime`, both imported by `sova/dashboard/services/agent_lifecycle.py` | They are underscore-private names reached across a package boundary, a coupling that predates the Codex move; the move left it as is | A change that renames them in `sova/ipc/codex_runtime.py` and `sova/ipc/runtime.py` (or exposes one public function each caller uses) and updates `reviewer.py`, `agent_lifecycle.py` and their tests |
+
+### Behaviour changes in the second slice
+
+None intended: the hoists, the Codex move and the docstrings change no logic, and the Codex runtime keeps
+its `ipc.runtime` log component. Two test-facing changes follow from them. A test that patches
+`sova.config.loader.load_config` or `sova.db.session.get_session` must patch the importing module once that
+module hoists the import (`tests/test_patch_targets.py` fails on a stale target), and the Codex names
+(`CodexRuntime`, `_codex_exec_args`, `_probe_codex_auth` and the rest) are importable from
+`sova.ipc.codex_runtime`, not `sova.ipc.runtime`.
 
 ### Behaviour changes in the first slice
 
@@ -51,4 +63,4 @@ means they are recorded here rather than left implicit.
   closing fence. A response that is wrapped in one fence goes through `strip_code_fences()`, so the two
   helpers agree on every wrapper shape; the prose-tolerant search is the one deliberate difference,
   because `strip_code_fences()` does not tolerate text outside its fence.
-- A follow-up issue for the deferred items above is not yet filed.
+- The package move, `control_service` and the remaining upward imports are tracked as #1272, #1273 and #1274.

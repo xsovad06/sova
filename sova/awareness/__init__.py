@@ -1,4 +1,7 @@
-"""Awareness subsystem: provider registry and factory."""
+"""Awareness subsystem: provider registry and factory.
+
+Allowed imports: sova.config, sova.dashboard, sova.utils (not a layer; chains through it are checked).
+"""
 
 from __future__ import annotations
 
