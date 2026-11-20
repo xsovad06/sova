@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.git.rebase import (
+    RebaseFailure,
     _get_conflicted_files,
     _has_unresolved_conflict,
     _unresolved_paths,
@@ -335,6 +336,7 @@ class TestRebaseVerificationIntegration:
             result, _cost = await rebase_with_conflict_resolution("main", cwd=tmp_path, max_attempts=2)
 
         assert result.success is False
+        assert result.cause == RebaseFailure.CONFLICTS
         assert "file.py" in result.error
         assert mock_llm.await_count == 2
 
@@ -353,6 +355,7 @@ class TestRebaseVerificationIntegration:
             result, _cost = await rebase_with_conflict_resolution("main", cwd=tmp_path, max_attempts=3)
 
         assert result.success is False
+        assert result.cause == RebaseFailure.GIT
         assert "verify" in result.error
         assert mock_llm.await_count == 1, "a failed check must not pay for more resolution passes"
         aborts = [c for c in mock_run.call_args_list if "--abort" in c[0]]
@@ -402,6 +405,7 @@ class TestRebaseVerificationIntegration:
             result, _cost = await rebase_with_conflict_resolution("main", cwd=tmp_path)
 
         assert result.success is False
+        assert result.cause == RebaseFailure.GIT
         assert "verify" in result.error
         continues = [c for c in mock_run.call_args_list if "--continue" in c[0]]
         assert len(continues) == 1, "must not blindly retry --continue on an unknown state"

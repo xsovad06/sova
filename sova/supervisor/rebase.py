@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from sova.config.loader import load_config
 from sova.core.state import TaskStatus
 from sova.db.models import TaskRun
 from sova.git.pr import PRLookupError, find_pr_for_issue_checked
-from sova.git.rebase import rebase_with_conflict_resolution
+from sova.git.rebase import RebaseFailure, rebase_with_conflict_resolution
 from sova.git.worktree import check_worktree_active_agent, cleanup_worktree, create_worktree, find_worktree_by_branch
 from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
 from sova.utils.env import scrub_check_env
@@ -43,6 +44,22 @@ REBASE_MAX_COMMITS = 5
 PRE_PUSH_HOOK_TIMEOUT = 300
 DEFAULT_RESOLUTION_TIMEOUT = 900.0
 RUNNING_REBASE_MARGIN = timedelta(minutes=10)
+
+
+class AutoRebaseFailure(StrEnum):
+    """Where ``attempt_auto_rebase()`` failed, as the ``cause`` of a ``failed`` result.
+
+    The rebase step itself reports ``RebaseFailure``'s values (``conflicts``, ``fetch``, ...) as its cause; these
+    are the stages around it. A caller explaining a failure to a user reads ``cause`` (and ``unresolved_files``),
+    never ``error``, which can carry exception text or git output.
+    """
+
+    PR_LOOKUP = "pr_lookup"  # GitHub could not be asked for the issue's PR
+    SETUP = "setup"  # the config or the PR facts could not be read before the run started
+    WORKTREE_CHECK = "worktree_check"  # the check for an agent using the branch's worktree failed
+    CHECKS = "checks"  # the rebase succeeded but the pre-push checks failed, so nothing was pushed
+    PUSH = "push"  # GitHub refused the push of the rebased branch
+    UNEXPECTED = "unexpected"  # any other failure (logged with its traceback)
 
 
 def running_rebase_stale_after(cfg: Any) -> timedelta:
@@ -126,10 +143,15 @@ async def attempt_auto_rebase(
             return {"status": "skipped", "reason": f"No open PR found for issue #{issue_number}"}
     except PRLookupError as exc:
         log.warning("auto_rebase.pr_lookup_failed", issue=issue_number, error=str(exc))
-        return {"status": "failed", "pr_number": None, "error": f"PR lookup failed: {exc}"}
+        return {
+            "status": "failed",
+            "pr_number": None,
+            "error": f"PR lookup failed: {exc}",
+            "cause": AutoRebaseFailure.PR_LOOKUP,
+        }
     except Exception as exc:  # noqa: BLE001 (no TaskRun exists yet; nothing to finalize)
         log.exception("auto_rebase.setup_error", issue=issue_number)
-        return {"status": "failed", "pr_number": None, "error": str(exc)}
+        return {"status": "failed", "pr_number": None, "error": str(exc), "cause": AutoRebaseFailure.SETUP}
 
     pr_number = pr_info["number"]
     branch = pr_info["branch"]
@@ -242,7 +264,7 @@ async def _run_locked_rebase(
         log.exception("auto_rebase.unexpected_error", issue=issue_number, pr=pr_number)
         if task_run is not None:
             await ops.finalize_run(task_run.id, "failed", str(exc), head_sha, session_factory)
-        return {"status": "failed", "pr_number": pr_number, "error": str(exc)}
+        return {"status": "failed", "pr_number": pr_number, "error": str(exc), "cause": AutoRebaseFailure.UNEXPECTED}
 
     finally:
         if worktree_path is not None and not reused_worktree:
@@ -318,7 +340,12 @@ async def _resolve_rebase_worktree(
         )
         reason = f"Cannot verify worktree safety: {exc}"
         await ops.finalize_run(task_run.id, "failed", reason, head_sha, session_factory, attempted=False)
-        return {"status": "failed", "pr_number": pr_number, "error": str(exc)}
+        return {
+            "status": "failed",
+            "pr_number": pr_number,
+            "error": str(exc),
+            "cause": AutoRebaseFailure.WORKTREE_CHECK,
+        }
 
     if active_pid is not None:
         log.info("auto_rebase.worktree_busy", issue=issue_number, pr=pr_number, pid=active_pid)
@@ -381,7 +408,13 @@ async def _run_rebase_and_push(
         log.warning("auto_rebase.failed", issue=issue_number, pr=pr_number, error=result.error)
         await ops.finalize_run(task_run.id, "failed", result.error, head_sha, session_factory)
         ops.write_manual_handoff(project_dir, issue_number, pr_number, branch, f"Auto-rebase failed: {result.error}")
-        return {"status": "failed", "pr_number": pr_number, "error": result.error}
+        return {
+            "status": "failed",
+            "pr_number": pr_number,
+            "error": result.error,
+            "cause": result.cause or RebaseFailure.GIT,
+            "unresolved_files": list(result.unresolved_files),
+        }
 
     hook_result = await ops.run_pre_push_hook(worktree_path, project_dir=project_dir)
     if not hook_result["passed"]:
@@ -395,7 +428,12 @@ async def _run_rebase_and_push(
             "Rebase succeeded but pre-push hook failed",
             validation_error=hook_result["output"],
         )
-        return {"status": "failed", "pr_number": pr_number, "error": "Pre-push hook failed after rebase"}
+        return {
+            "status": "failed",
+            "pr_number": pr_number,
+            "error": "Pre-push hook failed after rebase",
+            "cause": AutoRebaseFailure.CHECKS,
+        }
 
     push_result = await ops.run(
         "git",
@@ -412,7 +450,12 @@ async def _run_rebase_and_push(
             await ops.finalize_run(task_run.id, "done", "Branch HEAD changed during rebase", head_sha, session_factory)
             return {"status": "skipped", "pr_number": pr_number, "reason": "Branch HEAD changed during rebase"}
         await ops.finalize_run(task_run.id, "failed", push_result.stderr[:500], head_sha, session_factory)
-        return {"status": "failed", "pr_number": pr_number, "error": push_result.stderr[:500]}
+        return {
+            "status": "failed",
+            "pr_number": pr_number,
+            "error": push_result.stderr[:500],
+            "cause": AutoRebaseFailure.PUSH,
+        }
 
     log.info("auto_rebase.success", issue=issue_number, pr=pr_number, conflicts_resolved=result.conflicts_resolved)
     await ops.finalize_run(task_run.id, "done", None, head_sha, session_factory)

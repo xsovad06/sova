@@ -318,6 +318,7 @@ class TestAttemptAutoRebase:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "db crash" in result["error"]
+        assert result["cause"] == "unexpected"
 
     def test_default_ops_bind_the_real_collaborators(self) -> None:
         ops = rebase_module._default_ops()
@@ -421,6 +422,7 @@ class TestAttemptAutoRebasePrLookup:
         assert result["status"] == "failed"
         assert result["pr_number"] is None
         assert "gh pr view failed: boom" in result["error"]
+        assert result["cause"] == "pr_lookup"
         mock_log.warning.assert_called_once()
         mock_log.exception.assert_not_called()
         ops.create_rebase_run.assert_not_called()
@@ -441,7 +443,7 @@ class TestAttemptAutoRebasePrLookup:
         ops = _make_ops(get_pr_info=AsyncMock(side_effect=RuntimeError("config exploded")))
         with patch.object(rebase_module, "log") as mock_log:
             result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
-        assert result == {"status": "failed", "pr_number": None, "error": "config exploded"}
+        assert result == {"status": "failed", "pr_number": None, "error": "config exploded", "cause": "setup"}
         mock_log.exception.assert_called_once()
         mock_log.warning.assert_not_called()
         ops.create_rebase_run.assert_not_called()
@@ -661,6 +663,7 @@ class TestAttemptAutoRebaseExecution:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "DB query failed" in result["error"]
+        assert result["cause"] == "worktree_check"
 
     @pytest.mark.asyncio
     async def test_skips_when_branch_checked_out_in_main_worktree(self) -> None:
@@ -752,6 +755,33 @@ class TestAttemptAutoRebaseExecution:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "Pre-push hook failed" in result["error"]
+        assert result["cause"] == "checks"
+
+    @pytest.mark.asyncio
+    async def test_rebase_step_failure_carries_its_cause_and_files(self, tmp_path: Path) -> None:
+        from sova.git.rebase import RebaseFailure, RebaseResult
+
+        factory, session, mock_task_run, pr_info = self._setup_mocks()
+        ops = _make_ops()
+        self._cfg_mock(ops)
+        ops.get_pr_info.return_value = pr_info
+        wt_info = MagicMock()
+        wt_info.path = tmp_path / "wt"
+        ops.create_worktree.return_value = wt_info
+        ops.create_rebase_run.return_value = mock_task_run
+        ops.rebase_with_conflict_resolution.return_value = (
+            RebaseResult(
+                success=False,
+                error="Unresolved conflicts after 2 attempts: a.py",
+                cause=RebaseFailure.CONFLICTS,
+                unresolved_files=("a.py",),
+            ),
+            Decimal("0.05"),
+        )
+        result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
+
+        assert (result["status"], result["cause"], result["unresolved_files"]) == ("failed", "conflicts", ["a.py"])
+        ops.run_pre_push_hook.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_push_stale_info_skipped(self, tmp_path: Path) -> None:
@@ -791,6 +821,7 @@ class TestAttemptAutoRebaseExecution:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "network timeout" in result["error"]
+        assert result["cause"] == "push"
 
     @pytest.mark.asyncio
     async def test_unexpected_exception(self, tmp_path: Path) -> None:
@@ -807,6 +838,7 @@ class TestAttemptAutoRebaseExecution:
         result = await attempt_auto_rebase(42, Path("/fake"), factory, ops=ops)
         assert result["status"] == "failed"
         assert "unexpected crash" in result["error"]
+        assert result["cause"] == "unexpected"
         ops.finalize_run.assert_awaited_once()
         ops.cleanup_worktree.assert_awaited_once()
 

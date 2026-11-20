@@ -478,6 +478,14 @@ if (scenario === 'start-no-slot') {
   out.flagsBesideDraftState = board.prFlags(draftState, { stateShown: true });
   const pr = { number: 7, url: 'https://github.com/o/r/pull/7', state_label: 'Draft', state_color: 'gray' };
   out.prPill = board.prPill(pr);
+  const retry = { id: 'rebase', label: 'Retry rebase', style: 'warning', handler: 'trigger_rebase',
+    handler_args: { issue: '1066' } };
+  real('actionKey');
+  const failedState = { status: 'failed', message: 'Rebase failed', fix: retry };
+  globalThis.actionStateFor = (key) => (key === 'issue:1066' ? failedState : null);
+  out.failedWithFix = board.cardParts({ number: 1066 }, 'review').buttons;
+  out.otherCard = board.cardParts({ number: 7, rank: 2, start: null }, 'next').buttons;
+  globalThis.actionStateFor = () => '';
 } else if (scenario === 'pr-card') {
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
@@ -1142,6 +1150,14 @@ class TestStartRunsTheAgentTheStageNeeds:
         assert triaged["covers"] == ["start_agent:researcher"]
         assert "Develop now</button>" in out["queuedResearched"]["buttons"]
 
+    def test_a_failed_action_with_a_fix_shows_its_button(self, tmp_path: Path) -> None:
+        """A failed rebase's card offers the action that fixes it, and only that card does."""
+        out = _run_node(tmp_path, "card-start")
+
+        assert "Retry rebase</button>" in out["failedWithFix"]
+        assert "work-run-action" in out["failedWithFix"]
+        assert "Retry rebase" not in out["otherCard"]
+
     def test_a_card_with_no_run_for_its_state_has_no_start(self, tmp_path: Path) -> None:
         out = _run_node(tmp_path, "card-start")
 
@@ -1782,10 +1798,9 @@ class TestRebaseInTheBackground:
         rebase.assert_not_awaited()
         assert (await client.get("/api/work/actions")).json()["actions"] == []
 
-    async def test_a_failed_rebase_is_recorded_with_its_error(self, client: AsyncClient) -> None:
-        failed = AsyncMock(return_value={"status": "failed", "error": "conflict in app.py"})
+    async def _finished_actions(self, client: AsyncClient, rebase: AsyncMock) -> list[dict]:
         with (
-            patch("sova.supervisor.rebase.attempt_auto_rebase", failed),
+            patch("sova.supervisor.rebase.attempt_auto_rebase", rebase),
             patch("sova.db.session.get_session_factory", AsyncMock(return_value=MagicMock())),
             patch("sova.dashboard.services.agent_finalize.invalidate_work_item_caches", MagicMock()),
         ):
@@ -1795,8 +1810,40 @@ class TestRebaseInTheBackground:
                 actions = (await client.get("/api/work/actions")).json()["actions"]
                 if actions and actions[0]["status"] != "running":
                     break
+        return actions
 
-        assert [(a["status"], a["message"]) for a in actions] == [("failed", "Rebase failed: conflict in app.py")]
+    async def test_a_failed_rebase_says_why_and_offers_the_fix(self, client: AsyncClient) -> None:
+        failed = AsyncMock(
+            return_value={
+                "status": "failed",
+                "pr_number": 12,
+                "error": "Unresolved conflicts after 2 attempts: app.py",
+                "cause": "conflicts",
+                "unresolved_files": ["app.py"],
+            }
+        )
+        [action] = await self._finished_actions(client, failed)
+
+        assert action["status"] == "failed"
+        assert action["message"].startswith("Rebase failed: SOVA could not resolve the conflicts in app.py.")
+        assert action["fix"]["label"] == "Address PR"
+        assert action["fix"]["handler_args"] == {"command": "address-pr", "pr": 12, "issue": "5"}
+
+    async def test_a_rebase_that_raises_shows_no_exception_text_and_offers_a_retry(self, client: AsyncClient) -> None:
+        crashed = AsyncMock(side_effect=RuntimeError("sqlite3.OperationalError: /home/op/.claude/sova.db locked"))
+        [action] = await self._finished_actions(client, crashed)
+
+        assert action["status"] == "failed"
+        assert "sqlite" not in action["message"]
+        assert "server log" in action["message"]
+        assert action["fix"]["handler"] == "trigger_rebase"
+
+    async def test_a_skip_names_its_reason_and_has_no_fix(self, client: AsyncClient) -> None:
+        skipped = AsyncMock(return_value={"status": "skipped", "reason": "Branch HEAD changed during rebase"})
+        [action] = await self._finished_actions(client, skipped)
+
+        assert (action["status"], action["message"]) == ("done", "Rebase skipped: Branch HEAD changed during rebase")
+        assert "fix" not in action
 
 
 class TestStopARunTheDashboardDidNotStart:

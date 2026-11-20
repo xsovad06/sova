@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.context import get_project_dir
 from sova.config.db_loader import set_issue_hidden
-from sova.dashboard.services import action_registry, work_board_service, work_service
+from sova.dashboard.services import action_registry, rebase_outcome, work_board_service, work_service
 from sova.dashboard.services.work_item_service import GraphConfigError
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
@@ -208,7 +208,10 @@ async def trigger_rebase(issue_number: _IssueNumber) -> dict:
 
 
 async def _run_rebase(issue_number: int, project_dir: PathType, action_id: str) -> None:
-    """Run the rebase, record its outcome, and drop the caches it made stale so the card shows the new state."""
+    """Run the rebase, record its outcome, and drop the caches it made stale so the card shows the new state.
+
+    The card's line says why a failure happened and carries the action that fixes it (``rebase_outcome``).
+    """
     from sova.dashboard.services.agent_finalize import invalidate_work_item_caches
     from sova.db.session import get_session_factory
     from sova.supervisor.rebase import attempt_auto_rebase
@@ -216,24 +219,14 @@ async def _run_rebase(issue_number: int, project_dir: PathType, action_id: str) 
     try:
         session_factory = await get_session_factory(project_dir)
         result = await attempt_auto_rebase(issue_number, project_dir, session_factory, retry_failed=True)
-    except Exception as exc:  # noqa: BLE001 (background task: the failure is recorded on the card, never lost)
+    except Exception:  # noqa: BLE001 (background task: the failure is recorded on the card, never lost)
         log.error("work.rebase_failed", issue=issue_number, exc_info=True)
-        await action_registry.finish(project_dir, action_id, ok=False, message=f"Rebase failed: {exc}")
+        outcome = rebase_outcome.describe_rebase_crash(issue_number)
+        await action_registry.finish(project_dir, action_id, ok=False, message=outcome.message, fix=outcome.fix)
         return
-    ok, message = _rebase_outcome(result)
+    outcome = rebase_outcome.describe_rebase_result(result, issue_number=issue_number)
     invalidate_work_item_caches(project_dir, result.get("pr_number"))
-    await action_registry.finish(project_dir, action_id, ok=ok, message=message)
-
-
-def _rebase_outcome(result: dict) -> tuple[bool, str]:
-    """(ok, message) for ``attempt_auto_rebase()``'s answer: a skip names its reason, a failure its error."""
-    status = str(result.get("status") or "")
-    reason = str(result.get("reason") or result.get("error") or result.get("message") or "")
-    if status == "success":
-        return True, "Rebased"
-    if status == "skipped":
-        return True, f"Rebase skipped: {reason}" if reason else "Rebase skipped"
-    return False, f"Rebase failed: {reason}" if reason else f"Rebase failed ({status or 'no status'})"
+    await action_registry.finish(project_dir, action_id, ok=outcome.ok, message=outcome.message, fix=outcome.fix)
 
 
 @router.post("/work/{run_id}/mark-failed", responses={404: {"description": "Run not found"}})

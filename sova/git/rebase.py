@@ -7,6 +7,7 @@ import os
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,13 +42,34 @@ _DEFAULT_RESOLUTION_PROMPT = (
 )
 
 
+class RebaseFailure(StrEnum):
+    """Why a rebase-with-conflict-resolution attempt failed, for a caller that must explain it.
+
+    ``RebaseResult.error`` can carry git or resolver output, so a caller that shows the failure to a user
+    reads this instead, and never ``error``.
+    """
+
+    FETCH = "fetch"  # the base branch could not be fetched
+    WORKTREE_FILES = "worktree_files"  # files in the worktree block the rebase (untracked runtime collisions)
+    STASH = "stash"  # the worktree's uncommitted changes could not be restored after the rebase
+    RESOLVER = "resolver"  # the conflict resolver (an LLM call) failed
+    CONFLICTS = "conflicts"  # conflicts remain after every resolution attempt
+    COMMIT_CAP = "commit_cap"  # the branch has more commits than one attempt replays
+    GIT = "git"  # git itself failed (a non-conflict rebase error, a failed continue or conflict check)
+
+
 @dataclass
 class RebaseResult:
-    """Outcome of a rebase-with-conflict-resolution attempt."""
+    """Outcome of a rebase-with-conflict-resolution attempt.
+
+    A failure carries ``cause``, and for ``CONFLICTS`` the files still conflicted in ``unresolved_files``.
+    """
 
     success: bool
     conflicts_resolved: int = 0
     error: str = ""
+    cause: RebaseFailure | None = None
+    unresolved_files: tuple[str, ...] = ()
 
 
 def _normalize_resolution(text: str) -> str:
@@ -439,7 +461,7 @@ async def rebase_with_conflict_resolution(
 
     fetch = await run("git", "fetch", "origin", base, cwd=cwd)
     if not fetch.success:
-        return RebaseResult(success=False, error=f"Fetch failed: {fetch.stderr[:200]}"), cost
+        return RebaseResult(success=False, error=f"Fetch failed: {fetch.stderr[:200]}", cause=RebaseFailure.FETCH), cost
 
     # Only SOVA's runtime state stays out of this stash. `.claude/specs/` is stashed with the rest: a tracked spec
     # with uncommitted edits left in place would make `git rebase` refuse to run. Staged runtime files are
@@ -452,11 +474,11 @@ async def rebase_with_conflict_resolution(
     try:
         await clear_conflicting_runtime_files(f"origin/{base}", cwd)
     except RuntimeError as exc:
-        return RebaseResult(success=False, error=str(exc)[:300]), cost
+        return RebaseResult(success=False, error=str(exc)[:300], cause=RebaseFailure.WORKTREE_FILES), cost
     try:
         stash_pathspec_args = await runtime_stash_pathspecs(WORKTREE_STASH_EXCLUDED_PATHS, cwd)
     except RuntimeError as exc:
-        return RebaseResult(success=False, error=str(exc)[:300]), cost
+        return RebaseResult(success=False, error=str(exc)[:300], cause=RebaseFailure.GIT), cost
     stash_result = await run("git", "stash", "--include-untracked", "--", *stash_pathspec_args, cwd=cwd)
     stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
     if not stash_result.success:
@@ -485,12 +507,15 @@ async def rebase_with_conflict_resolution(
             success=False,
             conflicts_resolved=resolved,
             error="Could not verify conflict resolution: the git conflict check failed",
+            cause=RebaseFailure.GIT,
         ), cost
 
     result = await run("git", "rebase", f"origin/{base}", cwd=cwd)
     if result.success:
         if not await _pop_stash():
-            return RebaseResult(success=False, error="Stash restore failed after clean rebase"), cost
+            return RebaseResult(
+                success=False, error="Stash restore failed after clean rebase", cause=RebaseFailure.STASH
+            ), cost
         return RebaseResult(success=True), cost
 
     initial_error = (result.stderr or result.stdout or "")[:300]
@@ -499,7 +524,7 @@ async def rebase_with_conflict_resolution(
     if not conflicted:
         await run("git", "rebase", "--abort", cwd=cwd)
         await _pop_stash()
-        return RebaseResult(success=False, error=f"Rebase failed: {initial_error}"), cost
+        return RebaseResult(success=False, error=f"Rebase failed: {initial_error}", cause=RebaseFailure.GIT), cost
 
     conflicts_resolved = 0
     hit_commit_cap = False
@@ -509,7 +534,9 @@ async def rebase_with_conflict_resolution(
             cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
             if cont.success:
                 if not await _pop_stash():
-                    return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
+                    return RebaseResult(
+                        success=False, error="Stash restore failed after rebase", cause=RebaseFailure.STASH
+                    ), cost
                 return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
             last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
             log.warning(
@@ -550,7 +577,9 @@ async def rebase_with_conflict_resolution(
                     cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
                     if cont.success:
                         if not await _pop_stash():
-                            return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
+                            return RebaseResult(
+                                success=False, error="Stash restore failed after rebase", cause=RebaseFailure.STASH
+                            ), cost
                         return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
                     last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
                     next_conflicted = await _get_conflicted_files(cwd=cwd)
@@ -581,7 +610,12 @@ async def rebase_with_conflict_resolution(
                     log.warning("git.rebase.llm_failed", commit=commit_idx + 1, attempt=attempt, error=str(exc))
                     await run("git", "rebase", "--abort", cwd=cwd)
                     await _pop_stash()
-                    return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
+                    return RebaseResult(
+                        success=False,
+                        conflicts_resolved=conflicts_resolved,
+                        error=str(exc),
+                        cause=RebaseFailure.RESOLVER,
+                    ), cost
 
                 if project_dir is not None:
                     await _stage_resolved_conflicts(conflicted, cwd=cwd)
@@ -608,6 +642,8 @@ async def rebase_with_conflict_resolution(
                     success=False,
                     conflicts_resolved=conflicts_resolved,
                     error=f"Unresolved conflicts after {max_attempts} attempts: {', '.join(remaining_list)}",
+                    cause=RebaseFailure.CONFLICTS,
+                    unresolved_files=tuple(remaining_list),
                 ), cost
 
         conflicts_resolved += len(conflicted)
@@ -615,7 +651,9 @@ async def rebase_with_conflict_resolution(
         cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
             if not await _pop_stash():
-                return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
+                return RebaseResult(
+                    success=False, error="Stash restore failed after rebase", cause=RebaseFailure.STASH
+                ), cost
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
         last_meaningful_error = _update_error_tracking(cont.stderr, last_meaningful_error)
         next_conflicted = await _unresolved_paths(conflicted, cwd=cwd)
@@ -636,6 +674,8 @@ async def rebase_with_conflict_resolution(
     await _pop_stash()
     if hit_commit_cap:
         error = f"Exceeded max commits cap ({max_commits}, processed {commit_idx + 1} commits) during rebase"
+        cause = RebaseFailure.COMMIT_CAP
     else:
         error = f"Rebase could not be completed: {last_meaningful_error[:200]}".rstrip(": ")
-    return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=error), cost
+        cause = RebaseFailure.GIT
+    return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=error, cause=cause), cost

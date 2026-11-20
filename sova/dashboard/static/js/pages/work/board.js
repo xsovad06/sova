@@ -157,6 +157,14 @@ export function iconHtml(name) {
   return el ? el.innerHTML : '';
 }
 
+// The button that remedies the card's failed action (a failed rebase names a retry or an Address PR run), beside
+// the failure line: the failure says why, and the button is the way on, so the user never has to work out what next.
+function _fixButton(key, issue) {
+  var state = actionStateFor(key);
+  if (!state || state.status !== 'failed' || !state.fix) return '';
+  return _btn('warning', state.fix.label, 'work-run-action', [issue, state.fix], { icon: 'play', disabled: actionIsRunning(key) });
+}
+
 function _btn(variant, label, action, args, opts) {
   opts = opts || {};
   var cls = variant ? 'sova-btn sova-btn-' + variant : 'sova-btn sova-work-btn-quiet text-gray-400 hover:text-gray-200 hover:bg-surface-hover';
@@ -490,7 +498,7 @@ export function cardParts(entry, stage) {
     body = _chips([statePill(entry), _age(entry)]);
     buttons = _btn('', 'Unhide', 'work-unhide', [n], off);
   }
-  return { right: right, body: body, buttons: buttons, covers: covers };
+  return { right: right, body: body, buttons: _fixButton(entryKey(entry), entry.number) + buttons, covers: covers };
 }
 
 function _card(entry, stage) {

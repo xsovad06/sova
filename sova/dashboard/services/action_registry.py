@@ -129,21 +129,29 @@ async def begin(
     return action.id
 
 
-def _record(project_dir: Path | None, action_id: str, *, ok: bool, message: str) -> bool:
+def _record(project_dir: Path | None, action_id: str, *, ok: bool, message: str, fix: dict | None = None) -> bool:
     actions = _actions.get(_project_key(project_dir), {})
     action = actions.get(action_id)
     if action is None:
         return False
     action.status = DONE if ok else FAILED
     action.message = message
+    if fix is not None:
+        action.extra["fix"] = fix
     action.ended_at = time.time()
     _prune(actions, action.ended_at)
     return True
 
 
-async def finish(project_dir: Path | None, action_id: str, *, ok: bool, message: str = "") -> None:
-    """Record how an action ended. An unknown id (already dismissed, or reset) is ignored."""
-    if _record(project_dir, action_id, ok=ok, message=message):
+async def finish(
+    project_dir: Path | None, action_id: str, *, ok: bool, message: str = "", fix: dict | None = None
+) -> None:
+    """Record how an action ended. An unknown id (already dismissed, or reset) is ignored.
+
+    *fix* is a work item action (``work_state``'s ``{id, label, style, handler, handler_args}`` shape) that
+    remedies a failure; the card shows it as a button beside the message.
+    """
+    if _record(project_dir, action_id, ok=ok, message=message, fix=fix):
         await _notify(project_dir)
 
 
