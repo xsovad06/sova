@@ -4,7 +4,7 @@ How to authenticate and configure OpenAI's Codex CLI as SOVA's agent runtime
 (`agent.runtime = "codex"`). This is a separate concern from
 [AI Provider Setup Guide](ai-provider-setup-guide.md), which configures the
 LLM backend the step pipeline calls in-process (`llm.provider`): Codex is a
-coding-agent *runtime* (`sova/ipc/runtime.py:CodexRuntime`), the subprocess
+coding-agent *runtime* (`sova/ipc/codex_runtime.py:CodexRuntime`), the subprocess
 SOVA spawns to execute a pipeline step's instructions with real tool use
 (file edits, shell commands), the same role `"claude-code"`
 (`ClaudeCodeRuntime`, the default) plays. `agent.runtime` and `[codex]` in
@@ -68,7 +68,7 @@ credential to the store selected above. SOVA never reads, copies, or
 persists it: SOVA's only interaction is a read-only readiness probe,
 `codex login status` (never a model request; see
 `CodexRuntime.check_available()` and `_probe_codex_auth()` in
-`sova/ipc/runtime.py`).
+`sova/ipc/codex_runtime.py`).
 
 Verify:
 
@@ -288,7 +288,7 @@ refresh inside a single `codex exec` invocation triggered by SOVA.
 ## CLI Version Drift
 
 `codex exec`'s flag names (`--sandbox`, `--config`, `--model`, `--json`) are hardcoded
-in `_codex_exec_args()` (`sova/ipc/runtime.py`), so a CLI release that
+in `_codex_exec_args()` (`sova/ipc/codex_runtime.py`), so a CLI release that
 renames or drops one of them surfaces as a failing `codex exec` invocation
 at spawn time, with the CLI's own usage error in the agent's stderr; the fix
 is a code change to that one argv builder, not a config toggle.

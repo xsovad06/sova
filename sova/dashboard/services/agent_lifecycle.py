@@ -17,6 +17,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.output import OutputWriter
 from sova.dashboard.services.agent_adopt import hold_spawn_claim
@@ -205,10 +206,11 @@ from sova.dashboard.services.agent_validation import (
     fetch_launch_task as fetch_launch_task,
 )
 from sova.dashboard.services.feed_service import emit_safe
+from sova.db.session import get_session
+from sova.ipc.codex_runtime import _codex_extra_env
 from sova.ipc.runtime import (
     _PIPELINE_ROLES,
     RUN_RUNTIME_MODEL_OVERRIDE_ENV,
-    _codex_extra_env,
     get_runtime,
     spawn_direct,
 )
@@ -369,7 +371,6 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=pa.project_dir) as session:
             async with session.begin():
@@ -437,7 +438,6 @@ async def _first_open_pr(candidates: list[int], project_dir: "Path") -> int | No
     and every candidate is that fallback when no GitHub repo is configured or the config cannot be loaded. Lookups
     stop at ``_RECOVER_PR_DEADLINE``: the candidate being looked up then counts as unconfirmed.
     """
-    from sova.config.loader import load_config
     from sova.git.pr import PROpenState, get_pr_open_state
 
     try:
@@ -472,7 +472,6 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
         from sqlalchemy import select
 
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             stmt = (
@@ -531,8 +530,6 @@ async def _developer_pr_number(
 def _resolve_config_model(project_dir: Path) -> str | None:
     """Return the agent model alias from SOVA config, or None if unset."""
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         return cfg.agent.model or None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
@@ -543,8 +540,6 @@ def _resolve_config_model(project_dir: Path) -> str | None:
 def _resolve_config_fallback_model(project_dir: Path) -> str | None:
     """Return the first fallback model from SOVA config, or None if empty."""
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         return cfg.agent.fallback_models[0] if cfg.agent.fallback_models else None
     except Exception:  # noqa: BLE001 (model resolution falls back to the runtime default)
@@ -560,8 +555,6 @@ def _resolve_repo_context_agent_enabled(project_dir: Path) -> bool:
     run` process (and everything it spawns) when nothing will ever read it.
     """
     try:
-        from sova.config.loader import load_config
-
         return load_config(project_dir).review.repo_context_agent
     except Exception:  # noqa: BLE001 (config load failure defaults the feature off)
         log.warning("resolve_repo_context_agent_enabled.failed", exc_info=True)
@@ -573,7 +566,6 @@ async def _record_budget_override(issue: str, run_id: int, budget_error: dict, p
     from decimal import Decimal
 
     from sova.db.models import BudgetOverride
-    from sova.db.session import get_session
 
     spend = budget_error.get("total_cost_usd", "0")
     limit = budget_error.get("max_issue_budget", "0")
@@ -1011,8 +1003,6 @@ async def start_command(
     # multi-project dashboard has one shared runtime, which may belong to a
     # different project, so routing must read this project's configuration.
     if command == "address-pr":
-        from sova.config.loader import load_config
-
         if load_config(pa.project_dir).agent.runtime == "codex":
             if pr_number is None:
                 return {"error": "Address PR requires a PR number"}

@@ -33,8 +33,9 @@ from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.research import ResearchStep
 from sova.git.pr import CheckConclusion, CheckStatus, CICheck, PRInfo
+from sova.ipc.codex_runtime import CodexRuntime
 from sova.ipc.handoff import read_handoff_file
-from sova.ipc.runtime import ClaudeCodeRuntime, CodexRuntime, create_runtime
+from sova.ipc.runtime import ClaudeCodeRuntime, create_runtime
 from sova.llm import client
 from sova.llm.models import CostSource
 from sova.llm.provider import create_provider
@@ -357,7 +358,7 @@ class TestOpenAIOnlyScenario:
         spawned = AsyncMock(return_value=_Process([]))
 
         with (
-            patch("sova.ipc.runtime._spawn_agent_process", spawned),
+            patch("sova.ipc.codex_runtime._spawn_agent_process", spawned),
             patch.object(CodexRuntime, "_resolve_stdin_capable", AsyncMock(return_value=True)),
         ):
             await runtime.spawn("do it", tmp_path, model="openai/something-else", max_budget_usd=None)

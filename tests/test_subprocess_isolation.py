@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -48,15 +49,15 @@ class TestSubprocessIsolation:
         assert mock_exec.call_args[1].get("start_new_session") is True
 
     @pytest.mark.parametrize(
-        ("runtime_cls", "prompt", "use_file_output"),
+        ("runtime_module", "runtime_cls", "prompt", "use_file_output"),
         [
-            ("ClaudeCodeRuntime", "test prompt", False),
-            ("ClaudeCodeRuntime", "test prompt", True),
-            ("AiderRuntime", "fix bug", False),
-            ("AiderRuntime", "fix bug", True),
-            ("AiderRuntime", "Run the following command:\n```bash\nsova run 42\n```", False),
-            ("CodexRuntime", "fix bug", False),
-            ("CodexRuntime", "fix bug", True),
+            ("sova.ipc.runtime", "ClaudeCodeRuntime", "test prompt", False),
+            ("sova.ipc.runtime", "ClaudeCodeRuntime", "test prompt", True),
+            ("sova.ipc.runtime", "AiderRuntime", "fix bug", False),
+            ("sova.ipc.runtime", "AiderRuntime", "fix bug", True),
+            ("sova.ipc.runtime", "AiderRuntime", "Run the following command:\n```bash\nsova run 42\n```", False),
+            ("sova.ipc.codex_runtime", "CodexRuntime", "fix bug", False),
+            ("sova.ipc.codex_runtime", "CodexRuntime", "fix bug", True),
         ],
         ids=[
             "claude-pipe",
@@ -69,12 +70,10 @@ class TestSubprocessIsolation:
         ],
     )
     async def test_runtime_spawn_uses_start_new_session(
-        self, tmp_path: Path, runtime_cls: str, prompt: str, use_file_output: bool
+        self, tmp_path: Path, runtime_module: str, runtime_cls: str, prompt: str, use_file_output: bool
     ) -> None:
-        import sova.ipc.runtime as rt
-
         proc = _mock_proc(with_streams=not use_file_output)
-        runtime = getattr(rt, runtime_cls)()
+        runtime = getattr(importlib.import_module(runtime_module), runtime_cls)()
         if runtime_cls == "CodexRuntime":
             # Skip the stdin-support probe: it's a separate subprocess call
             # not modeled by this shared mock, and not what this test covers.

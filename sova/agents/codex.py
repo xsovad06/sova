@@ -14,7 +14,7 @@ class CodexAdapter(RuntimeAdapter):
     Codex has no slash-command concept, so ``commands_dir()`` returns
     ``None``: workflow commands reach Codex through the provider-neutral
     ``AGENTS.md`` instruction body it already discovers by convention (see
-    ``_HEADLESS_PREAMBLE_CODEX`` in ``sova/ipc/runtime.py`` for the matching
+    ``_HEADLESS_PREAMBLE_CODEX`` in ``sova/ipc/codex_runtime.py`` for the matching
     spawn-time preamble), as well as through a mechanically-rendered
     ``SKILL.md`` package per canonical command (``extra_skill_sources()``
     below), which is how Codex's own skill-discovery convention expects

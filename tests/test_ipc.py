@@ -1451,13 +1451,14 @@ class TestAgentRuntimeABC:
         assert isinstance(rt, AiderRuntime)
 
     def test_codex_runtime_name(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         assert rt.name == "codex"
 
     def test_create_runtime_codex(self) -> None:
-        from sova.ipc.runtime import CodexRuntime, create_runtime
+        from sova.ipc.codex_runtime import CodexRuntime
+        from sova.ipc.runtime import create_runtime
 
         rt = create_runtime("codex")
         assert isinstance(rt, CodexRuntime)
@@ -1466,7 +1467,8 @@ class TestAgentRuntimeABC:
 
     def test_create_runtime_codex_forwards_config(self) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime, create_runtime
+        from sova.ipc.codex_runtime import CodexRuntime
+        from sova.ipc.runtime import create_runtime
 
         cfg = CodexConfig(model="gpt-5-codex", sandbox="read-only")
         rt = create_runtime("codex", codex=cfg)
@@ -1933,7 +1935,8 @@ class TestSpawnDirect:
         """OPENAI_API_KEY re-admission is scoped to spawn_direct() only: the
         AgentRuntime spawn paths (Claude Code, Aider, Codex) must never see it,
         even when it's set in the source env."""
-        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime
 
         hostile = {"PATH": "/usr/bin", "OPENAI_API_KEY": "sk-openai-secret"}
 
@@ -1953,7 +1956,7 @@ class TestSpawnDirect:
 
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
-            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+            patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
         ):
             await CodexRuntime().spawn("do work", tmp_path, env=hostile)
         assert "OPENAI_API_KEY" not in mock_exec.call_args.kwargs["env"]
@@ -1965,7 +1968,8 @@ class TestSpawnDirect:
         agents: their commands call `sova config get` and `sova checks record`, which resolve the
         database through it and must read the one the orchestrator uses.
         """
-        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, CodexRuntime, spawn_direct
+        from sova.ipc.codex_runtime import CodexRuntime
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, spawn_direct
 
         env = {"PATH": "/usr/bin", "SOVA_DATABASE_URL": "postgresql://team/sova"}
         mock_proc = AsyncMock()
@@ -1988,7 +1992,7 @@ class TestSpawnDirect:
 
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
-            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+            patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
         ):
             await CodexRuntime().spawn("do work", tmp_path, env=env)
         assert "SOVA_DATABASE_URL" not in mock_exec.call_args.kwargs["env"]
@@ -2295,7 +2299,7 @@ class TestNoModelProbeOnSpawnHotPath:
 
     async def test_codex_spawn_does_not_enumerate(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         spy = AsyncMock(side_effect=AssertionError("spawn must not probe models"))
@@ -2303,7 +2307,7 @@ class TestNoModelProbeOnSpawnHotPath:
         with (
             # Same reason as TestCodexRuntime's autouse fixture: the stdin
             # capability probe's own subprocess call is not modelled here.
-            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
+            patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._mock_proc(201)),
             patch.object(rt, "_probe_models", spy),
             patch.object(rt, "list_available_models", spy),
@@ -2330,6 +2334,10 @@ class TestNoModelProbeOnSpawnHotPath:
         spy.assert_not_called()
 
 
+# CodexRuntime spawns through the shared _spawn_agent_process() and _check_cli_available() in sova.ipc.runtime, and
+# codex_runtime.py itself imports neither shutil nor create_subprocess_exec. The process-spawning and
+# ``shutil.which`` patches in the Codex classes below therefore target sova.ipc.runtime, the module that makes
+# the call; the probes and builders that moved are patched on sova.ipc.codex_runtime.
 class TestCodexRuntime:
     @pytest.fixture(autouse=True)
     def _default_no_stdin_probe(self):
@@ -2338,12 +2346,12 @@ class TestCodexRuntime:
         fallback outcome; tests covering stdin delivery set
         ``rt._stdin_capable`` directly or patch the probe themselves, which
         overrides this for their scope."""
-        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)):
+        with patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=False)):
             yield
 
     async def test_spawn_builds_correct_args(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 55
@@ -2372,7 +2380,7 @@ class TestCodexRuntime:
 
     async def test_spawn_can_allow_network_for_command_agents(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 60
@@ -2390,7 +2398,7 @@ class TestCodexRuntime:
 
     async def test_network_command_rejects_read_only_sandbox(self, tmp_path: Path) -> None:
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.errors import ConfigurationError
 
         rt = CodexRuntime(config=CodexConfig(sandbox="read-only"))
@@ -2398,7 +2406,7 @@ class TestCodexRuntime:
             await rt.spawn("integrate the PR", tmp_path, network_access=True)
 
     async def test_spawn_without_model_omits_flag(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 56
@@ -2422,7 +2430,7 @@ class TestCodexRuntime:
         ``agent.model``, which Codex cannot serve.
         """
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 58
@@ -2454,7 +2462,7 @@ class TestCodexRuntime:
     ) -> None:
         """read_only=True forces --sandbox read-only; otherwise codex.sandbox is used verbatim."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 59
@@ -2471,16 +2479,16 @@ class TestCodexRuntime:
         assert args[args.index("--sandbox") + 1] == expected
 
     def test_transform_prompt_prepends_codex_preamble(self) -> None:
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         rt = CodexRuntime()
         assert rt.transform_prompt("fix the bug") == _HEADLESS_PREAMBLE_CODEX + "fix the bug"
 
     def test_codex_preamble_is_provider_neutral_subset_of_claude_preamble(self) -> None:
         """Codex gets the shared guardrails but not Claude Code's /compact-specific tail."""
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX
         from sova.ipc.runtime import (
             _HEADLESS_PREAMBLE_CLAUDE_TAIL,
-            _HEADLESS_PREAMBLE_CODEX,
             _HEADLESS_PREAMBLE_CORE,
             _HEADLESS_PREAMBLE_EXECUTE_SUFFIX,
         )
@@ -2500,7 +2508,7 @@ class TestCodexRuntime:
 
     async def test_spawn_passes_prompt_verbatim_without_shell(self, tmp_path: Path) -> None:
         """No shell escaping/quoting is applied; only the guardrail preamble is prepended."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 57
@@ -2518,7 +2526,7 @@ class TestCodexRuntime:
 
     async def test_spawn_prompt_with_leading_dash_uses_separator(self, tmp_path: Path) -> None:
         """The "--" separator is present unconditionally, regardless of the prompt's content."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 61
@@ -2537,7 +2545,7 @@ class TestCodexRuntime:
 
     async def test_spawn_uses_stdin_when_cli_supports_it(self, tmp_path: Path) -> None:
         """When the installed CLI documents stdin delivery, the prompt never reaches argv."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 70
@@ -2559,7 +2567,7 @@ class TestCodexRuntime:
 
     async def test_spawn_falls_back_to_argv_when_stdin_unsupported(self, tmp_path: Path) -> None:
         """An explicit False (older CLI, failed probe) must keep today's argv delivery."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 71
@@ -2577,7 +2585,7 @@ class TestCodexRuntime:
         assert args[-2] == "--"
 
     async def test_spawn_logs_prompt_delivery_mode(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 72
@@ -2590,7 +2598,7 @@ class TestCodexRuntime:
         rt._stdin_capable = True
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             await rt.spawn("fix the bug", tmp_path)
 
@@ -2600,7 +2608,7 @@ class TestCodexRuntime:
 
     async def test_resolve_stdin_capable_probes_once_and_caches(self, tmp_path: Path) -> None:
         """The capability probe must not re-run on every spawn from the same runtime."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 73
@@ -2612,7 +2620,9 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=True)) as mock_probe,
+            patch(
+                "sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", AsyncMock(return_value=True)
+            ) as mock_probe,
         ):
             await rt.spawn("first", tmp_path)
             await rt.spawn("second", tmp_path)
@@ -2623,9 +2633,9 @@ class TestCodexRuntime:
         """Two spawns racing the first, uncached resolution must share one
         probe outcome instead of each entering the uncached branch and
         letting whichever result lands last silently win (CodeRabbit
-        finding, runtime.py:971): an ambiguous first outcome must never be
+        finding, codex_runtime.py): an ambiguous first outcome must never be
         overwritten by a later False."""
-        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+        from sova.ipc.codex_runtime import CodexRuntime, CodexStdinProbeAmbiguousError
 
         rt = CodexRuntime()
         release = asyncio.Event()
@@ -2634,7 +2644,7 @@ class TestCodexRuntime:
             await release.wait()
             raise CodexStdinProbeAmbiguousError("no PROMPT line found")
 
-        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", slow_ambiguous_probe):
+        with patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", slow_ambiguous_probe):
             task_a = asyncio.create_task(rt._resolve_stdin_capable())
             task_b = asyncio.create_task(rt._resolve_stdin_capable())
             await asyncio.sleep(0)
@@ -2658,7 +2668,7 @@ class TestCodexRuntime:
         """Unlike AiderRuntime, CodexRuntime does not parse for a fenced bash block: it
         always prepends the guardrail preamble verbatim, so an absent or malformed block
         must still yield a non-empty prompt that carries the caller's original text."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         rt = CodexRuntime()
         result = rt.transform_prompt(prompt)
@@ -2677,7 +2687,7 @@ class TestCodexRuntime:
     async def test_spawn_handles_missing_or_malformed_bash_block(self, prompt: str, tmp_path: Path) -> None:
         """spawn() must still place a usable, non-empty prompt on argv when the caller's
         prompt lacks a well-formed fenced bash block."""
-        from sova.ipc.runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX, CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 62
@@ -2695,7 +2705,7 @@ class TestCodexRuntime:
         assert args[-1] == _HEADLESS_PREAMBLE_CODEX + prompt
 
     def test_parse_output_plain_text(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         event = rt.parse_output("plain text line")
@@ -2707,7 +2717,7 @@ class TestCodexRuntime:
         """The runtime owns one CodexStreamParser instance, so thread state persists across calls."""
         import json
 
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         rt.parse_output(json.dumps({"type": "thread.started", "thread_id": "thread-abc"}))
@@ -2720,7 +2730,7 @@ class TestCodexRuntime:
 
     def test_create_stream_parser_returns_codex_stream_parser(self) -> None:
         from sova.ipc.codex import CodexStreamParser
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         parser = rt.create_stream_parser()
@@ -2731,7 +2741,7 @@ class TestCodexRuntime:
         `codex login --api-key` can store a metered key in Codex's own keyring,
         invisible to this check, so the default (codex.billing_mode unset) must stay
         UNKNOWN rather than assume SUBSCRIPTION (issue #1128 review)."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.models import CostSource
 
         parser = _codex_parser_for_api_key(CodexRuntime(), None)
@@ -2741,7 +2751,7 @@ class TestCodexRuntime:
         """Only an explicit codex.billing_mode = "subscription" promotes cost_source to
         SUBSCRIPTION; SOVA cannot infer it from auth state alone."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.models import CostSource
 
         rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
@@ -2754,7 +2764,7 @@ class TestCodexRuntime:
         SUBSCRIPTION, even when codex.billing_mode = "subscription" is also declared:
         the env var always wins over the declared billing mode."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.models import CostSource
 
         rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
@@ -2765,7 +2775,7 @@ class TestCodexRuntime:
         """codex.model is the model SOVA passes to `codex exec --model`, so it is the
         fallback when the JSONL stream reports none of its own (issue #1128)."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         parser = rt.create_stream_parser()
@@ -2776,7 +2786,7 @@ class TestCodexRuntime:
     def test_create_stream_parser_leaves_model_empty_when_unconfigured(self) -> None:
         """An unset codex.model means the CLI picked its own default, which SOVA cannot
         name: the result must stay empty rather than invent one."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         parser = CodexRuntime().create_stream_parser()
         event = parser.parse_line('{"type": "turn.completed", "usage": {}}')
@@ -2787,7 +2797,7 @@ class TestCodexRuntime:
         """Each create_stream_parser() call must reflect that moment's own auth mode,
         never a value cached from an earlier call on the same runtime instance."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.models import CostSource
 
         rt = CodexRuntime(config=CodexConfig(billing_mode="subscription"))
@@ -2802,7 +2812,7 @@ class TestCodexRuntime:
         config lookup at finalize time.
         """
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime(config=CodexConfig(reader_drain_timeout=42.0))
         assert rt.stream_reader_drain_timeout() == 42.0
@@ -2813,7 +2823,7 @@ class TestCodexRuntime:
         This is what makes concurrent Codex agents safe: each spawn gets an
         isolated parser rather than sharing the runtime singleton's state.
         """
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         first = rt.create_stream_parser()
@@ -2827,7 +2837,7 @@ class TestCodexRuntime:
         """Two spawns' parsers must not leak thread id or terminal latch into each other."""
         import json
 
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         parser_a = rt.create_stream_parser()
@@ -2844,14 +2854,14 @@ class TestCodexRuntime:
         assert event_b.result.session_id == ""
 
     def test_parse_output_empty(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         assert rt.parse_output("") is None
         assert rt.parse_output("   ") is None
 
     async def test_check_available_found(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         mock_proc = AsyncMock()
@@ -2868,7 +2878,7 @@ class TestCodexRuntime:
         assert "0.20.0" in detail
 
     async def test_check_available_not_found(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.shutil.which", return_value=None):
@@ -2887,13 +2897,13 @@ class TestCodexRuntime:
 
     async def test_check_available_missing_cli_never_probes_auth(self) -> None:
         """A missing CLI must return the install hint without attempting the login probe."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         with (
             patch("sova.ipc.runtime.shutil.which", return_value=None),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec") as mock_exec,
-            patch("sova.ipc.runtime.run") as mock_run,
+            patch("sova.ipc.codex_runtime.run") as mock_run,
         ):
             ok, detail = await rt.check_available()
 
@@ -2912,7 +2922,7 @@ class TestCodexRuntime:
     async def test_check_available_reports_auth(
         self, returncode: int, stdout: str, expected_ok: bool, expected_detail: str
     ) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         probe = ShellResult(returncode=returncode, stdout=stdout, stderr="")
@@ -2920,7 +2930,7 @@ class TestCodexRuntime:
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
+            patch("sova.ipc.codex_runtime.run", return_value=probe),
         ):
             ok, detail = await rt.check_available()
 
@@ -2932,7 +2942,7 @@ class TestCodexRuntime:
 
         Reachable, with no model ID to report: an empty list, not unavailable.
         """
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
@@ -2940,7 +2950,7 @@ class TestCodexRuntime:
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
+            patch("sova.ipc.codex_runtime.run", return_value=probe),
         ):
             result = await rt.list_available_models()
 
@@ -2950,7 +2960,7 @@ class TestCodexRuntime:
         """The Codex CLI has no listing endpoint and ignores the model override, so the
         one model an authenticated runtime can drive is codex.model itself."""
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime(config=CodexConfig(model="gpt-5-codex"))
         probe = ShellResult(returncode=0, stdout="Logged in via ChatGPT session.\n", stderr="")
@@ -2958,14 +2968,14 @@ class TestCodexRuntime:
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
+            patch("sova.ipc.codex_runtime.run", return_value=probe),
         ):
             result = await rt.list_available_models()
 
         assert result == ["gpt-5-codex"]
 
     async def test_list_available_models_not_installed(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         with patch("sova.ipc.runtime.shutil.which", return_value=None):
@@ -2975,7 +2985,7 @@ class TestCodexRuntime:
 
     async def test_check_available_auth_probe_timeout_fails_open(self) -> None:
         """An unparseable/timed-out auth probe must not block an otherwise working CLI."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         probe = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 5.0s", timed_out=True)
@@ -2983,7 +2993,30 @@ class TestCodexRuntime:
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
+            patch("sova.ipc.codex_runtime.run", return_value=probe),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "unknown" in detail
+
+    async def test_probe_codex_auth_spawn_oserror_returns_none(self) -> None:
+        """A ``codex login status`` spawn failure is an unknown result, never an output blob."""
+        from sova.ipc.codex_runtime import _probe_codex_auth
+
+        with patch("sova.ipc.codex_runtime.run", side_effect=OSError("exec format error")):
+            assert await _probe_codex_auth() is None
+
+    async def test_check_available_auth_probe_oserror_fails_open(self) -> None:
+        """An auth probe that cannot spawn must not block an otherwise working CLI."""
+        from sova.ipc.codex_runtime import CodexRuntime
+
+        rt = CodexRuntime()
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
+            patch("sova.ipc.codex_runtime.run", side_effect=OSError("exec format error")),
         ):
             ok, detail = await rt.check_available()
 
@@ -2991,7 +3024,7 @@ class TestCodexRuntime:
         assert "unknown" in detail
 
     async def test_check_available_reports_env_key_presence_without_value(self) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         rt = CodexRuntime()
         probe = ShellResult(returncode=0, stdout="", stderr="")
@@ -3000,7 +3033,7 @@ class TestCodexRuntime:
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/codex"),
             patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=self._version_proc()),
-            patch("sova.ipc.runtime.run", return_value=probe),
+            patch("sova.ipc.codex_runtime.run", return_value=probe),
         ):
             ok, detail = await rt.check_available()
 
@@ -3010,7 +3043,7 @@ class TestCodexRuntime:
 
     async def test_spawn_injects_codex_api_key_scoped_to_this_process(self, tmp_path: Path) -> None:
         """CODEX_API_KEY must reach the Codex child even though SCRUBBED_VARS strips it by default."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 62
@@ -3032,7 +3065,7 @@ class TestCodexRuntime:
 
     async def test_spawn_strips_anthropic_api_key_from_codex_child(self, tmp_path: Path) -> None:
         """A key meant for Claude Code must not leak into an unrelated Codex child."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 63
@@ -3052,7 +3085,7 @@ class TestCodexRuntime:
 
     async def test_spawn_prefers_caller_supplied_api_key(self, tmp_path: Path) -> None:
         """A curated env's own key wins over whatever is in the server's process env."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 67
@@ -3072,7 +3105,7 @@ class TestCodexRuntime:
 
     async def test_spawn_omits_key_when_caller_env_excludes_it(self, tmp_path: Path) -> None:
         """A caller that deliberately built an env without the key must not get the server's."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 68
@@ -3091,7 +3124,7 @@ class TestCodexRuntime:
         assert "CODEX_API_KEY" not in child_env
 
     async def test_spawn_treats_blank_api_key_as_absent(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 69
@@ -3110,7 +3143,7 @@ class TestCodexRuntime:
         assert "CODEX_API_KEY" not in child_env
 
     async def test_spawn_without_codex_api_key_omits_it(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 64
@@ -3152,7 +3185,7 @@ class TestCodexRuntime:
             assert "CODEX_API_KEY" not in child_env
 
     async def test_spawn_never_logs_codex_api_key(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 66
@@ -3164,7 +3197,7 @@ class TestCodexRuntime:
         with (
             patch.dict(os.environ, {"CODEX_API_KEY": "sk-codex-sentinel"}, clear=False),
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             await rt.spawn("do the task", tmp_path)
 
@@ -3172,7 +3205,7 @@ class TestCodexRuntime:
             assert "sk-codex-sentinel" not in str(call)
 
     async def test_spawn_with_fallback_model_logs_warning_without_prompt(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 58
@@ -3183,7 +3216,7 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             ap = await rt.spawn("secret prompt text", tmp_path, fallback_model="gpt-5-mini")
 
@@ -3197,7 +3230,7 @@ class TestCodexRuntime:
         rather than silently proceeding unbounded (issue #1128)."""
         from decimal import Decimal
 
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.llm.errors import ConfigurationError
 
         rt = CodexRuntime()
@@ -3228,7 +3261,7 @@ class TestCodexRuntime:
         from decimal import Decimal
 
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 59
@@ -3239,7 +3272,7 @@ class TestCodexRuntime:
         rt = CodexRuntime(config=CodexConfig(allow_unenforced_budget=True))
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             ap = await rt.spawn("secret prompt text", tmp_path, max_budget_usd=Decimal("5.00"))
 
@@ -3250,7 +3283,7 @@ class TestCodexRuntime:
 
     async def test_spawn_with_budget_unset_needs_no_opt_in(self, tmp_path: Path) -> None:
         """No budget requested at all: the opt-in flag is irrelevant and nothing warns."""
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 62
@@ -3261,7 +3294,7 @@ class TestCodexRuntime:
         rt = CodexRuntime()
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             ap = await rt.spawn("test", tmp_path)
 
@@ -3272,7 +3305,7 @@ class TestCodexRuntime:
         from decimal import Decimal
 
         from sova.config.models import CodexConfig
-        from sova.ipc.runtime import CodexRuntime
+        from sova.ipc.codex_runtime import CodexRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 60
@@ -3283,7 +3316,7 @@ class TestCodexRuntime:
         rt = CodexRuntime(config=CodexConfig(allow_unenforced_budget=True))
         with (
             patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             await rt.spawn(
                 "test",
@@ -3375,7 +3408,7 @@ class TestProbeCodexStdinPromptSupport:
                 id="unrelated-option-mentions-stdin",
             ),
             # `--template <PROMPT>` carries the same marker but is not PROMPT's own definition line; only a
-            # line that leads with the marker counts (CodeRabbit finding, runtime.py:725).
+            # line that leads with the marker counts (CodeRabbit finding, codex_runtime.py).
             pytest.param(
                 "Options:\n"
                 "  --template <PROMPT>  Read a prompt template from stdin.\n"
@@ -3385,7 +3418,7 @@ class TestProbeCodexStdinPromptSupport:
                 id="option-contains-prompt-marker",
             ),
             # "never" was missing from the negation markers, so this read as confirmed support
-            # (CodeRabbit finding, runtime.py:797).
+            # (CodeRabbit finding, codex_runtime.py).
             pytest.param(
                 "Arguments:\n  [PROMPT]\n          Prompt to use. PROMPT is never read\n          from stdin.\n",
                 False,
@@ -3437,22 +3470,22 @@ class TestProbeCodexStdinPromptSupport:
         ],
     )
     async def test_reads_stdin_support_from_help_text(self, help_text: str, expected: bool) -> None:
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
         probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
+        with patch("sova.ipc.codex_runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is expected
 
     async def test_probe_uses_scrubbed_environment(self) -> None:
         """The --help probe needs no credential at all, so it must see the
         same scrubbed environment as _probe_codex_auth(), not the server's
-        raw os.environ (CodeRabbit finding, runtime.py:624)."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        raw os.environ (CodeRabbit finding, codex_runtime.py)."""
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
         probe = ShellResult(returncode=0, stdout="Arguments:\n  <PROMPT>  Prompt to use.\n", stderr="")
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-secret", "CODEX_API_KEY": "sk-codex-secret"}),
-            patch("sova.ipc.runtime.run", return_value=probe) as mock_run,
+            patch("sova.ipc.codex_runtime.run", return_value=probe) as mock_run,
         ):
             await _probe_codex_stdin_prompt_support()
 
@@ -3461,32 +3494,32 @@ class TestProbeCodexStdinPromptSupport:
         assert "CODEX_API_KEY" not in probe_env
 
     async def test_returns_false_on_nonzero_exit(self) -> None:
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
         probe = ShellResult(returncode=1, stdout="", stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
+        with patch("sova.ipc.codex_runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is False
 
     async def test_returns_false_when_cli_missing(self) -> None:
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
-        with patch("sova.ipc.runtime.run", side_effect=OSError("codex not found")):
+        with patch("sova.ipc.codex_runtime.run", side_effect=OSError("codex not found")):
             assert await _probe_codex_stdin_prompt_support() is False
 
     async def test_returns_false_on_timeout(self) -> None:
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
         probe = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 5.0s", timed_out=True)
-        with patch("sova.ipc.runtime.run", return_value=probe):
+        with patch("sova.ipc.codex_runtime.run", return_value=probe):
             assert await _probe_codex_stdin_prompt_support() is False
 
     async def test_never_logs_help_text_verbatim_at_info_level(self) -> None:
         """Probe outcomes are debug-only noise; must never surface at info/warning."""
-        from sova.ipc.runtime import _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import _probe_codex_stdin_prompt_support
 
         with (
-            patch("sova.ipc.runtime.run", side_effect=OSError("boom")),
-            patch("sova.ipc.runtime.log") as mock_log,
+            patch("sova.ipc.codex_runtime.run", side_effect=OSError("boom")),
+            patch("sova.ipc.codex_runtime.log") as mock_log,
         ):
             await _probe_codex_stdin_prompt_support()
 
@@ -3505,21 +3538,21 @@ class TestProbeCodexStdinPromptSupport:
         ],
     )
     async def test_raises_when_no_prompt_argument_block_is_found(self, help_text: str) -> None:
-        from sova.ipc.runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
+        from sova.ipc.codex_runtime import CodexStdinProbeAmbiguousError, _probe_codex_stdin_prompt_support
 
         probe = ShellResult(returncode=0, stdout=help_text, stderr="")
-        with patch("sova.ipc.runtime.run", return_value=probe):
+        with patch("sova.ipc.codex_runtime.run", return_value=probe):
             with pytest.raises(CodexStdinProbeAmbiguousError):
                 await _probe_codex_stdin_prompt_support()
 
     async def test_spawn_raises_when_probe_is_ambiguous(self, tmp_path: Path) -> None:
         """An ambiguous probe must surface as an explicit spawn error, never
         a silent fallback to argv delivery."""
-        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+        from sova.ipc.codex_runtime import CodexRuntime, CodexStdinProbeAmbiguousError
 
         rt = CodexRuntime()
         with patch(
-            "sova.ipc.runtime._probe_codex_stdin_prompt_support",
+            "sova.ipc.codex_runtime._probe_codex_stdin_prompt_support",
             AsyncMock(side_effect=CodexStdinProbeAmbiguousError("no PROMPT line found")),
         ):
             with pytest.raises(CodexStdinProbeAmbiguousError):
@@ -3529,11 +3562,11 @@ class TestProbeCodexStdinPromptSupport:
         """An ambiguous outcome must be cached like a definite True/False,
         so the probe subprocess runs at most once per instance even when
         every spawn would otherwise re-probe and re-raise."""
-        from sova.ipc.runtime import CodexRuntime, CodexStdinProbeAmbiguousError
+        from sova.ipc.codex_runtime import CodexRuntime, CodexStdinProbeAmbiguousError
 
         rt = CodexRuntime()
         probe = AsyncMock(side_effect=CodexStdinProbeAmbiguousError("no PROMPT line found"))
-        with patch("sova.ipc.runtime._probe_codex_stdin_prompt_support", probe):
+        with patch("sova.ipc.codex_runtime._probe_codex_stdin_prompt_support", probe):
             with pytest.raises(CodexStdinProbeAmbiguousError):
                 await rt._resolve_stdin_capable()
             with pytest.raises(CodexStdinProbeAmbiguousError):
@@ -3978,12 +4011,12 @@ class TestInterpretCodexAuthProbe:
         ],
     )
     def test_interprets_probe_output(self, output: str | None, expected: tuple[bool | None, str]) -> None:
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         assert _interpret_codex_auth_probe(output) == expected
 
     def test_json_object_reports_logged_out(self) -> None:
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         authenticated, detail = _interpret_codex_auth_probe('{"logged_in": false}')
         assert authenticated is False
@@ -3991,7 +4024,7 @@ class TestInterpretCodexAuthProbe:
 
     def test_bare_json_scalar_falls_through_to_text_scan(self) -> None:
         """Valid JSON is not necessarily an object; a quoted scalar has no fields to read."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         assert _interpret_codex_auth_probe('"not logged in"')[0] is False
         assert _interpret_codex_auth_probe('"42"') == (None, "auth state unknown")
@@ -4006,20 +4039,111 @@ class TestInterpretCodexAuthProbe:
         ],
     )
     def test_negative_wording_is_logged_out(self, output: str) -> None:
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         assert _interpret_codex_auth_probe(output)[0] is False
 
     def test_a_prefixed_no_api_key_line_is_never_read_as_configured(self) -> None:
         """A mid-line "No API key configured" is not the positive status line, whatever prefix codex adds."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         for text in ("Error: No API key configured", "Status: no API key configured"):
             assert _interpret_codex_auth_probe(text)[0] is not True
 
     def test_chatgpt_login_mentioning_an_api_key_is_still_authenticated(self) -> None:
         """Only a status line that starts with the codex wording is a logout, not any mention of it."""
-        from sova.ipc.runtime import _interpret_codex_auth_probe
+        from sova.ipc.codex_runtime import _interpret_codex_auth_probe
 
         text = "Logged in using ChatGPT\nNote: no API key is set; proxy not configured."
         assert _interpret_codex_auth_probe(text)[0] is True
+
+
+class TestRuntimeRegistry:
+    """The registry maps every name to a factory taking the Codex config, so no entry is a placeholder."""
+
+    def test_every_entry_builds_an_agent_runtime(self) -> None:
+        from sova.ipc.runtime import _RUNTIMES, AgentRuntime
+
+        for name, factory in _RUNTIMES.items():
+            assert isinstance(factory(None), AgentRuntime), name
+
+    def test_codex_resolves_to_the_codex_runtime_module(self) -> None:
+        from sova.ipc.runtime import _RUNTIMES
+
+        assert type(_RUNTIMES["codex"](None)).__module__ == "sova.ipc.codex_runtime"
+
+    @pytest.mark.parametrize(
+        "first_import",
+        ["from sova.ipc.runtime import create_runtime", "from sova.ipc.codex_runtime import CodexRuntime"],
+    )
+    def test_create_runtime_codex_works_from_a_cold_import(self, first_import: str) -> None:
+        """``create_runtime('codex')`` works in a fresh interpreter, whichever of the two modules it imports first.
+
+        ``codex_runtime`` binds ``runtime``'s helpers at module scope and ``runtime`` resolves ``CodexRuntime``
+        lazily, so neither order may hit a partially initialized module.
+        """
+        import subprocess
+        import sys
+
+        code = (
+            f"{first_import}\n"
+            "from sova.ipc.runtime import create_runtime\n"
+            "r = create_runtime('codex')\n"
+            "assert type(r).__module__ == 'sova.ipc.codex_runtime', type(r).__module__\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=Path(__file__).parent.parent,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+class TestCodexRuntimeSharedNames:
+    """The comment in ``sova/ipc/runtime.py`` that lists the names ``codex_runtime`` imports must match the code."""
+
+    @staticmethod
+    def _commented_names() -> list[str]:
+        import re
+        from pathlib import Path
+
+        import sova.ipc.runtime as runtime_module
+
+        source = Path(runtime_module.__file__).read_text(encoding="utf-8")
+        match = re.search(r"^# Intra-package API for sova\.ipc\.codex_runtime.*?\n((?:#.*\n)+)", source, re.MULTILINE)
+        assert match, "the intra-package API comment block in sova/ipc/runtime.py is gone"
+        names = re.findall(r"\b_[A-Za-z][A-Za-z_0-9]*\b", match.group(0))
+        assert len(names) >= 6, f"expected the six shared names in the comment, found {names}"
+        return sorted(set(names))
+
+    def test_every_commented_name_is_defined_in_runtime_and_bound_by_codex_runtime(self) -> None:
+        import sova.ipc.codex_runtime as codex_module
+        import sova.ipc.runtime as runtime_module
+
+        for name in self._commented_names():
+            assert hasattr(runtime_module, name), f"sova.ipc.runtime no longer defines {name}"
+            assert getattr(codex_module, name, None) is getattr(runtime_module, name), (
+                f"sova.ipc.codex_runtime does not import {name} from sova.ipc.runtime"
+            )
+
+    def test_every_underscore_name_codex_runtime_imports_from_runtime_is_in_the_comment(self) -> None:
+        import ast
+        from pathlib import Path
+
+        import sova.ipc.codex_runtime as codex_module
+
+        tree = ast.parse(Path(codex_module.__file__).read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "sova.ipc.runtime"
+            for alias in node.names
+            if alias.name.startswith("_")
+        }
+        assert imported <= set(self._commented_names()), (
+            f"names codex_runtime imports from runtime.py but the comment there omits: "
+            f"{sorted(imported - set(self._commented_names()))}"
+        )

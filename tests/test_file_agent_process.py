@@ -414,8 +414,8 @@ class TestRuntimeFileOutput:
         assert result.stdout_path == output_dir / "200.stdout"
 
     async def test_codex_spawn_with_output_dir(self, tmp_path: Path) -> None:
+        from sova.ipc.codex_runtime import CodexRuntime
         from sova.ipc.control import FileAgentProcess
-        from sova.ipc.runtime import CodexRuntime
 
         output_dir = tmp_path / "agent-output"
         output_dir.mkdir()
