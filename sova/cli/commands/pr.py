@@ -1,4 +1,4 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, merge-subject."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from sova.config.loader import load_config
 
@@ -227,6 +228,149 @@ async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
         trusted_login=config.github_user or await get_active_gh_user() or "",
         handoffs=read_all_handoff_files(root),
     )
+
+
+# `sova merge-subject` exits 4 for an invalid title (the user edits it) and 3 when the title could not be
+# checked at all (gh, config, PR state, parse failure or any unexpected exception), which needs a different
+# recovery. Typer owns 2, and 1 is what an uncaught traceback exits with, so neither means "invalid title".
+MERGE_SUBJECT_INVALID_TITLE = 4
+MERGE_SUBJECT_CHECK_FAILED = 3
+
+
+def merge_subject(
+    pr: Annotated[int, typer.Argument(help="PR number.")],
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    validate_only: Annotated[
+        bool,
+        typer.Option("--validate-only", help="Only validate the title (the merge-queue path takes no --subject)."),
+    ] = False,
+) -> None:
+    """Validate a PR title against commit.types and commit.scopes, and print its squash-merge subject.
+
+    Exits 4 naming the failing part and the allowed values when the title is not a valid
+    conventional-commit line, and 3 when the title could not be checked (gh, config, an unreadable stored
+    commit convention, a PR that is not open, an unreadable allowed-methods lookup under "auto", or an
+    unexpected error), so /integrate-pr stops before the merge and tells the two apart (a GitHub project
+    with commit.pr_title_format "freeform" skips that check, as create_pr does). A merge that lands no
+    PR-title subject (merge_method "rebase" or "merge", or "auto" on a repository allowing several
+    methods) is not checked at all. When the merge will be a squash (merge_method "squash", or "auto" on a
+    repository allowing only squash) prints "<title> (#N)" for `gh pr merge --subject`; otherwise prints
+    nothing, and the reason goes to stderr. With --validate-only it prints nothing, skips the
+    allowed-methods lookup and always checks the title (the queue's method is unknown, and it takes no
+    --subject).
+    """
+    try:
+        subject = asyncio.run(_merge_subject(pr=pr, project_dir=project, validate_only=validate_only))
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001 (an unexpected error is no verdict on the title)
+        console.print(f"[red]Could not check the title of PR #{pr}: {escape(str(exc))}[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED) from None
+    if subject:
+        typer.echo(subject)
+
+
+async def _merge_subject(*, pr: int, project_dir: Path | None, validate_only: bool = False) -> str:
+    """The validated squash subject for *pr*, or "" when the merge method takes no subject.
+
+    An invalid title exits 4; any other failure to reach a verdict exits 3. The title is checked only when a
+    squash lands it. With *validate_only* (merge queue, method unknown) the method resolution is skipped, the
+    title is always checked and "" is returned once it is valid.
+    """
+    from sova.config.db_loader import db_read_failed
+    from sova.git.merge import squash_is_sole_merge_method
+    from sova.git.worktree import get_primary_worktree_root
+    from sova.utils.gh import resolve_gh_env
+    from sova.utils.shell import run
+
+    root = project_dir or await get_primary_worktree_root()
+    try:
+        config = load_config(root)
+    except Exception as exc:  # noqa: BLE001 (any load failure means no verdict, which must not read as a bad title)
+        console.print(f"[red]Could not load the SOVA config: {escape(str(exc))}[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED) from None
+    if db_read_failed():
+        # load_config then holds the TOML or default commit convention, not the stored one: a title the stored
+        # convention rejects could pass and become the squash subject.
+        console.print("[red]Stored settings unreadable: the commit convention is unverified.[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED)
+    if not config.github_repo:
+        console.print("[red]No github_repo configured: cannot read the PR title.[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED)
+    env = await resolve_gh_env(config.github_user)
+    view = await run("gh", "pr", "view", str(pr), "--repo", config.github_repo, "--json", "title,state", env=env)
+    if not view.success:
+        console.print(f"[red]gh pr view {pr} failed: {escape(view.stderr.strip()) or 'no error output'}[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED)
+    try:
+        data = json.loads(view.stdout)
+        title, state = str(data["title"]), str(data["state"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        console.print(f"[red]Could not read the title of PR #{pr}.[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED) from None
+    if state != "OPEN":
+        console.print(f"[red]PR #{pr} is not open ({state}): nothing to merge.[/red]")
+        raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED)
+
+    method = config.integration.merge_method
+    # A rebase or merge-commit merge lands no PR-title subject, so its title is not judged. The merge-queue path
+    # (--validate-only) cannot tell which method the queue uses, so it always validates.
+    lands_squash = True
+    if not validate_only:
+        if method == "auto":
+            sole_squash = await squash_is_sole_merge_method(repo=config.github_repo, github_user=config.github_user)
+            if sole_squash is None:
+                # Not knowing the allowed methods must not read as "several methods": the merge would then take the
+                # repository default's title at merge time, which is the edit window --subject exists to close.
+                console.print(
+                    f"[red]Could not read the allowed merge methods of {escape(config.github_repo)}: "
+                    "merge_method is auto, so it is unknown whether the merge is a squash.[/red]"
+                )
+                raise typer.Exit(code=MERGE_SUBJECT_CHECK_FAILED)
+            lands_squash = sole_squash
+            if not lands_squash:
+                console.print(
+                    "merge_method is auto and the repository allows more than one method: the title is not "
+                    "checked and there is no --subject, the repository default decides the landed subject."
+                )
+                return ""
+        elif method != "squash":
+            console.print(f"merge_method is {method}, which lands no PR-title subject: the title is not checked.")
+            return ""
+
+    subject = _validated_subject(config, title, pr)
+    return "" if validate_only or not lands_squash else subject
+
+
+def _validated_subject(config: ProjectConfig, title: str, pr: int) -> str:
+    """The squash subject for *title*, or exit 4 naming the failing part and the allowed values."""
+    from sova.core.steps.commit_convention import SCOPELESS_TYPE, build_merge_subject
+
+    commit = config.commit
+    # create_pr's rule: a Jira title is always "[KEY-N] type: subject", whatever pr_title_format says.
+    conventional = commit.pr_title_format != "freeform" or config.task_source.is_jira
+    try:
+        return build_merge_subject(
+            title,
+            pr,
+            types=commit.types,
+            scopes=commit.scopes,
+            conventional=conventional,
+            jira=config.task_source.is_jira,
+        )
+    except ValueError as exc:
+        if config.task_source.is_jira:
+            scope_note = " (a scope is optional only after a [KEY-N] ticket key)"
+        elif SCOPELESS_TYPE in commit.types:
+            scope_note = f" (a scope is optional on {SCOPELESS_TYPE})"
+        else:
+            scope_note = ""
+        console.print(
+            f"[red]PR #{pr} title is not a valid commit line: {escape(str(exc))}.[/red]\n"
+            f"Allowed types: {', '.join(commit.types)}\n"
+            f"Allowed scopes: {', '.join(commit.scopes)}{scope_note}"
+        )
+        raise typer.Exit(code=MERGE_SUBJECT_INVALID_TITLE) from None
 
 
 async def _pr_state(pr: int, repo: str, env: dict[str, str] | None) -> str:

@@ -11,7 +11,8 @@ import typer
 from typer.testing import CliRunner
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig
+from sova.config.models import CommitConfig, IntegrationConfig, ProjectConfig
+from sova.utils.shell import ShellResult
 
 runner = CliRunner()
 
@@ -2293,3 +2294,249 @@ class TestPrVerdictCommand:
         result = self._invoke(head="abc1234", review_data=None, repo="")
 
         assert result.stdout == "unknown\n"
+
+
+@pytest.mark.usefixtures("no_cli_provider_init")
+class TestMergeSubjectCommand:
+    """`sova merge-subject` validates the PR title /integrate-pr merges and prints the squash subject."""
+
+    def _invoke(
+        self,
+        *,
+        title: str = "feat(core): add widget",
+        state: str = "OPEN",
+        method: str = "squash",
+        sole_squash: bool | None = True,
+        validate_only: bool = False,
+        view: ShellResult | None = None,
+        pr_title_format: str = "conventional",
+        is_jira: bool = False,
+        repo: str = "o/r",
+        types: list[str] | None = None,
+        db_failed: bool = False,
+    ):
+        from sova.cli.app import app
+
+        cfg = MagicMock(
+            github_repo=repo,
+            github_user="sova-bot",
+            commit=CommitConfig(pr_title_format=pr_title_format, **({"types": types} if types else {})),
+            integration=IntegrationConfig(merge_method=method),
+            task_source=MagicMock(is_jira=is_jira),
+        )
+        view = view or ShellResult(returncode=0, stdout=json.dumps({"title": title, "state": state}), stderr="")
+        with (
+            patch("sova.cli.commands.pr.load_config", return_value=cfg),
+            patch("sova.config.db_loader.db_read_failed", return_value=db_failed),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=view) as self.run_mock,
+            patch(
+                "sova.git.merge.squash_is_sole_merge_method", new_callable=AsyncMock, return_value=sole_squash
+            ) as self.sole_squash_mock,
+        ):
+            args = ["merge-subject", "42", "--project", "."]
+            return runner.invoke(app, [*args, "--validate-only"] if validate_only else args)
+
+    def test_squash_prints_the_subject(self) -> None:
+        result = self._invoke()
+
+        assert result.exit_code == 0
+        assert result.stdout == "feat(core): add widget (#42)\n"
+
+    def test_reads_the_title_and_state_from_the_configured_repo(self) -> None:
+        self._invoke()
+
+        args = self.run_mock.await_args.args
+        assert args[:4] == ("gh", "pr", "view", "42")
+        assert args[args.index("--repo") + 1] == "o/r"
+        assert args[args.index("--json") + 1] == "title,state"
+
+    @pytest.mark.parametrize("method", ["squash", "rebase", "merge"])
+    def test_explicit_methods_skip_the_allowed_methods_lookup(self, method: str) -> None:
+        self._invoke(method=method)
+
+        self.sole_squash_mock.assert_not_awaited()
+
+    def test_auto_with_an_invalid_title_is_rejected_when_squash_is_sole(self) -> None:
+        result = self._invoke(title="perf(core): add widget", method="auto", sole_squash=True)
+
+        assert result.exit_code == 4
+        self.sole_squash_mock.assert_awaited_once()
+
+    def test_auto_with_several_methods_does_not_judge_the_title(self) -> None:
+        result = self._invoke(title="Update dependencies", method="auto", sole_squash=False)
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+
+    def test_auto_looks_up_the_allowed_methods_once(self) -> None:
+        self._invoke(method="auto")
+
+        self.sole_squash_mock.assert_awaited_once_with(repo="o/r", github_user="sova-bot")
+
+    @pytest.mark.parametrize("method", ["rebase", "merge"])
+    def test_other_methods_print_nothing_and_do_not_judge_the_title(self, method: str) -> None:
+        result = self._invoke(method=method, title="Update dependencies")
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+
+    def test_unreadable_stored_settings_stop_as_a_check_failure(self) -> None:
+        result = self._invoke(db_failed=True)
+
+        assert result.exit_code == 3
+        assert result.stdout == ""
+        assert "commit convention is unverified" in result.output.replace("\n", " ")
+        self.run_mock.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("sole_squash", "expected"),
+        [
+            pytest.param(True, "feat(core): add widget (#42)\n", id="sole-squash"),
+            pytest.param(False, "", id="several-methods"),
+        ],
+    )
+    def test_auto_prints_a_subject_only_when_squash_is_certain(self, sole_squash: bool, expected: str) -> None:
+        result = self._invoke(method="auto", sole_squash=sole_squash)
+
+        assert result.exit_code == 0
+        assert result.stdout == expected
+
+    def test_auto_with_unreadable_allowed_methods_stops_as_a_check_failure(self) -> None:
+        result = self._invoke(method="auto", sole_squash=None)
+
+        assert result.exit_code == 3
+        assert result.stdout == ""
+        assert "Could not read the allowed merge methods" in result.output
+
+    @pytest.mark.parametrize(
+        ("title", "named"),
+        [
+            pytest.param("perf(core): add widget", "unknown type 'perf'", id="type"),
+            pytest.param("feat(bogus): add widget", "unknown scope 'bogus'", id="scope"),
+            pytest.param("feat: add widget", "missing scope", id="missing-scope"),
+            pytest.param("feat(core): " + "a" * 70, "is 82 characters", id="length"),
+        ],
+    )
+    def test_invalid_title_stops_naming_the_problem_and_the_allowed_values(self, title: str, named: str) -> None:
+        result = self._invoke(title=title, method="squash")
+
+        assert result.exit_code == 4
+        assert result.stdout == ""
+        assert named in result.output
+        assert "Allowed types:" in result.output
+        assert "Allowed scopes:" in result.output
+
+    def test_freeform_github_title_is_not_checked(self) -> None:
+        result = self._invoke(title="Add the Widget", pr_title_format="freeform")
+
+        assert result.exit_code == 0
+        assert result.stdout == "Add the Widget (#42)\n"
+
+    def test_freeform_does_not_exempt_a_jira_title(self) -> None:
+        result = self._invoke(title="[RHCLOUD-7] perf: add widget", pr_title_format="freeform", is_jira=True)
+
+        assert result.exit_code == 4
+        assert "unknown type 'perf'" in result.output
+
+    def test_title_with_markup_brackets_is_reported_not_crashed(self) -> None:
+        result = self._invoke(title="feat([/bold]): add widget")
+
+        assert result.exit_code == 4
+        assert "unknown scope '[/bold]'" in result.output
+
+    def test_missing_pr_stops_without_a_subject(self) -> None:
+        result = self._invoke(view=ShellResult(returncode=1, stdout="", stderr="no pull requests found"))
+
+        assert result.exit_code == 3
+        assert result.stdout == ""
+        assert "no pull requests found" in result.output
+
+    def test_unparseable_gh_output_stops(self) -> None:
+        result = self._invoke(view=ShellResult(returncode=0, stdout="garbage", stderr=""))
+
+        assert result.exit_code == 3
+        assert "Could not read the title" in result.output
+
+    def test_merge_subject_without_github_repo_stops(self) -> None:
+        result = self._invoke(repo="")
+
+        assert result.exit_code == 3
+        assert result.stdout == ""
+        assert "No github_repo configured" in result.output
+
+    def test_closed_pr_stops(self) -> None:
+        result = self._invoke(state="MERGED")
+
+        assert result.exit_code == 3
+        assert "not open" in result.output
+
+    def test_config_load_failure_stops_as_a_check_failure(self) -> None:
+        from sova.cli.app import app
+
+        with patch("sova.cli.commands.pr.load_config", side_effect=ValueError("bad config")):
+            result = runner.invoke(app, ["merge-subject", "42", "--project", "."])
+
+        assert result.exit_code == 3
+        assert "bad config" in result.output
+
+    def test_validate_only_skips_the_allowed_methods_lookup(self) -> None:
+        result = self._invoke(method="auto", sole_squash=None, validate_only=True)
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        self.sole_squash_mock.assert_not_awaited()
+
+    def test_validate_only_still_rejects_an_invalid_title(self) -> None:
+        result = self._invoke(title="perf(core): x", validate_only=True)
+
+        assert result.exit_code == 4
+
+    @pytest.mark.parametrize("method", ["squash", "rebase", "merge", "auto"])
+    def test_validate_only_checks_the_title_whatever_the_method(self, method: str) -> None:
+        result = self._invoke(title="perf(core): x", method=method, validate_only=True)
+
+        assert result.exit_code == 4
+
+    @pytest.mark.parametrize("target", ["sova.utils.gh.resolve_gh_env", "sova.utils.shell.run"])
+    def test_unexpected_exception_is_a_check_failure_not_an_invalid_title(self, target: str) -> None:
+        from sova.cli.app import app
+
+        cfg = MagicMock(github_repo="o/r", github_user="u", task_source=MagicMock(is_jira=False))
+        with (
+            patch("sova.cli.commands.pr.load_config", return_value=cfg),
+            patch("sova.config.db_loader.db_read_failed", return_value=False),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=None),
+            patch(target, new_callable=AsyncMock, side_effect=FileNotFoundError("gh")),
+        ):
+            result = runner.invoke(app, ["merge-subject", "42", "--project", "."])
+
+        assert result.exit_code == 3
+        assert "Could not check the title" in result.output
+
+    def test_scope_hint_names_the_scope_optional_type_only_when_configured(self) -> None:
+        with_ci = self._invoke(title="perf(core): x")
+        without_ci = self._invoke(title="perf(core): x", types=["feat", "fix"])
+
+        assert "(a scope is optional on ci)" in with_ci.output
+        assert "ci takes none" not in with_ci.output
+        assert "optional" not in without_ci.output
+
+    def test_scope_hint_for_a_jira_title_says_the_scope_is_optional_after_the_key(self) -> None:
+        result = self._invoke(title="[RHCLOUD-7] perf: x", is_jira=True)
+
+        assert "(a scope is optional only after a [KEY-N] ticket key)" in result.output
+
+    def test_bracket_prefixed_title_is_rejected_for_a_github_project(self) -> None:
+        result = self._invoke(title="[WIP-1] feat: add widget")
+
+        assert result.exit_code == 4
+        assert result.stdout == ""
+
+    def test_non_integer_pr_is_a_usage_error(self) -> None:
+        from sova.cli.app import app
+
+        result = runner.invoke(app, ["merge-subject", "abc"])
+
+        assert result.exit_code == 2

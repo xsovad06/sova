@@ -25,6 +25,7 @@ from sova.cli.commands.pr import (
     address_pr,
     linked_issues,
     maintain_pr,
+    merge_subject,
     pr_verdict,
     review_pr,
 )
@@ -63,6 +64,7 @@ app.command(name="maintain-pr")(maintain_pr)
 app.command(name="review-pr")(review_pr)
 app.command(name="linked-issues")(linked_issues)
 app.command(name="pr-verdict")(pr_verdict)
+app.command(name="merge-subject")(merge_subject)
 
 # Configuration
 app.add_typer(config_app, name="config")

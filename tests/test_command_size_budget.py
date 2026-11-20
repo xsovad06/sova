@@ -49,7 +49,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # asks the shared resolver for a standing REVISE or BLOCK on the head (issue #1436).
     # Issue #1428's Phase 5 `sova refresh-pr-body` re-judge is gone: every PR closes its issue.
     # Issue #1361 lowered this by 1,000 by dropping the Phase 3 check for uncaptured review learnings.
-    "integrate-pr.md": 66_000,
+    # Issue #1521 raised this by 1,000 for the Phase 5 PR title validation (`sova merge-subject`) and the
+    # squash `--subject` it feeds `gh pr merge`.
+    "integrate-pr.md": 67_000,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     # Issue #1361 raised this by 1,000 for the push guard (the branch step 2 recorded must still be checked out

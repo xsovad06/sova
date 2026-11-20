@@ -742,6 +742,7 @@ i=load_config(Path('.')).integration; print(i.merge_method, i.delete_branch, i.p
 If merge queue is detected:
 - Omit merge strategy flags (queue controls strategy)
 - Omit `--delete-branch` (handled after queue processing)
+- First run `sova merge-subject <PR_NUMBER> --validate-only` and stop on a non-zero exit as below (no `--subject` here)
 - Run: `gh pr merge <PR_NUMBER>`
 - If enqueued, write a merge queue marker file in the primary checkout so the dashboard can track the PR:
   ```bash
@@ -755,13 +756,18 @@ If merge queue is detected:
 - On UNMERGEABLE: report ejection and stop
 - On TIMEOUT: report the PR is still enqueued, stop
 
-If merge queue is NOT detected:
+If merge queue is NOT detected, validate the title in the same block as the merge (a squash lands it as the subject, and `--match-head-commit` ignores title edits). `sova merge-subject` applies `create_pr`'s title rules:
 
 ```bash
-gh pr merge <PR_NUMBER> [--squash|--rebase|--merge] [--delete-branch] [--match-head-commit <GATED_SHA>]
+SUBJECT=$(sova merge-subject <PR_NUMBER>); rc=$?
+[ "$rc" -eq 4 ] && { echo "TITLE_INVALID"; exit 1; }
+[ "$rc" -ne 0 ] && { echo "MERGE_SUBJECT_FAILED"; exit 1; }
+gh pr merge <PR_NUMBER> [--squash [--subject "$SUBJECT"]|--rebase|--merge] [--delete-branch] [--match-head-commit <GATED_SHA>]
 ```
 
-If `merge_method` is "auto", omit strategy flags to use the GitHub repo default. Otherwise use the configured method. Only include `--delete-branch` when `delete_branch = true`. When Phase 2b printed `GATE_PASS <sha>`, pass `--match-head-commit <sha>` so GitHub refuses the merge if the head moved after the gate ran; on that refusal, re-run `/integrate-pr <PR_NUMBER>` from Phase 2.
+**Stop on `TITLE_INVALID`** (exit 4 only): stderr names the failing part and the allowed values. Report it, never rewrite the title; the user runs `gh pr edit <PR_NUMBER> --title "..."` and re-runs `/integrate-pr`. **Stop on `MERGE_SUBJECT_FAILED`** (any other non-zero exit, even 1): the title was not judged (`gh`, config, a non-`OPEN` PR, the "auto" lookup, or an error). Report stderr, never suggest a title edit, do not merge. On a squash (`merge_method` "squash", or "auto" on a squash-only repository) it prints the subject, else nothing.
+
+Pass `--subject "$SUBJECT"` (double-quoted) only with `--squash` and a non-empty `$SUBJECT`; for "auto" with a non-empty `$SUBJECT` pass `--squash --subject "$SUBJECT"`, else omit strategy flags to use the GitHub repo default. Otherwise use the configured method. Only include `--delete-branch` when `delete_branch = true`. When Phase 2b printed `GATE_PASS <sha>`, pass `--match-head-commit <sha>` so GitHub refuses the merge if the head moved after the gate ran; on that refusal, re-run `/integrate-pr <PR_NUMBER>` from Phase 2.
 
 **Stop if merge fails**: report the error (usually merge conflicts, branch protection, or required reviews). Recover by cause:
 - **"the base branch policy prohibits the merge"**: a repository ruleset blocks CLI merges outright, and every merge method fails the same way even when the PR is approved and green. Do not retry with a different method. Ask the user to merge with the GitHub UI button, then re-run `/integrate-pr <PR_NUMBER>`; Phase 1 sees the PR as `MERGED` and continues with cleanup.
