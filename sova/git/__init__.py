@@ -1,4 +1,8 @@
-"""Git operations and worktree management for SOVA."""
+"""Git operations and worktree management for SOVA.
+
+Allowed imports: sova.config, sova.db, sova.utils, and the sibling layers sova.llm, sova.ipc, sova.adapters.
+Outside the layers contract (import-linter does not check these): sova.agents.
+"""
 
 from sova.git.branch import (
     commit,

@@ -1,4 +1,7 @@
-"""SOVA: an autonomous AI development crew."""
+"""SOVA: an autonomous AI development crew.
+
+Allowed imports: none (the package root only resolves its version lazily).
+"""
 
 from typing import Any
 

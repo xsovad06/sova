@@ -1,4 +1,11 @@
-"""Utility functions for SOVA."""
+"""Utility functions for SOVA.
+
+Allowed imports: none inside sova (standard library and third-party packages only). The ``ignore_imports``
+baseline in ``pyproject.toml`` still holds upward edges from ``utils.env``, ``utils.gh``, ``utils.mcp_config`` and
+``utils.diagnostics``; #1274 removes them.
+Outside the layers contract (import-linter does not check these), another such upward edge: sova.awareness,
+  from ``utils.diagnostics``.
+"""
 
 from __future__ import annotations
 

@@ -1,9 +1,10 @@
-.PHONY: serve dev test lint lint-bash lint-py lint-js format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
+.PHONY: serve dev test lint lint-bash lint-py lint-js lint-imports format check install-deps setup help css css-watch marketplace commands-render skills-render test-ci
 
 SHELL := /bin/bash
 
 # Prefer tools on PATH (virtualenv, pipx); fall back to user-base.
 RUFF := $(or $(shell command -v ruff 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/ruff)
+LINT_IMPORTS := $(or $(shell command -v lint-imports 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/lint-imports)
 PYTEST := $(or $(shell command -v pytest 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/pytest)
 
 # Worker count for test-py's pytest-xdist run. Override with `make test-py PYTEST_WORKERS=4`,
@@ -60,7 +61,7 @@ test-evaluation: ## Run the model-evaluation harness against live providers (req
 
 # ── Linting ───────────────────────────────────────────────────
 
-lint: lint-bash lint-py lint-js lint-tree ## Run all linters
+lint: lint-bash lint-py lint-js lint-imports lint-tree ## Run all linters
 
 lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 	shellcheck invariants/*.sh .github/scripts/*.sh
@@ -68,6 +69,9 @@ lint-bash: ## ShellCheck on bash scripts (invariants + CI gate scripts)
 lint-py: ## Ruff lint + format check
 	$(RUFF) check sova/ tests/
 	$(RUFF) format --check sova/ tests/
+
+lint-imports: ## Import layering contract (import-linter, pyproject.toml); CI runs the same command
+	$(LINT_IMPORTS)
 
 lint-tree: ## Whole-tree invariant scans (every tracked file, not just a diff); CI's invariants job runs the same two
 	bash invariants/no-double-dash.sh --all .

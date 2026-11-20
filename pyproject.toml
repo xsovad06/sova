@@ -69,6 +69,7 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
     "ruff>=0.17.5",
+    "import-linter>=2.17,<3",
     "respx>=0.22",
 ]
 
@@ -165,4 +166,93 @@ filterwarnings = [
     # unrelated to SOVA code. StarletteDeprecationWarning subclasses
     # UserWarning, not DeprecationWarning.
     "ignore::starlette.exceptions.StarletteDeprecationWarning",
+]
+
+# Import layering contract (issue #1213). Layers run top to bottom: a layer may import the layers
+# below it and never one above. Siblings joined by " : " may import each other. Packages outside the
+# order (agents, knowledge, a2a, mcp, awareness, oversight, monitoring, commands) are not layers, but import
+# chains through them are still checked: a layer may import one only if nothing it pulls in sits above that layer.
+# `make lint` and CI's Python Lint job run `lint-imports`. See docs/architecture-deep-dive.md, "Target layout".
+[tool.importlinter]
+root_package = "sova"
+
+[[tool.importlinter.contracts]]
+name = "SOVA layers"
+type = "layers"
+layers = [
+    "sova.cli : sova.scheduler",
+    "sova.dashboard",
+    "sova.supervisor",
+    "sova.roles",
+    "sova.core",
+    "sova.llm : sova.git : sova.ipc : sova.adapters",
+    "sova.db",
+    "sova.config",
+    "sova.utils",
+]
+# The baseline: every upward import that exists today, generated from a real run. It can only shrink
+# (tests/test_import_baseline.py pins the exact set, so an addition or a swap fails and a removal must also trim the pin).
+# unmatched_ignore_imports_alerting is "error" explicitly, so deleting an import without deleting
+# its entry here fails CI. Do not add an entry for a new upward import: invert the dependency instead.
+unmatched_ignore_imports_alerting = "error"
+ignore_imports = [
+    "sova.adapters.github -> sova.supervisor.github_quota",
+    "sova.config.db_loader -> sova.db.models",
+    "sova.config.db_loader -> sova.db.session",
+    "sova.config.loader -> sova.llm.keyring_store",
+    "sova.config.root -> sova.llm.provider",
+    "sova.core.dag -> sova.dashboard.services.agent_lifecycle",
+    "sova.core.steps.address_review -> sova.roles.reviewer",
+    "sova.core.steps.create_pr -> sova.supervisor.coderabbit_quota",
+    "sova.core.steps.create_pr -> sova.supervisor.pr_throttle",
+    "sova.core.steps.develop -> sova.dashboard.services.feed_service",
+    "sova.core.steps.push -> sova.dashboard.services.feed_service",
+    "sova.dashboard.app -> sova.cli.commands.project",
+    "sova.dashboard.routers.setup -> sova.cli.commands.project",
+    "sova.dashboard.services.agent_finalize -> sova.scheduler.service",
+    "sova.dashboard.services.batch_service -> sova.cli.commands.harden",
+    "sova.git.pr -> sova.supervisor.github_quota",
+    "sova.git.rebase -> sova.core.agent_dispatch",
+    "sova.git.rebase -> sova.core.steps.rebase",
+    "sova.git.worktree -> sova.core.steps.commit_convention",
+    "sova.roles.developer -> sova.supervisor.labels",
+    "sova.roles.reviewer -> sova.dashboard.services.work_verdict",
+    "sova.roles.triage -> sova.supervisor.dependency_graph",
+    "sova.supervisor.daemon -> sova.dashboard.services.supervisor_service",
+    "sova.supervisor.dependency_graph -> sova.dashboard.services.spec_service",
+    "sova.supervisor.gates.budget -> sova.dashboard.services.agent_validation",
+    "sova.supervisor.gates.review_completed -> sova.dashboard.services.pr_service",
+    "sova.supervisor.gates.review_completed -> sova.dashboard.services.work_verdict",
+    "sova.supervisor.github_quota -> sova.dashboard.services.feed_service",
+    "sova.supervisor.network_health -> sova.dashboard.services.feed_service",
+    "sova.supervisor.planner -> sova.dashboard.services.feed_service",
+    "sova.supervisor.planner -> sova.dashboard.services.pr_service",
+    "sova.supervisor.planner -> sova.dashboard.services.supervisor_service",
+    "sova.supervisor.pr_monitor -> sova.dashboard.services.pr_service",
+    "sova.supervisor.pr_monitor -> sova.dashboard.services.work_state",
+    "sova.supervisor.progression -> sova.dashboard.services.agent_lifecycle",
+    "sova.supervisor.progression -> sova.dashboard.services.agent_recovery",
+    "sova.supervisor.progression -> sova.dashboard.services.feed_service",
+    "sova.supervisor.progression -> sova.dashboard.services.pr_service",
+    "sova.supervisor.progression -> sova.dashboard.services.work_state",
+    "sova.supervisor.progression -> sova.dashboard.services.work_verdict",
+    "sova.supervisor.watchdog -> sova.dashboard.services.agent_lifecycle",
+    "sova.supervisor.watchdog -> sova.dashboard.services.feed_service",
+    "sova.utils.diagnostics -> sova.awareness",
+    "sova.utils.diagnostics -> sova.config.db_loader",
+    "sova.utils.diagnostics -> sova.config.loader",
+    "sova.utils.diagnostics -> sova.config.models",
+    "sova.utils.diagnostics -> sova.dashboard.services.models_service",
+    "sova.utils.diagnostics -> sova.dashboard.services.settings_service",
+    "sova.utils.diagnostics -> sova.db.session",
+    "sova.utils.diagnostics -> sova.ipc.runtime",
+    "sova.utils.diagnostics -> sova.llm.backends",
+    "sova.utils.diagnostics -> sova.llm.client",
+    "sova.utils.diagnostics -> sova.llm.keyring_store",
+    "sova.utils.diagnostics -> sova.llm.models",
+    "sova.utils.diagnostics -> sova.llm.provider",
+    "sova.utils.env -> sova.config.loader",
+    "sova.utils.env -> sova.config.models",
+    "sova.utils.gh -> sova.supervisor.github_quota",
+    "sova.utils.mcp_config -> sova.config.models",
 ]

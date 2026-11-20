@@ -1,4 +1,7 @@
-"""LLM interaction layer for SOVA."""
+"""LLM interaction layer for SOVA.
+
+Allowed imports: sova.config, sova.db, sova.utils, and the sibling layers sova.git, sova.ipc, sova.adapters.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Database models and session management."""
+"""Database models and session management.
+
+Allowed imports: sova.config, sova.utils.
+"""
 
 from __future__ import annotations
 

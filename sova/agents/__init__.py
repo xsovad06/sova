@@ -4,6 +4,8 @@ Mirrors ``sova.ipc.runtime.AgentRuntime`` (which decides how to spawn a
 coding agent process) with ``RuntimeAdapter`` (which decides where that
 runtime's workflow commands and skills are installed on disk). See
 ``sova/agents/base.py`` for the full rationale.
+
+Allowed imports: sova.commands, sova.config, sova.utils (not a layer; chains through it are checked).
 """
 
 from sova.agents.base import RuntimeAdapter

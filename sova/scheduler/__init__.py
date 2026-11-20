@@ -1,4 +1,7 @@
-"""Task scheduling and parallel execution."""
+"""Task scheduling and parallel execution.
+
+Allowed imports: sova.dashboard and every layer below it, plus the sibling layer sova.cli.
+"""
 
 from __future__ import annotations
 

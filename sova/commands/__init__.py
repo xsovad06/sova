@@ -2,6 +2,11 @@
 
 Manages canonical command templates, adapts them to target project tech stacks,
 and tracks installed vs local commands via a manifest file.
+
+Not to be confused with ``sova.cli.commands``, which holds the ``sova`` CLI's own Typer subcommands
+(``sova run``, ``sova server``, ...); this package never registers CLI subcommands.
+
+Allowed imports: sova.agents, sova.config, sova.git, sova.utils (not a layer; chains through it are checked).
 """
 
 from sova.commands.catalog import classify, discover, get_canonical_dir, get_guidelines_dir

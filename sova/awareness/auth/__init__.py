@@ -1,4 +1,7 @@
-"""Google OAuth2 and credential management for awareness providers."""
+"""Google OAuth2 and credential management for awareness providers.
+
+Allowed imports: sova.config, sova.utils (not a layer; chains through it are checked).
+"""
 
 try:
     from sova.awareness.auth.google_oauth import (
