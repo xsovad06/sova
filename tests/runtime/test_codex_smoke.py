@@ -28,8 +28,8 @@ from pathlib import Path
 import pytest
 
 from sova.config.models import CodexConfig
+from sova.ipc.codex_runtime import CodexRuntime
 from sova.ipc.control import FileAgentProcess
-from sova.ipc.runtime import CodexRuntime
 
 pytestmark = [
     pytest.mark.codex_smoke,

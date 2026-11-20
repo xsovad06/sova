@@ -1,4 +1,7 @@
-"""Inter-process communication for SOVA agents."""
+"""Inter-process communication for SOVA agents.
+
+Allowed imports: sova.config, sova.db, sova.utils, and the sibling layers sova.llm, sova.git, sova.adapters.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +19,6 @@ from sova.ipc.runtime import (
     AgentRuntime,
     AiderRuntime,
     ClaudeCodeRuntime,
-    CodexRuntime,
     create_runtime,
     get_runtime,
     set_runtime,
@@ -28,7 +30,6 @@ __all__ = [
     "AgentRuntime",
     "AiderRuntime",
     "ClaudeCodeRuntime",
-    "CodexRuntime",
     "DashboardHandoff",
     "ExitClassification",
     "FileAgentProcess",

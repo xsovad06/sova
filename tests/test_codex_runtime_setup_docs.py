@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sova.agents.registry import ADAPTERS
 from sova.config.models import CodexConfig
+from sova.ipc import codex_runtime as codex_runtime_module
 from sova.ipc import runtime as runtime_module
 from sova.utils.env import CODEX_CREDENTIAL_VARS, OPENAI_CREDENTIAL_VARS
 
@@ -79,13 +80,13 @@ def test_credential_vars_documented() -> None:
 
 
 def test_install_command_matches_check_available() -> None:
-    source = inspect.getsource(runtime_module.CodexRuntime.check_available)
+    source = inspect.getsource(codex_runtime_module.CodexRuntime.check_available)
     assert "npm install -g @openai/codex" in source
     assert "npm install -g @openai/codex" in _doc_text()
 
 
 def test_auth_probe_commands_documented() -> None:
-    source = inspect.getsource(runtime_module._probe_codex_auth)
+    source = inspect.getsource(codex_runtime_module._probe_codex_auth)
     assert '"login", "status"' in source or "'login', 'status'" in source
     assert "codex login status" in _doc_text()
 
@@ -100,7 +101,7 @@ def test_doctor_verify_command_documented() -> None:
 
 def test_exec_flags_documented() -> None:
     """The drift section names the hardcoded `codex exec` flags; keep that list honest."""
-    args = runtime_module._codex_exec_args("PROMPT", model="some-model", sandbox="read-only")
+    args = codex_runtime_module._codex_exec_args("PROMPT", model="some-model", sandbox="read-only")
     flags = [arg for arg in args if arg.startswith("--") and arg != "--"]
     assert flags, "argv builder emitted no flags; the doc's drift section is now wrong"
     text = _doc_text()
@@ -117,5 +118,5 @@ def test_named_helpers_exist() -> None:
         "CodexStdinProbeAmbiguousError",
         "CodexRuntime",
     ):
-        assert hasattr(runtime_module, name), name
+        assert hasattr(codex_runtime_module, name), name
         assert name in _doc_text(), f"{name} is referenced by the guide's own prose checks"

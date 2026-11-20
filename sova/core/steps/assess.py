@@ -132,7 +132,7 @@ class AssessStep(BaseStep):
     def _check_unenforceable_codex_budget(ctx: ExecutionContext) -> StepResult | None:
         """Fail fast when ``agent.runtime = "codex"`` cannot enforce a budget cap.
 
-        Mirrors ``CodexRuntime.spawn()``'s own refusal (sova/ipc/runtime.py),
+        Mirrors ``CodexRuntime.spawn()``'s own refusal (sova/ipc/codex_runtime.py),
         which otherwise only fires inside the first tool-using step, after
         ``create_worktree``/``capture_baseline`` have already done their
         setup work. ``agent.max_budget`` is Pydantic-validated ``gt=0``, so
