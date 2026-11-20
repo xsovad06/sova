@@ -32,6 +32,17 @@ port. Giving the secret real force means signing the token with it, reusing the 
 generate/validate pair in `sova/dashboard/services/mcp_service.py`, and giving the
 operator a way to supply it; that belongs with the auth router that first consumes
 this guard.
+
+Reverse proxy (`dashboard.proxy_origins`, Tailscale Serve): the bind stays loopback, and
+each configured HTTPS origin is added to the trusted Host and Origin sets. The proxy
+forwards the client's Host unchanged, whatever it says, so `ProxyIdentityMiddleware`
+treats a request as proxied when its Host names a proxy origin or it carries a header a
+proxy adds (`X-Forwarded-For`, which Serve always sets), and refuses a proxied request
+that does not carry an allowed `Tailscale-User-Login`. Serve strips a client-sent copy of that
+header and sets its own for tailnet users only, so on the proxy path it identifies the
+caller. A process on the machine can still forge it by calling loopback directly with a
+proxy Host, which is the same "access to the machine implies access to the dashboard"
+model as the plain loopback bind.
 """
 
 from __future__ import annotations
@@ -39,8 +50,13 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import secrets
+from collections.abc import Iterable
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response, WebSocket
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.websockets import WebSocketClose
 
 CSRF_COOKIE_NAME = "sova_csrf"
 CSRF_HEADER_NAME = "x-csrf-token"
@@ -52,6 +68,18 @@ CSRF_REJECTED_DETAIL = "Missing or invalid CSRF token"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SCHEMES = ("http", "https")
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Headers Tailscale Serve sets on a proxied request (https://tailscale.com/docs/features/tailscale-serve).
+TAILSCALE_LOGIN_HEADER = "tailscale-user-login"
+TAILSCALE_FUNNEL_HEADER = "tailscale-funnel-request"
+PROXY_LOGIN_REJECTED_DETAIL = "Proxied request without an allowed Tailscale login"
+FUNNEL_REJECTED_DETAIL = "Requests through Tailscale Funnel are refused"
+# Headers a reverse proxy adds and a direct loopback client never sends. Serve forwards the
+# client's own Host unchanged, so a tailnet client can send a loopback Host through it; these
+# still mark the request as proxied (Serve sets X-Forwarded-For and X-Forwarded-Proto itself).
+_PROXY_MARKER_HEADERS = frozenset(
+    {"x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "forwarded", TAILSCALE_LOGIN_HEADER}
+)
 
 
 def _strip_brackets(host: str) -> str:
@@ -105,7 +133,7 @@ def is_wildcard_host(host: str) -> bool:
         return False
 
 
-def build_allowed_origins(host: str, port: int) -> frozenset[str]:
+def build_allowed_origins(host: str, port: int, proxy_origins: Iterable[str] = ()) -> frozenset[str]:
     """Build the set of `Origin` header values considered same-origin as the dashboard.
 
     For a loopback bind, all loopback hostname spellings are accepted (a user may
@@ -113,12 +141,21 @@ def build_allowed_origins(host: str, port: int) -> frozenset[str]:
     configured host itself, which need not be one of the canonical spellings
     (`--host 127.0.0.2` is still loopback). For a non-loopback bind, only the
     configured host is accepted.
+
+    Each `proxy_origins` entry (already normalized by `DashboardConfig`, the exact
+    string a browser sends) is added as is.
     """
     hosts = (_LOOPBACK_HOSTS | {host}) if is_loopback_host(host) else {host}
-    return frozenset(f"{scheme}://{format_host(h)}:{port}" for h in hosts for scheme in _SCHEMES)
+    own = {f"{scheme}://{format_host(h)}:{port}" for h in hosts for scheme in _SCHEMES}
+    return frozenset(own | set(proxy_origins))
 
 
-def build_allowed_hosts(host: str) -> list[str]:
+def proxy_hostnames(proxy_origins: Iterable[str]) -> frozenset[str]:
+    """The bare, lowercase hostnames of `proxy_origins`, as a Host header names them without its port."""
+    return frozenset(h for h in (urlsplit(o).hostname for o in proxy_origins) if h)
+
+
+def build_allowed_hosts(host: str, proxy_origins: Iterable[str] = ()) -> list[str]:
     """Build the bare hostnames `TrustedHostMiddleware` should accept for a bind host.
 
     Mirrors `build_allowed_origins`'s loopback handling (all loopback spellings for a
@@ -127,9 +164,76 @@ def build_allowed_hosts(host: str) -> list[str]:
     `TrustedHostMiddleware.allowed_hosts` does not take. Callers must handle a
     wildcard bind (`is_wildcard_host`) separately: there is no bare hostname a real
     client's Host header could match, matching this module's CSRF fail-closed path.
+    The hostname of each `proxy_origins` entry is added too.
     """
     hosts = (_LOOPBACK_HOSTS | {host}) if is_loopback_host(host) else {host}
-    return sorted({_strip_brackets(h) for h in hosts})
+    return sorted({_strip_brackets(h) for h in hosts} | proxy_hostnames(proxy_origins))
+
+
+def _host_header_name(value: str) -> str:
+    """The lowercase hostname of a Host header value, without its port or IPv6 brackets."""
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value[1 : value.find("]")] if "]" in value else value
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+class ProxyIdentityMiddleware:
+    """Refuse a proxied request that does not carry an allowed tailnet identity.
+
+    A pure ASGI middleware so it covers every HTTP route (pages, static files, the API,
+    SSE streams) and the websocket handshake alike; Starlette's `@app.middleware("http")`
+    never sees a websocket scope. Installed only when `dashboard.proxy_origins` is set.
+
+    - A request carrying `Tailscale-Funnel-Request` is refused whatever its Host: the
+      dashboard is never meant to be public, and Funnel traffic carries no identity.
+    - A proxied request must carry `Tailscale-User-Login` equal (case-insensitively) to
+      one of `allowed_logins`; an empty `allowed_logins` refuses every proxied request.
+      A request is proxied when its Host names a proxy origin or it carries any header a
+      proxy adds (`_PROXY_MARKER_HEADERS`): Serve forwards the client's Host unchanged, so
+      the Host alone would let a tailnet client skip this check by sending a loopback Host.
+    - Any other request (a direct loopback client) passes through untouched.
+
+    An HTTP refusal is a 403 JSON response; a websocket refusal closes the handshake
+    with 1008 before accept, which a server sends as HTTP 403, matching
+    `validate_websocket_origin`'s refusal.
+    """
+
+    def __init__(self, app: ASGIApp, proxy_hosts: Iterable[str], allowed_logins: Iterable[str]) -> None:
+        self.app = app
+        self.proxy_hosts = frozenset(h.lower() for h in proxy_hosts)
+        self.allowed_logins = frozenset(login.casefold() for login in allowed_logins)
+
+    def _refusal(self, scope: Scope) -> str | None:
+        """The reason to refuse `scope`, or None when it may pass."""
+        headers: dict[str, str] = {}
+        for raw_name, raw_value in scope.get("headers", ()):
+            name = raw_name.decode("latin-1").lower()
+            # The first occurrence wins, matching Starlette's `Headers.get()`.
+            headers.setdefault(name, raw_value.decode("latin-1"))
+        if TAILSCALE_FUNNEL_HEADER in headers:
+            return FUNNEL_REJECTED_DETAIL
+        to_proxy_host = _host_header_name(headers.get("host", "")) in self.proxy_hosts
+        has_proxy_header = not _PROXY_MARKER_HEADERS.isdisjoint(headers)
+        if not (to_proxy_host or has_proxy_header):
+            return None
+        login = headers.get(TAILSCALE_LOGIN_HEADER, "").strip().casefold()
+        if login and login in self.allowed_logins:
+            return None
+        return PROXY_LOGIN_REJECTED_DETAIL
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        reason = self._refusal(scope)
+        if reason is None:
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            await WebSocketClose(code=1008, reason=reason)(scope, receive, send)
+            return
+        await JSONResponse({"detail": reason}, status_code=403)(scope, receive, send)
 
 
 def validate_origin(request: Request, allowed_origins: frozenset[str]) -> bool:

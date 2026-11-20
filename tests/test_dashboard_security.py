@@ -287,3 +287,310 @@ class TestRequireSameOriginCsrf:
         client = TestClient(guarded_app)
         response = client.get("/guarded-read")
         assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Reverse proxy (Tailscale Serve) access: dashboard.proxy_origins (issue #1454)
+# ---------------------------------------------------------------------------
+
+_PROXY_ORIGIN = "https://mac.example.ts.net"
+_PROXY_HOST = "mac.example.ts.net"
+_LOGIN = "owner@github"
+
+
+class TestProxyOriginsConfig:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("https://mac.example.ts.net", "https://mac.example.ts.net", id="plain"),
+            pytest.param(" HTTPS://Mac.Example.TS.net/ ", "https://mac.example.ts.net", id="case-space-slash"),
+            pytest.param("https://mac.example.ts.net:443", "https://mac.example.ts.net", id="default-port-dropped"),
+            pytest.param("https://mac.example.ts.net:8443", "https://mac.example.ts.net:8443", id="other-port-kept"),
+        ],
+    )
+    def test_entry_is_normalized_to_browser_origin(self, raw: str, expected: str) -> None:
+        from sova.config.models import DashboardConfig
+
+        assert DashboardConfig(proxy_origins=[raw]).proxy_origins == [expected]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param("http://mac.example.ts.net", id="plain-http"),
+            pytest.param("mac.example.ts.net", id="no-scheme"),
+            pytest.param("https://mac.example.ts.net/agents", id="path"),
+            pytest.param("https://mac.example.ts.net?x=1", id="query"),
+            pytest.param("https://user@mac.example.ts.net", id="userinfo"),
+            pytest.param("https://localhost", id="localhost"),
+            pytest.param("https://127.0.0.1", id="loopback-ip"),
+            pytest.param("https://[::1]", id="ipv6-loopback"),
+            pytest.param("https://0.0.0.0", id="wildcard"),
+            pytest.param("https://*", id="glob-any-host"),
+            pytest.param("https://*.example.ts.net", id="glob-subdomain"),
+            pytest.param("https://mac.example.ts.net:notaport", id="bad-port"),
+            pytest.param("https://", id="no-host"),
+        ],
+    )
+    def test_invalid_entry_is_rejected(self, raw: str) -> None:
+        from pydantic import ValidationError
+
+        from sova.config.models import DashboardConfig
+
+        with pytest.raises(ValidationError):
+            DashboardConfig(proxy_origins=[raw])
+
+    def test_defaults_are_empty(self) -> None:
+        from sova.config.models import DashboardConfig
+
+        cfg = DashboardConfig()
+        assert cfg.proxy_origins == []
+        assert cfg.proxy_allowed_logins == []
+
+    def test_empty_login_is_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from sova.config.models import DashboardConfig
+
+        with pytest.raises(ValidationError):
+            DashboardConfig(proxy_allowed_logins=["  "])
+
+    def test_env_overrides_take_json_arrays(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from sova.config.models import DashboardConfig
+
+        monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ORIGINS", f'["{_PROXY_ORIGIN}"]')
+        monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS", f'["{_LOGIN}"]')
+        cfg = DashboardConfig()
+        assert cfg.proxy_origins == [_PROXY_ORIGIN]
+        assert cfg.proxy_allowed_logins == [_LOGIN]
+
+    def test_both_settings_have_restart_metadata(self) -> None:
+        from sova.dashboard.settings_meta import get_meta
+
+        for key in ("dashboard.proxy_origins", "dashboard.proxy_allowed_logins"):
+            meta = get_meta(key)
+            assert meta is not None
+            assert meta.value_type == "list"
+            assert meta.requires_restart is True
+
+
+class TestProxyAllowlists:
+    def test_empty_proxy_origins_change_nothing(self) -> None:
+        assert build_allowed_origins("127.0.0.1", 8111, ()) == build_allowed_origins("127.0.0.1", 8111)
+        assert build_allowed_hosts("127.0.0.1", ()) == build_allowed_hosts("127.0.0.1")
+
+    def test_proxy_origin_joins_origins_and_hosts(self) -> None:
+        origins = build_allowed_origins("127.0.0.1", 8111, [_PROXY_ORIGIN])
+        assert _PROXY_ORIGIN in origins
+        assert "http://127.0.0.1:8111" in origins
+        assert _PROXY_HOST in build_allowed_hosts("127.0.0.1", [_PROXY_ORIGIN])
+
+    def test_proxy_hostnames_drop_scheme_and_port(self) -> None:
+        from sova.dashboard.security import proxy_hostnames
+
+        assert proxy_hostnames([_PROXY_ORIGIN, "https://other.example.ts.net:8443"]) == {
+            _PROXY_HOST,
+            "other.example.ts.net",
+        }
+
+
+def _proxied_headers(login: str | None = _LOGIN, **extra: str) -> dict[str, str]:
+    headers = {"host": _PROXY_HOST, **extra}
+    if login is not None:
+        headers["tailscale-user-login"] = login
+    return headers
+
+
+@pytest.fixture
+def proxied_app(tmp_path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    """A real dashboard app with one proxy origin and one allowed login."""
+    from sova.dashboard.app import create_app
+
+    monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ORIGINS", f'["{_PROXY_ORIGIN}"]')
+    monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS", f'["{_LOGIN}"]')
+    monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+    app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+
+    @app.post("/__test/guarded", dependencies=[Depends(require_same_origin_csrf)])
+    def _guarded() -> dict:
+        return {"ok": True}
+
+    @app.get("/__test/cookie")
+    def _cookie(response: Response, request: Request) -> dict:
+        return {"token": issue_csrf_cookie(response, request)}
+
+    return app
+
+
+# One representative route per kind the identity check must cover.
+_PROXIED_ROUTES = [
+    pytest.param("/agents", id="page"),
+    pytest.param("/static/app.js", id="static-file"),
+    pytest.param("/api/agents/active", id="api-read"),
+    pytest.param("/api/feed/stream", id="sse-stream"),
+]
+
+
+class TestProxyIdentityAccess:
+    """The access matrix from issue #1454's acceptance criteria, against `create_app()`."""
+
+    @pytest.mark.parametrize("path", _PROXIED_ROUTES)
+    @pytest.mark.parametrize(
+        "login",
+        [
+            pytest.param(None, id="missing-login"),
+            pytest.param("", id="empty-login"),
+            pytest.param("intruder@github", id="other-login"),
+        ],
+    )
+    def test_proxied_request_without_allowed_login_is_refused(
+        self, proxied_app: FastAPI, path: str, login: str | None
+    ) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        response = client.get(path, headers=_proxied_headers(login))
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Proxied request without an allowed Tailscale login"
+        # The refusal still carries the dashboard's security headers.
+        assert response.headers["x-frame-options"] == "DENY"
+
+    @pytest.mark.parametrize("path", ["/static/app.js", "/healthz", "/api/agents/active"])
+    def test_proxied_request_with_allowed_login_passes(self, proxied_app: FastAPI, path: str) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        response = client.get(path, headers=_proxied_headers("Owner@GitHub"))
+        assert response.status_code == 200
+
+    def test_proxied_mutating_call_passes_csrf_with_proxy_origin(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        token = client.get("/__test/cookie", headers=_proxied_headers()).json()["token"]
+        client.cookies.set(CSRF_COOKIE_NAME, token)
+        response = client.post(
+            "/__test/guarded", headers=_proxied_headers(origin=_PROXY_ORIGIN, **{CSRF_HEADER_NAME: token})
+        )
+        assert response.status_code == 200
+
+    def test_proxied_mutating_call_with_foreign_origin_is_refused(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        client.cookies.set(CSRF_COOKIE_NAME, "t")
+        response = client.post(
+            "/__test/guarded", headers=_proxied_headers(origin="https://evil.example", **{CSRF_HEADER_NAME: "t"})
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Origin check failed"
+
+    def test_csrf_cookie_is_secure_over_https_proxy(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        response = client.get("/__test/cookie", headers=_proxied_headers())
+        assert "secure" in response.headers["set-cookie"].lower()
+
+    @pytest.mark.parametrize("host", [_PROXY_HOST, "127.0.0.1:8111"])
+    def test_funnel_request_is_refused_on_any_host(self, proxied_app: FastAPI, host: str) -> None:
+        client = TestClient(proxied_app)
+        headers = {"host": host, "tailscale-user-login": _LOGIN, "tailscale-funnel-request": "?1"}
+        response = client.get("/healthz", headers=headers)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Requests through Tailscale Funnel are refused"
+
+    def test_loopback_request_needs_no_login(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url="http://127.0.0.1:8111")
+        response = client.get("/healthz")
+        assert response.status_code == 200
+        assert "secure" not in response.headers.get("set-cookie", "").lower()
+
+    # Serve forwards the client's own Host, so a tailnet client can send a loopback one through it;
+    # the headers Serve adds still mark the request as proxied (measured live, issue #1454).
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            pytest.param({"x-forwarded-for": "100.64.0.9"}, id="x-forwarded-for"),
+            pytest.param({"x-forwarded-proto": "https"}, id="x-forwarded-proto"),
+            pytest.param({"x-forwarded-host": "127.0.0.1:8111"}, id="x-forwarded-host"),
+            pytest.param({"forwarded": "for=100.64.0.9;proto=https"}, id="forwarded"),
+            pytest.param({"tailscale-user-login": "intruder@github"}, id="other-login"),
+        ],
+    )
+    def test_loopback_host_with_proxy_headers_still_needs_allowed_login(
+        self, proxied_app: FastAPI, marker: dict[str, str]
+    ) -> None:
+        client = TestClient(proxied_app, base_url="http://127.0.0.1:8111")
+        response = client.get("/healthz", headers=marker)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Proxied request without an allowed Tailscale login"
+
+    def test_loopback_host_with_proxy_headers_and_allowed_login_passes(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url="http://127.0.0.1:8111")
+        headers = {"x-forwarded-for": "100.64.0.9", "x-forwarded-proto": "https", "tailscale-user-login": _LOGIN}
+        assert client.get("/healthz", headers=headers).status_code == 200
+
+    def test_websocket_with_loopback_host_and_proxy_headers_is_refused(self, proxied_app: FastAPI) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        client = TestClient(proxied_app, base_url="http://127.0.0.1:8111")
+        headers = {"origin": "http://127.0.0.1:8111", "x-forwarded-for": "100.64.0.9"}
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers=headers),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_unknown_host_is_still_refused(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app)
+        response = client.get("/healthz", headers={"host": "evil.example.ts.net", "tailscale-user-login": _LOGIN})
+        assert response.status_code == 400
+
+    def test_proxy_host_with_explicit_port_is_still_checked(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app)
+        response = client.get("/healthz", headers={"host": f"{_PROXY_HOST}:443"})
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize(
+        "login",
+        [pytest.param(None, id="missing-login"), pytest.param("intruder@github", id="other-login")],
+    )
+    def test_websocket_without_allowed_login_is_refused(self, proxied_app: FastAPI, login: str | None) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers=_proxied_headers(login, origin=_PROXY_ORIGIN)),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_websocket_with_allowed_login_and_proxy_origin_connects(self, proxied_app: FastAPI) -> None:
+        client = TestClient(proxied_app, base_url=_PROXY_ORIGIN)
+        with client.websocket_connect("/api/ws/agents/status", headers=_proxied_headers(origin=_PROXY_ORIGIN)) as ws:
+            assert ws.receive_json()["type"] == "status_update"
+
+
+class TestProxyWithoutAllowedLogins:
+    def test_every_proxied_request_is_refused_and_startup_warns(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ORIGINS", f'["{_PROXY_ORIGIN}"]')
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        with capture_logs() as logs:
+            app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        assert any(e["event"] == "dashboard.proxy_no_allowed_logins" for e in logs)
+        client = TestClient(app, base_url=_PROXY_ORIGIN)
+        assert client.get("/healthz", headers=_proxied_headers()).status_code == 403
+        assert TestClient(app, base_url="http://127.0.0.1:8111").get("/healthz").status_code == 200
+
+
+class TestNoProxyConfigured:
+    def test_proxy_host_is_refused_and_no_identity_middleware_is_installed(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.app import create_app
+        from sova.dashboard.security import ProxyIdentityMiddleware
+
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        assert all(m.cls is not ProxyIdentityMiddleware for m in app.user_middleware)
+        assert app.state.allowed_origins == build_allowed_origins("127.0.0.1", 8111)
+        response = TestClient(app).get("/healthz", headers=_proxied_headers())
+        assert response.status_code == 400

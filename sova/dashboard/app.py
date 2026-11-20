@@ -73,11 +73,13 @@ from sova.dashboard.routers import (
     work,
 )
 from sova.dashboard.security import (
+    ProxyIdentityMiddleware,
     build_allowed_hosts,
     build_allowed_origins,
     is_loopback_host,
     is_wildcard_host,
     issue_csrf_cookie,
+    proxy_hostnames,
     require_same_origin_csrf,
 )
 from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
@@ -939,7 +941,11 @@ def create_app(
         # beat sova.toml, and rejects a non-numeric value as a config error.
         port = cfg.dashboard.port
     app.state.is_loopback_bind = is_loopback_host(host)
-    app.state.allowed_origins = build_allowed_origins(host, port)
+    # A reverse proxy (Tailscale Serve) in front of the loopback bind: its origins join the
+    # Host and Origin allowlists, and ProxyIdentityMiddleware below gates them on the tailnet
+    # login. Empty (the default) leaves every set exactly as a plain loopback bind builds it.
+    proxy_origins = tuple(cfg.dashboard.proxy_origins)
+    app.state.allowed_origins = build_allowed_origins(host, port, proxy_origins)
     # A wildcard bind (0.0.0.0, ::) has no computable allowed-origin entry a real
     # browser could ever send, so it fails closed even with a secret configured
     # (see is_wildcard_host docstring in sova/dashboard/security.py).
@@ -969,8 +975,22 @@ def create_app(
     # cannot pass the separate Origin/CSRF guard above, which never allowlists
     # it: that guard, not this middleware, carries the real protection.
     _TEST_TRANSPORT_HOSTS = ("test", "testserver")
-    trusted_hosts = ["*"] if is_wildcard_host(host) else [*build_allowed_hosts(host), *_TEST_TRANSPORT_HOSTS]
+    trusted_hosts = (
+        ["*"] if is_wildcard_host(host) else [*build_allowed_hosts(host, proxy_origins), *_TEST_TRANSPORT_HOSTS]
+    )
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+
+    if proxy_origins:
+        # Added after TrustedHostMiddleware, so it runs before it: a request is identity-checked
+        # before anything routes it, and the later @app.middleware layers still add the security
+        # headers to its 403.
+        app.add_middleware(
+            ProxyIdentityMiddleware,
+            proxy_hosts=proxy_hostnames(proxy_origins),
+            allowed_logins=cfg.dashboard.proxy_allowed_logins,
+        )
+        if not cfg.dashboard.proxy_allowed_logins:
+            log.warning("dashboard.proxy_no_allowed_logins", proxy_origins=list(proxy_origins))
 
     if rate_limit > 0:
 
