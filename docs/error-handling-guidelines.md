@@ -156,9 +156,9 @@ Two modes in `sova/utils/shell.py`:
 | `run()` | Returns `ShellResult`, never raises | Failure is recoverable |
 | `run_checked()` | Raises `RuntimeError` on non-zero exit | Failure is fatal |
 
-- Timeout uses `asyncio.timeout()`; on expiry, kills process, returns `returncode=-1`
+- Timeout uses `asyncio.timeout()`; on expiry, sends SIGTERM to the child's whole process group (`run()` starts each child with `start_new_session=True`), waits up to `_TERM_GRACE_SECONDS` for the leader to exit, then SIGKILLs the group, so `make`, `pytest` and its xdist workers die with the `sh` that started them; returns `returncode=-1`. A cancelled `run()` SIGKILLs the group at once. The child has no controlling terminal, so a `/dev/tty` prompt (an SSH passphrase) fails instead of asking
 - `subprocess_error()` factory truncates stderr to 500 chars
-- Always catch `ProcessLookupError` when calling `proc.kill()`: the process may already be dead
+- Always catch `ProcessLookupError` when calling `proc.kill()`: the process may already be dead; for `os.killpg` also catch `PermissionError` (macOS, zombie leader) and log it at debug
 
 ## Step-Level Retry
 
