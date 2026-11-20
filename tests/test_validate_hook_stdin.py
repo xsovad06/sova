@@ -99,7 +99,7 @@ class TestBuildPrePushStdin:
 class TestValidateStepTimeout:
     async def test_hook_timeout_does_not_trigger_an_llm_fix(self, tmp_path: Path) -> None:
         """A killed hook has no diagnosable output, so do not spend an LLM call on it."""
-        from tests.test_core import _make_ctx
+        from tests.core_helpers import _make_ctx
 
         ctx = _make_ctx(tmp_path)
         timed_out = ShellResult(returncode=-1, stdout="", stderr="Command timed out after 120s", timed_out=True)
@@ -118,7 +118,7 @@ class TestValidateStepTimeout:
 
     async def test_retry_timeout_stops_instead_of_spending_more_attempts(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
-        from tests.test_core import _make_ctx
+        from tests.core_helpers import _make_ctx
 
         ctx = _make_ctx(tmp_path)
         failed = ShellResult(returncode=1, stdout="FAIL: lint\n", stderr="")
@@ -147,7 +147,7 @@ class TestValidateStepTimeout:
 class TestValidateStepEndToEnd:
     async def test_step_delivers_stdin_to_a_real_hook(self, tmp_path: Path) -> None:
         """End to end: the hook only passes if it actually received ref lines."""
-        from tests.test_core import _make_ctx
+        from tests.core_helpers import _make_ctx
 
         await _init_repo(tmp_path)
         await run("git", "config", "core.hooksPath", ".githooks", cwd=tmp_path)
@@ -170,7 +170,7 @@ class TestValidateStepEndToEnd:
     async def test_retry_sends_the_fix_commit_sha_not_the_stale_one(self, tmp_path: Path) -> None:
         """Regression: a retry that reuses the pre-fix stdin validates the wrong commit."""
         from sova.llm.models import LLMResult
-        from tests.test_core import _make_ctx
+        from tests.core_helpers import _make_ctx
 
         await _init_repo(tmp_path)
         await run("git", "config", "core.hooksPath", ".githooks", cwd=tmp_path)

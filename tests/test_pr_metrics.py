@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import PREvent
@@ -575,6 +576,13 @@ class TestModuleLevelWrappers:
         assert result == []
 
 
+async def _events_for(project_dir: Path, pr_number: int) -> list[PREvent]:
+    """Read back the PREvent rows a state transition wrote to a project's database."""
+    async with await get_session(project_dir) as s:
+        result = await s.execute(select(PREvent).where(PREvent.pr_number == pr_number))
+        return list(result.scalars().all())
+
+
 class TestStateTransitionRecording:
     def test_computed_to_event_mapping(self) -> None:
         from sova.dashboard.services.pr_service import _COMPUTED_TO_EVENT
@@ -602,6 +610,10 @@ class TestStateTransitionRecording:
         await _record_state_transitions(prs, repo="o/r", project_dir=tmp_path)
         _last_known_states.pop(500, None)
 
+        events = await _events_for(tmp_path, 500)
+        assert [(e.event_type, e.actor) for e in events] == [("approved", "testuser")]
+        assert events[0].metadata_json == {"computed_state": "approved", "prev_state": "awaiting_review"}
+
     async def test_record_state_no_transition(self, tmp_path: Path) -> None:
         from sova.dashboard.services.pr_service import _last_known_states, _record_state_transitions
 
@@ -609,6 +621,8 @@ class TestStateTransitionRecording:
         prs = [{"number": 501, "computed_state": "approved", "updated_at": "", "author": "u"}]
         await _record_state_transitions(prs, repo="o/r", project_dir=tmp_path)
         _last_known_states.pop(501, None)
+
+        assert await _events_for(tmp_path, 501) == []
 
     async def test_record_state_first_seen(self, tmp_path: Path) -> None:
         from sova.dashboard.services.pr_service import _last_known_states, _record_state_transitions
@@ -625,4 +639,7 @@ class TestStateTransitionRecording:
         _last_known_states[503] = "approved"
         prs = [{"number": 503, "computed_state": "draft", "updated_at": "", "author": "u"}]
         await _record_state_transitions(prs, repo="o/r", project_dir=tmp_path)
-        _last_known_states.pop(503, None)
+
+        # The state is still tracked, but "draft" has no event mapping, so nothing is written.
+        assert _last_known_states.pop(503, None) == "draft"
+        assert await _events_for(tmp_path, 503) == []

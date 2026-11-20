@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import OperationalError
+from structlog.testing import capture_logs
 
 from sova.dashboard.services.supervisor_service import get_decision_counts, get_planner_health, get_recent_decisions
 from sova.db.models import SupervisorDecision
@@ -1858,12 +1859,19 @@ class TestMaybeMigrateQueueFromToml:
         mock_read.assert_not_called()
 
     async def test_skips_when_toml_queue_empty(self, project_dir) -> None:
-        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
+        import sova.dashboard.services.supervisor_service as sup_mod
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = []
-        with patch("sova.dashboard.services.supervisor_service.load_config", return_value=mock_cfg):
-            await maybe_migrate_queue_from_toml(project_dir)
+        mock_persist = AsyncMock()
+        with (
+            patch("sova.dashboard.services.supervisor_service.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.supervisor_service.persist_queue", mock_persist),
+        ):
+            await sup_mod.maybe_migrate_queue_from_toml(project_dir)
+
+        mock_persist.assert_not_called()
+        assert str(project_dir) in sup_mod._toml_migrated
 
     async def test_migrates_toml_queue_to_db(self, project_dir) -> None:
         from sova.config.db_loader import load_task_queue
@@ -1892,10 +1900,18 @@ class TestMaybeMigrateQueueFromToml:
         assert loaded == [99]
 
     async def test_exception_is_swallowed(self) -> None:
-        from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
+        import sova.dashboard.services.supervisor_service as sup_mod
 
-        with patch("sova.dashboard.services.supervisor_service.load_config", side_effect=RuntimeError("boom")):
-            await maybe_migrate_queue_from_toml(Path("/nonexistent"))
+        project_dir = Path("/nonexistent")
+        with (
+            patch("sova.dashboard.services.supervisor_service.load_config", side_effect=RuntimeError("boom")),
+            capture_logs() as logs,
+        ):
+            await sup_mod.maybe_migrate_queue_from_toml(project_dir)
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["supervisor.queue.toml_migration_skipped"]
+        # A failed migration is not marked done, so the next call retries it.
+        assert str(project_dir) not in sup_mod._toml_migrated
 
 
 class TestDeduplicate:

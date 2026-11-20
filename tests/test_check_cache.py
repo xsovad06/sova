@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.commands.catalog import get_canonical_dir
 from sova.core import check_cache
@@ -346,7 +347,11 @@ class TestClearMarker:
         assert not marker_path.exists()
 
     def test_noop_when_no_marker(self, tmp_path: Path) -> None:
-        clear_marker(tmp_path)  # must not raise
+        with capture_logs() as logs:
+            clear_marker(tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == []
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestHashFailureModes:
@@ -464,7 +469,10 @@ class TestClearMarkerFailure:
 
         monkeypatch.setattr(Path, "unlink", boom)
 
-        clear_marker(tmp_path)  # must not raise
+        with capture_logs() as logs:
+            clear_marker(tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["check_cache.clear_failed"]
 
 
 class TestPathStates:

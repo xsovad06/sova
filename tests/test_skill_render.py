@@ -393,7 +393,7 @@ class TestAssertFullyRendered:
         """{{ check_cmd }} is left for install-time rendering, not a leftover idiom."""
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "run {{ check_cmd }} and {{ lint_cmd }}")
+        assert _assert_fully_rendered("foo", "run {{ check_cmd }} and {{ lint_cmd }}") is None
 
     def test_uncovered_backticked_command_reference_raises(self) -> None:
         """A backticked `/bar` that survived every rewrite pass must fail loudly, never ship."""
@@ -413,29 +413,29 @@ class TestAssertFullyRendered:
         """A longer inline-code example (a URL path, not a command) must not false-positive."""
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "see `gh api repos/.../pulls/<N>/comments`")
+        assert _assert_fully_rendered("foo", "see `gh api repos/.../pulls/<N>/comments`") is None
 
     def test_bare_path_segment_ending_in_hyphen_does_not_raise(self) -> None:
         """ "the `MERGEABLE`/not-`BEHIND` case": stripping the two code spans must not leave a bare /not-."""
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "the `MERGEABLE`/not-`BEHIND` case")
+        assert _assert_fully_rendered("foo", "the `MERGEABLE`/not-`BEHIND` case") is None
 
     def test_fully_rendered_body_does_not_raise(self) -> None:
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "clean body with no idioms")
+        assert _assert_fully_rendered("foo", "clean body with no idioms") is None
 
     def test_cross_reference_inside_a_fence_does_not_raise(self) -> None:
         """The renderer deliberately leaves in-fence /foo alone, so the guard must not fire on it."""
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "```bash\ncat /bar/baz\n```")
+        assert _assert_fully_rendered("foo", "```bash\ncat /bar/baz\n```") is None
 
     def test_path_segment_does_not_raise(self) -> None:
         from sova.commands.skill_render import _assert_fully_rendered
 
-        _assert_fully_rendered("foo", "document build/bar/lint commands")
+        assert _assert_fully_rendered("foo", "document build/bar/lint commands") is None
 
     def test_description_label_appears_in_error(self) -> None:
         from sova.commands.skill_render import _assert_fully_rendered

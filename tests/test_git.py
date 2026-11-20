@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.config.models import ProjectConfig
 from sova.git.artifact_exclusions import RUNTIME_STATE_PATHS
@@ -199,7 +200,12 @@ class TestSyncBranch:
                 _shell_fail(stderr="CONFLICT in file.py"),  # stash pop conflict
             ]
 
-            await sync_branch("main", cwd=Path("/repo"))  # must not raise
+            with capture_logs() as logs:
+                await sync_branch("main", cwd=Path("/repo"))  # must not raise
+
+        warnings = [e["event"] for e in logs if e["log_level"] == "warning"]
+        assert warnings == ["git.sync_branch.stash_pop_failed"]
+        assert logs[-1]["stderr"] == "CONFLICT in file.py"
 
 
 class TestSyncBranchRuntimeFiles:
@@ -1156,7 +1162,13 @@ class TestAssignPR:
             mock_run.return_value = _shell_fail(stderr="not found")
 
             # Should not raise, just log
-            await assign_pr(42, assignee="xsovad06", repo="user/repo")
+            with capture_logs() as logs:
+                await assign_pr(42, assignee="xsovad06", repo="user/repo")
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["git.assign_pr.failed"]
+        assert warnings[0]["pr"] == 42
+        assert warnings[0]["stderr"] == "not found"
 
 
 class TestFindPRForIssue:

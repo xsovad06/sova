@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from structlog.testing import capture_logs
 
 from sova.monitoring.cross_project import (
     MetricsSnapshotWriter,
@@ -430,9 +431,14 @@ class TestMetricsSnapshotWriter:
             metrics_dir=metrics_dir,
         )
         # Don't start the background task: just test the unlink error path
-        with patch("sova.monitoring.cross_project.Path.unlink", side_effect=OSError("perm denied")):
+        with (
+            patch("sova.monitoring.cross_project.Path.unlink", side_effect=OSError("perm denied")),
+            capture_logs() as logs,
+        ):
             await writer.stop()
-        # Should not raise
+
+        # The OSError is swallowed: stop() carries on to its final log line.
+        assert [e["event"] for e in logs if e["log_level"] == "info"] == ["cross_project.writer_stopped"]
 
     @pytest.mark.asyncio
     async def test_write_loop_catches_exception(self, tmp_path: Path) -> None:

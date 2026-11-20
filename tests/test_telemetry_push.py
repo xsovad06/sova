@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.config.models import ProjectConfig, TelemetryConfig
 from sova.db.models import StepExecution, TaskRun
@@ -123,8 +124,10 @@ class TestPushTelemetry:
         cfg = _make_cfg(hub_url="https://hub.example.com")
 
         with patch("httpx.AsyncClient", side_effect=RuntimeError("connection refused")):
-            # Should not raise
-            await push_telemetry(run_id, Path.cwd(), cfg)
+            with capture_logs() as logs:
+                await push_telemetry(run_id, Path.cwd(), cfg)
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["push_telemetry.failed"]
 
     async def test_server_error_swallowed(self) -> None:
         import httpx
@@ -148,8 +151,11 @@ class TestPushTelemetry:
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            # Should not raise despite 500 response
-            await push_telemetry(run_id, Path.cwd(), cfg)
+            with capture_logs() as logs:
+                await push_telemetry(run_id, Path.cwd(), cfg)
+
+        mock_client.post.assert_awaited_once()
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["push_telemetry.failed"]
 
     async def test_duration_none_when_ended_at_missing(self) -> None:
         from sova.dashboard.services.telemetry_push import push_telemetry
@@ -197,7 +203,11 @@ class TestPushTelemetry:
 
         cfg = _make_cfg(hub_url="https://hub.example.com")
         # Non-existent run_id
-        await push_telemetry(99999, Path.cwd(), cfg)
+        with patch("httpx.AsyncClient") as mock_client_cls, capture_logs() as logs:
+            await push_telemetry(99999, Path.cwd(), cfg)
+
+        mock_client_cls.assert_not_called()
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["push_telemetry.no_run"]
 
 
 @pytest.mark.asyncio

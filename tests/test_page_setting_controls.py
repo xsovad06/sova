@@ -148,7 +148,7 @@ class TestDependenciesPage:
 class TestPageKeysSave:
     """Every key a page control writes is saved by POST /settings/config and applies without a restart.
 
-    The service is mocked as in test_dashboard.py's settings route tests: in this harness the write and the
+    The service is mocked as in test_settings_api.py's settings route tests: in this harness the write and the
     config read use different stores. The read-back after a save is covered by test_setting_controls.py.
     """
 

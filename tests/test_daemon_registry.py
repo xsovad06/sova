@@ -84,7 +84,12 @@ class TestUnregisterDaemon:
         assert len(daemon_registry.get_registry()) == 2
 
     def test_unknown_project_is_a_no_op(self, tmp_path: Path) -> None:
-        daemon_registry.unregister_daemon(tmp_path)
+        daemon = MagicMock()
+        daemon_registry.register_daemon(tmp_path / "a", daemon)
+
+        daemon_registry.unregister_daemon(tmp_path / "b")
+
+        assert daemon_registry.get_daemon(tmp_path / "a") is daemon
 
 
 class TestLifecycleLock:

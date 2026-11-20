@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from structlog.testing import capture_logs
 
 from sova.db.models import Base, OversightFinding, OversightRun, OversightRunStatus
 from sova.llm.models import LLMResult, resolve_model_alias
@@ -766,7 +767,11 @@ class TestOversightAgentUnit:
         from sova.oversight.agent import OversightAgent
 
         agent = OversightAgent(config=OversightConfig())
-        await agent.stop()  # Should not raise
+        with capture_logs() as logs:
+            await agent.stop()
+
+        assert agent._task is None
+        assert [e for e in logs if e["event"] == "oversight.stopped"] == []
 
     @pytest.mark.asyncio
     async def test_stop_with_running_task(self) -> None:
@@ -797,7 +802,10 @@ class TestOversightAgentUnit:
         with patch.object(agent, "_record_run", side_effect=_failing_record):
             from datetime import datetime, timezone
 
-            await agent._record_error_safe("r1", 1, 100, datetime.now(timezone.utc), "test error")  # Should not raise
+            with capture_logs() as logs:
+                await agent._record_error_safe("r1", 1, 100, datetime.now(timezone.utc), "test error")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["oversight.error_record_failed"]
 
     @pytest.mark.asyncio
     async def test_cancelled_error_records_and_reraises(self) -> None:

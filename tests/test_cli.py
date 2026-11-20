@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import typer
+from structlog.testing import capture_logs
 from typer.testing import CliRunner
 
 from sova.adapters.base import Task, TaskState
@@ -21,6 +22,11 @@ from sova.config.models import (
 from sova.utils.shell import ShellResult
 
 runner = CliRunner()
+
+
+def _printed(mock_console: MagicMock) -> str:
+    """Everything a patched ``console`` printed, joined into one string."""
+    return " ".join(str(c.args[0]) for c in mock_console.print.call_args_list)
 
 
 def _scaffold_install_artifacts(tmp_path: Path) -> None:
@@ -635,7 +641,11 @@ class TestProjectCommands:
             mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
             # Neither the early Stage 1 attempt nor the Stage 3 backfill raises past _install.
-            await _install(path=tmp_path, no_dashboard=True, update=False)
+            with capture_logs() as logs:
+                await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        warnings = [e["event"] for e in logs if e["log_level"] == "warning"]
+        assert warnings == ["Failed to backfill default config after init_db"]
 
     async def test_install_agent_permissions_exception_is_non_fatal(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _install
@@ -1005,7 +1015,7 @@ class TestExcludeRuntimeFiles:
             with patch("sova.cli.commands.project.console") as mock_console:
                 await _exclude_runtime_files(tmp_path)
 
-        printed = " ".join(str(c.args[0]) for c in mock_console.print.call_args_list)
+        printed = _printed(mock_console)
         assert "not a git repository" in printed
         assert list(tmp_path.iterdir()) == []
 
@@ -1020,6 +1030,7 @@ class TestInstallGitIdentityWarning:
         mock_id = AsyncMock(return_value=missing)
 
         with (
+            patch("sova.cli.commands.project.console") as mock_console,
             patch("sova.cli.commands.project.check_git_identity", mock_id),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_cmds,
@@ -1034,6 +1045,9 @@ class TestInstallGitIdentityWarning:
             mock_guides.return_value = MagicMock(installed=0)
             mock_sk.return_value = MagicMock(installed=0)
             await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        printed = _printed(mock_console)
+        assert "git identity incomplete (missing user.name)" in printed
 
     async def test_install_swallows_identity_check_exception(self, tmp_path: Path) -> None:
         """The except Exception block (line 67-68) must not propagate."""
@@ -1043,6 +1057,7 @@ class TestInstallGitIdentityWarning:
         mock_id = AsyncMock(side_effect=RuntimeError("git not found"))
 
         with (
+            patch("sova.cli.commands.project.console") as mock_console,
             patch("sova.cli.commands.project.check_git_identity", mock_id),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_cmds,
@@ -1056,8 +1071,12 @@ class TestInstallGitIdentityWarning:
             mock_cmds.return_value = MagicMock(installed=1)
             mock_guides.return_value = MagicMock(installed=0)
             mock_sk.return_value = MagicMock(installed=0)
-            # Should not raise despite check_git_identity failure
-            await _install(path=tmp_path, no_dashboard=True, update=False)
+            with capture_logs() as logs:
+                await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        assert [e["log_level"] for e in logs if e["event"] == "install.git_identity_check_failed"] == ["debug"]
+        printed = _printed(mock_console)
+        assert "git identity incomplete" not in printed
 
     async def test_install_no_warning_when_identity_configured(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _install
@@ -1067,6 +1086,7 @@ class TestInstallGitIdentityWarning:
         valid = GitIdentityResult(name="User", email="u@e.com")
 
         with (
+            patch("sova.cli.commands.project.console") as mock_console,
             patch("sova.cli.commands.project.check_git_identity", AsyncMock(return_value=valid)),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_cmds,
@@ -1081,6 +1101,9 @@ class TestInstallGitIdentityWarning:
             mock_guides.return_value = MagicMock(installed=0)
             mock_sk.return_value = MagicMock(installed=0)
             await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        printed = _printed(mock_console)
+        assert "git identity incomplete" not in printed
 
 
 # ---------------------------------------------------------------------------
@@ -1327,8 +1350,15 @@ class TestUninstallCommand:
         """Running uninstall on a project without SOVA is a no-op."""
         from sova.cli.commands.project import _uninstall
 
-        with patch("sova.config.registry.list_projects", return_value={}):
-            _uninstall(path=tmp_path)
+        with (
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.cli.commands.project.console") as mock_console,
+        ):
+            failures = _uninstall(path=tmp_path)
+
+        assert failures == []
+        printed = _printed(mock_console)
+        assert "No SOVA artifacts found to remove." in printed
 
     def test_uninstall_db_failure_continues_to_next(self, tmp_path: Path) -> None:
         """If one db file fails to delete, remaining files are still attempted."""
@@ -1714,18 +1744,29 @@ class TestOfferStarterMilestones:
         mock_cfg = MagicMock()
         mock_cfg.task_source.type = ""
 
-        with patch(f"{self._MOD}.load_config", return_value=mock_cfg):
+        with (
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter") as mock_create_adapter,
+            patch(f"{self._MOD}.console") as mock_console,
+        ):
             await _offer_starter_milestones(tmp_path)
+
+        mock_create_adapter.assert_not_called()
+        mock_console.print.assert_not_called()
 
     async def test_skips_when_config_not_found(self, tmp_path: Path) -> None:
         """Returns early when config cannot be loaded."""
         from sova.cli.commands.project import _offer_starter_milestones
 
-        with patch(
-            f"{self._MOD}.load_config",
-            side_effect=FileNotFoundError("sova.toml not found"),
+        with (
+            patch(f"{self._MOD}.load_config", side_effect=FileNotFoundError("sova.toml not found")),
+            patch(f"{self._MOD}.create_adapter") as mock_create_adapter,
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        mock_create_adapter.assert_not_called()
+        mock_console.print.assert_not_called()
 
     async def test_skips_when_adapter_creation_fails(self, tmp_path: Path) -> None:
         """Returns early when create_adapter raises ValueError."""
@@ -1737,8 +1778,13 @@ class TestOfferStarterMilestones:
         with (
             patch(f"{self._MOD}.load_config", return_value=mock_cfg),
             patch(f"{self._MOD}.create_adapter", side_effect=ValueError("bad config")),
+            patch("typer.confirm") as mock_confirm,
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        mock_confirm.assert_not_called()
+        mock_console.print.assert_not_called()
 
     async def test_skips_when_user_declines(self, tmp_path: Path) -> None:
         """Does not create milestones when user declines."""
@@ -1751,9 +1797,16 @@ class TestOfferStarterMilestones:
         with (
             patch(f"{self._MOD}.load_config", return_value=mock_cfg),
             patch(f"{self._MOD}.create_adapter", return_value=mock_adapter),
-            patch("typer.confirm", return_value=False),
+            patch("typer.confirm", return_value=False) as mock_confirm,
+            patch(f"{self._MOD}.create_starter_milestones", new_callable=AsyncMock) as mock_create,
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        mock_confirm.assert_called_once()
+        mock_create.assert_not_awaited()
+        printed = _printed(mock_console)
+        assert "Skipped milestone creation." in printed
 
     async def test_creates_milestones_on_confirm(self, tmp_path: Path) -> None:
         """Creates milestones when user confirms."""
@@ -1771,9 +1824,14 @@ class TestOfferStarterMilestones:
                 f"{self._MOD}.create_starter_milestones",
                 new_callable=AsyncMock,
                 return_value={"status": "ok", "created": ["Phase 1: Now"], "skipped": [], "failed": []},
-            ),
+            ) as mock_create,
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        mock_create.assert_awaited_once_with(tmp_path)
+        printed = _printed(mock_console)
+        assert "Created 1 milestones: Phase 1: Now" in printed
 
     async def test_handles_create_error(self, tmp_path: Path) -> None:
         """Prints error when milestone creation fails."""
@@ -1792,8 +1850,13 @@ class TestOfferStarterMilestones:
                 new_callable=AsyncMock,
                 return_value={"status": "error", "detail": "API failure"},
             ),
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        printed = _printed(mock_console)
+        assert "Failed: API failure" in printed
+        assert "Created" not in printed
 
     async def test_reports_skipped_and_failed(self, tmp_path: Path) -> None:
         """Reports skipped and failed milestones."""
@@ -1817,8 +1880,14 @@ class TestOfferStarterMilestones:
                     "failed": [{"title": "Phase 3: Later", "error": "timeout"}],
                 },
             ),
+            patch(f"{self._MOD}.console") as mock_console,
         ):
             await _offer_starter_milestones(tmp_path)
+
+        printed = _printed(mock_console)
+        assert "Created 1 milestones: Phase 2: Next" in printed
+        assert "Skipped 1 (already exist): Phase 1: Now" in printed
+        assert "Failed: Phase 3: Later: timeout" in printed
 
 
 # ---------------------------------------------------------------------------

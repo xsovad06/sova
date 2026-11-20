@@ -372,7 +372,10 @@ def test_path_validation_rejects_outside_allowed(func_name: str, args: tuple, tm
 def test_path_validation_accepts_sova_config_dir() -> None:
     from sova.awareness.auth.google_oauth import _validate_path
 
-    _validate_path(Path.home() / ".config" / "sova" / "token.pickle")
+    assert _validate_path(Path.home() / ".config" / "sova" / "token.pickle") is None
+    # A sibling directory sharing the root's name prefix is still outside it.
+    with pytest.raises(ValueError, match="outside allowed"):
+        _validate_path(Path.home() / ".config" / "sova-evil" / "token.pickle")
 
 
 # ---------------------------------------------------------------------------

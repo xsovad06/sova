@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from structlog.testing import capture_logs
 
 from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.db.models import SupervisorDecision
@@ -495,9 +496,13 @@ class TestSupervisorDaemon:
             event_type="test",
             action="test",
         )
-        with patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")):
-            # Should not raise
+        with (
+            patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")),
+            capture_logs() as logs,
+        ):
             await daemon._log_decisions_batch([bad_record])
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["log_decision.write_failed"]
 
     async def test_poll_quota_enabled(
         self,
@@ -556,8 +561,14 @@ class TestSupervisorDaemon:
         daemon: SupervisorDaemon,
     ) -> None:
         """_purge_old_logs should swallow exceptions without raising."""
-        with patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")):
+        with (
+            patch.object(daemon, "_session_factory", side_effect=SQLAlchemyError("db down")),
+            capture_logs() as logs,
+        ):
             await daemon._purge_old_logs()
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["daemon.purge_failed"]
+        assert "daemon.purged_old_logs" not in [e["event"] for e in logs]
 
     async def test_poll_once_quota_runs_before_progression(
         self, daemon: SupervisorDaemon, config: ProjectConfig

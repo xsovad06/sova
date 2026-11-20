@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from sova.core.state import PhaseStatus
 from sova.dashboard.services import lifecycle_service
@@ -20,6 +21,17 @@ from tests.conftest import csrf_request_headers as _csrf_request_headers
 # Uses the shared per-worker in-memory DB, emptied before each test
 # (see ``tests/conftest.py:reset_db_rows``).
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
+
+
+@pytest.fixture
+def phase_transitions():
+    """Replace the three phase transitions with spies, returning them keyed by name."""
+    with (
+        patch.object(lifecycle_service, "complete_phase", new_callable=AsyncMock) as complete,
+        patch.object(lifecycle_service, "fail_phase", new_callable=AsyncMock) as fail,
+        patch.object(lifecycle_service, "stop_phase", new_callable=AsyncMock) as stop,
+    ):
+        yield {"complete": complete, "fail": fail, "stop": stop}
 
 
 @pytest.fixture
@@ -834,12 +846,18 @@ class TestFinalizePhaseFromRun:
             lc = await lifecycle_service.get_lifecycle(session, lc.id)
             assert lc.phase_status == PhaseStatus.STOPPED
 
-    async def test_finalize_no_run(self, session: AsyncSession):
+    async def test_finalize_no_run(self, session: AsyncSession, phase_transitions: dict[str, AsyncMock]):
         """Non-existent run_id is a no-op."""
         async with session.begin():
             await lifecycle_service.finalize_phase_from_run(session, 99999, exit_code=0)
 
-    async def test_finalize_no_lifecycle_id(self, session: AsyncSession):
+        assert {name: spy.await_count for name, spy in phase_transitions.items()} == {
+            "complete": 0,
+            "fail": 0,
+            "stop": 0,
+        }
+
+    async def test_finalize_no_lifecycle_id(self, session: AsyncSession, phase_transitions: dict[str, AsyncMock]):
         """Run without lifecycle_id is a no-op."""
         async with session.begin():
             run = TaskRun(issue_number="42", role="developer", status="done")
@@ -849,7 +867,13 @@ class TestFinalizePhaseFromRun:
         async with session.begin():
             await lifecycle_service.finalize_phase_from_run(session, run.id, exit_code=0)
 
-    async def test_finalize_unknown_role(self, session: AsyncSession):
+        assert {name: spy.await_count for name, spy in phase_transitions.items()} == {
+            "complete": 0,
+            "fail": 0,
+            "stop": 0,
+        }
+
+    async def test_finalize_unknown_role(self, session: AsyncSession, phase_transitions: dict[str, AsyncMock]):
         """Run with unmapped role is a no-op."""
         async with session.begin():
             lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
@@ -865,6 +889,12 @@ class TestFinalizePhaseFromRun:
         async with session.begin():
             await lifecycle_service.finalize_phase_from_run(session, run.id, exit_code=0)
 
+        assert {name: spy.await_count for name, spy in phase_transitions.items()} == {
+            "complete": 0,
+            "fail": 0,
+            "stop": 0,
+        }
+
     async def test_finalize_exception_is_non_fatal(self, session: AsyncSession):
         """Errors during finalization are logged but not raised."""
         async with session.begin():
@@ -878,9 +908,14 @@ class TestFinalizePhaseFromRun:
             session.add(run)
             await session.flush()
 
-        with patch.object(lifecycle_service, "complete_phase", side_effect=RuntimeError("DB error")):
+        with (
+            patch.object(lifecycle_service, "complete_phase", side_effect=RuntimeError("DB error")),
+            capture_logs() as logs,
+        ):
             async with session.begin():
                 await lifecycle_service.finalize_phase_from_run(session, run.id, exit_code=0)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["lifecycle.finalize_failed"]
 
 
 class TestNoneLifecycleErrorBranches:

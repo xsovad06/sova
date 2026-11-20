@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from structlog.testing import capture_logs
+
 from sova.ipc.control import ExitClassification
 
 
@@ -532,9 +534,12 @@ class TestAdoptedProcess:
 
         proc = AdoptedProcess(4242, is_alive=lambda: True, resolve_exit_code=AsyncMock(return_value=0))
 
-        with patch("sova.ipc.control.os.kill", side_effect=ProcessLookupError):
+        with patch("sova.ipc.control.os.kill", side_effect=ProcessLookupError) as kill, capture_logs() as logs:
             proc.terminate()
             proc.kill()
+
+        assert kill.call_count == 2
+        assert [e for e in logs if e["log_level"] == "warning"] == []
 
     async def test_tailing_skips_the_line_the_agent_was_mid_way_through_writing(self, tmp_path: Path) -> None:
         from sova.ipc.control import AdoptedProcess, FileAgentProcess

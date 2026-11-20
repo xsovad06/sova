@@ -208,11 +208,13 @@ class TestOversightServiceDirect:
         assert updated.github_issue_number == 123
 
     async def test_update_finding_issue_number_not_found(self) -> None:
-        from sova.dashboard.services.oversight_service import update_finding_issue_number
+        from sova.dashboard.services.oversight_service import get_finding_by_id, update_finding_issue_number
 
         async with await get_session() as session:
             async with session.begin():
                 await update_finding_issue_number(session, 99999, 42)
+                created = await get_finding_by_id(session, 99999)
+        assert created is None
 
 
 class TestOversightStatus:
@@ -407,9 +409,12 @@ class TestRunNow:
 
 class TestCancelRunNowTasks:
     async def test_cancel_run_now_tasks_empty(self) -> None:
-        from sova.dashboard.routers.oversight import cancel_run_now_tasks
+        from sova.dashboard.routers.oversight import _background_tasks, cancel_run_now_tasks
 
-        await cancel_run_now_tasks()
+        assert len(_background_tasks) == 0
+
+        assert await cancel_run_now_tasks() is None
+        assert len(_background_tasks) == 0
 
     async def test_cancel_run_now_tasks_with_pending(self) -> None:
         from sova.dashboard.routers.oversight import _background_tasks, cancel_run_now_tasks

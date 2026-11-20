@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from click.testing import Result
 from pydantic import ValidationError
+from structlog.testing import capture_logs
 
 from sova.config.loader import load_config
 from sova.config.models import (
@@ -1090,14 +1091,18 @@ class TestFieldConstraints:
 
     def test_defaults_still_accepted(self) -> None:
         """All constrained models accept their default values."""
-        AgentConfig()
-        ReviewConfig()
-        CIConfig()
-        ConfidenceConfig()
-        WatchConfig()
-        WorktreeConfig()
-        TriageConfig()
-        PipelineConfig()
+        for model in (
+            AgentConfig,
+            ReviewConfig,
+            CIConfig,
+            ConfidenceConfig,
+            WatchConfig,
+            WorktreeConfig,
+            TriageConfig,
+            PipelineConfig,
+        ):
+            defaults = model()
+            assert model.model_validate(defaults.model_dump()) == defaults
 
 
 class TestConfidenceConfig:
@@ -1274,7 +1279,11 @@ class TestSaveConfigToDbSync:
     def test_skips_when_no_db_file(self, tmp_path: Path) -> None:
         from sova.config.db_loader import _save_config_to_db_sync
 
-        _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"})
+        with capture_logs() as logs:
+            _save_config_to_db_sync(tmp_path, {"github_repo": "a/b"})
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["db_loader.db_file_missing"]
+        assert not (tmp_path / ".claude" / "sova.db").exists()
 
     def test_idempotent_upsert(self, tmp_path: Path) -> None:
         import asyncio
@@ -1335,8 +1344,14 @@ class TestSaveConfigToDbSync:
         from sova.db.session import init_db
 
         asyncio.run(init_db(tmp_path))
-        with patch.object(db_loader, "_write_flat_config", side_effect=RuntimeError("disk full")):
+        with (
+            patch.object(db_loader, "_write_flat_config", side_effect=RuntimeError("disk full")),
+            capture_logs() as logs,
+        ):
             db_loader._save_config_to_db_sync(tmp_path, {"github_repo": "a/b"}, only_if_empty=True)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["db_loader.save_sync_failed"]
+        assert db_loader._try_load_from_db(tmp_path) is None
 
     def test_is_db_confirmed_empty_fails_closed_on_error(self, tmp_path: Path) -> None:
         """Any error probing the DB reports not-confirmed-empty rather than raising."""

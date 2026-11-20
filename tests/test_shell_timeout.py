@@ -213,6 +213,8 @@ class TestWriteStdinAndClose:
 
         await write_stdin_and_close(mock_proc, "hello")
 
+        assert mock_proc.mock_calls == []
+
     async def test_writes_drains_and_closes_on_success(self) -> None:
         from sova.utils.shell import write_stdin_and_close
 

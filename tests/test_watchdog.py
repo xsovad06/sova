@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.config.models import WatchdogConfig
 from sova.supervisor.watchdog import (
@@ -438,13 +439,16 @@ class TestRunLoop:
     async def test_run_loop_initial_scan_error_is_caught(self) -> None:
         """Verify scan errors during initial startup scan are caught, not propagated."""
         wd = _make_watchdog(check_interval_seconds=3600)
-        with patch.object(wd, "_scan_once", side_effect=RuntimeError("db error")):
+        with capture_logs() as logs, patch.object(wd, "_scan_once", side_effect=RuntimeError("db error")) as scan:
             task = wd.start()
             # Give the loop time to run the initial scan and hit the error
             await asyncio.sleep(0.05)
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+        scan.assert_awaited_once()
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["watchdog.scan_error"]
 
     async def test_run_loop_cancellation_propagates(self) -> None:
         """CancelledError in the loop must propagate (not swallowed)."""
@@ -551,12 +555,20 @@ class TestKillAgentEdgeCases:
         mock_session.__aexit__ = AsyncMock(return_value=None)
         mock_get_session.return_value = mock_session
 
-        with patch(
-            "sova.dashboard.services.agent_lifecycle.stop_agent",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("stop failed"),
+        with (
+            capture_logs() as logs,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.stop_agent",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("stop failed"),
+            ) as mock_stop,
         ):
-            await wd._execute_finding(finding)  # should not raise
+            await wd._execute_finding(finding)
+
+        mock_stop.assert_awaited_once()
+        failed = [e for e in logs if e["event"] == "watchdog.kill_failed"]
+        assert [e["log_level"] for e in failed] == ["warning"]
+        assert failed[0]["run_id"] == 1
 
 
 class TestConfigValidation:

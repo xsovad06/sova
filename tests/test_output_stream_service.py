@@ -108,7 +108,10 @@ class TestOutputStreamService:
 
     def test_unsubscribe_nonexistent_is_noop(self) -> None:
         svc = OutputStreamService()
-        svc.unsubscribe(99, 99)  # should not raise
+        svc.unsubscribe(99, 99)
+
+        assert svc._subscribers == {}
+        assert not svc.has_subscribers(99)
 
 
 class TestGetOutputStreamService:

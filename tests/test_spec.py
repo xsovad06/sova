@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, RolesConfig, SpecConfig
@@ -1339,8 +1340,11 @@ class TestSpecService:
     def test_write_answers_no_spec_file(self, tmp_path: Path) -> None:
         from sova.dashboard.services.spec_service import write_answers
 
-        # Should not raise
-        write_answers("99", {"0": "answer"}, project_dir=tmp_path)
+        with capture_logs() as logs:
+            write_answers("99", {"0": "answer"}, project_dir=tmp_path)
+
+        assert list(tmp_path.rglob("*")) == []
+        assert [e for e in logs if e["log_level"] == "warning"] == []
 
     def test_write_answers_empty_answers(self, tmp_path: Path) -> None:
         from sova.dashboard.services.spec_service import write_answers
@@ -1521,10 +1525,14 @@ class TestSpecService:
         specs_dir = tmp_path / ".claude" / "specs"
         specs_dir.mkdir(parents=True)
         spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Q1?\n")
+        original = "# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Q1?\n"
+        spec.write_text(original)
 
-        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+        with capture_logs() as logs, patch.object(Path, "read_text", side_effect=OSError("disk error")):
             write_answers("42", {"0": "answer"}, project_dir=tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["spec.write_answers.read_failed"]
+        assert spec.read_text() == original
 
     def test_write_answers_write_failure(self, tmp_path: Path) -> None:
         from sova.dashboard.services.spec_service import write_answers
@@ -1532,10 +1540,14 @@ class TestSpecService:
         specs_dir = tmp_path / ".claude" / "specs"
         specs_dir.mkdir(parents=True)
         spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Should we use X?\n")
+        original = "# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Should we use X?\n"
+        spec.write_text(original)
 
-        with patch.object(Path, "write_text", side_effect=OSError("read-only fs")):
+        with capture_logs() as logs, patch.object(Path, "write_text", side_effect=OSError("read-only fs")):
             write_answers("42", {"0": "Use X"}, project_dir=tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["spec.write_answers.write_failed"]
+        assert spec.read_text() == original
 
 
 # ---------------------------------------------------------------------------

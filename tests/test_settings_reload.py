@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from pathlib import Path
 from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.llm.models import LLMResult
 
@@ -994,8 +995,14 @@ class TestReloadOversightConfigWithCfg:
         from sova.dashboard.services.settings_service import reload_oversight_config_with_cfg
 
         cfg = MagicMock()
-        with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=None):
+        with (
+            patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=None) as get_agent,
+            capture_logs() as logs,
+        ):
             await reload_oversight_config_with_cfg(cfg)
+
+        get_agent.assert_called_once_with()
+        assert [e["event"] for e in logs] == []
 
 
 class TestDaemonComponentsAccessors:
@@ -1120,6 +1127,23 @@ class TestMergeQueueReloadWithNotification:
         assert mon.notification_config is ncfg
 
 
+@contextlib.contextmanager
+def _spy_other_reload_targets() -> Iterator[dict[str, AsyncMock]]:
+    """Spy on the async reloads a dispatch to the wrong target would have run."""
+    with (
+        patch(
+            "sova.dashboard.services.settings_service.daemon_registry.reload_daemon_config", new_callable=AsyncMock
+        ) as supervisor,
+        patch(
+            "sova.dashboard.services.settings_service.reload_oversight_config_with_cfg", new_callable=AsyncMock
+        ) as oversight,
+        patch(
+            "sova.dashboard.services.settings_service._start_pr_throttle_if_enabled", new_callable=AsyncMock
+        ) as throttle,
+    ):
+        yield {"supervisor": supervisor, "oversight": oversight, "throttle": throttle}
+
+
 class TestDispatchConfigReload:
     """dispatch_config_reload routes to the correct daemon."""
 
@@ -1128,15 +1152,21 @@ class TestDispatchConfigReload:
         from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
-        await dispatch_config_reload("watchdog", cfg, {}, tmp_path)
+        with _spy_other_reload_targets() as spies:
+            await dispatch_config_reload("watchdog", cfg, {}, tmp_path)
+
+        assert [name for name, spy in spies.items() if spy.await_count] == []
 
     @pytest.mark.asyncio
     async def test_empty_monitor_list_is_noop(self, tmp_path: Path) -> None:
         from sova.dashboard.services.settings_service import dispatch_config_reload
 
         cfg = MagicMock()
-        await dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
-        await dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
+        with _spy_other_reload_targets() as spies:
+            await dispatch_config_reload("pr_monitor", cfg, {"pr_monitors": []}, tmp_path)
+            await dispatch_config_reload("integration", cfg, {"merge_queue_monitors": []}, tmp_path)
+
+        assert [name for name, spy in spies.items() if spy.await_count] == []
 
     @pytest.mark.asyncio
     async def test_quota_change_starts_a_loop_when_none_is_registered(self, tmp_path: Path) -> None:

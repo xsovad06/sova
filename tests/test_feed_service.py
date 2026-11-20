@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from structlog.testing import capture_logs
 
 from sova.dashboard.services.feed_service import (
     FeedEvent,
@@ -235,7 +236,10 @@ class TestEmitSafe:
     def test_emit_safe_swallows_exception(self) -> None:
         """emit_safe should not raise even when get_feed_service().emit raises."""
         with patch("sova.dashboard.services.feed_service.get_feed_service", side_effect=RuntimeError("boom")):
-            emit_safe("will fail")  # should not raise
+            with capture_logs() as logs:
+                emit_safe("will fail")
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["feed.emit_safe_failed"]
 
 
 @pytest.mark.asyncio

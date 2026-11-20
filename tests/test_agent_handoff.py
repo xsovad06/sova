@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.dashboard.services.work_verdict import _NO_REVIEW, UNRESOLVED_KEY
 from sova.db.models import TaskRun
@@ -1097,7 +1098,10 @@ class TestPersistCompletingAgentHandoff:
             source="reviewer", status="awaiting_action", issue="93", summary="x", details={"a": 1}
         )
 
-        await _persist_completing_agent_handoff(999999, handoff, tmp_path)  # should not raise
+        with capture_logs() as logs:
+            await _persist_completing_agent_handoff(999999, handoff, tmp_path)
+
+        assert [e["event"] for e in logs] == []
 
     async def test_exception_is_swallowed(self, monkeypatch, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_handoff import _persist_completing_agent_handoff
@@ -1111,4 +1115,7 @@ class TestPersistCompletingAgentHandoff:
             source="reviewer", status="awaiting_action", issue="94", summary="x", details={"a": 1}
         )
 
-        await _persist_completing_agent_handoff(1, handoff, tmp_path)  # should not raise
+        with capture_logs() as logs:
+            await _persist_completing_agent_handoff(1, handoff, tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["auto_handoff.handoff_json_persist_failed"]
