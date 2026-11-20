@@ -25,6 +25,7 @@ from sova.git.merge import (
     merge_pr,
     poll_merge_queue,
     should_use_merge_queue,
+    squash_is_sole_merge_method,
 )
 from sova.utils.shell import ShellResult
 
@@ -94,6 +95,64 @@ class TestBuildMergeArgs:
         assert "--merge" not in args
         assert "--delete-branch" not in args
         assert "42" in args
+
+
+class TestBuildMergeArgsSubject:
+    @pytest.mark.parametrize(
+        ("method", "use_queue", "expect_subject"),
+        [
+            pytest.param("squash", False, True, id="squash-passes-subject"),
+            pytest.param("rebase", False, False, id="rebase-unchanged"),
+            pytest.param("merge", False, False, id="merge-commit-unchanged"),
+            pytest.param("auto", False, False, id="auto-needs-an-explicit-strategy"),
+            pytest.param("squash", True, False, id="queue-unchanged"),
+        ],
+    )
+    def test_subject_only_on_a_direct_squash(self, method: str, use_queue: bool, expect_subject: bool) -> None:
+        cfg = IntegrationConfig(merge_method=method)
+        subject = 'feat(core): a "quoted" `title` $HOME (#42)'
+        args = _build_merge_args(42, repo="o/r", cfg=cfg, use_queue=use_queue, subject=subject)
+        if expect_subject:
+            assert args[args.index("--subject") + 1] == subject
+        else:
+            assert "--subject" not in args
+
+    def test_no_subject_by_default(self) -> None:
+        args = _build_merge_args(42, repo="o/r", cfg=IntegrationConfig(merge_method="squash"), use_queue=False)
+        assert "--subject" not in args
+
+
+class TestSquashIsSoleMergeMethod:
+    @pytest.mark.parametrize(
+        ("stdout", "expected"),
+        [
+            pytest.param(
+                json.dumps({"rebaseMergeAllowed": False, "squashMergeAllowed": True, "mergeCommitAllowed": False}),
+                True,
+                id="only-squash",
+            ),
+            pytest.param(
+                json.dumps({"rebaseMergeAllowed": True, "squashMergeAllowed": True, "mergeCommitAllowed": False}),
+                False,
+                id="several-methods",
+            ),
+            pytest.param("not json", None, id="unparseable"),
+            pytest.param("{}", None, id="missing-fields"),
+        ],
+    )
+    async def test_reads_allowed_methods(self, stdout: str, expected: bool | None) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock, return_value=_shell_ok(stdout=stdout)),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            assert await squash_is_sole_merge_method(repo="o/r") is expected
+
+    async def test_gh_failure_is_unknown_not_false(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock, return_value=_shell_fail()),
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            assert await squash_is_sole_merge_method(repo="o/r") is None
 
 
 class TestDetectMergeQueue:

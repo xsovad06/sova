@@ -141,12 +141,16 @@ def _build_merge_args(
     repo: str,
     cfg: IntegrationConfig,
     use_queue: bool,
+    subject: str = "",
 ) -> list[str]:
+    """Build the ``gh pr merge`` argv. *subject* (a validated squash subject) rides only on a direct squash."""
     args = ["gh", "pr", "merge", str(pr_number), "--repo", repo]
 
     if not use_queue:
         if cfg.merge_method == "squash":
             args.append("--squash")
+            if subject:
+                args.extend(["--subject", subject])
         elif cfg.merge_method == "rebase":
             args.append("--rebase")
         elif cfg.merge_method == "merge":
@@ -156,6 +160,33 @@ def _build_merge_args(
         args.append("--delete-branch")
 
     return args
+
+
+async def squash_is_sole_merge_method(*, repo: str, github_user: str = "") -> bool | None:
+    """True when the repository allows squash merging and nothing else, False otherwise.
+
+    None when the allowed methods cannot be read, so "could not tell" never reads as "several methods".
+    Under ``merge_method = "auto"`` the repository default decides, and only this case is certainly squash.
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "repo",
+        "view",
+        repo,
+        "--json",
+        "rebaseMergeAllowed,squashMergeAllowed,mergeCommitAllowed",
+        env=env,
+    )
+    if not result.success:
+        log.warning("git.merge.allowed_methods_failed", repo=repo, stderr=result.stderr[:200])
+        return None
+    try:
+        data = json.loads(result.stdout)
+        return bool(data["squashMergeAllowed"]) and not data["rebaseMergeAllowed"] and not data["mergeCommitAllowed"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        log.warning("git.merge.allowed_methods_unparseable", repo=repo)
+        return None
 
 
 async def _get_pr_base_branch(
@@ -191,6 +222,7 @@ async def merge_pr(
     cfg: IntegrationConfig,
     github_user: str = "",
     base_branch: str = "",
+    subject: str = "",
 ) -> MergeResult:
     if not base_branch:
         base_branch = await _get_pr_base_branch(pr_number, repo=repo, github_user=github_user)
@@ -209,7 +241,7 @@ async def merge_pr(
         use_queue=use_queue,
     )
 
-    args = _build_merge_args(pr_number, repo=repo, cfg=cfg, use_queue=use_queue)
+    args = _build_merge_args(pr_number, repo=repo, cfg=cfg, use_queue=use_queue, subject=subject)
     env = await resolve_gh_env(github_user)
     result = await run(*args, env=env)
 

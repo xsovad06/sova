@@ -6,6 +6,8 @@ import pytest
 
 from sova.core.steps.commit_convention import (
     MAX_LINE_LENGTH,
+    build_merge_subject,
+    commit_line_problem,
     format_type_scope,
     infer_scope_from_paths,
     infer_type_from_paths,
@@ -59,6 +61,101 @@ class TestIsValidCommitLine:
 
     def test_empty_configured_scopes_rejects_every_non_ci_type(self) -> None:
         assert not is_valid_commit_line("feat(core): add widget", types=TYPES, scopes=[])
+
+
+class TestCommitLineProblem:
+    @pytest.mark.parametrize(
+        ("line", "expected"),
+        [
+            pytest.param("feat(core): add widget", None, id="valid"),
+            pytest.param("perf(core): speed it up", "unknown type 'perf'", id="unknown-type"),
+            pytest.param("feat(perf): speed it up", "unknown scope 'perf'", id="unknown-scope"),
+            pytest.param("ci(perf): add step", "unknown scope 'perf'", id="ci-unknown-scope"),
+            pytest.param("feat: add widget", "missing scope", id="missing-scope"),
+            pytest.param("feat(core,cli): add widget", "unknown scope 'core,cli'", id="multi-scope-matches-create-pr"),
+            pytest.param("feat(core): Add widget", "capitalized", id="capitalized-subject"),
+            pytest.param("feat(core): " + "a" * 61, "73 characters", id="over-length-names-the-length"),
+            pytest.param("no colon here", "type(scope): subject", id="malformed"),
+            pytest.param("   ", "the line is empty", id="blank"),
+        ],
+    )
+    def test_names_the_failing_part(self, line: str, expected: str | None) -> None:
+        problem = commit_line_problem(line, types=TYPES, scopes=SCOPES)
+        if expected is None:
+            assert problem is None
+        else:
+            assert problem is not None
+            assert expected in problem
+
+
+class TestBuildMergeSubject:
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            pytest.param("feat(core): add widget", "feat(core): add widget (#42)", id="appends-number"),
+            pytest.param("ci: add workflow step", "ci: add workflow step (#42)", id="ci-scopeless"),
+            pytest.param("feat(core): LLM provider layer", "feat(core): LLM provider layer (#42)", id="acronym"),
+            pytest.param("feat(core): add widget (#42)", "feat(core): add widget (#42)", id="suffix-not-doubled"),
+            pytest.param("feat(core): add widget(#42)", "feat(core): add widget (#42)", id="suffix-without-space"),
+            pytest.param("feat(core): add widget  (#42)", "feat(core): add widget (#42)", id="suffix-extra-space"),
+            pytest.param(
+                "[RHCLOUD-7] feat(core): add widget",
+                "[RHCLOUD-7] feat(core): add widget (#42)",
+                id="jira-key-kept-not-validated-as-type",
+            ),
+            pytest.param(
+                'feat(core): quote " tick ` $HOME',
+                'feat(core): quote " tick ` $HOME (#42)',
+                id="shell-metacharacters-pass-through",
+            ),
+            pytest.param("  feat(core): add widget  ", "feat(core): add widget (#42)", id="trimmed"),
+            pytest.param(
+                "[RHCLOUD-7] feat: add widget", "[RHCLOUD-7] feat: add widget (#42)", id="jira-scopeless-as-create-pr"
+            ),
+        ],
+    )
+    def test_valid(self, title: str, expected: str) -> None:
+        assert build_merge_subject(title, 42, types=TYPES, scopes=SCOPES, jira=title.startswith("[")) == expected
+
+    def test_jira_key_with_underscore_is_stripped(self) -> None:
+        subject = build_merge_subject("[MY_PROJ-12] feat: add widget", 42, types=TYPES, scopes=SCOPES, jira=True)
+        assert subject == "[MY_PROJ-12] feat: add widget (#42)"
+
+    @pytest.mark.parametrize("title", ["[WIP-1] feat: add widget", "[WIP-1] feat(core): add widget"])
+    def test_bracket_prefix_is_rejected_for_a_non_jira_project(self, title: str) -> None:
+        with pytest.raises(ValueError, match="not in 'type"):
+            build_merge_subject(title, 42, types=TYPES, scopes=SCOPES)
+
+    def test_freeform_title_is_not_checked(self) -> None:
+        subject = build_merge_subject("Add the Widget", 42, types=TYPES, scopes=SCOPES, conventional=False)
+        assert subject == "Add the Widget (#42)"
+
+    def test_limit_counts_the_title_not_the_suffix(self) -> None:
+        title = "feat(core): " + "a" * (MAX_LINE_LENGTH - len("feat(core): "))
+        assert build_merge_subject(title, 42, types=TYPES, scopes=SCOPES) == f"{title} (#42)"
+
+    def test_jira_title_at_the_limit_with_its_key_is_valid(self) -> None:
+        prefix = "[RHCLOUD-12345] feat(core): "
+        title = prefix + "a" * (MAX_LINE_LENGTH - len(prefix))
+        assert build_merge_subject(title, 42, types=TYPES, scopes=SCOPES, jira=True) == f"{title} (#42)"
+
+    @pytest.mark.parametrize(
+        ("title", "message"),
+        [
+            pytest.param("perf(core): x", "unknown type 'perf'", id="type"),
+            pytest.param("feat(perf): x", "unknown scope 'perf'", id="scope"),
+            pytest.param("feat: x", "missing scope", id="missing-scope"),
+            pytest.param("feat(core): " + "a" * 61, "73 characters", id="length"),
+            pytest.param("feat(core): one\ntwo", "several lines", id="multi-line"),
+            pytest.param("[RHCLOUD-7] perf(core): x", "unknown type 'perf'", id="jira-prefixed-invalid"),
+            pytest.param("[RHCLOUD-7] feat(bogus): x", "unknown scope 'bogus'", id="jira-unknown-scope"),
+            pytest.param("   ", "empty", id="empty"),
+            pytest.param("[RHCLOUD-12345] feat(core): " + "a" * 50, "characters, over the 72", id="jira-key-counts"),
+        ],
+    )
+    def test_invalid_names_the_problem(self, title: str, message: str) -> None:
+        with pytest.raises(ValueError, match=message):
+            build_merge_subject(title, 42, types=TYPES, scopes=SCOPES, jira=title.startswith("["))
 
 
 class TestResolveDefaultScope:
