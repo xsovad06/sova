@@ -8,6 +8,7 @@ from decimal import Decimal
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.config.loader import load_config
 from sova.db.models import CostRecord, TaskRun
 from sova.utils.logging import get_logger
 
@@ -58,8 +59,6 @@ def _compression_savings_usd(tokens_saved: int) -> Decimal:
     from sova.llm.models import input_rate_per_mtok
 
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config()
         model = cfg.llm.model or cfg.agent.model
     except Exception:  # noqa: BLE001 (savings display is best-effort; any config failure yields no estimate)

@@ -819,7 +819,7 @@ class TestResumeRestoresTheCycle:
         role.name = "developer"
         dispatch = AsyncMock(return_value=(role, RoleResult(success=True, summary="done")))
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),

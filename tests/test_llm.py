@@ -1183,7 +1183,7 @@ class TestResolveTaskTypeModel:
         from sova.config.models import ProjectConfig
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config", return_value=ProjectConfig()):
+        with patch("sova.llm.client.load_config", return_value=ProjectConfig()):
             assert _resolve_task_type_model("opus", "triage") == "opus"
 
     def test_no_task_type_returns_model(self) -> None:
@@ -1194,7 +1194,7 @@ class TestResolveTaskTypeModel:
     def test_task_type_resolves_from_config(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.llm.client.load_config") as mock_cfg:
             mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
             result = _resolve_task_type_model(None, "triage")
             assert result == "ollama/qwen3:8b"
@@ -1202,7 +1202,7 @@ class TestResolveTaskTypeModel:
     def test_task_type_not_in_config_returns_none(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.llm.client.load_config") as mock_cfg:
             mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
             result = _resolve_task_type_model(None, "extraction")
             assert result is None
@@ -1210,14 +1210,14 @@ class TestResolveTaskTypeModel:
     def test_config_load_failure_returns_model(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError):
+        with patch("sova.llm.client.load_config", side_effect=FileNotFoundError):
             result = _resolve_task_type_model(None, "triage")
             assert result is None
 
     def test_empty_routing_returns_model(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.llm.client.load_config") as mock_cfg:
             mock_cfg.return_value.llm.routing = {}
             result = _resolve_task_type_model(None, "triage")
             assert result is None
@@ -1261,7 +1261,7 @@ class TestResolveTaskTypeModel:
     def test_config_load_failure_keeps_explicit_model(self) -> None:
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError):
+        with patch("sova.llm.client.load_config", side_effect=FileNotFoundError):
             assert _resolve_task_type_model("sonnet", "develop") == "sonnet"
 
     def test_caller_supplied_none_cfg_is_not_reloaded_from_process_cwd(self) -> None:
@@ -1269,7 +1269,7 @@ class TestResolveTaskTypeModel:
         pick up whatever project the process happens to be sitting in."""
         from sova.llm.client import _resolve_task_type_model
 
-        with patch("sova.config.loader.load_config") as mock_load:
+        with patch("sova.llm.client.load_config") as mock_load:
             assert _resolve_task_type_model("sonnet", "develop", cfg=None) == "sonnet"
 
         mock_load.assert_not_called()
@@ -1277,7 +1277,7 @@ class TestResolveTaskTypeModel:
     def test_resolve_timeout_does_not_reload_when_caller_cfg_is_none(self) -> None:
         from sova.llm.client import _resolve_timeout
 
-        with patch("sova.config.loader.load_config") as mock_load:
+        with patch("sova.llm.client.load_config") as mock_load:
             assert _resolve_timeout(None, cfg=None) == 900.0
 
         mock_load.assert_not_called()
@@ -1351,7 +1351,7 @@ class TestConfigRoot:
 
         with (
             patch("sova.llm.provider._resolve_primary_root", return_value=primary),
-            patch("sova.config.loader.load_config", return_value=cfg) as mock_load,
+            patch("sova.llm.client.load_config", return_value=cfg) as mock_load,
         ):
             assert _resolve_task_type_model("opus", "develop", cwd=worktree) == "haiku"
 

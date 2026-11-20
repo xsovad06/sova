@@ -40,6 +40,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from sova.adapters.priority import Priority
+from sova.config.loader import load_config
 from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
 from sova.dashboard.routers import (
     agents,
@@ -96,7 +97,7 @@ from sova.dashboard.services.work_state import run_actions_payload
 from sova.dashboard.settings_meta import GROUPS as SETTING_GROUPS
 from sova.dashboard.settings_meta import SECTION_LABELS, SECTIONS, SUPERVISOR_SWITCH_GROUPS
 from sova.dashboard.settings_meta import get_meta as get_setting_meta
-from sova.db.session import close_db, init_db, init_db_for_project
+from sova.db.session import close_db, get_session, init_db, init_db_for_project
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 from sova.utils.version import get_code_staleness, record_startup_code_sha
@@ -157,8 +158,6 @@ _CONTENT_SECURITY_POLICY = (
 
 def _try_load_config(project_path: Path) -> ProjectConfig | None:
     """Load config for a project, returning None on failure."""
-    from sova.config.loader import load_config
-
     try:
         return load_config(project_path)
     except Exception:  # noqa: BLE001 (one unloadable project must not abort multi-project startup)
@@ -199,8 +198,6 @@ def _load_config_or_fail(project_path: Path) -> ProjectConfig:
     installed) are all configuration problems, not bugs, so none of them
     should surface as an unhandled ASGI startup traceback.
     """
-    from sova.config.loader import load_config
-
     try:
         return load_config(project_path)
     except (RuntimeError, ValueError, ImportError) as exc:
@@ -279,7 +276,6 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
     from sova.dashboard.services.agent_recovery import _MERGE_CHECK_TIMEOUT, _RECOVERY_TOTAL_TIMEOUT
     from sova.dashboard.services.control_service import _is_process_alive, _projects
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     managed_run_ids_by_dir: dict[Path, set[int]] = {}
     for pa in _projects.values():
@@ -535,8 +531,6 @@ _HEALTHZ_MIN_FREE_MB = 100  # minimum free disk space (MB) to be considered heal
 async def _check_db_health(project_dir: Path | None = None, timeout: float = _HEALTHZ_DB_TIMEOUT) -> str:
     """Run a bounded ``SELECT 1`` so a locked/slow DB fails fast instead of hanging."""
     from sqlalchemy import text
-
-    from sova.db.session import get_session
 
     async def _probe() -> None:
         async with await get_session(project_dir=project_dir) as session:
@@ -1547,7 +1541,6 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def supervisor_page(request: Request) -> Response:
         try:
             from sova.config.context import get_project_dir
-            from sova.config.loader import load_config
 
             sup_cfg = load_config(get_project_dir())
             github_repo = sup_cfg.github_repo or ""
@@ -1661,7 +1654,6 @@ def _register_a2a_routes(app: FastAPI) -> None:
     async def well_known_agent_card(request: Request) -> Response:
         from sova.a2a.agent_card import generate_agent_card
         from sova.config.context import resolve_project_dir_or_none
-        from sova.config.loader import load_config
         from sova.dashboard.services.agent_pool import get_default_project_dir
 
         project_dir = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())

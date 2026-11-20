@@ -10,6 +10,8 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.config.loader import load_config
+
 app = typer.Typer(
     name="supervisor",
     help="Query the SOVA supervisor daemon.",
@@ -25,8 +27,6 @@ def status(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Show supervisor daemon status and recent decisions."""
-    from sova.config.loader import load_config
-
     resolved = (project or Path.cwd()).resolve()
     cfg = load_config(resolved)
 
@@ -91,8 +91,6 @@ def poll(
     output_json: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Run a single supervisor poll cycle."""
-    from sova.config.loader import load_config
-
     resolved = (project or Path.cwd()).resolve()
     cfg = load_config(resolved)
 

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.config.loader import load_config
+
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
 
@@ -25,7 +27,6 @@ def address_pr(
 
 
 async def _address_pr(*, pr: int, project_dir: Path | None) -> None:
-    from sova.config.loader import load_config
     from sova.llm.client import invoke_command
 
     resolved_dir = project_dir or Path.cwd()
@@ -55,7 +56,6 @@ def maintain_pr(
 
 
 async def _maintain_pr(*, pr: int, project_dir: Path | None) -> None:
-    from sova.config.loader import load_config
     from sova.utils.env import scrub_check_env
     from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
@@ -104,7 +104,6 @@ def review_pr(
 
 async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.reviewer import ReviewerRole
@@ -204,7 +203,6 @@ async def _pr_verdict(*, pr: int, project_dir: Path | None) -> str:
 
 
 async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
-    from sova.config.loader import load_config
     from sova.dashboard.services.pr_service import resolve_head_verdict
     from sova.git.pr import get_pr_head_sha, get_pr_review_data
     from sova.git.worktree import get_primary_worktree_root
@@ -244,7 +242,6 @@ async def _pr_state(pr: int, repo: str, env: dict[str, str] | None) -> str:
 
 
 async def _linked_issues(*, pr: int, apply: bool, mark_in_review: bool, project_dir: Path | None) -> None:
-    from sova.config.loader import load_config
     from sova.git.merge import handle_merged_pr_issues, read_issue_links
     from sova.git.worktree import get_primary_worktree_root
     from sova.utils.gh import resolve_gh_env

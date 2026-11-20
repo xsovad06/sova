@@ -331,7 +331,7 @@ def test_json_output_serialization() -> None:
     with (
         patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
         patch("sova.awareness.create_providers", return_value=[]),
-        patch("sova.config.loader.load_config"),
+        patch("sova.cli.commands.briefing.load_config"),
         patch("sova.cli.commands.briefing.console", test_console),
         patch("typer.echo") as mock_echo,
     ):
@@ -514,7 +514,7 @@ def test_briefing_with_providers_str() -> None:
     )
 
     with (
-        patch("sova.config.loader.load_config", return_value=mock_config),
+        patch("sova.cli.commands.briefing.load_config", return_value=mock_config),
         patch("sova.awareness.create_providers", return_value=[]) as mock_create_providers,
         patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
         patch("sova.cli.commands.briefing.console", test_console),
@@ -585,7 +585,7 @@ def test_json_output_quiet_filters_sections() -> None:
     with (
         patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
         patch("sova.awareness.create_providers", return_value=[]),
-        patch("sova.config.loader.load_config"),
+        patch("sova.cli.commands.briefing.load_config"),
         patch("sova.cli.commands.briefing.console", test_console),
         patch("typer.echo") as mock_echo,
     ):
@@ -639,7 +639,7 @@ def test_briefing_cli_output() -> None:
     with (
         patch("sova.awareness.briefing.BriefingService", return_value=mock_service),
         patch("sova.awareness.create_providers", return_value=[]),
-        patch("sova.config.loader.load_config"),
+        patch("sova.cli.commands.briefing.load_config"),
         patch("sova.cli.commands.briefing.console", test_console),
         patch("sova.awareness.rendering.cli_renderer.render_briefing_cli") as mock_render,
     ):

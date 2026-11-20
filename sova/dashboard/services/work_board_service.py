@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskState
 from sova.config.db_loader import load_hidden_issues, load_task_queue, remove_from_task_queue
+from sova.config.loader import load_config
 from sova.dashboard.services.work_item_service import (
     _parse_issue_number,
     get_work_items,
@@ -36,6 +37,7 @@ from sova.dashboard.services.work_state import (
     state_label,
     work_stage,
 )
+from sova.db.session import get_session
 from sova.git.pr import list_merged_prs_since
 from sova.supervisor.labels import is_epic
 from sova.supervisor.queue_maintenance import prune_closed
@@ -279,7 +281,6 @@ async def _active_runs(project_dir: Path | None) -> dict[str, dict] | None:
     ``unavailable`` rather than showing running issues with no details as if that were all there is.
     """
     from sova.dashboard.services.work_service import get_active_work
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session, session.begin():
@@ -345,7 +346,6 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
     own entry. A PR merged at exactly midnight belongs to the new day. The merged list is cached for
     ``_MERGED_CACHE_TTL`` seconds, so a failure is never cached as an empty day.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.services.pr_service import extract_all_linked_issues, extract_jira_key
 
     midnight = _local_midnight(now)
@@ -439,7 +439,6 @@ async def _enrich_done_assignees(project_dir: Path | None, graph: DependencyGrap
     if not missing:
         return True
     from sova.adapters import close_adapter, create_adapter
-    from sova.config.loader import load_config
 
     try:
         adapter = create_adapter(await asyncio.to_thread(load_config, project_dir))
@@ -485,7 +484,6 @@ async def _queued_states(project_dir: Path | None, queue: list[int], graph: Depe
         return states
 
     from sova.adapters import close_adapter, create_adapter
-    from sova.config.loader import load_config
 
     try:
         adapter = create_adapter(await asyncio.to_thread(load_config, project_dir))

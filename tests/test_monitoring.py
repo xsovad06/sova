@@ -1239,7 +1239,7 @@ class TestLifecycleResourceIntegration:
         mock_process.pid = 999
         agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.services.agent_resource.load_config") as mock_cfg:
             mock_cfg.return_value.monitoring.enabled = False
             _start_resource_monitoring(agent, tmp_path, 999)
 
@@ -1393,7 +1393,7 @@ class TestLifecycleResourceIntegration:
         mock_writer = MagicMock()
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_resource.load_config") as mock_cfg,
             patch(
                 "sova.monitoring.writer.ResourceWriter",
                 return_value=mock_writer,
@@ -1426,7 +1426,7 @@ class TestLifecycleResourceIntegration:
         agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_resource.load_config") as mock_cfg,
             patch(
                 "sova.monitoring.collector.ResourceCollector",
                 side_effect=ImportError("no psutil"),
@@ -1606,7 +1606,7 @@ class TestResourceWriterErrorPaths:
         )
         writer.add_sample(sample)
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+        with patch("sova.monitoring.writer.get_session", side_effect=RuntimeError("db down")):
             await writer.flush()
 
         # Sample should be re-added to buffer
@@ -1620,7 +1620,7 @@ class TestResourceWriterErrorPaths:
         writer = ResourceWriter(project_dir=None, run_id=1)
         summary = ResourceSummary.empty()
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+        with patch("sova.monitoring.writer.get_session", side_effect=RuntimeError("db down")):
             await writer.write_summary(summary)  # should not raise
 
     @pytest.mark.asyncio
@@ -1628,7 +1628,7 @@ class TestResourceWriterErrorPaths:
         """cleanup_old_resources returns 0 on exception."""
         from sova.monitoring.writer import cleanup_old_resources
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+        with patch("sova.monitoring.writer.get_session", side_effect=RuntimeError("db down")):
             result = await cleanup_old_resources(project_dir=None, retention_days=30)
 
         assert result == 0
@@ -1657,7 +1657,7 @@ class TestResourceWriterErrorPaths:
         mock_session.__aenter__ = AsyncMock(side_effect=asyncio.CancelledError)
         mock_get_session = AsyncMock(return_value=mock_session)
 
-        with patch("sova.db.session.get_session", mock_get_session):
+        with patch("sova.monitoring.writer.get_session", mock_get_session):
             with pytest.raises(asyncio.CancelledError):
                 await writer.flush()
 

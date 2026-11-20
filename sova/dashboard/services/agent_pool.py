@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sova.config.context import get_project_dir, get_project_slug
+from sova.config.loader import load_config
 from sova.llm.phase_usage import PhaseTally
 from sova.utils.logging import get_logger
 
@@ -193,8 +194,6 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
 def read_max_parallel(project_dir: Path) -> int:
     """Read max_parallel_agents from config, falling back to dataclass default."""
     try:
-        from sova.config.loader import load_config
-
         return load_config(project_dir).max_parallel_agents
     except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.warning("pool.max_parallel_config_failed", project_dir=str(project_dir), exc_info=True)
@@ -217,8 +216,6 @@ def set_project_dir(path: Path) -> None:
 def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None) -> None:
     """Read max_parallel_agents from config and apply to the in-memory pool."""
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         pa = _get_project_agents(slug)
         if cfg.max_parallel_agents != pa.max_concurrent:

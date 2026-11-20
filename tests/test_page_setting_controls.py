@@ -213,10 +213,10 @@ class TestPageKeysSave:
             return cfg
 
         with patch("sova.dashboard.services.daemon_registry.get_oversight_agent", return_value=agent):
-            with patch("sova.config.loader.load_config", return_value=config_with(True)):
+            with patch("sova.dashboard.services.settings_service.load_config", return_value=config_with(True)):
                 on = await client.post("/api/settings/config", json={"key": "oversight.enabled", "value": True})
             assert agent.running is True
-            with patch("sova.config.loader.load_config", return_value=config_with(False)):
+            with patch("sova.dashboard.services.settings_service.load_config", return_value=config_with(False)):
                 off = await client.post("/api/settings/config", json={"key": "oversight.enabled", "value": False})
 
         assert agent.running is False

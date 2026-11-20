@@ -37,21 +37,21 @@ class TestIsConfigured:
     async def test_false_when_no_project_enabled(self, tmp_path: Path) -> None:
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(False)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(False)),
         ):
             assert await provider_mod.DependencyHealthProvider(AwarenessConfig()).is_configured() is False
 
     async def test_true_when_any_project_enabled(self, tmp_path: Path) -> None:
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
         ):
             assert await provider_mod.DependencyHealthProvider(AwarenessConfig()).is_configured() is True
 
     async def test_config_load_failure_is_not_configured(self, tmp_path: Path) -> None:
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")),
+            patch("sova.awareness.providers.dependency_health.load_config", side_effect=RuntimeError("boom")),
         ):
             assert await provider_mod.DependencyHealthProvider(AwarenessConfig()).is_configured() is False
 
@@ -65,7 +65,7 @@ class TestFetchItems:
         mock_snapshot = AsyncMock(return_value=_snapshot([]))
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
             patch.object(svc, "get_snapshot", new=mock_snapshot),
         ):
             await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items()
@@ -79,7 +79,7 @@ class TestFetchItems:
         ]
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
             patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_snapshot(packages))),
         ):
             items = await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items()
@@ -101,7 +101,7 @@ class TestFetchItems:
         ]
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
             patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_snapshot(packages))),
         ):
             items = await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items()
@@ -113,14 +113,14 @@ class TestFetchItems:
     async def test_disabled_project_yields_nothing(self, tmp_path: Path) -> None:
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(False)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(False)),
         ):
             assert await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items() == []
 
     async def test_project_failure_is_isolated(self, tmp_path: Path) -> None:
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
             patch.object(svc, "get_snapshot", new=AsyncMock(side_effect=RuntimeError("boom"))),
         ):
             assert await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items() == []
@@ -132,7 +132,7 @@ class TestFetchItems:
         ]
         with (
             patch.object(provider_mod, "list_projects", return_value={"p": str(tmp_path)}),
-            patch("sova.config.loader.load_config", return_value=_cfg(True)),
+            patch("sova.awareness.providers.dependency_health.load_config", return_value=_cfg(True)),
             patch.object(svc, "get_snapshot", new=AsyncMock(return_value=_snapshot(packages))),
         ):
             items = await provider_mod.DependencyHealthProvider(AwarenessConfig()).fetch_items()

@@ -14,6 +14,7 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from sova.config.loader import load_config
 from sova.utils.log_dedup import warn_once
 from sova.utils.logging import get_logger
 
@@ -305,8 +306,7 @@ def scan_prompt(text: str, *, custom_deny_patterns: list[str] | None = None) -> 
 def guard_prompt(prompt: str, *, untrusted_segments: Sequence[str] = ()) -> None:
     """Check a prompt and raise PromptInjectionError if it exceeds the threshold.
 
-    Loads config lazily to avoid circular imports. When the guard is disabled
-    via config, this is a no-op.
+    When the guard is disabled via config, this is a no-op.
 
     ``untrusted_segments`` are data blocks embedded verbatim in *prompt* (a reviewed diff, for
     example). Each is removed by exact text before the scan, so a fixture string inside reviewed
@@ -315,8 +315,6 @@ def guard_prompt(prompt: str, *, untrusted_segments: Sequence[str] = ()) -> None
     verbatim removes nothing, so the whole prompt stays guarded (fail closed). The caller must only
     pass a segment for a call that reaches no tools (see ``invoke(isolated=True)``).
     """
-    from sova.config.loader import load_config
-
     try:
         config = load_config()
     except Exception:  # noqa: BLE001 (config may fail for many reasons, guard is non-essential)

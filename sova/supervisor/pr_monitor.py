@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.config.loader import load_config
 from sova.config.models import PRMonitorConfig
 from sova.dashboard.services.pr_service import ComputedPRState
 from sova.dashboard.services.work_state import state_label
@@ -271,7 +272,6 @@ def create_monitors_for_projects() -> list[PRMonitor]:
     and a github_repo configured. Logs warnings for projects that fail config
     loading and silently skips disabled/unconfigured ones.
     """
-    from sova.config.loader import load_config
     from sova.config.registry import list_projects
 
     monitors: list[PRMonitor] = []

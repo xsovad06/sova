@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from sova.config.loader import load_config
 from sova.config.models import LLMConfig, RolesConfig
 from sova.config.root import resolve_config_root
 from sova.llm.backends import (
@@ -974,8 +975,6 @@ def reset_config_root_cache() -> None:
 def _try_load_config(cwd: Path | str | None = None) -> ProjectConfig | None:
     """Load project config, returning None on failure."""
     try:
-        from sova.config.loader import load_config
-
         return load_config(_config_root(cwd))
     except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
         log.debug("llm.config_load_failed", exc_info=True)

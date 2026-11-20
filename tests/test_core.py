@@ -11916,7 +11916,8 @@ class TestRunWorkflowOutcome:
         from sova.config.models import ProjectConfig
 
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -12003,7 +12004,8 @@ class TestRunWorkflowLease:
             return MagicMock(), RoleResult(success=True, summary="done")
 
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -12053,7 +12055,8 @@ class TestRunWorkflowLease:
 
         config = ProjectConfig(max_parallel_agents=3)
         with (
-            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.cli.commands.run.load_config", return_value=config),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=config),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.roles.dispatcher.dispatch", new=dispatch),
@@ -12088,7 +12091,8 @@ class TestRunWorkflowLease:
         # The second poll stops the loop the way Ctrl-C does.
         adapter.list_tasks = AsyncMock(side_effect=[[task], KeyboardInterrupt()])
         with (
-            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.cli.commands.run.load_config", return_value=config),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=config),
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.roles.dispatcher.dispatch", new=dispatch),
@@ -12133,7 +12137,8 @@ class TestRunWorkflowPersistsRoleCost:
     @contextmanager
     def _patch_run_deps(dispatch_mock: AsyncMock) -> Iterator[None]:
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -12270,7 +12275,9 @@ class TestRunWorkflowPersistsRoleCost:
         dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
 
         with self._patch_run_deps(dispatch_mock):
-            with patch("sova.db.session.get_session", side_effect=OperationalError("stmt", {}, Exception("locked"))):
+            with patch(
+                "sova.cli.commands.run.get_session", side_effect=OperationalError("stmt", {}, Exception("locked"))
+            ):
                 with patch("sova.cli.commands.run.log") as mock_log:
                     await _run_workflow(
                         "1368", project_dir=tmp_path, role_name="reviewer", force=False, task_run_id=run_id
@@ -12308,7 +12315,7 @@ class TestRunWorkflowPersistsRoleCost:
         dispatch_mock = self._spending_dispatch("reviewer", Decimal("1.00"), RoleResult(success=True, summary="ok"))
 
         with self._patch_run_deps(dispatch_mock):
-            with patch("sova.db.session.get_session") as mock_get_session:
+            with patch("sova.cli.commands.run.get_session") as mock_get_session:
                 await _run_workflow("1368", project_dir=tmp_path, role_name="reviewer", force=False)
 
         mock_get_session.assert_not_called()
@@ -12469,7 +12476,7 @@ class TestHandleSigtermShutdown:
 
         with (
             patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)),
-            patch("sova.db.session.get_session", side_effect=RuntimeError("db unavailable")),
+            patch("sova.cli.commands.run.get_session", side_effect=RuntimeError("db unavailable")),
         ):
             await _handle_sigterm_shutdown(ctx, 999)  # must not raise
 
@@ -12489,7 +12496,8 @@ class TestRunWorkflowCancellation:
 
         with (
             # A real config, not a MagicMock: see TestRunWorkflowOutcome._patch_run_deps.
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),

@@ -13,6 +13,8 @@ import typer
 from rich.console import Console
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -78,7 +80,6 @@ async def _run_workflow(
     task_run_id: int | None = None,
 ) -> None:
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
     from sova.core.context import ADDRESS_CYCLE_KEY, ExecutionContext
     from sova.db.session import init_db
     from sova.git.worktree import get_primary_worktree_root
@@ -245,7 +246,6 @@ async def _persist_run_cost(ctx: ExecutionContext, task_run_id: int | None, prio
 
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, task_run_id)
@@ -298,7 +298,6 @@ async def _handle_sigterm_shutdown(
 
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(ctx.project_dir) as session, session.begin():
             task_run = await session.get(TaskRun, task_run_id)
@@ -340,7 +339,6 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
 
     from sova.core.context import ADDRESS_CYCLE_KEY
     from sova.db.models import StepExecution, TaskRun
-    from sova.db.session import get_session
 
     async with await get_session() as session:
         async with session.begin():
@@ -397,7 +395,6 @@ def watch(
 async def _watch(*, project_dir: Path | None, force: bool) -> None:
     from sova.adapters import create_adapter
     from sova.adapters.base import TaskFilters, TaskState
-    from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.dispatcher import dispatch
@@ -464,7 +461,6 @@ def parallel(
 
 async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool) -> None:
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.dispatcher import dispatch

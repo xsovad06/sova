@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
+from sova.db.session import get_session
 from sova.utils.formatting import format_cost_usd
 from sova.utils.logging import get_logger
 
@@ -83,7 +84,6 @@ async def get_all_agent_statuses(
     """
     from sova.dashboard.services.agent_lifecycle import get_step_progress
     from sova.db.models import StepExecution, TaskRun
-    from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session:
         # Query 1: all non-terminal TaskRuns
@@ -291,7 +291,6 @@ async def _fetch_step_averages(
     Returns empty dict if fewer than _MIN_HISTORY_RUNS exist.
     """
     from sova.db.models import StepExecution, TaskRun
-    from sova.db.session import get_session
 
     if not pipeline_steps:
         return {}

@@ -284,6 +284,7 @@ class TestBuildHardenPrompt:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestHardenCommand:
     def test_harden_help(self) -> None:
         from sova.cli.app import app

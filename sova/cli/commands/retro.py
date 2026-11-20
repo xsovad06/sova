@@ -18,6 +18,8 @@ from typing import Annotated, Optional
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
 from sova.knowledge.retro import (
     COMMON_MISTAKES_PATH,
     RetroClassificationError,
@@ -61,7 +63,6 @@ async def _project_dir(project: Path | None) -> Path:
 
 async def _project_context(project: Path | None) -> tuple[Path, str, dict[str, str] | None, str]:
     """``(project dir, GitHub repo, gh env, classification model)`` for record and backfill."""
-    from sova.config.loader import load_config
     from sova.llm.routing import resolve_extraction_model
     from sova.utils.gh import resolve_gh_env
 
@@ -161,8 +162,6 @@ def backfill_cmd(
 async def _backfill(
     *, project: Path | None, limit: int | None, dry_run: bool, force: bool = False, concurrency: int = 1
 ) -> None:
-    from sova.db.session import get_session
-
     project_dir, repo, env, model = await _project_context(project)
     try:
         merged = await _merged_prs(repo, env)
@@ -250,8 +249,6 @@ def _share(part: int, whole: int) -> str:
 
 
 async def _report(*, since: str | None, project: Path | None) -> None:
-    from sova.db.session import get_session
-
     project_dir = await _project_dir(project)
     async with await get_session(project_dir) as session:
         report = build_report(await load_retro_rows(session), since=since)
@@ -301,8 +298,6 @@ def top_rules_cmd(
 
 
 async def _top_rules(*, limit: int, since: str | None, project: Path | None) -> None:
-    from sova.db.session import get_session
-
     project_dir = await _project_dir(project)
     async with await get_session(project_dir) as session:
         rows = await load_retro_rows(session)

@@ -167,7 +167,7 @@ class TestSupervisorPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.supervisor.load_config",
                 return_value=type("C", (), {"supervisor": type("S", (), {"persona_path": str(persona_path)})()})(),
             ),
             patch(
@@ -201,7 +201,7 @@ class TestSupervisorPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.supervisor.load_config",
                 return_value=type("C", (), {"supervisor": type("S", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value=None),
@@ -232,7 +232,7 @@ class TestSupervisorPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.supervisor.load_config",
                 return_value=type("C", (), {"supervisor": type("S", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
@@ -265,7 +265,7 @@ class TestSupervisorPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.supervisor.load_config",
                 return_value=type("C", (), {"supervisor": type("S", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
@@ -293,7 +293,7 @@ class TestSupervisorPersonaEndpoints:
 
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.routers.supervisor.load_config", side_effect=RuntimeError("bad config")),
         ):
             # The catch-all answers, then Starlette re-raises: only a test asserting the 500 turns that off.
             transport = ASGITransport(app=app, raise_app_exceptions=False)

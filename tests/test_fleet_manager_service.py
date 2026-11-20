@@ -602,7 +602,9 @@ class TestFleetManagerServiceCoverage:
 
     def test_read_coderabbit_limit_exception(self) -> None:
         """_read_coderabbit_limit returns 0 on config load failure."""
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config broken")):
+        with patch(
+            "sova.dashboard.services.fleet_manager_service.load_config", side_effect=RuntimeError("config broken")
+        ):
             result = FleetManagerService._read_coderabbit_limit(Path("/nonexistent"))
         assert result == 0
 
@@ -620,7 +622,7 @@ class TestFleetManagerServiceCoverage:
         service = FleetManagerService()
         with (
             patch("sova.config.db_loader.save_setting", mock_save),
-            patch("sova.db.session.get_session", mock_get_session),
+            patch("sova.dashboard.services.fleet_manager_service.get_session", mock_get_session),
         ):
             result = await service._write_max_concurrent_to_db(tmp_path, 8)
 
@@ -638,7 +640,7 @@ class TestFleetManagerServiceCoverage:
         service = FleetManagerService()
         with (
             patch("sova.config.db_loader.save_setting", mock_save),
-            patch("sova.db.session.get_session", mock_get_session),
+            patch("sova.dashboard.services.fleet_manager_service.get_session", mock_get_session),
         ):
             result = await service._write_max_concurrent_to_db(tmp_path, 8)
 
@@ -655,7 +657,7 @@ class TestFleetManagerServiceCoverage:
         service = FleetManagerService()
         with (
             patch("sova.config.db_loader.save_setting", AsyncMock()),
-            patch("sova.db.session.get_session", AsyncMock(return_value=mock_session)),
+            patch("sova.dashboard.services.fleet_manager_service.get_session", AsyncMock(return_value=mock_session)),
             patch("sova.config.loader.invalidate_config_cache") as invalidate,
         ):
             assert await service._write_max_concurrent_to_db(tmp_path, 8) is True
@@ -663,7 +665,7 @@ class TestFleetManagerServiceCoverage:
 
         with (
             patch("sova.config.db_loader.save_setting", AsyncMock(side_effect=RuntimeError("DB gone"))),
-            patch("sova.db.session.get_session", AsyncMock(return_value=mock_session)),
+            patch("sova.dashboard.services.fleet_manager_service.get_session", AsyncMock(return_value=mock_session)),
             patch("sova.config.loader.invalidate_config_cache") as invalidate,
         ):
             assert await service._write_max_concurrent_to_db(tmp_path, 8) is False
@@ -688,7 +690,7 @@ class TestFleetManagerServiceCoverage:
         service = FleetManagerService()
         with (
             patch("sova.config.db_loader.save_setting", mock_save),
-            patch("sova.db.session.get_session", mock_get_session),
+            patch("sova.dashboard.services.fleet_manager_service.get_session", mock_get_session),
         ):
             result = await service._write_max_concurrent_to_db(Path("/dummy"), 5)
         assert result is False

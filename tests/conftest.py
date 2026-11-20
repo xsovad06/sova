@@ -38,7 +38,7 @@ from sova.db.session import get_session, init_db
 # Enables the ``pytester`` fixture: ``tests/test_shared_db_fixture.py`` uses it to
 # drive a deterministic, isolated two-test pytest run in a subprocess.
 # ``tests.duration_budget`` fails a test over ``SOVA_TEST_DURATION_BUDGET`` (set in CI).
-pytest_plugins = ["pytester", "tests.duration_budget"]
+pytest_plugins = ["pytester", "tests.duration_budget", "tests.patch_target_guard"]
 
 # ``SOVA_DATABASE_URL`` is set deliberately by several test modules (at import
 # time) to route ORM access to an in-memory SQLite DB, so it must survive the
@@ -186,6 +186,19 @@ def configure_test_logging() -> None:
         logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
         cache_logger_on_first_use=False,
     )
+
+
+@pytest.fixture
+def no_cli_provider_init(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the CLI root callback's provider setup, which loads the config of the working directory.
+
+    A CLI test that stubs its subcommand's ``load_config`` does not stub ``sova.cli.app``'s own binding, so without
+    this the callback would build the global LLM provider and runtime from the real checkout's config.
+    """
+    import importlib
+
+    # sova.cli.app names the Typer object, so the module is looked up by import.
+    monkeypatch.setattr(importlib.import_module("sova.cli.app"), "_init_llm_provider", lambda: None)
 
 
 @pytest.fixture(scope="session", autouse=True)

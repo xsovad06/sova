@@ -181,7 +181,7 @@ class TestListOpenPrsWithStateFailureNotCached:
         pr_service._pr_cache.clear()
         with (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.pr_service.load_config", return_value=cfg),
             patch("sova.git.pr.list_open_prs", new=_failing_list),
         ):
             assert await pr_service.list_open_prs_with_state() == []
@@ -198,7 +198,7 @@ class TestListOpenPrsWithStateFailurePause:
         cfg = MagicMock(github_repo="o/r", github_user="u")
         return (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.pr_service.load_config", return_value=cfg),
             patch("sova.git.pr.list_open_prs", new=listing),
         )
 
@@ -401,7 +401,7 @@ class TestRecoverLastPrNumber:
 
         states = self._states({300: PROpenState.NOT_OPEN, 200: PROpenState.OPEN, 100: PROpenState.OPEN})
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg()),
             patch("sova.git.pr.get_pr_open_state", new=states),
         ):
             assert await _first_open_pr([300, 200, 100], tmp_path) == 200
@@ -411,7 +411,7 @@ class TestRecoverLastPrNumber:
 
         states = self._states({300: PROpenState.NOT_OPEN})
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg()),
             patch("sova.git.pr.get_pr_open_state", new=states),
         ):
             assert await _first_open_pr([300], tmp_path) is None
@@ -421,7 +421,7 @@ class TestRecoverLastPrNumber:
 
         states = self._states({300: PROpenState.UNKNOWN, 200: PROpenState.NOT_OPEN})
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg()),
             patch("sova.git.pr.get_pr_open_state", new=states),
         ):
             assert await _first_open_pr([300, 200], tmp_path) == 300
@@ -431,7 +431,7 @@ class TestRecoverLastPrNumber:
 
         lookup = AsyncMock()
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg("")),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg("")),
             patch("sova.git.pr.get_pr_open_state", new=lookup),
         ):
             assert await _first_open_pr([300, 200], tmp_path) == 300
@@ -447,7 +447,7 @@ class TestRecoverLastPrNumber:
             return PROpenState.OPEN
 
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg()),
             patch("sova.git.pr.get_pr_open_state", new=AsyncMock(side_effect=_lookup)),
             patch.object(agent_lifecycle, "_RECOVER_PR_DEADLINE", 0.01),
         ):
@@ -463,7 +463,7 @@ class TestRecoverLastPrNumber:
             return PROpenState.OPEN
 
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=self._cfg()),
             patch("sova.git.pr.get_pr_open_state", new=AsyncMock(side_effect=_lookup)),
             patch.object(agent_lifecycle, "_RECOVER_PR_DEADLINE", 0.01),
         ):
@@ -472,7 +472,7 @@ class TestRecoverLastPrNumber:
     async def test_unreadable_config_keeps_the_newest_candidate(self, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_lifecycle import _first_open_pr
 
-        with patch("sova.config.loader.load_config", side_effect=ValueError("bad config")):
+        with patch("sova.dashboard.services.agent_lifecycle.load_config", side_effect=ValueError("bad config")):
             assert await _first_open_pr([300, 200], tmp_path) == 300
 
 
@@ -487,7 +487,10 @@ class TestDeveloperStartPrNumber:
 
         recover = AsyncMock(return_value=500)
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="o/r", github_user="u")),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.load_config",
+                return_value=MagicMock(github_repo="o/r", github_user="u"),
+            ),
             patch("sova.git.pr.get_pr_open_state", new=AsyncMock(return_value=state)),
             patch("sova.dashboard.services.agent_lifecycle._recover_last_pr_number", new=recover),
         ):
@@ -554,7 +557,14 @@ class TestDeveloperStartPrNumber:
         recover = AsyncMock(return_value=500)
         capture = AsyncMock(return_value=None)
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="o/r", github_user="u")),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.load_config",
+                return_value=MagicMock(github_repo="o/r", github_user="u"),
+            ),
+            patch(
+                "sova.dashboard.services.agent_validation.load_config",
+                return_value=MagicMock(github_repo="o/r", github_user="u"),
+            ),
             patch("sova.git.pr.get_pr_open_state", new=AsyncMock(return_value=PROpenState.NOT_OPEN)),
             patch.object(agent_lifecycle, "_recover_last_pr_number", new=recover),
             patch.object(agent_lifecycle, "_get_project_agents", return_value=agents),
@@ -592,7 +602,10 @@ class TestRunKeepsStoredPrForDispatch:
         dispatch = AsyncMock(return_value=(role, RoleResult(success=True, summary="done")))
         lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch(
+                "sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig(github_repo="o/r")
+            ),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -656,7 +669,10 @@ class TestDeveloperResumeWithClosedCheckpointPr:
 
         lookup = AsyncMock(return_value=PROpenState.NOT_OPEN)
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch(
+                "sova.dashboard.services.agent_validation.load_config", return_value=ProjectConfig(github_repo="o/r")
+            ),
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),
@@ -939,7 +955,7 @@ class TestGetWorkItemsStalePr:
             patch("sova.dashboard.services.work_item_service._load_graph_or_none", new=AsyncMock(return_value=None)),
             patch("sova.dashboard.services.work_item_service._fetch_sova_verdicts", new=AsyncMock(return_value={})),
             patch("sova.dashboard.services.agent_pool._get_project_agents", MagicMock(return_value=None)),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_open_state",
                 new=AsyncMock(return_value=lookup),
@@ -1068,7 +1084,10 @@ class TestQueueLastRunPrNumber:
 
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo=repo, github_user="u")),
+            patch(
+                "sova.dashboard.services.queue_service.load_config",
+                return_value=ProjectConfig(github_repo=repo, github_user="u"),
+            ),
             patch("sova.dashboard.services.pr_service.get_pr_open_state", new=AsyncMock(return_value=lookup)),
         ):
             queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
@@ -1127,7 +1146,7 @@ class TestQueueLastRunPrNumber:
         load = MagicMock(side_effect=AssertionError("load_config must not run"))
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", new=load),
+            patch("sova.dashboard.services.queue_service.load_config", new=load),
             patch(
                 "sova.dashboard.services.pr_service.get_pr_open_state", new=AsyncMock(return_value=PROpenState.NOT_OPEN)
             ),
@@ -1164,7 +1183,7 @@ class TestQueueLastRunPrNumber:
 
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
         ):
             queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
@@ -1182,7 +1201,7 @@ class TestQueueLastRunPrNumber:
 
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
         ):
             queue = await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
@@ -1205,7 +1224,7 @@ class TestQueueLastRunPrNumber:
 
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.dashboard.services.pr_service.get_pr_open_state", new=lookup),
         ):
             await queue_service.get_priority_queue(None, open_prs=asyncio.ensure_future(_fetched()))
@@ -1218,7 +1237,7 @@ class TestQueueLastRunPrNumber:
         listing = AsyncMock(return_value=[{"number": 1300}])
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing),
         ):
             queue = await queue_service.get_priority_queue(None)
@@ -1246,7 +1265,7 @@ class TestQueueLastRunPrNumber:
         listing = AsyncMock(return_value=[{"number": 1300}])
         with (
             self._one_queued_issue(),
-            patch("sova.config.loader.load_config", return_value=ProjectConfig(github_repo="o/r")),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=ProjectConfig(github_repo="o/r")),
             patch("sova.dashboard.services.pr_service.list_open_prs_with_state", new=listing),
             patch(
                 "sova.dashboard.services.agent_lifecycle.get_unified_agents",

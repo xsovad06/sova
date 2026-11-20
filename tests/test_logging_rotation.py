@@ -205,7 +205,8 @@ class TestConfiguredRotationReachesEveryWriter:
         role.name = "researcher"
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.cli.commands.run.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging") as mock_setup,

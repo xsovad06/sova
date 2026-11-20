@@ -31,7 +31,7 @@ async def client(dashboard_app):
 class TestTasksRouterErrors:
     async def test_list_issues_returns_503_on_task_source_failure(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.routers.tasks._issues_cache", {}):
-            with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            with patch("sova.dashboard.routers.tasks.load_config", side_effect=RuntimeError("no config")):
                 resp = await client.get("/api/tasks/issues")
         assert resp.status_code == 503
         assert resp.json() == {"detail": "Task source unavailable"}
@@ -298,7 +298,7 @@ class TestSettingsRouterErrors:
     async def test_audit_labels_not_github_returns_400(self, client: AsyncClient) -> None:
         mock_cfg = MagicMock()
         mock_cfg.task_source.type = "jira"
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg):
             resp = await client.get("/api/settings/labels/audit")
         assert resp.status_code == 400
         assert "GitHub-only" in resp.json()["detail"]
@@ -307,7 +307,7 @@ class TestSettingsRouterErrors:
         mock_cfg = MagicMock()
         mock_cfg.task_source.type = "github"
         mock_cfg.github_repo = ""
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg):
             resp = await client.get("/api/settings/labels/audit")
         assert resp.status_code == 400
         assert "not configured" in resp.json()["detail"]
@@ -321,7 +321,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -346,7 +346,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -373,7 +373,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch(
                 "sova.utils.shell.run",
@@ -395,7 +395,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -417,7 +417,7 @@ class TestSettingsRouterErrors:
     async def test_create_labels_not_github_returns_400(self, client: AsyncClient) -> None:
         mock_cfg = MagicMock()
         mock_cfg.task_source.type = "jira"
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg):
             resp = await client.post("/api/settings/labels/create")
         assert resp.status_code == 400
         assert "GitHub-only" in resp.json()["detail"]
@@ -431,7 +431,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -461,7 +461,7 @@ class TestSettingsRouterErrors:
         all_labels = [{"name": label["name"]} for label in REQUIRED_LABELS]
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -492,7 +492,7 @@ class TestSettingsRouterErrors:
         mock_cfg.github_user = "testuser"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -528,7 +528,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=1, stdout="", stderr="HTTP 403: permission denied")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -566,7 +566,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=1, stdout="", stderr="creation failed")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -611,7 +611,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -655,7 +655,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=1, stdout="", stderr="API error")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -697,7 +697,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=1, stdout="", stderr=long_error)
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -740,7 +740,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=0, stdout="", stderr="")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch("sova.utils.shell.run", new_callable=AsyncMock, side_effect=run_mock),
             patch("sova.dashboard.services.github_labels_service.REQUIRED_LABELS", test_labels),
@@ -764,7 +764,7 @@ class TestSettingsRouterErrors:
             return ShellResult(returncode=0, stdout='[{"color": "fff"}, {"name": "test:one"}]', stderr="")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=mock_cfg),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch("sova.utils.shell.run", new_callable=AsyncMock, side_effect=run_mock),
             patch("sova.dashboard.services.github_labels_service.REQUIRED_LABELS", [{"name": "test:one"}]),
@@ -784,7 +784,7 @@ class TestSettingsRouterErrors:
     async def test_label_routes_categorize_an_unloadable_config(
         self, client: AsyncClient, exc: Exception, status: int
     ) -> None:
-        with patch("sova.config.loader.load_config", side_effect=exc):
+        with patch("sova.dashboard.routers.settings.load_config", side_effect=exc):
             audit = await client.get("/api/settings/labels/audit")
             create = await client.post("/api/settings/labels/create")
 
@@ -1139,7 +1139,7 @@ class TestFormerlyOkWithErrorEndpoints:
         probe = MagicMock()
         probe.check_available = AsyncMock(side_effect=RuntimeError("socket: SECRET_HOST refused"))
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.routers.settings.load_config", return_value=MagicMock()),
             patch("sova.llm.provider.create_provider", return_value=probe),
             patch("sova.ipc.runtime.create_runtime", return_value=probe),
         ):
@@ -1153,7 +1153,7 @@ class TestFormerlyOkWithErrorEndpoints:
         probe = MagicMock()
         probe.check_available = AsyncMock(return_value=(False, "no API key"))
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.routers.settings.load_config", return_value=MagicMock()),
             patch("sova.llm.provider.create_provider", return_value=probe),
         ):
             resp = await client.post("/api/settings/llm/test-connection")
@@ -1169,7 +1169,7 @@ class TestFormerlyOkWithErrorEndpoints:
         cfg.github_repo = "owner/repo"
         cfg.github_user = "testuser"
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=cfg),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch(
                 "sova.utils.shell.run",
@@ -1199,7 +1199,7 @@ class TestFormerlyOkWithErrorEndpoints:
             return ShellResult(returncode=1, stdout="", stderr="HTTP 500 STDERR_MARKER owner/private-repo")
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.routers.settings.load_config", return_value=cfg),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
             patch("sova.utils.shell.run", new_callable=AsyncMock, side_effect=run),
             patch(
@@ -1230,7 +1230,7 @@ class TestFormerlyOkWithErrorEndpoints:
         ]
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="test/repo")),
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=MagicMock(github_repo="test/repo")),
                 patch.object(supervisor_service, "execute_plan_decisions", AsyncMock(return_value=results)),
             ):
                 resp = await client.post("/api/supervisor/plan/approve", json={})
@@ -1251,7 +1251,11 @@ class TestFormerlyOkWithErrorEndpoints:
         supervisor_service.set_pending_plan(decisions, project_slug="test/repo")
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=MagicMock(github_repo="test/repo")),
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=MagicMock(github_repo="test/repo")),
+                patch(
+                    "sova.dashboard.services.supervisor_service.load_config",
+                    return_value=MagicMock(github_repo="test/repo"),
+                ),
                 patch("sova.adapters.create_adapter", return_value=MagicMock()),
                 patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
                 patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
@@ -1297,7 +1301,7 @@ class TestFormerlyOkWithErrorEndpoints:
         from sova.llm.errors import ComponentMisconfiguredError
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.routers.settings.load_config", return_value=MagicMock()),
             patch(factory, side_effect=ComponentMisconfiguredError("Unknown thing: 'x'. Available: a, b")),
         ):
             resp = await client.post(url)
@@ -1307,7 +1311,7 @@ class TestFormerlyOkWithErrorEndpoints:
 
     async def test_a_plain_value_error_from_a_factory_is_not_shown(self, client: AsyncClient) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.routers.settings.load_config", return_value=MagicMock()),
             patch("sova.llm.provider.create_provider", side_effect=ValueError("/Users/x/secret/path")),
         ):
             resp = await client.post("/api/settings/llm/test-connection")
@@ -1334,7 +1338,7 @@ class TestFormerlyOkWithErrorEndpoints:
     async def test_an_unloadable_config_has_one_mapping_on_every_settings_route(
         self, client: AsyncClient, method: str, url: str, error: Exception, status: int
     ) -> None:
-        with patch("sova.config.loader.load_config", side_effect=error):
+        with patch("sova.dashboard.routers.settings.load_config", side_effect=error):
             resp = await getattr(client, method)(url)
 
         assert resp.status_code == status
@@ -1349,7 +1353,7 @@ class TestFormerlyOkWithErrorEndpoints:
             ProjectConfig(max_parallel_agents="not-a-number")  # type: ignore[arg-type]
         except ValidationError as exc:
             error = exc
-        with patch("sova.config.loader.load_config", side_effect=error):
+        with patch("sova.dashboard.routers.settings.load_config", side_effect=error):
             resp = await client.post("/api/settings/llm/test-connection")
 
         assert resp.status_code == 422
@@ -1363,7 +1367,7 @@ class TestSettingsWidgetsAndModelMap:
         from sqlalchemy.exc import OperationalError
 
         with patch(
-            "sova.db.session.get_session",
+            "sova.dashboard.routers.settings.get_session",
             new_callable=AsyncMock,
             side_effect=OperationalError("select", {}, Exception("db is locked /secret")),
         ) as mock_session:
@@ -1384,7 +1388,7 @@ class TestSettingsWidgetsAndModelMap:
             ProjectConfig(max_parallel_agents="not-a-number")  # type: ignore[arg-type]
         except ValidationError as exc:
             error = exc
-        with patch("sova.config.loader.load_config", side_effect=error):
+        with patch("sova.dashboard.routers.settings.load_config", side_effect=error):
             resp = await client.get("/api/settings/models/map")
 
         assert resp.status_code == 422
@@ -1393,7 +1397,7 @@ class TestSettingsWidgetsAndModelMap:
     async def test_pin_catalog_is_none_when_the_config_cannot_be_loaded(self) -> None:
         from sova.dashboard.services import settings_service
 
-        with patch("sova.config.loader.load_config", side_effect=OSError("db down")):
+        with patch("sova.dashboard.services.settings_service.load_config", side_effect=OSError("db down")):
             assert await settings_service.pin_catalog(None) is None
 
     async def test_a_priority_the_tracker_lacks_is_a_400_with_the_typed_user_message(self, client: AsyncClient) -> None:
@@ -1402,7 +1406,7 @@ class TestSettingsWidgetsAndModelMap:
         adapter = AsyncMock()
         adapter.set_priority.side_effect = PriorityUnavailableError("Jira has no priority for 'blocker'")
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.routers.issues.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=adapter),
         ):
             resp = await client.put("/api/issues/1/priority", json={"priority": "blocker"})

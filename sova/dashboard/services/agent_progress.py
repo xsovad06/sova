@@ -9,6 +9,7 @@ import asyncio
 import time
 from pathlib import Path
 
+from sova.config.loader import load_config
 from sova.core.steps import (
     get_address_review_step_names,
     get_developer_step_names,
@@ -56,8 +57,6 @@ async def _resolve_pipelines(project_dir: Path | None) -> dict[str, list[str]]:
 
     resolved = dict(_BUILTIN_PIPELINES)
     try:
-        from sova.config.loader import load_config
-
         pipelines = (await asyncio.to_thread(load_config, project_dir)).pipelines
         for variant in ("developer", "address_review", "researcher"):
             configured = getattr(pipelines, variant, None)

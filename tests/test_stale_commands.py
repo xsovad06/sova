@@ -214,7 +214,7 @@ class TestBranchCopyStaleness:
         self, project: Path, worktree: Path, cfg: ProjectConfig
     ) -> None:
         """A worktree has no sova.db; loading config there would render with defaults."""
-        with patch("sova.config.loader.load_config", return_value=cfg) as mock_load:
+        with patch("sova.commands.staleness.load_config", return_value=cfg) as mock_load:
             find_stale_command(project, "address-pr", run_dir=worktree)
 
         mock_load.assert_called_once_with(project)
@@ -594,7 +594,7 @@ class TestStaleCommandPreSpawnCheck:
 
         _age_manifest_entry(project, "rearrange-commits.md", "old recipe\n")
 
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.commands.staleness.load_config", return_value=cfg):
             block = check_stale_command(project, "rearrange-commits")
 
         assert block is not None
@@ -604,21 +604,27 @@ class TestStaleCommandPreSpawnCheck:
     def test_current_command_passes(self, project: Path, cfg: ProjectConfig) -> None:
         from sova.dashboard.services.agent_validation import check_stale_command
 
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.commands.staleness.load_config", return_value=cfg):
             assert check_stale_command(project, "review-full") is None
 
     def test_non_safety_command_skips_config_load(self, project: Path) -> None:
         """Every dashboard command passes through here: only the safety-critical ones may pay for a config load."""
         from sova.dashboard.services.agent_validation import check_stale_command
 
-        with patch("sova.config.loader.load_config") as mock_load:
+        # find_stale_command loads the config through the binding in sova.commands.staleness; the
+        # agent_validation binding is patched too so a future direct load there is caught as well.
+        mock_load = MagicMock()
+        with (
+            patch("sova.commands.staleness.load_config", mock_load),
+            patch("sova.dashboard.services.agent_validation.load_config", mock_load),
+        ):
             assert check_stale_command(project, "agent-resume") is None
         mock_load.assert_not_called()
 
     def test_unevaluable_check_fails_open(self, project: Path) -> None:
         from sova.dashboard.services.agent_validation import check_stale_command
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.commands.staleness.load_config", side_effect=RuntimeError("boom")):
             assert check_stale_command(project, "address-pr") is None
 
 

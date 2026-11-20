@@ -328,7 +328,7 @@ class TestPersonaEndpoints:
         with patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path):
             with patch("sova.dashboard.routers.settings.settings_service"):
                 with patch(
-                    "sova.config.loader.load_config",
+                    "sova.dashboard.routers.settings.load_config",
                     return_value=type("C", (), {"oversight": type("O", (), {"persona_path": str(persona_path)})()})(),
                 ):
                     with patch(
@@ -361,7 +361,7 @@ class TestPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.settings.load_config",
                 return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value=None),
@@ -391,7 +391,7 @@ class TestPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.settings.load_config",
                 return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
@@ -421,7 +421,7 @@ class TestPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.settings.load_config",
                 return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
@@ -449,7 +449,7 @@ class TestPersonaEndpoints:
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.routers.settings.load_config",
                 return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
             ),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
@@ -474,7 +474,7 @@ class TestPersonaEndpoints:
 
         with (
             patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", side_effect=OSError("bad config")),
+            patch("sova.dashboard.routers.settings.load_config", side_effect=OSError("bad config")),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:

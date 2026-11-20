@@ -39,7 +39,7 @@ class TestStatusCommand:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", mock_get),
+            patch("sova.cli.commands.admin.get_session", mock_get),
             patch("sova.cli.commands.admin.console") as mock_console,
         ):
             await _status(project_dir=tmp_path)
@@ -60,7 +60,7 @@ class TestStatusCommand:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", mock_get),
+            patch("sova.cli.commands.admin.get_session", mock_get),
             patch("sova.cli.commands.admin.console") as mock_console,
         ):
             await _status(project_dir=tmp_path)
@@ -80,7 +80,7 @@ class TestCostsCommand:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", mock_get),
+            patch("sova.cli.commands.admin.get_session", mock_get),
             patch("sova.cli.commands.admin.console") as mock_console,
         ):
             await _costs(project_dir=tmp_path)
@@ -105,7 +105,7 @@ class TestCostsCommand:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", mock_get),
+            patch("sova.cli.commands.admin.get_session", mock_get),
             patch("sova.cli.commands.admin.console") as mock_console,
         ):
             await _costs(project_dir=tmp_path)
@@ -164,7 +164,7 @@ class TestCleanupCommand:
             patch("sova.git.worktree.cleanup_by_issue_state", new_callable=AsyncMock, return_value=gc),
             patch("sova.cli.commands.admin.console"),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.admin.load_config") as mock_cfg,
             patch("sova.core.output.cleanup_old_output", new_callable=AsyncMock, return_value=5) as mock_cleanup,
         ):
             mock_cfg.return_value.output.retention_days = 30

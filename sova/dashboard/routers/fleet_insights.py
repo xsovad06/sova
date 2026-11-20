@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from sova.adapters.base import AdapterError
+from sova.config.loader import load_config
 from sova.dashboard.services.fleet_service import FleetService, build_issue_draft
 from sova.utils.logging import get_logger
 
@@ -99,7 +100,6 @@ async def propose_issue(req: ProposeIssueRequest) -> dict[str, object]:
     """
     from sova.adapters.github import GitHubAdapter
     from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
     from sova.config.models import FleetConfig
 
     project_dir = get_project_dir()

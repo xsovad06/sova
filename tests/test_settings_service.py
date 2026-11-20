@@ -187,7 +187,7 @@ class TestUpdateConfigIntegration:
     async def test_db_exception_returns_false(self, tmp_path) -> None:
         from sova.dashboard.services.settings_service import _save_setting_to_db
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+        with patch("sova.dashboard.services.settings_service.get_session", side_effect=RuntimeError("db down")):
             result = await _save_setting_to_db(tmp_path, "agent.max_budget", 25)
         assert result is False
 
@@ -321,7 +321,7 @@ class TestCrossFieldValidation:
         from sova.dashboard.services.settings_service import _validate_config_consistency
 
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.services.settings_service.load_config",
             side_effect=RuntimeError("Invalid configuration"),
         ):
             assert _validate_config_consistency(tmp_path, "agent.max_budget", 25) is None
@@ -776,7 +776,7 @@ class TestGetSecretLocations:
     async def test_config_load_failure_returns_empty(self, tmp_path) -> None:
         from sova.dashboard.services.settings_service import get_secret_locations
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.dashboard.services.settings_service.load_config", side_effect=RuntimeError("boom")):
             assert get_secret_locations(tmp_path) == {}
 
 
@@ -1079,7 +1079,7 @@ class TestGetConfigAndPersona:
     def test_get_config_returns_error_dict_on_load_failure(self, tmp_path) -> None:
         from sova.dashboard.services.settings_service import get_config
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad toml")):
+        with patch("sova.dashboard.services.settings_service.load_config", side_effect=RuntimeError("bad toml")):
             result = get_config(tmp_path)
 
         assert result == {"_error": "No configuration found"}

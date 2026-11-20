@@ -10,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.config.loader import load_config
 from sova.git.artifact_exclusions import WORKTREE_STASH_EXCLUDED_PATHS, unstage_command
 from sova.git.untracked_collisions import clear_conflicting_runtime_files, runtime_stash_pathspecs
 from sova.llm.client import invoke_command
@@ -256,7 +257,6 @@ def _load_consensus_config(
     ``invoke_command``.
     """
     try:
-        from sova.config.loader import load_config
         from sova.llm.backends import Backend, detect_backend, is_anthropic_model_id
 
         cfg = load_config(cwd)

@@ -180,7 +180,7 @@ class TestAgentPoolConfig:
         mock_cfg = MagicMock()
         mock_cfg.max_parallel_agents = 7
         mock_load_config = MagicMock(return_value=mock_cfg)
-        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.load_config", mock_load_config)
         old_projects = agent_pool._projects.copy()
         agent_pool._projects.clear()
         try:
@@ -203,7 +203,7 @@ class TestAgentPoolConfig:
 
         mock_cfg = MagicMock()
         mock_cfg.max_parallel_agents = 1
-        monkeypatch.setattr("sova.config.loader.load_config", MagicMock(return_value=mock_cfg))
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.load_config", MagicMock(return_value=mock_cfg))
         old_projects = agent_pool._projects.copy()
         agent_pool._projects.clear()
         try:
@@ -230,7 +230,7 @@ class TestAgentPoolConfig:
         mock_cfg = MagicMock()
         mock_cfg.max_parallel_agents = 2
         mock_load_config = MagicMock(return_value=mock_cfg)
-        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.load_config", mock_load_config)
         old_projects = agent_pool._projects.copy()
         agent_pool._projects.clear()
         try:
@@ -249,7 +249,7 @@ class TestAgentPoolConfig:
         from sova.dashboard.services import agent_pool
 
         mock_load_config = MagicMock(side_effect=RuntimeError("no config"))
-        monkeypatch.setattr("sova.config.loader.load_config", mock_load_config)
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.load_config", mock_load_config)
         old_projects = agent_pool._projects.copy()
         agent_pool._projects.clear()
         try:

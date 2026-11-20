@@ -12,11 +12,13 @@ from typing import TYPE_CHECKING
 from cachetools import TTLCache
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_adopt import (
     _find_pr_completion_handoff,
     _read_result_is_error,
     adopt_orphaned_run,
 )
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
 
@@ -276,8 +278,6 @@ async def _derive_finished_outcome(run: TaskRun, project_dir: Path | None) -> bo
 def _recovery_kill_orphans(project_dir: Path | None) -> bool:
     """Whether ``recovery.kill_orphans`` is on. An unreadable config answers False: nothing is killed."""
     try:
-        from sova.config.loader import load_config
-
         return load_config(project_dir).recovery.kill_orphans
     except Exception:  # noqa: BLE001 (config may fail many ways; the safe answer is to signal nothing)
         log.warning("recovery.kill_orphans_config_failed", project_dir=str(project_dir), exc_info=True)
@@ -319,7 +319,6 @@ async def _kill_terminal_zombies(project_dir: Path | None = None) -> int:
 
     from sova.dashboard.services.work_service import _TERMINAL
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     managed_run_ids, _ = _get_managed_run_ids()
 
@@ -356,8 +355,6 @@ async def _kill_terminal_zombies(project_dir: Path | None = None) -> int:
 def _get_recovery_config(project_dir: Path | None) -> tuple[str, str]:
     """Load (repo, github_user) for merge queue checks during recovery."""
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         return cfg.github_repo or "", cfg.github_user or ""
     except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
@@ -429,7 +426,6 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
         )
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         # Phase 1: load stale runs and apply fast (synchronous) checks.
         async with await get_session(project_dir=project_dir) as session:
@@ -730,11 +726,9 @@ async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> 
 
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
-        from sova.config.loader import load_config
         from sova.dashboard.services.agent_db import PRIOR_STATE_KEY
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             task_run = await session.get(TaskRun, run_id)
@@ -862,7 +856,6 @@ async def get_interrupted_runs_and_total(limit: int = 5) -> tuple[list[dict], in
 
     from sova.dashboard.services import run_service
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     cutoff = datetime.now(timezone.utc) - _INTERRUPTED_RUN_WINDOW
     try:
@@ -901,7 +894,6 @@ async def dismiss_interrupted_runs(run_ids: list[int], *, preserve_diagnostic: b
     from sqlalchemy import update
 
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     if not run_ids:
         return 0
@@ -953,7 +945,6 @@ def _summarize_ci_checks(checks: list | None) -> str:
 def _load_repo_config() -> tuple[str, str] | None:
     """Load project config and return (repo, gh_user), or None if unavailable."""
     from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
 
     project_dir = get_project_dir()
     if not project_dir:
@@ -1043,7 +1034,6 @@ async def _has_active_run(issue_number: str) -> bool:
 
     from sova.dashboard.services.work_service import _TERMINAL
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     async with await get_session() as session:
         async with session.begin():
@@ -1116,7 +1106,6 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
     """Fetch reviews from adapter, deduplicate, interpret, and build actions."""
     from sova.adapters import create_adapter
     from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
 
     cfg = load_config(get_project_dir())
     try:
@@ -1213,7 +1202,6 @@ async def get_synthesized_handoff() -> dict | None:
     from sqlalchemy import func, select
 
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -1284,7 +1272,6 @@ async def attempt_network_self_heal(project_dir: Path | None = None) -> list[dic
     Returns the resumes it started, for logging and tests.
     """
     try:
-        from sova.config.loader import load_config
         from sova.supervisor.network_health import get_connectivity_tracker
 
         cfg = load_config(project_dir)
@@ -1334,7 +1321,6 @@ async def _find_self_heal_candidates(project_dir: Path | None, window_minutes: i
     from sqlalchemy import func, select
 
     from sova.db.models import StepExecution, TaskRun
-    from sova.db.session import get_session
     from sova.utils.network import looks_like_network_outage
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
@@ -1458,7 +1444,6 @@ async def _count_recent_resumes(project_dir: Path | None) -> int:
     from sqlalchemy import func, select
 
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     async with await get_session(project_dir=project_dir) as session:

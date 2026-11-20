@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.db.models import OversightFinding
+from sova.db.session import get_session
 from sova.llm.models import resolve_model_alias
 from sova.llm.provider import LLMProvider
 from sova.utils.json import extract_json
@@ -232,8 +233,6 @@ async def _persist_findings(
     if not findings:
         return 0
 
-    from sova.db.session import get_session
-
     try:
         async with await get_session(project_dir=project_dir) as session, session.begin():
             session.add_all(findings)
@@ -285,8 +284,6 @@ async def analyze_snapshot(
             return ([], "partial: parse failed")
 
         # Deduplicate against recent history using fingerprints
-        from sova.db.session import get_session
-
         try:
             async with await get_session(project_dir=project_dir) as session:
                 recent_fps = await _load_recent_fingerprints(session, dedup_window_days)

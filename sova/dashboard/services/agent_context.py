@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 from sova.commands.catalog import get_canonical_dir
+from sova.config.loader import load_config
 from sova.git.artifact_exclusions import STASH_EXCLUDED_PATHS, unstage_command
 from sova.git.untracked_collisions import (
     clear_conflicting_runtime_files,
@@ -39,7 +40,6 @@ async def _resolve_branch_name(pr_number: int | None, project_dir: Path) -> str:
     if not pr_number:
         return ""
     try:
-        from sova.config.loader import load_config
         from sova.git.pr import get_pr_branch
 
         cfg = load_config(project_dir)
@@ -318,7 +318,6 @@ def _render_canonical_template(content: str, project_dir: Path) -> str:
     `ProjectConfig()`'s defaults rather than returning the raw template.
     """
     from sova.commands.templates import build_variables, render_command
-    from sova.config.loader import load_config
     from sova.config.models import ProjectConfig
 
     try:
@@ -453,7 +452,6 @@ async def _is_issue(number: str, project_dir: Path) -> bool:
 
 def _resolve_mcp_env(run_id: int, project_dir: Path) -> dict[str, str]:
     """Generate MCP token and URL for the agent subprocess."""
-    from sova.config.loader import load_config
     from sova.dashboard.services.mcp_service import generate_mcp_token, get_or_generate_secret
 
     try:
@@ -509,7 +507,6 @@ def with_check_worker_cap(env: dict[str, str] | None, project_dir: Path) -> dict
 async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
     """Resolve GH_TOKEN env for the project's configured github_user."""
     try:
-        from sova.config.loader import load_config
         from sova.utils.gh import resolve_gh_env
 
         cfg = load_config(project_dir)

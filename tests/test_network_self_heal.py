@@ -50,7 +50,7 @@ def guard_config():
     from sova.config.models import NetworkGuardConfig
 
     cfg = type("Cfg", (), {"network_guard": NetworkGuardConfig()})()
-    with patch("sova.config.loader.load_config", return_value=cfg):
+    with patch("sova.dashboard.services.agent_recovery.load_config", return_value=cfg):
         yield cfg
 
 
@@ -342,7 +342,7 @@ class TestGuards:
 
         await _add(_run(issue="664", status="failed"))
         cfg = type("Cfg", (), {"network_guard": NetworkGuardConfig(auto_resume=False)})()
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=cfg):
             assert await attempt_network_self_heal(tmp_path / "project") == []
 
     async def test_a_rejected_spawn_is_not_reported_as_resumed(

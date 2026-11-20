@@ -14,6 +14,8 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 
+from sova.config.loader import load_config
+
 if TYPE_CHECKING:
     from sova.awareness.rendering.models import Briefing
 
@@ -44,7 +46,6 @@ async def _briefing(
     from sova.awareness import create_providers
     from sova.awareness.briefing import BriefingService
     from sova.awareness.rendering.cli_renderer import render_briefing_cli
-    from sova.config.loader import load_config
 
     resolved_dir = project_dir or Path.cwd()
     cfg = load_config(resolved_dir)

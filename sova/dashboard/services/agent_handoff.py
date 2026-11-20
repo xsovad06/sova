@@ -6,8 +6,10 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_validation import check_memory_pressure
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -49,7 +51,6 @@ async def _check_address_review_circuit_breaker(
     if role != "developer" or pr_number is None:
         return None
 
-    from sova.config.loader import load_config
     from sova.dashboard.services.work_verdict import (
         TRUNCATED_KEY,
         UNRESOLVED_KEY,
@@ -108,7 +109,6 @@ def _notify_budget_exhausted(agent: AgentState, issue: str, reason: str, *, head
     failing before clear_handoff() runs.
     """
     try:
-        from sova.config.loader import load_config
         from sova.ipc.notifications import NotificationKind, notify
 
         notify(
@@ -142,7 +142,6 @@ async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHand
     """
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():

@@ -15,8 +15,10 @@ from pathlib import Path
 import aiosqlite
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.config.registry import ProjectEntry, get_project_entries, list_projects
 from sova.dashboard.services.agent_pool import list_all_pools, read_max_parallel
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="fleet_manager")
@@ -240,11 +242,9 @@ class FleetManagerService:
     def _read_coderabbit_limit(project_dir: Path) -> int:
         """Read CodeRabbit reviews_per_hour from project config."""
         try:
-            from sova.config.loader import load_config
-
             cfg = load_config(project_dir)
             return cfg.coderabbit_quota.reviews_per_hour or 0
-        except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+        except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML))
             log.warning("fleet_manager.coderabbit_limit_read_failed", project_dir=str(project_dir), exc_info=True)
             return 0
 
@@ -258,7 +258,6 @@ class FleetManagerService:
         """
         try:
             from sova.config.db_loader import config_db_unreadable_reason, save_setting
-            from sova.db.session import get_session
 
             reason = config_db_unreadable_reason(project_dir)
             if reason is not None:

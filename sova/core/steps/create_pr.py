@@ -33,6 +33,7 @@ from sova.core.steps.commit_convention import (
     match_type_prefix,
     truncate_commit_line,
 )
+from sova.db.session import get_session
 from sova.git import operations as git_ops
 from sova.llm.client import invoke
 from sova.utils.formatting import truncate
@@ -308,7 +309,6 @@ class CreatePRStep(BaseStep):
     async def _create_pr_throttled(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
         """Enqueue PR creation and wait, within the step deadline, for the background processor to create it."""
         from sova.db.models import PRQueueStatus
-        from sova.db.session import get_session
         from sova.supervisor.pr_throttle import QueueEntryMissingError, enqueue, poll_until_created, throttle_loop_alive
 
         if ctx.task_run_id is None:
@@ -412,7 +412,6 @@ class CreatePRStep(BaseStep):
         An entry already ``creating`` is not touched: its ``gh pr create`` cannot be recalled, and the
         loop's own ``created`` write stays the authoritative one.
         """
-        from sova.db.session import get_session
         from sova.supervisor.pr_throttle import dequeue, get_queue_entry_status
 
         async def _cancel_and_read() -> dict | None:
@@ -448,7 +447,6 @@ class CreatePRStep(BaseStep):
     @staticmethod
     async def _next_slot_hint(ctx: ExecutionContext) -> str:
         """Describe when the CodeRabbit quota next has a free slot, for the queue timeout error."""
-        from sova.db.session import get_session
         from sova.supervisor.coderabbit_quota import get_quota_status
 
         try:

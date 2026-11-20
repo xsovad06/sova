@@ -324,7 +324,7 @@ class TestPersistIssueNumbers:
         async def _fake_get_session(*_a, **_kw):
             return mock_session
 
-        with patch("sova.db.session.get_session", side_effect=_fake_get_session):
+        with patch("sova.oversight.actions.get_session", side_effect=_fake_get_session):
             await _persist_issue_numbers([finding])
 
         mock_session.merge.assert_awaited_once_with(finding)
@@ -336,7 +336,7 @@ class TestPersistIssueNumbers:
         finding.github_issue_number = 42
 
         with patch(
-            "sova.db.session.get_session",
+            "sova.oversight.actions.get_session",
             side_effect=RuntimeError("DB gone"),
         ):
             await _persist_issue_numbers([finding])
@@ -375,7 +375,7 @@ class TestProjectDirScope:
             calls.append(kwargs)
             raise RuntimeError("stop here")
 
-        with patch("sova.db.session.get_session", side_effect=_get_session):
+        with patch("sova.oversight.actions.get_session", side_effect=_get_session):
             assert await _find_existing_issue_by_fingerprint("abc", tmp_path) is None
 
         assert calls == [{"project_dir": tmp_path}]
@@ -389,7 +389,7 @@ class TestProjectDirScope:
             raise RuntimeError("stop here")
 
         finding = _make_finding(confidence=0.9)
-        with patch("sova.db.session.get_session", side_effect=_get_session):
+        with patch("sova.oversight.actions.get_session", side_effect=_get_session):
             await _persist_issue_numbers([finding], tmp_path)
 
         assert calls == [{"project_dir": tmp_path}]

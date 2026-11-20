@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sova.monitoring.models import ResourceSummary
 
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_pool import AgentState
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -73,8 +75,6 @@ async def cancel_background_tasks() -> None:
 def _start_resource_monitoring(agent: AgentState, project_dir: Path, pid: int) -> None:
     """Start resource collector and writer for an agent (if monitoring is enabled)."""
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         if not cfg.monitoring.enabled:
             return
@@ -141,7 +141,6 @@ async def _compute_and_store_energy(
         log.debug("energy.skipped", run_id=run_id, reason="no cpu reading")
         return
     from sova.db.models import ResourceSummaryRecord, TaskRun
-    from sova.db.session import get_session
     from sova.monitoring.energy import estimate_energy
 
     try:
@@ -159,8 +158,6 @@ async def _compute_and_store_energy(
             tdp_override = None
             co2_grams_per_kwh = 436.0
             try:
-                from sova.config.loader import load_config
-
                 cfg = load_config(project_dir)
                 tdp_override = cfg.monitoring.tdp_override
                 co2_grams_per_kwh = cfg.monitoring.co2_grams_per_kwh

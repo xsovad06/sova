@@ -215,7 +215,7 @@ class TestStartBatch:
 
 class TestBatchTriage:
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.roles.triage.TriageRole")
     async def test_triage_processes_all_issues(
@@ -258,7 +258,7 @@ class TestBatchTriage:
         [("ready", TaskState.TRIAGED), ("needs_spec", TaskState.NEEDS_SPEC), ("human_only", TaskState.HUMAN_ONLY)],
     )
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     async def test_triage_transitions_to_the_verdict_state(
         self,
@@ -286,7 +286,7 @@ class TestBatchTriage:
         adapter.transition_state.assert_awaited_once_with("1", expected)
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.roles.triage.TriageRole")
     async def test_triage_skips_non_backlog(
@@ -313,7 +313,7 @@ class TestBatchTriage:
         mock_role_cls.return_value.heuristic_assess.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.roles.triage.TriageRole")
     async def test_triage_cancel_skips_remaining(
@@ -352,7 +352,7 @@ class TestBatchTriage:
 
 class TestBatchHarden:
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_processes_issues(
@@ -387,7 +387,7 @@ class TestBatchHarden:
         adapter.post_comment.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_skips_ineligible_state(
@@ -414,7 +414,7 @@ class TestBatchHarden:
         mock_invoke.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_retriage_applies_suitability_label(
@@ -454,7 +454,7 @@ class TestBatchHarden:
         adapter.add_label.assert_awaited_once_with("1", "agent:interactive-recommended")
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_retriage_moves_a_needs_spec_issue_to_triaged_on_a_ready_verdict(
@@ -487,7 +487,7 @@ class TestBatchHarden:
         adapter.transition_state.assert_awaited_once_with("1", TaskState.TRIAGED)
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_retriage_never_moves_a_human_only_issue_on_a_weaker_verdict(
@@ -518,7 +518,7 @@ class TestBatchHarden:
         [("needs_spec", "agent:researched"), ("human_only", "agent:in-progress")],
     )
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_guard_reads_state_before_the_verdict_label(
@@ -559,7 +559,7 @@ class TestBatchHarden:
         adapter.transition_state.assert_not_awaited()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_retriage_without_auto_label_touches_no_labels(
@@ -591,7 +591,7 @@ class TestBatchHarden:
         adapter.remove_label.assert_not_awaited()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_retriage_failure_keeps_item_done(
@@ -621,7 +621,7 @@ class TestBatchHarden:
         adapter.edit_body.assert_awaited_once()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_empty_llm_result_marks_failed(
@@ -649,7 +649,7 @@ class TestBatchHarden:
         adapter.edit_body.assert_not_awaited()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_item_error_lands_in_result_row(
@@ -689,7 +689,7 @@ class TestBatchHarden:
         assert job.results[1].status == "done"
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_cancel_skips_remaining(
@@ -716,7 +716,7 @@ class TestBatchHarden:
         mock_invoke.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_list_tasks_failure_is_fail_open(
@@ -743,7 +743,7 @@ class TestBatchHarden:
         assert job.results[0].status == "done"
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     async def test_harden_fatal_setup_failure_marks_pending_failed(
         self, mock_config, mock_init_db, tmp_path: Path
     ) -> None:
@@ -766,7 +766,7 @@ class TestBatchHarden:
 
 class TestBatchConcurrency:
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.roles.triage.TriageRole")
     async def test_triage_respects_concurrency_limit(
@@ -822,7 +822,7 @@ class TestBatchConcurrency:
         assert max_concurrent <= 2
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
-    @patch("sova.config.loader.load_config")
+    @patch("sova.dashboard.services.batch_service.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.llm.client.invoke", new_callable=AsyncMock)
     async def test_harden_respects_concurrency_limit(

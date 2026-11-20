@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.models import FleetConfig
 from sova.config.registry import list_projects
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="fleet")
@@ -437,8 +438,6 @@ class FleetService:
         from datetime import datetime, timedelta, timezone
 
         from sqlalchemy import case, func, select
-
-        from sova.db.session import get_session
 
         try:
             from sova.db.models import TelemetryEvent

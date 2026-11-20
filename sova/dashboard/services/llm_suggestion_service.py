@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_validation import classify_for_launch
 from sova.dashboard.services.work_item_service import load_classification_graph
 from sova.db.session import get_session
@@ -93,7 +94,6 @@ async def get_issue_complexity(issue_number: str, role: str | None = None) -> di
     (or a nickname of them, or no role on an issue the dispatcher would route to one) ``suitability`` is null.
     """
     from sova.config.context import resolve_project_dir_or_none
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.db.models import TaskAssessmentRecord
     from sova.llm.complexity import ComplexityTier, assess_complexity

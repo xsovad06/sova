@@ -8,6 +8,9 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
+
 app = typer.Typer(
     name="server",
     help="Manage the SOVA server daemon (dashboard + scheduler).",
@@ -29,7 +32,6 @@ _PRIVATE_TMP_ROOTS = (Path("/tmp").resolve(), Path("/var/tmp").resolve())  # NOS
 
 def _start_server(project: Path | None, host: str, port: int, no_scheduler: bool, multi: bool | None) -> None:
     """Common server startup logic."""
-    from sova.config.loader import load_config
     from sova.scheduler.server import SOVAServer, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
@@ -73,7 +75,6 @@ def start(
     ] = None,
 ) -> None:
     """Start the SOVA server (dashboard + scheduler)."""
-    from sova.config.loader import load_config
     from sova.scheduler.server import _is_port_listening, locate_running_server, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
@@ -98,7 +99,6 @@ def stop(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
 ) -> None:
     """Stop the running SOVA server."""
-    from sova.config.loader import load_config
     from sova.scheduler.server import (
         StopResult,
         _is_port_listening,
@@ -130,7 +130,6 @@ def status(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
 ) -> None:
     """Show the SOVA server status."""
-    from sova.config.loader import load_config
     from sova.scheduler.server import _is_port_listening, locate_running_server, resolve_multi_mode
 
     resolved_dir = project or Path.cwd()
@@ -160,7 +159,6 @@ def restart(
     ] = None,
 ) -> None:
     """Restart the SOVA server (stop, then start)."""
-    from sova.config.loader import load_config
     from sova.scheduler.server import (
         StopResult,
         _is_port_listening,
@@ -207,7 +205,6 @@ def digest(
     import asyncio
     from datetime import UTC, datetime, timedelta
 
-    from sova.db.session import get_session
     from sova.scheduler.server import query_digest_stats
 
     resolved_dir = project or Path.cwd()
@@ -259,7 +256,6 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
     """
     import signal
 
-    from sova.config.loader import load_config
     from sova.scheduler.server import _resolve_pid_path
 
     newsyslog_dir = Path.home() / ".config" / "sova"

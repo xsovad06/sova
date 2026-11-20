@@ -14,6 +14,9 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
+
 console = Console(stderr=True)
 
 app = typer.Typer(name="assess", help="Manage local suitability assessments.", no_args_is_help=True)
@@ -96,7 +99,6 @@ async def _resolve_target(project_dir: Path | None, issue: str) -> tuple[Path, s
     command run from a linked worktree would otherwise create and write to a
     throwaway DB the supervisor never reads.
     """
-    from sova.config.loader import load_config
     from sova.db.session import init_db
     from sova.git.worktree import get_primary_worktree_root
 
@@ -127,7 +129,6 @@ def set_cmd(
 
 
 async def _set(*, issue: str, suitability: str, project_dir: Path | None) -> None:
-    from sova.db.session import get_session
     from sova.knowledge.assessments import resolve_suitability, set_assessment
 
     resolved = resolve_suitability(suitability)
@@ -159,7 +160,6 @@ def get_cmd(
 
 
 async def _get(*, issue: str, project_dir: Path | None) -> None:
-    from sova.db.session import get_session
     from sova.knowledge.assessments import get_latest_assessment, shorthand_for
 
     resolved_dir, project_slug, issue_number = await _resolve_target(project_dir, issue)
@@ -183,7 +183,6 @@ def clear_cmd(
 
 
 async def _clear(*, issue: str, project_dir: Path | None) -> None:
-    from sova.db.session import get_session
     from sova.knowledge.assessments import clear_assessment
 
     resolved_dir, project_slug, issue_number = await _resolve_target(project_dir, issue)

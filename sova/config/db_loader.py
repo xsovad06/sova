@@ -25,8 +25,9 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError, OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.config.loader import invalidate_config_cache, load_config
 from sova.db.models import ProjectSetting
-from sova.db.session import _get_database_url
+from sova.db.session import _get_database_url, get_session
 from sova.utils.logging import get_logger
 
 logger = get_logger(component="config.db_loader")
@@ -157,9 +158,6 @@ async def _swap_task_queue(project_dir: Path | None, rebuild: Callable[[Any], li
     from sqlalchemy import update
     from sqlalchemy.exc import IntegrityError
 
-    from sova.config.loader import invalidate_config_cache
-    from sova.db.session import get_session
-
     for _attempt in range(_QUEUE_SWAP_ATTEMPTS):
         async with await get_session(project_dir=project_dir) as session:
             result = await session.execute(select(ProjectSetting.value).where(ProjectSetting.key == TASK_QUEUE_KEY))
@@ -208,8 +206,6 @@ async def save_task_queue(
     the dashboard API and the daemon's queue maintenance. Raises on failure so callers can handle rollback or
     HTTP errors.
     """
-    from sova.db.session import get_session
-
     if based_on is not None:
 
         def rebuild(stored: Any) -> list[Any]:
@@ -226,8 +222,6 @@ async def save_task_queue(
     async with await get_session(project_dir=project_dir) as session, session.begin():
         await save_setting(session, TASK_QUEUE_KEY, queue)
 
-    from sova.config.loader import invalidate_config_cache
-
     invalidate_config_cache(project_dir or Path.cwd())
     return list(queue)
 
@@ -240,8 +234,6 @@ async def load_task_queue(project_dir: Path | None) -> list[int]:
     zero, and negative values). Shared by dashboard API endpoints that need
     the current queue state without going through the sync load_config().
     """
-    from sova.db.session import get_session
-
     async with await get_session(project_dir=project_dir) as session:
         queue = await get_setting(session, TASK_QUEUE_KEY)
     if not isinstance(queue, list):
@@ -300,8 +292,6 @@ async def load_hidden_issues(project_dir: Path | None) -> list[int]:
     Read through ``load_config()`` rather than the DB alone, so a list set in ``sova.toml`` or by an environment
     override hides issues too. The load is synchronous (TOML and DB reads on a cache miss), so it runs in a thread.
     """
-    from sova.config.loader import load_config
-
     config = await asyncio.to_thread(load_config, project_dir)
     return _positive_ids(config.dashboard.hidden_issues)
 
@@ -313,9 +303,6 @@ async def set_issue_hidden(project_dir: Path | None, issue_number: int, *, hidde
     read and written in one transaction, and a failed read raises rather than reading as an empty list, so a
     database error can never replace the stored list with only this issue. Raises on a persistence failure.
     """
-    from sova.config.loader import invalidate_config_cache
-    from sova.db.session import get_session
-
     async with _hidden_issues_lock:
         async with await get_session(project_dir=project_dir) as session, session.begin():
             result = await session.execute(select(ProjectSetting.value).where(ProjectSetting.key == HIDDEN_ISSUES_KEY))

@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_pool import ProjectAgents
+from sova.db.session import get_session
 from sova.supervisor.suitability import Suitability, SuitabilityMode, assess_suitability
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
@@ -49,7 +51,6 @@ async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = 
         from sova.dashboard.services.agent_recovery import _is_process_alive
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         in_memory_ids = set(pa.agents.keys())
         async with await get_session(project_dir=pa.project_dir) as session:
@@ -90,7 +91,6 @@ async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path |
     if pr_number is None:
         return False
     try:
-        from sova.config.loader import load_config
         from sova.git.pr import get_pr_status
 
         cfg = load_config(project_dir)
@@ -114,9 +114,7 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
     block all agent operations. The failure is logged as a warning.
     """
     try:
-        from sova.config.loader import load_config
         from sova.dashboard.services.lifecycle_service import get_lifecycle_for_issue
-        from sova.db.session import get_session
 
         cfg = load_config(project_dir)
         max_budget = cfg.agent.max_issue_budget
@@ -195,7 +193,6 @@ async def _read_issue_suitability(
     issue: str, project_dir: Path, task: Task | None, cfg: ProjectConfig | None, graph: DependencyGraph | None
 ) -> Suitability:
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
     from sova.supervisor.labels import local_assessment_applies
 
     if cfg is None:
@@ -221,7 +218,6 @@ async def _latest_local_suitability(canonical: str, typed: str, project_dir: Pat
     A launch for `007` fetches issue `7`, and the record is stored under `7`; the id as typed is still
     tried when it differs, so a record written under that spelling is not lost.
     """
-    from sova.db.session import get_session
     from sova.knowledge.assessments import get_latest_assessment
 
     async with await get_session(project_dir=project_dir) as session:
@@ -265,7 +261,6 @@ async def pin_override_role(issue: str, role: str | None, project_dir: Path) -> 
     try:
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
-        from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
         async with asyncio.timeout(_SUITABILITY_CHECK_TIMEOUT_S):
@@ -340,8 +335,6 @@ async def check_issue_suitability(
         return None
     cfg: ProjectConfig | None = None
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
     except Exception:  # noqa: BLE001 (an unreadable config leaves nicknames unresolved and classify retries it)
         log.warning("issue_suitability_check.config_failed", issue=issue, exc_info=True)
@@ -364,7 +357,6 @@ async def _fetch_launch_task(issue: str, project_dir: Path, cfg: ProjectConfig |
     """The tracker issue, or None (logged) when it cannot be read; the caller's deadline bounds the read."""
     try:
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
 
         return await create_adapter(cfg or load_config(project_dir)).get_task(issue)
     except Exception:  # noqa: BLE001 (a tracker or config failure leaves the launch role unknown)
@@ -465,8 +457,6 @@ def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:
     values are invalid, returns ``(None, None)``.
     """
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         guard = cfg.memory_guard
         if not guard.enabled:
@@ -520,8 +510,6 @@ def check_network_connectivity(project_dir: Path) -> tuple[dict | None, str | No
         if not status.is_down:
             return None, None
 
-        from sova.config.loader import load_config
-
         guard = load_config(project_dir).network_guard
         if guard.enabled and guard.block_spawns:
             return {
@@ -571,7 +559,6 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
     try:
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
-        from sova.config.loader import load_config
 
         adapter = create_adapter(load_config(project_dir))
         await adapter.transition_state(issue, TaskState.IN_PROGRESS)

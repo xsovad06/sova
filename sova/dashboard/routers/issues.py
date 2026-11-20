@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import AdapterError, PriorityUnavailableError
 from sova.adapters.priority import Priority
 from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -56,7 +57,6 @@ async def set_priority(number: Annotated[int, Path(gt=0)], body: PriorityRequest
     The adapter is built for this request, so any client it opened is closed on every exit path.
     """
     from sova.adapters import close_adapter, create_adapter
-    from sova.config.loader import load_config
 
     project_dir = get_project_dir()
     try:

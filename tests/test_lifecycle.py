@@ -1069,7 +1069,7 @@ class TestLifecycleRouter:
     async def test_get_by_issue_config_load_failure(self, app, session: AsyncSession):
         """Config load failure should not break the endpoint (covers except branch)."""
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.routers.lifecycle.load_config",
             side_effect=ValueError("Bad config"),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

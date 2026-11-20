@@ -23,10 +23,9 @@ from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.ipc.handoff import DashboardHandoff, handoff_filename, write_handoff_file
 
-# agent_handoff.py resolves `get_session` via a function-local `from sova.db.session
-# import get_session` on every call (not a module-level import), so patching
-# "sova.db.session.get_session" at its definition module takes effect correctly here,
-# unlike the general rule of patching at the importing module's namespace.
+# agent_handoff.py imports `get_session` and `load_config` at module scope, so a test
+# patches them in its namespace ("sova.dashboard.services.agent_handoff.get_session"),
+# never at their definition modules, where the patch would not reach this code.
 
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -186,7 +185,7 @@ class TestAutoHandoffIssueMismatch:
         mock_start = AsyncMock()
         with (
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_handoff.get_session", side_effect=_ignore_project_dir),
         ):
             await _process_auto_handoff(agent)
 
@@ -286,9 +285,9 @@ class TestAutoHandoffIssueMismatch:
         mock_start = AsyncMock(return_value={"run_id": 99})
         with (
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_handoff.get_session", side_effect=_ignore_project_dir),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.agent_handoff.load_config",
                 return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
             ),
         ):
@@ -353,7 +352,7 @@ class TestAutoHandoffIssueMismatch:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_handoff.get_session", side_effect=_ignore_project_dir):
             await _process_auto_handoff(agent)
 
         # No auto_execute action: the manual Integrate handoff stays for the dashboard to render.
@@ -413,7 +412,7 @@ class TestAutoHandoffCircuitBreaker:
         mock_cfg.pipeline.max_address_review_cycles = 2
         with (
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
                 "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
@@ -478,7 +477,7 @@ class TestAutoHandoffCircuitBreaker:
         mock_cfg.pipeline.max_address_review_cycles = 2
         with (
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
                 "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
@@ -500,7 +499,7 @@ class TestAutoHandoffCircuitBreaker:
         mock_cfg = MagicMock()
         mock_cfg.pipeline.max_address_review_cycles = 3
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
                 "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
@@ -522,7 +521,7 @@ class TestAutoHandoffCircuitBreaker:
         mock_cfg = MagicMock()
         mock_cfg.pipeline.max_address_review_cycles = 3
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
             patch(
                 "sova.dashboard.services.work_verdict.resolve_sova_verdict",
                 new_callable=AsyncMock,
@@ -648,7 +647,7 @@ class TestAutoHandoffCircuitBreaker:
         mock_cfg.pipeline.max_address_review_cycles = 0
         with (
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_handoff.load_config", return_value=mock_cfg),
         ):
             await _process_auto_handoff(agent)
 
@@ -821,7 +820,7 @@ class TestAutoHandoff:
                 agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_start,
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.agent_handoff.load_config",
                 return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
             ),
         ):
@@ -944,7 +943,7 @@ class TestAutoHandoff:
                 agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_start,
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.work_verdict.load_config",
                 return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
             ),
         ):
@@ -1106,7 +1105,7 @@ class TestPersistCompletingAgentHandoff:
         async def _boom(**kwargs):
             raise RuntimeError("db unavailable")
 
-        monkeypatch.setattr("sova.db.session.get_session", _boom)
+        monkeypatch.setattr("sova.dashboard.services.agent_handoff.get_session", _boom)
 
         handoff = DashboardHandoff(
             source="reviewer", status="awaiting_action", issue="94", summary="x", details={"a": 1}

@@ -376,7 +376,7 @@ class TestFindPromptTemplate:
 
 
 class TestLoadConsensusConfig:
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_returns_config_values(self, mock_load: MagicMock) -> None:
         from sova.config.models import ConflictResolutionConfig, LLMConfig
 
@@ -392,7 +392,7 @@ class TestLoadConsensusConfig:
         assert templates == {"m1": "tmpl"}
         assert timeout == 600.0
 
-    @patch("sova.config.loader.load_config", side_effect=Exception("bad config"))
+    @patch("sova.git.rebase.load_config", side_effect=Exception("bad config"))
     def test_returns_defaults_on_failure(self, mock_config: MagicMock) -> None:
         models, threshold, templates, timeout = _load_consensus_config(Path("/fake"))
         assert models == []
@@ -400,7 +400,7 @@ class TestLoadConsensusConfig:
         assert templates == {}
         assert timeout is None
 
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_empties_models_when_provider_not_anthropic_capable(self, mock_load: MagicMock) -> None:
         """A non-Anthropic llm.provider must not reach the direct LiteLLM consensus
         call, even if agent.cr_models still lists Anthropic model IDs (#924)."""
@@ -416,7 +416,7 @@ class TestLoadConsensusConfig:
         assert models == []
         assert threshold == 0.8
 
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_keeps_explicitly_non_anthropic_models_under_matching_provider(self, mock_load: MagicMock) -> None:
         """Only the implicit Anthropic assumption is guarded: an explicitly listed
         OpenAI consensus pair under llm.provider="openai" is a coherent operator
@@ -430,7 +430,7 @@ class TestLoadConsensusConfig:
         models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
         assert models == ["gpt-5", "gpt-5-mini"]
 
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_keeps_models_when_provider_anthropic_capable(self, mock_load: MagicMock) -> None:
         from sova.config.models import ConflictResolutionConfig, LLMConfig
 
@@ -441,7 +441,7 @@ class TestLoadConsensusConfig:
         models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
         assert models == ["claude-sonnet-4-6", "claude-opus-4-1"]
 
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_empties_models_when_vertex_provider_even_though_anthropic_capable(self, mock_load: MagicMock) -> None:
         """llm.provider="vertex" with an Anthropic llm.model is Anthropic-capable, but
         _create_providers() still builds a bare, unprefixed LiteLLMProvider(model=model_id)
@@ -457,7 +457,7 @@ class TestLoadConsensusConfig:
         models, _threshold, _templates, _timeout = _load_consensus_config(Path("/fake"))
         assert models == []
 
-    @patch("sova.config.loader.load_config")
+    @patch("sova.git.rebase.load_config")
     def test_empties_models_when_claude_code_redirected_to_vertex(self, mock_load: MagicMock) -> None:
         """CLAUDE_CODE_USE_VERTEX redirects the CLI off FIRSTPARTY even though
         llm.provider="claude-code" is Anthropic-capable unconditionally; the bare consensus

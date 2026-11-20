@@ -14,8 +14,9 @@ from sova.config.models import ProjectConfig, SupervisorConfig
 
 runner = CliRunner()
 
-# load_config is imported inside the command functions, so patch at the source module.
-_PATCH_LOAD_CONFIG = "sova.config.loader.load_config"
+# load_config is bound at module scope in the commands module, so patch it there (patching
+# sova.config.loader would miss it).
+_PATCH_LOAD_CONFIG = "sova.cli.commands.supervisor.load_config"
 # asyncio is imported at module level, so patch on the commands module.
 _PATCH_ASYNCIO = "sova.cli.commands.supervisor.asyncio"
 

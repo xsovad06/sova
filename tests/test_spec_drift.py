@@ -535,7 +535,9 @@ class TestSpecDriftService:
 
         sha = _git(repo, "rev-parse", "HEAD")
         _commit(repo, {"sova/core/a.py": "a2\n"})
-        with patch("sova.db.session.get_session", side_effect=OperationalError("s", {}, Exception("db"))):
+        with patch(
+            "sova.dashboard.services.spec_service.get_session", side_effect=OperationalError("s", {}, Exception("db"))
+        ):
             result = await spec_drift(_spec(sha, "`sova/core/a.py`"), "approved", repo, "42")
         assert result == {"status": "unverifiable", "files": []}
 
@@ -550,7 +552,7 @@ class TestSpecDriftService:
     async def test_config_failure_is_unverifiable_not_current(self, repo: Path) -> None:
         from sova.dashboard.services.spec_service import spec_drift
 
-        with patch("sova.config.loader.load_config", side_effect=ValueError("bad config")):
+        with patch("sova.dashboard.services.spec_service.load_config", side_effect=ValueError("bad config")):
             result = await spec_drift(_spec(_UNKNOWN_SHA, "`a.py`"), project_dir=repo)
         assert result == {"status": "unverifiable", "files": []}
 

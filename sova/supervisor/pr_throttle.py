@@ -19,6 +19,7 @@ from pathlib import Path
 from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.config.loader import load_config
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.db.models import PRCreationQueue, PRQueueStatus, TaskRun
@@ -471,7 +472,6 @@ async def run_post_create_side_effects(
     per-request context variable is not set outside request handlers.
     """
     from sova.adapters.base import TaskState
-    from sova.config.loader import load_config
     from sova.git import operations as git_ops
 
     if github_user:
@@ -526,8 +526,6 @@ async def _trigger_coderabbit_review(
     project_dir: Path | None = None,
 ) -> None:
     """Post @coderabbitai review comment when trigger_review is enabled."""
-    from sova.config.loader import load_config
-
     cfg = load_config(project_dir)
     if not cfg.external_reviews.coderabbit.trigger_review:
         return

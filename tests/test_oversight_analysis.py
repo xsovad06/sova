@@ -41,7 +41,12 @@ async def db_session():
     async def _mock_get_session(**kwargs):
         return factory()
 
-    with patch("sova.db.session.get_session", side_effect=_mock_get_session):
+    # Every oversight module binds get_session at module scope, so each binding is patched.
+    with (
+        patch("sova.oversight.analysis.get_session", side_effect=_mock_get_session),
+        patch("sova.oversight.actions.get_session", side_effect=_mock_get_session),
+        patch("sova.oversight.agent.get_session", side_effect=_mock_get_session),
+    ):
         yield factory
 
     await engine.dispose()
@@ -637,7 +642,7 @@ class TestPersistFindings:
         async def _failing_session(**kwargs):
             raise RuntimeError("DB unavailable")
 
-        with patch("sova.db.session.get_session", side_effect=_failing_session):
+        with patch("sova.oversight.analysis.get_session", side_effect=_failing_session):
             result = await _persist_findings([finding], "run-x")
         assert result == 0
 
@@ -940,7 +945,7 @@ class TestConfigReload:
         new_cfg = OversightConfig(enabled=True, wake_interval_minutes=15)
         mock_project_cfg = type("C", (), {"oversight": new_cfg})()
 
-        with patch("sova.config.loader.load_config", return_value=mock_project_cfg):
+        with patch("sova.oversight.agent.load_config", return_value=mock_project_cfg):
             result = agent._reload_config()
 
         assert result.enabled is True
@@ -953,7 +958,7 @@ class TestConfigReload:
         cfg = OversightConfig(enabled=True, wake_interval_minutes=60)
         agent = OversightAgent(config=cfg)
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.oversight.agent.load_config", side_effect=RuntimeError("boom")):
             result = agent._reload_config()
 
         assert result is cfg
@@ -974,9 +979,10 @@ class TestFingerprintCrossCheck:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("sova.db.session.get_session", return_value=mock_session):
+        with patch("sova.oversight.actions.get_session", return_value=mock_session):
             result = await _find_existing_issue_by_fingerprint("abc123")
             assert result is None
+        mock_session.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_returns_none_for_none_fingerprint(self) -> None:

@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.config.loader import load_config
 from sova.llm.errors import ComponentMisconfiguredError
 from sova.llm.models import ModelInfo
 from sova.utils.logging import get_logger
@@ -216,8 +217,6 @@ async def get_available_models(project_dir: Path, *, layer: str = "llm", refresh
     and ``layer="runtime"`` for the same project must not collide or share a
     refresh allowance, since they enumerate independent credentials.
     """
-    from sova.config.loader import load_config
-
     cache_key = f"{layer}:{project_dir.resolve()}"
     now = time.monotonic()
     _prune_stale_entries(now)

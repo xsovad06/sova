@@ -14,6 +14,7 @@ from sova.dashboard.services.agent_recovery import (
     invalidate_synthesis_cache,
 )
 from sova.dashboard.services.snapshot_service import get_snapshot, invalidate_snapshot, refresh_snapshot
+from sova.db.session import get_session
 
 router = APIRouter()
 
@@ -24,7 +25,6 @@ async def _find_awaiting_approval_run(issue: str) -> int | None:
 
     from sova.core.state import TaskStatus
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     async with await get_session() as session, session.begin():
         stmt = (

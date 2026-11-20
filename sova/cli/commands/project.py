@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters import create_adapter
 from sova.config.loader import invalidate_config_cache, load_config
 from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
+from sova.db.session import get_session
 from sova.git.artifact_exclusions import INFO_EXCLUDE_ENTRIES
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
@@ -54,7 +55,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     if _try_load_from_db(project_dir) is None and not update:
         try:
-            from sova.db.session import get_session, init_db
+            from sova.db.session import init_db
 
             await init_db(project_dir)
             async with await get_session(project_dir=project_dir) as session:
@@ -94,7 +95,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     # Stage 3: Database
     failed_stages: list[str] = []
     try:
-        from sova.db.session import get_session, init_db
+        from sova.db.session import init_db
 
         await init_db(project_dir)
         console.print("[green]Database initialized.[/green]")
@@ -854,7 +855,7 @@ async def _setup(*, path: Path | None) -> None:
 
     # Initialize DB and save config
     try:
-        from sova.db.session import get_session, init_db
+        from sova.db.session import init_db
 
         await init_db(project_dir)
     except (OSError, SQLAlchemyError) as exc:

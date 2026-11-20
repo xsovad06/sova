@@ -3269,7 +3269,7 @@ class TestCheckWorktreeActiveAgent:
 
     async def test_returns_none_when_no_matching_runs(self) -> None:
         mock_gs = self._make_session_mock([])
-        with patch("sova.db.session.get_session", mock_gs):
+        with patch("sova.git.worktree.get_session", mock_gs):
             result = await check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
         assert result is None
 
@@ -3277,7 +3277,7 @@ class TestCheckWorktreeActiveAgent:
         record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
         mock_gs = self._make_session_mock([record])
         with (
-            patch("sova.db.session.get_session", mock_gs),
+            patch("sova.git.worktree.get_session", mock_gs),
             patch("os.kill") as mock_kill,
         ):
             mock_kill.return_value = None
@@ -3288,7 +3288,7 @@ class TestCheckWorktreeActiveAgent:
         record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
         mock_gs = self._make_session_mock([record])
         with (
-            patch("sova.db.session.get_session", mock_gs),
+            patch("sova.git.worktree.get_session", mock_gs),
             patch("os.kill", side_effect=ProcessLookupError),
         ):
             result = await check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
@@ -3298,7 +3298,7 @@ class TestCheckWorktreeActiveAgent:
         record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
         mock_gs = self._make_session_mock([record])
         with (
-            patch("sova.db.session.get_session", mock_gs),
+            patch("sova.git.worktree.get_session", mock_gs),
             patch("os.kill", side_effect=PermissionError),
         ):
             result = await check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
@@ -3306,14 +3306,14 @@ class TestCheckWorktreeActiveAgent:
 
     async def test_raises_on_db_failure(self) -> None:
         mock_gs = AsyncMock(side_effect=RuntimeError("DB down"))
-        with patch("sova.db.session.get_session", mock_gs):
+        with patch("sova.git.worktree.get_session", mock_gs):
             with pytest.raises(RuntimeError, match="Cannot verify worktree safety"):
                 await check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
 
     async def test_returns_none_for_non_matching_path(self) -> None:
         record = self._make_run_record("/other/path", 99999)
         mock_gs = self._make_session_mock([record])
-        with patch("sova.db.session.get_session", mock_gs):
+        with patch("sova.git.worktree.get_session", mock_gs):
             result = await check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
         assert result is None
 

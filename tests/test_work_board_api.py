@@ -241,7 +241,8 @@ class TestPriorityRoute:
         tracker = _FakeTracker({1: Priority.LOW, 2: Priority.MEDIUM})
         with (
             patch("sova.adapters.create_adapter", return_value=tracker),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.routers.issues.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=SimpleNamespace()),
         ):
             yield tracker
 
@@ -300,7 +301,7 @@ class TestPriorityRoute:
         tracker = SimpleNamespace(repo="owner/repo", set_priority=AsyncMock())
         with (
             patch("sova.adapters.create_adapter", return_value=tracker),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.routers.issues.load_config", return_value=SimpleNamespace()),
         ):
             resp = await client.put("/api/issues/1/priority", json={"priority": "high"})
 
@@ -310,7 +311,7 @@ class TestPriorityRoute:
         assert (await client.put("/api/issues/1/priority", json={"priority": "urgent"})).status_code == 422
 
     async def test_a_config_failure_is_a_503(self, client: AsyncClient) -> None:
-        with patch("sova.config.loader.load_config", side_effect=OSError("no config")):
+        with patch("sova.dashboard.routers.issues.load_config", side_effect=OSError("no config")):
             resp = await client.put("/api/issues/1/priority", json={"priority": "high"})
 
         assert resp.status_code == 503

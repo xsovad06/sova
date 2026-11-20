@@ -17,6 +17,7 @@ from pathlib import Path
 
 from sova.awareness import register_provider
 from sova.awareness.base import AwarenessItem, AwarenessProvider, ItemCategory
+from sova.config.loader import load_config
 from sova.config.registry import list_projects
 from sova.utils.logging import get_logger
 
@@ -59,8 +60,6 @@ class DependencyHealthProvider(AwarenessProvider):
 
 def _project_enabled(project_dir: Path) -> bool:
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         return cfg.dependency_health.enabled
     except Exception:  # noqa: BLE001 (config may fail for many reasons; fail closed to not-enabled)
@@ -81,7 +80,6 @@ async def _safe_project_items(slug: str, project_dir: Path, sem: asyncio.Semapho
 
 
 async def _project_items(slug: str, project_dir: Path) -> list[AwarenessItem]:
-    from sova.config.loader import load_config
     from sova.dashboard.services import dependency_health_service
 
     cfg = load_config(project_dir)

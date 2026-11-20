@@ -54,27 +54,27 @@ class TestAgentDbSessionFailures:
     """`sova/dashboard/services/agent_db.py` DB-boundary handlers."""
 
     async def test_create_task_run_returns_none_when_session_fails(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._create_task_run("42", "developer", tmp_path) is None
 
     async def test_update_pid_swallows_session_failure(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session(OSError("disk gone"))):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session(OSError("disk gone"))):
             assert await agent_db._update_task_run_pid(1, 999, tmp_path) is None
 
     async def test_update_output_path_swallows_session_failure(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session(RuntimeError("closed"))):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session(RuntimeError("closed"))):
             assert await agent_db._update_task_run_output_path(1, str(tmp_path / "out"), tmp_path) is None
 
     async def test_finalize_orphaned_run_swallows_session_failure(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._finalize_orphaned_run(1, tmp_path) is None
 
     async def test_fetch_output_lines_returns_none_on_db_error(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._fetch_output_lines(1, tmp_path) is None
 
     async def test_fetch_run_states_returns_empty_dict_on_db_error(self) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._fetch_run_states([1, 2]) == {}
 
     async def test_dequeue_pr_entry_swallows_db_error(self) -> None:
@@ -87,11 +87,11 @@ class TestAgentDbSessionFailures:
         assert await agent_db._finalize_orphaned_steps(session, 1) is None
 
     async def test_validate_pipeline_outcome_returns_none_on_db_error(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._validate_pipeline_outcome(1, _agent(tmp_path)) is None
 
     async def test_downgrade_to_failed_swallows_db_error(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session()):
             assert await agent_db._downgrade_to_failed(1, "bypassed", tmp_path) is None
 
     async def test_downgrade_to_failed_survives_rollback_failure(self, tmp_path: Path) -> None:
@@ -108,7 +108,7 @@ class TestAgentDbSessionFailures:
             return session
 
         with (
-            patch("sova.db.session.get_session", _get_session),
+            patch("sova.dashboard.services.agent_db.get_session", _get_session),
             patch(
                 "sova.dashboard.services.agent_recovery.rollback_issue_state",
                 side_effect=RuntimeError("tracker offline"),
@@ -121,7 +121,7 @@ class TestAgentDbSessionFailures:
 
     async def test_persist_review_verdict_reraises_after_logging(self, tmp_path: Path) -> None:
         with (
-            patch("sova.db.session.get_session", _broken_session()),
+            patch("sova.dashboard.services.agent_db.get_session", _broken_session()),
             pytest.raises(SQLAlchemyError),
         ):
             await agent_db._persist_review_verdict(1, "approve", tmp_path)
@@ -139,7 +139,7 @@ class TestAgentDbSessionFailures:
             assert await agent_db._check_pr_branch_pushed(_agent(tmp_path)) == (None, False)
 
     async def test_finalize_task_run_returns_false_on_unexpected_error(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session(ValueError("bad state"))):
+        with patch("sova.dashboard.services.agent_db.get_session", _broken_session(ValueError("bad state"))):
             assert await agent_db._finalize_task_run(1, exit_code=1, agent=_agent(tmp_path)) is False
 
 
@@ -176,7 +176,7 @@ class TestBatchServiceFailurePaths:
 
         with (
             patch("sova.db.session.init_db", AsyncMock()),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.batch_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch(
                 "sova.dashboard.services.batch_service._try_batch_llm_triage",
@@ -211,7 +211,7 @@ class TestBatchServiceFailurePaths:
 
         with (
             patch("sova.db.session.init_db", AsyncMock()),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.batch_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch("sova.cli.commands.harden._load_project_docs", return_value=""),
             patch("sova.cli.commands.harden._format_issues_summary", return_value=""),
@@ -306,7 +306,7 @@ class TestResourceServiceFailurePaths:
         from sova.dashboard.services import resource_service
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.resource_service.load_config", side_effect=RuntimeError("bad config")),
             pytest.raises(RuntimeError, match="bad config"),
         ):
             await resource_service.get_capacity_recommendation(_broken_db_session(), tmp_path)
@@ -315,7 +315,9 @@ class TestResourceServiceFailurePaths:
         from sova.dashboard.services import resource_service
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(max_parallel_agents=3)),
+            patch(
+                "sova.dashboard.services.resource_service.load_config", return_value=MagicMock(max_parallel_agents=3)
+            ),
             pytest.raises(SQLAlchemyError),
         ):
             await resource_service.get_capacity_recommendation(_broken_db_session(), tmp_path)
@@ -330,7 +332,7 @@ class TestResourceServiceFailurePaths:
         cfg.monitoring.safety_margin = 0.2
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.resource_service.load_config", return_value=cfg),
             patch("psutil.cpu_count", side_effect=OSError("no cpu info")),
             patch.object(resource_service, "get_cross_project_metrics", return_value={}),
         ):
@@ -349,7 +351,7 @@ class TestResourceServiceFailurePaths:
         cfg.monitoring.safety_margin = 0.2
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.resource_service.load_config", return_value=cfg),
             patch.object(resource_service, "get_cross_project_metrics", side_effect=RuntimeError("registry gone")),
         ):
             async with await get_session() as session:
@@ -368,7 +370,7 @@ class TestSchedulerServerFailurePaths:
         return SOVAServer(config=MagicMock(), project_dir=project_dir)
 
     async def test_db_health_check_reports_unhealthy_on_error(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.scheduler.server.get_session", _broken_session()):
             assert await self._server(tmp_path)._check_db_connection() is False
 
     def test_active_agent_count_falls_back_to_zero(self, tmp_path: Path) -> None:
@@ -384,7 +386,7 @@ class TestMergeQueueMonitorFailurePaths:
     async def test_create_entry_returns_none_on_db_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
 
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.merge_queue_monitor.get_session", _broken_session()):
             entry_id = await create_merge_queue_entry(
                 pr_number=7,
                 repo="owner/repo",
@@ -395,13 +397,13 @@ class TestMergeQueueMonitorFailurePaths:
     async def test_load_queued_entries_returns_empty_list_on_db_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import _load_queued_entries
 
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.merge_queue_monitor.get_session", _broken_session()):
             assert await _load_queued_entries(tmp_path) == []
 
     async def test_update_entry_status_swallows_db_error(self, tmp_path: Path) -> None:
         from sova.dashboard.services.merge_queue_monitor import _update_entry_status
 
-        with patch("sova.db.session.get_session", _broken_session()):
+        with patch("sova.dashboard.services.merge_queue_monitor.get_session", _broken_session()):
             assert await _update_entry_status(1, "merged", tmp_path) is None
 
     def test_monitor_creation_skips_projects_with_unloadable_config(self, tmp_path: Path) -> None:
@@ -412,6 +414,6 @@ class TestMergeQueueMonitorFailurePaths:
                 "sova.config.registry.list_projects",
                 return_value={"broken": str(tmp_path)},
             ),
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad toml")),
+            patch("sova.dashboard.services.merge_queue_monitor.load_config", side_effect=RuntimeError("bad toml")),
         ):
             assert create_monitors_for_merge_queue() == []

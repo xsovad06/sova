@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.config.loader import load_config
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION
 from sova.utils.logging import get_logger
@@ -198,7 +199,6 @@ async def start_batch_run(
 async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
     try:
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
         from sova.db.session import init_db
         from sova.roles.triage import TriageRole
 
@@ -307,7 +307,6 @@ async def _run_batch_harden(
             _load_issue_template,
             _load_project_docs,
         )
-        from sova.config.loader import load_config
         from sova.db.session import init_db
         from sova.llm.client import invoke
         from sova.roles.triage import TriageRole

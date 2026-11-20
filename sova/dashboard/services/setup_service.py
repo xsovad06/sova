@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from sova.config.loader import load_config
 from sova.dashboard.services.health_service import invalidate_health_checks_cache
 from sova.utils.env import configured_passthrough, scrub_agent_env
 from sova.utils.formatting import decimal_to_json
@@ -513,7 +514,6 @@ async def create_starter_milestones(
     Returns a dict with created, skipped, and failed lists.
     """
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
 
     effective_titles = list(DEFAULT_PHASE_TITLES) if titles is None else titles
 
@@ -591,7 +591,6 @@ def get_github_user(project_dir: Path | None) -> str | None:
     retries. A successful read is cached per project for ``_GITHUB_USER_CACHE_TTL`` seconds. Falls back to
     the single-project default when no project is scoped.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     resolved_dir = project_dir or get_default_project_dir()
@@ -622,7 +621,6 @@ async def get_auth_status(project_dir: Path) -> dict:
     (e.g. config load failure) propagates so the router can turn it into a
     503 (a genuine service failure, not a status to report).
     """
-    from sova.config.loader import load_config
     from sova.llm.provider import create_provider
     from sova.utils.env import PROVIDER_ROUTING_VARS
 
@@ -862,7 +860,6 @@ async def get_connection_catalog(project_dir: Path, *, is_loopback_bind: bool = 
     behavior) for any caller that does not thread the dashboard's own bind
     signal through.
     """
-    from sova.config.loader import load_config
     from sova.llm import keyring_store
 
     cfg = await asyncio.to_thread(load_config, project_dir)
@@ -936,8 +933,6 @@ async def _build_llm_candidate_for_request(
     """
     if provider in _LLM_MODEL_REQUIRED and not model:
         return None, {"ok": False, "reason": "missing_model", "detail": f"'{provider}' requires an explicit model"}
-
-    from sova.config.loader import load_config
 
     cfg = await asyncio.to_thread(load_config, project_dir)
     try:
@@ -1063,7 +1058,6 @@ async def activate_llm_candidate(project_dir: Path, provider: str, *, model: str
     # and must reload the in-process provider itself: otherwise the running
     # server keeps serving LLM calls through the old provider until an
     # unrelated settings write happens to touch the llm.* prefix.
-    from sova.config.loader import load_config
     from sova.llm.client import reload_provider_async
 
     cfg = await asyncio.to_thread(load_config, project_dir)
@@ -1115,7 +1109,6 @@ async def validate_runtime_candidate(project_dir: Path, runtime: str) -> dict:
     if runtime not in _RUNTIME_LABELS:
         return {"ok": False, "reason": "unknown_runtime", "detail": f"Unknown runtime: {runtime!r}"}
 
-    from sova.config.loader import load_config
     from sova.ipc.runtime import create_runtime
 
     cfg = await asyncio.to_thread(load_config, project_dir)
@@ -1143,7 +1136,6 @@ async def activate_runtime_candidate(project_dir: Path, runtime: str) -> dict:
     # Mirrors activate_llm_candidate(): this path writes straight through
     # update_config() rather than POST /settings/config, so it must reload
     # the in-process runtime itself.
-    from sova.config.loader import load_config
     from sova.ipc.runtime import reload_runtime
 
     cfg = await asyncio.to_thread(load_config, project_dir)
@@ -1290,7 +1282,6 @@ async def _check_gh_flow(project_dir: Path, is_loopback_bind: bool) -> dict:  # 
 async def _check_google_flow(project_dir: Path, is_loopback_bind: bool) -> dict:
     """Server-side gating for Google authorization, so a direct POST gets the same rejection the UI shows."""
     from sova.awareness.auth import google_oauth
-    from sova.config.loader import load_config
 
     availability = reconnect_availability(is_loopback_bind=is_loopback_bind, flow="google")
     if not availability["can_reconnect"]:
@@ -1358,7 +1349,6 @@ async def _finish_gh(project_dir: Path) -> str:
 async def _finish_google(project_dir: Path) -> str:
     """Re-derive the real state: drop the stale credential cache, then run the non-interactive provider check."""
     from sova.awareness.auth import google_oauth
-    from sova.config.loader import load_config
 
     cfg = await asyncio.to_thread(load_config, project_dir)
     google_oauth.forget_cached_credentials(cfg.awareness)

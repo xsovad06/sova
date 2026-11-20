@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query
 
 from sova.adapters.base import AdapterError
+from sova.config.loader import load_config
 from sova.dashboard.services import oversight_service
 from sova.dashboard.services.daemon_registry import get_oversight_agent
 from sova.db.session import get_session
@@ -32,7 +33,6 @@ async def cancel_run_now_tasks() -> None:
 async def get_status() -> dict:
     """Return oversight agent status and summary stats."""
     from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
 
     project_dir = get_project_dir()
     try:
@@ -107,7 +107,6 @@ async def create_issue_from_finding(finding_id: int) -> dict:
     """Create a GitHub Issue from a pending finding."""
     from sova.adapters import create_adapter
     from sova.config.context import get_project_dir
-    from sova.config.loader import load_config
     from sova.oversight.actions import _issue_body, _issue_labels
 
     async with await get_session() as session:

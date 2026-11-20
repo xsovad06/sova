@@ -115,7 +115,6 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
     from sqlalchemy import select
 
     from sova.db.models import WorkflowDefinition
-    from sova.db.session import get_session
     from sova.roles.custom import CustomRole
 
     try:

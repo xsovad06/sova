@@ -932,7 +932,7 @@ class TestNextSlotHint:
 
         quota = MagicMock(can_create_pr=can_create, next_available_minutes=minutes)
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.coderabbit_quota.get_quota_status", new_callable=AsyncMock, return_value=quota),
         ):
             hint = await CreatePRStep._next_slot_hint(_throttle_ctx(tmp_path))
@@ -947,7 +947,7 @@ class TestNextSlotHint:
         from sova.core.steps.create_pr import CreatePRStep
 
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.coderabbit_quota.get_quota_status", new_callable=AsyncMock, side_effect=error),
         ):
             hint = await CreatePRStep._next_slot_hint(_throttle_ctx(tmp_path))
@@ -968,7 +968,7 @@ class TestCreatePRStepThrottledInternals:
         mock_pr = PRInfo(number=10, url="https://github.com/o/r/pull/10")
         with (
             patch(
-                "sova.db.session.get_session",
+                "sova.core.steps.create_pr.get_session",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("DB down"),
             ),
@@ -988,7 +988,7 @@ class TestCreatePRStepThrottledInternals:
 
         cancelled = {"id": 99, "status": "cancelled", "pr_number": None}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=99),
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=None),
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock, return_value=cancelled),
@@ -1011,7 +1011,7 @@ class TestCreatePRStepThrottledInternals:
 
         poll_result = {"status": PRQueueStatus.CREATED, "pr_number": 77, "pr_url": "https://github.com/o/r/pull/77"}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=99),
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=poll_result),
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock, return_value=poll_result) as cancel,
@@ -1033,7 +1033,7 @@ class TestCreatePRStepThrottledInternals:
 
         poll_result = {"status": PRQueueStatus.FAILED, "pr_number": None, "error_message": "API rate limit"}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=99),
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=poll_result),
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock, return_value=poll_result),
@@ -1053,7 +1053,7 @@ class TestCreatePRStepThrottledInternals:
 
         poll_result = {"status": PRQueueStatus.FAILED, "pr_number": None, "error_message": None}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=99),
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=poll_result),
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock, return_value=poll_result),
@@ -1111,7 +1111,7 @@ class TestCreatePRStepWithoutThrottleLoop:
         ctx = _throttle_ctx(tmp_path)
         created = {"status": "created", "pr_number": 3, "pr_url": "u"}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=7) as enqueue,
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=created),
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock, return_value=created),
@@ -1141,7 +1141,7 @@ class TestCreatePRStepQueueWaitBound:
         ctx = _throttle_ctx(tmp_path, step_time_remaining=remaining)
         created = {"status": "created", "pr_number": 3, "pr_url": "u"}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=7),
             patch(
                 "sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=created
@@ -1159,7 +1159,7 @@ class TestCreatePRStepQueueWaitBound:
         step = CreatePRStep()
         ctx = _throttle_ctx(tmp_path, step_time_remaining=remaining)
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock) as get_session,
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock) as get_session,
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock) as enqueue,
             patch("sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock) as poll,
             patch.object(step, "_cancel_queue_entry", new_callable=AsyncMock) as cancel,
@@ -1181,7 +1181,7 @@ class TestCreatePRStepQueueWaitBound:
         ctx.step_deadline_is_runaway = True
         created = {"status": "created", "pr_number": 3, "pr_url": "u"}
         with (
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=_mock_session()),
+            patch("sova.core.steps.create_pr.get_session", new_callable=AsyncMock, return_value=_mock_session()),
             patch("sova.supervisor.pr_throttle.enqueue", new_callable=AsyncMock, return_value=7),
             patch(
                 "sova.supervisor.pr_throttle.poll_until_created", new_callable=AsyncMock, return_value=created
@@ -1746,7 +1746,7 @@ class TestRunPostCreateSideEffects:
 
         with (
             patch("sova.git.operations.assign_pr", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.pr_throttle.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch("sova.core.steps.create_pr.suggest_ldap_reviewers", new_callable=AsyncMock) as mock_suggest,
         ):
@@ -1774,7 +1774,7 @@ class TestRunPostCreateSideEffects:
 
         with (
             patch("sova.git.operations.assign_pr", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.pr_throttle.load_config", return_value=cfg),
             patch("sova.core.steps.create_pr.suggest_ldap_reviewers", new_callable=AsyncMock) as mock_suggest,
         ):
             await run_post_create_side_effects(
@@ -1797,7 +1797,7 @@ class TestTriggerCodeRabbitReview:
         mock_run_result.success = True
         with (
             patch(
-                "sova.config.loader.load_config",
+                "sova.supervisor.pr_throttle.load_config",
                 return_value=_make_config_with_trigger(True),
             ),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1815,7 +1815,7 @@ class TestTriggerCodeRabbitReview:
 
         with (
             patch(
-                "sova.config.loader.load_config",
+                "sova.supervisor.pr_throttle.load_config",
                 return_value=_make_config_with_trigger(False),
             ),
             patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
@@ -1831,7 +1831,7 @@ class TestTriggerCodeRabbitReview:
         mock_run_result.stderr = "error"
         with (
             patch(
-                "sova.config.loader.load_config",
+                "sova.supervisor.pr_throttle.load_config",
                 return_value=_make_config_with_trigger(True),
             ),
             patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),

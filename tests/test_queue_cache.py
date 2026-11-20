@@ -54,7 +54,7 @@ async def test_cache_hit_within_ttl():
     cfg = _github_cfg()
 
     with (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=cfg),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -74,7 +74,7 @@ async def test_cache_expires_after_ttl():
     cfg = _github_cfg()
 
     with (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=cfg),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -97,7 +97,7 @@ async def test_multi_project_cache_isolation():
     cfg = _github_cfg()
 
     with (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=cfg),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -116,7 +116,7 @@ async def test_adapter_error_not_cached():
     mock_adapter.list_tasks = AsyncMock(side_effect=RuntimeError("API down"))
 
     with (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=cfg),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
     ):
         result = await queue_service.get_priority_queue(Path("/proj"))
@@ -135,7 +135,7 @@ async def test_queue_passes_paginate_true():
     cfg = _github_cfg()
 
     with (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=cfg),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -157,7 +157,7 @@ async def test_last_run_refreshed_while_task_list_cached():
     awaiting = {"1148": {"id": 7, "status": "awaiting_approval", "role": "researcher"}}
 
     with (
-        patch("sova.config.loader.load_config", return_value=_github_cfg()),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch(
             "sova.dashboard.services.queue_service._get_last_runs_by_issue",
@@ -180,7 +180,7 @@ async def test_spec_status_reenriched_on_every_call():
     mock_adapter.list_tasks = AsyncMock(return_value=[task])
 
     with (
-        patch("sova.config.loader.load_config", return_value=_github_cfg()),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
         patch("sova.dashboard.services.queue_service._enrich_spec_status", new_callable=AsyncMock) as enrich,
@@ -200,7 +200,7 @@ async def test_calls_do_not_share_mutable_queue_dicts():
     mock_adapter.list_tasks = AsyncMock(return_value=[task])
 
     with (
-        patch("sova.config.loader.load_config", return_value=_github_cfg()),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -222,7 +222,7 @@ async def test_mutating_returned_lists_does_not_corrupt_cached_task():
     mock_adapter.list_tasks = AsyncMock(return_value=[task])
 
     with (
-        patch("sova.config.loader.load_config", return_value=_github_cfg()),
+        patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
         patch("sova.adapters.create_adapter", return_value=mock_adapter),
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
@@ -271,7 +271,7 @@ class TestInvalidateQueueCache:
         mock_adapter.list_tasks = AsyncMock(return_value=[task])
 
         with (
-            patch("sova.config.loader.load_config", return_value=_github_cfg()),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch(
                 "sova.dashboard.services.queue_service._get_last_runs_by_issue",
@@ -300,7 +300,7 @@ class TestInvalidateQueueCache:
         mock_adapter.list_tasks = AsyncMock(side_effect=_slow_list_tasks)
 
         with (
-            patch("sova.config.loader.load_config", return_value=_github_cfg()),
+            patch("sova.dashboard.services.queue_service.load_config", return_value=_github_cfg()),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch(
                 "sova.dashboard.services.queue_service._get_last_runs_by_issue",

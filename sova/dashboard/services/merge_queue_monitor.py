@@ -22,7 +22,9 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.config.models import IntegrationConfig
+from sova.db.session import get_session
 from sova.ipc.notifications import NotificationKind
 from sova.utils.logging import get_logger
 
@@ -271,7 +273,6 @@ class MergeQueueMonitor:
         body carries no GitHub closing keyword, so there the entry's ticket is the one moved.
         """
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
         from sova.git.merge import handle_merged_pr_issues, handle_post_merge_state
 
         cfg = load_config(self.project_dir)
@@ -367,7 +368,6 @@ async def create_merge_queue_entry(
     from sqlalchemy import select
 
     from sova.db.models import MergeQueueEntry
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -409,7 +409,6 @@ async def _load_queued_entries(project_dir: Path) -> list[dict]:
     from sqlalchemy import select
 
     from sova.db.models import MergeQueueEntry
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -444,7 +443,6 @@ async def _update_entry_status(entry_id: int, status: str, project_dir: Path) ->
     from sqlalchemy import select
 
     from sova.db.models import MergeQueueEntry
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -461,7 +459,6 @@ async def _update_entry_status(entry_id: int, status: str, project_dir: Path) ->
 
 def create_monitors_for_merge_queue() -> list[MergeQueueMonitor]:
     """Create MergeQueueMonitor instances for all registered projects."""
-    from sova.config.loader import load_config
     from sova.config.registry import list_projects
 
     monitors: list[MergeQueueMonitor] = []
