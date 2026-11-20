@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from decimal import Decimal
@@ -901,7 +902,68 @@ class DashboardConfig(BaseSettings):
                 raise ValueError(msg)
         return v
 
+    # HTTPS origins of a reverse proxy in front of the loopback bind (Tailscale Serve), stored
+    # normalized as `https://host` or `https://host:port`. Each one is trusted as a Host and an
+    # Origin, and a request addressed to it must carry an allowed `Tailscale-User-Login`
+    # (`sova/dashboard/security.py`, `ProxyIdentityMiddleware`). The bind itself stays loopback.
+    proxy_origins: list[str] = Field(default_factory=list)
+    proxy_allowed_logins: list[str] = Field(default_factory=list)
+
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
+
+    @field_validator("proxy_origins", mode="after")
+    @classmethod
+    def _normalize_proxy_origins(cls, value: list[str]) -> list[str]:
+        """Normalize each entry to the exact `Origin` a browser sends, or reject it.
+
+        Only `https` is accepted: Tailscale Serve terminates TLS, and the identity header it
+        sets means nothing on a plain-HTTP hop. A path, query, fragment or userinfo is
+        refused rather than dropped, since it signals a URL was pasted where an origin was
+        meant. A loopback or wildcard host is refused, and so is a `*` in the host (Starlette's
+        trusted-host check treats it as a glob, which would let any Host through): either would
+        put the identity check in front of the loopback dashboard itself, which has no proxy to
+        set the header.
+        """
+        normalized: list[str] = []
+        for raw in value:
+            entry = raw.strip()
+            parts = urlparse(entry)
+            if parts.scheme.lower() != "https":
+                raise ValueError(f"proxy origin {entry!r} must start with https://")
+            if parts.path not in ("", "/") or parts.query or parts.fragment or parts.params or "@" in parts.netloc:
+                raise ValueError(f"proxy origin {entry!r} must be scheme://host[:port] only, without a path")
+            try:
+                port = parts.port
+            except ValueError as exc:
+                raise ValueError(f"proxy origin {entry!r} has an invalid port") from exc
+            host = (parts.hostname or "").lower()
+            if not host:
+                raise ValueError(f"proxy origin {entry!r} has no host")
+            if "*" in host or host == "localhost" or _is_loopback_or_wildcard_ip(host):
+                raise ValueError(f"proxy origin {entry!r} must name the proxy, not a loopback or wildcard address")
+            shown = f"[{host}]" if ":" in host else host
+            origin = f"https://{shown}" if port in (None, 443) else f"https://{shown}:{port}"
+            if origin not in normalized:
+                normalized.append(origin)
+        return normalized
+
+    @field_validator("proxy_allowed_logins", mode="after")
+    @classmethod
+    def _clean_proxy_logins(cls, value: list[str]) -> list[str]:
+        """Strip each login and reject an empty one, which could never match a real header."""
+        cleaned = [v.strip() for v in value]
+        if any(not v for v in cleaned):
+            raise ValueError("proxy_allowed_logins entries must not be empty")
+        return cleaned
+
+
+def _is_loopback_or_wildcard_ip(host: str) -> bool:
+    """True when `host` is an IP literal on the loopback interface or the unspecified address."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_unspecified
 
 
 class AtlassianMCPConfig(BaseSettings):

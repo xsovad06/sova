@@ -138,6 +138,21 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 
 On the Work board, **Up next** ranks issues ready for an agent. **Queued** is the saved order the supervisor starts when it is on and a slot is free. **Running** includes active runs, rebases, and issues marked in progress. **In review** contains open PRs still in draft, CI, review, or changes requested, plus issues marked in review by the tracker; it does not imply unresolved review findings. The PR's thread count shows resolved/total, so the difference is unresolved. **Needs you** contains merge decisions, approvals, and failed runs. Mine matches an issue assignee to the configured identity for that issue's tracker, or a PR author or assignee to the GitHub user. The header totals remain project wide.
 
+### Remote Access over Tailscale
+
+The dashboard stays bound to loopback. To reach it from your own phone or laptop, publish it to your tailnet with Tailscale Serve (never Funnel, which would make it public) and tell SOVA which origin and which Tailscale login to accept:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8111
+sova config set dashboard.proxy_origins https://<machine>.<tailnet>.ts.net
+sova config set dashboard.proxy_allowed_logins you@example.com   # your Tailscale login
+sova server restart                                              # both settings apply at startup
+```
+
+Both settings apply to the whole server and are read once at startup, from the project the server serves. On the multi-project hub (`sova server start --multi`) that is the directory the server was started in, so run the `sova config set` lines there, or set `SOVA_DASHBOARD_PROXY_ORIGINS` and `SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS` (JSON arrays) in the server environment; a value saved in any other project has no effect.
+
+Enable HTTPS certificates in the Tailscale admin console first, and consider restricting the access policy to your own devices (`autogroup:self`). A request through the proxy origin without an allowed login, and any Funnel request, gets 403. If the first HTTPS request fails with a TLS error, `tailscale cert <machine>.<tailnet>.ts.net` prints the underlying certificate error. The security model is in `docs/security-guidelines.md`, "Dashboard Security Model".
+
 ## Configuration
 
 **Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. Read a single value (for scripts or commands) with `sova config get <key>`; lists and dicts print as JSON, and a secret key always prints `(secret)`. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.

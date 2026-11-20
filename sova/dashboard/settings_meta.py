@@ -1511,6 +1511,29 @@ _REGISTRY: list[SettingMeta] = [
         "list",
         item_type="int",
     ),
+    SettingMeta(
+        "dashboard.proxy_origins",
+        "Proxy origins",
+        "HTTPS origins of a Tailscale Serve proxy in front of this loopback dashboard, such as "
+        "https://mac.example.ts.net. Each is trusted as a Host and Origin, and a request to it must "
+        "carry an allowed Tailscale login (see Proxy allowed logins). Never use Tailscale Funnel: "
+        "Funnel requests are always refused. Server-wide, read at startup from the project the server serves "
+        "(on the multi-project hub, the directory it was started in). "
+        "Env: SOVA_DASHBOARD_PROXY_ORIGINS as a JSON array",
+        "dashboard",
+        "list",
+        requires_restart=True,
+    ),
+    SettingMeta(
+        "dashboard.proxy_allowed_logins",
+        "Proxy allowed logins",
+        "Tailscale logins (the Tailscale-User-Login header Serve sets, such as you@github) allowed "
+        "through a proxy origin. Empty refuses every proxied request. Read at startup from the same project as "
+        "Proxy origins. Env: SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS as a JSON array",
+        "dashboard",
+        "list",
+        requires_restart=True,
+    ),
     # MCP
     SettingMeta(
         "mcp.enabled",
