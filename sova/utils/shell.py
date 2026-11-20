@@ -8,6 +8,9 @@ It bypasses this module intentionally; see its docstring for rationale.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +22,11 @@ log = get_logger(component="shell")
 # Max seconds to wait for a killed process to exit. SIGKILL is unblockable;
 # delays beyond ~1s indicate uninterruptible kernel I/O (e.g., deleted mount).
 _KILL_TIMEOUT_SECONDS = 5
+
+# Seconds a timed-out command's process group gets to exit after SIGTERM before
+# the whole group is sent SIGKILL. Lets pytest and make clean up without making
+# a timed-out step wait noticeably longer.
+_TERM_GRACE_SECONDS = 2
 
 # Bounds the stdin write for long-lived spawns (write_stdin_and_close). A
 # stall here would mean the child is not reading stdin at all, since it
@@ -63,6 +71,56 @@ class ShellResult:
         return looks_like_network_outage(self.stderr) or looks_like_network_outage(self.stdout)
 
 
+def _signal_group(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    """Send ``sig`` to the process group ``proc`` leads; a group that is already gone is fine.
+
+    ``run()`` starts every child in its own session, so the child's pid is its
+    process group id and the group holds every descendant. A missing or
+    non-positive pid is never passed to ``killpg`` (pid 0 would signal our own
+    group): SIGKILL falls back to killing the child alone, SIGTERM is skipped.
+    """
+    pid = proc.pid
+    if pid is None or pid <= 0:
+        if sig is signal.SIGKILL and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+        return
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
+        pass  # the group is already gone
+    except PermissionError:
+        # macOS raises it for a group whose leader is a zombie. On Linux it means no
+        # member could be signalled, so the subtree may have survived: leave a trace.
+        log.debug("shell.killpg_denied", pgid=pid, sig=sig.name)
+
+
+async def _kill_process_group(proc: asyncio.subprocess.Process, cmd: str, *, grace: float, event: str) -> None:
+    """Terminate the whole process group of ``proc`` and reap the leader.
+
+    With a ``grace``, the group first gets SIGTERM and the leader that long to
+    exit. The group then always gets SIGKILL, even when the leader already
+    exited: the group id stays valid while any descendant lives (``make`` can
+    exit on SIGTERM while an xdist worker ignores it). The SIGKILL sits in a
+    ``finally`` so a cancellation during the grace wait cannot leave it unsent.
+    """
+    try:
+        if grace and proc.returncode is None:
+            _signal_group(proc, signal.SIGTERM)
+            try:
+                async with asyncio.timeout(grace):
+                    await proc.wait()
+            except TimeoutError:
+                pass
+    finally:
+        _signal_group(proc, signal.SIGKILL)
+    try:
+        async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
+            await proc.wait()
+    except TimeoutError:
+        log.warning(event, cmd=cmd, pid=proc.pid)
+
+
 async def run(
     *args: str,
     cwd: Path | str | None = None,
@@ -96,6 +154,9 @@ async def run(
         stderr=stderr_pipe,
         cwd=cwd,
         env=env,
+        # Own session, so the child leads a process group holding all its
+        # descendants and a timeout can kill the whole tree, not only the child.
+        start_new_session=True,
     )
 
     stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
@@ -103,22 +164,13 @@ async def run(
         async with asyncio.timeout(timeout):
             stdout_bytes, stderr_bytes = await proc.communicate(input=stdin_bytes)
     except TimeoutError:
-        proc.kill()
-        try:
-            async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
-                await proc.wait()
-        except TimeoutError:
-            log.warning("shell.kill_timeout", cmd=args[0], pid=proc.pid)
+        await _kill_process_group(proc, args[0], grace=_TERM_GRACE_SECONDS, event="shell.kill_timeout")
         return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s", timed_out=True)
     except asyncio.CancelledError:
         # Outer scope cancelled us (e.g., workflow verification timeout).
-        # Kill the child process before propagating cancellation.
-        proc.kill()
-        try:
-            async with asyncio.timeout(_KILL_TIMEOUT_SECONDS):
-                await proc.wait()
-        except TimeoutError:
-            log.warning("shell.kill_timeout_on_cancel", cmd=args[0], pid=proc.pid)
+        # Kill the child's whole process group before propagating cancellation;
+        # no grace period, since the caller is already abandoning the work.
+        await _kill_process_group(proc, args[0], grace=0, event="shell.kill_timeout_on_cancel")
         raise
 
     stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")

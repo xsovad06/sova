@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -195,20 +196,20 @@ class TestShellProcessKillTimeout:
     """
 
     async def test_normal_kill_completes_quickly(self) -> None:
-        """When process exits normally after kill, wait completes immediately."""
+        """When the leader exits right after the signals, both waits complete immediately."""
         from sova.utils.shell import run
 
-        with patch("asyncio.create_subprocess_exec") as mock_create:
+        with patch("asyncio.create_subprocess_exec") as mock_create, patch("os.killpg") as mock_killpg:
             mock_proc = AsyncMock()
+            mock_proc.pid = 12345
             mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-            mock_proc.kill = MagicMock()
             # Process exits immediately after kill
             mock_proc.wait = AsyncMock(return_value=None)
-            mock_proc.returncode = -9
+            mock_proc.returncode = None
             mock_create.return_value = mock_proc
 
             result = await run("sleep", "1000", timeout=0.1)
 
-            mock_proc.kill.assert_called_once()
-            mock_proc.wait.assert_called_once()
+            assert [c.args for c in mock_killpg.call_args_list] == [(12345, signal.SIGTERM), (12345, signal.SIGKILL)]
+            assert mock_proc.wait.await_count == 2
             assert result.returncode == -1
