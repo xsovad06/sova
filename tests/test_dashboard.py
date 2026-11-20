@@ -15845,7 +15845,7 @@ class TestHandoffFallback:
             ],
         }
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
 
@@ -15877,7 +15877,7 @@ class TestHandoffFallback:
 
         mock_synth = AsyncMock(return_value={"source": "pr-review-state", "next_actions": []})
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             mock_synth,
         )
 
@@ -15892,7 +15892,7 @@ class TestHandoffFallback:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
 

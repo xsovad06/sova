@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
@@ -13,7 +12,6 @@ from sova.dashboard.services.agent_recovery import (
     get_synthesized_handoff,
     invalidate_synthesis_cache,
 )
-from sova.dashboard.services.snapshot_service import get_snapshot, invalidate_snapshot, refresh_snapshot
 from sova.db.session import get_session
 
 router = APIRouter()
@@ -49,31 +47,6 @@ class ClearHandoffRequest(BaseModel):
     issue: str | None = None
 
 
-def _project_dir() -> Path | None:
-    from sova.config.context import get_project_dir
-
-    return get_project_dir()
-
-
-async def build_handoff_snapshot() -> dict:
-    """Rebuild the project-wide handoff snapshot now and return it; raises when the rebuild failed.
-
-    The status socket's producer calls this, so the snapshot ``GET /handoff`` answers from stays warm. A failed
-    rebuild raises rather than returning the previous payload: the producer then reports ``handoff_unavailable``
-    instead of passing old data off as current.
-    """
-    project_dir = _project_dir()
-    await refresh_snapshot("handoff", project_dir, _build_handoff)
-    snapshot = await get_snapshot("handoff", project_dir, _build_handoff)
-    if snapshot.failed_at is not None:
-        raise RuntimeError(f"handoff rebuild failed: {snapshot.last_error}")
-    return snapshot.payload
-
-
-async def _build_handoff() -> dict:
-    return await _read_handoff(None)
-
-
 @router.get("/handoff")
 async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
     """Get active handoff files, optionally filtered by issue.
@@ -83,45 +56,8 @@ async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
     A read for one issue is always built on the spot.
     """
     if issue is not None:
-        return await _read_handoff(issue)
-    return (await get_snapshot("handoff", _project_dir(), _build_handoff)).payload
-
-
-async def _read_handoff(issue: str | None) -> dict:
-    """Read active handoff files, optionally filtered by issue.
-
-    ``unreadable_handoffs`` lists the files that could not be parsed. ``schema_invalid_handoffs``
-    lists the files that parse as JSON objects, and are still returned in ``handoffs`` because the
-    dashboard renders legacy shapes, but fail ``DashboardHandoff`` validation: the supervisor and the
-    auto-handoff skip them, so they must not look healthy. Without ``issue`` both cover the whole
-    project; with ``issue`` they are narrowed to that issue's own file and the legacy shared
-    ``handoff.json``, so another issue's corrupt file is not reported as this one's.
-    """
-    unreadable: list[str] = []
-    schema_invalid: list[str] = []
-    all_handoffs = handoff_service.get_all_handoffs(unreadable_out=unreadable, schema_invalid_out=schema_invalid)
-
-    if issue:
-        # Built inline rather than via handoff_filename(): this route is polled every few seconds
-        # and that helper warns on an unsafe issue string, which here is client-controlled input.
-        own_files = {f"handoff-{issue.lstrip('#').strip()}.json", "handoff.json"}
-        unreadable = [path for path in unreadable if Path(path).name in own_files]
-        schema_invalid = [path for path in schema_invalid if Path(path).name in own_files]
-        filtered = [h for h in all_handoffs if str(h.get("issue", "")) == issue]
-    else:
-        filtered = all_handoffs
-
-    problems = {"unreadable_handoffs": unreadable, "schema_invalid_handoffs": schema_invalid}
-
-    if filtered:
-        return {"has_handoff": True, "handoff": filtered[0], "handoffs": filtered, **problems}
-    if issue:
-        return {"has_handoff": False, "handoffs": [], **problems}
-
-    synthesized = await get_synthesized_handoff()
-    if synthesized is not None:
-        return {"has_handoff": True, "handoff": synthesized, "handoffs": [synthesized], **problems}
-    return {"has_handoff": False, "handoffs": [], **problems}
+        return await handoff_service.read_handoff(issue)
+    return await handoff_service.get_handoff_snapshot()
 
 
 @router.post(
@@ -204,7 +140,7 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
         raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")
 
     exec_params = handoff_service.build_action_command(action)
-    invalidate_snapshot("handoff", _project_dir())
+    handoff_service.invalidate_handoff_snapshot()
 
     if handoff.get("source") != "pr-review-state":
         issue = str(handoff.get("issue") or "") or None
@@ -248,5 +184,5 @@ async def clear_handoff(req: ClearHandoffRequest | None = None) -> dict:
     """
     issue = req.issue if req else None
     cleared = handoff_service.clear_handoff(issue=issue)
-    invalidate_snapshot("handoff", _project_dir())
+    handoff_service.invalidate_handoff_snapshot()
     return {"cleared": cleared}

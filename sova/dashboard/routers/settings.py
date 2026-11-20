@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.config.context import get_project_dir, resolve_project_dir, resolve_project_dir_or_none
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
-from sova.dashboard.config_errors import load_config_or_http, validation_detail
+from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.security import require_same_origin_csrf
 from sova.dashboard.services import github_labels_service, settings_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
@@ -31,11 +31,6 @@ from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
-
-
-def _extract_validation_detail(exc: Exception) -> str:
-    """Extract a user-readable message from a Pydantic ValidationError, or fall back to generic."""
-    return validation_detail(exc) or "Failed to fetch configuration"
 
 
 def _validate_github_config(cfg: ProjectConfig) -> None:
@@ -80,22 +75,17 @@ def _load_cfg(project_dir: Path | None = None) -> ProjectConfig:
     return load_config(project_dir if project_dir is not None else _settings_project_dir())
 
 
-@router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
+@router.get("/settings/config")
 async def get_config() -> dict:
-    """Get the current project configuration (flat, for backward compat)."""
-    try:
-        project_dir = _settings_project_dir()
-        return {"config": settings_service.get_config(project_dir)}
-    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
-        log.warning("settings.config.get.error", exc_info=True)
-        detail = _extract_validation_detail(exc)
-        raise HTTPException(status_code=500, detail=detail) from None
+    """Get the current project configuration (flat, for backward compat).
+
+    A config that cannot be loaded is not an error here: ``settings_service`` answers it with its ``_error``
+    payload, so anything that still raises is a bug and reaches the catch-all handler as a 500.
+    """
+    return {"config": settings_service.get_config(_settings_project_dir())}
 
 
-@router.get(
-    "/settings/config/grouped",
-    responses={500: {"description": "Failed to fetch configuration"}},
-)
+@router.get("/settings/config/grouped")
 async def get_config_grouped() -> dict:
     """Get configuration organized into labeled groups with descriptions.
 
@@ -104,14 +94,9 @@ async def get_config_grouped() -> dict:
     """
     from sova.llm import keyring_store
 
-    try:
-        payload = settings_service.get_grouped_settings(_settings_project_dir())
-        payload["keyring_available"] = keyring_store.is_keyring_available()
-        return payload
-    except Exception as exc:  # noqa: BLE001 (route boundary translates config/pydantic/IO errors to HTTP 500)
-        log.warning("settings.config.grouped.error", exc_info=True)
-        detail = _extract_validation_detail(exc)
-        raise HTTPException(status_code=500, detail=detail) from None
+    payload = settings_service.get_grouped_settings(_settings_project_dir())
+    payload["keyring_available"] = keyring_store.is_keyring_available()
+    return payload
 
 
 @router.post(

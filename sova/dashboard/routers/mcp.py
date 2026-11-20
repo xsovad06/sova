@@ -127,9 +127,9 @@ async def mcp_endpoint(
     """
     try:
         body = await request.json()
-    except Exception as e:  # noqa: BLE001 (JSON-RPC boundary: any body-read/parse failure becomes a -32700 error)
+    except Exception:  # noqa: BLE001 (JSON-RPC boundary: any body-read/parse failure becomes a -32700 error)
         log.warning("mcp.request_parse_failed", exc_info=True)
-        return _jsonrpc_error(-32700, f"Parse error: {e}", None)
+        return _jsonrpc_error(-32700, "Parse error", None)
 
     try:
         rpc = JsonRpcRequest.model_validate(body)
@@ -191,8 +191,8 @@ async def mcp_endpoint(
                 "result": result,
                 "id": req_id,
             }
-        except ValueError as e:
-            return _jsonrpc_error(-32000, str(e), req_id)
+        except mcp_service.RunNotFoundError as e:
+            return _jsonrpc_error(-32000, e.user_message, req_id)
         except Exception:  # noqa: BLE001 (JSON-RPC boundary: any tool failure becomes an error response)
             log.exception("mcp.tool_error", tool=tool_name)
             return _jsonrpc_error(-32603, "Internal error", req_id)

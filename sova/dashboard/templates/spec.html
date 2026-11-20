@@ -248,13 +248,12 @@ async function approveSpec() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers: answers })
     });
-    var data = await resp.json();
-    if (data.error || data.detail) {
-      showToast('Failed: ' + (data.error || data.detail), 'error');
-    } else {
-      showToast('Spec approved: developer agent starting', 'success');
-      loadSpec();
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to approve spec'), 'error');
+      return;
     }
+    showToast('Spec approved: developer agent starting', 'success');
+    loadSpec();
   } catch (e) {
     showToast('Failed to approve spec: ' + e.message, 'error');
   }
@@ -265,7 +264,10 @@ async function reviseSpec() {
   if (!ok) return;
   try {
     var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/revise'), { method: 'POST' });
-    var data = await resp.json();
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to revise spec'), 'error');
+      return;
+    }
     showToast('Spec revision started', 'info');
   } catch (e) {
     showToast('Failed to revise spec: ' + e.message, 'error');
@@ -277,7 +279,10 @@ async function skipSpec() {
   if (!ok) return;
   try {
     var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/skip'), { method: 'POST' });
-    var data = await resp.json();
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to skip spec'), 'error');
+      return;
+    }
     showToast('Spec skipped: developer agent starting', 'info');
     setTimeout(function() { window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work'; }, 1500);
   } catch (e) {
@@ -290,7 +295,10 @@ async function rejectSpec() {
   if (!ok) return;
   try {
     var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/reject'), { method: 'POST' });
-    var data = await resp.json();
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to reject spec'), 'error');
+      return;
+    }
     showToast('Spec rejected', 'warning');
     loadSpec();
   } catch (e) {

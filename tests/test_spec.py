@@ -1877,7 +1877,7 @@ class TestSpecRouter:
         assert call_order == ["transition", "start_agent"]
 
     async def test_approve_blocks_agent_on_transition_failure(self, _spec_dir: Path) -> None:
-        """approve_spec raises HTTP 500 and does not spawn developer when transition fails."""
+        """approve_spec answers 502 (a failed tracker write) and does not spawn developer when transition fails."""
         from fastapi import HTTPException
 
         spec = _spec_dir / "42-test.md"
@@ -1900,7 +1900,8 @@ class TestSpecRouter:
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await approve_spec("42")
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
+            assert "API error" not in str(exc_info.value.detail)
 
         mock_start.assert_not_called()
 
@@ -1933,7 +1934,7 @@ class TestSpecRouter:
         assert call_order == ["transition", "start_agent"]
 
     async def test_skip_blocks_agent_on_transition_failure(self, tmp_path: Path) -> None:
-        """skip_spec raises HTTP 500 and does not spawn developer when transition fails."""
+        """skip_spec answers 502 and does not spawn developer when transition fails."""
         from fastapi import HTTPException
 
         from sova.dashboard.routers.spec import skip_spec
@@ -1951,7 +1952,8 @@ class TestSpecRouter:
         ):
             with pytest.raises(HTTPException) as exc_info:
                 await skip_spec("42")
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
+            assert "API error" not in str(exc_info.value.detail)
 
         mock_start.assert_not_called()
 

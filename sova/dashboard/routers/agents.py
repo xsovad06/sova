@@ -287,7 +287,7 @@ async def _build_activity_message() -> dict:
 
 
 async def _build_handoff_message() -> dict:
-    from sova.dashboard.routers.handoff import build_handoff_snapshot
+    from sova.dashboard.services.handoff_service import build_handoff_snapshot
 
     # A fresh build, not the served snapshot: this is the producer that keeps the snapshot warm.
     return {"type": "handoff", "data": await build_handoff_snapshot()}
