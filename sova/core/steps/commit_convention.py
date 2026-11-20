@@ -16,48 +16,117 @@ MAX_LINE_LENGTH = 72
 # "ci" is scopeless (invariants/commit-format.sh: "ci: is allowed without
 # scope, repo-wide infrastructure"); every other type requires one.
 _SCOPELESS_TYPE = "ci"
+# Public name for callers that describe the scope-optional type (an error hint), without reaching for a private.
+SCOPELESS_TYPE = _SCOPELESS_TYPE
 
 _LINE_RE = re.compile(r"^(?P<type>[a-z][a-z0-9]*)(?:\((?P<scope>[^)]+)\))?:\s*(?P<subject>\S.*)$")
 
 
-def is_valid_commit_line(line: str, *, types: list[str] | frozenset[str], scopes: list[str] | frozenset[str]) -> bool:
-    """Return True if *line* is a valid ``type(scope): subject`` line.
+def commit_line_problem(
+    line: str,
+    *,
+    types: list[str] | frozenset[str],
+    scopes: list[str] | frozenset[str],
+    require_scope: bool = True,
+) -> str | None:
+    """Name what is wrong with *line* as a ``type(scope): subject`` line, or None when it is valid.
 
-    Validates against the configured *types*/*scopes* (not this repo's own
+    Checks against the configured *types*/*scopes* (not this repo's own
     hardcoded lists), a lowercase-first-letter subject, and a 72-character
-    line length. Returns False for anything else, including a type/scope not
-    in the configured lists, a missing scope on a non-"ci" type, or a blank
-    or oversized line.
+    line length. The returned text names the failing part (the length, an
+    unknown type, an unknown or missing scope, a capitalized subject) so a
+    caller can report it; :func:`is_valid_commit_line` is the boolean form.
+    With *require_scope* False a missing scope is accepted on every type, as
+    on ``"ci"``; a scope that is present must still be configured.
     """
     candidate = line.strip()
-    if not candidate or len(candidate) > MAX_LINE_LENGTH:
-        return False
+    if not candidate:
+        return "the line is empty"
+    if len(candidate) > MAX_LINE_LENGTH:
+        return f"the line is {len(candidate)} characters, over the {MAX_LINE_LENGTH} character limit"
 
     match = _LINE_RE.match(candidate)
     if not match:
-        return False
+        return "the line is not in 'type(scope): subject' form (lowercase type, then a subject)"
 
     commit_type = match.group("type")
     scope = match.group("scope")
     subject = match.group("subject")
 
     if commit_type not in types:
-        return False
+        return f"unknown type '{commit_type}'"
 
-    if commit_type == _SCOPELESS_TYPE:
+    if commit_type == _SCOPELESS_TYPE or not require_scope:
         # Scope-optional, not scope-forbidden: invariants/commit-format.sh
         # accepts both "ci: subject" and "ci(scope): subject" (the latter via
         # its general type(scope) pattern, which "ci" also matches), so a
         # scope is only rejected here when present but not configured.
         if scope is not None and scope not in scopes:
-            return False
-    elif not scope or scope not in scopes:
-        return False
+            return f"unknown scope '{scope}'"
+    elif not scope:
+        return "missing scope"
+    elif scope not in scopes:
+        return f"unknown scope '{scope}'"
 
     # An all-caps opening word (e.g. "LLM provider abstraction") is an
     # acronym lowercase_first_letter() deliberately leaves alone; reject
     # only a subject starting with an isolated capitalized word.
-    return not subject[0].isupper() or (len(subject) > 1 and subject[1].isupper())
+    if subject[0].isupper() and not (len(subject) > 1 and subject[1].isupper()):
+        return "the subject starts with a capitalized word (use lowercase)"
+    return None
+
+
+def is_valid_commit_line(line: str, *, types: list[str] | frozenset[str], scopes: list[str] | frozenset[str]) -> bool:
+    """Return True if *line* is a valid ``type(scope): subject`` line (see :func:`commit_line_problem`)."""
+    return commit_line_problem(line, types=types, scopes=scopes) is None
+
+
+# A Jira PR title carries its ticket key in front of the conventional line ("[PROJ-123] type(scope): subject").
+# The key charset matches the project keys setup_service accepts ("MY_PROJ-12" is valid).
+_JIRA_PREFIX_RE = re.compile(r"^\[[A-Z][A-Z0-9_]*-\d+\]\s+")
+
+
+def build_merge_subject(
+    title: str,
+    pr_number: int,
+    *,
+    types: list[str] | frozenset[str],
+    scopes: list[str] | frozenset[str],
+    conventional: bool = True,
+    jira: bool = False,
+) -> str:
+    """Validate a PR *title* and return the squash-merge subject ``"<title> (#<pr_number>)"``.
+
+    The rules are :func:`commit_line_problem`'s, applied to the title alone: the 72-character limit
+    does not count the appended suffix (it does count a Jira ticket key, as ``create_pr`` does), and a
+    ``(#<pr_number>)`` already ending the title is not appended twice. With *jira* True (a Jira
+    project) a leading ticket key is kept in the subject but not validated as a type, and the line after it
+    may omit the scope (``create_pr`` builds ``"[KEY-N] type: subject"``); for any other project a bracketed
+    prefix is not a ticket key and fails the convention like any malformed title. With
+    *conventional* False (``commit.pr_title_format = "freeform"``) the title is not checked against
+    the convention. Raises ``ValueError`` naming the failing part when the title is not valid or spans
+    several lines.
+    """
+    cleaned = title.strip()
+    if "\n" in cleaned or "\r" in cleaned:
+        raise ValueError("the title spans several lines")
+    suffix = f" (#{pr_number})"
+    # Tolerate a hand-typed suffix ("(#42)" with no space, or extra spaces) so it is neither counted toward the
+    # limit nor appended a second time.
+    cleaned = re.sub(rf"\s*\(#{pr_number}\)$", "", cleaned)
+    if not cleaned:
+        raise ValueError("the title is empty")
+    if not conventional:
+        return f"{cleaned}{suffix}"
+    key = _JIRA_PREFIX_RE.match(cleaned) if jira else None
+    line = cleaned[key.end() :] if key else cleaned
+    if key and len(cleaned) > MAX_LINE_LENGTH:
+        # create_pr budgets a Jira title with its ticket key, so the limit counts the key too.
+        raise ValueError(f"the line is {len(cleaned)} characters, over the {MAX_LINE_LENGTH} character limit")
+    problem = commit_line_problem(line, types=types, scopes=scopes, require_scope=not key)
+    if problem:
+        raise ValueError(problem)
+    return f"{cleaned}{suffix}"
 
 
 def resolve_default_scope(scopes: list[str] | frozenset[str] | tuple[str, ...], *, preferred: str = "core") -> str:
