@@ -1,6 +1,6 @@
 import { actionAttrs } from '../agents/actions.js';
 import {
-  actionSignature, cardParts, ciHtml, entryKey, getBoard, iconHtml, lastRunHtml, loadBoard, onBoard, prFlags, prPill,
+  actionSignature, cardParts, ciHtml, entryKey, getBoard, holdBoardScroll, iconHtml, lastRunHtml, loadBoard, onBoard, onBoardRendered, prFlags, prPill,
   queuePosition, sizeHtml, statePill, threadsHtml,
 } from './board.js';
 import { createPriorityPicker } from './priority-picker.js';
@@ -201,6 +201,7 @@ function _render() {
   if (!el) return;
   var board = getBoard();
   var number = getSelected();
+  _setBoardRoom(number !== null && !!board);
   if (number === null || !board) {
     el.hidden = true;
     el.innerHTML = '';
@@ -250,7 +251,7 @@ function _render() {
       (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
       _moreActions(entry, parts, busy) +
     '</div>' +
-    '<div class="flex flex-col gap-4 px-4 py-3 overflow-y-auto">' +
+    '<div class="sova-work-drawer-body flex flex-col gap-4 px-4 py-3">' +
       _section('Why it is here', '<p class="flex items-start gap-2 text-sm text-gray-300">' +
         '<span class="w-2 h-2 mt-1.5 rounded-full shrink-0" style="background:' + stateHex(col ? col.color : 'gray') + '"></span>' +
         '<span>' + escapeHtml(_why(entry, stage)) + '</span></p>') +
@@ -264,7 +265,7 @@ function _render() {
             (total > direct.length ? '<span class="normal-case tracking-normal text-gray-500">' + total + ' in total</span>' : ''))) +
       (pr ? _section('Pull request', _kv([
         ['PR', '<span class="flex flex-wrap items-center gap-1">' + prPill(pr) +
-          (pr.state_label ? _tag(pr.state_label, stateBadgeClasses(pr.state_color)) : '') + prFlags(pr) + '</span>'],
+          (pr.state_label ? _tag(pr.state_label, stateBadgeClasses(pr.state_color)) : '') + prFlags(pr, { stateShown: !!pr.state_label, end: true }) + '</span>'],
         ['CI', ciHtml(pr.ci_state) || '<span class="text-gray-500">No checks reported</span>'],
         ['Threads', threadsHtml(pr, true)],
         ['Size', sizeHtml(pr, true)],
@@ -312,6 +313,72 @@ function _replayRedraw() {
   _renderUnlessBusy();
 }
 
+// The drawer lies over the right of the board without narrowing it, so a card selected in a right-hand column
+// would open the drawer on top of itself. The board scrolls sideways inside its own box: scroll it, as far as it
+// can go, until the selected card clears the drawer's left edge. While the drawer is open the board's track has a
+// drawer's width of extra scroll room (sova-work-board-room), so even the last column can be brought clear.
+//
+// The reveal never depends on listener order or timing. It is tried after the board redraws its cards and after
+// the drawer draws itself, whichever runs first. A selection is handled once its card was measured with the drawer
+// showing; if no card can be measured at a redraw with the drawer showing (an issue only a chain or the search
+// shows, or a card in a collapsed group), the selection is handled all the same, so a reload or an expanded group
+// minutes later never scrolls the board on its own. _revealedKey is the selection already handled.
+var _revealedKey = null;
+
+var _REVEAL_NOT_READY = 0;  // no selection, or the drawer is not showing yet: try again at the next redraw
+var _REVEAL_NO_CARD = 1;    // the drawer shows but no column card could be measured
+var _REVEAL_DONE = 2;       // the card was measured (and scrolled, or found clear already)
+
+function _revealSelectedCard() {
+  var key = getSelected();
+  var drawer = document.getElementById('work-drawer');
+  var host = document.getElementById('work-board');
+  if (key === null || !drawer || drawer.hidden || !host) return _REVEAL_NOT_READY;
+  var args = JSON.stringify([key]);
+  // Only the column card: a chain node or a collapsed group's card selects the same issue, and a hidden one
+  // measures as an empty box.
+  var card = Array.prototype.find.call(host.querySelectorAll('[data-work-card]'), function(el) {
+    return el.isConnected !== false && el.getAttribute('data-args') === args && el.getBoundingClientRect().width > 0;
+  });
+  if (!card) return _REVEAL_NO_CARD;
+  var cardBox = card.getBoundingClientRect();
+  var hostBox = host.getBoundingClientRect();
+  var limit = Math.min(hostBox.right, drawer.getBoundingClientRect().left) - 16;
+  // A drawer covering most of the window (a narrow screen) leaves no room to show the card beside it.
+  if (cardBox.right <= limit || limit - hostBox.left < cardBox.width) return _REVEAL_DONE;
+  // Never ask for more than the board can still scroll, so no animation starts that goes nowhere.
+  var delta = Math.min(cardBox.right - limit, host.scrollWidth - host.clientWidth - host.scrollLeft);
+  if (!(delta > 0)) return _REVEAL_DONE;
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reduce) holdBoardScroll(host.scrollLeft + delta, key);
+  host.scrollBy({ left: delta, behavior: reduce ? 'auto' : 'smooth' });
+  return _REVEAL_DONE;
+}
+
+// The selection the board last redrew its cards for: the reveal waits for it, and a drawer that shows and finds no
+// card for a selection the board has drawn has none to show, whichever of the two ran first.
+var _drawnKey = null;
+
+function _revealIfNew() {
+  var key = getSelected();
+  if (key === null) {
+    _revealedKey = null;
+    return;
+  }
+  if (key === _revealedKey) return;
+  // Measure only once the board has drawn this selection: ahead of its redraw the cards are the old ones, and the
+  // redraw restoring its own scroll position would turn the smooth scroll into a jump.
+  if (_drawnKey !== key) return;
+  var result = _revealSelectedCard();
+  if (result === _REVEAL_DONE || (result === _REVEAL_NO_CARD && _drawnKey === key)) _revealedKey = key;
+}
+
+// The board keeps a drawer's width of scroll room past its last column while the drawer shows.
+function _setBoardRoom(open) {
+  var host = document.getElementById('work-board');
+  if (host && host.classList) host.classList.toggle('sova-work-board-room', open);
+}
+
 // What a click outside the drawer may land on without closing it: a card or chain node (it selects, or toggles
 // the selected one off), the search box and its results, and every overlay the page can open over it: a dialog (a
 // confirm the drawer's button opened), the log viewer View log opens, and a toast with its dismiss button. An overlay
@@ -332,6 +399,11 @@ function _closesDrawer(e) {
 
 export function init() {
   onSelectionChange(_render);
+  onSelectionChange(_revealIfNew);
+  onBoardRendered(function() {
+    _drawnKey = getSelected();
+    _revealIfNew();
+  });
   onBoard(function() {
     _refreshOffBoard();
     _renderUnlessBusy();

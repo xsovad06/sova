@@ -1600,15 +1600,37 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-work-stepper .sova-stepper-value { min-width: 1.5rem; font-size: 0.75rem; }
 
 /* Board: one column per stage the board API puts in its own column. It scrolls sideways inside itself,
-   never the page; nothing in it uses data-tooltip, since the scroll container would clip the bubble. */
+   never the page; nothing in it uses data-tooltip, since the scroll container would clip the bubble. The columns
+   live in a track, so the room a drawer needs beside the last column can be added to the scroll range without
+   reflowing them. */
 .sova-work-board {
+  overflow-x: auto;
+  padding-bottom: 0.375rem;
+}
+/* The track is as wide as its columns when they overflow the board, so the spacer below lands past the last
+   column; when they fit it still fills the board (min-width). A plain block-level grid would stop at the board's
+   client width and the spacer would land inside the overflow. */
+.sova-work-track {
+  position: relative;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(13rem, 1fr);
   gap: 0.625rem;
-  overflow-x: auto;
   align-items: start;
-  padding-bottom: 0.375rem;
+  width: fit-content;
+  min-width: 100%;
+}
+/* While the issue drawer is open (drawer.js), the track scrolls as far again as the drawer is wide: the last
+   columns, which the drawer would sit on, can be brought clear of it. An absolutely placed spacer past the track's
+   end widens the scroll range only; the columns keep their widths. */
+.sova-work-board-room .sova-work-track::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 100%;
+  width: min(26rem, 100vw);
+  height: 1px;
+  pointer-events: none;
 }
 .sova-work-col {
   display: flex;
@@ -1671,7 +1693,8 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-work-node.sova-work-up { border-color: var(--ctp-peach); background: rgb(var(--ctp-peach-rgb) / 0.12); }
 .sova-work-node.sova-work-down { border-color: var(--ctp-teal); background: rgb(var(--ctp-teal-rgb) / 0.12); }
 
-/* The issue drawer: fixed to the right edge; on a wide window the page makes room for it. */
+/* The issue drawer: fixed to the right edge, over the board. The board keeps its full width and does not reflow
+   when the drawer opens; the shadow (the feed panel's) separates the drawer from the cards beneath it. */
 .sova-work-drawer {
   position: fixed;
   top: 0;
@@ -1683,11 +1706,34 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   flex-direction: column;
   background: var(--color-surface-card);
   border-left: 1px solid var(--color-border);
+  box-shadow: -8px 0 32px rgb(0 0 0 / 0.35);
 }
 .sova-work-drawer[hidden] { display: none; }
-@media (min-width: 1100px) {
-  body.sova-work-drawer-open #main-content { padding-right: calc(26rem + 2rem); }
+/* The page header and the search row stay clear of the drawer while it is open (they cannot scroll out from under
+   it like a card): only they pad, never the board, whose columns keep their widths. The padding is 27rem and the
+   sidebar takes about 16rem, so below 72rem the padded rows would be left too little width to use; there the
+   drawer covers their right end, as it does on a narrow window. */
+@media (min-width: 72rem) {
+  body:has(.sova-work-drawer:not([hidden])) #work-header,
+  body:has(.sova-work-drawer:not([hidden])) #work-toolbar { padding-right: 27rem; }
 }
+/* The drawer's body scrolls up and down only, so a tooltip must fit inside it. Its tooltips wrap at 13rem and grow
+   rightward from their element's left edge (a pill at the left of a row); an element at the right of its row
+   (data-tooltip-end: the PR flags) grows them leftward from its right edge instead. A centred bubble reached past
+   the body's edge, and even hidden it widened the scroll area into a sideways scrollbar. Known limit: a bubble
+   still clips at the body's left edge when its element wraps to the start of a row (a flag on a second line of the
+   PR row) or sits more than about 11rem in from the left; measuring and flipping it needs JS the shared tooltip
+   does not have. */
+.sova-work-drawer-body { overflow-x: hidden; overflow-y: auto; }
+.sova-work-drawer-body [data-tooltip]:not([data-tooltip-pos])::after {
+  left: 0;
+  right: auto;
+  transform: none;
+  white-space: normal;
+  width: max-content;
+  max-width: 13rem;
+}
+.sova-work-drawer-body [data-tooltip-end]:not([data-tooltip-pos])::after { left: auto; right: 0; }
 
 /* Issue search above the board (static/js/pages/work/search.js): the Settings search's input, with a list of the
    matching issues under it. */

@@ -2,7 +2,7 @@ import { actionAttrs } from '../agents/actions.js';
 import { _updateApiHealthBanner } from '../agents/live-status.js';
 import { diffSizeColor, diffSizeLabel, formatAgeBadge } from '../agents/render-utils.js';
 import { renderHeader } from './header.js';
-import { clearSelection, onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
+import { clearSelection, getSelected, onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
 
 // The Work board: GET /api/work/board, drawn in the order of the payload's `columns`, with each column's
 // label and color token and the payload key holding its entries. A stage whose `column` names another stage
@@ -35,6 +35,24 @@ export function getBoard() { return _board; }
 
 // Another module (chains, drawer) redraws whenever a new board arrives.
 export function onBoard(fn) { _listeners.push(fn); }
+
+// Called after renderBoard() has replaced the cards, so a listener that measures them never sees a stale node.
+var _renderedListeners = [];
+export function onBoardRendered(fn) { _renderedListeners.push(fn); }
+
+// Where a smooth scroll of the board is headed, until it has finished: a redraw in that window restores this
+// position instead of the mid-animation one. It belongs to the selection it revealed (`key`): another selection
+// starts from wherever the board is. The hold ends with the animation (the host's `scrollend`) or with the user
+// taking the scroll over (wheel, touch, pointer, keys); a timer is only the fallback where `scrollend` does not
+// exist, and a generous cap otherwise.
+var _scrollHold = null;
+var _HOLD_FALLBACK_MS = 600;
+var _HOLD_CAP_MS = 3000;
+export function holdBoardScroll(left, key) {
+  var hasScrollEnd = typeof window !== 'undefined' && window && 'onscrollend' in window;
+  _scrollHold = { left: left, until: Date.now() + (hasScrollEnd ? _HOLD_CAP_MS : _HOLD_FALLBACK_MS), key: key };
+}
+function _releaseScrollHold() { _scrollHold = null; }
 
 export function loadBoard() {
   if (_load) {
@@ -173,9 +191,12 @@ function _notePill(text, cls) {
   return '<span class="px-1.5 rounded-md text-xs leading-snug break-words min-w-0 ' + cls + '">' + escapeHtml(text) + '</span>';
 }
 
-function _pill(text, cls, tooltip) {
+// `end` marks a pill that sits at the right of its row: inside the drawer's body its tooltip grows leftward from the
+// pill's right edge (data-tooltip-end), where a tooltip on a pill at the left grows rightward. Nothing outside the
+// drawer reads the attribute, so only the drawer asks for it.
+function _pill(text, cls, tooltip, end) {
   return '<span class="px-1.5 rounded-full text-xs whitespace-nowrap ' + cls + '"' +
-    (tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' : '') + '>' + escapeHtml(text) + '</span>';
+    (tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' + (end ? ' data-tooltip-end' : '') : '') + '>' + escapeHtml(text) + '</span>';
 }
 
 // The PR's number in its state's color, a link to GitHub.
@@ -205,13 +226,20 @@ export function sizeHtml(pr, long) {
     label + '</span>' + (long ? ' <span class="text-gray-400">' + counts + '</span>' : '');
 }
 
-// Conflicts, a base that moved on, and draft, as pills when they apply.
-export function prFlags(pr) {
+// Conflicts, a base that moved on, and draft, as pills when they apply. Each flag names the PR state (`pr.state`,
+// the server's computed state, a ComputedPRState value) it repeats, or null when no state says the same.
+// `opts.stateShown` is true beside a PR state tag (the drawer's): a flag repeating that state is left out, since a PR
+// in the conflicted state is also CONFLICTING. The comparison is on the state key, never on display text.
+// `opts.end` anchors the pills' tooltips at their right edge (the drawer's PR row).
+export function prFlags(pr, opts) {
+  var stateShown = !!(opts && opts.stateShown);
+  var end = !!(opts && opts.end);
   return [
-    pr.mergeable === 'CONFLICTING' ? _pill('Conflicts', 'bg-accent-red/20 text-accent-red', 'The PR has merge conflicts to resolve') : '',
-    pr.merge_state === 'BEHIND' ? _pill('Behind base', 'bg-accent-lavender/20 text-accent-lavender', 'The base branch moved on; Integrate rebases first') : '',
-    pr.is_draft ? _pill('Draft', 'bg-gray-600/30 text-gray-400') : '',
-  ].join('');
+    [pr.mergeable === 'CONFLICTING', 'conflicted', 'Conflicts', 'bg-accent-red/20 text-accent-red', 'The PR has merge conflicts to resolve'],
+    [pr.merge_state === 'BEHIND', null, 'Behind base', 'bg-accent-lavender/20 text-accent-lavender', 'The base branch moved on; Integrate rebases first'],
+    [pr.is_draft, 'draft', 'Draft', 'bg-gray-600/30 text-gray-400'],
+  ].filter(function(f) { return f[0] && !(stateShown && f[1] !== null && f[1] === pr.state); })
+    .map(function(f) { return _pill(f[2], f[3], f[4], end); }).join('');
 }
 
 // The open PR at a glance, as the old task list showed it: its number in its state's color (a link to
@@ -477,7 +505,7 @@ function _card(entry, stage) {
     ? ' draggable="true" data-drag-issue="' + n + '" data-start-role="' + escapeHtml(_startRole(entry)) + '"'
     : '';
   var status = actionStatusHtml(entryKey(entry));
-  return '<div class="sova-work-card ' + rel + '"' + draggable +
+  return '<div class="sova-work-card ' + rel + '" data-work-card' + draggable +
     (selectable ? actionAttrs('work-select', [key]) + ' tabindex="0" role="button" aria-label="' + escapeHtml(ref + ': ' + (entry.title || '')) + ', show details"' : '') + '>' +
     '<div class="flex items-center gap-1.5 min-w-0">' +
       _priorityIcon(entry, stage) +
@@ -617,11 +645,23 @@ export function renderBoard() {
       groups.map(_group).join('') +
     '</div>';
   }).join('');
-  var scroll = host.scrollLeft;
+  // A smooth scroll the drawer's reveal started is still running: restore where it is headed, not the point it has
+  // reached, since assigning scrollLeft cancels the animation and would leave the card partly under the drawer.
+  // Closing the drawer ends the hold with it.
+  if (getSelected() === null) _scrollHold = null;
+  var held = _scrollHold && Date.now() < _scrollHold.until && _scrollHold.key === getSelected();
+  var scroll = held ? _scrollHold.left : host.scrollLeft;
   var focused = _focusedControl(host);
-  host.innerHTML = html;
+  host.innerHTML = '<div class="sova-work-track">' + html + '</div>';
   host.scrollLeft = scroll;
   _restoreFocus(host, focused);
+  _renderedListeners.forEach(function(fn) {
+    try {
+      fn();
+    } catch (e) {
+      console.error('work board render listener failed', e);
+    }
+  });
 }
 
 // The board redraws from scratch on every change (a selection, an action's state, a reload), which removes the
@@ -728,6 +768,9 @@ export function init() {
   onSelectionChange(renderBoard);
   var host = document.getElementById('work-board');
   if (host) {
+    ['scrollend', 'wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function(type) {
+      host.addEventListener(type, _releaseScrollHold, { passive: true });
+    });
     host.addEventListener('change', function(e) {
       if (e.target && e.target.id === 'work-milestone') setMilestone(e.target.value);
     });

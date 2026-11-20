@@ -100,7 +100,6 @@ export function setSelectionBoard(board) {
 
 export function select(number) {
   _selected = _normalize(number);
-  document.body.classList.toggle('sova-work-drawer-open', _selected !== null);
   _recompute();
   _notify();
 }
