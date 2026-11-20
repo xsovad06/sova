@@ -1969,7 +1969,7 @@ class TestServerCLICommands:
         with (
             patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
             patch("sova.scheduler.server.SOVAServer") as mock_server_class,
-            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.cli.commands.server.load_config") as mock_config,
             patch("sova.config.registry.has_projects", return_value=False),
         ):
             mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
@@ -1997,7 +1997,7 @@ class TestServerCLICommands:
             patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING),
             patch("sova.scheduler.server._is_port_listening", return_value=True),
             patch("sova.scheduler.server.SOVAServer") as mock_server_class,
-            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.cli.commands.server.load_config") as mock_config,
             patch("sova.config.registry.has_projects", return_value=False),
         ):
             mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
@@ -2031,7 +2031,7 @@ class TestServerCLICommands:
             patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING),
             patch("sova.scheduler.server._is_port_listening", return_value=False) as mock_listening,
             patch("sova.scheduler.server.SOVAServer") as mock_server_class,
-            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.cli.commands.server.load_config") as mock_config,
             patch("sova.config.registry.has_projects", return_value=False),
         ):
             mock_config.return_value = _make_config(server={"pid_file": str(pid_file), "host": "0.0.0.0", "port": 9000})
@@ -2061,7 +2061,7 @@ class TestServerCLICommands:
             patch("sova.scheduler.server.stop_server", return_value=StopResult.FAILED),
             patch("sova.scheduler.server._is_port_listening", return_value=False),
             patch("sova.scheduler.server.SOVAServer") as mock_server_class,
-            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.cli.commands.server.load_config") as mock_config,
             patch("sova.config.registry.has_projects", return_value=False),
         ):
             mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
@@ -2180,7 +2180,7 @@ class TestServerCLICommands:
         async def async_get_session(*args, **kwargs):
             return mock_session
 
-        with patch("sova.db.session.get_session", side_effect=async_get_session):
+        with patch("sova.cli.commands.server.get_session", side_effect=async_get_session):
             result = runner.invoke(app, ["digest", "--project", str(tmp_path), "--hours", "24"])
 
             assert result.exit_code == 0

@@ -65,7 +65,7 @@ class TestDaemonEnabledGuard:
             session_factory=MagicMock(),
         )
 
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.supervisor.daemon.load_config", return_value=cfg):
             result = await daemon._poll_once()
         assert "skipped" in result
 
@@ -91,7 +91,7 @@ class TestDaemonEnabledGuard:
         )
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.daemon.load_config", return_value=cfg),
             patch("sova.supervisor.daemon.SupervisorDaemon._poll_progression", new_callable=AsyncMock) as mock_prog,
         ):
             mock_prog.return_value = ({"decisions": 0, "executed": 0, "pending": 0}, None)
@@ -178,7 +178,7 @@ class TestReloadDaemonConfigLifecycle:
         sup_mod._daemon_registry = {resolved_key: daemon}
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_daemon", return_value=daemon),
             ):
                 await reload_daemon_config(project_dir)
@@ -204,7 +204,7 @@ class TestReloadDaemonConfigLifecycle:
         sup_mod._daemon_registry = {}
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_daemon", return_value=None),
                 patch(
                     "sova.db.session.get_session_factory",
@@ -234,7 +234,7 @@ class TestReloadDaemonConfigLifecycle:
         cfg.supervisor.enabled = True
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
             patch.object(sup_mod, "get_daemon", return_value=daemon),
         ):
             await reload_daemon_config(tmp_path)
@@ -254,7 +254,7 @@ class TestReloadDaemonConfigLifecycle:
             cfg = MagicMock()
             cfg.supervisor.enabled = True
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_project_dir", return_value=None),
                 patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
                 patch("sova.supervisor.daemon.SupervisorDaemon") as daemon_cls,
@@ -281,7 +281,7 @@ class TestReloadDaemonConfigLifecycle:
             cfg = MagicMock()
             cfg.supervisor.enabled = False
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_project_dir", return_value=None),
                 patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
             ):
@@ -306,7 +306,7 @@ class TestReloadDaemonConfigLifecycle:
             cfg = MagicMock()
             cfg.supervisor.enabled = False
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_project_dir", return_value=None),
                 patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path),
             ):
@@ -351,7 +351,7 @@ class TestReloadDaemonConfigLifecycle:
         sup_mod._daemon_registry = {}
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch("sova.db.session.get_session_factory", side_effect=_slow_session_factory),
                 patch("sova.supervisor.daemon.SupervisorDaemon", side_effect=_make_daemon),
                 patch.object(sup_router, "_resolve_project_dir", return_value=tmp_path),
@@ -498,7 +498,7 @@ class TestLifecycleErrorPropagation:
         sup_mod._daemon_registry = {resolved_key: daemon}
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_daemon", return_value=daemon),
             ):
                 with pytest.raises(RuntimeError, match="stop failed"):
@@ -518,7 +518,7 @@ class TestLifecycleErrorPropagation:
         sup_mod._daemon_registry = {}
         try:
             with (
-                patch("sova.config.loader.load_config", return_value=cfg),
+                patch("sova.dashboard.services.daemon_registry.load_config", return_value=cfg),
                 patch.object(sup_mod, "get_daemon", return_value=None),
                 patch(
                     "sova.db.session.get_session_factory",
@@ -571,7 +571,7 @@ class TestLifecycleSerialization:
         sup_mod._daemon_registry = {resolved_key: daemon}
         try:
             with (
-                patch("sova.config.loader.load_config", side_effect=lambda _: next(configs)),
+                patch("sova.dashboard.services.daemon_registry.load_config", side_effect=lambda _: next(configs)),
                 patch.object(sup_mod, "get_daemon", side_effect=lambda _: sup_mod._daemon_registry.get(resolved_key)),
                 patch(
                     "sova.db.session.get_session_factory",
@@ -1194,7 +1194,7 @@ class TestReloadAllConfigs:
         resolved_key = str(project_dir.resolve())
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"watchdog": wd}},
@@ -1216,7 +1216,7 @@ class TestReloadAllConfigs:
         resolved_key = str(project_dir.resolve())
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"pr_monitors": [mon]}},
@@ -1238,7 +1238,7 @@ class TestReloadAllConfigs:
         resolved_key = str(project_dir.resolve())
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"pr_throttles": [throttle]}},
@@ -1272,7 +1272,7 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
-            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg) as load,
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(app_project.resolve()): {"pr_throttles": [throttle]}},
@@ -1304,7 +1304,7 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=None),
-            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg) as load,
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
@@ -1347,7 +1347,7 @@ class TestReloadAllConfigs:
         try:
             with (
                 patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=other),
-                patch("sova.config.loader.load_config", return_value=cfg) as load,
+                patch("sova.dashboard.services.settings_service.load_config", return_value=cfg) as load,
                 patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value=components),
                 patch(
                     "sova.dashboard.services.daemon_registry.ensure_pr_throttle_loop", new_callable=AsyncMock
@@ -1416,7 +1416,7 @@ class TestReloadAllConfigs:
         throttle = MagicMock()
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={str(tmp_path.resolve()): {"pr_throttles": [throttle]}},
@@ -1453,7 +1453,7 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
-            patch("sova.config.loader.load_config", return_value=cfg) as load,
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg) as load,
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch(
                 "sova.dashboard.services.daemon_registry.reload_daemon_config", new_callable=AsyncMock
@@ -1486,7 +1486,7 @@ class TestReloadAllConfigs:
 
         with (
             patch("sova.dashboard.services.settings_service.get_default_project_dir", return_value=app_project),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value=components),
         ):
             err = await reload_all_configs(None, "watchdog.check_interval_seconds")
@@ -1506,7 +1506,7 @@ class TestReloadAllConfigs:
         resolved_key = str(project_dir.resolve())
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"merge_queue_monitors": [mqm]}},
@@ -1526,7 +1526,7 @@ class TestReloadAllConfigs:
         project_dir = tmp_path
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch("sova.llm.client.reload_provider") as mock_reload,
         ):
@@ -1544,7 +1544,7 @@ class TestReloadAllConfigs:
         project_dir = tmp_path
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch("sova.ipc.runtime.reload_runtime") as mock_reload,
         ):
@@ -1561,7 +1561,7 @@ class TestReloadAllConfigs:
         project_dir = tmp_path
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch(
                 "sova.dashboard.services.daemon_registry.reload_daemon_config", new_callable=AsyncMock
@@ -1580,7 +1580,7 @@ class TestReloadAllConfigs:
         project_dir = tmp_path
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.daemon_registry.get_daemon_components", return_value={}),
             patch(
                 "sova.dashboard.services.settings_service.reload_oversight_config_with_cfg",
@@ -1609,7 +1609,9 @@ class TestReloadAllConfigs:
 
         project_dir = tmp_path
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config parse error")):
+        with patch(
+            "sova.dashboard.services.settings_service.load_config", side_effect=RuntimeError("config parse error")
+        ):
             err = await reload_all_configs(project_dir, "watchdog.enabled")
 
         assert err is not None
@@ -1627,7 +1629,7 @@ class TestReloadAllConfigs:
         resolved_key = str(project_dir.resolve())
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.settings_service.load_config", return_value=cfg),
             patch(
                 "sova.dashboard.services.daemon_registry.get_daemon_components",
                 return_value={resolved_key: {"watchdog": wd}},

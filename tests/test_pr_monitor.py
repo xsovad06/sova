@@ -937,7 +937,7 @@ class TestMultiProjectMonitor:
                 "sova.config.registry.list_projects",
                 return_value={"good": str(tmp_path / "good"), "bad": str(tmp_path / "bad")},
             ),
-            patch("sova.config.loader.load_config", side_effect=_load_config),
+            patch("sova.supervisor.pr_monitor.load_config", side_effect=_load_config),
             patch("pathlib.Path.is_dir", return_value=True),
         ):
             monitors = create_monitors_for_projects()
@@ -974,7 +974,7 @@ class TestMultiProjectMonitor:
                 "sova.config.registry.list_projects",
                 return_value={"disabled": disabled_dir, "norepo": norepo_dir},
             ),
-            patch("sova.config.loader.load_config", side_effect=lambda p: configs[str(p)]),
+            patch("sova.supervisor.pr_monitor.load_config", side_effect=lambda p: configs[str(p)]),
             patch("pathlib.Path.is_dir", return_value=True),
         ):
             monitors = create_monitors_for_projects()

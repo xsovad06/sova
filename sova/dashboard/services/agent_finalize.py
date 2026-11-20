@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.config.models import CodexConfig
 from sova.dashboard.services.agent_context import (
     _resolve_issue_from_pr,
@@ -32,6 +33,7 @@ from sova.dashboard.services.agent_pool import (
 from sova.dashboard.services.agent_validation import (
     _check_pr_merged_on_failure,
 )
+from sova.db.session import get_session
 from sova.git.merge import delete_remote_branch, handle_merged_pr_issues, handle_post_merge_state
 from sova.git.pr import get_pr_branch
 from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, FileAgentProcess
@@ -57,7 +59,6 @@ _READER_DRAIN_TIMEOUT = CodexConfig.model_fields["reader_drain_timeout"].default
 async def _crash_recovery_cleanup(agent: AgentState) -> None:
     """Clean up branch and issue state when merge succeeded but agent crashed."""
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
 
     if not agent.pr_number:
         log.warning("finalize.crash_recovery_no_pr", issue=agent.issue)
@@ -156,7 +157,6 @@ async def _check_merge_queue_on_failure(
     the merge is tracked). Returns the updated (status, exit_code).
     """
     try:
-        from sova.config.loader import load_config
         from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
         from sova.git.merge import get_merge_queue_status
 
@@ -237,7 +237,6 @@ async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
     """
     from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -419,7 +418,6 @@ def invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
         log.warning("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
     try:
-        from sova.config.loader import load_config
         from sova.dashboard.services.pr_service import invalidate_pr_cache
 
         repo = load_config(project_dir).github_repo
@@ -670,7 +668,6 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         await _finalize_lifecycle_phase(run_id, exit_code, agent.last_result_cost or 0.0, agent.project_dir)
 
     try:
-        from sova.config.loader import load_config
         from sova.ipc.notifications import notify
 
         # Inside the best-effort block: this read only picks a notification kind, so whatever it raises must not
@@ -738,7 +735,6 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     # Schedule non-blocking telemetry push if hub is configured
     try:
-        from sova.config.loader import load_config
         from sova.dashboard.services.agent_resource import _background_tasks
 
         tel_cfg = load_config(agent.project_dir)

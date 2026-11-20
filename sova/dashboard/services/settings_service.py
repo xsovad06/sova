@@ -17,8 +17,10 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.context import resolve_project_dir_or_none
+from sova.config.loader import load_config
 from sova.dashboard.services import daemon_registry
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.db.session import get_session
 from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 
@@ -84,11 +86,9 @@ def _get_raw_config(project_dir: Path | None = None) -> dict:
     surface must go through ``get_config()`` instead, which masks every
     ``value_type="secret"`` key.
     """
-    from sova.config.loader import load_config
-
     try:
         cfg = load_config(project_dir)
-    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML, import errors))
+    except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML))
         log.warning("settings.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return {"_error": "No configuration found"}
 
@@ -334,7 +334,6 @@ async def _delete_stored_value(project_dir: Path | None, key: str, meta: Setting
     removed only leaves an orphan, which is reported as the warning rather than treated as a failure.
     """
     from sova.config.db_loader import delete_setting
-    from sova.db.session import get_session
     from sova.llm import keyring_store
 
     async with await get_session(project_dir=project_dir) as session, session.begin():
@@ -428,7 +427,6 @@ async def _write_routing_rows(
 
     from sova.config.db_loader import delete_setting, save_setting
     from sova.db.models import ProjectSetting
-    from sova.db.session import get_session
 
     deleted = 0
     async with await get_session(project_dir=project_dir) as session, session.begin():
@@ -559,7 +557,6 @@ def _changed_since_read(project_dir: Path | None, expected: dict[str, Any] | Non
     """
     if not expected:
         return None
-    from sova.config.loader import load_config
     from sova.dashboard.services.model_map_service import setting_value
 
     try:
@@ -575,8 +572,6 @@ def _changed_since_read(project_dir: Path | None, expected: dict[str, Any] | Non
 
 def _current_routing(project_dir: Path | None) -> dict[str, str] | None:
     """The effective routing table, or None when the config cannot be loaded (never an empty table for a failure)."""
-    from sova.config.loader import load_config
-
     try:
         return dict(load_config(project_dir).llm.routing)
     except Exception:  # noqa: BLE001 (an unloadable config is reported by the save path's consistency check)
@@ -594,7 +589,6 @@ async def pin_short_names(
     ``skipped``. Single-model and list settings are written in one transaction, routing rows in another.
     Returns ``{"status": "ok", "pinned": {key: value}, "skipped": [{key, reason}]}`` or ``{"error": ...}``.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.config_errors import CONFIG_LOAD_ERRORS
     from sova.dashboard.services.model_map_service import short_name_settings
 
@@ -863,7 +857,6 @@ async def update_config_many(
 async def _save_settings_in_one_transaction(project_dir: Path | None, values: dict[str, object]) -> None:
     """Write every key in *values* in one DB transaction, then drop the cached config."""
     from sova.config.db_loader import save_setting
-    from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session, session.begin():
         for key, value in values.items():
@@ -881,7 +874,6 @@ def _validate_config_consistency_many(project_dir: Path | None, updates: dict[st
     """
     from pydantic import ValidationError
 
-    from sova.config.loader import load_config
     from sova.config.models import ProjectConfig
 
     try:
@@ -930,8 +922,6 @@ def _active_llm_provider(project_dir: Path | None) -> str | None:
     of this codebase's "never silently discard credential state" posture.
     Callers must treat ``None`` as a hard failure for a write.
     """
-    from sova.config.loader import load_config
-
     try:
         return load_config(project_dir).llm.provider
     except Exception:  # noqa: BLE001 (any load failure is reported to the caller as unresolvable)
@@ -1102,7 +1092,6 @@ async def _save_setting_to_db(project_dir: Path | None, key: str, value: object)
     """Persist a setting to the database. Returns True on success."""
     try:
         from sova.config.db_loader import save_setting
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session, session.begin():
             await save_setting(session, key, value)
@@ -1216,7 +1205,6 @@ def _validate_config_consistency(project_dir: Path | None, key: str, value: obje
     """
     from pydantic import ValidationError
 
-    from sova.config.loader import load_config
     from sova.config.models import ProjectConfig
 
     try:
@@ -1646,7 +1634,6 @@ async def reload_all_configs(project_dir: Path | None, key: str) -> str | None:
 
     Returns a lifecycle error message string, or None on success.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.services.daemon_registry import get_daemon_components
 
     matched = match_reload_target(key)
@@ -1767,7 +1754,6 @@ def runtime_honours_model(cfg: ProjectConfig) -> bool:
 
 async def get_model_map_payload(project_dir: Path | None) -> dict:
     """Which model each role and step runs on and why, with fallbacks, and the settings stored as a short name."""
-    from sova.config.loader import load_config
     from sova.dashboard.services.model_map_service import build_model_map, short_name_settings
 
     cfg = await asyncio.to_thread(load_config, project_dir)
@@ -1786,7 +1772,6 @@ async def pin_catalog(project_dir: Path | None) -> list[str] | None:
     None also covers a config that cannot be loaded (logged here): ``pin_short_names()`` reports that as its own
     refusal, a 503 since a config the server cannot read is not a fault in the request.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.config_errors import CONFIG_LOAD_ERRORS
     from sova.dashboard.services.model_map_service import short_name_settings
 

@@ -643,7 +643,9 @@ class TestBudgetExhaustedNotification:
         from sova.dashboard.services.agent_handoff import _notify_budget_exhausted
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(notification=_ntfy_config())),
+            patch(
+                "sova.dashboard.services.agent_handoff.load_config", return_value=MagicMock(notification=_ntfy_config())
+            ),
             patch("sova.ipc.notifications.notify") as mock_notify,
         ):
             _notify_budget_exhausted(self._agent(tmp_path), "42", "budget spent", headline="review budget exhausted")
@@ -659,7 +661,9 @@ class TestBudgetExhaustedNotification:
         from sova.dashboard.services.agent_handoff import _notify_budget_exhausted
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(notification=_ntfy_config())),
+            patch(
+                "sova.dashboard.services.agent_handoff.load_config", return_value=MagicMock(notification=_ntfy_config())
+            ),
             patch("sova.ipc.notifications.notify") as mock_notify,
         ):
             _notify_budget_exhausted(self._agent(tmp_path, issue=""), "", "budget spent", headline="budget unknown")
@@ -673,7 +677,7 @@ class TestBudgetExhaustedNotification:
         from sova.dashboard.services.agent_handoff import _notify_budget_exhausted
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("db locked")),
+            patch("sova.dashboard.services.agent_handoff.load_config", side_effect=RuntimeError("db locked")),
             patch("sova.ipc.notifications.notify") as mock_notify,
         ):
             _notify_budget_exhausted(self._agent(tmp_path), "42", "budget spent", headline="budget exhausted")
@@ -723,7 +727,10 @@ class TestFinalizeNotificationKind:
             patch.object(agent_finalize, "_engine_announced_failure", new=marker_lookup),
             patch.object(agent_finalize, "_announce_agent_finished", new=AsyncMock()),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new=AsyncMock()),
-            patch("sova.config.loader.load_config", return_value=MagicMock(notification=_ntfy_config())),
+            patch(
+                "sova.dashboard.services.agent_finalize.load_config",
+                return_value=MagicMock(notification=_ntfy_config()),
+            ),
             patch("sova.ipc.notifications.notify", side_effect=notify_side_effect) as mock_notify,
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new=AsyncMock()),
         ):

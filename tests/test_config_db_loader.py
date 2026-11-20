@@ -692,18 +692,18 @@ class TestSaveTaskQueueInvalidation:
 
     async def test_successful_write_invalidates_the_project(self, tmp_path: Path) -> None:
         with (
-            patch("sova.db.session.get_session", AsyncMock(return_value=self._session())),
+            patch("sova.config.db_loader.get_session", AsyncMock(return_value=self._session())),
             patch("sova.config.db_loader.save_setting", AsyncMock()),
-            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+            patch("sova.config.db_loader.invalidate_config_cache") as invalidate,
         ):
             await save_task_queue(tmp_path, [1, 2])
         invalidate.assert_called_once_with(tmp_path)
 
     async def test_failed_write_does_not_invalidate(self, tmp_path: Path) -> None:
         with (
-            patch("sova.db.session.get_session", AsyncMock(return_value=self._session())),
+            patch("sova.config.db_loader.get_session", AsyncMock(return_value=self._session())),
             patch("sova.config.db_loader.save_setting", AsyncMock(side_effect=RuntimeError("DB gone"))),
-            patch("sova.config.loader.invalidate_config_cache") as invalidate,
+            patch("sova.config.db_loader.invalidate_config_cache") as invalidate,
             pytest.raises(RuntimeError),
         ):
             await save_task_queue(tmp_path, [1, 2])
@@ -714,7 +714,7 @@ class TestLoadTaskQueue:
     @staticmethod
     async def _load(stored: Any) -> list[int]:
         with (
-            patch("sova.db.session.get_session", new=AsyncMock(return_value=MagicMock())),
+            patch("sova.config.db_loader.get_session", new=AsyncMock(return_value=MagicMock())),
             patch("sova.config.db_loader.get_setting", new=AsyncMock(return_value=stored)),
         ):
             return await load_task_queue(None)
@@ -817,7 +817,7 @@ class TestTaskQueueCompareAndSwap:
     async def test_prune_keeps_an_entry_another_process_added_meanwhile(self, tmp_path: Path) -> None:
         await save_task_queue(tmp_path, [42, 43])
 
-        with patch("sova.db.session.get_session", _racing_get_session([[42, 43, 44]])):
+        with patch("sova.config.db_loader.get_session", _racing_get_session([[42, 43, 44]])):
             removed = await remove_from_task_queue(tmp_path, [42])
 
         assert removed == [42]
@@ -842,7 +842,7 @@ class TestTaskQueueCompareAndSwap:
     async def test_based_on_save_rebased_after_a_lost_swap(self, tmp_path: Path) -> None:
         await save_task_queue(tmp_path, [1, 2])
 
-        with patch("sova.db.session.get_session", _racing_get_session([[2, 7]])):
+        with patch("sova.config.db_loader.get_session", _racing_get_session([[2, 7]])):
             saved = await save_task_queue(tmp_path, [2, 5], based_on=[1, 2])
 
         assert saved == [2, 5, 7]
@@ -853,14 +853,14 @@ class TestTaskQueueCompareAndSwap:
         assert await load_task_queue(tmp_path) == [5]
 
     async def test_a_concurrent_first_write_of_an_unset_queue_is_kept(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", _racing_get_session([[9]])):
+        with patch("sova.config.db_loader.get_session", _racing_get_session([[9]])):
             saved = await save_task_queue(tmp_path, [5], based_on=[])
 
         assert saved == [5, 9]
         assert await load_task_queue(tmp_path) == [5, 9]
 
     async def test_no_issue_id_removes_nothing_and_reads_nothing(self, tmp_path: Path) -> None:
-        with patch("sova.db.session.get_session", AsyncMock()) as session:
+        with patch("sova.config.db_loader.get_session", AsyncMock()) as session:
             assert await remove_from_task_queue(tmp_path, ["7"]) == []  # type: ignore[list-item]
         session.assert_not_awaited()
 
@@ -869,7 +869,7 @@ class TestTaskQueueCompareAndSwap:
         concurrent = [[1, 2, 100 + n] for n in range(8)]
 
         with (
-            patch("sova.db.session.get_session", _racing_get_session(concurrent)),
+            patch("sova.config.db_loader.get_session", _racing_get_session(concurrent)),
             pytest.raises(TaskQueueConflictError),
         ):
             await remove_from_task_queue(tmp_path, [1])
@@ -930,7 +930,7 @@ class TestHiddenIssues:
             return session
 
         with (
-            patch("sova.db.session.get_session", failing_get_session),
+            patch("sova.config.db_loader.get_session", failing_get_session),
             patch("sova.config.db_loader.save_setting", AsyncMock()) as save,
             pytest.raises(OperationalError),
         ):
@@ -948,7 +948,7 @@ class TestHiddenIssues:
     async def test_malformed_entries_are_dropped_and_duplicates_collapsed(self) -> None:
         config = MagicMock()
         config.dashboard.hidden_issues = [3, "x", -1, True, 3, 4]
-        with patch("sova.config.loader.load_config", return_value=config):
+        with patch("sova.config.db_loader.load_config", return_value=config):
             assert await load_hidden_issues(None) == [3, 4]
 
     async def test_a_list_set_in_toml_is_read_when_the_database_has_none(self, tmp_path: Path) -> None:

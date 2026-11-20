@@ -22,7 +22,7 @@ class TestCodexAddressPrDispatch:
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(agent_lifecycle, "get_runtime", return_value=server_runtime),
-            patch("sova.config.loader.load_config", return_value=project_config),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=project_config),
             patch.object(
                 agent_lifecycle, "_resolve_command_context", new_callable=AsyncMock, return_value=(1496, "1418")
             ),
@@ -45,7 +45,7 @@ class TestCodexAddressPrDispatch:
         project_config.agent.runtime = "codex"
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.config.loader.load_config", return_value=project_config),
+            patch("sova.dashboard.services.agent_lifecycle.load_config", return_value=project_config),
             patch.object(
                 agent_lifecycle, "_resolve_command_context", new_callable=AsyncMock, return_value=(None, "1418")
             ),

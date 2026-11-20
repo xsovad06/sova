@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.core.spec_utils import (
     SpecDrift,
     SpecDriftResult,
@@ -24,6 +25,7 @@ from sova.core.spec_utils import (
     read_spec,
 )
 from sova.core.steps._spec_helpers import SECTION_IMPLEMENTATION_NOTES
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
@@ -114,8 +116,6 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
 
 def _drift_for(raw_content: str, repo_dir: Path) -> SpecDriftResult:
     """Load the project's base branch and run the drift check (blocking: config read plus git)."""
-    from sova.config.loader import load_config
-
     return check_spec_code_drift(raw_content, repo_dir, load_config(repo_dir).base_branch)
 
 
@@ -149,7 +149,6 @@ async def _development_started(issue_number: str, project_dir: Path) -> bool | N
 
     from sova.core.state import TASK_RUN_TERMINAL
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     spec_written_at = _spec_written_at(issue_number, project_dir)
     opened_pr = TaskRun.pr_number.isnot(None)

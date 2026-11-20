@@ -339,7 +339,7 @@ class TestCreateIssueFromFinding:
 
         with (
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.oversight.load_config"),
         ):
             resp = await client.post(f"/api/oversight/findings/{finding.id}/create-issue")
             assert resp.status_code == 200
@@ -451,7 +451,7 @@ class TestRouterErrorPaths:
             assert resp.status_code == 500
 
     async def test_status_config_load_error(self, client: AsyncClient) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.routers.oversight.load_config", side_effect=RuntimeError("bad config")):
             resp = await client.get("/api/oversight/status")
             assert resp.status_code == 200
             data = resp.json()
@@ -476,7 +476,7 @@ class TestRouterErrorPaths:
     async def test_create_issue_adapter_error(self, client: AsyncClient, seed_runs: dict) -> None:
         finding = seed_runs["findings"][0]
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.oversight.load_config"),
             patch("sova.adapters.create_adapter", side_effect=RuntimeError("adapter fail")),
         ):
             resp = await client.post(f"/api/oversight/findings/{finding.id}/create-issue")
@@ -492,7 +492,7 @@ class TestCreateIssueTrackerFailure:
         mock_adapter.create_issue = AsyncMock(side_effect=RuntimeError("gh: token ghp_SECRET expired"))
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.oversight.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             resp = await client.post(f"/api/oversight/findings/{finding.id}/create-issue")

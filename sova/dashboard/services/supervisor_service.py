@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from sova.config.loader import load_config
 from sova.dashboard.services import daemon_registry
 from sova.db.models import SupervisorDecision
 from sova.db.session import get_session
@@ -246,7 +247,6 @@ async def execute_plan_decisions(decisions: list[ProgressionDecision], project_d
 
     from sova.adapters import create_adapter
     from sova.adapters.base import AdapterError
-    from sova.config.loader import load_config
     from sova.db.session import get_session_factory
     from sova.supervisor.progression import TaskProgressionEngine
 
@@ -333,8 +333,6 @@ async def notify_daemon_queue_change(project_dir: Path | None) -> None:
     if daemon is None:
         return
     try:
-        from sova.config.loader import load_config
-
         cfg = await asyncio.to_thread(load_config, project_dir)
         daemon.reload_config(cfg, wake=False)
     except Exception:  # noqa: BLE001 (best-effort daemon notify; queue mutation must not fail on it)
@@ -365,8 +363,6 @@ async def maybe_migrate_queue_from_toml(project_dir: Path | None) -> None:
         return
 
     try:
-        from sova.config.loader import load_config
-
         cfg = await asyncio.to_thread(load_config, project_dir)
         toml_queue = cfg.supervisor.task_queue
         if toml_queue:

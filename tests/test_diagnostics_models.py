@@ -65,7 +65,8 @@ def discovery() -> Iterator[tuple[ProjectConfig, MagicMock, AsyncMock]]:
     provider = MagicMock()
     provider.list_available_models = AsyncMock(return_value=[_model("claude-present")])
     runtime = AsyncMock(return_value={"source": "runtime", "models": [{"id": "runtime-present"}]})
-    # These collaborators are imported inside the diagnostic, so patch their source modules.
+    # diagnostics imports load_config lazily (utils cannot import config at module scope), so it is patched at
+    # sova.config.loader; the provider and runtime factories are lazy too, so those are patched at their sources.
     with (
         patch("sova.config.loader.load_config", return_value=cfg),
         patch("sova.llm.provider.create_provider", return_value=provider),
@@ -451,7 +452,8 @@ class TestDiscoveryIntegration:
         cfg.llm.provider = "ollama"
         cfg.llm.model = "ollama/local-typo"
         provider = LiteLLMProvider(model=cfg.llm.model, vendor="ollama")
-        # Factory/config are imported locally; retain the provider's real fallback path.
+        # diagnostics imports load_config lazily (utils cannot import config at module scope), so it is patched at
+        # sova.config.loader, and so is the provider factory; retain the provider's real fallback path.
         with (
             patch("sova.config.loader.load_config", return_value=cfg),
             patch("sova.llm.provider.create_provider", return_value=provider),
@@ -484,8 +486,11 @@ class TestDiscoveryIntegration:
         cfg.agent.runtime = "aider"
         cfg.roles.developer_runtime_model = "runtime-present"
         fetch = AsyncMock(return_value=[_model("claude-present")])
-        # The factories/config are imported locally by diagnostics and models_service.
+        # diagnostics imports load_config lazily (utils cannot import config at module scope), so it is patched at
+        # sova.config.loader; models_service binds it at module scope and is patched there. The runtime factory is
+        # imported lazily, so it is patched at its source module.
         with (
+            patch("sova.dashboard.services.models_service.load_config", return_value=cfg),
             patch("sova.config.loader.load_config", return_value=cfg),
             patch.object(anthropic_api, "_HAS_ANTHROPIC", True),
             patch.object(anthropic_api.AnthropicAPIProvider, "_fetch_sdk_models", fetch),
@@ -513,8 +518,11 @@ class TestDiscoveryIntegration:
         cfg = ProjectConfig()
         cfg.agent.runtime = "aider"
         cfg.roles.developer_runtime_model = "runtime-present"
-        # Runtime construction is local to models_service; use its real enumeration/cache path.
+        # models_service binds load_config at module scope and is patched there; diagnostics imports it lazily
+        # (utils cannot import config at module scope), so it is patched at sova.config.loader. Runtime construction
+        # stays lazy in models_service, so use its real enumeration/cache path.
         with (
+            patch("sova.dashboard.services.models_service.load_config", return_value=cfg),
             patch("sova.config.loader.load_config", return_value=cfg),
             patch.object(AiderRuntime, "check_available", AsyncMock(return_value=(False, "unauthenticated"))),
         ):

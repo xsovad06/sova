@@ -303,22 +303,6 @@ class TestCopyWorktreeFilesDirConflict:
             _copy_worktree_files(project, worktree, ["mydir"])
 
 
-class TestCheckActiveAgentImportError:
-    async def test_import_error_returns_none(self) -> None:
-        from sova.git.worktree import check_worktree_active_agent
-
-        original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "sqlalchemy":
-                raise ImportError("no sqlalchemy")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=fake_import):
-            result = await check_worktree_active_agent(Path("/fake/wt"))
-        assert result is None
-
-
 class TestCreateWorktreeCheckedOutElsewhere:
     @pytest.mark.parametrize(
         "stderr",

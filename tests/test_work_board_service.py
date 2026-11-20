@@ -499,7 +499,7 @@ class TestQueue:
         with (
             _sources(items=[], tasks=[], queue=[7]),
             patch("sova.adapters.create_adapter", return_value=adapter),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
         ):
             await board.build_board(PROJECT)
 
@@ -511,7 +511,7 @@ class TestQueue:
         with (
             _sources(items=[], tasks=[], queue=[7, 8]) as src,
             patch("sova.adapters.create_adapter", return_value=adapter),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
         ):
             result = await board.build_board(PROJECT)
 
@@ -523,7 +523,7 @@ class TestQueue:
         with (
             _sources(items=[], tasks=[], queue=[7, 8]) as src,
             patch("sova.adapters.create_adapter", return_value=adapter),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
         ):
             result = await board.build_board(PROJECT)
 
@@ -541,7 +541,7 @@ class TestDoneToday:
         with (
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch("sova.adapters.close_adapter", AsyncMock()),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
         ):
             await board._enrich_done_assignees(PROJECT, DependencyGraph([]), [entry])
             again = {"number": 42, "jira_key": "ARVAC-42"}
@@ -558,7 +558,7 @@ class TestDoneToday:
         with (
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch("sova.adapters.close_adapter", AsyncMock()),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
         ):
             complete = await board._enrich_done_assignees(PROJECT, DependencyGraph([]), [entry])
 
@@ -582,7 +582,7 @@ class TestDoneToday:
         cfg = SimpleNamespace(github_repo="owner/repo", github_user="")
         fetch = AsyncMock(side_effect=prs) if isinstance(prs, Exception) else AsyncMock(return_value=prs)
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=cfg),
             patch.object(board, "list_merged_prs_since", fetch),
         ):
             yield fetch
@@ -625,7 +625,7 @@ class TestDoneToday:
             ),
         )
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=cfg),
             patch.object(board, "list_merged_prs_since", AsyncMock(return_value=prs)),
         ):
             entries = await board._done_today(PROJECT, self.NOW)
@@ -740,7 +740,7 @@ class TestActiveRuns:
         session.__aexit__ = AsyncMock(return_value=False)
         session.begin = MagicMock(return_value=session)
         with (
-            patch("sova.db.session.get_session", AsyncMock(return_value=session)),
+            patch("sova.dashboard.services.work_board_service.get_session", AsyncMock(return_value=session)),
             patch("sova.dashboard.services.work_service.get_active_work", AsyncMock(return_value=runs)),
         ):
             indexed = await board._active_runs(PROJECT)
@@ -749,7 +749,9 @@ class TestActiveRuns:
         assert set(indexed) == {"run:9", "run:3", "issue:5"}
 
     async def test_a_failed_lookup_is_unavailable_never_no_runs(self) -> None:
-        with patch("sova.db.session.get_session", AsyncMock(side_effect=RuntimeError("db gone"))):
+        with patch(
+            "sova.dashboard.services.work_board_service.get_session", AsyncMock(side_effect=RuntimeError("db gone"))
+        ):
             assert await board._active_runs(PROJECT) is None
 
     async def test_the_board_names_failed_active_runs_as_unavailable(self) -> None:
@@ -782,13 +784,16 @@ class TestDoneTodaySources:
     NOW = datetime(2026, 11, 13, 15, 30, tzinfo=timezone.utc)
 
     async def test_a_project_without_a_github_repo_has_an_empty_day(self) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_repo="", github_user="")):
+        with patch(
+            "sova.dashboard.services.work_board_service.load_config",
+            return_value=SimpleNamespace(github_repo="", github_user=""),
+        ):
             assert await board._done_today(PROJECT, self.NOW) == []
 
     async def test_a_new_day_evicts_the_previous_days_cache(self) -> None:
         cfg = SimpleNamespace(github_repo="owner/repo", github_user="")
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=cfg),
             patch.object(board, "list_merged_prs_since", AsyncMock(return_value=[])),
         ):
             await board._done_today(PROJECT, self.NOW)
@@ -801,7 +806,7 @@ class TestQueueLookupAdapter:
     async def test_no_adapter_keeps_every_unknown_entry(self) -> None:
         with (
             _sources(items=[], tasks=[], queue=[7, 8]) as src,
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")),
+            patch("sova.dashboard.services.work_board_service.load_config", side_effect=RuntimeError("no config")),
         ):
             result = await board.build_board(PROJECT)
 

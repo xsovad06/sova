@@ -153,7 +153,7 @@ class TestSupervisorRouter:
                 return create_app(project_dir=Path.cwd())
 
     async def test_ci_budget_no_repo(self, app) -> None:
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = ""
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -171,7 +171,7 @@ class TestSupervisorRouter:
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1850, remaining=150, pct_used=92.5))
         mock_tracker.is_cached.return_value = True
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
             mock_cfg.return_value.github_user = "user"
             mock_cfg.return_value.supervisor.ci_warn_minutes = 200
@@ -196,7 +196,7 @@ class TestSupervisorRouter:
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))
         mock_tracker.is_cached.return_value = True
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
             mock_cfg.return_value.github_user = "user"
             mock_cfg.return_value.supervisor.ci_warn_minutes = 200
@@ -210,7 +210,7 @@ class TestSupervisorRouter:
                     assert data["block"] is True
 
     async def test_ci_budget_exception_returns_zero(self, app) -> None:
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
             mock_cfg.return_value.github_user = "user"
             with patch(
@@ -236,7 +236,7 @@ class TestSupervisorRouter:
         mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=0, used=0, remaining=0, pct_used=0.0))
         mock_tracker.is_cached.return_value = False
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value.github_repo = "owner/repo"
             mock_cfg.return_value.github_user = "user"
             mock_cfg.return_value.supervisor.ci_warn_minutes = 200
@@ -375,7 +375,7 @@ class TestSupervisorRouter:
     async def test_get_counts_with_data(self, app, seed_decisions) -> None:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "test/repo"
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/counts")
@@ -396,7 +396,7 @@ class TestSupervisorRouter:
     async def test_get_planner_health_with_data(self, app, seed_planner_health) -> None:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "test/repo"
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/planner-health")
@@ -408,7 +408,7 @@ class TestSupervisorRouter:
     async def test_get_decisions_with_filters(self, app, seed_decisions) -> None:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "test/repo"
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/decisions?component=progression&limit=10")
@@ -423,7 +423,7 @@ class TestSupervisorRouter:
         project_dir = Path.cwd().resolve()
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -479,7 +479,7 @@ class TestSupervisorRouter:
         try:
             with (
                 patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-                patch("sova.config.loader.load_config", return_value=mock_cfg),
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg),
                 patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
                 patch("sova.supervisor.daemon.SupervisorDaemon", return_value=mock_daemon),
             ):
@@ -504,7 +504,7 @@ class TestSupervisorRouter:
         try:
             with (
                 patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
-                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                     client.headers.update(_csrf_request_headers(client))
@@ -543,7 +543,7 @@ class TestSupervisorRouter:
         try:
             with (
                 patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
-                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                     client.headers.update(_csrf_request_headers(client))
@@ -564,7 +564,7 @@ class TestSupervisorRouter:
             with (
                 patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None),
                 patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
-                patch("sova.config.loader.load_config", return_value=mock_cfg) as mock_load,
+                patch("sova.dashboard.routers.supervisor.load_config", return_value=mock_cfg) as mock_load,
             ):
                 async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                     client.headers.update(_csrf_request_headers(client))
@@ -576,7 +576,7 @@ class TestSupervisorRouter:
 
     async def test_get_decisions_load_config_error(self, app) -> None:
         """GET /supervisor/decisions falls back to project_slug=None when load_config raises."""
-        with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=Exception("no config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/decisions")
@@ -585,7 +585,7 @@ class TestSupervisorRouter:
 
     async def test_get_counts_load_config_error(self, app) -> None:
         """GET /supervisor/counts falls back to project_slug=None when load_config raises."""
-        with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=Exception("no config")):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/counts")
@@ -614,7 +614,7 @@ class TestSupervisorPlan:
         set_pending_plan([], project_slug="test/repo")
 
     async def test_get_plan_empty(self, app) -> None:
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -642,7 +642,7 @@ class TestSupervisorPlan:
         ]
         set_pending_plan(decisions, project_slug="test/repo")
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -666,7 +666,9 @@ class TestSupervisorPlan:
         ]
         set_pending_plan(decisions, project_slug="test/repo")
 
-        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError("Config load failed")):
+        with patch(
+            "sova.dashboard.routers.supervisor.load_config", side_effect=FileNotFoundError("Config load failed")
+        ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
                 resp = await client.get("/api/supervisor/plan")
@@ -683,7 +685,7 @@ class TestSupervisorPlan:
 
         set_pending_plan([], project_slug="test/repo")
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -707,7 +709,7 @@ class TestSupervisorPlan:
             new_callable=AsyncMock,
             return_value=[{"run_id": 1}],
         )
-        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -731,7 +733,7 @@ class TestSupervisorPlan:
             new_callable=AsyncMock,
             return_value=[],
         )
-        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -759,7 +761,7 @@ class TestSupervisorPlan:
             "sova.dashboard.services.supervisor_service.execute_plan_decisions",
             side_effect=daemon_writes_during_setup,
         )
-        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -783,7 +785,7 @@ class TestSupervisorPlan:
             new_callable=AsyncMock,
             return_value=[{"ok": True, "run_id": 1}, {"ok": False, "error": "spawn failed", "issue_number": 43}],
         )
-        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg, _mock_exec:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -816,7 +818,8 @@ class TestSupervisorPlan:
         set_pending_plan(decisions, project_slug="test/repo", reasoning="why", deferred=[{"issue": 9}])
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
+            patch("sova.dashboard.services.supervisor_service.load_config", new=mock_cfg),
             patch("sova.adapters.create_adapter", side_effect=ValueError("no adapter /secret")),
         ):
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
@@ -840,7 +843,7 @@ class TestSupervisorPlan:
         ]
         set_pending_plan(decisions, project_slug="test/repo")
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -851,7 +854,7 @@ class TestSupervisorPlan:
         assert remaining[0].issue_number == 43
 
     async def test_skip_nonexistent_issue_returns_404(self, app) -> None:
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 client.headers.update(_csrf_request_headers(client))
@@ -860,7 +863,7 @@ class TestSupervisorPlan:
 
     async def test_approve_with_config_load_failure(self, app) -> None:
         """approve_plan answers with the fixed 500 body when load_config fails."""
-        with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=Exception("Config load failed")):
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
             ) as client:
@@ -871,7 +874,7 @@ class TestSupervisorPlan:
 
     async def test_skip_with_config_load_failure(self, app) -> None:
         """skip_plan_item answers with the fixed 500 body when load_config fails."""
-        with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=Exception("Config load failed")):
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
             ) as client:
@@ -903,7 +906,7 @@ class TestSupervisorDaemonRequireApproval:
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.daemon.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
@@ -935,7 +938,7 @@ class TestSupervisorDaemonRequireApproval:
         execute_results = [{"run_id": 1}]
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.daemon.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
@@ -971,7 +974,10 @@ class TestExecutePlanDecisions:
             return {"run_id": 1, "issue_number": decision.issue_number}
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch(
+                "sova.dashboard.services.supervisor_service.load_config",
+                return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r"),
+            ),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
             patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
@@ -1001,7 +1007,10 @@ class TestExecutePlanDecisions:
             return {"run_id": 1}
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch(
+                "sova.dashboard.services.supervisor_service.load_config",
+                return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r"),
+            ),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
             patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
@@ -1047,7 +1056,10 @@ class TestExecutePlanDecisions:
             return {"run_id": 1} if decision.issue_number == 42 else engine_result
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch(
+                "sova.dashboard.services.supervisor_service.load_config",
+                return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r"),
+            ),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
             patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
@@ -1071,7 +1083,10 @@ class TestExecutePlanDecisions:
 
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch(
+                "sova.dashboard.services.supervisor_service.load_config",
+                return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r"),
+            ),
             patch("sova.adapters.create_adapter", side_effect=ValueError("Jira adapter requires jira_base_url")),
             patch(
                 "sova.supervisor.progression.TaskProgressionEngine.execute_decision", new_callable=AsyncMock
@@ -1717,7 +1732,7 @@ class TestSupervisorPersonaEndpoints:
     async def test_get_persona_success(self, app, tmp_path: Path) -> None:
         persona_info = {"content": "Test persona", "path": str(tmp_path / "persona.md"), "exists": True}
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
             patch("sova.supervisor.persona.get_persona_info", return_value=persona_info),
         ):
             mock_cfg.return_value.supervisor.persona_path = str(tmp_path / "persona.md")
@@ -1728,7 +1743,7 @@ class TestSupervisorPersonaEndpoints:
         assert resp.json()["content"] == "Test persona"
 
     async def test_get_persona_error_returns_500(self, app) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=RuntimeError("bad config")):
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
             ) as client:
@@ -1738,7 +1753,7 @@ class TestSupervisorPersonaEndpoints:
         assert resp.json()["detail"] == "Internal error"
 
     async def test_open_persona_config_error_returns_500(self, app) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.dashboard.routers.supervisor.load_config", side_effect=RuntimeError("no config")):
             async with AsyncClient(
                 transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
             ) as client:
@@ -1749,7 +1764,7 @@ class TestSupervisorPersonaEndpoints:
 
     async def test_open_persona_no_editor_returns_400(self, app, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
             patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value=None),
         ):
@@ -1762,7 +1777,7 @@ class TestSupervisorPersonaEndpoints:
 
     async def test_open_persona_editor_not_found_returns_400(self, app, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
             patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=FileNotFoundError()),
@@ -1777,7 +1792,7 @@ class TestSupervisorPersonaEndpoints:
     async def test_open_persona_subprocess_error_is_a_500_not_a_client_error(self, app, tmp_path: Path) -> None:
         """A spawn failure other than a missing opener (permission, resources) is the host's fault."""
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
             patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=PermissionError("EPERM")),
@@ -1794,7 +1809,7 @@ class TestSupervisorPersonaEndpoints:
 
     async def test_open_persona_success(self, app, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.routers.supervisor.load_config") as mock_cfg,
             patch("sova.supervisor.persona.ensure_persona_exists", return_value=tmp_path / "persona.md"),
             patch("sova.oversight.persona.get_open_command", return_value="code"),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
@@ -1847,7 +1862,7 @@ class TestMaybeMigrateQueueFromToml:
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = []
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.services.supervisor_service.load_config", return_value=mock_cfg):
             await maybe_migrate_queue_from_toml(project_dir)
 
     async def test_migrates_toml_queue_to_db(self, project_dir) -> None:
@@ -1856,7 +1871,7 @@ class TestMaybeMigrateQueueFromToml:
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [10, 20, 30]
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.services.supervisor_service.load_config", return_value=mock_cfg):
             await maybe_migrate_queue_from_toml(project_dir)
 
         loaded = await load_task_queue(project_dir)
@@ -1870,7 +1885,7 @@ class TestMaybeMigrateQueueFromToml:
 
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [10, 20]
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.services.supervisor_service.load_config", return_value=mock_cfg):
             await maybe_migrate_queue_from_toml(project_dir)
 
         loaded = await load_task_queue(project_dir)
@@ -1879,7 +1894,7 @@ class TestMaybeMigrateQueueFromToml:
     async def test_exception_is_swallowed(self) -> None:
         from sova.dashboard.services.supervisor_service import maybe_migrate_queue_from_toml
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.dashboard.services.supervisor_service.load_config", side_effect=RuntimeError("boom")):
             await maybe_migrate_queue_from_toml(Path("/nonexistent"))
 
 

@@ -500,7 +500,7 @@ class TestAddCommand:
     ) -> None:
         fake = FakeGh(lambda _url: ShellResult(0, "", ""), project_list=TWO_BOARDS)
         _install(monkeypatch, fake)
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _root: _config(0))
+        monkeypatch.setattr("sova.cli.commands.board.load_config", lambda _root: _config(0))
 
         result = runner.invoke(app, ["board", "add", URL_1])
 
@@ -510,7 +510,7 @@ class TestAddCommand:
 
     def test_failed_discovery_exits_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", ""), project_list=ShellResult(1, "", "boom")))
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _root: _config(0))
+        monkeypatch.setattr("sova.cli.commands.board.load_config", lambda _root: _config(0))
 
         result = runner.invoke(app, ["board", "add", URL_1])
 
@@ -522,7 +522,7 @@ class TestAddCommand:
             return ShellResult(0, "", "") if url == URL_1 else ShellResult(1, "", "boom")
 
         _install(monkeypatch, FakeGh(item_add))
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _root: _config(7))
+        monkeypatch.setattr("sova.cli.commands.board.load_config", lambda _root: _config(7))
 
         result = runner.invoke(app, ["board", "add", URL_1, URL_2])
 
@@ -551,7 +551,7 @@ class TestAddCommand:
         def broken(_root: object) -> SimpleNamespace:
             raise error
 
-        monkeypatch.setattr("sova.config.loader.load_config", broken)
+        monkeypatch.setattr("sova.cli.commands.board.load_config", broken)
 
         result = runner.invoke(app, ["board", "add", URL_1])
 
@@ -580,7 +580,7 @@ class TestAddCommand:
             seen.append(root)
             return _config(7)
 
-        monkeypatch.setattr("sova.config.loader.load_config", load)
+        monkeypatch.setattr("sova.cli.commands.board.load_config", load)
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", "")))
 
         result = runner.invoke(app, ["board", "add", URL_1])
@@ -602,7 +602,7 @@ class TestRootCallback:
 
         monkeypatch.setattr(app_module, "_init_llm_provider", _REAL_INIT_LLM_PROVIDER)
         monkeypatch.setattr(app_module, "load_config", unreadable)
-        monkeypatch.setattr("sova.config.loader.load_config", unreadable)
+        monkeypatch.setattr("sova.cli.commands.board.load_config", unreadable)
         _install(monkeypatch, FakeGh(lambda _url: ShellResult(0, "", "")))
 
         result = runner.invoke(app, ["board", "add", URL_1])

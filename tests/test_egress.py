@@ -364,7 +364,7 @@ class TestGetEgressMode:
     def test_loads_from_config(self) -> None:
         from sova.adapters.base import _get_egress_mode
 
-        with patch("sova.config.loader.load_config") as mock_load:
+        with patch("sova.adapters.base.load_config") as mock_load:
             mock_load.return_value.egress.mode = "block"
             result = _get_egress_mode()
             assert result == "block"
@@ -372,7 +372,7 @@ class TestGetEgressMode:
     def test_no_cache_reads_config_each_call(self) -> None:
         from sova.adapters.base import _get_egress_mode
 
-        with patch("sova.config.loader.load_config") as mock_load:
+        with patch("sova.adapters.base.load_config") as mock_load:
             mock_load.return_value.egress.mode = "off"
             assert _get_egress_mode() == "off"
             assert _get_egress_mode() == "off"
@@ -381,7 +381,7 @@ class TestGetEgressMode:
     def test_falls_back_to_warn_on_config_error(self) -> None:
         from sova.adapters.base import _get_egress_mode
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.adapters.base.load_config", side_effect=RuntimeError("no config")):
             result = _get_egress_mode()
             assert result == "warn"
 

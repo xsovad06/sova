@@ -1150,7 +1150,7 @@ class TestComputeAndStoreEnergy:
             cpu_measured=False,
         )
         with (
-            patch("sova.db.session.get_session") as mock_session,
+            patch("sova.dashboard.services.agent_resource.get_session") as mock_session,
             patch("sova.monitoring.energy.estimate_energy") as mock_est,
         ):
             await _compute_and_store_energy(1, summary, None)

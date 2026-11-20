@@ -11,10 +11,9 @@ import pytest
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 
-# agent_recovery.py resolves `get_session` via a function-local `from sova.db.session
-# import get_session` on every call (not a module-level import), so patching
-# "sova.db.session.get_session" at its definition module takes effect correctly here,
-# unlike the general rule of patching at the importing module's namespace.
+# agent_recovery.py imports `get_session` and `load_config` at module scope, so a test
+# patches them in its namespace ("sova.dashboard.services.agent_recovery.get_session"),
+# never at their definition modules, where the patch would not reach this code.
 
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -665,7 +664,7 @@ class TestOrphanAdoption:
         from sova.dashboard.services.agent_recovery import _recovery_kill_orphans
 
         assert ProjectConfig().recovery.kill_orphans is False
-        with patch("sova.config.loader.load_config", side_effect=ValueError("bad")):
+        with patch("sova.dashboard.services.agent_recovery.load_config", side_effect=ValueError("bad")):
             assert _recovery_kill_orphans(None) is False
 
 
@@ -893,7 +892,7 @@ class TestSynthesizePrActions:
                 "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
             },
         )()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: mock_cfg)
         monkeypatch.setattr(
             "sova.git.operations.find_pr_for_issue",
             AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
@@ -1125,7 +1124,7 @@ class TestLoadRepoConfig:
         with (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.agent_recovery.load_config",
                 side_effect=RuntimeError("bad config"),
             ),
         ):
@@ -1141,7 +1140,7 @@ class TestLoadRepoConfig:
         with (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.agent_recovery.load_config",
                 return_value=mock_cfg,
             ),
         ):
@@ -1453,7 +1452,7 @@ class TestFetchAndInterpretReviews:
                 "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
             },
         )()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: mock_cfg)
 
     async def test_caches_none_on_adapter_exception(self, monkeypatch) -> None:
         from sova.dashboard.services import agent_recovery
@@ -1496,7 +1495,7 @@ class TestSynthesizePrActionsCachePaths:
                 "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
             },
         )()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: mock_cfg)
 
     async def test_returns_none_when_no_repo_config(self, monkeypatch) -> None:
         from sova.dashboard.services import agent_recovery
@@ -1634,7 +1633,7 @@ class TestGetSynthesizedHandoff:
         async def get_session():
             return fake_session()
 
-        monkeypatch.setattr("sova.db.session.get_session", get_session)
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_session", get_session)
 
     async def test_returns_handoff_for_recent_done_run(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
@@ -1680,7 +1679,9 @@ class TestGetSynthesizedHandoff:
     async def test_returns_none_on_exception(self, monkeypatch) -> None:
         from sova.dashboard.services import agent_recovery
 
-        monkeypatch.setattr("sova.db.session.get_session", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.get_session", lambda: (_ for _ in ()).throw(RuntimeError("db down"))
+        )
 
         result = await agent_recovery.get_synthesized_handoff()
         assert result is None
@@ -1720,14 +1721,16 @@ class TestGetRecoveryConfig:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
 
         mock_cfg = type("Cfg", (), {"github_repo": repo, "github_user": user})()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: mock_cfg)
 
         assert _get_recovery_config(None) == expected
 
     def test_load_config_exception_returns_empty_tuple(self, monkeypatch) -> None:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
 
         assert _get_recovery_config(None) == ("", "")
 
@@ -1968,13 +1971,13 @@ class TestDismissInterruptedRuns:
     async def test_returns_negative_one_on_exception(self, monkeypatch) -> None:
         """0 is a legitimate 'nothing matched' result, so a swallowed DB error must
         use a sentinel outside that range rather than looking like a no-op success."""
+        from sova.dashboard.services import agent_recovery
         from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
-        from sova.db import session as session_module
 
         async def _boom():
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(session_module, "get_session", _boom)
+        monkeypatch.setattr(agent_recovery, "get_session", _boom)
 
         count = await dismiss_interrupted_runs([1])
         assert count == -1
@@ -2097,7 +2100,7 @@ class TestRollbackIssueState:
         mock_adapter.get_task.return_value = Task(
             id="71", title="t", labels=["agent:triaged", "type:bug", "agent:in-progress"]
         )
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 
         await rollback_issue_state(run_id)
@@ -2121,7 +2124,7 @@ class TestRollbackIssueState:
             run_id = run.id
 
         mock_adapter = AsyncMock()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 
         await rollback_issue_state(run_id)
@@ -2145,7 +2148,7 @@ class TestRollbackIssueState:
 
         mock_adapter = AsyncMock()
         mock_adapter.get_task.return_value = MagicMock(state=TaskState.IN_PROGRESS)
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 
         await rollback_issue_state(run_id)
@@ -2166,7 +2169,7 @@ class TestRollbackIssueState:
             run_id = run.id
 
         mock_adapter = AsyncMock()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 
         await rollback_issue_state(run_id)
@@ -2186,7 +2189,7 @@ class TestRollbackIssueState:
             run_id = run.id
 
         mock_adapter = AsyncMock()
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: object())
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.load_config", lambda _: object())
         monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
 
         await rollback_issue_state(run_id)
@@ -2203,6 +2206,8 @@ class TestRollbackIssueState:
             await session.flush()
             run_id = run.id
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
 
         await rollback_issue_state(run_id)  # must not raise

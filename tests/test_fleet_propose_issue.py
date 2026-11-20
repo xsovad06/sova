@@ -316,7 +316,7 @@ class TestProposeIssueEndpoint:
         with (
             patch("sova.adapters.github.GitHubAdapter") as mock_adapter_cls,
             patch("sova.config.context.get_project_dir", return_value=str(tmp_path / "proj")),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.routers.fleet_insights.load_config", return_value=mock_cfg),
         ):
             mock_adapter = AsyncMock()
             mock_adapter.create_issue = AsyncMock(return_value=mock_task)

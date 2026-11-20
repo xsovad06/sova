@@ -159,6 +159,7 @@ class TestAppHelp:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestConfigCommand:
     """`sova config set` is the CLI half of DB-backed configuration.
 
@@ -375,6 +376,7 @@ class TestDashboardCommand:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestTriageCommand:
     def test_triage_help(self) -> None:
         from sova.cli.app import app
@@ -423,7 +425,7 @@ class TestPRCommands:
 
         execute = AsyncMock(return_value=RoleResult(success=True, summary="Reviewed PR #60: 0 findings"))
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.pr.load_config", return_value=ProjectConfig()),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.utils.gh.resolve_linked_issue", new_callable=AsyncMock, return_value=None),
@@ -443,7 +445,7 @@ class TestPRCommands:
 
         execute = AsyncMock()
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.pr.load_config", return_value=ProjectConfig()),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch(
@@ -498,7 +500,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
@@ -525,7 +527,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
@@ -546,7 +548,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
@@ -571,7 +573,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines"),
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             with pytest.raises(Exit):
                 await _install(path=tmp_path, no_dashboard=True, update=False)
@@ -589,7 +591,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_hooks.side_effect = RuntimeError("git not found")
             mock_install_cmds.return_value = MagicMock(installed=1)
@@ -614,14 +616,14 @@ class TestProjectCommands:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.cli.commands.project.get_session", new_callable=AsyncMock, return_value=mock_session),
             patch("sova.config.db_loader._try_load_from_db", return_value=None),
             patch("sova.config.db_loader.save_config_to_db", side_effect=SQLAlchemyError("locked")),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
@@ -640,7 +642,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_perms.side_effect = OSError("settings.json locked")
             mock_install_cmds.return_value = MagicMock(installed=1)
@@ -661,7 +663,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_rtk.side_effect = RuntimeError("rtk hook injection failed")
             mock_install_cmds.return_value = MagicMock(installed=1)
@@ -682,7 +684,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_mcp.side_effect = RuntimeError("mcp config write failed")
             mock_install_cmds.return_value = MagicMock(installed=1)
@@ -703,7 +705,7 @@ class TestProjectCommands:
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_memory.side_effect = OSError("disk full")
             mock_install_cmds.return_value = MagicMock(installed=1)
@@ -744,7 +746,7 @@ class TestProjectCommands:
 
         with (
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.cli.commands.project.get_session", new_callable=AsyncMock, return_value=mock_session),
             patch("sova.config.db_loader._try_load_from_db", side_effect=_try_load_side_effect),
             patch("sova.config.db_loader.save_config_to_db", side_effect=_capture_save),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
@@ -753,7 +755,7 @@ class TestProjectCommands:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_install_cmds.side_effect = _install_cmds_side_effect
             mock_install_guides.return_value = MagicMock(installed=0)
@@ -780,7 +782,7 @@ class TestProjectCommands:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_up_cmds.return_value = MagicMock(updated=1, skipped=0, conflicts=[])
             mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
@@ -803,7 +805,7 @@ class TestProjectCommands:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_up_cmds.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
             mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
@@ -1019,7 +1021,7 @@ class TestInstallGitIdentityWarning:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_cmds.return_value = MagicMock(installed=1)
             mock_guides.return_value = MagicMock(installed=0)
@@ -1042,7 +1044,7 @@ class TestInstallGitIdentityWarning:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_cmds.return_value = MagicMock(installed=1)
             mock_guides.return_value = MagicMock(installed=0)
@@ -1066,7 +1068,7 @@ class TestInstallGitIdentityWarning:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_cmds.return_value = MagicMock(installed=1)
             mock_guides.return_value = MagicMock(installed=0)
@@ -1107,7 +1109,7 @@ class TestAgentPermissionsSetup:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_cmds.return_value = MagicMock(installed=1)
             mock_guides.return_value = MagicMock(installed=0)
@@ -1141,7 +1143,7 @@ class TestAgentPermissionsSetup:
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.cli.commands.project.load_config", return_value=ProjectConfig()),
         ):
             mock_up_cmds.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
             mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
@@ -1817,6 +1819,7 @@ class TestOfferStarterMilestones:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestSkillsCLICommands:
     _MOD = "sova.cli.commands.commands"
 
@@ -2010,7 +2013,7 @@ class TestSetupFunction:
             patch(f"{self._MOD}._install", new_callable=AsyncMock),
             patch(f"{self._MOD}._offer_starter_milestones", new_callable=AsyncMock),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", new_callable=AsyncMock, return_value=mock_session),
+            patch("sova.cli.commands.project.get_session", new_callable=AsyncMock, return_value=mock_session),
             patch("sova.config.db_loader.save_config_to_db", side_effect=_capture_save),
         ):
             await _setup(path=tmp_path)
@@ -2045,7 +2048,7 @@ class TestSetupFunction:
             patch(f"{self._MOD}._detect_github_user", new_callable=AsyncMock, return_value="owner"),
             patch(f"{self._MOD}._detect_test_command", return_value="make test"),
             patch("sova.db.session.init_db", new_callable=AsyncMock),
-            patch("sova.db.session.get_session", side_effect=RuntimeError("session unavailable")),
+            patch("sova.cli.commands.project.get_session", side_effect=RuntimeError("session unavailable")),
         ):
             with pytest.raises(Exit):
                 await _setup(path=tmp_path)
@@ -2215,6 +2218,7 @@ class TestDbCommand:
         assert calls == ["acquire", "release"]
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestPrVerdictCommand:
     """`sova pr-verdict` prints the head verdict /integrate-pr gates on."""
 
@@ -2223,7 +2227,7 @@ class TestPrVerdictCommand:
 
         cfg = MagicMock(github_repo=repo, github_user="sova-bot")
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.cli.commands.pr.load_config", return_value=cfg),
             patch("sova.git.pr.get_pr_head_sha", new_callable=AsyncMock, return_value=head),
             patch("sova.git.pr.get_pr_review_data", new_callable=AsyncMock, return_value={7: review_data}),
             patch("sova.ipc.handoff.read_all_handoff_files", return_value=handoffs or []),
@@ -2273,7 +2277,7 @@ class TestPrVerdictCommand:
 
         cfg = MagicMock(github_repo="o/r", github_user="sova-bot")
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.cli.commands.pr.load_config", return_value=cfg),
             patch(
                 "sova.git.pr.get_pr_head_sha",
                 new_callable=AsyncMock,

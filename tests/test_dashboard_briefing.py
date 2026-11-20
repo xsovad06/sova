@@ -329,7 +329,12 @@ async def test_briefing_page_renders(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_nav_hides_briefing_link_when_awareness_disabled(client: AsyncClient) -> None:
-    with patch("sova.dashboard.services.awareness_service.load_config", return_value=_mock_disabled_config()):
+    # The page's connection check reads setup_service's binding; one config for both, as one source patch gave.
+    cfg = _mock_disabled_config()
+    with (
+        patch("sova.dashboard.services.awareness_service.load_config", return_value=cfg),
+        patch("sova.dashboard.services.setup_service.load_config", return_value=cfg),
+    ):
         resp = await client.get("/work")
     assert resp.status_code == 200
     assert 'href="/briefing"' not in resp.text
@@ -337,7 +342,12 @@ async def test_nav_hides_briefing_link_when_awareness_disabled(client: AsyncClie
 
 @pytest.mark.asyncio
 async def test_nav_shows_briefing_link_when_awareness_enabled(client: AsyncClient) -> None:
-    with patch("sova.dashboard.services.awareness_service.load_config", return_value=_mock_enabled_config()):
+    # The page's connection check reads setup_service's binding; one config for both, as one source patch gave.
+    cfg = _mock_enabled_config()
+    with (
+        patch("sova.dashboard.services.awareness_service.load_config", return_value=cfg),
+        patch("sova.dashboard.services.setup_service.load_config", return_value=cfg),
+    ):
         resp = await client.get("/work")
     assert resp.status_code == 200
     assert 'href="/briefing"' in resp.text
@@ -345,7 +355,12 @@ async def test_nav_shows_briefing_link_when_awareness_enabled(client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_briefing_is_first_entry_of_the_more_group(client: AsyncClient) -> None:
-    with patch("sova.dashboard.services.awareness_service.load_config", return_value=_mock_enabled_config()):
+    # The page's connection check reads setup_service's binding; one config for both, as one source patch gave.
+    cfg = _mock_enabled_config()
+    with (
+        patch("sova.dashboard.services.awareness_service.load_config", return_value=cfg),
+        patch("sova.dashboard.services.setup_service.load_config", return_value=cfg),
+    ):
         resp = await client.get("/work")
     group = resp.text[resp.text.index('id="sidebar-more-group"') :]
     assert group.index('href="/briefing"') < group.index('href="/roles"')

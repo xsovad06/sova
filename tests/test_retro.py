@@ -501,7 +501,7 @@ class TestRetroTopRulesCli:
             patch("sova.cli.commands.retro.load_retro_rows", AsyncMock(side_effect=lambda _s: self.rows)),
             patch("sova.cli.commands.retro.load_rule_bullets", self.bullets),
             patch("sova.cli.commands.retro.load_rule_catalog", self.dated_catalog),
-            patch("sova.db.session.get_session", AsyncMock(return_value=AsyncMock())),
+            patch("sova.cli.commands.retro.get_session", AsyncMock(return_value=AsyncMock())),
         ):
             yield
 

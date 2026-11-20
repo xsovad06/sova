@@ -1863,7 +1863,7 @@ class TestSpecRouter:
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
             patch("sova.config.context.get_project_dir", return_value=_spec_dir.parent),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.spec.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, side_effect=_track_start),
             patch.object(handoff_service, "clear_handoff"),
@@ -1893,7 +1893,7 @@ class TestSpecRouter:
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
             patch("sova.config.context.get_project_dir", return_value=_spec_dir.parent),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.spec.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_start,
             patch.object(handoff_service, "clear_handoff"),
@@ -1919,7 +1919,7 @@ class TestSpecRouter:
 
         with (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.spec.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, side_effect=_track_start),
             patch.object(handoff_service, "clear_handoff"),
@@ -1944,7 +1944,7 @@ class TestSpecRouter:
 
         with (
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.spec.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_start,
             patch.object(handoff_service, "clear_handoff"),
@@ -2180,7 +2180,7 @@ class TestCompleteAwaitingApprovalByIssue:
     async def test_nonfatal_on_db_error(self) -> None:
         from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+        with patch("sova.dashboard.services.agent_approval.get_session", side_effect=RuntimeError("DB down")):
             result = await complete_awaiting_approval_by_issue("42", "done")
 
         assert result is None

@@ -11,6 +11,7 @@ from typing import Literal
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -30,7 +31,6 @@ async def _claim_awaiting_approval(run_id: int, target_status: str) -> tuple[dic
 
     from sova.core.state import TaskStatus
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     async with await get_session() as session, session.begin():
         task_run = await session.get(TaskRun, run_id)
@@ -89,7 +89,6 @@ async def resume_from_approval(run_id: int) -> dict:
 
     from sova.core.state import TaskStatus
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     run_data, error = await _claim_awaiting_approval(run_id, TaskStatus.PENDING)
     if error:
@@ -146,7 +145,6 @@ async def complete_awaiting_approval_by_issue(
 
     from sova.core.state import TaskStatus
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     try:
         async with await get_session() as session, session.begin():
@@ -218,7 +216,6 @@ async def _link_run_to_lifecycle(
     try:
         from sova.dashboard.services.lifecycle_service import link_task_run_to_lifecycle
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -238,7 +235,6 @@ async def _finalize_lifecycle_phase(
     """Update lifecycle phase status after a run completes."""
     try:
         from sova.dashboard.services.lifecycle_service import finalize_phase_from_run
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():

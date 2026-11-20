@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.core.agent_dispatch import dispatch_prompt
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.db.session import get_session
 from sova.ipc.handoff import read_handoff, read_handoff_file
 from sova.llm.guard import sanitize_external_input, scan_prompt
 from sova.llm.payload import trim_payload
@@ -67,7 +68,6 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
     from sqlalchemy import select
 
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     try:
         async with await get_session() as session:

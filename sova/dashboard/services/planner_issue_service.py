@@ -8,6 +8,7 @@ from typing import Protocol
 
 from sova.adapters.label_catalog import AREA_CHOICES
 from sova.adapters.priority import Priority
+from sova.config.loader import load_config
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.planner_issues")
@@ -58,7 +59,6 @@ async def create_planner_issues(tasks: Sequence[PlannedTask]) -> list[dict]:
     """
     from sova.adapters import create_adapter
     from sova.config.context import resolve_project_dir_or_none
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     if not tasks:

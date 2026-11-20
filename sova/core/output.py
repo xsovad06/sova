@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="output")
@@ -55,7 +56,6 @@ class OutputWriter:
         from sqlalchemy import func, select
 
         from sova.db.models import OutputLine
-        from sova.db.session import get_session
 
         # Seed counter from DB on first flush to avoid collisions on re-adopted runs
         if self._next_line_number == 0:
@@ -142,8 +142,6 @@ class OutputWriter:
 
     async def _insert(self, records: list) -> None:
         """Persist *records* in one transaction (must run to completion)."""
-        from sova.db.session import get_session
-
         async with await get_session(project_dir=self._project_dir) as session:
             async with session.begin():
                 session.add_all(records)
@@ -168,7 +166,6 @@ async def read_lines(
     from sqlalchemy import func, select
 
     from sova.db.models import OutputLine
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -213,7 +210,6 @@ async def cleanup_old_output(project_dir: Path, retention_days: int = 30) -> int
     from sqlalchemy import delete, select
 
     from sova.db.models import OutputLine, TaskRun
-    from sova.db.session import get_session
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 

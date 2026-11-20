@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter
+from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.db.models import SupervisorDecision
 from sova.utils.logging import get_logger
@@ -143,7 +144,6 @@ class SupervisorDaemon:
         crashing the daemon loop or counting as a poll failure.
         """
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
 
         try:
             cfg = await asyncio.to_thread(load_config, self._project_dir)

@@ -20,8 +20,10 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.config.models import OversightConfig, ProjectConfig
 from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
+from sova.db.session import get_session
 from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
 
@@ -43,8 +45,6 @@ class OversightAgent:
     def _reload_config(self) -> OversightConfig:
         """Re-read config so runtime SOVA config changes take effect."""
         from pathlib import Path
-
-        from sova.config.loader import load_config
 
         try:
             project_dir = Path(self._project_dir) if self._project_dir else None
@@ -284,7 +284,6 @@ class OversightAgent:
         from pathlib import Path
 
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
         from sova.config.registry import list_projects
         from sova.oversight.actions import propose_issues
 
@@ -371,8 +370,6 @@ class OversightAgent:
 
         Non-fatal: on a DB failure ``_record_run`` inserts the row at the end of the cycle instead.
         """
-        from sova.db.session import get_session
-
         try:
             async with await get_session(project_dir=self._db_scope) as session, session.begin():
                 session.add(
@@ -398,8 +395,6 @@ class OversightAgent:
         snapshot: dict | None = None,
     ) -> None:
         """Finish the wake cycle's record: update the row inserted at cycle start, or insert it if missing."""
-        from sova.db.session import get_session
-
         try:
             async with await get_session(project_dir=self._db_scope) as session, session.begin():
                 now = datetime.now(timezone.utc)

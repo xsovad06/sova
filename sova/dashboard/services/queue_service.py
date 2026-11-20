@@ -12,7 +12,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.adapters.milestone import extract_phase_order
+from sova.config.loader import load_config
 from sova.dashboard.services.work_state import state_color, state_label
+from sova.db.session import get_session
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
@@ -179,7 +181,6 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
     generation = _queue_cache_generation.setdefault(cache_key, 0)
 
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
 
     try:
         cfg = load_config(project_dir)
@@ -278,7 +279,6 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
         from sqlalchemy import func, select
 
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -350,7 +350,6 @@ async def _drop_closed_pr_numbers(
     if not any(candidates_by_issue.values()):
         return
 
-    from sova.config.loader import load_config
     from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
 
     if cfg is None:

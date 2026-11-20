@@ -20,6 +20,7 @@ import typer
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.cli.commands.audit import project_root
+from sova.config.loader import load_config
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
 
@@ -283,8 +284,6 @@ def add_cmd(urls: Annotated[list[str], _URL_ARGUMENT]) -> None:
     it was discovered or its title is known.
     Exits 0 when every URL was added (or no single board could be chosen), 1 when any URL failed.
     """
-    from sova.config.loader import load_config
-
     try:
         root = asyncio.run(project_root(Path.cwd()))
         number = load_config(root).task_source.github_project_number

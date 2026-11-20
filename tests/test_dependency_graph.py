@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -1155,6 +1156,16 @@ class TestBuildDependencyGraphIssueWindow:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _patch_graph_config(mock_cfg):
+    """Patch ``load_config`` where the graph endpoint and the work-item service each bind it."""
+    with (
+        patch("sova.dashboard.routers.dependencies.load_config", return_value=mock_cfg),
+        patch("sova.dashboard.services.work_item_service.load_config", return_value=mock_cfg),
+    ):
+        yield
+
+
 def _mock_graph_context(tasks: list[Task]):
     """Return context managers that patch config+adapter+build for API tests."""
     from unittest.mock import MagicMock
@@ -1165,7 +1176,7 @@ def _mock_graph_context(tasks: list[Task]):
         return DependencyGraph(tasks)
 
     return (
-        patch("sova.config.loader.load_config", return_value=mock_cfg),
+        _patch_graph_config(mock_cfg),
         patch("sova.adapters.create_adapter", return_value=AsyncMock()),
         patch("sova.supervisor.dependency_graph.build_dependency_graph", side_effect=_build),
     )
@@ -1243,7 +1254,9 @@ class TestBuildGraphConfigError:
 
         with (
             patch("sova.dashboard.routers.dependencies.get_project_dir", return_value=str(tmp_path / "fake")),
-            patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no sova.toml")),
+            patch(
+                "sova.dashboard.services.work_item_service.load_config", side_effect=FileNotFoundError("no sova.toml")
+            ),
         ):
             with pytest.raises(_ConfigError, match="no sova.toml"):
                 await _build_graph()
@@ -1256,7 +1269,7 @@ class TestBuildGraphConfigError:
 
         with (
             patch("sova.dashboard.routers.dependencies.get_project_dir", return_value=str(tmp_path / "fake")),
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
         ):
             with pytest.raises(_ConfigError, match="missing repo"):
@@ -1603,6 +1616,29 @@ class TestDependencyAPI:
         assert "validation" in data
 
     @pytest.mark.asyncio
+    async def test_graph_endpoint_reads_config_through_both_bound_sites(self, client: AsyncClient) -> None:
+        """``_patch_graph_config`` patches two bindings; a dead one would silently hit the real config."""
+        tasks = [_task(1, title="Base", state=TaskState.DONE)]
+        _, p2, p3 = _mock_graph_context(tasks)
+        f1, f2, f3, f4 = _mock_fetch_context()
+        router_cfg = MagicMock()
+        service_cfg = MagicMock()
+        with (
+            patch("sova.dashboard.routers.dependencies.load_config", return_value=router_cfg) as router_load,
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=service_cfg) as service_load,
+            p2,
+            p3,
+            f1,
+            f2,
+            f3,
+            f4,
+        ):
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 200
+        router_load.assert_called()
+        service_load.assert_called()
+
+    @pytest.mark.asyncio
     async def test_graph_endpoint_with_pr_enrichment(self, client: AsyncClient) -> None:
         tasks = [_task(1, title="In Review", state=TaskState.IN_REVIEW)]
         pr_map = {
@@ -1761,7 +1797,7 @@ class TestDependencyAPI:
         adapter = _milestone_adapter({milestone: members}, {1: outside})
         s1, s2 = _mock_ready_sources()
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.work_item_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=adapter),
             s1,
             s2,
@@ -1779,7 +1815,7 @@ class TestDependencyAPI:
         adapter = _milestone_adapter({"3": [a, b]}, {})
         s1, s2 = _mock_ready_sources()
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.work_item_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=adapter),
             s1,
             s2,
@@ -1792,7 +1828,7 @@ class TestDependencyAPI:
         adapter = _milestone_adapter({}, {})
         s1, s2 = _mock_ready_sources()
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.work_item_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=adapter),
             s1,
             s2,
@@ -1928,7 +1964,7 @@ class TestDependencyAPI:
         ]
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [2, 1]
-        p1 = patch("sova.config.loader.load_config", return_value=mock_cfg)
+        p1 = _patch_graph_config(mock_cfg)
         p2 = patch("sova.adapters.create_adapter", return_value=AsyncMock())
 
         async def _build(adapter, *, milestone=""):
@@ -1952,7 +1988,7 @@ class TestDependencyAPI:
         tasks = [_task(1, title="Feature")]
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = []
-        p1 = patch("sova.config.loader.load_config", return_value=mock_cfg)
+        p1 = _patch_graph_config(mock_cfg)
         p2 = patch("sova.adapters.create_adapter", return_value=AsyncMock())
 
         async def _build(adapter, *, milestone=""):
@@ -1975,7 +2011,7 @@ class TestEnrichWithQueuePosition:
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [5, 3]
         graph_dict = {"nodes": [{"id": 3}, {"id": 5}, {"id": 7}]}
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.dependencies.load_config", return_value=mock_cfg):
             _enrich_with_queue_position(graph_dict, Path("/fake"))
         assert graph_dict["nodes"][0]["queue_position"] == 2
         assert graph_dict["nodes"][1]["queue_position"] == 1
@@ -1989,7 +2025,7 @@ class TestEnrichWithQueuePosition:
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = []
         graph_dict = {"nodes": [{"id": 1}]}
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.dependencies.load_config", return_value=mock_cfg):
             _enrich_with_queue_position(graph_dict, Path("/fake"))
         assert "queue_position" not in graph_dict["nodes"][0]
 
@@ -1997,7 +2033,7 @@ class TestEnrichWithQueuePosition:
         from sova.dashboard.routers.dependencies import _enrich_with_queue_position
 
         graph_dict = {"nodes": [{"id": 1}]}
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("nope")):
+        with patch("sova.dashboard.routers.dependencies.load_config", side_effect=RuntimeError("nope")):
             _enrich_with_queue_position(graph_dict, Path("/fake"))
         assert "queue_position" not in graph_dict["nodes"][0]
 
@@ -2009,7 +2045,7 @@ class TestEnrichWithQueuePosition:
         mock_cfg = MagicMock()
         mock_cfg.supervisor.task_queue = [1, 2]
         graph_dict = {"nodes": [{"id": 1}, {"no_id_key": 2}, {"id": 2}]}
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.routers.dependencies.load_config", return_value=mock_cfg):
             _enrich_with_queue_position(graph_dict, Path("/fake"))
         assert graph_dict["nodes"][0]["queue_position"] == 1
         assert "queue_position" not in graph_dict["nodes"][1]

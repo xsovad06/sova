@@ -12,6 +12,7 @@ import socket
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -37,7 +38,6 @@ async def push_telemetry(run_id: int, project_dir: Path, cfg: ProjectConfig) -> 
         import httpx
 
         from sova.db.models import StepExecution, TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             task_run = await session.get(TaskRun, run_id)

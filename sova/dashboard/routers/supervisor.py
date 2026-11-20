@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from sova.config.context import get_project_dir, resolve_project_dir
 from sova.config.db_loader import task_queue_lock
+from sova.config.loader import load_config
 from sova.dashboard.services import daemon_registry, supervisor_service
 from sova.utils.logging import get_logger
 
@@ -49,12 +50,7 @@ _queue_lock = task_queue_lock
 
 
 def _load_cfg(project_dir: Path | None = None) -> ProjectConfig:
-    """The (cached) project config for *project_dir*, else for the request's project.
-
-    ``load_config`` is imported at call time so a test patching ``sova.config.loader.load_config`` takes effect.
-    """
-    from sova.config.loader import load_config
-
+    """The (cached) project config for *project_dir*, else for the request's project."""
     return load_config(project_dir if project_dir is not None else get_project_dir())
 
 

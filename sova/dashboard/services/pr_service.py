@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.dashboard.services.work_state import state_color, state_label
 from sova.dashboard.services.work_verdict import parse_review_history
+from sova.db.session import get_session
 from sova.git.pr import OPEN_PR_LIST_LIMIT, PROpenState, get_pr_open_state
 from sova.utils.gh import BRANCH_ISSUE_RE as _BRANCH_ISSUE_RE
 from sova.utils.gh import TITLE_ISSUE_RE as _TITLE_ISSUE_RE
@@ -656,7 +658,6 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     returning [] (so callers can distinguish "no PRs" from "retrieval failed").
     """
     from sova.config.context import resolve_project_dir
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.git.pr import PRLookupError, get_pr_review_data, list_open_prs
     from sova.ipc.handoff import read_all_handoff_files
@@ -795,7 +796,6 @@ async def confirm_open_pr_numbers(
 async def _record_state_transitions(prs: list[dict], *, repo: str, project_dir: Path) -> None:
     """Detect state changes and write PREvent rows (fire-and-forget)."""
     from sova.db.models import PREvent
-    from sova.db.session import get_session
 
     events_to_write: list[dict] = []
     for pr in prs:

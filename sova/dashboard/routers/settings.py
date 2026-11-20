@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.context import get_project_dir, resolve_project_dir, resolve_project_dir_or_none
+from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.dashboard.config_errors import load_config_or_http, validation_detail
 from sova.dashboard.security import require_same_origin_csrf
@@ -24,6 +25,7 @@ from sova.dashboard.services.settings_service import (
     reload_pinned,
 )
 from sova.dashboard.settings_meta import get_meta
+from sova.db.session import get_session
 from sova.llm.errors import ComponentMisconfiguredError
 from sova.utils.logging import get_logger
 
@@ -74,12 +76,7 @@ def _settings_project_dir() -> Path | None:
 
 
 def _load_cfg(project_dir: Path | None = None) -> ProjectConfig:
-    """The (cached) config of *project_dir*, else of the project this router acts on.
-
-    ``load_config`` is imported at call time so a test patching ``sova.config.loader.load_config`` takes effect.
-    """
-    from sova.config.loader import load_config
-
+    """The (cached) config of *project_dir*, else of the project this router acts on."""
     return load_config(project_dir if project_dir is not None else _settings_project_dir())
 
 
@@ -251,7 +248,6 @@ async def llm_cost_projection() -> dict:
     A database failure degrades to ``{"insufficient_data": true}`` (logged), so the widget always renders.
     """
     from sova.dashboard.services import cost_service
-    from sova.db.session import get_session
 
     project_dir = _settings_project_dir()
     try:

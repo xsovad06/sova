@@ -277,7 +277,10 @@ class TestFeedPersistence:
         from structlog.testing import capture_logs
 
         with (
-            patch("sova.db.session.get_session", side_effect=OperationalError("stmt", {}, Exception("locked"))),
+            patch(
+                "sova.dashboard.services.feed_service.get_session",
+                side_effect=OperationalError("stmt", {}, Exception("locked")),
+            ),
             capture_logs() as logs,
         ):
             event = feed_service.emit("Unpersisted event")

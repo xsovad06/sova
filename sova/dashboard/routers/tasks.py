@@ -7,6 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.dashboard.services.work_state import state_color, state_label
 from sova.utils.logging import get_logger
 
@@ -29,7 +30,6 @@ async def list_issues() -> dict:
         return {"issues": cached[1]}
 
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
 
     try:
         cfg = load_config(project_dir)

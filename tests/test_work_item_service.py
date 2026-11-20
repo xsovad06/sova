@@ -1761,7 +1761,7 @@ class TestGetWorkItems:
                 type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
             )
         )
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg):
             result = await get_work_items()
 
         assert [(item["issue_number"], item["pr_number"]) for item in result["items"]] == [("42", 301)]
@@ -1778,7 +1778,7 @@ class TestGetWorkItems:
             {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-7"},
         ]
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg),
             patch("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs)),
             patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={"agents": []})),
         ):
@@ -1804,7 +1804,7 @@ class TestGetWorkItems:
         with (
             patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=project),
             patch("sova.dashboard.services.pr_service.list_open_prs_with_state", fetched),
-            patch("sova.config.loader.load_config", loaded),
+            patch("sova.dashboard.services.work_item_service.load_config", loaded),
             patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={"agents": []})),
         ):
             await next_task_exclusions(None)
@@ -1914,7 +1914,9 @@ class TestGetWorkItems:
         mock_fetch, mock_pa, _ = _mock_sources
         mock_pa.return_value = None
         mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _path: MagicMock(max_parallel_agents=6))
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service.load_config", lambda _path: MagicMock(max_parallel_agents=6)
+        )
 
         result = await get_work_items()
 
@@ -1945,7 +1947,7 @@ class TestGetWorkItems:
         def _no_config(_path):
             raise RuntimeError("no config")
 
-        monkeypatch.setattr("sova.config.loader.load_config", _no_config)
+        monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", _no_config)
 
         result = await get_work_items()
 
@@ -2783,7 +2785,7 @@ class TestFetchSovaVerdictsBatch:
     async def test_linked_and_unlinked_prs_both_resolve(self, monkeypatch) -> None:
         from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
 
-        monkeypatch.setattr("sova.config.loader.load_config", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", MagicMock(return_value=MagicMock()))
         monkeypatch.setattr(
             "sova.adapters.create_adapter",
             MagicMock(return_value=MagicMock(repo="owner/repo", github_user="bot")),
@@ -2849,7 +2851,8 @@ class TestGetWorkItemsConfigLoadFailure:
         def _boom(_path):
             raise RuntimeError("config broken")
 
-        monkeypatch.setattr("sova.config.loader.load_config", _boom)
+        monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", _boom)
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", _boom)
 
         with patch("sova.dashboard.services.work_item_service.log") as mock_log:
             result = await get_work_items(project_dir=tmp_path)
@@ -3177,7 +3180,8 @@ class TestJiraDisplayName:
         mock_cfg.external_reviews.enabled = False
         mock_cfg.github_user = "dsova06"
         mock_cfg.task_source.jira_display_name = "Damian Sova"
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _path: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", lambda _path: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", lambda _path: mock_cfg)
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == "Damian Sova"
@@ -3193,10 +3197,9 @@ class TestJiraDisplayName:
             "sova.dashboard.services.agent_pool._get_project_agents",
             MagicMock(return_value=MagicMock(max_concurrent=3)),
         )
-        monkeypatch.setattr(
-            "sova.config.loader.load_config",
-            MagicMock(side_effect=RuntimeError("config broken")),
-        )
+        failing_load = MagicMock(side_effect=RuntimeError("config broken"))
+        monkeypatch.setattr("sova.dashboard.services.work_item_service.load_config", failing_load)
+        monkeypatch.setattr("sova.dashboard.services.work_verdict.load_config", failing_load)
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["jira_display_name"] == ""
@@ -4049,14 +4052,14 @@ class TestLoadDependencyGraph:
 
     @pytest.mark.asyncio
     async def test_config_failure_is_a_graph_config_error(self, _real_loader, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.dashboard.services.work_item_service.load_config", side_effect=RuntimeError("no config")):
             with pytest.raises(GraphConfigError, match="no config"):
                 await load_dependency_graph(tmp_path)
 
     @pytest.mark.asyncio
     async def test_adapter_failure_is_a_graph_config_error(self, _real_loader, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
         ):
             with pytest.raises(GraphConfigError, match="missing repo"):
@@ -4065,7 +4068,7 @@ class TestLoadDependencyGraph:
     @pytest.mark.asyncio
     async def test_fetch_failure_propagates_unwrapped(self, _real_loader, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch(
                 "sova.supervisor.dependency_graph.build_dependency_graph",
@@ -4080,7 +4083,7 @@ class TestLoadDependencyGraph:
     async def test_passes_project_dir_and_milestone_through(self, _real_loader, tmp_path: Path) -> None:
         graph = DependencyGraph([])
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()) as mock_load,
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=MagicMock()) as mock_load,
             patch("sova.adapters.create_adapter", return_value="adapter"),
             patch(
                 "sova.supervisor.dependency_graph.build_dependency_graph",
@@ -4116,7 +4119,7 @@ class TestGraphCacheAcrossPolls:
         sources = ([_queue_entry("1", ["agent:ready"])], [], [], {"agents": [], "completed": []})
 
         with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=MagicMock()),
             patch("sova.adapters.create_adapter", return_value=adapter),
             patch(
                 "sova.dashboard.services.work_item_service._fetch_all_sources",

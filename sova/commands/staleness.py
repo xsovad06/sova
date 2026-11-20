@@ -17,6 +17,7 @@ from pathlib import Path
 from sova.agents.claude_code import ClaudeCodeAdapter
 from sova.commands.catalog import get_canonical_dir
 from sova.commands.distribution import diff_commands
+from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.git.worktree import git_tracked_paths
 from sova.utils.logging import get_logger
@@ -93,8 +94,6 @@ def find_stale_command(
         return None
 
     if cfg is None:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
 
     canonical_dir = get_canonical_dir()

@@ -763,7 +763,7 @@ class TestCheckMergeQueueOnFailure:
         queued_status = MergeQueueStatus(in_queue=True, state="QUEUED", position=3, estimated_time="5m")
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_cfg,
             patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock, return_value=queued_status),
             patch(
                 "sova.dashboard.services.merge_queue_monitor.create_merge_queue_entry",
@@ -805,7 +805,7 @@ class TestCheckMergeQueueOnFailure:
         not_queued = MergeQueueStatus(in_queue=False, state="NOT_QUEUED", position=None, estimated_time="")
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_cfg,
             patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock, return_value=not_queued),
         ):
             cfg = MagicMock()
@@ -831,7 +831,7 @@ class TestCheckMergeQueueOnFailure:
         agent.project_dir = project_dir
         agent.pr_number = 42
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.services.agent_finalize.load_config") as mock_cfg:
             cfg = MagicMock()
             cfg.github_repo = ""
             mock_cfg.return_value = cfg
@@ -908,7 +908,7 @@ class TestCreateMonitorsForMergeQueue:
                 "sova.config.registry.list_projects",
                 return_value={"test": str(project_dir)},
             ),
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.merge_queue_monitor.load_config") as mock_cfg,
         ):
             cfg = MagicMock()
             cfg.integration = IntegrationConfig(merge_queue_enabled="auto")
@@ -928,7 +928,7 @@ class TestCreateMonitorsForMergeQueue:
                 "sova.config.registry.list_projects",
                 return_value={"test": str(project_dir)},
             ),
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.merge_queue_monitor.load_config") as mock_cfg,
         ):
             cfg = MagicMock()
             cfg.integration = IntegrationConfig(merge_queue_enabled="false")
@@ -946,7 +946,7 @@ class TestCreateMonitorsForMergeQueue:
                 "sova.config.registry.list_projects",
                 return_value={"test": str(project_dir)},
             ),
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.merge_queue_monitor.load_config") as mock_cfg,
         ):
             cfg = MagicMock()
             cfg.integration = IntegrationConfig(merge_queue_enabled="auto")
@@ -973,7 +973,7 @@ class TestTransitionIssueState:
         monitor = _make_monitor(project_dir)
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.merge_queue_monitor.load_config") as mock_cfg,
             patch("sova.adapters.create_adapter") as mock_adapter_factory,
             patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as mock_handle,
         ):
@@ -1010,7 +1010,7 @@ class TestTransitionIssueState:
         monitor = _make_monitor(project_dir)
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.merge_queue_monitor.load_config") as mock_cfg,
             patch.object(GitHubAdapter, "_gh", new_callable=AsyncMock) as mock_gh,
             patch("sova.git.merge.run", new=self._pr_body(pr_body)),
             patch("sova.git.merge.resolve_gh_env", new_callable=AsyncMock, return_value={}),
@@ -1044,7 +1044,7 @@ class TestTransitionIssueState:
         monitor = _make_monitor(project_dir)
         merged = MergedIssues(transitioned=["10"])
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg("github")),
+            patch("sova.dashboard.services.merge_queue_monitor.load_config", return_value=self._cfg("github")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.git.merge.handle_merged_pr_issues", new_callable=AsyncMock, return_value=merged) as handle,
             patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as single,
@@ -1060,7 +1060,7 @@ class TestTransitionIssueState:
     async def test_github_unreadable_body_is_reported(self, project_dir: Path) -> None:
         monitor = _make_monitor(project_dir)
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg("github")),
+            patch("sova.dashboard.services.merge_queue_monitor.load_config", return_value=self._cfg("github")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.git.merge.handle_merged_pr_issues", new_callable=AsyncMock, return_value=None),
         ):
@@ -1072,7 +1072,7 @@ class TestTransitionIssueState:
     async def test_jira_without_a_ticket_does_nothing(self, project_dir: Path) -> None:
         monitor = _make_monitor(project_dir)
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg("jira")),
+            patch("sova.dashboard.services.merge_queue_monitor.load_config", return_value=self._cfg("jira")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.git.merge.handle_post_merge_state", new_callable=AsyncMock) as single,
         ):
@@ -1130,7 +1130,7 @@ class TestRecoveryHelpers:
     def test_get_recovery_config_returns_repo_and_user(self, project_dir: Path) -> None:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
 
-        with patch("sova.config.loader.load_config") as mock_cfg:
+        with patch("sova.dashboard.services.agent_recovery.load_config") as mock_cfg:
             cfg = MagicMock()
             cfg.github_repo = "owner/repo"
             cfg.github_user = "testuser"
@@ -1144,7 +1144,7 @@ class TestRecoveryHelpers:
     def test_get_recovery_config_returns_empty_on_error(self) -> None:
         from sova.dashboard.services.agent_recovery import _get_recovery_config
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.dashboard.services.agent_recovery.load_config", side_effect=RuntimeError("no config")):
             repo, user = _get_recovery_config(None)
 
         assert repo == ""

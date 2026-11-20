@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
 from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
 from sova.git.safety import SUSPICIOUS_PATHS, unstage_suspicious_files
 from sova.git.untracked_collisions import stage_all_except
@@ -382,15 +384,9 @@ async def check_worktree_active_agent(worktree_path: Path, *, project_dir: Path 
     Returns:
         The PID of the active agent, or ``None`` if no active agent found.
     """
-    try:
-        from sqlalchemy import select
+    from sqlalchemy import select
 
-        from sova.db.models import TaskRun
-        from sova.db.session import get_session
-    except ImportError:
-        # DB module genuinely not installed (CLI-only context with no DB):
-        # no TaskRun tracking means no agent could own this worktree.
-        return None
+    from sova.db.models import TaskRun
 
     _TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "stopped"})
     resolved = str(worktree_path.resolve())
@@ -699,7 +695,6 @@ def _active_runtime_skills_dirs(project_dir: Path) -> tuple[Path, RuntimeAdapter
     """
     from sova.agents.claude_code import ClaudeCodeAdapter
     from sova.agents.registry import create_runtime_adapter
-    from sova.config.loader import load_config
 
     try:
         cfg = load_config(project_dir)

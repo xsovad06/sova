@@ -193,6 +193,8 @@ def _cap_config(config: ProjectConfig | None, project_dir: Path | None) -> Proje
     if config is not None:
         return config
     try:
+        # Lazy on purpose: utils is the bottom layer, so this is a baselined upward edge (#1274 removes it)
+        # and a module-level import would load the config stack with every `import sova.utils.env`.
         from sova.config.loader import load_config
 
         return load_config(project_dir)
@@ -368,6 +370,7 @@ def configured_passthrough() -> tuple[str, ...]:
     (``sova/llm/providers/claude_code.py``).
     """
     try:
+        # Lazy on purpose: baselined upward edge from the bottom layer (see _cap_config).
         from sova.config.loader import load_config
 
         return tuple(load_config().agent.env_passthrough)

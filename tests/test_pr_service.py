@@ -1804,7 +1804,7 @@ class TestListOpenPrsWithState:
             seen_dirs.append(project_dir)
             raise RuntimeError("config error")
 
-        monkeypatch.setattr("sova.config.loader.load_config", _raise_config)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", _raise_config)
         result = await list_open_prs_with_state()
         assert result == []
         assert seen_dirs == [tmp_path]
@@ -1818,7 +1818,7 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
         load_config = MagicMock(return_value=mock_cfg)
-        monkeypatch.setattr("sova.config.loader.load_config", load_config)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", load_config)
         result = await list_open_prs_with_state()
         assert result == []
         load_config.assert_called_once_with(tmp_path)
@@ -1832,7 +1832,7 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
 
         raw_prs = [{"number": 10, "title": "Test"}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
@@ -1856,7 +1856,7 @@ class TestListOpenPrsWithState:
 
         monkeypatch.setattr("sova.config.context.get_project_dir", lambda: tmp_path)
         mock_cfg = MagicMock(github_repo="owner/verdict-wiring", github_user="sova-bot")
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
         write_handoff_file(tmp_path, _handoff("revise", _HEAD, pr=10))
         raw_prs = [{"number": 10, "headRefOid": _HEAD}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
@@ -1879,7 +1879,7 @@ class TestListOpenPrsWithState:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
 
         raw_prs = [{"number": 10}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
@@ -1965,7 +1965,7 @@ class TestRecordStateTransitions:
 
             return MockSession()
 
-        monkeypatch.setattr("sova.db.session.get_session", mock_session)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", mock_session)
 
         # Set previous state so transition happens
         pr_service._last_known_states[10] = "draft"
@@ -1991,7 +1991,7 @@ class TestRecordStateTransitions:
         async def _raise_session(*args, **kwargs):
             raise RuntimeError("session error")
 
-        monkeypatch.setattr("sova.db.session.get_session", _raise_session)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", _raise_session)
 
         pr_service._last_known_states[10] = "draft"
         prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
@@ -2054,7 +2054,7 @@ class TestInvalidatePrCache:
         mock_cfg = MagicMock()
         mock_cfg.github_repo = "owner/repo"
         mock_cfg.github_user = "testuser"
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr("sova.dashboard.services.pr_service.load_config", lambda _: mock_cfg)
 
         async def _slow_list_open_prs(*_args: object, **_kwargs: object) -> list:
             # Invalidate mid-fetch, simulating an agent finishing while this

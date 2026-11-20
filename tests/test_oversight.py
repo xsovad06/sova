@@ -215,7 +215,7 @@ class TestOversightAgent:
         cfg = OversightConfig(wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
-        with patch("sova.db.session.get_session", side_effect=_mock_get_session):
+        with patch("sova.oversight.agent.get_session", side_effect=_mock_get_session):
             await agent._record_run("test-uuid", 1, OversightRunStatus.DONE, 42)
 
         async with factory() as session:
@@ -371,7 +371,7 @@ class TestOversightAgent:
         cfg = OversightConfig(wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB gone")):
+        with patch("sova.oversight.agent.get_session", side_effect=RuntimeError("DB gone")):
             # Should not raise
             await agent._record_run("test-uuid", 1, OversightRunStatus.DONE, 42)
 
@@ -522,7 +522,7 @@ class TestOversightActionWiring:
         mock_config.task_source = TaskSourceConfig(type="jira")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.oversight.agent.load_config", return_value=mock_config),
             patch("sova.adapters.create_adapter") as mock_create,
             patch("sova.oversight.actions.propose_issues") as mock_propose,
         ):
@@ -565,7 +565,7 @@ class TestOversightActionWiring:
             return [finding]
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.oversight.agent.load_config", return_value=mock_config),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch("sova.config.registry.list_projects", return_value={}),
             patch("sova.oversight.actions.propose_issues", side_effect=_mock_propose),
@@ -589,7 +589,7 @@ class TestOversightActionWiring:
         mock_config.task_source = TaskSourceConfig(type="github")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.oversight.agent.load_config", return_value=mock_config),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.config.registry.list_projects", return_value={}),
             patch("sova.oversight.actions.propose_issues", new_callable=AsyncMock, return_value=[]) as mock_propose,
@@ -647,7 +647,7 @@ class TestOversightActionWiring:
             return []
 
         with (
-            patch("sova.config.loader.load_config", side_effect=_load),
+            patch("sova.oversight.agent.load_config", side_effect=_load),
             patch("sova.adapters.create_adapter", side_effect=_create),
             patch(
                 "sova.config.registry.list_projects",
@@ -768,7 +768,7 @@ class TestOversightActionWiring:
         mock_config.task_source = TaskSourceConfig(type="github")
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.oversight.agent.load_config", return_value=mock_config),
             patch("sova.adapters.create_adapter", side_effect=RuntimeError("adapter boom")),
         ):
             await agent._propose_issues([finding])
@@ -918,7 +918,9 @@ class TestRunRowLifecycle:
         provider = AsyncMock()
         provider.invoke = AsyncMock(side_effect=_invoke)
         with (
-            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch("sova.oversight.agent.get_session", side_effect=_get_session),
+            patch("sova.oversight.analysis.get_session", side_effect=_get_session),
+            patch("sova.oversight.actions.get_session", side_effect=_get_session),
             patch("sova.llm.client.get_provider", return_value=provider),
             patch.object(agent, "_reload_config", return_value=agent._config),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"projects": []}),
@@ -1024,7 +1026,7 @@ class TestRunRowLifecycle:
         from datetime import datetime, timezone
 
         agent = OversightAgent(config=OversightConfig(wake_interval_minutes=1))
-        with patch("sova.db.session.get_session", side_effect=exc):
+        with patch("sova.oversight.agent.get_session", side_effect=exc):
             await agent._start_run("run-x", 1, datetime.now(timezone.utc))  # Should not raise
 
     @pytest.mark.asyncio
@@ -1041,7 +1043,9 @@ class TestRunRowLifecycle:
             return fk_session_factory()
 
         with (
-            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch("sova.oversight.agent.get_session", side_effect=_get_session),
+            patch("sova.oversight.analysis.get_session", side_effect=_get_session),
+            patch("sova.oversight.actions.get_session", side_effect=_get_session),
             patch.object(agent, "_reload_config", return_value=agent._config),
             patch.object(agent, "_observe", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
         ):
@@ -1203,7 +1207,9 @@ class TestWriteShields:
             return fk_session_factory()
 
         with (
-            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch("sova.oversight.agent.get_session", side_effect=_get_session),
+            patch("sova.oversight.analysis.get_session", side_effect=_get_session),
+            patch("sova.oversight.actions.get_session", side_effect=_get_session),
             patch.object(agent, "_reload_config", return_value=agent._config),
             patch.object(agent, "_observe", new_callable=AsyncMock, return_value=snapshot),
             patch.object(agent, "_analyze", new_callable=AsyncMock, side_effect=asyncio.CancelledError),

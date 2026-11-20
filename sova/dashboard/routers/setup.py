@@ -17,6 +17,7 @@ from sova.config.registry import register_project
 from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.services import setup_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.setup")
@@ -277,7 +278,7 @@ async def configure_project(req: ConfigureRequest) -> dict:
     config_dict = setup_service.generate_config_dict(toml_cfg)
 
     from sova.config.db_loader import save_config_to_db
-    from sova.db.session import get_session, init_db_for_project
+    from sova.db.session import init_db_for_project
 
     await init_db_for_project(project)
     async with await get_session(project_dir=project) as session:
@@ -337,7 +338,6 @@ async def sync_commands(req: SyncCommandsRequest | None = None) -> dict[str, obj
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import UpdateResult, update_commands, update_guidelines
     from sova.commands.manifest import read_manifest
-    from sova.config.loader import load_config
 
     project_dir = get_project_dir()
     if not project_dir or not project_dir.is_dir():

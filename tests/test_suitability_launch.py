@@ -8,8 +8,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import ExitStack, asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -46,6 +46,19 @@ async def _no_session(*_args: object, **_kwargs: object) -> AsyncIterator[MagicM
     yield MagicMock()
 
 
+@contextmanager
+def _patch_load_config(cfg: object) -> Iterator[MagicMock]:
+    """Patch ``load_config`` where the suitability check and the complexity endpoint each bind it.
+
+    Yields the endpoint's mock, so a test can count the loads the endpoint itself makes.
+    """
+    with (
+        patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
+        patch("sova.dashboard.services.llm_suggestion_service.load_config", return_value=cfg) as endpoint_load,
+    ):
+        yield endpoint_load
+
+
 def _tracker(
     labels: list[str],
     *,
@@ -65,9 +78,12 @@ def _tracker(
     record = MagicMock(suitability=local) if local else None
     cfg = MagicMock(github_repo="o/r", roles=RolesConfig(nicknames=nicknames or {}))
     return (
-        patch("sova.config.loader.load_config", return_value=cfg),
+        _patch_load_config(cfg),
         patch("sova.adapters.create_adapter", return_value=adapter),
-        patch("sova.db.session.get_session", new=AsyncMock(side_effect=lambda **_: _no_session())),
+        patch(
+            "sova.dashboard.services.agent_validation.get_session",
+            new=AsyncMock(side_effect=lambda **_: _no_session()),
+        ),
         patch(
             "sova.knowledge.assessments.get_latest_assessment",
             new=assessment if assessment is not None else AsyncMock(return_value=record),
@@ -157,12 +173,15 @@ class TestCheckIssueSuitability:
             p3,
             p4,
             patch(
-                "sova.config.loader.load_config", side_effect=[RuntimeError("bad config"), MagicMock(github_repo="o/r")]
-            ),
+                "sova.dashboard.services.agent_validation.load_config",
+                side_effect=[RuntimeError("bad config"), MagicMock(github_repo="o/r")],
+            ) as load,
             patch("sova.dashboard.services.agent_validation.log") as log,
         ):
             result = await check_issue_suitability("7", "developer", Path("/tmp"))
         assert result is not None
+        # Both loads happen in agent_validation: the failing one, then the one the classification reads.
+        assert load.call_count == 2
         assert log.warning.call_args_list[0].args[0] == "issue_suitability_check.config_failed"
 
     async def test_assessment_is_looked_up_by_the_trackers_canonical_id(self) -> None:
@@ -220,7 +239,7 @@ class TestCheckIssueSuitability:
             patch.object(agent_validation, "_fetch_launch_task", _slow_fetch),
             patch.object(agent_validation, "_read_issue_suitability", _slow_read),
             patch.object(agent_validation, "log") as log,
-            patch("sova.config.loader.load_config", return_value=MagicMock(roles=RolesConfig())),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=MagicMock(roles=RolesConfig())),
         ):
             result = await check_issue_suitability("7", None, Path("/tmp"))
         assert result is None  # unknown fails open
@@ -1032,7 +1051,7 @@ class TestRunCli:
         if dispatch is None:
             dispatch = AsyncMock(return_value=(role, RoleResult(success=True, summary="done")))
         with (
-            patch("sova.config.loader.load_config", return_value=ProjectConfig()),
+            patch("sova.cli.commands.run.load_config", return_value=ProjectConfig()),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.init_db", new=AsyncMock()),
             patch("sova.utils.logging.setup_logging"),

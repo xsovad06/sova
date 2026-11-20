@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskState
 from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.dashboard.services.pr_service import ComputedPRState
 from sova.dashboard.services.work_item_service import GraphConfigError as _ConfigError
 from sova.dashboard.services.work_item_service import (
@@ -19,6 +20,7 @@ from sova.dashboard.services.work_item_service import (
     rank_graph_entries,
 )
 from sova.dashboard.services.work_state import state_color, state_label
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.dependencies")
@@ -163,10 +165,8 @@ async def _fetch_last_run_map() -> dict[int, dict]:
     try:
         from sqlalchemy import func, select
 
-        from sova.config.context import get_project_dir
         from sova.core.state import TASK_RUN_TERMINAL
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         project_dir = get_project_dir()
         async with await get_session(project_dir=project_dir) as session:
@@ -218,8 +218,6 @@ def _enrich_with_queue_position(graph_dict: dict, project_dir: str | Path) -> No
     Fail-open: config or iteration errors are silently swallowed so the graph
     response is still returned without queue data.
     """
-    from sova.config.loader import load_config
-
     try:
         cfg = load_config(project_dir)
         queue = list(cfg.supervisor.task_queue)

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sova.config.loader import load_config
 from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
 from sova.utils.review_markers import (
@@ -198,7 +199,6 @@ def build_verdict_adapter(project_dir: Path | None = None, *, config: Any = None
     """
     try:
         from sova.adapters import create_adapter
-        from sova.config.loader import load_config
 
         return create_adapter(config if config is not None else load_config(project_dir))
     except Exception:  # noqa: BLE001 (the adapter only supplies the repo; fail open to no verdict)

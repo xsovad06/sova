@@ -24,6 +24,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.feed")
@@ -115,7 +116,6 @@ class FeedService:
             from sqlalchemy import func, select
 
             from sova.db.models import FeedEventRecord
-            from sova.db.session import get_session
 
             async with await get_session(project_dir) as session:
                 max_id = (await session.execute(select(func.max(FeedEventRecord.id)))).scalar()
@@ -182,7 +182,6 @@ class FeedService:
     async def _persist(self, event: FeedEvent, project_dir: Path | None) -> None:
         try:
             from sova.db.models import FeedEventRecord
-            from sova.db.session import get_session
 
             async with self._persist_lock, await get_session(project_dir) as session:
                 record = FeedEventRecord(
@@ -234,7 +233,6 @@ class FeedService:
             from sqlalchemy import select
 
             from sova.db.models import FeedEventRecord
-            from sova.db.session import get_session
 
             async with await get_session(project_dir) as session:
                 stmt = select(FeedEventRecord)
@@ -261,7 +259,6 @@ class FeedService:
             from sqlalchemy import delete
 
             from sova.db.models import FeedEventRecord
-            from sova.db.session import get_session
 
             cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
             async with await get_session(project_dir) as session:

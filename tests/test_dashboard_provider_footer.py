@@ -67,37 +67,48 @@ def _block_after(css: str, selector: str) -> str:
 
 class TestConfiguredGithubUser:
     def test_returns_configured_user(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user="xsovad06")):
+        with patch(
+            "sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_user="xsovad06")
+        ):
             assert setup_service.get_github_user(tmp_path) == "xsovad06"
 
     @pytest.mark.parametrize("raw", ["", "   ", None])
     def test_unset_user_is_empty_string(self, tmp_path: Path, raw: str | None) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user=raw)):
+        with patch("sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_user=raw)):
             assert setup_service.get_github_user(tmp_path) == ""
 
     def test_config_failure_returns_none(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.services.setup_service.load_config", side_effect=RuntimeError("bad config")):
             assert setup_service.get_github_user(tmp_path) is None
 
     def test_config_without_a_github_user_attribute_returns_none(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_repo="owner/repo")):
+        with patch(
+            "sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_repo="owner/repo")
+        ):
             assert setup_service.get_github_user(tmp_path) is None
 
     def test_successful_read_is_cached_within_the_ttl(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user="xsovad06")) as mock_load:
+        with patch(
+            "sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_user="xsovad06")
+        ) as mock_load:
             assert setup_service.get_github_user(tmp_path) == "xsovad06"
             assert setup_service.get_github_user(tmp_path) == "xsovad06"
         mock_load.assert_called_once_with(tmp_path)
 
     def test_unset_user_is_cached_too(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user=None)) as mock_load:
+        with patch(
+            "sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_user=None)
+        ) as mock_load:
             assert setup_service.get_github_user(tmp_path) == ""
             assert setup_service.get_github_user(tmp_path) == ""
         mock_load.assert_called_once()
 
     def test_cache_expires_after_the_ttl(self, tmp_path: Path) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user="xsovad06")) as mock_load,
+            patch(
+                "sova.dashboard.services.setup_service.load_config",
+                return_value=SimpleNamespace(github_user="xsovad06"),
+            ) as mock_load,
             patch("sova.dashboard.services.setup_service.time.monotonic", side_effect=[1000.0, 1061.0]),
         ):
             setup_service.get_github_user(tmp_path)
@@ -105,22 +116,30 @@ class TestConfiguredGithubUser:
         assert mock_load.call_count == 2
 
     def test_failure_is_not_cached(self, tmp_path: Path) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.services.setup_service.load_config", side_effect=RuntimeError("bad config")):
             assert setup_service.get_github_user(tmp_path) is None
-        with patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user="xsovad06")):
+        with patch(
+            "sova.dashboard.services.setup_service.load_config", return_value=SimpleNamespace(github_user="xsovad06")
+        ):
             assert setup_service.get_github_user(tmp_path) == "xsovad06"
 
     def test_cache_is_keyed_per_project(self, tmp_path: Path) -> None:
         a, b = tmp_path / "a", tmp_path / "b"
         users = {a: "alice", b: "bob"}
-        with patch("sova.config.loader.load_config", side_effect=lambda d: SimpleNamespace(github_user=users[d])):
+        with patch(
+            "sova.dashboard.services.setup_service.load_config",
+            side_effect=lambda d: SimpleNamespace(github_user=users[d]),
+        ):
             assert setup_service.get_github_user(a) == "alice"
             assert setup_service.get_github_user(b) == "bob"
 
     def test_none_project_dir_falls_back_to_default_project(self, tmp_path: Path) -> None:
         with (
             patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path),
-            patch("sova.config.loader.load_config", return_value=SimpleNamespace(github_user="xsovad06")) as mock_load,
+            patch(
+                "sova.dashboard.services.setup_service.load_config",
+                return_value=SimpleNamespace(github_user="xsovad06"),
+            ) as mock_load,
         ):
             assert setup_service.get_github_user(None) == "xsovad06"
         mock_load.assert_called_once_with(tmp_path)

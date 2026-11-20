@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task
 from sova.adapters.priority import Priority
+from sova.config.loader import load_config
 from sova.dashboard.services.pr_service import confirm_open_pr_numbers, known_open_pr_numbers
 from sova.dashboard.services.work_state import (
     _AWAITING_APPROVAL as _AWAITING_APPROVAL,
@@ -166,7 +167,6 @@ async def load_dependency_graph(project_dir: Path | None, milestone: str = "") -
     ``GraphConfigError``; a failure while fetching issues propagates as-is.
     """
     from sova.adapters import create_adapter
-    from sova.config.loader import load_config
     from sova.supervisor.dependency_graph import build_dependency_graph
 
     try:
@@ -713,8 +713,6 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         slug = project_dir.name
 
     try:
-        from sova.config.loader import load_config
-
         cfg = load_config(project_dir)
         external_reviews_enabled = cfg.external_reviews.enabled
         max_address_cycles = cfg.pipeline.max_address_review_cycles
@@ -960,7 +958,6 @@ async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[
     filter as the only exclusion.
     """
     from sova.config.context import resolve_project_dir
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())

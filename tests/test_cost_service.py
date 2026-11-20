@@ -57,7 +57,7 @@ async def test_summary_savings_usd_uses_configured_model_rate() -> None:
     cfg.llm.model = "claude-sonnet-5"
     cfg.agent.model = "opus"
 
-    with patch("sova.config.loader.load_config", return_value=cfg):
+    with patch("sova.dashboard.services.cost_service.load_config", return_value=cfg):
         async with await get_session() as session:
             summary = await cost_service.get_summary(session)
 
@@ -74,7 +74,7 @@ async def test_summary_savings_usd_unknown_model_falls_back_to_zero() -> None:
     cfg.llm.model = "gpt-4o"
     cfg.agent.model = "gpt-4o"
 
-    with patch("sova.config.loader.load_config", return_value=cfg):
+    with patch("sova.dashboard.services.cost_service.load_config", return_value=cfg):
         async with await get_session() as session:
             summary = await cost_service.get_summary(session)
 
@@ -82,5 +82,5 @@ async def test_summary_savings_usd_unknown_model_falls_back_to_zero() -> None:
 
 
 def test_compression_savings_usd_returns_zero_on_config_load_failure() -> None:
-    with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad toml")):
+    with patch("sova.dashboard.services.cost_service.load_config", side_effect=RuntimeError("bad toml")):
         assert cost_service._compression_savings_usd(1_000_000) == Decimal("0")

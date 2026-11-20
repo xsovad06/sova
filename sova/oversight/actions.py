@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.adapters.base import TaskAdapter
 from sova.config.models import OversightConfig
 from sova.db.models import OversightFinding
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="oversight.actions")
@@ -60,8 +61,6 @@ async def _find_existing_issue_by_fingerprint(fingerprint: str | None, project_d
     """Check DB for an existing issue created from a finding with the same fingerprint."""
     if not fingerprint:
         return None
-    from sova.db.session import get_session
-
     try:
         async with await get_session(project_dir=project_dir) as session:
             from sqlalchemy import select
@@ -205,8 +204,6 @@ def _select_adapter(
 
 async def _persist_issue_numbers(findings: list[OversightFinding], project_dir: Path | None = None) -> None:
     """Write github_issue_number back to the DB for each finding."""
-    from sova.db.session import get_session
-
     try:
         async with await get_session(project_dir=project_dir) as session, session.begin():
             for finding in findings:

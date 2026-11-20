@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.config.loader import load_config
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+from sova.db.session import get_session
 from sova.ipc.control import EXIT_OUTCOME_UNKNOWN, normalize_signal_exit
 from sova.llm.phase_usage import PhaseTally
 from sova.utils.formatting import format_cost_usd
@@ -137,7 +139,6 @@ async def _load_suitability_check(run_id: int, project_dir: Path) -> str | None:
     """
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             task_run = await session.get(TaskRun, run_id)
@@ -166,7 +167,6 @@ async def _create_task_run(
     """Create a TaskRun record and return its ID; *assessment* seeds ``assessment_json`` when given."""
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -193,7 +193,6 @@ async def _update_task_run_pid(run_id: int, pid: int, project_dir: Path) -> None
     """Set the PID on an existing TaskRun after process spawn."""
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -208,7 +207,6 @@ async def _update_task_run_output_path(run_id: int, output_path: str, project_di
     """Store the output file path on a TaskRun for reconnection after restart."""
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -223,7 +221,6 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
     """Mark a TaskRun as failed when the process never started."""
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -383,7 +380,6 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
     """
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         if exit_code == 0:
             status, termination_reason = "done", None
@@ -475,7 +471,6 @@ async def _get_task_run_status(run_id: int, project_dir: Path) -> str | None:
     """
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             task_run = await session.get(TaskRun, run_id)
@@ -496,7 +491,6 @@ async def _engine_announced_failure(run_id: int, project_dir: Path) -> bool:
         from sqlalchemy import select
 
         from sova.db.models import FAILURE_ANNOUNCED_KEY, FailureRecord
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             latest = await session.scalar(
@@ -539,7 +533,6 @@ async def _finalize_orphaned_steps(session: object, run_id: int) -> None:
 async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str] | None:
     """Fetch output lines for a TaskRun. Returns None if no lines exist or on error."""
     from sova.db.models import OutputLine
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -774,7 +767,6 @@ async def _resolve_pin_downgrade_exemption_text(agent: AgentState) -> str:
 
         try:
             from sova.adapters import create_adapter
-            from sova.config.loader import load_config
 
             cfg = load_config(agent.project_dir)
             adapter = create_adapter(cfg)
@@ -819,7 +811,6 @@ async def _check_pr_diff_guard(agent: AgentState) -> OutcomeValidation:
     if baseline_sha is None:
         return _VALID
 
-    from sova.config.loader import load_config
     from sova.core.pr_diff_guard import check_pin_downgrades, check_silent_revert
 
     repo_dir = agent.worktree_path or agent.project_dir
@@ -1008,7 +999,6 @@ def _extract_review_verdict_marker(lines: list[str]) -> tuple[str, str | None] |
 async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path | None, sha: str | None = None) -> None:
     """Write structured handoff_json to a review-pr TaskRun."""
     from sova.db.models import TaskRun
-    from sova.db.session import get_session
 
     next_action = _VERDICT_TO_NEXT_ACTION.get(verdict, "address_review")
     handoff_data = {
@@ -1077,7 +1067,6 @@ async def _has_active_merge_queue_entry(pr_number: int, project_dir: Path) -> bo
     from sqlalchemy import select
 
     from sova.db.models import MergeQueueEntry
-    from sova.db.session import get_session
 
     try:
         async with await get_session(project_dir=project_dir) as session:
@@ -1116,7 +1105,6 @@ async def _validate_merge_command(run_id: int, agent: AgentState) -> OutcomeVali
     if agent.pr_number is None:
         return _VALID
 
-    from sova.config.loader import load_config
     from sova.git.pr import get_pr_status
 
     try:
@@ -1331,8 +1319,6 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
         return None
 
     try:
-        from sova.db.session import get_session
-
         async with await get_session(project_dir=agent.project_dir) as session:
             async with session.begin():
                 return await _check_pipeline_steps(
@@ -1358,7 +1344,6 @@ async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path, *, s
     """
     try:
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
@@ -1386,7 +1371,6 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
         from sqlalchemy import select
 
         from sova.db.models import TaskRun
-        from sova.db.session import get_session
 
         async with await get_session() as session:
             async with session.begin():

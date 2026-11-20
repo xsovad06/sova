@@ -169,7 +169,10 @@ class TestCLITimeoutConfig:
         )
 
         # Call without cwd (will trigger config load failure in resolution)
-        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError):
+        with (
+            patch("sova.llm.client.load_config", side_effect=FileNotFoundError),
+            patch("sova.llm.guard.load_config", side_effect=FileNotFoundError),
+        ):
             await invoke("test prompt", timeout=None)
 
         # Should fallback to 900s

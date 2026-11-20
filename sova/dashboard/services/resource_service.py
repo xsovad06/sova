@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.config.loader import load_config
 from sova.dashboard.services.agent_pool import _get_project_agents
 from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord, TaskRun
 from sova.utils.logging import get_logger
@@ -40,7 +41,6 @@ def _get_memory_guard_config() -> MemoryGuardConfig | None:
     """
     try:
         from sova.config.context import get_project_dir
-        from sova.config.loader import load_config
 
         cfg = load_config(get_project_dir())
         return cfg.memory_guard
@@ -295,7 +295,6 @@ async def get_capacity_recommendation(session: AsyncSession, project_dir: Path |
     """Get a capacity recommendation based on historical resource data."""
     from dataclasses import asdict
 
-    from sova.config.loader import load_config
     from sova.monitoring.advisor import recommend_capacity
 
     cfg = load_config(project_dir)

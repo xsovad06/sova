@@ -1431,7 +1431,7 @@ class TestStatePayloads:
         )
         with (
             patch.dict(tasks_router._issues_cache, clear=True),
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.routers.tasks.load_config"),
             patch("sova.adapters.create_adapter", return_value=adapter),
         ):
             payload = await tasks_router.list_issues()

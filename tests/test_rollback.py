@@ -61,7 +61,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -86,7 +86,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -117,7 +117,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -146,7 +146,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
                     await rollback_issue_state(task_run.id, tmp_path)
@@ -172,7 +172,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -211,7 +211,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 with patch("sova.dashboard.services.feed_service.emit_safe") as emit:
                     await rollback_issue_state(task_run.id, tmp_path)
@@ -240,7 +240,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -260,7 +260,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -279,7 +279,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -299,7 +299,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -323,7 +323,7 @@ class TestRollbackIssueState:
             return_value=MagicMock(labels=["agent:triaged", "type:feature", "agent:in-progress"])
         )
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -350,7 +350,7 @@ class TestRollbackIssueState:
         mock_adapter.remove_label = AsyncMock()
         mock_adapter.get_task = AsyncMock(return_value=MagicMock(labels=["agent:ready", "agent:on-hold"]))
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -370,7 +370,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -390,7 +390,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -415,7 +415,7 @@ class TestRollbackIssueState:
         session.add_all([task_run1, task_run2])
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run1.id, tmp_path)
 
@@ -434,7 +434,7 @@ class TestRollbackIssueState:
         session.add(task_run)
         await session.commit()
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await rollback_issue_state(task_run.id, tmp_path)
 
@@ -456,7 +456,7 @@ class TestRollbackIssueState:
 
         mock_adapter.transition_state.side_effect = Exception("API rate limit exceeded")
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_recovery.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 with patch("sova.dashboard.services.agent_recovery.log") as mock_log:
                     await rollback_issue_state(task_run.id, tmp_path)
@@ -471,7 +471,7 @@ class TestTransitionToInProgress:
     async def _run(self, mock_adapter, mock_config, tmp_path) -> None:
         from sova.dashboard.services.agent_validation import _transition_to_in_progress
 
-        with patch("sova.config.loader.load_config", return_value=mock_config):
+        with patch("sova.dashboard.services.agent_validation.load_config", return_value=mock_config):
             with patch("sova.adapters.create_adapter", return_value=mock_adapter):
                 await _transition_to_in_progress("42", tmp_path)
 

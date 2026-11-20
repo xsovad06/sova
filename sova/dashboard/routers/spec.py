@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.dashboard.services import control_service, handoff_service, spec_service
 from sova.utils.logging import get_logger
 
@@ -22,7 +23,6 @@ async def _transition_to_researched(issue_number: str) -> bool:
     try:
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
-        from sova.config.loader import load_config
 
         project_dir = get_project_dir()
         cfg = load_config(project_dir)

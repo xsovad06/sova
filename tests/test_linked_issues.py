@@ -171,7 +171,7 @@ def _patched(*, cfg: MagicMock | None = None, pr_state: str = "MERGED", **merge_
     """Patch everything `sova linked-issues` reaches: config, gh auth, the PR-state check and merge helpers."""
     state_result = ShellResult(returncode=0, stdout=f"{pr_state}\n", stderr="")
     patches = [
-        patch("sova.config.loader.load_config", return_value=cfg or _config()),
+        patch("sova.cli.commands.pr.load_config", return_value=cfg or _config()),
         patch("sova.git.worktree.get_primary_worktree_root", new_callable=AsyncMock, return_value=REPO_ROOT),
         patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value={}),
         patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=state_result),
@@ -188,6 +188,7 @@ def _run_with(patches: list, *args: str) -> object:
         return _invoke(*args)
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestLinkedIssuesCli:
     def test_prints_the_links_as_json(self) -> None:
         links = AsyncMock(return_value=IssueLinks(closes=("1340",), part_of=("1228",)))
@@ -251,6 +252,7 @@ class TestLinkedIssuesCli:
         handle.assert_not_awaited()
 
 
+@pytest.mark.usefixtures("no_cli_provider_init")
 class TestLinkedIssuesMarkInReview:
     """`sova linked-issues <PR> --mark-in-review`, which /pr runs once the PR is open (#1281 follow-up)."""
 
@@ -319,7 +321,7 @@ class TestLinkedIssuesMarkInReview:
         primary = AsyncMock(return_value=Path("/primary"))
         patches = [
             *_patched(pr_state="OPEN", mark_pr_issues_in_review=mark),
-            patch("sova.config.loader.load_config", new=loader),
+            patch("sova.cli.commands.pr.load_config", new=loader),
             patch("sova.git.worktree.get_primary_worktree_root", new=primary),
         ]
         result = _run_with(patches, "1389", "--mark-in-review")

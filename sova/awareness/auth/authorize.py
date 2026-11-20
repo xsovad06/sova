@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from sova.config.loader import load_config
 from sova.utils.logging import get_logger
 
 _log = get_logger(component="awareness.auth")
@@ -21,7 +22,6 @@ def main(argv: list[str]) -> int:
     if len(argv) != 1:
         return 2
     from sova.awareness.auth.google_oauth import authenticate_google
-    from sova.config.loader import load_config
     from sova.utils.logging import rotation_kwargs, setup_logging
 
     project_dir = Path(argv[0])

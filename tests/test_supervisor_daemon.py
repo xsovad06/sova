@@ -112,7 +112,7 @@ class TestSupervisorDaemon:
 
     async def test_poll_once_returns_all_phases(self, daemon: SupervisorDaemon, config: ProjectConfig) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.supervisor.daemon.load_config", return_value=config),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
             patch.object(daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"changed": False}),
@@ -287,7 +287,7 @@ class TestSupervisorDaemon:
     async def test_poll_once_adapter_creation_failure(self, daemon: SupervisorDaemon, config: ProjectConfig) -> None:
         """_poll_once should return error dict when adapter creation fails."""
         with (
-            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.supervisor.daemon.load_config", return_value=config),
             patch("sova.adapters.create_adapter", side_effect=Exception("no auth")),
         ):
             result = await daemon._poll_once()
@@ -313,7 +313,7 @@ class TestSupervisorDaemon:
             return {"decisions": 0, "executed": 0}, None
 
         with (
-            patch("sova.config.loader.load_config", side_effect=[cfg_v1, cfg_v2]),
+            patch("sova.supervisor.daemon.load_config", side_effect=[cfg_v1, cfg_v2]),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
             patch.object(
                 daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"skipped": "auto_queue"}
@@ -336,7 +336,7 @@ class TestSupervisorDaemon:
         failure that triggers exponential backoff.
         """
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("db is locked")),
+            patch("sova.supervisor.daemon.load_config", side_effect=RuntimeError("db is locked")),
             patch("sova.adapters.create_adapter", return_value=AsyncMock()),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
             patch.object(
@@ -578,7 +578,7 @@ class TestSupervisorDaemon:
             return {"decisions": 0, "executed": 0}, None
 
         with (
-            patch("sova.config.loader.load_config", return_value=config),
+            patch("sova.supervisor.daemon.load_config", return_value=config),
             patch.object(daemon, "_poll_quota", side_effect=mock_quota),
             patch.object(daemon, "_poll_queue_maintenance", side_effect=mock_queue),
             patch.object(daemon, "_poll_progression", side_effect=mock_progression),
@@ -646,7 +646,7 @@ class TestSupervisorDaemon:
         d = SupervisorDaemon(config=cfg, project_dir=tmp_path, session_factory=session_factory)
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.supervisor.daemon.load_config", return_value=cfg),
             patch.object(d, "_poll_quota", new_callable=AsyncMock, return_value={}),
             patch.object(d, "_poll_queue_maintenance", new_callable=AsyncMock) as mock_qm,
             patch.object(d, "_poll_progression", new_callable=AsyncMock, return_value=({}, None)),

@@ -15,7 +15,7 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from sova.config.models import ProjectConfig
+from sova.db.session import get_session
 from sova.scheduler import service
 from sova.utils.logging import get_logger
 from sova.utils.process import is_process_alive
@@ -280,8 +281,6 @@ class SOVAServer:
         try:
             from sqlalchemy import text
 
-            from sova.db.session import get_session
-
             session = await get_session(self._project_dir)
             try:
                 await session.execute(text("SELECT 1"))
@@ -304,10 +303,6 @@ class SOVAServer:
 
     async def _get_scheduler_digest(self, hours: int) -> dict:
         """Get task completion summary and cost for the specified period."""
-        from datetime import UTC, datetime, timedelta
-
-        from sova.db.session import get_session
-
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         session = await get_session(self._project_dir)
         try:

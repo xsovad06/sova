@@ -26,6 +26,10 @@ from sova.utils.files import read_text_or_none
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, check_git_identity, run
 
+# Every ``from sova.config.loader import load_config`` below is function-local on purpose: utils is the bottom
+# layer, so each is a baselined upward edge (#1274 removes them) and a module-level import would load the config
+# stack with every ``import sova.utils.diagnostics``.
+
 if TYPE_CHECKING:
     from sova.config.models import LLMConfig, ProjectConfig
     from sova.llm.models import ModelInfo

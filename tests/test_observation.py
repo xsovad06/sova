@@ -662,7 +662,7 @@ class TestAgentObservation:
         agent = OversightAgent(config=cfg)
         snapshot_data = {"collected_at": 1234567890, "projects": [], "agent_slots": {}, "partial": False}
 
-        with patch("sova.db.session.get_session", side_effect=_mock_get_session):
+        with patch("sova.oversight.agent.get_session", side_effect=_mock_get_session):
             await agent._record_run("snap-1", 1, OversightRunStatus.DONE, 100, snapshot=snapshot_data)
 
         async with factory() as session:

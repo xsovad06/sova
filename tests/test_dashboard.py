@@ -293,7 +293,7 @@ class TestDashboardHealth:
 
         from sova.dashboard.app import _check_db_health
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("boom")):
+        with patch("sova.dashboard.app.get_session", side_effect=RuntimeError("boom")):
             assert await _check_db_health() == "fail"
 
     async def test_check_disk_health_returns_fail_when_low(self, tmp_path: Path) -> None:
@@ -600,7 +600,13 @@ class TestDashboardHealth:
 
         with (
             patch("sova.config.context.get_project_dir", return_value=str(tmp_path / "proj")),
-            patch("sova.config.loader.load_config", return_value=FakeCfg()),
+            patch("sova.dashboard.app.load_config", return_value=FakeCfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=FakeCfg()),
+            # The nav reads awareness_service's binding; awareness off keeps the page's briefing link out of it.
+            patch(
+                "sova.dashboard.services.awareness_service.load_config",
+                return_value=MagicMock(awareness=MagicMock(enabled=False)),
+            ),
         ):
             resp = await client.get("/supervisor")
         assert resp.status_code == 200
@@ -608,7 +614,11 @@ class TestDashboardHealth:
     async def test_supervisor_page_falls_back_on_config_error(self, client: AsyncClient) -> None:
         from unittest.mock import patch
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with (
+            patch("sova.dashboard.app.load_config", side_effect=RuntimeError("no config")),
+            patch("sova.dashboard.services.setup_service.load_config", side_effect=RuntimeError("no config")),
+            patch("sova.dashboard.services.awareness_service.load_config", side_effect=RuntimeError("no config")),
+        ):
             resp = await client.get("/supervisor")
         assert resp.status_code == 200
 
@@ -2493,7 +2503,8 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir),
         ):
             result = await start_agent("344", role="developer")  # no pr_number passed
 
@@ -2554,7 +2565,8 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir),
         ):
             result = await start_agent("344", role="reviewer")  # reviewer role
 
@@ -2569,7 +2581,7 @@ class TestDuplicateAgentPrevention:
 
         from sova.dashboard.services.agent_lifecycle import _recover_last_pr_number
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("db boom")):
+        with patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=RuntimeError("db boom")):
             result = await _recover_last_pr_number("42", tmp_path / "proj")
 
         assert result is None
@@ -2602,7 +2614,7 @@ class TestDuplicateAgentPrevention:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=_ignore_project_dir):
             result = await _recover_last_pr_number("345", tmp_path / "proj")
 
         assert result == 373
@@ -2656,7 +2668,7 @@ class TestDuplicateAgentPrevention:
             return await original()
 
         with (
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir),
             patch(
                 "sova.dashboard.services.agent_recovery._is_process_alive",
                 return_value=True,
@@ -2676,7 +2688,7 @@ class TestDuplicateAgentPrevention:
 
         pa = ProjectAgents()
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=RuntimeError("DB down")):
             result = await _check_issue_conflict("16", pa)
 
         assert result is None
@@ -2703,7 +2715,7 @@ class TestDuplicateAgentPrevention:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_conflict("84", pa)
 
         assert result is None
@@ -2735,7 +2747,7 @@ class TestDuplicateAgentPrevention:
             return await original()
 
         with (
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir),
             patch("sova.dashboard.services.agent_recovery._is_process_alive", return_value=True),
         ):
             result_no_force = await _check_issue_conflict("85", pa)
@@ -4789,7 +4801,7 @@ class TestAgentsAPI:
 
         with (
             patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
-            patch("sova.config.loader.load_config", return_value=FakeConfig()),
+            patch("sova.dashboard.services.agent_recovery.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
             patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
             patch("sova.git.operations.get_ci_checks", new_callable=AsyncMock, return_value=[]),
@@ -4815,7 +4827,7 @@ class TestAgentsAPI:
 
         with (
             patch("sova.config.context.get_project_dir", return_value=str(tmp_path)),
-            patch("sova.config.loader.load_config", return_value=FakeConfig()),
+            patch("sova.dashboard.services.agent_recovery.load_config", return_value=FakeConfig()),
             patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=None),
         ):
             resp = await client.get("/api/agents/issue/99/pr-status")
@@ -5421,7 +5433,7 @@ class TestLLMSettingsAPI:
         def boom(*_a, **_kw):
             raise OSError("bad config")
 
-        monkeypatch.setattr("sova.config.loader.load_config", boom)
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", boom)
         resp = await client.post("/api/settings/llm/test-connection")
         assert resp.status_code == 503
         assert resp.json()["detail"] == "Failed to load configuration"
@@ -5429,7 +5441,7 @@ class TestLLMSettingsAPI:
     async def test_test_connection_provider_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         def boom(*_a, **_kw):
             from sova.llm.errors import ComponentMisconfiguredError
@@ -5446,7 +5458,7 @@ class TestLLMSettingsAPI:
     ) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         def boom(*_a, **_kw):
             raise RuntimeError("secret internals")
@@ -5460,7 +5472,7 @@ class TestLLMSettingsAPI:
     async def test_test_connection_success(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         class _FakeProvider:
             async def check_available(self):
@@ -5476,7 +5488,7 @@ class TestLLMSettingsAPI:
     async def test_test_connection_check_available_raises_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         class _FakeProvider:
             async def check_available(self):
@@ -5659,7 +5671,7 @@ class TestLLMSettingsAPI:
 
         monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.routers.settings.load_config",
             side_effect=FileNotFoundError("sova.toml not found"),
         ):
             resp = await client.get("/api/settings/installation/diff")
@@ -5688,7 +5700,7 @@ class TestAgentRuntimeSettingsAPI:
         def boom(*_a, **_kw):
             raise OSError("bad config")
 
-        monkeypatch.setattr("sova.config.loader.load_config", boom)
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", boom)
         resp = await client.post("/api/settings/agent-runtime/test-connection")
         assert resp.status_code == 503
         assert resp.json()["detail"] == "Failed to load configuration"
@@ -5696,7 +5708,7 @@ class TestAgentRuntimeSettingsAPI:
     async def test_test_connection_runtime_create_error_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         def boom(*_a, **_kw):
             from sova.llm.errors import ComponentMisconfiguredError
@@ -5712,7 +5724,7 @@ class TestAgentRuntimeSettingsAPI:
         from sova.config.models import ProjectConfig
 
         monkeypatch.setattr(
-            "sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig(agent={"runtime": "codex"})
+            "sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig(agent={"runtime": "codex"})
         )
 
         class _FakeRuntime:
@@ -5730,7 +5742,7 @@ class TestAgentRuntimeSettingsAPI:
     async def test_test_connection_check_available_raises_not_500(self, client: AsyncClient, monkeypatch) -> None:
         from sova.config.models import ProjectConfig
 
-        monkeypatch.setattr("sova.config.loader.load_config", lambda *_a, **_kw: ProjectConfig())
+        monkeypatch.setattr("sova.dashboard.routers.settings.load_config", lambda *_a, **_kw: ProjectConfig())
 
         class _FakeRuntime:
             async def check_available(self):
@@ -5937,7 +5949,7 @@ class TestSetupAPI:
 
         monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.routers.setup.load_config",
             side_effect=FileNotFoundError("sova.toml not found"),
         ):
             resp = await client.post("/api/setup/commands/sync")
@@ -6721,7 +6733,7 @@ class TestFinalizeTaskRunGuard:
 
         with (
             patch("sova.dashboard.services.agent_db._read_file_handoff", return_value=file_handoff_data),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_db.get_session", side_effect=_ignore_project_dir),
             patch("sova.supervisor.pr_throttle.dequeue", AsyncMock()),
         ):
             await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
@@ -6760,7 +6772,7 @@ class TestMergeAwareFinalization:
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         mock_status = MagicMock(state=state)
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is expected
@@ -6772,7 +6784,7 @@ class TestMergeAwareFinalization:
 
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, side_effect=RuntimeError("not found")),
         ):
             assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is False
@@ -7030,7 +7042,8 @@ class TestMergeAwareFinalization:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock) as mock_finalize,
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_db.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -7476,7 +7489,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
@@ -7515,7 +7528,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
@@ -7559,7 +7572,7 @@ class TestWaitAndFinalizeGraphBroadcast:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("handoff exploded"),
             ),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
             with pytest.raises(RuntimeError, match="handoff exploded"):
@@ -7599,7 +7612,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
@@ -7634,7 +7647,7 @@ class TestWaitAndFinalizeGraphBroadcast:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_finalize.load_config", return_value=cfg),
             patch("sova.ipc.notifications.notify"),
             patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
@@ -7658,7 +7671,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from sova.dashboard.services import agent_finalize
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("boom")),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
             patch("sova.dashboard.services.work_verdict.invalidate_verdict") as invalidate_verdict,
@@ -7674,7 +7687,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from sova.dashboard.services import agent_finalize
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache") as invalidate_queue,
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
@@ -7692,7 +7705,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         cfg = MagicMock()
         cfg.github_repo = "owner/repo"
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_finalize.load_config", return_value=cfg),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache", side_effect=OSError("stale symlink")),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
@@ -7709,7 +7722,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         cfg = MagicMock()
         cfg.github_repo = ""
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_finalize.load_config", return_value=cfg),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
             patch("sova.dashboard.services.pr_service.invalidate_pr_cache") as invalidate_prs,
         ):
@@ -7724,7 +7737,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         from sova.dashboard.services import agent_finalize
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=RuntimeError("bad config")),
             patch("sova.dashboard.services.queue_service.invalidate_queue_cache"),
             patch("sova.dashboard.services.work_verdict.invalidate_verdict", side_effect=OSError("boom")),
         ):
@@ -7735,7 +7748,7 @@ class TestWaitAndFinalizeGraphBroadcast:
 
         from sova.dashboard.services import agent_lifecycle
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.services.agent_lifecycle.load_config", side_effect=RuntimeError("bad config")):
             assert agent_lifecycle._resolve_repo_context_agent_enabled(tmp_path) is False
 
     async def test_broadcast_failure_does_not_raise(self, tmp_path: Path) -> None:
@@ -7821,7 +7834,7 @@ class TestIssueBudgetCheck:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_budget("200", Path.cwd())
 
         assert result is not None
@@ -7851,7 +7864,7 @@ class TestIssueBudgetCheck:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_budget("201", Path.cwd())
 
         assert result is None
@@ -7869,7 +7882,7 @@ class TestIssueBudgetCheck:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_budget("999", Path.cwd())
         assert result is None
 
@@ -7905,7 +7918,7 @@ class TestBudgetOverride:
         async def _ignore_project_dir(**_kw):
             return await original()
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_budget("500", Path.cwd())
 
         assert result is not None
@@ -7985,7 +7998,7 @@ class TestBudgetOverride:
             "max_issue_budget": "50.000000",
         }
 
-        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+        with patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=_ignore_project_dir):
             await _record_budget_override("600", run_id, budget_error, Path.cwd())
 
         async with await get_session() as session:
@@ -8011,7 +8024,7 @@ class TestBudgetOverride:
         }
 
         with (
-            patch("sova.db.session.get_session", side_effect=RuntimeError("db unavailable")),
+            patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=RuntimeError("db unavailable")),
             patch("sova.dashboard.services.agent_lifecycle.log") as mock_log,
         ):
             await _record_budget_override("600", 1, budget_error, Path.cwd())
@@ -8082,7 +8095,8 @@ class TestBudgetOverride:
             ),
             patch.object(agent_lifecycle, "_record_budget_override", mock_record),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
-            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_lifecycle.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_validation.get_session", side_effect=_ignore_project_dir),
         ):
             result = await start_agent("600", budget_override=True)
 
@@ -8311,7 +8325,7 @@ class TestNetworkConnectivityPreSpawnCheck:
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=self._cfg()),
             patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)),
         ):
             block, warn = check_network_connectivity(tmp_path)
@@ -8328,7 +8342,7 @@ class TestNetworkConnectivityPreSpawnCheck:
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         with (
-            patch("sova.config.loader.load_config", return_value=self._cfg()),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=self._cfg()),
             patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=False)),
         ):
             assert check_network_connectivity(tmp_path) == (None, None)
@@ -8339,9 +8353,11 @@ class TestNetworkConnectivityPreSpawnCheck:
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         with patch("sova.supervisor.network_health.get_connectivity_status", return_value=self._status(is_down=True)):
-            with patch("sova.config.loader.load_config", return_value=self._cfg(enabled=False)):
+            with patch("sova.dashboard.services.agent_validation.load_config", return_value=self._cfg(enabled=False)):
                 assert check_network_connectivity(tmp_path) == (None, None)
-            with patch("sova.config.loader.load_config", return_value=self._cfg(block_spawns=False)):
+            with patch(
+                "sova.dashboard.services.agent_validation.load_config", return_value=self._cfg(block_spawns=False)
+            ):
                 assert check_network_connectivity(tmp_path) == (None, None)
 
     def test_fails_open_when_unevaluable(self, tmp_path: Path) -> None:
@@ -8350,7 +8366,7 @@ class TestNetworkConnectivityPreSpawnCheck:
         from sova.dashboard.services.agent_validation import check_network_connectivity
 
         # An unloadable config must not stop every spawn on the machine.
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+        with patch("sova.dashboard.services.agent_validation.load_config", side_effect=RuntimeError("bad config")):
             assert check_network_connectivity(tmp_path) == (None, None)
 
 
@@ -8373,7 +8389,7 @@ class TestMemoryPressureGate:
         mem = SimpleNamespace(available=int(0.5 * 1024**3))
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -8394,7 +8410,7 @@ class TestMemoryPressureGate:
         mem = SimpleNamespace(available=int(2.5 * 1024**3))
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -8414,7 +8430,7 @@ class TestMemoryPressureGate:
         mem = SimpleNamespace(available=int(8.0 * 1024**3))
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -8431,7 +8447,7 @@ class TestMemoryPressureGate:
         guard = SimpleNamespace(enabled=False, warn_threshold_gb=4.0, block_threshold_gb=1.0)
         cfg = SimpleNamespace(memory_guard=guard)
 
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg):
             block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
@@ -8447,7 +8463,7 @@ class TestMemoryPressureGate:
         cfg = SimpleNamespace(memory_guard=guard)
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", side_effect=OSError("no psutil")),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -8461,7 +8477,7 @@ class TestMemoryPressureGate:
         from sova.dashboard.services.agent_validation import check_memory_pressure
 
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.services.agent_validation.load_config",
             side_effect=RuntimeError("bad config"),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -8480,7 +8496,7 @@ class TestMemoryPressureGate:
         mem = SimpleNamespace(available=int(0.5 * 1024**3))
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mem),
         ):
             block, _ = check_memory_pressure(tmp_path)
@@ -8684,7 +8700,7 @@ class TestWaitWithTerminalCheck:
 
         from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
 
-        with patch("sova.db.session.get_session", side_effect=Exception("db broken")):
+        with patch("sova.dashboard.services.agent_finalize.get_session", side_effect=Exception("db broken")):
             result = await _is_run_terminal_in_db(1, None)
         assert result is False
 
@@ -9477,7 +9493,7 @@ class TestValidateMergeCommand:
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         mock_status = MagicMock(state=state)
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
@@ -9496,7 +9512,7 @@ class TestValidateMergeCommand:
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         mock_status = MagicMock(state="OPEN")
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             result = await _validate_merge_command(1, agent)
@@ -9534,7 +9550,7 @@ class TestValidateMergeCommand:
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         mock_status = MagicMock(state="OPEN")
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
@@ -9572,7 +9588,7 @@ class TestValidateMergeCommand:
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         mock_status = MagicMock(state="OPEN")
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
         ):
             result = await _validate_merge_command(1, agent)
@@ -9591,7 +9607,7 @@ class TestValidateMergeCommand:
 
         mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg),
             patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, side_effect=RuntimeError("not found")),
         ):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
@@ -9608,7 +9624,7 @@ class TestValidateMergeCommand:
         agent.project_dir = None
 
         mock_cfg = MagicMock(github_repo="")
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch("sova.dashboard.services.agent_db.load_config", return_value=mock_cfg):
             assert (await _validate_merge_command(1, agent)).failure_reason is None
 
 
@@ -10506,7 +10522,7 @@ class TestAgentContextHelpers:
         mock_cfg = MagicMock()
         mock_cfg.github_user = "testuser"
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_context.load_config", return_value=mock_cfg),
             patch(
                 "sova.utils.gh.resolve_gh_env",
                 new_callable=AsyncMock,
@@ -10523,7 +10539,7 @@ class TestAgentContextHelpers:
         from sova.dashboard.services.agent_context import _resolve_project_gh_env
 
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.services.agent_context.load_config",
             side_effect=Exception("no config"),
         ):
             result = await _resolve_project_gh_env(tmp_path)
@@ -11365,7 +11381,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11418,7 +11434,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11464,7 +11480,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11509,7 +11525,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:rearrange-commits"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.core.pr_diff_guard.check_silent_revert",
                 new_callable=AsyncMock,
@@ -11543,7 +11559,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.core.pr_diff_guard.check_silent_revert",
                 new_callable=AsyncMock,
@@ -11577,7 +11593,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11622,7 +11638,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11659,7 +11675,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11688,7 +11704,7 @@ class TestCheckPrDiffGuard:
         agent.role = "command:address-pr"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11725,7 +11741,7 @@ class TestCheckPrDiffGuard:
         agent.issue = None
         agent.role = "command:address-pr"
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.dashboard.services.agent_db.load_config", side_effect=RuntimeError("boom")):
             result = await _check_pr_diff_guard(agent)
 
         assert result.failure_reason is None
@@ -11747,7 +11763,7 @@ class TestCheckPrDiffGuard:
         agent.prompt = "Fix the flaky test"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11801,7 +11817,7 @@ class TestCheckPrDiffGuard:
         agent.prompt = "Pin requests back down in requirements.txt to fix the regression"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -11861,7 +11877,7 @@ class TestCheckPrDiffGuard:
         mock_task.body = "Please pin requests back down in requirements.txt to fix the regression"
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.dashboard.services.agent_db.load_config") as mock_cfg,
             patch(
                 "sova.dashboard.services.agent_db._fetch_pr_fields",
                 new_callable=AsyncMock,
@@ -12389,7 +12405,7 @@ class TestOutputService:
         writer.write_line("line2")
 
         # First flush fails: lines should be preserved in buffer
-        with patch("sova.db.session.get_session", side_effect=Exception("db down")):
+        with patch("sova.core.output.get_session", side_effect=Exception("db down")):
             await writer.flush()
 
         assert len(writer._buffer) == 2, "failed flush should restore buffer"
@@ -12406,7 +12422,7 @@ class TestOutputService:
 
         from sova.core.output import cleanup_old_output
 
-        with patch("sova.db.session.get_session", side_effect=Exception("db error")):
+        with patch("sova.core.output.get_session", side_effect=Exception("db error")):
             deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 0
 
@@ -12416,7 +12432,7 @@ class TestOutputService:
 
         from sova.core.output import read_lines
 
-        with patch("sova.db.session.get_session", side_effect=Exception("db error")):
+        with patch("sova.core.output.get_session", side_effect=Exception("db error")):
             lines, total = await read_lines(tmp_path / "fake", run_id=999)
         assert lines == []
         assert total == 0
@@ -12860,7 +12876,7 @@ class TestAuthStatusAPI:
         }
         provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", account)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -12881,7 +12897,7 @@ class TestAuthStatusAPI:
 
         provider = _FakeAuthProvider(False, "not authenticated (run: claude auth login)", None)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -12900,7 +12916,7 @@ class TestAuthStatusAPI:
 
         provider = _FakeAuthProvider(True, "2.1.259 (auth state unknown)", None)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -12914,7 +12930,7 @@ class TestAuthStatusAPI:
 
         provider = _FakeNoAuthDetailsProvider(True, "ollama available")
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg(provider="ollama")),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg(provider="ollama")),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -12929,7 +12945,7 @@ class TestAuthStatusAPI:
 
         provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", None)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()) as mock_load,
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()) as mock_load,
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             first = await client.get("/api/auth/status")
@@ -12957,7 +12973,7 @@ class TestAuthStatusAPI:
                 return True, "2.1.259 (user@example.com, max)"
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=_SlowAuthProvider()),
         ):
             first, second = await asyncio.gather(
@@ -12976,7 +12992,7 @@ class TestAuthStatusAPI:
 
         provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", None)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
             patch.dict(os.environ, {"ANTHROPIC_VERTEX_PROJECT_ID": "some-project"}),
         ):
@@ -12988,7 +13004,7 @@ class TestAuthStatusAPI:
         from unittest.mock import patch
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg(provider="claude-code")),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg(provider="claude-code")),
             patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
         ):
             resp = await client.get("/api/auth/status")
@@ -13001,7 +13017,7 @@ class TestAuthStatusAPI:
     async def test_config_load_failure_returns_503(self, client: AsyncClient) -> None:
         from unittest.mock import patch
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+        with patch("sova.dashboard.services.setup_service.load_config", side_effect=RuntimeError("config unreadable")):
             resp = await client.get("/api/auth/status")
         assert resp.status_code == 503
         assert "config unreadable" not in resp.text
@@ -13018,7 +13034,7 @@ class TestAuthStatusAPI:
         account = {"loggedIn": True, "email": "u@e.com", "expires_at": "2026-01-01", "models": ["opus"]}
         provider = _FakeAuthProvider(True, "2.1.259 (user@example.com, max)", account)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -13036,7 +13052,7 @@ class TestAuthStatusAPI:
         account = {"loggedIn": True, "email": "u@e.com", "accessToken": "sk-ant-secret"}
         provider = _FakeAuthProvider(True, "2.1.259", account)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             resp = await client.get("/api/auth/status")
@@ -13101,7 +13117,9 @@ class TestConnectionsAPI:
     async def test_catalog_lists_every_provider_and_runtime(self, client: AsyncClient) -> None:
         from unittest.mock import patch
 
-        with patch("sova.config.loader.load_config", return_value=_fake_full_cfg()):
+        with (
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
+        ):
             resp = await client.get("/api/connections")
         assert resp.status_code == 200
         data = resp.json()
@@ -13122,7 +13140,7 @@ class TestConnectionsAPI:
             raise RuntimeError("detonated")
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", side_effect=_boom),
         ):
             resp = await client.get("/api/connections")
@@ -13180,7 +13198,9 @@ class TestConnectionsAPI:
             agent=SimpleNamespace(runtime="claude-code"),
             codex=None,
         )
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with (
+            patch("sova.dashboard.services.setup_service.load_config", return_value=cfg),
+        ):
             resp = await client.get("/api/connections")
         by_id = {c["id"]: c for c in resp.json()["llm_providers"]}
         assert by_id["ollama"]["configured_api_base"] == "http://box:9999"
@@ -13193,7 +13213,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update_many = AsyncMock(return_value={"error": "db is locked"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
@@ -13233,7 +13253,7 @@ class TestConnectionsAPI:
 
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
         ):
             resp = await client.post(
@@ -13249,7 +13269,7 @@ class TestConnectionsAPI:
 
         provider = _FakeNoAuthDetailsProvider(False, "not logged in")
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
         ):
             resp = await client.post(
@@ -13266,7 +13286,7 @@ class TestConnectionsAPI:
 
         candidate = _FakeCatalogProvider(catalog)
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=candidate),
         ):
             resp = await client.post(
@@ -13316,7 +13336,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update_many = AsyncMock(return_value={"status": "ok"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
@@ -13343,7 +13363,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_reload = AsyncMock()
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch(
                 "sova.dashboard.services.settings_service.update_config_many",
@@ -13368,7 +13388,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update_many = AsyncMock(return_value={"status": "ok"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
@@ -13403,7 +13423,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update_many = AsyncMock(return_value={"error": "'llm.provider' rejected: llm.model: required"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
@@ -13425,7 +13445,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update_many = AsyncMock(return_value={"error": "Failed to persist settings (DB unavailable)"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
             patch("sova.dashboard.services.settings_service.update_config_many", mock_update_many),
         ):
@@ -13449,7 +13469,7 @@ class TestConnectionsAPI:
             return_value=LLMResult(text="pong", model="claude-sonnet-4-6", cost_usd=Decimal("0.001"))
         )
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
         ):
             resp = await client.post(
@@ -13483,7 +13503,7 @@ class TestConnectionsAPI:
         from unittest.mock import patch
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}),
             patch("sova.dashboard.services.setup_service.configured_passthrough", return_value=()),
         ):
@@ -13495,7 +13515,7 @@ class TestConnectionsAPI:
         from unittest.mock import patch
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch.dict(os.environ, {"CLAUDE_CODE_USE_VERTEX": "1"}),
             patch(
                 "sova.dashboard.services.setup_service.configured_passthrough",
@@ -13512,7 +13532,7 @@ class TestConnectionsAPI:
         provider = _FakeNoAuthDetailsProvider(True, "ok")
         provider.invoke = AsyncMock(side_effect=RuntimeError("rate limited"))
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_cfg()),
             patch("sova.dashboard.services.setup_service._build_llm_candidate_provider", return_value=provider),
         ):
             resp = await client.post(
@@ -13541,7 +13561,7 @@ class TestConnectionsAPI:
         runtime = _FakeNoAuthDetailsProvider(True, "ok")
         mock_update = AsyncMock(return_value={"status": "ok"})
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch("sova.ipc.runtime.create_runtime", return_value=runtime),
             patch("sova.dashboard.services.settings_service.update_config", mock_update),
         ):
@@ -13563,7 +13583,7 @@ class TestConnectionsAPI:
 
         runtime = _FakeNoAuthDetailsProvider(True, "ok")
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch("sova.ipc.runtime.create_runtime", return_value=runtime),
             patch("sova.dashboard.services.settings_service.update_config", AsyncMock(return_value={"status": "ok"})),
             patch("sova.ipc.runtime.reload_runtime") as mock_reload,
@@ -13829,7 +13849,7 @@ class TestReconnectFlows:
         credentials.write_text("{}", encoding="utf-8")
         cfg = SimpleNamespace(awareness=SimpleNamespace(enabled=True, providers=["gmail"], gmail_token_path=""))
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=cfg),
             patch.object(google_oauth, "InstalledAppFlow", object()),
             patch.object(google_oauth, "DEFAULT_CREDENTIALS_PATH", credentials),
         ):
@@ -14151,7 +14171,10 @@ class TestReconnectFlows:
         from sova.dashboard.services.setup_service import start_reconnect
 
         stack, spawn = _spawn_patches(_FakeProcess())
-        with stack, patch("sova.config.loader.load_config", side_effect=ValueError("/secret/config")):
+        with (
+            stack,
+            patch("sova.dashboard.services.setup_service.load_config", side_effect=ValueError("/secret/config")),
+        ):
             result = await start_reconnect(tmp_path, flow="google")
         assert result["reason"] == "config_error"
         assert "/secret" not in result["detail"]
@@ -14320,7 +14343,7 @@ class TestAuthorizeGoogleChild:
             awareness=SimpleNamespace(), server=SimpleNamespace(log_max_bytes=1024, log_backup_count=2)
         )
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.awareness.auth.authorize.load_config", return_value=cfg),
             patch("sova.utils.logging.setup_logging") as setup_logging,
         ):
             with patch("sova.awareness.auth.google_oauth.authenticate_google") as authenticate:
@@ -14387,7 +14410,9 @@ class _FakeRuntimeForModels:
 def _patch_models_env(provider, cfg=None):
     """Patch the config load and provider construction every test here needs."""
     with (
-        patch("sova.config.loader.load_config", return_value=cfg if cfg is not None else _fake_cfg()),
+        patch(
+            "sova.dashboard.services.models_service.load_config", return_value=cfg if cfg is not None else _fake_cfg()
+        ),
         patch("sova.llm.provider.create_provider", return_value=provider),
     ):
         yield
@@ -14397,7 +14422,7 @@ def _patch_models_env(provider, cfg=None):
 def _patch_runtime_env(runtime):
     """_patch_models_env's layer=runtime counterpart: config load + runtime construction."""
     with (
-        patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+        patch("sova.dashboard.services.models_service.load_config", return_value=_fake_full_cfg()),
         patch("sova.ipc.runtime.create_runtime", return_value=runtime),
     ):
         yield
@@ -14549,7 +14574,7 @@ class TestReconnectAvailability:
         from sova.llm.backends import Backend
 
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_full_cfg()),
+            patch("sova.dashboard.services.setup_service.load_config", return_value=_fake_full_cfg()),
             patch("sova.dashboard.services.setup_service._claude_cli_backend", return_value=Backend.VERTEX),
             patch("sova.dashboard.services.setup_service._is_headless_environment", return_value=False),
         ):
@@ -14654,7 +14679,7 @@ class TestAvailableModelsAPI:
     async def test_cache_hit_returns_cached_true(self, client: AsyncClient) -> None:
         provider = _FakeModelsProvider([_model()])
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()) as mock_load,
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()) as mock_load,
             patch("sova.llm.provider.create_provider", return_value=provider),
         ):
             first = await client.get("/api/models/available", params={"layer": "llm"})
@@ -14692,7 +14717,7 @@ class TestAvailableModelsAPI:
 
     async def test_misconfigured_provider_returns_200_curated(self, client: AsyncClient) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()),
             patch(
                 "sova.llm.provider.create_provider",
                 side_effect=ComponentMisconfiguredError("Unknown LLM provider: 'nope'"),
@@ -14709,7 +14734,7 @@ class TestAvailableModelsAPI:
         self, client: AsyncClient
     ) -> None:
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", side_effect=ValueError("bad key sk-SECRET")),
         ):
             resp = await client.get("/api/models/available", params={"layer": "llm"})
@@ -14731,7 +14756,7 @@ class TestAvailableModelsAPI:
         assert "timed out" in data["detail"].lower()
 
     async def test_config_load_failure_returns_503(self, client: AsyncClient) -> None:
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+        with patch("sova.dashboard.services.models_service.load_config", side_effect=RuntimeError("config unreadable")):
             resp = await client.get("/api/models/available", params={"layer": "llm"})
         assert resp.status_code == 503
         assert "config unreadable" not in resp.text
@@ -14804,7 +14829,9 @@ class TestAvailableModelsAPI:
         assert "timed out" in data["detail"].lower()
 
     async def test_layer_runtime_unknown_runtime_type_returns_200_unavailable(self, client: AsyncClient) -> None:
-        with patch("sova.config.loader.load_config", return_value=_fake_full_cfg(agent_runtime="bogus")):
+        with patch(
+            "sova.dashboard.services.models_service.load_config", return_value=_fake_full_cfg(agent_runtime="bogus")
+        ):
             resp = await client.get("/api/models/available", params={"layer": "runtime"})
         assert resp.status_code == 200
         assert resp.json()["source"] == "unavailable"
@@ -14848,7 +14875,7 @@ class TestAvailableModelsAPI:
         that cannot enumerate anything must not charge that cost to every other
         project sharing the process."""
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
             patch("sova.llm.client.clear_enumeration") as mock_clear,
         ):
@@ -14861,7 +14888,7 @@ class TestAvailableModelsAPI:
         spend the 60s throttle window: the very next ?refresh=1 should still
         go through rather than getting a 429 for a refresh that never happened."""
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", side_effect=ValueError("Unknown LLM provider")),
         ):
             first = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
@@ -14874,7 +14901,7 @@ class TestAvailableModelsAPI:
         extra for litellm/anthropic providers); that must be handled the same
         as a ValueError misconfiguration, not propagate as a 503."""
         with (
-            patch("sova.config.loader.load_config", return_value=_fake_cfg()),
+            patch("sova.dashboard.services.models_service.load_config", return_value=_fake_cfg()),
             patch("sova.llm.provider.create_provider", side_effect=ImportError("litellm not installed")),
         ):
             resp = await client.get("/api/models/available", params={"layer": "llm"})
@@ -14887,7 +14914,7 @@ class TestAvailableModelsAPI:
     async def test_refresh_allowance_not_consumed_when_config_load_fails(self, client: AsyncClient) -> None:
         """A refresh that fails before create_provider is even reached (the
         config load itself errors) must not spend the throttle window either."""
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("config unreadable")):
+        with patch("sova.dashboard.services.models_service.load_config", side_effect=RuntimeError("config unreadable")):
             first = await client.get("/api/models/available", params={"layer": "llm", "refresh": "1"})
         assert first.status_code == 503
 
@@ -14941,7 +14968,7 @@ class TestAvailableModelsAPI:
             return provider_a if llm_cfg.provider == "claude-code" else provider_b
 
         with (
-            patch("sova.config.loader.load_config", side_effect=_load_config),
+            patch("sova.dashboard.services.models_service.load_config", side_effect=_load_config),
             patch("sova.llm.provider.create_provider", side_effect=_create_provider),
         ):
             result_a = await models_service.get_available_models(project_a)
@@ -15156,7 +15183,7 @@ class TestCreateStarterMilestones:
         mock_adapter.create_milestone.return_value = Milestone(title="Phase 2: Next", state="open")
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.setup_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -15190,7 +15217,7 @@ class TestCreateStarterMilestones:
         mock_adapter.create_milestone.side_effect = side_effect
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.setup_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -15205,7 +15232,7 @@ class TestCreateStarterMilestones:
         from sova.dashboard.services.setup_service import create_starter_milestones
 
         with patch(
-            "sova.config.loader.load_config",
+            "sova.dashboard.services.setup_service.load_config",
             side_effect=FileNotFoundError("sova.toml not found"),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -15223,7 +15250,7 @@ class TestCreateStarterMilestones:
         mock_adapter.create_milestone.side_effect = PermissionError("Insufficient permissions")
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.setup_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -15271,7 +15298,7 @@ class TestCreateStarterMilestonesAdapterError:
         from sova.dashboard.services.setup_service import create_starter_milestones
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.setup_service.load_config"),
             patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -15287,7 +15314,7 @@ class TestCreateStarterMilestonesAdapterError:
         mock_adapter.list_milestones.side_effect = RuntimeError("network error")
 
         with (
-            patch("sova.config.loader.load_config"),
+            patch("sova.dashboard.services.setup_service.load_config"),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             result = await create_starter_milestones(tmp_path)
@@ -17181,7 +17208,7 @@ class TestWaitAndFinalizeOrdering:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=tracking_finalize),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17232,7 +17259,8 @@ class TestWaitAndFinalizeOrdering:
             ),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_db.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip notifications")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17292,7 +17320,7 @@ class TestLivenessSweepMergeCheck:
             return await get_session()
 
         stack = ExitStack()
-        stack.enter_context(patch("sova.db.session.get_session", _test_get_session))
+        stack.enter_context(patch("sova.dashboard.app.get_session", _test_get_session))
         stack.enter_context(patch("sova.dashboard.services.control_service._is_process_alive", return_value=False))
         for target, mock_val in extra_patches.items():
             stack.enter_context(patch(target, **mock_val))
@@ -17521,7 +17549,7 @@ class TestLivenessSweepMergeCheck:
 
         with self._patch_sweep_deps(
             **{
-                "sova.db.session.get_session": {"new": _test_get_session},
+                "sova.dashboard.app.get_session": {"new": _test_get_session},
                 "sova.dashboard.app._SWEEP_WRITE_RETRY_DELAY": {"new": 0},
             }
         ):
@@ -17568,7 +17596,7 @@ class TestWaitAndFinalizeOutputWriter:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17607,7 +17635,7 @@ class TestWaitAndFinalizeOutputWriter:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17649,7 +17677,7 @@ class TestWaitAndFinalizeStreamFailure:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock) as mock_ah,
-            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17691,7 +17719,7 @@ class TestWaitAndFinalizeStreamFailure:
             patch.object(agent_finalize, "log") as mock_log,
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17731,7 +17759,7 @@ class TestWaitAndFinalizeStreamFailure:
             patch.object(agent_finalize, "_finalize_task_run", new_callable=AsyncMock, side_effect=track_finalize),
             patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock) as mock_ah,
-            patch("sova.config.loader.load_config", side_effect=Exception("skip")),
+            patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip")),
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
@@ -17795,7 +17823,9 @@ class TestWaitAndFinalizeStreamFailure:
             stack.enter_context(
                 patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock)
             )
-            stack.enter_context(patch("sova.config.loader.load_config", side_effect=Exception("skip")))
+            stack.enter_context(
+                patch("sova.dashboard.services.agent_finalize.load_config", side_effect=Exception("skip"))
+            )
             if drain_timeout is not None:
                 stack.enter_context(patch.object(agent_finalize, "_READER_DRAIN_TIMEOUT", drain_timeout))
 
@@ -18633,7 +18663,7 @@ class TestPlannerCreateIssues:
         mock_adapter.create_issue.return_value = Task(id="200", title="feat(cli): new cmd", state=TaskState.BACKLOG)
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.planner_issue_service.load_config", return_value=cfg),
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
         ):
             resp = await client.post(
@@ -18771,7 +18801,7 @@ class TestCheckMemoryPressure:
         mock_mem.available = int(1.0 * 1024**3)  # 1.0 GB, below block_threshold_gb=2.0
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -18792,7 +18822,7 @@ class TestCheckMemoryPressure:
         mock_mem.available = int(3.0 * 1024**3)  # 3.0 GB, below warn=4.0 but above block=2.0
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -18812,7 +18842,7 @@ class TestCheckMemoryPressure:
         mock_mem.available = int(8.0 * 1024**3)
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg),
             patch("psutil.virtual_memory", return_value=mock_mem),
         ):
             block, warn = check_memory_pressure(tmp_path)
@@ -18830,7 +18860,7 @@ class TestCheckMemoryPressure:
             memory_guard=MemoryGuardConfig(enabled=False, warn_threshold_gb=4.0, block_threshold_gb=2.0)
         )
 
-        with patch("sova.config.loader.load_config", return_value=cfg):
+        with patch("sova.dashboard.services.agent_validation.load_config", return_value=cfg):
             block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
@@ -18841,7 +18871,7 @@ class TestCheckMemoryPressure:
 
         from sova.dashboard.services.agent_validation import check_memory_pressure
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+        with patch("sova.dashboard.services.agent_validation.load_config", side_effect=RuntimeError("boom")):
             block, warn = check_memory_pressure(tmp_path)
 
         assert block is None
@@ -18868,7 +18898,7 @@ class TestResourceServiceMemoryPressure:
         cfg = ProjectConfig(memory_guard=MemoryGuardConfig(enabled=True, warn_threshold_gb=5.0, block_threshold_gb=2.0))
 
         with (
-            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.services.resource_service.load_config", return_value=cfg),
             patch("sova.config.context.get_project_dir", return_value=tmp_path),
         ):
             result = rs._get_memory_guard_config()
@@ -18882,7 +18912,7 @@ class TestResourceServiceMemoryPressure:
 
         import sova.dashboard.services.resource_service as rs
 
-        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+        with patch("sova.dashboard.services.resource_service.load_config", side_effect=RuntimeError("no config")):
             result = rs._get_memory_guard_config()
 
         assert result is None
@@ -19507,7 +19537,11 @@ class TestComplexityEndpoint:
         with (
             patch("sova.adapters.create_adapter", return_value=mock_adapter),
             patch(
-                "sova.config.loader.load_config",
+                "sova.dashboard.services.llm_suggestion_service.load_config",
+                return_value=cfg,
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service.load_config",
                 return_value=cfg,
             ),
         ):
@@ -19591,7 +19625,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent()
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
@@ -19642,7 +19676,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent()
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
@@ -19698,7 +19732,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent()
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
@@ -19741,7 +19775,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent()
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch("sova.adapters.create_adapter"),
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
@@ -19863,7 +19897,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent(pr_number=None)
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,
@@ -19893,7 +19927,7 @@ class TestCrashRecoveryCleanup:
         agent = self._make_agent()
 
         with (
-            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.dashboard.services.agent_finalize.load_config") as mock_load_config,
             patch(
                 "sova.dashboard.services.agent_finalize.get_pr_branch",
                 new_callable=AsyncMock,

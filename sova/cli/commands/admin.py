@@ -12,6 +12,9 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
+from sova.config.loader import load_config
+from sova.db.session import get_session
+
 console = Console(stderr=True)
 
 
@@ -24,7 +27,7 @@ def status(
 
 async def _status(*, project_dir: Path | None) -> None:
     from sova.db.models import TaskRun
-    from sova.db.session import get_session, init_db
+    from sova.db.session import init_db
 
     resolved_dir = project_dir or Path.cwd()
     await init_db(resolved_dir)
@@ -75,7 +78,7 @@ def costs(
 
 async def _costs(*, project_dir: Path | None) -> None:
     from sova.db.models import CostRecord
-    from sova.db.session import get_session, init_db
+    from sova.db.session import init_db
 
     resolved_dir = project_dir or Path.cwd()
     await init_db(resolved_dir)
@@ -167,7 +170,6 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool,
         raise typer.Exit(code=1)
 
     if clean_logs and not dry_run:
-        from sova.config.loader import load_config
         from sova.core.output import cleanup_old_output
         from sova.db.session import init_db
 

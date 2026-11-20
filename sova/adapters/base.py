@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from sova.adapters.priority import Priority
+from sova.config.loader import load_config
 from sova.llm.egress import EgressMode, filter_egress
 from sova.utils.logging import get_logger
 
@@ -105,8 +106,6 @@ class Milestone:
 def _get_egress_mode() -> EgressMode:
     """Load egress mode from config (no cache: supports multi-project mode)."""
     try:
-        from sova.config.loader import load_config
-
         return load_config().egress.mode
     except Exception:  # noqa: BLE001 (egress filter defaults to warn mode when config is unavailable)
         _log.warning("egress.config_load_failed", exc_info=True)

@@ -318,7 +318,7 @@ class TestModelsView:
         client, _project = startup
 
         with (
-            patch("sova.config.loader.load_config", side_effect=OSError("config unreadable")),
+            patch("sova.dashboard.services.settings_service.load_config", side_effect=OSError("config unreadable")),
             patch("sova.dashboard.services.settings_service.log") as log,
         ):
             res = await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))
@@ -334,7 +334,7 @@ class TestModelsView:
         client, _project = startup
 
         with (
-            patch("sova.config.loader.load_config", side_effect=RuntimeError("loader bug")),
+            patch("sova.dashboard.services.settings_service.load_config", side_effect=RuntimeError("loader bug")),
             pytest.raises(RuntimeError, match="loader bug"),
         ):
             await client.post("/api/settings/models/pin", json={}, headers=_csrf_request_headers(client))

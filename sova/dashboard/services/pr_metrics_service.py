@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.pr_metrics")
@@ -89,7 +90,6 @@ class PRMetricsService:
         from sova.config.context import resolve_project_dir
         from sova.dashboard.services.agent_pool import get_default_project_dir
         from sova.db.models import PREvent
-        from sova.db.session import get_session
 
         project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -394,7 +394,6 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
     from sova.config.context import resolve_project_dir
     from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.db.models import PREvent
-    from sova.db.session import get_session
     from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
 

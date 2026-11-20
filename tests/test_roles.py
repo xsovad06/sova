@@ -7835,7 +7835,7 @@ class TestDispatcherAsyncFallback:
 
         from sova.roles.dispatcher import get_role_async
 
-        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+        with patch("sova.roles.dispatcher.get_session", side_effect=RuntimeError("DB down")):
             with pytest.raises(RuntimeError, match="DB down"):
                 await get_role_async("some-custom-role")
 

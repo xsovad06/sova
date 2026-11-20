@@ -15,6 +15,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from sova.db.session import get_session
 from sova.monitoring.models import ResourceSample, ResourceSummary
 from sova.utils.logging import get_logger
 
@@ -139,8 +140,6 @@ class ResourceWriter:
 
     async def _insert(self, records: list) -> None:
         """Persist *records* in one transaction (must run to completion)."""
-        from sova.db.session import get_session
-
         async with await get_session(project_dir=self._project_dir) as session:
             async with session.begin():
                 session.add_all(records)
@@ -195,8 +194,6 @@ class ResourceWriter:
 
     async def _insert_summary(self, record: object) -> None:
         """Persist the summary in one transaction (must run to completion)."""
-        from sova.db.session import get_session
-
         async with await get_session(project_dir=self._project_dir) as session:
             async with session.begin():
                 session.add(record)
@@ -217,7 +214,6 @@ async def cleanup_old_resources(project_dir: Path | None, retention_days: int = 
     from sqlalchemy import delete, select
 
     from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord, TaskRun
-    from sova.db.session import get_session
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 

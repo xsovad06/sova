@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from sova.config.context import get_project_dir, resolve_project_dir_or_none
+from sova.config.loader import load_config
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -118,7 +120,6 @@ async def reload_daemon_config(project_dir: Path | None) -> None:
 
     Raises on lifecycle failure so the caller can report it to the UI.
     """
-    from sova.config.loader import load_config
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     project_dir = resolve_project_dir_or_none(project_dir, default_project_dir=get_default_project_dir())
@@ -223,7 +224,6 @@ async def ensure_pr_throttle_loop(project_dir: Path, cfg: ProjectConfig) -> bool
     if not cfg.coderabbit_quota.enabled:
         return False
 
-    from sova.db.session import get_session
     from sova.supervisor.pr_throttle import PRThrottleLoop as _PRThrottleLoop
     from sova.supervisor.pr_throttle import recover_creating_entries, sibling_loop_alive
 
