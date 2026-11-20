@@ -11,6 +11,8 @@ the configured threshold are proposed.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskAdapter
@@ -54,14 +56,14 @@ def _issue_body(finding: OversightFinding) -> str:
     return "\n\n".join(parts)
 
 
-async def _find_existing_issue_by_fingerprint(fingerprint: str | None) -> int | None:
+async def _find_existing_issue_by_fingerprint(fingerprint: str | None, project_dir: Path | None = None) -> int | None:
     """Check DB for an existing issue created from a finding with the same fingerprint."""
     if not fingerprint:
         return None
     from sova.db.session import get_session
 
     try:
-        async with await get_session() as session:
+        async with await get_session(project_dir=project_dir) as session:
             from sqlalchemy import select
 
             stmt = (
@@ -96,6 +98,7 @@ async def propose_issues(
     project_adapters: dict[str, TaskAdapter],
     *,
     confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD,
+    project_dir: Path | None = None,
 ) -> list[OversightFinding]:
     """Create GitHub Issues for confirmed findings above the confidence threshold.
 
@@ -105,6 +108,7 @@ async def propose_issues(
         sova_adapter: Adapter for the SOVA repository (global findings).
         project_adapters: {project_slug: adapter} for local findings.
         confidence_threshold: Minimum confidence to file an issue.
+        project_dir: Project whose database holds the findings; ``None`` keeps ``get_session()``'s default.
 
     Returns:
         List of findings that had issues created (github_issue_number populated).
@@ -136,7 +140,7 @@ async def propose_issues(
             )
             continue
 
-        existing_issue = await _find_existing_issue_by_fingerprint(finding.fingerprint)
+        existing_issue = await _find_existing_issue_by_fingerprint(finding.fingerprint, project_dir)
         if existing_issue is not None:
             if await _is_issue_open(adapter, existing_issue):
                 log.debug(
@@ -178,7 +182,7 @@ async def propose_issues(
             )
 
     if created:
-        await _persist_issue_numbers(created)
+        await _persist_issue_numbers(created, project_dir)
 
     return created
 
@@ -199,15 +203,14 @@ def _select_adapter(
     return None
 
 
-async def _persist_issue_numbers(findings: list[OversightFinding]) -> None:
+async def _persist_issue_numbers(findings: list[OversightFinding], project_dir: Path | None = None) -> None:
     """Write github_issue_number back to the DB for each finding."""
     from sova.db.session import get_session
 
     try:
-        async with await get_session() as session:
-            async with session.begin():
-                for finding in findings:
-                    merged = await session.merge(finding)
-                    merged.github_issue_number = finding.github_issue_number
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            for finding in findings:
+                merged = await session.merge(finding)
+                merged.github_issue_number = finding.github_issue_number
     except (OSError, RuntimeError, SQLAlchemyError):
         log.error("oversight.actions.persist_failed", count=len(findings), exc_info=True)

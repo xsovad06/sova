@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRunStatus
@@ -42,6 +45,18 @@ class TestOversightConfig:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _stub_start_run():
+    """Keep ``_start_run`` off the DB in tests that stub ``_record_run``.
+
+    Otherwise each cycle opens a file-backed engine under the fake home that no
+    fixture disposes (the ``reset_db_rows`` leak).
+    """
+    with patch.object(OversightAgent, "_start_run", new_callable=AsyncMock):
+        yield
+
+
+@pytest.mark.usefixtures("_stub_start_run")
 class TestOversightAgent:
     def test_init(self) -> None:
         cfg = OversightConfig()
@@ -366,6 +381,7 @@ class TestOversightAgent:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_stub_start_run")
 class TestOversightActionWiring:
     @pytest.mark.asyncio
     async def test_propose_issues_called_with_findings(self) -> None:
@@ -558,6 +574,29 @@ class TestOversightActionWiring:
             await agent._propose_issues([finding])
 
         assert triage_called is True
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_receives_the_agents_db_scope(self, tmp_path) -> None:
+        """The action phase writes to the agent's own project database, not the caller's contextvar."""
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from sova.config.models import TaskSourceConfig
+
+        agent = OversightAgent(config=OversightConfig(wake_interval_minutes=1), project_dir=str(tmp_path))
+        mock_config = MagicMock()
+        mock_config.github_repo = "owner/repo"
+        mock_config.task_source = TaskSourceConfig(type="github")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.oversight.actions.propose_issues", new_callable=AsyncMock, return_value=[]) as mock_propose,
+        ):
+            await agent._propose_issues([])
+
+        assert mock_propose.await_args.kwargs["project_dir"] == Path(tmp_path)
 
     @pytest.mark.asyncio
     async def test_propose_issues_skips_jira_projects(self) -> None:
@@ -822,3 +861,358 @@ class TestOversightMigration:
         mig = importlib.import_module("sova.db.migrations.versions.022_add_oversight_runs_table")
         assert mig.revision == "022"
         assert mig.down_revision == "021"
+
+
+# ---------------------------------------------------------------------------
+# Run row lifecycle (foreign key from oversight_findings to oversight_runs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def fk_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A file-less SQLite DB that enforces foreign keys, as production does.
+
+    The shared test DB never registers the pragma, so it cannot catch a finding
+    written before its OversightRun row exists.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from sova.db.models import Base
+    from sova.db.session import _register_sqlite_pragmas
+
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    _register_sqlite_pragmas(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        assert (await conn.execute(text("PRAGMA foreign_keys"))).scalar() == 1
+
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+class TestRunRowLifecycle:
+    @staticmethod
+    async def _run_cycle(
+        agent: OversightAgent,
+        factory: async_sessionmaker[AsyncSession],
+        findings_json: str,
+        *,
+        on_analysis: Callable[[], Awaitable[None]] | None = None,
+        session_calls: list[dict] | None = None,
+    ) -> None:
+        """Run one cycle on ``factory``; ``on_analysis`` runs as the LLM call starts, before it answers."""
+        from sova.llm.models import LLMResult
+
+        async def _get_session(**kwargs: object) -> AsyncSession:
+            if session_calls is not None:
+                session_calls.append(kwargs)
+            return factory()
+
+        async def _invoke(*args: object, **kwargs: object) -> LLMResult:
+            if on_analysis is not None:
+                await on_analysis()
+            return LLMResult(text=findings_json, model="test")
+
+        provider = AsyncMock()
+        provider.invoke = AsyncMock(side_effect=_invoke)
+        with (
+            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch("sova.llm.client.get_provider", return_value=provider),
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"projects": []}),
+            patch.object(agent, "_propose_issues", new_callable=AsyncMock),
+        ):
+            await agent.run_cycle_once()
+
+    @pytest.mark.asyncio
+    async def test_findings_persist_under_enforced_foreign_keys(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The run row exists before analysis writes findings, and ends as one done row."""
+        from sqlalchemy import select
+
+        from sova.db.models import OversightFinding, OversightRun
+
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        findings = '[{"title": "CI flaky", "scope": "global", "severity": "warning"}]'
+        await self._run_cycle(agent, fk_session_factory, findings)
+
+        async with fk_session_factory() as session:
+            runs = (await session.execute(select(OversightRun))).scalars().all()
+            stored = (await session.execute(select(OversightFinding))).scalars().all()
+
+        assert len(runs) == 1
+        assert runs[0].status == OversightRunStatus.DONE
+        assert runs[0].error is None
+        assert runs[0].duration_ms is not None
+        assert runs[0].ended_at is not None
+        assert [f.title for f in stored] == ["CI flaky"]
+        assert stored[0].run_id == runs[0].id
+
+    @pytest.mark.asyncio
+    async def test_run_row_is_running_before_analysis_starts(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A row inserted only once analysis finishes, or inserted as done, fails here."""
+        from sqlalchemy import select
+
+        from sova.db.models import OversightRun
+
+        seen: list[list[OversightRunStatus]] = []
+
+        async def _capture_status() -> None:
+            async with fk_session_factory() as session:
+                rows = (await session.execute(select(OversightRun))).scalars().all()
+            seen.append([r.status for r in rows])
+
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        await self._run_cycle(agent, fk_session_factory, "[]", on_analysis=_capture_status)
+
+        assert seen == [[OversightRunStatus.RUNNING]]
+        async with fk_session_factory() as session:
+            runs = (await session.execute(select(OversightRun))).scalars().all()
+        assert [r.status for r in runs] == [OversightRunStatus.DONE]
+
+    @pytest.mark.asyncio
+    async def test_every_cycle_write_uses_the_agents_own_project_db(
+        self, fk_session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        """Start, dedup, findings and finish all name the agent's project, not the caller's contextvar."""
+        agent = OversightAgent(
+            config=OversightConfig(enabled=True, wake_interval_minutes=1),
+            project_dir=str(tmp_path),
+        )
+        calls: list[dict] = []
+        findings = '[{"title": "CI flaky", "scope": "global", "severity": "warning"}]'
+        await self._run_cycle(agent, fk_session_factory, findings, session_calls=calls)
+
+        assert len(calls) == 4
+        assert all(c.get("project_dir") == Path(tmp_path) for c in calls), calls
+
+    @pytest.mark.asyncio
+    async def test_agent_without_project_dir_keeps_default_session_resolution(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        calls: list[dict] = []
+        await self._run_cycle(agent, fk_session_factory, "[]", session_calls=calls)
+
+        assert calls
+        assert all(c.get("project_dir") is None for c in calls), calls
+
+    @pytest.mark.asyncio
+    async def test_failed_start_insert_falls_back_to_one_row_at_the_end(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import OversightRun
+
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        with patch.object(agent, "_start_run", new_callable=AsyncMock):
+            await self._run_cycle(agent, fk_session_factory, "[]")
+
+        async with fk_session_factory() as session:
+            runs = (await session.execute(select(OversightRun))).scalars().all()
+        assert [r.status for r in runs] == [OversightRunStatus.DONE]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc", [SQLAlchemyError("boom"), OSError("disk")])
+    async def test_start_run_swallows_db_failure(self, exc: Exception) -> None:
+        from datetime import datetime, timezone
+
+        agent = OversightAgent(config=OversightConfig(wake_interval_minutes=1))
+        with patch("sova.db.session.get_session", side_effect=exc):
+            await agent._start_run("run-x", 1, datetime.now(timezone.utc))  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_cancelled_cycle_updates_the_running_row(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import OversightRun
+
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+
+        async def _get_session(**kwargs: object) -> AsyncSession:
+            return fk_session_factory()
+
+        with (
+            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_observe", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await agent.run_cycle_once()
+
+        async with fk_session_factory() as session:
+            runs = (await session.execute(select(OversightRun))).scalars().all()
+        assert len(runs) == 1
+        assert runs[0].status == OversightRunStatus.ERROR
+        assert runs[0].error == "cancelled"
+
+
+class TestCancellationCleanupShield:
+    @pytest.mark.asyncio
+    async def test_second_cancellation_does_not_abandon_the_finishing_write(self) -> None:
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        cleanup_started = asyncio.Event()
+        cleanup_done = asyncio.Event()
+        observe_started = asyncio.Event()
+
+        async def _observe_forever() -> None:
+            observe_started.set()
+            await asyncio.sleep(60)
+
+        async def _slow_record(*args: object, **kwargs: object) -> None:
+            cleanup_started.set()
+            await asyncio.sleep(0.05)
+            cleanup_done.set()
+
+        with (
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_start_run", new_callable=AsyncMock),
+            patch.object(agent, "_observe", side_effect=_observe_forever),
+            patch.object(agent, "_record_run", side_effect=_slow_record),
+        ):
+            task = asyncio.ensure_future(agent.run_cycle_once())
+            await observe_started.wait()
+            task.cancel()
+            await cleanup_started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert cleanup_done.is_set()
+
+
+class TestWriteShields:
+    """Every run-row write on the cancellable cycle task finishes before a cancellation propagates."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_start_insert_lets_the_insert_finish(self) -> None:
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        start_began = asyncio.Event()
+        start_done = asyncio.Event()
+
+        async def _slow_start(*args: object, **kwargs: object) -> None:
+            start_began.set()
+            await asyncio.sleep(0.05)
+            start_done.set()
+
+        with (
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_start_run", side_effect=_slow_start),
+            patch.object(agent, "_record_error_safe", new_callable=AsyncMock),
+        ):
+            task = asyncio.ensure_future(agent.run_cycle_once())
+            await start_began.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert start_done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_generic_error_write_lets_it_finish(self) -> None:
+        """A cycle that fails (persona load) and is then cancelled mid error-write still finalizes the row."""
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        error_began = asyncio.Event()
+        error_done = asyncio.Event()
+
+        async def _slow_error(*args: object, **kwargs: object) -> None:
+            error_began.set()
+            await asyncio.sleep(0.05)
+            error_done.set()
+
+        with (
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_start_run", new_callable=AsyncMock),
+            patch("sova.oversight.agent.load_persona", side_effect=ValueError("bad persona")),
+            patch.object(agent, "_record_error_safe", side_effect=_slow_error),
+        ):
+            task = asyncio.ensure_future(agent.run_cycle_once())
+            await error_began.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert error_done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_repeated_cancellations_do_not_abandon_a_shielded_write(self) -> None:
+        began = asyncio.Event()
+        done = asyncio.Event()
+
+        async def _slow_write() -> None:
+            began.set()
+            await asyncio.sleep(0.05)
+            done.set()
+
+        task = asyncio.ensure_future(OversightAgent._shielded(_slow_write()))
+        await began.wait()
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_normal_finalization_lets_the_write_finish(self) -> None:
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        record_began = asyncio.Event()
+        record_done = asyncio.Event()
+
+        async def _slow_record(*args: object, **kwargs: object) -> None:
+            record_began.set()
+            await asyncio.sleep(0.05)
+            record_done.set()
+
+        with (
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_start_run", new_callable=AsyncMock),
+            patch.object(agent, "_observe", new_callable=AsyncMock, return_value={"projects": []}),
+            patch.object(agent, "_analyze", new_callable=AsyncMock, return_value=([], None)),
+            patch.object(agent, "_record_run", side_effect=_slow_record),
+        ):
+            task = asyncio.ensure_future(agent.run_cycle_once())
+            await record_began.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert record_done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_analysis_keeps_the_observed_snapshot(
+        self, fk_session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import OversightRun
+
+        agent = OversightAgent(config=OversightConfig(enabled=True, wake_interval_minutes=1))
+        snapshot = {"projects": ["alpha"]}
+
+        async def _get_session(**kwargs: object) -> AsyncSession:
+            return fk_session_factory()
+
+        with (
+            patch("sova.db.session.get_session", side_effect=_get_session),
+            patch.object(agent, "_reload_config", return_value=agent._config),
+            patch.object(agent, "_observe", new_callable=AsyncMock, return_value=snapshot),
+            patch.object(agent, "_analyze", new_callable=AsyncMock, side_effect=asyncio.CancelledError),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await agent.run_cycle_once()
+
+        async with fk_session_factory() as session:
+            runs = (await session.execute(select(OversightRun))).scalars().all()
+        assert len(runs) == 1
+        assert runs[0].error == "cancelled"
+        assert runs[0].snapshot_json == snapshot

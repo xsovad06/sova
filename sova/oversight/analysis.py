@@ -18,6 +18,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -224,6 +225,8 @@ async def _load_recent_fingerprints(session: Any, dedup_window_days: int = _DEFA
 async def _persist_findings(
     findings: list[OversightFinding],
     run_id: str,
+    *,
+    project_dir: Path | None = None,
 ) -> int:
     """Persist findings to the DB. Returns number persisted."""
     if not findings:
@@ -232,10 +235,9 @@ async def _persist_findings(
     from sova.db.session import get_session
 
     try:
-        async with await get_session() as session:
-            async with session.begin():
-                session.add_all(findings)
-                await session.flush()
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            session.add_all(findings)
+            await session.flush()
         return len(findings)
     except (OSError, RuntimeError, SQLAlchemyError):
         log.error("oversight.analysis.persist_failed", run_id=run_id, count=len(findings), exc_info=True)
@@ -251,6 +253,7 @@ async def analyze_snapshot(
     model: str = _DEFAULT_ANALYSIS_MODEL,
     dedup_window_days: int = _DEFAULT_DEDUP_WINDOW_DAYS,
     analysis_timeout: int = _DEFAULT_ANALYSIS_TIMEOUT,
+    project_dir: Path | None = None,
 ) -> tuple[list[OversightFinding], str | None]:
     """Analyze a snapshot via LLM and persist deduplicated findings.
 
@@ -260,6 +263,9 @@ async def analyze_snapshot(
         persona: The operations persona text (already loaded by caller).
         provider: An LLMProvider instance for the LLM call.
         model: Model identifier to use for analysis.
+        project_dir: The database the dedup query and the findings write use, passed by the caller
+            so background work never resolves it from an ambient contextvar. ``None`` keeps
+            ``get_session()``'s default resolution.
 
     Returns:
         Tuple of (list of persisted OversightFinding instances, error message or None).
@@ -282,7 +288,7 @@ async def analyze_snapshot(
         from sova.db.session import get_session
 
         try:
-            async with await get_session() as session:
+            async with await get_session(project_dir=project_dir) as session:
                 recent_fps = await _load_recent_fingerprints(session, dedup_window_days)
         except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("oversight.analysis.dedup_query_failed", run_id=run_id, exc_info=True)
@@ -303,7 +309,7 @@ async def analyze_snapshot(
             if finding.fingerprint:
                 recent_fps.add(finding.fingerprint)
 
-        persisted = await _persist_findings(new_findings, run_id)
+        persisted = await _persist_findings(new_findings, run_id, project_dir=project_dir)
 
         global_count = sum(1 for f in new_findings if f.scope == "global")
         local_count = len(new_findings) - global_count

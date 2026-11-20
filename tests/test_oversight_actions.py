@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from sova.config.models import OversightConfig
 from sova.db.models import OversightFinding
 from sova.oversight.actions import (
     _FOOTER,
+    _find_existing_issue_by_fingerprint,
     _is_issue_open,
     _issue_body,
     _issue_labels,
@@ -338,3 +340,56 @@ class TestPersistIssueNumbers:
             side_effect=RuntimeError("DB gone"),
         ):
             await _persist_issue_numbers([finding])
+
+
+# ---------------------------------------------------------------------------
+# Database scope: every helper writes to the project the caller names
+# ---------------------------------------------------------------------------
+
+
+class TestProjectDirScope:
+    @pytest.mark.asyncio
+    async def test_propose_issues_scopes_dedup_and_persist_to_project_dir(self, tmp_path: Path) -> None:
+        cfg = OversightConfig(auto_create_issues=True)
+        sova = _mock_adapter()
+        finding = _make_finding(confidence=0.9)
+
+        with (
+            patch(
+                "sova.oversight.actions._find_existing_issue_by_fingerprint",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as find,
+            patch("sova.oversight.actions._persist_issue_numbers", new_callable=AsyncMock) as persist,
+        ):
+            await propose_issues([finding], cfg, sova, {}, project_dir=tmp_path)
+
+        assert find.await_args.args[1] == tmp_path
+        assert persist.await_args.args[1] == tmp_path
+
+    @pytest.mark.asyncio
+    async def test_fingerprint_lookup_opens_the_named_project_session(self, tmp_path: Path) -> None:
+        calls: list[dict] = []
+
+        async def _get_session(**kwargs: object) -> None:
+            calls.append(kwargs)
+            raise RuntimeError("stop here")
+
+        with patch("sova.db.session.get_session", side_effect=_get_session):
+            assert await _find_existing_issue_by_fingerprint("abc", tmp_path) is None
+
+        assert calls == [{"project_dir": tmp_path}]
+
+    @pytest.mark.asyncio
+    async def test_persist_opens_the_named_project_session(self, tmp_path: Path) -> None:
+        calls: list[dict] = []
+
+        async def _get_session(**kwargs: object) -> None:
+            calls.append(kwargs)
+            raise RuntimeError("stop here")
+
+        finding = _make_finding(confidence=0.9)
+        with patch("sova.db.session.get_session", side_effect=_get_session):
+            await _persist_issue_numbers([finding], tmp_path)
+
+        assert calls == [{"project_dir": tmp_path}]

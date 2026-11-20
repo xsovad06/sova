@@ -397,6 +397,18 @@ class TestAnalyzeSnapshot:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _stub_start_run():
+    """Keep ``_start_run`` off the DB in tests that stub ``_record_run``.
+
+    Otherwise each cycle opens a file-backed engine under the fake home that no
+    fixture disposes (the ``reset_db_rows`` leak).
+    """
+    with patch("sova.oversight.agent.OversightAgent._start_run", new_callable=AsyncMock):
+        yield
+
+
+@pytest.mark.usefixtures("_stub_start_run")
 class TestAgentAnalyzeWiring:
     @pytest.mark.asyncio
     async def test_analyze_called_on_snapshot(self) -> None:
@@ -703,6 +715,7 @@ class TestAnalyzeSnapshotEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_stub_start_run")
 class TestOversightAgentUnit:
     def test_determine_outcome_done(self) -> None:
         from sova.oversight.agent import OversightAgent
@@ -796,7 +809,7 @@ class TestOversightAgentUnit:
         async def _mock_observe():
             raise asyncio.CancelledError
 
-        async def _mock_record_error_safe(run_id, cycle, duration_ms, started_at, error):
+        async def _mock_record_error_safe(run_id, cycle, duration_ms, started_at, error, snapshot=None):
             recorded.append({"error": error})
 
         with (
