@@ -1647,6 +1647,14 @@ class TestActionRegistry:
         assert await action_registry.dismiss(PROJECT, entry["id"]) is True
         assert action_registry.list_actions(PROJECT) == []
 
+    async def test_a_failure_that_is_not_an_http_error_shows_no_exception_text(self) -> None:
+        with pytest.raises(RuntimeError):
+            async with action_registry.tracked_action(PROJECT, kind="stop", label="Stopping", issue=6):
+                raise RuntimeError("database is locked at /home/op/.claude/sova.db")
+
+        [entry] = action_registry.list_actions(PROJECT)
+        assert (entry["status"], entry["message"]) == ("failed", "Internal error")
+
     async def test_a_success_leaves_the_list_after_its_time(self) -> None:
         action_id = await action_registry.begin(PROJECT, kind="start", label="Starting", issue=5)
         await action_registry.finish(PROJECT, action_id, ok=True, message="Started")

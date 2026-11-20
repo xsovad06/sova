@@ -6,12 +6,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from sova.config.context import resolve_project_dir
 from sova.config.loader import load_config
+from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.git.pr import PRLookupError
-from sova.utils.logging import get_logger
-
-log = get_logger(component="dashboard.prs")
 
 router = APIRouter(prefix="/prs", tags=["prs"])
 
@@ -65,11 +63,7 @@ async def trigger_pr_backfill(days: int = Query(90, ge=7, le=365)) -> dict:
     from sova.dashboard.services import pr_metrics_service
 
     project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
-    try:
-        cfg = load_config(project_dir)
-    except Exception as exc:  # noqa: BLE001 (HTTP boundary: any internal failure becomes a 400)
-        log.warning("prs.backfill.config_error", project_dir=str(project_dir), exc_info=True)
-        raise HTTPException(status_code=400, detail="Failed to load config") from exc
+    cfg = load_config_or_http(lambda: load_config(project_dir), event="prs.backfill.config_error")
 
     if not cfg.github_repo:
         raise HTTPException(status_code=400, detail="No github_repo configured")

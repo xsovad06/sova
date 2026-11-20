@@ -900,13 +900,12 @@ class TestSaveSettingToToml:
         assert result is False
 
 
-class TestExtractValidationDetail:
-    """Tests for _extract_validation_detail helper in the settings router."""
+class TestValidationDetail:
+    """``config_errors.validation_detail()``: the readable message for a config that fails validation."""
 
-    def test_pydantic_validation_error(self) -> None:
+    @staticmethod
+    def _validation_error() -> Exception:
         from pydantic import BaseModel, ValidationError
-
-        from sova.dashboard.routers.settings import _extract_validation_detail
 
         class Dummy(BaseModel):
             count: int
@@ -914,40 +913,33 @@ class TestExtractValidationDetail:
         try:
             Dummy(count="not_a_number")  # type: ignore[arg-type]
         except ValidationError as ve:
-            result = _extract_validation_detail(ve)
+            return ve
+        raise AssertionError("Dummy accepted an invalid count")
 
+    def test_pydantic_validation_error(self) -> None:
+        from sova.dashboard.config_errors import validation_detail
+
+        result = validation_detail(self._validation_error())
+
+        assert result is not None
         assert "Invalid configuration" in result
         assert "count" in result
 
     def test_wrapped_validation_error(self) -> None:
-        from pydantic import BaseModel, ValidationError
+        from sova.dashboard.config_errors import validation_detail
 
-        from sova.dashboard.routers.settings import _extract_validation_detail
+        wrapper = RuntimeError("config load failed")
+        wrapper.__cause__ = self._validation_error()
+        result = validation_detail(wrapper)
 
-        class Dummy(BaseModel):
-            count: int
-
-        try:
-            Dummy(count="bad")  # type: ignore[arg-type]
-        except ValidationError as ve:
-            wrapper = RuntimeError("config load failed")
-            wrapper.__cause__ = ve
-            result = _extract_validation_detail(wrapper)
-
-        assert "Invalid configuration" in result
+        assert result is not None
         assert "count" in result
 
-    def test_non_validation_error_returns_generic(self) -> None:
-        from sova.dashboard.routers.settings import _extract_validation_detail
+    @pytest.mark.parametrize("exc", [RuntimeError("something went wrong"), Exception("oops")])
+    def test_any_other_error_has_no_detail(self, exc: Exception) -> None:
+        from sova.dashboard.config_errors import validation_detail
 
-        result = _extract_validation_detail(RuntimeError("something went wrong"))
-        assert result == "Failed to fetch configuration"
-
-    def test_generic_exception(self) -> None:
-        from sova.dashboard.routers.settings import _extract_validation_detail
-
-        result = _extract_validation_detail(Exception("oops"))
-        assert result == "Failed to fetch configuration"
+        assert validation_detail(exc) is None
 
 
 class TestSettingsRouterErrors:
@@ -962,42 +954,35 @@ class TestSettingsRouterErrors:
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
 
-    async def test_get_config_pydantic_error(self, client, monkeypatch) -> None:
-        from pydantic import BaseModel
+    async def test_unloadable_config_is_reported_in_the_payload(self, client, monkeypatch) -> None:
+        """The service answers a config it cannot load with its own payload, so neither route errors."""
 
-        class Bad(BaseModel):
-            x: int
+        def raise_missing(*_a, **_kw):
+            raise FileNotFoundError("sova.toml")
 
-        def raise_validation(*_a, **_kw):
-            Bad(x="nope")  # type: ignore[arg-type]
+        monkeypatch.setattr("sova.dashboard.services.settings_service.load_config", raise_missing)
+        flat = await client.get("/api/settings/config")
+        grouped = await client.get("/api/settings/config/grouped")
 
-        monkeypatch.setattr("sova.dashboard.services.settings_service.get_config", raise_validation)
-        resp = await client.get("/api/settings/config")
-        assert resp.status_code == 500
-        assert "Invalid configuration" in resp.json()["detail"]
+        assert flat.status_code == 200
+        assert flat.json()["config"]["_error"] == "No configuration found"
+        assert grouped.status_code == 200
+        assert grouped.json()["error"] == "No configuration found"
 
-    async def test_get_config_grouped_pydantic_error(self, client, monkeypatch) -> None:
-        from pydantic import BaseModel
-
-        class Bad(BaseModel):
-            x: int
-
-        def raise_validation(*_a, **_kw):
-            Bad(x="nope")  # type: ignore[arg-type]
-
-        monkeypatch.setattr("sova.dashboard.services.settings_service.get_config", raise_validation)
-        resp = await client.get("/api/settings/config/grouped")
-        assert resp.status_code == 500
-        assert "Invalid configuration" in resp.json()["detail"]
-
-    async def test_get_config_generic_error(self, client, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        ("target", "path"),
+        [("get_config", "/api/settings/config"), ("get_grouped_settings", "/api/settings/config/grouped")],
+    )
+    async def test_a_bug_reaches_the_catch_all_handler(self, client, monkeypatch, target: str, path: str) -> None:
         def raise_generic(*_a, **_kw):
             raise RuntimeError("disk full")
 
-        monkeypatch.setattr("sova.dashboard.services.settings_service.get_config", raise_generic)
-        resp = await client.get("/api/settings/config")
+        monkeypatch.setattr(f"sova.dashboard.services.settings_service.{target}", raise_generic)
+        resp = await client.get(path)
+
         assert resp.status_code == 500
-        assert resp.json()["detail"] == "Failed to fetch configuration"
+        assert resp.json() == {"detail": "Internal error"}
+        assert "disk full" not in resp.text
 
     async def test_update_config_server_error(self, client, monkeypatch) -> None:
         async def raise_generic(*_a, **_kw):

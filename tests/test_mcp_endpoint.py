@@ -457,7 +457,7 @@ async def test_mcp_endpoint_malformed_json_returns_32700(client: AsyncClient, mc
 
     assert response.status_code == 200
     data = response.json()
-    assert data["error"]["code"] == -32700
+    assert data["error"] == {"code": -32700, "message": "Parse error"}
     assert data["id"] is None
 
 
@@ -478,16 +478,35 @@ async def test_mcp_endpoint_non_integer_run_id_returns_32602(client: AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_mcp_endpoint_tool_value_error_returns_32000(client: AsyncClient, mcp_headers, seed_runs, monkeypatch):
+async def test_mcp_endpoint_run_not_found_returns_32000(client: AsyncClient, mcp_headers, seed_runs, monkeypatch):
     from unittest.mock import AsyncMock
 
+    from sova.dashboard.services.mcp_service import RunNotFoundError
+
     monkeypatch.setattr(
-        "sova.dashboard.routers.mcp.mcp_service.get_budget", AsyncMock(side_effect=ValueError("run not found"))
+        "sova.dashboard.routers.mcp.mcp_service.get_budget", AsyncMock(side_effect=RunNotFoundError(seed_runs[0].id))
     )
 
     data = await _call_tool(client, mcp_headers, "get_budget", {"run_id": seed_runs[0].id})
 
-    assert data["error"] == {"code": -32000, "message": "run not found"}
+    assert data["error"] == {"code": -32000, "message": f"Run {seed_runs[0].id} not found"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_endpoint_other_value_error_returns_32603_without_detail(
+    client: AsyncClient, mcp_headers, seed_runs, monkeypatch
+):
+    """A ValueError the service did not raise on purpose (a library parse) is not echoed to the agent."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "sova.dashboard.routers.mcp.mcp_service.get_budget",
+        AsyncMock(side_effect=ValueError("invalid literal for int() with base 10: 'secret'")),
+    )
+
+    data = await _call_tool(client, mcp_headers, "get_budget", {"run_id": seed_runs[0].id})
+
+    assert data["error"] == {"code": -32603, "message": "Internal error"}
 
 
 @pytest.mark.asyncio

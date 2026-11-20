@@ -13,7 +13,9 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sova.config.context import resolve_project_dir
+from sova.config.context import get_project_dir, resolve_project_dir
+from sova.dashboard.services.agent_recovery import get_synthesized_handoff
+from sova.dashboard.services.snapshot_service import get_snapshot, invalidate_snapshot, refresh_snapshot
 from sova.ipc.handoff import is_schema_valid, prune_unreadable_warnings, read_handoff_json
 from sova.utils.files import remove_stale_temp_files
 
@@ -290,3 +292,76 @@ def build_action_command(action: dict) -> dict:
         return {"type": "shell", "command": command}
 
     return {"type": "unknown", "error": f"Unknown mode: {mode}"}
+
+
+async def read_handoff(issue: str | None) -> dict:
+    """Read active handoff files, optionally filtered by issue, as ``GET /handoff`` returns them.
+
+    ``unreadable_handoffs`` lists the files that could not be parsed. ``schema_invalid_handoffs``
+    lists the files that parse as JSON objects, and are still returned in ``handoffs`` because the
+    dashboard renders legacy shapes, but fail ``DashboardHandoff`` validation: the supervisor and the
+    auto-handoff skip them, so they must not look healthy. Without ``issue`` both cover the whole
+    project; with ``issue`` they are narrowed to that issue's own file and the legacy shared
+    ``handoff.json``, so another issue's corrupt file is not reported as this one's.
+    """
+    unreadable: list[str] = []
+    schema_invalid: list[str] = []
+    all_handoffs = get_all_handoffs(unreadable_out=unreadable, schema_invalid_out=schema_invalid)
+
+    if issue:
+        # Built inline rather than via handoff_filename(): this route is polled every few seconds
+        # and that helper warns on an unsafe issue string, which here is client-controlled input.
+        own_files = {f"handoff-{issue.lstrip('#').strip()}.json", "handoff.json"}
+        unreadable = [path for path in unreadable if Path(path).name in own_files]
+        schema_invalid = [path for path in schema_invalid if Path(path).name in own_files]
+        filtered = [h for h in all_handoffs if str(h.get("issue", "")) == issue]
+    else:
+        filtered = all_handoffs
+
+    problems = {"unreadable_handoffs": unreadable, "schema_invalid_handoffs": schema_invalid}
+
+    if filtered:
+        return {"has_handoff": True, "handoff": filtered[0], "handoffs": filtered, **problems}
+    if issue:
+        return {"has_handoff": False, "handoffs": [], **problems}
+
+    synthesized = await get_synthesized_handoff()
+    if synthesized is not None:
+        return {"has_handoff": True, "handoff": synthesized, "handoffs": [synthesized], **problems}
+    return {"has_handoff": False, "handoffs": [], **problems}
+
+
+def _snapshot_project_dir() -> Path | None:
+    return get_project_dir()
+
+
+async def _build_project_handoff() -> dict:
+    return await read_handoff(None)
+
+
+async def get_handoff_snapshot() -> dict:
+    """Return the project-wide handoff from the last build; a stale one is rebuilt in the background.
+
+    The synthesized handoff can wait on GitHub, so the project-wide read never builds on the request path.
+    """
+    return (await get_snapshot("handoff", _snapshot_project_dir(), _build_project_handoff)).payload
+
+
+async def build_handoff_snapshot() -> dict:
+    """Rebuild the project-wide handoff snapshot now and return it; raises when the rebuild failed.
+
+    The status socket's producer calls this, so the snapshot ``GET /handoff`` answers from stays warm. A failed
+    rebuild raises rather than returning the previous payload: the producer then reports ``handoff_unavailable``
+    instead of passing old data off as current.
+    """
+    project_dir = _snapshot_project_dir()
+    await refresh_snapshot("handoff", project_dir, _build_project_handoff)
+    snapshot = await get_snapshot("handoff", project_dir, _build_project_handoff)
+    if snapshot.failed_at is not None:
+        raise RuntimeError(f"handoff rebuild failed: {snapshot.last_error}")
+    return snapshot.payload
+
+
+def invalidate_handoff_snapshot() -> None:
+    """Drop the project-wide snapshot after a handoff write, so the next read is built fresh."""
+    invalidate_snapshot("handoff", _snapshot_project_dir())

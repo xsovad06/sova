@@ -11,7 +11,7 @@ import pytest
 
 from sova.dashboard.routers import agents as agents_router
 from sova.dashboard.routers import handoff as handoff_router
-from sova.dashboard.services import snapshot_service
+from sova.dashboard.services import handoff_service, snapshot_service
 from sova.dashboard.services.work_item_service import normalize_work_items_for_digest
 
 
@@ -262,8 +262,8 @@ class TestHandoffEndpoint:
             return {"has_handoff": False, "handoffs": [], "n": reads}
 
         with (
-            patch.object(handoff_router, "_project_dir", return_value=tmp_path),
-            patch.object(handoff_router, "_read_handoff", read),
+            patch.object(handoff_service, "_snapshot_project_dir", return_value=tmp_path),
+            patch.object(handoff_service, "read_handoff", read),
         ):
             first = await handoff_router.get_handoff(issue=None)
             snapshot_service._snapshots[snapshot_service._key("handoff", tmp_path)].built_at -= 600
@@ -279,8 +279,8 @@ class TestHandoffEndpoint:
     async def test_a_read_for_one_issue_is_built_on_the_spot(self, tmp_path: Path) -> None:
         read = AsyncMock(return_value={"has_handoff": False, "handoffs": []})
         with (
-            patch.object(handoff_router, "_project_dir", return_value=tmp_path),
-            patch.object(handoff_router, "_read_handoff", read),
+            patch.object(handoff_service, "_snapshot_project_dir", return_value=tmp_path),
+            patch.object(handoff_service, "read_handoff", read),
         ):
             await handoff_router.get_handoff(issue="7")
             await handoff_router.get_handoff(issue="7")
@@ -290,9 +290,9 @@ class TestHandoffEndpoint:
     async def test_clearing_a_handoff_drops_the_snapshot_so_the_next_read_is_fresh(self, tmp_path: Path) -> None:
         reads = iter([{"has_handoff": True, "handoffs": [1]}, {"has_handoff": False, "handoffs": []}])
         with (
-            patch.object(handoff_router, "_project_dir", return_value=tmp_path),
-            patch.object(handoff_router, "_read_handoff", AsyncMock(side_effect=lambda issue: next(reads))),
-            patch.object(handoff_router.handoff_service, "clear_handoff", return_value=1),
+            patch.object(handoff_service, "_snapshot_project_dir", return_value=tmp_path),
+            patch.object(handoff_service, "read_handoff", AsyncMock(side_effect=lambda issue: next(reads))),
+            patch.object(handoff_service, "clear_handoff", return_value=1),
         ):
             before = await handoff_router.get_handoff(issue=None)
             await handoff_router.clear_handoff(None)
@@ -306,9 +306,9 @@ class TestHandoffEndpoint:
     ) -> None:
         reads = [{"has_handoff": False, "handoffs": []}, RuntimeError("github 502")]
         with (
-            patch.object(handoff_router, "_project_dir", return_value=tmp_path),
-            patch.object(handoff_router, "_read_handoff", AsyncMock(side_effect=reads)),
+            patch.object(handoff_service, "_snapshot_project_dir", return_value=tmp_path),
+            patch.object(handoff_service, "read_handoff", AsyncMock(side_effect=reads)),
         ):
-            assert await handoff_router.build_handoff_snapshot() == {"has_handoff": False, "handoffs": []}
+            assert await handoff_service.build_handoff_snapshot() == {"has_handoff": False, "handoffs": []}
             with pytest.raises(RuntimeError, match="handoff rebuild failed"):
-                await handoff_router.build_handoff_snapshot()
+                await handoff_service.build_handoff_snapshot()

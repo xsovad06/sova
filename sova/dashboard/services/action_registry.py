@@ -166,12 +166,16 @@ async def dismiss(project_dir: Path | None, action_id: str) -> bool:
 
 
 def _error_message(exc: BaseException) -> str:
+    """The card's text for a failed block: the route's own HTTP detail, else the catch-all handler's fixed text.
+
+    Any other exception is a bug the catch-all answers as a 500 without its text, so the card never shows more.
+    """
     if isinstance(exc, HTTPException):
         detail = exc.detail
         if isinstance(detail, dict):
             return str(detail.get("message") or detail.get("detail") or detail)
         return str(detail)
-    return str(exc) or type(exc).__name__
+    return "Internal error"
 
 
 class _Tracked:
@@ -192,7 +196,7 @@ async def tracked_action(
     """Register an action for the duration of the block: done when it returns, failed when it raises.
 
     The exception is re-raised unchanged, so the route still answers with its own error status; the failure
-    is recorded with the HTTP detail (or the exception text) as its message.
+    is recorded with the HTTP detail as its message, or "Internal error" for any other exception.
     """
     handle = _Tracked(await begin(project_dir, kind=kind, label=label, issue=issue, pr=pr))
     try:

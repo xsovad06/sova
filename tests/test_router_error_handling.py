@@ -277,6 +277,74 @@ class TestSpecRouterErrors:
             resp = await client.post("/api/spec/42/approve")
         assert resp.status_code == 409
 
+    async def test_a_failed_tracker_transition_is_a_502_and_starts_no_agent(self, client: AsyncClient) -> None:
+        from sova.dashboard.services import control_service as cs
+
+        adapter = MagicMock()
+        adapter.transition_state = AsyncMock(side_effect=RuntimeError("gh: token=abc rejected"))
+        with (
+            patch("sova.dashboard.routers.spec.spec_service.approve_spec", return_value={"status": "approved"}),
+            patch.object(cs, "complete_awaiting_approval_by_issue", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.routers.spec.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch.object(cs, "start_agent", new_callable=AsyncMock) as start,
+        ):
+            resp = await client.post("/api/spec/42/approve")
+
+        assert resp.status_code == 502
+        assert resp.json() == {"detail": "Failed to transition issue #42 to RESEARCHED"}
+        assert "token" not in resp.text
+        start.assert_not_called()
+
+    async def test_an_unloadable_config_answers_by_the_one_mapping(self, client: AsyncClient) -> None:
+        from sova.dashboard.services import control_service as cs
+
+        with (
+            patch("sova.dashboard.routers.spec.spec_service.approve_spec", return_value={"status": "approved"}),
+            patch.object(cs, "complete_awaiting_approval_by_issue", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.routers.spec.load_config", side_effect=FileNotFoundError("sova.toml")),
+        ):
+            resp = await client.post("/api/spec/42/approve")
+
+        assert resp.status_code == 400
+        assert resp.json() == {"detail": "Failed to load project config"}
+
+    @pytest.mark.parametrize("action", ["approve", "revise", "skip"])
+    async def test_an_agent_spawn_crash_reaches_the_catch_all_handler(self, client: AsyncClient, action: str) -> None:
+        from sova.dashboard.services import control_service as cs
+
+        with (
+            patch("sova.dashboard.routers.spec.spec_service.approve_spec", return_value={"status": "approved"}),
+            patch.object(cs, "complete_awaiting_approval_by_issue", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock),
+            patch.object(cs, "start_agent", new_callable=AsyncMock, side_effect=RuntimeError("spawn: /secret/path")),
+        ):
+            resp = await client.post(f"/api/spec/42/{action}")
+
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": "Internal error"}
+
+
+class TestPrBackfillConfigErrors:
+    """``POST /prs/metrics/backfill`` loads the config through ``load_config_or_http()``, not a route mapping."""
+
+    @pytest.mark.parametrize(
+        ("exc", "status", "detail"),
+        [
+            (FileNotFoundError("sova.toml"), 400, "Failed to load project config"),
+            (OSError("disk"), 503, "Failed to load configuration"),
+            (AttributeError("bug in the loader"), 500, "Internal error"),
+        ],
+    )
+    async def test_config_failures_by_cause(
+        self, client: AsyncClient, exc: Exception, status: int, detail: str
+    ) -> None:
+        with patch("sova.dashboard.routers.prs.load_config", side_effect=exc):
+            resp = await client.post("/api/prs/metrics/backfill", headers=_csrf_request_headers(client))
+
+        assert resp.status_code == status
+        assert resp.json() == {"detail": detail}
+
 
 class TestSettingsRouterErrors:
     async def test_update_config_error_chains_exception(self, client: AsyncClient) -> None:
@@ -1639,10 +1707,6 @@ class TestRoutersStayThin:
 
     _ROOT = Path(__file__).resolve().parent.parent / "sova" / "dashboard"
     _ROUTERS = ("settings.py", "supervisor.py", "agents.py")
-    # The one router-to-router import still open (the status socket's handoff message in agents.py reuses the
-    # handoff router's snapshot builder). Not fixed here: tests patch names in routers/handoff.py for both its read
-    # and its execute path. Remove the entry when the builder moves into a service; the set must never grow.
-    _KNOWN_ROUTER_IMPORTS = {("agents.py", "sova.dashboard.routers.handoff")}
 
     @classmethod
     def _violations(cls, name: str) -> list[str]:
@@ -1656,11 +1720,8 @@ class TestRoutersStayThin:
                     found.append(f"{name}:{node.lineno} calls {called}()")
             elif isinstance(node, ast.ImportFrom | ast.Import):
                 modules = [node.module or ""] if isinstance(node, ast.ImportFrom) else [a.name for a in node.names]
-                found += [
-                    f"{name}:{node.lineno} imports {m}"
-                    for m in modules
-                    if m.startswith("sova.dashboard.routers") and (name, m) not in cls._KNOWN_ROUTER_IMPORTS
-                ]
+                routers = [m for m in modules if m.startswith("sova.dashboard.routers")]
+                found += [f"{name}:{node.lineno} imports {m}" for m in routers]
         return found
 
     @pytest.mark.parametrize("name", _ROUTERS)

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
+from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.services import control_service, handoff_service, spec_service
 from sova.utils.logging import get_logger
 
@@ -15,24 +16,26 @@ log = get_logger(component="dashboard.api.spec")
 router = APIRouter(prefix="/spec", tags=["spec"])
 
 
-async def _transition_to_researched(issue_number: str) -> bool:
+async def _transition_to_researched(issue_number: str) -> None:
     """Transition issue to RESEARCHED so the developer Gate 3 check passes.
 
-    Returns True on success, False on failure.
+    A config that cannot be loaded answers by its one mapping (``load_config_or_http()``). A failed tracker
+    write is a 502 with a fixed detail, so no agent is started on an issue the tracker still shows unresearched.
     """
-    try:
-        from sova.adapters import create_adapter
-        from sova.adapters.base import TaskState
+    from sova.adapters import create_adapter
+    from sova.adapters.base import AdapterError, TaskState
 
-        project_dir = get_project_dir()
-        cfg = load_config(project_dir)
+    project_dir = get_project_dir()
+    cfg = load_config_or_http(lambda: load_config(project_dir), event="spec.transition_researched_config_error")
+    try:
         adapter = create_adapter(cfg)
         await adapter.transition_state(issue_number, TaskState.RESEARCHED)
-        log.info("spec.transition_researched", issue=issue_number)
-        return True
-    except Exception:  # noqa: BLE001 (config load, adapter construction and tracker call each fail differently)
+    except (AdapterError, RuntimeError, OSError) as exc:
         log.warning("spec.transition_researched_failed", issue=issue_number, exc_info=True)
-        return False
+        raise HTTPException(
+            status_code=502, detail=f"Failed to transition issue #{issue_number} to RESEARCHED"
+        ) from exc
+    log.info("spec.transition_researched", issue=issue_number)
 
 
 class ApproveRequest(BaseModel):
@@ -88,15 +91,10 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
     if updated_run_id:
         log.info("spec.approve.taskrun_completed", issue=issue_number, run_id=updated_run_id)
 
-    if not await _transition_to_researched(issue_number):
-        raise HTTPException(status_code=500, detail=f"Failed to transition issue #{issue_number} to RESEARCHED")
+    await _transition_to_researched(issue_number)
 
     # Spawn developer agent, then clear handoff only on success
-    try:
-        agent_result = await control_service.start_agent(issue_number, role="developer")
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("spec.approve.agent_spawn_failed", issue=issue_number, exc_info=True)
-        raise
+    agent_result = await control_service.start_agent(issue_number, role="developer")
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
         detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
         raise HTTPException(status_code=409, detail=detail)
@@ -114,11 +112,7 @@ async def revise_spec(issue_number: str) -> dict:
         log.info("spec.revise.taskrun_rejected", issue=issue_number, run_id=updated_run_id)
 
     # Respawn researcher to re-run /spec, then clear handoff on success
-    try:
-        agent_result = await control_service.start_agent(issue_number, role="researcher")
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("spec.revise.agent_spawn_failed", issue=issue_number, exc_info=True)
-        raise
+    agent_result = await control_service.start_agent(issue_number, role="researcher")
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
         detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
         raise HTTPException(status_code=409, detail=detail)
@@ -134,14 +128,9 @@ async def skip_spec(issue_number: str) -> dict:
     if updated_run_id:
         log.info("spec.skip.taskrun_completed", issue=issue_number, run_id=updated_run_id)
 
-    if not await _transition_to_researched(issue_number):
-        raise HTTPException(status_code=500, detail=f"Failed to transition issue #{issue_number} to RESEARCHED")
+    await _transition_to_researched(issue_number)
     # Spawn developer without spec, then clear handoff on success
-    try:
-        agent_result = await control_service.start_agent(issue_number, role="developer")
-    except Exception:  # noqa: BLE001 (logged then re-raised; the router turns it into a 500)
-        log.warning("spec.skip.agent_spawn_failed", issue=issue_number, exc_info=True)
-        raise
+    agent_result = await control_service.start_agent(issue_number, role="developer")
     if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
         detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
         raise HTTPException(status_code=409, detail=detail)

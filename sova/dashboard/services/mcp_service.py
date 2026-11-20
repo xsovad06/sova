@@ -27,6 +27,17 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dashboard.mcp")
 
 
+class RunNotFoundError(ValueError):
+    """A tool was asked about a run the database does not hold.
+
+    ``user_message`` is the text the JSON-RPC error carries; the endpoint never sends ``str()`` of an exception.
+    """
+
+    def __init__(self, run_id: int) -> None:
+        self.user_message = f"Run {run_id} not found"
+        super().__init__(self.user_message)
+
+
 def generate_mcp_token(run_id: int, secret: str, expiry_hours: int = 24) -> str:
     """Generate a run-scoped HMAC token for MCP authentication.
 
@@ -128,7 +139,7 @@ async def get_run_status(run_id: int, project_dir: Path | None = None) -> dict:
         result = await session.execute(select(TaskRun).where(TaskRun.id == run_id))
         run = result.scalar_one_or_none()
         if not run:
-            raise ValueError(f"Run {run_id} not found")
+            raise RunNotFoundError(run_id)
 
         elapsed = 0.0
         if run.started_at:
@@ -174,7 +185,7 @@ async def get_budget(run_id: int, project_dir: Path | None = None) -> dict:
         result = await session.execute(select(TaskRun).where(TaskRun.id == run_id))
         run = result.scalar_one_or_none()
         if not run:
-            raise ValueError(f"Run {run_id} not found")
+            raise RunNotFoundError(run_id)
 
         cfg = load_config(project_dir)
         run_limit = Decimal(str(cfg.agent.max_budget))
@@ -254,7 +265,7 @@ async def get_pr_status(run_id: int, project_dir: Path | None = None) -> dict:
         result = await session.execute(select(TaskRun).where(TaskRun.id == run_id))
         run = result.scalar_one_or_none()
         if not run:
-            raise ValueError(f"Run {run_id} not found")
+            raise RunNotFoundError(run_id)
 
         pr_number = run.pr_number
         if not pr_number:
@@ -302,7 +313,7 @@ async def get_issue_context(run_id: int, project_dir: Path | None = None) -> dic
         result = await session.execute(select(TaskRun).where(TaskRun.id == run_id))
         run = result.scalar_one_or_none()
         if not run:
-            raise ValueError(f"Run {run_id} not found")
+            raise RunNotFoundError(run_id)
 
         issue_number = run.issue_number
         if not issue_number:
@@ -351,7 +362,7 @@ async def list_run_history(run_id: int, project_dir: Path | None = None) -> list
         result = await session.execute(select(TaskRun).where(TaskRun.id == run_id))
         run = result.scalar_one_or_none()
         if not run:
-            raise ValueError(f"Run {run_id} not found")
+            raise RunNotFoundError(run_id)
 
         if not run.issue_number:
             return []
