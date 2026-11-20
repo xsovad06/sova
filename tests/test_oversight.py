@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from structlog.testing import capture_logs
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRunStatus
@@ -79,7 +80,11 @@ class TestOversightAgent:
     async def test_stop_when_not_started(self) -> None:
         cfg = OversightConfig(wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
-        await agent.stop()  # should not raise
+        with capture_logs() as logs:
+            await agent.stop()
+
+        assert agent._task is None
+        assert [e["event"] for e in logs] == []
 
     @pytest.mark.asyncio
     async def test_cycle_records_done(self) -> None:
@@ -371,9 +376,12 @@ class TestOversightAgent:
         cfg = OversightConfig(wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
-        with patch("sova.oversight.agent.get_session", side_effect=RuntimeError("DB gone")):
-            # Should not raise
+        with capture_logs() as logs, patch("sova.oversight.agent.get_session", side_effect=RuntimeError("DB gone")):
             await agent._record_run("test-uuid", 1, OversightRunStatus.DONE, 42)
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["oversight.record_failed"]
+        assert warnings[0]["run_id"] == "test-uuid"
 
 
 # ---------------------------------------------------------------------------
@@ -768,10 +776,13 @@ class TestOversightActionWiring:
         mock_config.task_source = TaskSourceConfig(type="github")
 
         with (
+            capture_logs() as logs,
             patch("sova.oversight.agent.load_config", return_value=mock_config),
             patch("sova.adapters.create_adapter", side_effect=RuntimeError("adapter boom")),
         ):
             await agent._propose_issues([finding])
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["oversight.actions.failed"]
 
 
 # ---------------------------------------------------------------------------
@@ -1026,8 +1037,12 @@ class TestRunRowLifecycle:
         from datetime import datetime, timezone
 
         agent = OversightAgent(config=OversightConfig(wake_interval_minutes=1))
-        with patch("sova.oversight.agent.get_session", side_effect=exc):
-            await agent._start_run("run-x", 1, datetime.now(timezone.utc))  # Should not raise
+        with capture_logs() as logs, patch("sova.oversight.agent.get_session", side_effect=exc):
+            await agent._start_run("run-x", 1, datetime.now(timezone.utc))
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["oversight.start_run_failed"]
+        assert warnings[0]["run_id"] == "run-x"
 
     @pytest.mark.asyncio
     async def test_cancelled_cycle_updates_the_running_row(

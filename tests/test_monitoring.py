@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import psutil
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from sova.monitoring.collector import ResourceCollector
 from sova.monitoring.models import ResourceSample, ResourceSummary
@@ -894,6 +895,10 @@ class TestResourceWriter:
 
     @pytest.mark.asyncio
     async def test_close_is_idempotent(self, session: AsyncSession) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSampleRecord
+        from sova.db.session import get_session
         from sova.monitoring.writer import ResourceWriter
 
         await _create_run(session, 2)
@@ -910,7 +915,16 @@ class TestResourceWriter:
             )
         )
         await writer.close()
-        await writer.close()  # should not raise
+        await writer.close()
+
+        async with await get_session() as s:
+            async with s.begin():
+                rows = (
+                    (await s.execute(select(ResourceSampleRecord).where(ResourceSampleRecord.task_run_id == 2)))
+                    .scalars()
+                    .all()
+                )
+        assert len(rows) == 1
 
     @pytest.mark.asyncio
     async def test_add_sample_after_close_ignored(self) -> None:
@@ -1033,7 +1047,10 @@ class TestResourceWriter:
         from sova.monitoring.writer import ResourceWriter
 
         writer = ResourceWriter(project_dir=None, run_id=1)
-        await writer.flush()  # should not raise
+        with patch("sova.monitoring.writer.get_session") as mock_get_session:
+            await writer.flush()
+
+        mock_get_session.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1257,7 +1274,10 @@ class TestLifecycleResourceIntegration:
         mock_process = MagicMock()
         mock_process.pid = 999
         agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
-        await _finalize_resource_monitoring(agent)  # should not raise
+        with capture_logs() as logs:
+            await _finalize_resource_monitoring(agent)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == []
 
     @pytest.mark.asyncio
     async def test_finalize_resource_monitoring_full(self, session: AsyncSession) -> None:
@@ -1374,7 +1394,10 @@ class TestLifecycleResourceIntegration:
             raise RuntimeError("boom")
 
         with patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", side_effect=_sleep_then_raise):
-            await _resource_flush_loop(agent)  # should return via except branch, not raise
+            with capture_logs() as logs:
+                await _resource_flush_loop(agent)
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["resource_flush_loop.failed"]
 
     @pytest.mark.asyncio
     async def test_start_resource_monitoring_enabled(self, tmp_path: Path) -> None:
@@ -1506,8 +1529,10 @@ class TestLifecycleResourceIntegration:
         agent.resource_collector = mock_collector
         agent.resource_writer = MagicMock()
 
-        # Should not raise
-        await _finalize_resource_monitoring(agent)
+        with capture_logs() as logs:
+            await _finalize_resource_monitoring(agent)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["resource_monitoring.finalize_failed"]
 
     @pytest.mark.asyncio
     async def test_resource_flush_loop_drains_and_flushes(self) -> None:
@@ -1621,7 +1646,10 @@ class TestResourceWriterErrorPaths:
         summary = ResourceSummary.empty()
 
         with patch("sova.monitoring.writer.get_session", side_effect=RuntimeError("db down")):
-            await writer.write_summary(summary)  # should not raise
+            with capture_logs() as logs:
+                await writer.write_summary(summary)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["resource_writer.summary_failed"]
 
     @pytest.mark.asyncio
     async def test_cleanup_failure_returns_zero(self) -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, RolesConfig
 from sova.core.agent_dispatch import (
@@ -1393,7 +1394,12 @@ class TestStopQuietlyShieldsCleanupFromCancellation:
         with patch("sova.core.agent_dispatch._STOP_QUIETLY_TIMEOUT_SECONDS", 0.05):
             # Must return normally (the timeout is caught and logged), never
             # propagate as an unhandled TimeoutError out of _stop_quietly().
-            await _stop_quietly(_HangingProc(), runtime, cause="agent_dispatch_timeout")
+            with capture_logs() as logs:
+                await _stop_quietly(_HangingProc(), runtime, cause="agent_dispatch_timeout")
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["agent_dispatch.stop_failed"]
+        assert warnings[0]["cause"] == "agent_dispatch_timeout"
 
 
 class TestTaskTypeModelCompatibilityFallback:

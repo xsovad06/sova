@@ -701,7 +701,7 @@ _LLM_PROVIDER_LABELS: dict[str, str] = {
 # Must match sova/config/models.py:_VENDOR_MODEL_EXAMPLES exactly, as
 # _LLM_PROVIDER_LABELS/_RUNTIME_LABELS above must match the LLMConfig.provider
 # and AgentConfig.runtime Literals (all three pinned by
-# tests/test_dashboard.py::TestConnectionsAPI::test_catalog_tables_match_config).
+# tests/test_connections_api.py::TestConnectionsAPI::test_catalog_tables_match_config).
 _LLM_MODEL_REQUIRED = frozenset({"openai", "ollama", "vertex"})
 
 _RUNTIME_LABELS: dict[str, str] = {

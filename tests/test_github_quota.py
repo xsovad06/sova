@@ -6,6 +6,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.supervisor.github_quota import (
     GitHubQuotaTracker,
@@ -178,16 +179,20 @@ class TestEmitEvents:
 
     @pytest.mark.asyncio
     async def test_emit_hit_event_static_method_catches_import_error(self) -> None:
-        with patch(
-            "sova.supervisor.github_quota.GitHubQuotaTracker._emit_hit_event",
-            wraps=GitHubQuotaTracker._emit_hit_event,
+        with (
+            patch("sova.dashboard.services.feed_service.emit_safe", side_effect=ImportError("boom")),
+            capture_logs() as logs,
         ):
             GitHubQuotaTracker._emit_hit_event()
 
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["emit_hit_event.failed"]
+
     @pytest.mark.asyncio
     async def test_emit_recovery_event_static_method_catches_import_error(self) -> None:
-        with patch(
-            "sova.supervisor.github_quota.GitHubQuotaTracker._emit_recovery_event",
-            wraps=GitHubQuotaTracker._emit_recovery_event,
+        with (
+            patch("sova.dashboard.services.feed_service.emit_safe", side_effect=ImportError("boom")),
+            capture_logs() as logs,
         ):
             GitHubQuotaTracker._emit_recovery_event()
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["emit_recovery_event.failed"]

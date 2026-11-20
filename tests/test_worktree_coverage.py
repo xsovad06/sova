@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.git.worktree import (
     WORKTREE_DIR,
@@ -141,8 +142,11 @@ class TestCopyClaudeArtifacts:
         (project / "CLAUDE.md").write_text("# Instructions")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        with patch("sova.git.worktree.shutil.copy2", side_effect=OSError("denied")):
+        with capture_logs() as logs, patch("sova.git.worktree.shutil.copy2", side_effect=OSError("denied")):
             _copy_claude_artifacts(project, worktree)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["worktree.copy_claude_md.failed"]
+        assert not (worktree / "CLAUDE.md").exists()
 
     def test_handles_copytree_error(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -152,8 +156,13 @@ class TestCopyClaudeArtifacts:
         (claude_dir / "commands" / "dev.md").write_text("cmd")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        with patch("sova.git.worktree.shutil.copytree", side_effect=OSError("denied")):
+        with capture_logs() as logs, patch("sova.git.worktree.shutil.copytree", side_effect=OSError("denied")):
             _copy_claude_artifacts(project, worktree)
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["worktree.copy_claude_dir.failed"]
+        assert warnings[0]["dir"] == "commands"
+        assert not (worktree / ".claude" / "commands" / "dev.md").exists()
 
     def test_handles_copy_file_error(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -162,8 +171,13 @@ class TestCopyClaudeArtifacts:
         (claude_dir / "settings.json").write_text("{}")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        with patch("sova.git.worktree.shutil.copy2", side_effect=OSError("denied")):
+        with capture_logs() as logs, patch("sova.git.worktree.shutil.copy2", side_effect=OSError("denied")):
             _copy_claude_artifacts(project, worktree)
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["worktree.copy_claude_file.failed"]
+        assert warnings[0]["file"] == "settings.json"
+        assert not (worktree / ".claude" / "settings.json").exists()
 
     def test_skips_claude_md_when_already_exists(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -239,7 +253,11 @@ class TestCopyWorktreeFilesTraversal:
         project.mkdir()
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        _copy_worktree_files(project, worktree, ["missing.txt"])
+        with capture_logs() as logs:
+            _copy_worktree_files(project, worktree, ["missing.txt"])
+
+        assert list(worktree.iterdir()) == []
+        assert [e for e in logs if e["log_level"] == "warning"] == []
 
     def test_copies_valid_file(self, tmp_path: Path) -> None:
         project = tmp_path / "project"

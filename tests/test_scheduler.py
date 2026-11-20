@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, WatchConfig
@@ -1862,8 +1863,11 @@ class TestSOVAServerEdgeCases:
         config = _make_config(server={"pid_file": str(pid_file)})
         server = SOVAServer(config=config)
 
-        # Should not raise
-        server._remove_pid_file()
+        with capture_logs() as logs:
+            server._remove_pid_file()
+
+        assert not pid_file.exists()
+        assert [e for e in logs if e["log_level"] == "warning"] == []
 
     async def test_remove_pid_file_oserror_is_swallowed(self, tmp_path: Path) -> None:
         """_remove_pid_file() logs but does not raise on OSError."""
@@ -1874,8 +1878,13 @@ class TestSOVAServerEdgeCases:
         config = _make_config(server={"pid_file": str(pid_file)})
         server = SOVAServer(config=config)
 
-        with patch.object(Path, "unlink", side_effect=OSError("permission denied")):
-            server._remove_pid_file()  # should not raise
+        with capture_logs() as logs, patch.object(Path, "unlink", side_effect=OSError("permission denied")):
+            server._remove_pid_file()
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["pid.remove_failed"]
+        assert warnings[0]["path"] == str(pid_file)
+        assert pid_file.exists()
 
     async def test_health_check_agents_active_exception(self) -> None:
         """Health endpoint returns agents_active=0 when import fails."""

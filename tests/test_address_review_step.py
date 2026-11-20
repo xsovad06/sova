@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import TaskState
 from sova.config.models import RolesConfig
@@ -562,8 +563,11 @@ class TestAddressReviewStepClearsStaleVerdictLabel:
         execution_context.adapter = None
         step = AddressReviewStep()
 
-        # Must not raise AttributeError from a None adapter.
-        await step._clear_stale_verdict_label(execution_context)
+        # A None adapter must short-circuit: an AttributeError would be swallowed and surface as a warning.
+        with capture_logs() as logs:
+            await step._clear_stale_verdict_label(execution_context)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == []
 
     @pytest.mark.asyncio
     async def test_label_removal_failure_is_non_fatal(

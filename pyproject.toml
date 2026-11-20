@@ -144,7 +144,7 @@ filterwarnings = [
     # (the AsyncMock case alone) fails tests on pre-existing leaks, none of
     # them a test double: 'create_subprocess_exec' (tests/test_ipc.py),
     # '_ConnectionManager._produce_loop'
-    # (tests/test_dashboard.py's websocket tests) and 'Queue.get' (garbage
+    # (tests/test_dashboard_app.py's websocket tests) and 'Queue.get' (garbage
     # collected during the setup of a tests/test_output_stream_service.py test,
     # so leaked by an earlier test on the same xdist worker, not yet traced).
     # Fix those, then narrow this entry to the AsyncMock message.

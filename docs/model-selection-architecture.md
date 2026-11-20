@@ -985,7 +985,7 @@ flag" design above. With the flag off (the default), `_try_step_with_retries()` 
 the `"billing_exhausted"` status that would trigger `_advance_fallback`, so the method is live
 code guarded by a flag, not dead code: flipping `engine_owned_fallback` back on is the documented
 rollback path to the legacy engine-driven advance, exercised by the
-`llm={"engine_owned_fallback": True}` cases in `tests/test_core.py` and by
+`llm={"engine_owned_fallback": True}` cases in `tests/test_workflow_engine.py` and by
 `tests/test_llm_fallback_loop.py`. It is kept, not removed, exactly per this file's Q5 design.
 
 **Audit note (#924): rebase consensus resolution is gated on `is_anthropic_capable()`.**

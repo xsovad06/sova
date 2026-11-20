@@ -46,9 +46,13 @@ def test_doctor_command_defaults_to_the_current_directory(tmp_path: Path) -> Non
     mock_run.assert_called_once_with(tmp_path.resolve())
 
 
-def test_render_results_all_pass() -> None:
+def test_render_results_all_pass(capsys: pytest.CaptureFixture[str]) -> None:
     checks = [DiagnosticCheck("test", True, "ok", True)]
     _render_results(checks)
+
+    err = capsys.readouterr().err
+    assert "OK" in err
+    assert "All required checks passed." in err
 
 
 def test_render_results_required_failure() -> None:
@@ -57,6 +61,10 @@ def test_render_results_required_failure() -> None:
         _render_results(checks)
 
 
-def test_render_results_optional_warning() -> None:
+def test_render_results_optional_warning(capsys: pytest.CaptureFixture[str]) -> None:
     checks = [DiagnosticCheck("test", False, "warn", False)]
     _render_results(checks)
+
+    err = capsys.readouterr().err
+    assert "WARN" in err
+    assert "All required checks passed." in err

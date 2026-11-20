@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.git.rebase import (
     _build_file_resolution_prompt,
@@ -168,7 +169,11 @@ class TestConfigureDiff3:
     @patch("sova.git.rebase.run", new_callable=AsyncMock)
     async def test_failure_logged_not_raised(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = MagicMock(success=False, stderr="error")
-        await _configure_diff3(Path("/fake"))
+
+        with capture_logs() as logs:
+            await _configure_diff3(Path("/fake"))
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["git.rebase.diff3_config_failed"]
 
 
 class TestResolveFileWithConsensus:

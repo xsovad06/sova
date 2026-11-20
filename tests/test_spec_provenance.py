@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 # Uses the shared per-worker in-memory DB, emptied before each test
 # (see ``tests/conftest.py:reset_db_rows``).
@@ -154,8 +155,13 @@ async def test_develop_no_spec_silently_skips(tmp_path: Path) -> None:
 
     ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
 
-    # Should not raise, even with no spec
-    await _append_implementation_notes(ctx)
+    mock_invoke = AsyncMock()
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke):
+        await _append_implementation_notes(ctx)
+
+    mock_invoke.assert_not_called()
+    assert not (tmp_path / ".claude" / "specs").exists()
 
 
 async def test_develop_llm_failure_nonfatal(tmp_path: Path) -> None:
@@ -975,8 +981,10 @@ def test_reviewer_rationale_exception_nonfatal(tmp_path: Path) -> None:
         "sova.core.steps._spec_helpers.append_spec_section",
         side_effect=OSError("disk full"),
     ):
-        # Should not raise
-        reviewer._append_review_rationale(ctx, review)
+        with capture_logs() as logs:
+            reviewer._append_review_rationale(ctx, review)
+
+    assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.review_rationale_failed"]
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.config.models import NotificationConfig
 from sova.db.models import TaskRun
@@ -793,8 +794,11 @@ class TestMarkCrashed:
         from sova.ipc.control import mark_crashed
 
         session = await get_session()
-        # Should not raise
-        await mark_crashed(99999, "crash", session)
+        with capture_logs() as logs:
+            await mark_crashed(99999, "crash", session)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["mark_crashed.not_found"]
+        assert [e["event"] for e in logs if e["log_level"] == "info"] == []
 
 
 class TestProcessTracker:
@@ -1002,9 +1006,12 @@ class TestNotify:
 
         config = NotificationConfig(desktop=True)
         with patch("sova.ipc.notifications.send_desktop_notification", side_effect=Exception("boom")):
-            # Should not raise: fire-and-forget
-            notify(config, "Title", "Body")
-            await asyncio.sleep(0)
+            # Fire-and-forget: the failure surfaces as a warning from the background task, not an exception.
+            with capture_logs() as logs:
+                notify(config, "Title", "Body")
+                await asyncio.sleep(0)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["notify.desktop_failed"]
 
     async def test_notify_is_fire_and_forget(self) -> None:
         """Verify notify() returns immediately without awaiting delivery."""
@@ -1094,9 +1101,12 @@ class TestEmailNotification:
             email_smtp_host="smtp.example.com",
         )
 
-        with patch("sova.ipc.notifications.send_email_notification", side_effect=Exception("SMTP error")):
+        with patch("sova.ipc.notifications.smtplib.SMTP", side_effect=OSError("SMTP error")):
             coro = send_email_notification(config, "Title", "Body")
-            await _safe_notify("notify.email_failed", coro, "Title")
+            with capture_logs() as logs:
+                await _safe_notify("notify.email_failed", coro, "Title")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["notify.email_failed"]
 
 
 class TestWebhookNotification:
@@ -1129,9 +1139,12 @@ class TestWebhookNotification:
     async def test_send_webhook_notification_error_logged(self) -> None:
         from sova.ipc.notifications import _safe_notify, send_webhook_notification
 
-        with patch("sova.ipc.notifications.send_webhook_notification", side_effect=Exception("HTTP error")):
+        with patch("sova.ipc.notifications.httpx.AsyncClient", side_effect=Exception("HTTP error")):
             coro = send_webhook_notification("https://example.com", "", "Title", "Body")
-            await _safe_notify("notify.webhook_failed", coro, "Title")
+            with capture_logs() as logs:
+                await _safe_notify("notify.webhook_failed", coro, "Title")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["notify.webhook_failed"]
 
 
 class TestNotifyDispatcher:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -666,11 +666,13 @@ class TestMaintainQueueCostControlGates:
             Task(id="30", title="z", state=TaskState.RESEARCHED),
         ]
 
-        def exploding_factory():
-            raise AssertionError("session_factory must not be called when there is nothing to resolve")
+        # A raising factory would be swallowed by the fail-open lookup, so assert on the call record instead.
+        session_factory = MagicMock(side_effect=AssertionError("must not be called when there is nothing to resolve"))
 
         with patch("sova.config.db_loader.save_task_queue", new_callable=_echo_save):
-            await maintain_queue(adapter, cfg, tmp_path, session_factory=exploding_factory, project_slug="test/repo")
+            await maintain_queue(adapter, cfg, tmp_path, session_factory=session_factory, project_slug="test/repo")
+
+        session_factory.assert_not_called()
 
 
 class TestMaintainQueueLocalAssessment:

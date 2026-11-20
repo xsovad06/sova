@@ -2750,14 +2750,36 @@ class TestResolveSovaVerdict:
         assert calls == 2
 
     def test_invalidate_verdict_is_a_noop_without_a_cache_entry(self) -> None:
-        from sova.dashboard.services.work_verdict import invalidate_verdict
+        from sova.dashboard.services.work_verdict import (
+            _cache_get,
+            _cache_put,
+            clear_verdict_cache,
+            invalidate_verdict,
+        )
 
-        invalidate_verdict(None, 9999)  # must not raise
+        clear_verdict_cache()
+        _cache_put(None, 60, {"has_sova_review": True, "verdict": "approve"})
+
+        invalidate_verdict(None, 9999)
+
+        assert _cache_get(None, 60) == {"has_sova_review": True, "verdict": "approve"}
+        clear_verdict_cache()
 
     def test_invalidate_verdict_is_a_noop_when_pr_number_is_none(self) -> None:
-        from sova.dashboard.services.work_verdict import invalidate_verdict
+        from sova.dashboard.services.work_verdict import (
+            _cache_get,
+            _cache_put,
+            clear_verdict_cache,
+            invalidate_verdict,
+        )
 
-        invalidate_verdict(None, None)  # must not raise
+        clear_verdict_cache()
+        _cache_put(None, 60, {"has_sova_review": True, "verdict": "approve"})
+
+        invalidate_verdict(None, None)
+
+        assert _cache_get(None, 60) == {"has_sova_review": True, "verdict": "approve"}
+        clear_verdict_cache()
 
 
 class TestPrewarmVerdictCache:
@@ -2765,7 +2787,7 @@ class TestPrewarmVerdictCache:
 
     @pytest.mark.asyncio
     async def test_no_login_to_trust_skips_prewarm_entirely(self, monkeypatch) -> None:
-        from sova.dashboard.services.work_verdict import _prewarm_verdict_cache, clear_verdict_cache
+        from sova.dashboard.services.work_verdict import _cache_get, _prewarm_verdict_cache, clear_verdict_cache
 
         clear_verdict_cache()
 
@@ -2779,7 +2801,10 @@ class TestPrewarmVerdictCache:
         monkeypatch.setattr("sova.git.pr.get_pr_review_data", fake_get_pr_review_data)
         adapter = MagicMock(repo="owner/repo", github_user="")
 
-        await _prewarm_verdict_cache([1, 2], project_dir=None, adapter=adapter)  # must not raise
+        await _prewarm_verdict_cache([1, 2], project_dir=None, adapter=adapter)
+
+        assert _cache_get(None, 1) is None
+        assert _cache_get(None, 2) is None
 
 
 class TestFetchSovaVerdictsBatch:
@@ -4036,7 +4061,12 @@ class TestBoundedGraphLoad:
 
     @pytest.mark.asyncio
     async def test_cancel_graph_builds_is_a_no_op_without_a_build(self) -> None:
+        from sova.dashboard.services import work_item_service
+
         await cancel_graph_builds()
+
+        assert not work_item_service._graph_builds
+        assert not work_item_service._retired_graph_builds
 
 
 class TestForgetGraph:

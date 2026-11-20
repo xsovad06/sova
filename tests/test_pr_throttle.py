@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
+from structlog.testing import capture_logs
 
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.core.state import TASK_RUN_TERMINAL
@@ -1701,7 +1702,10 @@ class TestRunPostCreateSideEffects:
     async def test_assign_failure_logged_not_raised(self) -> None:
         from sova.supervisor.pr_throttle import run_post_create_side_effects
 
-        with patch("sova.git.operations.assign_pr", new_callable=AsyncMock, side_effect=RuntimeError):
+        with (
+            patch("sova.git.operations.assign_pr", new_callable=AsyncMock, side_effect=RuntimeError),
+            capture_logs() as logs,
+        ):
             await run_post_create_side_effects(
                 pr_number=1,
                 issue_number=None,
@@ -1709,12 +1713,17 @@ class TestRunPostCreateSideEffects:
                 github_user="testuser",
             )
 
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["pr_throttle.assign_failed"]
+        assert warnings[0]["pr"] == 1
+
     async def test_tracker_update_failure_logged_not_raised(self) -> None:
         from sova.supervisor.pr_throttle import run_post_create_side_effects
 
         with (
             patch("sova.git.operations.assign_pr", new_callable=AsyncMock),
             patch("sova.adapters.create_adapter", side_effect=RuntimeError("no adapter")),
+            capture_logs() as logs,
         ):
             await run_post_create_side_effects(
                 pr_number=1,
@@ -1722,6 +1731,10 @@ class TestRunPostCreateSideEffects:
                 repo="owner/repo",
                 github_user="testuser",
             )
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["pr_throttle.tracker_update_failed"]
+        assert warnings[0]["pr"] == 1
 
     async def test_no_github_user_skips_assign(self) -> None:
         from sova.supervisor.pr_throttle import run_post_create_side_effects
@@ -2032,17 +2045,24 @@ class TestHeartbeat:
         assert throttle_loop_alive(tmp_path) is False
 
     def test_clear_without_a_heartbeat_is_a_noop(self, tmp_path: Path) -> None:
-        from sova.supervisor.pr_throttle import clear_heartbeat
+        from sova.supervisor.pr_throttle import clear_heartbeat, heartbeat_path
 
-        clear_heartbeat(tmp_path)
+        with capture_logs() as logs:
+            clear_heartbeat(tmp_path)
+
+        assert [e for e in logs if e["log_level"] == "warning"] == []
+        assert not heartbeat_path(tmp_path).exists()
 
     def test_clear_failure_is_swallowed(self, tmp_path: Path) -> None:
         """An unremovable heartbeat is logged; shutdown must still complete."""
-        from sova.supervisor.pr_throttle import clear_heartbeat, touch_heartbeat
+        from sova.supervisor.pr_throttle import clear_heartbeat, heartbeat_path, touch_heartbeat
 
         touch_heartbeat(tmp_path)
-        with patch("pathlib.Path.unlink", side_effect=PermissionError("denied")):
+        with patch("pathlib.Path.unlink", side_effect=PermissionError("denied")), capture_logs() as logs:
             clear_heartbeat(tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["pr_throttle.heartbeat_clear_failed"]
+        assert heartbeat_path(tmp_path).exists()
 
     def test_touch_stamps_the_owner_into_the_file(self, tmp_path: Path) -> None:
         from sova.supervisor.pr_throttle import heartbeat_path, throttle_loop_alive, touch_heartbeat

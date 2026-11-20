@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import LdapConfig, ProjectConfig, RolesConfig
@@ -7293,12 +7294,13 @@ class TestReviewerExceptionPaths:
         finding = ReviewFinding(file="a.py", severity=8, category="bug", description="Bad")
         review = ReviewResult(findings=[finding], summary="Issues found", total_cost=0)
 
-        with patch(
-            "sova.core.steps._spec_helpers.append_spec_section",
-            side_effect=OSError("write failed"),
+        with (
+            patch("sova.core.steps._spec_helpers.append_spec_section", side_effect=OSError("write failed")),
+            capture_logs() as logs,
         ):
-            # Should not raise
             role._append_review_rationale(ctx, review)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.review_rationale_failed"]
 
     async def test_write_verdict_label_calls_adapter(self, tmp_path: Path) -> None:
         """_write_verdict_label adds sova:{verdict} label and removes stale ones."""
@@ -7328,8 +7330,10 @@ class TestReviewerExceptionPaths:
         ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
-        # Should not raise
-        await role._write_verdict_label(ctx, review)
+        with capture_logs() as logs:
+            await role._write_verdict_label(ctx, review)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.verdict_label_failed"]
 
     async def test_write_verdict_label_skipped_when_no_issue(self, tmp_path: Path) -> None:
         """_write_verdict_label is a no-op when issue_number is missing."""
@@ -7359,10 +7363,13 @@ class TestReviewerExceptionPaths:
 
         with (
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock, side_effect=SQLAlchemyError("DB down")),
-            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
+            capture_logs() as logs,
         ):
-            # Should not raise
             await role._write_handoff(ctx, review)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.handoff_db_failed"]
+        mock_file_handoff.assert_called_once()
 
     async def test_write_handoff_file_exception_non_fatal(self, tmp_path: Path) -> None:
         """_write_handoff handles file write failure gracefully (lines 783-784)."""
@@ -7374,9 +7381,13 @@ class TestReviewerExceptionPaths:
         ctx = _make_ctx(tmp_path, role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
         review = ReviewResult(findings=[], summary="OK", total_cost=0)
 
-        with patch("sova.roles.reviewer.write_handoff_file", side_effect=OSError("disk full")):
-            # Should not raise
+        with (
+            patch("sova.roles.reviewer.write_handoff_file", side_effect=OSError("disk full")),
+            capture_logs() as logs,
+        ):
             await role._write_handoff(ctx, review)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.handoff_file_failed"]
 
     async def test_write_handoff_advisory_only_approves_but_keeps_pending_findings(self, tmp_path: Path) -> None:
         """A review whose only findings are advisory (below revise_severity) must
@@ -8263,9 +8274,13 @@ class TestPlannerRole:
                 rationale="r",
             ),
         ]
-        with patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock, side_effect=OSError("disk full")):
-            # Should not raise
+        with (
+            patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock, side_effect=OSError("disk full")),
+            capture_logs() as logs,
+        ):
             await role._write_handoff(ctx, tasks)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["planner.file_handoff_failed"]
 
     async def test_write_handoff_db_path(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -8316,11 +8331,14 @@ class TestPlannerRole:
             ),
         ]
         with (
-            patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock),
+            patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock) as mock_write_file,
             patch("sova.roles.planner.write_handoff", new=AsyncMock(side_effect=RuntimeError("DB down"))),
+            capture_logs() as logs,
         ):
-            # Should not raise
             await role._write_handoff(ctx, tasks)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["planner.db_handoff_failed"]
+        mock_write_file.assert_called_once()
 
     async def test_execute_happy_path_writes_handoff_with_issue(self, tmp_path: Path) -> None:
         from unittest.mock import MagicMock, patch

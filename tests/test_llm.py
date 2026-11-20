@@ -2203,7 +2203,8 @@ class TestAssertCommandExists:
         cmd_dir = tmp_path / ".claude" / "commands"
         cmd_dir.mkdir(parents=True)
         (cmd_dir / "develop.md").write_text("# develop")
-        _assert_command_exists("/develop", tmp_path)
+
+        assert _assert_command_exists("/develop", tmp_path) == cmd_dir / "develop.md"
 
     def test_command_file_missing(self, tmp_path: Path) -> None:
         from sova.llm.provider import _assert_command_exists
@@ -2250,7 +2251,10 @@ class TestAssertCommandExists:
 
         with patch("sova.llm.provider._resolve_primary_root", return_value=primary):
             with patch("sova.git.worktree.ensure_claude_artifacts", side_effect=fake_ensure):
-                _assert_command_exists("/develop", cwd)
+                restored = _assert_command_exists("/develop", cwd)
+
+        assert restored == cmd_dir / "develop.md"
+        assert restored.read_text() == "# develop"
 
     def test_missing_command_restoration_fails_still_raises(self, tmp_path: Path) -> None:
         from sova.llm.provider import _assert_command_exists
@@ -2439,9 +2443,11 @@ class TestProviderInitFromConfig:
 
         with (
             patch("sova.cli.app.load_config", return_value=ProjectConfig(llm={"provider": "claude-code"})),
-            patch.object(socket.socket, "connect", side_effect=AssertionError("unexpected network call")),
+            patch.object(socket.socket, "connect") as connect,
         ):
-            _init_llm_provider()  # must not raise
+            _init_llm_provider()
+
+        connect.assert_not_called()
 
     async def test_spawn_direct_makes_no_network_calls_before_exec(self, tmp_path: Path) -> None:
         """Regression guard for R7: spawn_direct must not probe the network.
@@ -2454,9 +2460,11 @@ class TestProviderInitFromConfig:
 
         from sova.ipc.runtime import spawn_direct
 
-        with patch.object(socket.socket, "connect", side_effect=AssertionError("unexpected network call")):
+        with patch.object(socket.socket, "connect") as connect:
             proc = await spawn_direct(["true"], cwd=str(tmp_path))
         await proc.stop()
+
+        connect.assert_not_called()
 
 
 class TestReloadProviderCapabilityWarning:
@@ -4207,10 +4215,14 @@ class TestComplexityScorer:
         assert result == expected
 
     def test_none_labels_accepted(self) -> None:
-        assess_complexity("title", "desc", labels=None)
+        assert assess_complexity("fix typo in README", "", labels=None) == assess_complexity(
+            "fix typo in README", "", labels=[]
+        )
 
     def test_none_file_count_accepted(self) -> None:
-        assess_complexity("title", "desc", file_count_estimate=None)
+        assert assess_complexity("fix typo in README", "", file_count_estimate=None) == assess_complexity(
+            "fix typo in README", ""
+        )
 
     def test_bug_label_casts_no_vote(self) -> None:
         """Issue #1260: a bare 'bug' label has no reliable correlation to size,

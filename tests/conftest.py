@@ -21,18 +21,22 @@ import shutil
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import structlog
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
 from sqlalchemy.pool import StaticPool
 
 import sova.db.session as _dbs
-from sova.db.models import Base
+from sova.db.models import Base, CostRecord, StepExecution, TaskRun
 from sova.db.session import get_session, init_db
 
 # Enables the ``pytester`` fixture: ``tests/test_shared_db_fixture.py`` uses it to
@@ -955,6 +959,247 @@ def dashboard_app(_module_dashboard_app: tuple[Any, dict[str, Any]]) -> Iterator
     handoff_service.set_project_dir(Path.cwd().resolve())
     yield app
     reset()
+
+
+@pytest.fixture
+async def session() -> AsyncIterator[AsyncSession]:
+    async with await get_session() as s:
+        yield s
+
+
+@pytest.fixture
+async def seed_data(session: AsyncSession):
+    """Populate the DB with test data."""
+    now = datetime.now(timezone.utc)
+
+    # Task runs
+    run1 = TaskRun(
+        issue_number="42",
+        role="developer",
+        status="done",
+        current_step="complete",
+        branch_name="feat/login",
+        total_cost_usd=Decimal("1.50"),
+        project_slug="myproject",
+        started_at=now - timedelta(hours=2),
+        ended_at=now - timedelta(hours=1),
+    )
+    run2 = TaskRun(
+        issue_number="43",
+        role="triage",
+        status="failed",
+        current_step="develop",
+        branch_name="feat/signup",
+        total_cost_usd=Decimal("0.75"),
+        error_message="Tests failed",
+        project_slug="myproject",
+        started_at=now - timedelta(hours=1),
+        ended_at=now - timedelta(minutes=30),
+    )
+    run3 = TaskRun(
+        issue_number="44",
+        role="developer",
+        status="developing",
+        current_step="develop",
+        branch_name="feat/dashboard",
+        total_cost_usd=Decimal("0.25"),
+        project_slug="myproject",
+        started_at=now - timedelta(minutes=10),
+    )
+    session.add_all([run1, run2, run3])
+    await session.flush()
+
+    # Step executions for run1
+    steps = [
+        StepExecution(
+            task_run_id=run1.id,
+            step_name="sync",
+            status="done",
+            cost_usd=Decimal("0.10"),
+            duration_ms=5000,
+            started_at=now - timedelta(hours=2),
+            ended_at=now - timedelta(hours=2) + timedelta(seconds=5),
+        ),
+        StepExecution(
+            task_run_id=run1.id,
+            step_name="develop",
+            status="done",
+            cost_usd=Decimal("1.20"),
+            duration_ms=300000,
+            started_at=now - timedelta(hours=2) + timedelta(seconds=5),
+            ended_at=now - timedelta(hours=2) + timedelta(minutes=5, seconds=5),
+        ),
+    ]
+    session.add_all(steps)
+
+    # Cost records
+    costs = [
+        CostRecord(
+            task_run_id=run1.id,
+            phase="develop",
+            issue="42",
+            model="opus",
+            input_tokens=10000,
+            output_tokens=5000,
+            cost_usd=Decimal("0.80"),
+            duration_ms=15000,
+            recorded_at=now - timedelta(hours=1, minutes=30),
+        ),
+        CostRecord(
+            task_run_id=run1.id,
+            phase="simplify",
+            issue="42",
+            model="sonnet",
+            input_tokens=5000,
+            output_tokens=2000,
+            cost_usd=Decimal("0.30"),
+            duration_ms=8000,
+            recorded_at=now - timedelta(hours=1, minutes=15),
+        ),
+        CostRecord(
+            task_run_id=run2.id,
+            phase="develop",
+            issue="43",
+            model="opus",
+            input_tokens=8000,
+            output_tokens=4000,
+            cost_usd=Decimal("0.60"),
+            duration_ms=12000,
+            recorded_at=now - timedelta(minutes=45),
+        ),
+    ]
+    session.add_all(costs)
+
+    await session.commit()
+    return {"runs": [run1, run2, run3], "costs": costs}
+
+
+@pytest.fixture
+async def client(dashboard_app):
+    """Shared dashboard test client, pre-armed with a valid CSRF/origin pair.
+
+    Router-level `require_same_origin_csrf` (#1204) now guards every mutating
+    route by construction, so a mutating request needs a matching Origin header
+    and CSRF cookie/header pair even for routes that were never individually
+    opted in before. Setting it once here, rather than per call site, is what
+    `csrf_request_headers()`'s own docstring recommends to avoid duplicating it
+    across the (now much larger) set of tests that post to a guarded route; a
+    GET request is unaffected since the guard no-ops for safe methods.
+    """
+    app = dashboard_app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        ac.headers.update(csrf_request_headers(ac))
+        yield ac
+
+
+@pytest.fixture
+async def client_no_raise(dashboard_app):
+    """`client`, except an unhandled exception comes back as the catch-all's 500 instead of being re-raised.
+
+    Only a test that asserts on that 500 takes this one: with the raising `client`, a real crash in any other
+    test fails with its traceback instead of passing as an opaque `{"detail": "Internal error"}`.
+    """
+    transport = ASGITransport(app=dashboard_app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        ac.headers.update(csrf_request_headers(ac))
+        yield ac
+
+
+@pytest.fixture
+def fake_runtime() -> Iterator[Any]:
+    """The shared fake ``AgentRuntime``, installed as the process-wide runtime for the test.
+
+    Every test that needs a coding agent (CLI tests, the dashboard's ``start_command()`` and
+    ``start_agent()`` tests, core steps) takes this one rather than building a ``MagicMock`` runtime, so a
+    change to the runtime contract is made in ``tests/process_fakes.py`` only. ``spawn_calls`` records each
+    spawn; its processes stay alive until the test calls ``finish()``, and any left open are finished here.
+    """
+    import sova.ipc.runtime as runtime_module
+    from tests.process_fakes import FakeAgentRuntime
+
+    previous = runtime_module._runtime
+    fake = FakeAgentRuntime()
+    runtime_module.set_runtime(fake)
+    yield fake
+    for process in fake.processes:
+        process.finish()
+    runtime_module._runtime = previous
+
+
+@pytest.fixture
+def fake_provider() -> Iterator[Any]:
+    """A fake text-only ``LLMProvider`` installed as the process-wide provider for the test."""
+    from sova.llm import client
+    from tests.process_fakes import FakeLLMProvider
+
+    previous = client._provider
+    fake = FakeLLMProvider()
+    client.set_provider(fake)
+    yield fake
+    client._provider = previous
+
+
+@pytest.fixture
+def quiet_logs() -> Iterator[None]:
+    """Keep a CLI command from rewiring process-wide logging, and send structlog output to a throwaway sink.
+
+    The suite's logging goes to ``sys.stdout`` (see ``configure_test_logging()``), which a ``CliRunner`` captures
+    into ``result.stdout``, while production logs to stderr. A test of a command whose stdout is a contract
+    (`linked-issues` prints JSON, `pr-verdict` prints one word) takes this so it can assert on that stream whole;
+    a test that needs a log event uses ``structlog.testing.capture_logs()``, which does not depend on the sink.
+
+    ``sova run`` also calls production ``setup_logging()``, which reconfigures structlog for the whole process
+    with ``cache_logger_on_first_use``, so every module logger first used during that run stays bound to the
+    ``CliRunner``'s stderr and rotating log handler, both closed afterwards, and a later test on the same
+    xdist worker fails with "I/O operation on closed file". It is replaced here by a no-op: the rotation
+    behaviour it sets up is covered by ``tests/test_logging_rotation.py``.
+    """
+    with open(os.devnull, "w", encoding="utf-8") as sink, pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sova.utils.logging.setup_logging", lambda **_kwargs: None)
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sink))
+        yield
+    configure_test_logging()
+
+
+@pytest.fixture
+def fake_gh(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A scripted ``gh`` at the front of PATH for this test only; unscripted calls exit 1 and are recorded."""
+    from tests.process_fakes import FakeGh
+
+    gh = FakeGh(tmp_path_factory.mktemp("fake-gh"))
+    monkeypatch.setenv("PATH", f"{gh.directory}{os.pathsep}{os.environ.get('PATH', '')}")
+    return gh
+
+
+@pytest.fixture
+def git_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real git repository under ``tmp_path`` on ``main`` with one commit, set as the working directory."""
+    from tests.process_fakes import init_git_project
+
+    root = init_git_project(tmp_path / "project")
+    monkeypatch.chdir(root)
+    return root
+
+
+@pytest.fixture
+async def project_agents(git_project: Path, fake_runtime: Any, fake_gh: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A real ``ProjectAgents`` for ``git_project``, registered as the dashboard's default project pool.
+
+    ``start_agent()`` and ``start_command()`` run unpatched against it: the real project directory, git
+    repository and database, with only the agent (``fake_runtime``) and ``gh`` (``fake_gh``) faked. Taking
+    ``fake_runtime`` first makes its processes outlive the teardown here, which cancels the background tasks
+    the start left running so no finalizer runs against a finished test.
+    """
+    from sova.dashboard.services import agent_pool, control_service
+    from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+
+    pool = agent_pool.ProjectAgents(project_dir=git_project.resolve())
+    monkeypatch.setitem(agent_pool._projects, agent_pool._DEFAULT_SLUG, pool)
+    # Restored on teardown, so a later test on this worker does not resolve a deleted tmp project.
+    monkeypatch.setattr(agent_pool, "_default_project_dir", agent_pool._default_project_dir)
+    control_service.set_project_dir(git_project)
+    yield pool
+    await cancel_background_tasks()
 
 
 INVARIANTS_DIR = Path(__file__).parent.parent / "invariants"

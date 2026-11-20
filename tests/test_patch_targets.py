@@ -71,7 +71,7 @@ _SHARED_HELPER_RE = re.compile(
 # ``loader.load_config`` off the module, and the setup router and fleet manager import ``invalidate_config_cache``
 # inside the function that calls it.
 SOURCE_PATCHES: dict[str, dict[str, tuple[int, tuple[str, ...]]]] = {
-    "test_dashboard.py": {
+    "test_setup_api.py": {
         "invalidate_config_cache": (2, ("sova.dashboard.routers.setup",)),
     },
     "test_dependency_health_api.py": {

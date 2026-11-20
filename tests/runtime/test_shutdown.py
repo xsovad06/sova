@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.dashboard.services.agent_pool import AgentState
 
@@ -47,6 +48,9 @@ class TestShutdownCancelsWsProducerTasks:
         await ws_manager.cancel_all()
         await ws_manager.cancel_all()
 
+        assert ws_manager._producer_tasks == {}
+        assert ws_manager._groups == {}
+
     async def test_broadcast_timeout_on_slow_client(self, ws_manager) -> None:
         """_broadcast times out on a WebSocket that blocks on send_json."""
         slow_ws = AsyncMock()
@@ -61,6 +65,8 @@ class TestShutdownCancelsWsProducerTasks:
             ws_manager._broadcast({"type": "test"}, None),
             timeout=5.0,
         )
+
+        assert None not in ws_manager._groups
 
     async def test_produce_loop_handles_cancellation(self, ws_manager) -> None:
         """_produce_loop re-raises CancelledError after cleanup."""
@@ -123,9 +129,13 @@ class TestShutdownCancelsBatchTasks:
 
     async def test_cancel_all_batches_idempotent(self) -> None:
         """Calling cancel_all_batches() with no active batches is safe."""
-        from sova.dashboard.services.batch_service import cancel_all_batches
+        from sova.dashboard.services.batch_service import _active_batches, cancel_all_batches
+
+        before = dict(_active_batches)
 
         await cancel_all_batches()
+
+        assert _active_batches == before
 
 
 @pytest.mark.runtime
@@ -196,10 +206,14 @@ class TestShutdownTimeout:
                 await asyncio.sleep(3600)
 
         task = asyncio.create_task(_sticky_task())
+        await asyncio.sleep(0)  # let the task reach its sleep so cancellation lands inside the sticky handler
         agent_lifecycle._background_tasks.add(task)
 
         try:
-            await asyncio.wait_for(cancel_background_tasks(), timeout=5.0)
+            with capture_logs() as logs:
+                await asyncio.wait_for(cancel_background_tasks(), timeout=5.0)
+            warnings = [e["event"] for e in logs if e["log_level"] == "warning"]
+            assert warnings == ["cancel_background_tasks.timeout"]
         finally:
             agent_lifecycle._background_tasks.discard(task)
             if not task.done():
@@ -231,6 +245,9 @@ class TestShutdownTimeout:
                 _shutdown_tasks(sweep, [], [], None),
                 timeout=10.0,
             )
+
+        mock_ws.cancel_all.assert_awaited_once()
+        assert sweep.done()
 
 
 @pytest.mark.runtime

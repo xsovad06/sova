@@ -97,8 +97,10 @@ class TestComputeIssueRevisionHash:
         assert compute_issue_revision_hash(*base) == compute_issue_revision_hash(*variant)
 
     def test_empty_body(self) -> None:
-        # Must not raise.
-        compute_issue_revision_hash("Title", "")
+        digest = compute_issue_revision_hash("Title", "")
+
+        assert len(digest) == 12
+        assert digest != compute_issue_revision_hash("Title", "Body text")
 
 
 class TestSpecIsCurrent:

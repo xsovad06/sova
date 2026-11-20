@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.dashboard.services.pr_service import (
     ComputedPRState,
@@ -1913,8 +1914,12 @@ class TestRecordStateTransitions:
         pr_service._last_known_states.clear()
 
         prs = [{"number": 10, "computed_state": "approved"}]
+        sessions = AsyncMock()
+        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
-        # No exception = success, no events written because prev is None
+
+        sessions.assert_not_called()
+        assert pr_service._last_known_states[10] == "approved"
 
     @pytest.mark.asyncio
     async def test_skips_prs_with_same_state(self, monkeypatch, tmp_path: Path) -> None:
@@ -1926,8 +1931,11 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "approved"
 
         prs = [{"number": 10, "computed_state": "approved", "updated_at": "2026-08-01T12:00:00Z"}]
+        sessions = AsyncMock()
+        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
-        # No exception = success, no events written because state unchanged
+
+        sessions.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_state_with_no_event_mapping(self, monkeypatch, tmp_path: Path) -> None:
@@ -1939,8 +1947,12 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "some_old_state"
 
         prs = [{"number": 10, "computed_state": "unknown_state", "updated_at": "2026-08-01T12:00:00Z"}]
+        sessions = AsyncMock()
+        monkeypatch.setattr("sova.dashboard.services.pr_service.get_session", sessions)
         await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
-        # No exception = success, no events written because no mapping
+
+        sessions.assert_not_called()
+        assert pr_service._last_known_states[10] == "unknown_state"
 
     @pytest.mark.asyncio
     async def test_handles_event_write_exception_gracefully(self, monkeypatch, tmp_path) -> None:
@@ -1979,8 +1991,10 @@ class TestRecordStateTransitions:
             }
         ]
 
-        # Should not raise despite DB error
-        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
+        with capture_logs() as logs:
+            await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["pr_service.event_write_conflict"]
 
     @pytest.mark.asyncio
     async def test_handles_session_exception_gracefully(self, monkeypatch, tmp_path) -> None:
@@ -1996,8 +2010,10 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "draft"
         prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
 
-        # Should not raise
-        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
+        with capture_logs() as logs:
+            await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
+
+        assert [e["event"] for e in logs if e["log_level"] == "debug"] == ["pr_service.event_write_conflict"]
 
 
 class TestInvalidatePrCache:

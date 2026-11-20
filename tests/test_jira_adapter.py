@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 import respx
 from httpx import Response
+from structlog.testing import capture_logs
 
 from sova.adapters.base import PriorityUnavailableError, TaskFilters, TaskState
 from sova.adapters.jira import (
@@ -1136,7 +1137,10 @@ class TestAssignToUser:
         respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(400, text="Bad request"),
         )
-        await adapter.assign_to_user("1", "jdoe")  # should not raise
+        with capture_logs() as logs:
+            await adapter.assign_to_user("1", "jdoe")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["assign_to_user.failed"]
 
     @respx.mock
     async def test_assign_to_user_unresolvable_account_is_non_fatal(self) -> None:
@@ -1188,9 +1192,14 @@ class TestAssignToUser:
 
 
 class TestAddReviewer:
+    @respx.mock
     async def test_add_reviewer_is_noop_for_jira(self) -> None:
         adapter = _adapter()
-        await adapter.add_reviewer("1", 42, "jdoe")  # should not raise, no HTTP call
+        with capture_logs() as logs:
+            await adapter.add_reviewer("1", 42, "jdoe")
+
+        assert [e["event"] for e in logs] == ["add_reviewer.no_op_for_jira"]
+        assert respx.calls.call_count == 0
 
 
 class TestPostComment:
@@ -1210,22 +1219,33 @@ class TestPrNoOps:
     @respx.mock
     async def test_post_pr_comment_is_noop(self) -> None:
         adapter = _adapter()
-        await adapter.post_pr_comment(42, "review")
+        with capture_logs() as logs:
+            await adapter.post_pr_comment(42, "review")
+
+        assert [e["event"] for e in logs] == ["post_pr_comment.no_op_for_jira"]
+        assert respx.calls.call_count == 0
 
     @respx.mock
     async def test_post_pr_review_is_noop(self) -> None:
         adapter = _adapter()
-        await adapter.post_pr_review(42, "body", "APPROVE", [])
+        with capture_logs() as logs:
+            await adapter.post_pr_review(42, "body", "APPROVE", [])
+
+        assert [e["event"] for e in logs] == ["post_pr_review.no_op_for_jira"]
+        assert respx.calls.call_count == 0
 
 
 class TestEditBody:
     @respx.mock
     async def test_edit_body_success(self) -> None:
         adapter = _adapter()
-        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(204),
         )
         await adapter.edit_body("1", "Updated description")
+
+        assert route.call_count == 1
+        assert b"Updated description" in route.calls[0].request.content
 
     @respx.mock
     async def test_edit_body_failure(self) -> None:
@@ -1311,16 +1331,20 @@ class TestTransitionState:
         respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(200, json=_issue_json(key="TEST-1", labels=["agent:triaged"])),
         )
-        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+        labels_route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
             return_value=Response(204),
         )
         respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
             return_value=Response(200, json={"transitions": [{"id": "31", "name": "In Progress"}]}),
         )
-        respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+        transition_route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
             return_value=Response(204),
         )
         await adapter.transition_state("1", TaskState.IN_PROGRESS)
+
+        assert json.loads(transition_route.calls[0].request.content) == {"transition": {"id": "31"}}
+        label_ops = json.loads(labels_route.calls[0].request.content)["update"]["labels"]
+        assert label_ops == [{"remove": "agent:triaged"}, {"add": "agent:in-progress"}]
 
     @respx.mock
     async def test_transition_with_config_override(self) -> None:
@@ -1570,7 +1594,11 @@ class TestTriggerTransitionEdgeCases:
         respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
             return_value=Response(500, json={"error": "Internal Server Error"}),
         )
-        await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+        with capture_logs() as logs:
+            result = await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+
+        assert result is False
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["transition.post_failed"]
 
 
 class TestGetPrReviews:

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import OversightConfig
@@ -335,11 +336,15 @@ class TestPersistIssueNumbers:
         finding = _make_finding(confidence=0.9)
         finding.github_issue_number = 42
 
-        with patch(
-            "sova.oversight.actions.get_session",
-            side_effect=RuntimeError("DB gone"),
+        with (
+            patch("sova.oversight.actions.get_session", side_effect=RuntimeError("DB gone")),
+            capture_logs() as logs,
         ):
             await _persist_issue_numbers([finding])
+
+        errors = [e for e in logs if e["log_level"] == "error"]
+        assert [e["event"] for e in errors] == ["oversight.actions.persist_failed"]
+        assert errors[0]["count"] == 1
 
 
 # ---------------------------------------------------------------------------

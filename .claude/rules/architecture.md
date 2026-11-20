@@ -51,7 +51,7 @@ SOVA has four main components:
 - **Batch operations**: triage/harden many issues concurrently (`asyncio.Semaphore`, `DEFAULT_CONCURRENCY`) with a global progress bar (full entry: docs/architecture-deep-dive.md).
 - **Handoff system**: agents write `.claude/agent-control/handoff.json`; `_process_auto_handoff()` (`agent_handoff.py`) auto-triggers `auto_execute=True` actions after agent exit, per `pipeline.auto_handoff` / `pipeline.auto_address_review` (full entry: docs/architecture-deep-dive.md).
 - **Claude command execution**: `agent_lifecycle.start_command()` runs Claude Code commands from handoff actions (re-exported via `control_service` facade)
-- Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport, in-memory SQLite via `sqlite+aiosqlite://`), run via `make test-py`
+- Tests: `tests/test_*_api.py`, `tests/test_agent_*.py`, `tests/test_dashboard_app.py` (pytest + httpx ASGITransport, in-memory SQLite), via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
 - `watch.py` (WatchLoop): async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown. Dispatches one task at a time (`max_parallel_agents` has no effect here; `sova parallel` is the concurrent path)

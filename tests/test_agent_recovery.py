@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.db.models import TaskRun
 from sova.db.session import get_session
@@ -351,12 +352,19 @@ class TestZombieProcessIdentity:
 
     async def test_kill_process_returns_if_process_gone(self) -> None:
         """When SIGTERM raises OSError, the function returns without SIGKILL."""
+        import signal
         from unittest.mock import patch
 
         from sova.dashboard.services.agent_recovery import _kill_process
 
-        with patch("os.kill", side_effect=OSError("no such process")):
-            await _kill_process(99999)  # should not raise
+        with (
+            patch("os.kill", side_effect=OSError("no such process")) as mock_kill,
+            patch("asyncio.sleep") as mock_sleep,
+        ):
+            await _kill_process(99999)
+
+        mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+        mock_sleep.assert_not_called()
 
 
 class TestTerminalZombieRecovery:
@@ -2044,7 +2052,10 @@ class TestRollbackIssueState:
     async def test_missing_run_returns_without_error(self) -> None:
         from sova.dashboard.services.agent_recovery import rollback_issue_state
 
-        await rollback_issue_state(999999)  # no such run id; should not raise
+        with capture_logs() as logs:
+            await rollback_issue_state(999999)
+
+        assert [e["event"] for e in logs if e["event"].startswith("rollback.")] == []
 
     async def test_missing_issue_number_skips_rollback(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
@@ -2210,4 +2221,7 @@ class TestRollbackIssueState:
             "sova.dashboard.services.agent_recovery.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("boom"))
         )
 
-        await rollback_issue_state(run_id)  # must not raise
+        with capture_logs() as logs:
+            await rollback_issue_state(run_id)
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["rollback.failed"]

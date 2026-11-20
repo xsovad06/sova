@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.github import GitHubAdapter
 from sova.config.models import IntegrationConfig, NotificationConfig
@@ -155,6 +156,12 @@ class TestLoadAndUpdateEntries:
     async def test_update_nonexistent_entry_is_noop(self, project_dir: Path) -> None:
         await _update_entry_status(9999, "merged", project_dir)
 
+        async with await get_session(project_dir=project_dir) as session:
+            from sqlalchemy import select
+
+            result = await session.execute(select(MergeQueueEntry))
+            assert result.scalars().all() == []
+
 
 # ---------------------------------------------------------------------------
 # MergeQueueMonitor._poll_cycle
@@ -182,11 +189,17 @@ class TestPollCycle:
 
         tracker = MagicMock()
         tracker.should_skip.return_value = False
-        with patch(
-            "sova.supervisor.github_quota.get_github_quota_tracker",
-            return_value=tracker,
+        with (
+            patch(
+                "sova.supervisor.github_quota.get_github_quota_tracker",
+                return_value=tracker,
+            ),
+            patch.object(monitor, "_check_entry", new_callable=AsyncMock) as mock_check,
         ):
             await monitor._poll_cycle()
+
+        tracker.should_skip.assert_called_once()
+        mock_check.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_calls_check_entry_for_each(self, project_dir: Path) -> None:
@@ -644,7 +657,11 @@ class TestNotify:
 
     def test_noop_when_no_config(self, project_dir: Path) -> None:
         monitor = _make_monitor(project_dir, notification_config=None)
-        monitor._notify(pr_number=7, kind=NotificationKind.INFO, subtitle="Test", message="Hello")
+
+        with patch("sova.ipc.notifications.notify") as mock_notify:
+            monitor._notify(pr_number=7, kind=NotificationKind.INFO, subtitle="Test", message="Hello")
+
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +738,13 @@ class TestCheckMergeQueueMarkerFile:
         agent.cwd = None
         agent.project_dir = None
 
-        await _check_merge_queue_marker_file(agent, run_id=100)
+        with patch(
+            "sova.dashboard.services.merge_queue_monitor.create_merge_queue_entry",
+            new_callable=AsyncMock,
+        ) as mock_create:
+            await _check_merge_queue_marker_file(agent, run_id=100)
+
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_noop_when_missing_pr_number(self, project_dir: Path) -> None:
@@ -1213,9 +1236,13 @@ class TestCheckEntryEdgeCases:
             patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock, return_value=queued_status),
             patch.object(monitor, "_handle_merged", new_callable=AsyncMock),
             patch.object(monitor, "_handle_ejected", new_callable=AsyncMock),
-            patch.object(monitor, "_handle_timeout", new_callable=AsyncMock),
+            patch.object(monitor, "_handle_timeout", new_callable=AsyncMock) as mock_timeout,
         ):
             await monitor._check_entry(entry)
+
+        # The 2026-01-01 entry is long past the 3600 s timeout once read as UTC; a naive datetime would raise
+        # TypeError on the subtraction instead of reaching the timeout handler.
+        mock_timeout.assert_awaited_once_with(entry)
 
 
 # ---------------------------------------------------------------------------
@@ -1267,12 +1294,19 @@ class TestCleanupErrorHandling:
         monitor = _make_monitor(project_dir)
         entry = {"issue_number": "10"}
 
-        with patch(
-            "sova.git.worktree.cleanup_worktree",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("cleanup failed"),
+        with (
+            capture_logs() as logs,
+            patch(
+                "sova.git.worktree.cleanup_worktree",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("cleanup failed"),
+            ),
         ):
             await monitor._cleanup_local_worktree(entry)
+
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["merge_queue_monitor.worktree_cleanup_failed"]
+        assert warnings[0]["path"] == str(worktree_path)
 
     @pytest.mark.asyncio
     async def test_branch_delete_failure_does_not_block_merge(self, project_dir: Path) -> None:

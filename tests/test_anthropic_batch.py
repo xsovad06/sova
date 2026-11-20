@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 import respx
+from structlog.testing import capture_logs
 
 from sova.llm.models import BatchRequest, BatchResult, BatchTimeoutError, CostSource, LLMResult
 from sova.llm.provider import LLMProvider
@@ -753,7 +754,10 @@ class TestCancelAndCleanup:
         )
 
         async with httpx.AsyncClient() as client:
-            await provider._cancel_anthropic_batch(client, provider._anthropic_headers(), "batch-fail")
+            with capture_logs() as logs:
+                await provider._cancel_anthropic_batch(client, provider._anthropic_headers(), "batch-fail")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["batch.anthropic.cancel_failed"]
 
     @pytest.mark.asyncio
     async def test_gcs_cleanup_prefix(self) -> None:
@@ -779,7 +783,10 @@ class TestCancelAndCleanup:
         provider = BatchProvider("vertex", project_id="p", region="us-east5", gcs_bucket="test-bucket")
         with patch.object(provider, "_get_vertex_token", side_effect=RuntimeError("no creds")):
             async with httpx.AsyncClient() as client:
-                await provider._gcs_cleanup_prefix(client, "input", "out/")
+                with capture_logs() as logs:
+                    await provider._gcs_cleanup_prefix(client, "input", "out/")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["batch.gcs.cleanup_token_failed"]
 
     @pytest.mark.asyncio
     async def test_gcs_delete_rejected(self) -> None:
@@ -787,7 +794,12 @@ class TestCancelAndCleanup:
         with respx.mock:
             respx.delete(url__regex=r".*test-bucket.*").mock(return_value=httpx.Response(403, text="Forbidden"))
             async with httpx.AsyncClient() as client:
-                await provider._gcs_delete(client, "tok", "some-file")
+                with capture_logs() as logs:
+                    await provider._gcs_delete(client, "tok", "some-file")
+
+        rejected = [e for e in logs if e["event"] == "batch.gcs.cleanup_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["status"] == 403
 
     def test_vertex_error_guard_non_dict(self) -> None:
         provider = BatchProvider("vertex", project_id="p", region="us-east5", gcs_bucket="b")

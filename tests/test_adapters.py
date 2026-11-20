@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import unquote
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter, _parse_issue
@@ -624,7 +625,10 @@ class TestGitHubAdapter:
     async def test_assign_to_user_failure_is_non_fatal(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="not found")
 
-        await self.adapter.assign_to_user("42", "jdoe")  # should not raise
+        with capture_logs() as logs:
+            await self.adapter.assign_to_user("42", "jdoe")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["assign_to_user.failed"]
 
     async def test_add_reviewer(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
@@ -641,7 +645,10 @@ class TestGitHubAdapter:
     async def test_add_reviewer_failure_is_non_fatal(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="not found")
 
-        await self.adapter.add_reviewer("42", 7, "jdoe")  # should not raise
+        with capture_logs() as logs:
+            await self.adapter.add_reviewer("42", 7, "jdoe")
+
+        assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["add_reviewer.failed"]
 
     # add_label / remove_label
 

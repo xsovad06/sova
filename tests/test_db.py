@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import inspect, select
+from structlog.testing import capture_logs
 
 from sova.db.models import (
     CostRecord,
@@ -1236,9 +1237,12 @@ async def test_register_sqlite_pragmas_swallows_exception(tmp_path) -> None:
         def cursor(self):
             raise RuntimeError("boom")
 
-    pragma_listener(_RaisingConnection(), None)  # must not raise
+    with capture_logs() as logs:
+        pragma_listener(_RaisingConnection(), None)
 
     await engine.dispose()
+
+    assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["db.sqlite_pragmas_failed"]
 
 
 async def test_create_task_assessment() -> None:
@@ -1894,7 +1898,9 @@ async def test_enable_sqlite_wal_sets_wal_mode(tmp_path) -> None:
 
 
 async def test_enable_sqlite_wal_is_idempotent(tmp_path) -> None:
-    """Calling _enable_sqlite_wal twice must not raise."""
+    """Calling _enable_sqlite_wal twice leaves WAL on and logs no failure."""
+    import sqlite3
+
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from sova.db.session import _enable_sqlite_wal
@@ -1905,9 +1911,16 @@ async def test_enable_sqlite_wal_is_idempotent(tmp_path) -> None:
         connect_args={"check_same_thread": False},
     )
 
-    await _enable_sqlite_wal(engine)
-    await _enable_sqlite_wal(engine)
+    with capture_logs() as logs:
+        await _enable_sqlite_wal(engine)
+        await _enable_sqlite_wal(engine)
     await engine.dispose()
+
+    assert [e for e in logs if e["log_level"] == "warning"] == []
+    raw = sqlite3.connect(str(db_path))
+    mode = raw.execute("PRAGMA journal_mode").fetchone()[0]
+    raw.close()
+    assert mode == "wal"
 
 
 # ---------------------------------------------------------------------------
@@ -2538,10 +2551,17 @@ class TestMigrationLock:
 
     async def test_migration_lock_is_a_noop_for_non_file_databases(self) -> None:
         """In-memory and non-SQLite URLs must not attempt any file locking."""
+        from unittest.mock import patch
+
         from sova.db.session import _migration_lock
 
-        async with _migration_lock("sqlite+aiosqlite://"):
-            pass  # must not raise, no lock file touched
+        entered = False
+        with patch("sova.db.session._acquire_migration_lock_sync") as acquire:
+            async with _migration_lock("sqlite+aiosqlite://"):
+                entered = True
+
+        assert entered is True
+        acquire.assert_not_called()
 
     async def test_init_db_for_project_uses_the_migration_lock(self, tmp_path) -> None:
         """init_db_for_project must take the cross-process lock around migrations."""
@@ -2743,10 +2763,12 @@ async def test_enable_sqlite_wal_swallows_exception(tmp_path) -> None:
     )
 
     with patch("sqlalchemy.ext.asyncio.AsyncConnection.execute", side_effect=Exception("pragma fail")):
-        # Must not raise even when the PRAGMA fails.
-        await _enable_sqlite_wal(engine)
+        with capture_logs() as logs:
+            await _enable_sqlite_wal(engine)
 
     await engine.dispose()
+
+    assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["db.sqlite_wal_mode_failed"]
 
 
 # ---------------------------------------------------------------------------

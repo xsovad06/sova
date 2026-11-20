@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import DEFAULT_COMMIT_SCOPES, ProjectConfig, TaskSourceConfig
@@ -1330,7 +1331,13 @@ class TestCreatePRStepLdapReviewerSuggestion:
         mock_client.get_org_chart.return_value = [Person(uid="alice")]
 
         with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
-            await CreatePRStep()._suggest_reviewers(ctx, 10)  # should not raise
+            with capture_logs() as logs:
+                await CreatePRStep()._suggest_reviewers(ctx, 10)
+
+        adapter.add_reviewer.assert_awaited_once_with("42", 10, "alice")
+        warnings = [e for e in logs if e["log_level"] == "warning"]
+        assert [e["event"] for e in warnings] == ["ldap_reviewers.add_reviewer_failed"]
+        assert warnings[0]["user"] == "alice"
 
     async def test_uses_uid_mapping_when_github_user_differs_from_ldap_uid(self, tmp_path: Path) -> None:
         """github_user and LDAP uid are frequently different identifiers (ldap.uid_mapping)."""
