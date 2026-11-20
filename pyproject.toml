@@ -59,7 +59,7 @@ awareness = [
     "google-auth-oauthlib>=1.2.0",
     "google-auth-httplib2>=0.2.0",
 ]
-postgres = ["asyncpg>=0.30", "psycopg[binary]>=3.3.8"]
+postgres = ["asyncpg>=0.30", "psycopg[binary]>=3.3.9"]
 ldap = ["ldap3>=2.9"]
 keyring = ["keyring>=24.0"]
 dev = [
