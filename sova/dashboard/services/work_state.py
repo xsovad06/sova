@@ -429,6 +429,19 @@ def _build_action(
     }
 
 
+def retry_rebase_action(issue_number: int | str) -> dict:
+    """The action that starts the auto-rebase of *issue_number*'s PR again (a fix for a transient failure)."""
+    return _build_action("rebase", "Retry rebase", "warning", "trigger_rebase", {"issue": str(issue_number)})
+
+
+def address_pr_action(issue_number: int | str | None, pr_number: int) -> dict:
+    """The action that runs /address-pr on *pr_number*: an agent that rebases, resolves and fixes what fails."""
+    args: dict = {"command": "address-pr", "pr": pr_number}
+    if issue_number:
+        args["issue"] = str(issue_number)
+    return _build_action("address_pr", "Address PR", "warning", "run_command", args)
+
+
 def _get_actions(
     state: WorkItemState,
     *,

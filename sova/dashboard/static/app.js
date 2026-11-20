@@ -1430,7 +1430,8 @@ function mountSettingControls(root, overrides) {
      runTrackedAction(key, label, fn)  marks the row running with `label`, awaits fn(); fn resolves to the
                                        success message (or nothing) and rejects with an Error whose message
                                        is shown. Resolves to {ok, message}; never rejects.
-     actionStateFor(key)               {status: 'running'|'done'|'failed', label, message} or null
+     actionStateFor(key)               {status: 'running'|'done'|'failed', label, message} or null; a server
+                                       failure may also carry `fix`, the work item action that remedies it
      actionIsRunning(key)              whether the row's buttons should be disabled
      actionStatusHtml(key)             the row's status line ('' when there is nothing to show)
      setServerActions(actions)         the server's list; a running server action shows like a local one
@@ -1503,6 +1504,8 @@ function setServerActions(actions) {
       at: (a.started_at || 0) * 1000,
       endedAt: a.ended_at ? a.ended_at * 1000 : null,
       id: a.id,
+      // A failure the server knows how to remedy (a failed rebase) names the work item action that fixes it.
+      fix: a.status === 'failed' && a.fix ? a.fix : null,
     };
     // The newest action per row; one still running wins over an older one that ended.
     var prev = next[key];

@@ -50,6 +50,7 @@ from sova.git.operations import (
     update_pr_body,
 )
 from sova.git.pr import _parse_run_id
+from sova.git.rebase import RebaseFailure
 from sova.git.worktree import (
     WorktreeInfo,
     _copy_claude_artifacts,
@@ -525,6 +526,7 @@ class TestRebaseWithConflictResolution:
             )
 
             assert not result.success
+            assert result.cause == RebaseFailure.COMMIT_CAP
             assert "commits" in result.error.lower()
 
     async def test_per_commit_retry_exhaustion_aborts(self) -> None:
@@ -550,6 +552,8 @@ class TestRebaseWithConflictResolution:
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"), max_attempts=3)
 
             assert not result.success
+            assert result.cause == RebaseFailure.CONFLICTS
+            assert "file.py" in result.unresolved_files
             assert "file.py" in result.error
 
     async def test_continue_fails_when_no_conflicts_breaks(self) -> None:
@@ -577,6 +581,7 @@ class TestRebaseWithConflictResolution:
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"), max_attempts=3)
 
             assert not result.success
+            assert result.cause == RebaseFailure.GIT
             assert "could not be completed" in result.error
 
     async def test_stash_command_failure_logs_and_continues(self) -> None:
@@ -606,6 +611,7 @@ class TestRebaseWithConflictResolution:
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
 
         assert not result.success
+        assert result.cause == RebaseFailure.STASH
         assert "Stash restore failed" in result.error
 
     async def test_llm_failure_aborts_immediately(self) -> None:
@@ -629,6 +635,7 @@ class TestRebaseWithConflictResolution:
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
 
             assert not result.success
+            assert result.cause == RebaseFailure.RESOLVER
             assert "LLM unavailable" in result.error
 
     async def test_no_conflicted_files_continue_succeeds(self) -> None:
@@ -663,6 +670,7 @@ class TestRebaseWithConflictResolution:
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
 
             assert not result.success
+            assert result.cause == RebaseFailure.GIT
             assert "Rebase failed" in result.error
 
 

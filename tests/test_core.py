@@ -9655,6 +9655,9 @@ class TestRebaseWithConflictResolution:
 
         assert not result.success
         assert "Fetch failed" in result.error
+        from sova.git.rebase import RebaseFailure
+
+        assert result.cause == RebaseFailure.FETCH
 
 
 # ---------------------------------------------------------------------------
