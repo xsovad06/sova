@@ -20,14 +20,14 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "typer>=0.29.0,<1.0",
-    "fastapi>=0.162.2,<0.163",
+    "typer>=0.29.1,<1.0",
+    "fastapi>=0.163.1,<0.164",
     "starlette>=1.10.0,<2.0",
     "uvicorn[standard]>=0.54.0,<1.0",
     "sqlalchemy[asyncio]>=2.1.8,<2.2",
     "alembic>=1.13,<2.0",
     "pydantic>=2.14.3,<3.0",
-    "pydantic-settings>=2.16.2,<3.0",
+    "pydantic-settings>=2.16.3,<3.0",
     "aiosqlite>=0.20,<1.0",
     "jinja2>=3.1,<4.0",
     "httpx>=0.27,<1.0",
@@ -48,14 +48,14 @@ Issues = "https://github.com/xsovad06/sova/issues"
 Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=2.7.0"]
-litellm = ["litellm>=1.110.0.dev2"]
-vertex = ["google-auth>=2.62.1", "requests>=2.20"]
+anthropic = ["anthropic>=2.9.0"]
+litellm = ["litellm>=1.111.0.dev4"]
+vertex = ["google-auth>=2.62.2", "requests>=2.20"]
 batch = ["sova[vertex]"]
 compression = ["headroom-ai>=0.44.0"]
 awareness = [
-    "google-api-python-client>=2.100.0",
-    "google-auth>=2.62.1",
+    "google-api-python-client>=2.202.0",
+    "google-auth>=2.62.2",
     "google-auth-oauthlib>=1.2.0",
     "google-auth-httplib2>=0.2.0",
 ]
@@ -64,11 +64,11 @@ ldap = ["ldap3>=2.9"]
 keyring = ["keyring>=24.0"]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1.post1",
+    "pytest-asyncio>=1.5.0",
     "pytest-cov>=6.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
     "respx>=0.22",
 ]
 
