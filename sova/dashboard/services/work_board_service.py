@@ -166,6 +166,7 @@ def _pr_summary(item: dict) -> dict | None:
     return {
         "number": number,
         "url": pr.get("url", ""),
+        "state": pr.get("computed_state", ""),
         "state_label": pr.get("state_label", ""),
         "state_color": pr.get("state_color", ""),
         "ci_state": pr.get("ci_status", ""),

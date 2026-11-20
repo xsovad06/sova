@@ -241,6 +241,7 @@ class TestEntryFields:
         assert entry["pr"] == {
             "number": 9,
             "url": "https://example.test/pull/9",
+            "state": "pr_review_exhausted",
             "state_label": "",
             "state_color": "",
             "ci_state": "passed",
@@ -467,6 +468,16 @@ if (scenario === 'start-no-slot') {
   const stale = { number: 1029, kind: 'stale_label', reason: 'PR no longer open, issue still labeled in review' };
   out.longReason = board.cardParts(stale, 'needs').body;
   out.rebaseRunning = board.cardParts({ number: 1066, role: 'supervisor:rebase', run_id: 7 }, 'running').buttons;
+  // The PR state keys come from the server's ComputedPRState (STATE_CONFLICTED, STATE_DRAFT), never a literal here.
+  const flagged = { mergeable: 'CONFLICTING', is_draft: true, merge_state: 'BEHIND' };
+  flagged.state = process.env.STATE_CONFLICTED;
+  out.flagsAll = board.prFlags(flagged);
+  out.flagsBesideStateTag = board.prFlags(flagged, { stateShown: true, end: true });
+  out.flagsBesideOtherState = board.prFlags(Object.assign({}, flagged, { state: 'ci_failed' }), { stateShown: true });
+  const draftState = Object.assign({}, flagged, { state: process.env.STATE_DRAFT });
+  out.flagsBesideDraftState = board.prFlags(draftState, { stateShown: true });
+  const pr = { number: 7, url: 'https://github.com/o/r/pull/7', state_label: 'Draft', state_color: 'gray' };
+  out.prPill = board.prPill(pr);
 } else if (scenario === 'pr-card') {
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
@@ -647,6 +658,128 @@ if (scenario === 'start-no-slot') {
   selection.select(null);
   click(target([]));
   out.nothingSelected = selection.getSelected();
+} else if (scenario === 'drawer-reveal') {
+  // The drawer lies over the board without narrowing it: selecting a card it covers scrolls the board sideways
+  // until the card clears the drawer's left edge (1rem short of it); a card already clear stays put. The real
+  // board redraws the cards on a selection, and each redraw replaces the card elements: a replaced element
+  // measures as empty, so only a reveal that measures the redrawn card scrolls. It must work whichever of the
+  // drawer and the board registers its listeners first (REVEAL_BOARD_FIRST), and a reload must not scroll again.
+  globalThis.subscribeSovaSocket = () => ({ unsubscribe() {} });
+  globalThis.visibilityAwarePoll = () => ({ id: null });
+  const realSetInterval = globalThis.setInterval;
+  globalThis.setInterval = () => realSetInterval(() => {}, 1e9);
+  let drawerLeft = 1090;
+  let drawerShown = false;
+  const room = new Set();
+  const drawerEl = { innerHTML: '', querySelector: () => null, getBoundingClientRect: () => ({ left: drawerLeft }) };
+  Object.defineProperty(drawerEl, 'hidden', { get: () => !drawerShown, set(v) { drawerShown = !v; } });
+  let generation = 0;
+  const empty = { left: 0, right: 0, width: 0 };
+  const rect = (gen, left, right) => (gen === generation ? { left, right, width: right - left } : empty);
+  let cardsPresent = true;
+  const el = (key, box) => {
+    const gen = generation;
+    return {
+      getAttribute: (name) => (name === 'data-args' ? JSON.stringify([key]) : null),
+      getBoundingClientRect: () => rect(gen, box[0], box[1]),
+    };
+  };
+  const scrolls = [];
+  const events = [];
+  const hostListeners = [];
+  const TRACK = 2400;
+  const ROOM = 416;
+  const host = {
+    scrollLeft: 0, clientWidth: 1186,
+    classList: { toggle: (name, on) => (on ? room.add(name) : room.delete(name)) },
+    addEventListener: (type, fn) => hostListeners.push([type, fn]),
+    contains: () => false,
+    getBoundingClientRect: () => ({ left: 262, right: 1448 }),
+    // A chain node for the same issue comes first in the document but is not a column card.
+    querySelectorAll: (selector) => {
+      const cards = cardsPresent ? [el(1213, [738, 932]), el(1422, [1234, 1428]), el('pr:1495', [956, 1150])] : [];
+      return selector.includes('data-work-card') ? cards : [el(1422, [0, 0])].concat(cards);
+    },
+    scrollBy: (opts) => { events.push('scroll'); scrolls.push(opts); },
+  };
+  // The track scrolls a drawer's width further only while the drawer is open (the room class).
+  Object.defineProperty(host, 'scrollWidth', { get: () => TRACK + (room.has('sova-work-board-room') ? ROOM : 0) });
+  Object.defineProperty(host, 'innerHTML', { get: () => '', set() { generation += 1; events.push('render'); } });
+  document.getElementById = (id) => (id === 'work-drawer' ? drawerEl : id === 'work-board' ? host : null);
+  let reduce = false;
+  globalThis.matchMedia = () => ({ matches: reduce });
+  routes = {
+    'GET /api/work/board': [200, {
+      columns: [{ stage: 'next', label: 'Up next', color: 'blue', entries: 'up_next', column: 'next' }],
+      up_next: [{ number: 1422, title: 'One', state: 'researched', actions: [] }], chains: [], hidden: [],
+    }],
+    'GET /api/work/actions': [200, { actions: [] }],
+  };
+  const selection = await work('selection');
+  const board = await work('board');
+  const drawer = await work('drawer');
+  if (process.env.REVEAL_BOARD_FIRST) {
+    board.init();
+    drawer.init();
+  } else {
+    drawer.init();
+    board.init();
+  }
+  await board.loadBoard();
+  // Starts from a closed drawer scrolled to `from`; closing redraws the board, which would undo a position set earlier.
+  const scrollFor = (key, from = 0) => {
+    selection.select(null);
+    host.scrollLeft = from;
+    scrolls.length = 0;
+    events.length = 0;
+    selection.select(key);
+    return scrolls.slice();
+  };
+  out.covered = scrollFor(1422);
+  // The reveal runs after the board's redraw in either listener order, never before it: a redraw after the scroll
+  // restores the board's own position and turns the smooth scroll into a jump.
+  out.coveredOrder = events.slice();
+  // A reload after the reveal redraws the cards but never scrolls again.
+  scrolls.length = 0;
+  await board.loadBoard();
+  out.reload = scrolls.slice();
+  // The smooth scroll is still on its way (the stub never moves): the redraw restores its target, not where it is.
+  out.reloadScrollLeft = host.scrollLeft;
+  // The user takes the scroll over (a wheel turn) or the animation ends (scrollend): the hold is released, and a
+  // redraw keeps wherever the board is.
+  for (const type of ['wheel', 'scrollend']) {
+    scrollFor(1422);
+    host.scrollLeft = 200;
+    hostListeners.filter(([t]) => t === type).forEach(([, fn]) => fn({}));
+    await board.loadBoard();
+    out['scrollAfter_' + type] = host.scrollLeft;
+  }
+  // A selection nothing could show (no card yet) is handled all the same: a card that appears at a later reload,
+  // or in an expanded group, never scrolls the board on its own.
+  cardsPresent = false;
+  scrollFor(1422);
+  cardsPresent = true;
+  scrolls.length = 0;
+  await board.loadBoard();
+  out.lateCard = scrolls.slice();
+  out.clear = scrollFor(1213);
+  out.prOnly = scrollFor('pr:1495');
+  reduce = true;
+  out.reducedMotion = scrollFor(1422);
+  reduce = false;
+  // The board is scrolled to the end of its own columns: while the drawer is open it has a drawer's width more,
+  // so the card is still brought clear of the drawer.
+  out.atEnd = scrollFor(1422, TRACK - host.clientWidth);
+  // Only 100px of the room is left: the scroll is capped to it.
+  out.nearEnd = scrollFor(1422, TRACK + ROOM - host.clientWidth - 100);
+  // Scrolled to the very end, with the room used up: nothing to animate.
+  out.roomUsed = scrollFor(1422, TRACK + ROOM - host.clientWidth);
+  out.roomWhileOpen = room.has('sova-work-board-room');
+  drawerLeft = 300;
+  out.drawerCoversBoard = scrollFor(1422);
+  drawerLeft = 1090;
+  out.deselected = scrollFor(null);
+  out.roomAfterClose = room.has('sova-work-board-room');
 } else if (scenario === 'drawer-offboard') {
   // The search's entry stands in for a card only while it is current: another selection, a column of the board
   // showing the issue, or a re-read from the search replaces it, so its `start` never outlives its state.
@@ -974,7 +1107,7 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
-def _run_node(tmp_path: Path, scenario: str) -> dict:
+def _run_node(tmp_path: Path, scenario: str, env: dict[str, str] | None = None) -> dict:
     _require_node()
     script = tmp_path / "work_page.mjs"
     script.write_text(_HARNESS, encoding="utf-8")
@@ -984,9 +1117,17 @@ def _run_node(tmp_path: Path, scenario: str) -> dict:
         text=True,
         timeout=60,
         check=False,
+        env={**os.environ, **(env or {})},
     )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
+
+
+def _pr_state_env() -> dict[str, str]:
+    """The server's PR state keys, for a scenario that must not hard-code them."""
+    from sova.dashboard.services.pr_service import ComputedPRState
+
+    return {"STATE_CONFLICTED": ComputedPRState.CONFLICTED.value, "STATE_DRAFT": ComputedPRState.DRAFT.value}
 
 
 class TestStartRunsTheAgentTheStageNeeds:
@@ -1122,6 +1263,125 @@ class TestDrawerClosesOnAClickOutside:
         assert out["detached"] == 5, "a target a redraw removed was inside the drawer"
         assert out["pressBeganInside"] == 5, "a text selection released outside is not a click outside"
         assert out["nothingSelected"] is None
+
+
+def _css_declarations(css: str, selector: str) -> dict[str, str]:
+    """The declarations of the one rule with exactly this selector, as a property to value mapping."""
+    match = re.search(r"^" + re.escape(selector) + r"\s*\{([^}]*)\}", css, re.MULTILINE)
+    assert match, f"no rule for {selector}"
+    pairs = (part.split(":", 1) for part in match.group(1).split(";") if ":" in part)
+    return {name.strip(): value.strip() for name, value in pairs}
+
+
+class TestDrawerOverlaysTheBoard:
+    def test_the_page_never_narrows_for_the_drawer(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        selection = (_WORK_JS / "selection.js").read_text(encoding="utf-8")
+
+        assert "sova-work-drawer-open" not in css, "the board keeps its full width; the drawer covers its right side"
+        assert "sova-work-drawer-open" not in selection
+
+    @pytest.mark.parametrize("board_first", [False, True], ids=["drawer_first", "board_first"])
+    def test_selecting_a_card_the_drawer_covers_scrolls_the_board_until_it_is_clear(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, board_first: bool
+    ) -> None:
+        if board_first:
+            monkeypatch.setenv("REVEAL_BOARD_FIRST", "1")
+        out = _run_node(tmp_path, "drawer-reveal")
+
+        assert out["covered"] == [{"left": 1428 - (1090 - 16), "behavior": "smooth"}], (
+            "the reveal measures the redrawn column card, not a chain node with the same key ahead of it, "
+            "whichever of the drawer and the board registered its listener first"
+        )
+        assert out["coveredOrder"] == ["render", "scroll"], (
+            "the reveal waits for the board's redraw of the selection, whichever listener was registered first"
+        )
+        assert out["reload"] == [], "a reload redraws the cards but the selection was already revealed"
+        assert out["reloadScrollLeft"] == 354, "a redraw mid-animation restores the scroll's target, not its progress"
+        assert out["scrollAfter_wheel"] == 200, "the user taking the scroll over releases the hold"
+        assert out["scrollAfter_scrollend"] == 200, "the end of the animation releases the hold"
+        assert out["lateCard"] == [], "a card that appears at a later reload does not scroll the board by itself"
+        assert out["clear"] == [], "a card left of the drawer stays where it is"
+        assert out["prOnly"] == [{"left": 1150 - (1090 - 16), "behavior": "smooth"}], "a PR card selects by pr:N"
+        assert out["reducedMotion"] == [{"left": 354, "behavior": "auto"}]
+        assert out["atEnd"] == [{"left": 354, "behavior": "smooth"}], (
+            "the drawer adds scroll room, so a card at the end of the columns is still cleared"
+        )
+        assert out["nearEnd"] == [{"left": 100, "behavior": "smooth"}], "the scroll is capped to the room left"
+        assert out["roomUsed"] == [], "a board scrolled to its very end has nothing left to animate"
+        assert out["roomWhileOpen"] is True
+        assert out["drawerCoversBoard"] == [], "no room beside a drawer covering the board: nothing to scroll to"
+        assert out["deselected"] == []
+        assert out["roomAfterClose"] is False, "the scroll room goes with the drawer"
+
+    def test_the_board_track_carries_the_drawers_scroll_room_without_reflowing_its_columns(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        board = (_WORK_JS / "board.js").read_text(encoding="utf-8")
+
+        assert 'class="sova-work-track"' in board, "the columns live in a track the spacer can extend"
+        track = _css_declarations(css, ".sova-work-track")
+        assert track["display"] == "grid" and track["position"] == "relative"
+        assert track["width"] == "fit-content" and track["min-width"] == "100%", (
+            "sized to its columns when they overflow, so the spacer's left: 100% lands past the last one"
+        )
+        spacer = _css_declarations(css, ".sova-work-board-room .sova-work-track::after")
+        assert spacer["position"] == "absolute" and spacer["left"] == "100%", "past the track's end, out of its flow"
+
+    def test_only_the_header_and_search_row_pad_for_the_drawer(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        template = (_TEMPLATES / "work.html").read_text(encoding="utf-8")
+
+        rules = re.findall(r"(body:has\(\.sova-work-drawer[^{]*)\{\s*padding-right", css)
+        assert rules, "the header and the search row keep clear of the drawer"
+        named = {name for rule in rules for name in re.findall(r"#([\w-]+)", rule)}
+        assert named == {"work-header", "work-toolbar"}, "only the header and the search row pad: never the board"
+        for name in named:
+            assert f'id="{name}"' in template, f"the padding rule names #{name}, which the template must carry"
+        media = re.search(r"@media \(min-width: (\d+)rem\)\s*\{\s*body:has\(\.sova-work-drawer", css)
+        assert media and int(media.group(1)) >= 72, "below 72rem the padded rows would be left too little width"
+
+    def test_the_drawer_body_never_scrolls_sideways_and_its_tooltips_stay_inside_it(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        drawer = (_WORK_JS / "drawer.js").read_text(encoding="utf-8")
+
+        assert "sova-work-drawer-body" in drawer
+        body = _css_declarations(css, ".sova-work-drawer-body")
+        assert body["overflow-x"] == "hidden"
+        assert body["overflow-y"] == "auto"
+        start = _css_declarations(css, ".sova-work-drawer-body [data-tooltip]:not([data-tooltip-pos])::after")
+        assert start["left"] == "0", "a tooltip grows rightward from the element's left edge by default"
+        assert start["transform"] == "none"
+        assert start["white-space"] == "normal" and start["max-width"] == "13rem", "a bubble wraps inside the body"
+        end = _css_declarations(css, ".sova-work-drawer-body [data-tooltip-end]:not([data-tooltip-pos])::after")
+        assert end == {"left": "auto", "right": "0"}, "a right-hand pill grows its tooltip leftward"
+
+    def test_a_pr_flag_repeating_the_state_tag_beside_it_is_left_out(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start", env=_pr_state_env())
+
+        assert out["flagsAll"].count(">Conflicts<") == 1
+        assert ">Draft<" in out["flagsAll"]
+        assert ">Conflicts<" not in out["flagsBesideStateTag"], "the drawer's Conflicts state tag already says it"
+        assert ">Draft<" in out["flagsBesideStateTag"]
+        assert ">Behind base<" in out["flagsBesideStateTag"], "no PR state repeats a base that moved on"
+        assert ">Conflicts<" in out["flagsBesideOtherState"], "the flag stays when the state tag says something else"
+        assert ">Draft<" not in out["flagsBesideDraftState"], "the drawer's Draft state tag already says it"
+        assert ">Conflicts<" in out["flagsBesideDraftState"]
+
+    def test_the_server_emits_the_state_key_the_duplicate_is_matched_on(self) -> None:
+        from sova.dashboard.services.pr_service import ComputedPRState
+        from sova.dashboard.services.work_board_service import _pr_summary
+
+        for state in (ComputedPRState.CONFLICTED, ComputedPRState.DRAFT):
+            summary = _pr_summary({"pr_details": {"number": 3, "computed_state": state.value, "state_label": "x"}})
+            assert summary is not None
+            assert summary["state"] == state.value, "the board payload carries the state key, not only its label"
+
+    def test_the_pr_row_flags_anchor_their_tooltips_at_their_right_edge(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "card-start", env=_pr_state_env())
+
+        assert out["flagsAll"].count("data-tooltip-end") == 0, "a board card has no use for the drawer's anchoring"
+        assert out["flagsBesideStateTag"].count("data-tooltip-end") == 1, "the drawer's Behind base carries a tooltip"
+        assert "data-tooltip-end" not in out["prPill"], "the first pill grows its tooltip rightward from its left edge"
 
 
 class TestDrawerOffBoardEntryStaysCurrent:
