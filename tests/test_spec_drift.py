@@ -25,6 +25,17 @@ from sova.core.steps.spec import _stamp_issue_revision
 _UNKNOWN_SHA = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _no_active_agent_on_the_issue():
+    """/revise peeks at the process-wide agent registry, which an earlier test's agent can still occupy."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.dashboard.services import control_service
+
+    with patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=None)):
+        yield
+
+
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
@@ -688,10 +699,44 @@ class TestSpecRouterDrift:
     async def test_revise_is_refused_while_another_agent_is_active_for_the_issue(self, client_factory) -> None:
         from unittest.mock import AsyncMock
 
+        from sova.adapters.base import TaskState
         from sova.dashboard.services import control_service, handoff_service
 
         conflict = {"error": "Issue #42 already has an active agent (run 9)", "existing_run_id": 9}
         with (
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.IN_PROGRESS)),
+            patch("sova.dashboard.routers.spec._transition_issue", new=AsyncMock()) as transition,
+            patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=conflict)),
+            patch.object(
+                control_service, "complete_awaiting_approval_by_issue", new=AsyncMock(return_value=None)
+            ) as complete,
+            patch.object(control_service, "start_agent", new=AsyncMock()) as start,
+            patch.object(handoff_service, "clear_handoff") as clear,
+        ):
+            async with client_factory() as client:
+                resp = await client.post("/api/spec/42/revise")
+        assert resp.status_code == 409
+        assert "already has an active agent" in resp.json()["detail"]
+        # Refused before anything is written: no tracker write, no run rejected, no start.
+        transition.assert_not_awaited()
+        complete.assert_not_awaited()
+        start.assert_not_awaited()
+        clear.assert_not_called()
+
+    async def test_revise_puts_back_the_prior_state_when_the_start_loses_a_race(self, client_factory) -> None:
+        from unittest.mock import AsyncMock, call
+
+        from sova.adapters.base import TaskState
+        from sova.dashboard.services import control_service, handoff_service
+
+        conflict = {"error": "Issue #42 already has an active agent (run 9)", "existing_run_id": 9}
+        with (
+            patch(
+                "sova.dashboard.routers.spec._issue_state",
+                new=AsyncMock(side_effect=[TaskState.RESEARCHED, TaskState.TRIAGED]),
+            ),
+            patch("sova.dashboard.routers.spec._transition_issue", new=AsyncMock()) as transition,
+            patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=None)),
             patch.object(control_service, "complete_awaiting_approval_by_issue", new=AsyncMock(return_value=None)),
             patch.object(control_service, "start_agent", new=AsyncMock(return_value=conflict)),
             patch.object(handoff_service, "clear_handoff") as clear,
@@ -699,17 +744,30 @@ class TestSpecRouterDrift:
             async with client_factory() as client:
                 resp = await client.post("/api/spec/42/revise")
         assert resp.status_code == 409
-        assert "already has an active agent" in resp.json()["detail"]
+        assert transition.await_args_list == [call("42", TaskState.TRIAGED), call("42", TaskState.RESEARCHED)]
         clear.assert_not_called()
 
-    @pytest.mark.parametrize("status", ["draft", "approved"])
-    async def test_revise_starts_researcher_for_draft_and_approved_specs(self, client_factory, status: str) -> None:
+    @pytest.mark.parametrize(
+        ("status", "prior", "expected_transitions"),
+        [
+            ("draft", "researched", [("42", "triaged")]),
+            ("approved", "researched", [("42", "triaged")]),
+            ("draft", "triaged", []),
+            ("approved", "in_progress", [("42", "triaged")]),
+        ],
+    )
+    async def test_revise_starts_researcher_for_draft_and_approved_specs(
+        self, client_factory, status: str, prior: str, expected_transitions: list[tuple[str, str]]
+    ) -> None:
         from unittest.mock import AsyncMock
 
+        from sova.adapters.base import TaskState
         from sova.dashboard.services import control_service, handoff_service
 
         spec = {"issue_number": "42", "status": status, "raw_content": "x"}
         with (
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState(prior))),
+            patch("sova.dashboard.routers.spec._transition_issue", new=AsyncMock()) as transition,
             patch("sova.dashboard.services.spec_service.read_spec", return_value=spec),
             patch.object(control_service, "complete_awaiting_approval_by_issue", new=AsyncMock(return_value=None)),
             patch.object(control_service, "start_agent", new=AsyncMock(return_value={"pid": 1})) as start,
@@ -720,6 +778,7 @@ class TestSpecRouterDrift:
         assert resp.status_code == 200
         assert resp.json()["status"] == "revision_started"
         start.assert_awaited_once_with("42", role="researcher")
+        assert [(c.args[0], str(c.args[1])) for c in transition.await_args_list] == expected_transitions
 
 
 class TestSpecPageDriftWiring:

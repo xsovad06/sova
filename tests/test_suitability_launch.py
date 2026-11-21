@@ -41,6 +41,17 @@ _BLOCKED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_active_agent_on_the_issue():
+    """/revise peeks at the process-wide agent registry, which an earlier test's agent can still occupy."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.dashboard.services import control_service
+
+    with patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=None)):
+        yield
+
+
 @asynccontextmanager
 async def _no_session(*_args: object, **_kwargs: object) -> AsyncIterator[MagicMock]:
     yield MagicMock()
@@ -1272,11 +1283,32 @@ class TestNonEnforcingCallers:
             patch("sova.dashboard.routers.handoff.handoff_service.clear_handoff"),
             patch("sova.dashboard.routers.spec.handoff_service.clear_handoff"),
             patch("sova.dashboard.routers.spec.spec_service.approve_spec", return_value={"status": "approved"}),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new=AsyncMock(return_value=True)),
+            patch("sova.dashboard.routers.spec._transition_issue", new=AsyncMock(return_value=True)) as transition,
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.RESEARCHED)),
         ):
             resp = await getattr(client, method)(url, json=body) if body else await getattr(client, method)(url)
         assert resp.status_code == 200, resp.text
         _assert_not_enforced(start)
+        expected = {
+            "spec_approve": [("7", TaskState.RESEARCHED)],
+            "spec_revise": [("7", TaskState.TRIAGED)],
+            "spec_skip": [("7", TaskState.RESEARCHED)],
+        }.get(caller, [])
+        assert [c.args for c in transition.await_args_list] == expected
+
+    async def test_revise_of_an_already_triaged_issue_does_not_transition_it(self, client: AsyncClient) -> None:
+        from sova.dashboard.services import control_service as cs
+
+        with (
+            patch.object(cs, "start_agent", AsyncMock(return_value={"status": "started", "run_id": 1})),
+            patch.object(cs, "complete_awaiting_approval_by_issue", new=AsyncMock(return_value=None)),
+            patch("sova.dashboard.routers.spec.handoff_service.clear_handoff"),
+            patch("sova.dashboard.routers.spec._transition_issue", new=AsyncMock()) as transition,
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.TRIAGED)),
+        ):
+            resp = await client.post("/api/spec/7/revise")
+        assert resp.status_code == 200, resp.text
+        transition.assert_not_awaited()
 
     async def test_auto_handoff_does_not_enforce(self, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_handoff import _process_auto_handoff

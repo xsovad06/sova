@@ -18,6 +18,17 @@ from tests.conftest import csrf_request_headers as _csrf_request_headers
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
+@pytest.fixture(autouse=True)
+def _no_active_agent_on_the_issue():
+    """/revise peeks at the process-wide agent registry, which an earlier test's agent can still occupy."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.dashboard.services import control_service
+
+    with patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=None)):
+        yield
+
+
 @pytest.fixture
 async def client(dashboard_app):
 
@@ -263,7 +274,7 @@ class TestSpecRouterErrors:
                 return_value={"status": "approved"},
             ),
             patch(
-                "sova.dashboard.routers.spec._transition_to_researched",
+                "sova.dashboard.routers.spec._transition_issue",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -316,7 +327,8 @@ class TestSpecRouterErrors:
         with (
             patch("sova.dashboard.routers.spec.spec_service.approve_spec", return_value={"status": "approved"}),
             patch.object(cs, "complete_awaiting_approval_by_issue", new_callable=AsyncMock, return_value=None),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock),
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value="researched")),
             patch.object(cs, "start_agent", new_callable=AsyncMock, side_effect=RuntimeError("spawn: /secret/path")),
         ):
             resp = await client.post(f"/api/spec/42/{action}")
