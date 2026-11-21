@@ -49,6 +49,7 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model, runs_as_role
+from sova.llm.errors import was_content_filtered
 from sova.llm.guard import PromptInjectionError
 from sova.llm.models import CostSource, accumulate_llm_result
 
@@ -59,6 +60,7 @@ from sova.roles._review_comments import (
     _MAX_COMPACT_SPEC_CHARS,
     _SPEC_SECTIONS,
     _VERDICT_TO_LABEL,
+    CAUSE_UNPARSEABLE,
     CRITERIA_CATEGORY,
     DIFF_CHUNK_SIZE,
     ReviewFinding,
@@ -87,6 +89,7 @@ from sova.roles._review_comments import (
     _sova_verdict_label_name,
     _try_parse_findings,
     _verdict_label,
+    review_failure_cause,
 )
 from sova.roles._review_format import _SEVERITY_HIGH
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
@@ -691,7 +694,11 @@ class ReviewerRole(AgentRole):
 
         if result.unreviewed_files:
             result.findings.append(
-                _make_incomplete_review_finding(result.unreviewed_files, revise_at=ctx.config.review.revise_severity)
+                _make_incomplete_review_finding(
+                    result.unreviewed_files,
+                    revise_at=ctx.config.review.revise_severity,
+                    causes=result.unreviewed_causes,
+                )
             )
 
         if staleness_note:
@@ -804,6 +811,7 @@ class ReviewerRole(AgentRole):
         model = self._resolve_review_model(ctx)
 
         failed_chunks = 0
+        summary_is_unavailable = False
         chunk_notes: list[tuple[str, list[ReviewFinding]]] = []
         # The criteria pass takes its own share of the budget, reserved up front so the chunk reviews and the
         # pass together stay within agent.max_budget.
@@ -832,12 +840,14 @@ class ReviewerRole(AgentRole):
                 findings, summary = await self._review_chunk_with_retry(
                     ctx, prompt, chunk, i, model, share_budget, result
                 )
-            except Exception:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
+            except Exception as exc:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
                 failed_chunks += 1
-                result.mark_unreviewed(_chunk_files(chunk) or files)
+                cause = CAUSE_UNPARSEABLE if isinstance(exc, _UnparseableReviewError) else review_failure_cause(exc)
+                result.mark_unreviewed(_chunk_files(chunk) or files, cause=cause)
                 if not result.findings:
-                    result.summary = "LLM review unavailable: manual review recommended"
+                    result.summary = result.unavailable_summary()
+                    summary_is_unavailable = True
                 continue
 
             if len(chunks) == 1:
@@ -848,6 +858,10 @@ class ReviewerRole(AgentRole):
             chunk_notes.append((summary, findings))
             if i == 0 or not result.summary:
                 result.summary = summary
+
+        if summary_is_unavailable:
+            # Rebuilt once every chunk has run: a later chunk can add a cause or review the rest of the diff.
+            result.summary = result.unavailable_summary(partial=failed_chunks < len(chunks))
 
         if runs_criteria_pass:
             await self._run_criteria_pass(ctx, task, files, chunks, chunk_notes, model, share_budget, result)
@@ -920,9 +934,13 @@ class ReviewerRole(AgentRole):
         """Review one chunk, retrying the whole attempt once on a transient failure.
 
         A ``PromptInjectionError`` is not retried: the guard is deterministic, so the same prompt
-        would be rejected again. The retry spends only what is left of *chunk_budget*, so a chunk's
-        worst-case spend does not double. Raises the last error when both attempts fail. *label* names a call
-        that is not one of the diff's chunks (the criteria pass) in logs and errors, in place of the chunk number.
+        would be rejected again. Nor is a content-filter block on any hop of the model chain
+        (``was_content_filtered()``, which sees a filtered primary whose fallback then failed differently): the
+        chain has already offered the prompt to each model in ``agent.fallback_models``, and resending it
+        unchanged to the same model was blocked again in every observed case (issue #1531). The retry spends
+        only what is left of *chunk_budget*, so a chunk's worst-case spend does not double. Raises the last
+        error when both attempts fail. *label* names a call that is not one of the diff's chunks (the criteria
+        pass) in logs and errors, in place of the chunk number.
         """
         first_call = len(result.llm_results)
         try:
@@ -931,7 +949,9 @@ class ReviewerRole(AgentRole):
             )
         except PromptInjectionError:
             raise
-        except Exception:  # noqa: BLE001 (any transient failure is retried once before the chunk is reported unreviewed)
+        except Exception as exc:  # noqa: BLE001 (any transient failure is retried once before the chunk is reported unreviewed)
+            if was_content_filtered(exc):
+                raise
             log.warning("reviewer.chunk_retry", chunk=label or chunk_index + 1, exc_info=True)
         return await self._review_chunk(ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call, label)
 

@@ -22,9 +22,12 @@ from sova.dashboard.services.work_state import (
     resolve_next_action,
 )
 from sova.dashboard.services.work_verdict import parse_review_history
+from sova.llm.errors import BillingError, ContentFilteredError, LLMTimeoutError, note_content_filtered_models
 from sova.llm.guard import PromptInjectionError, ScanResult, guard_prompt
 from sova.llm.models import LLMResult
 from sova.roles._review_comments import (
+    CAUSE_CONTENT_FILTERED,
+    CAUSE_UNPARSEABLE,
     ReviewFinding,
     ReviewResult,
     _build_criteria_prompt,
@@ -36,9 +39,10 @@ from sova.roles._review_comments import (
     _parse_findings,
     _try_parse_findings,
     _verdict_label,
+    review_failure_cause,
 )
 from sova.roles._review_format import format_review_body
-from sova.roles.panel_review import _PanelState, run_panel_review
+from sova.roles.panel_review import _PanelState, _review_call, run_panel_review
 from sova.roles.reviewer import _SCHEMA_MAX_RETRIES, DIFF_CHUNK_SIZE, ReviewerRole, _review_next_action
 from sova.utils.review_markers import (
     INCOMPLETE_REVIEW_CATEGORY,
@@ -783,3 +787,192 @@ class TestEdgeGuards:
         # The first call spends the whole chunk budget, so neither a schema retry nor a chunk retry runs.
         assert mock_invoke.await_count == 1
         assert result.unreviewed_files == ["a.py"]
+
+
+SAFEGUARDS = "Claude CLI failed (exit 1): API Error: Opus 5.5's safeguards flagged this message"
+
+
+def _filtered_then_failed(error: Exception) -> Exception:
+    """The error walk_model_chain() raises when the primary was content-filtered and the fallback then failed."""
+    note_content_filtered_models(error, ["opus"])
+    return error
+
+
+class TestUnreviewedCause:
+    """An unreviewed chunk's review names why it went unreviewed (issue #1531)."""
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (ContentFilteredError(SAFEGUARDS), CAUSE_CONTENT_FILTERED),
+            # Providers can still raise a bare RuntimeError: the cause comes from its message.
+            (RuntimeError(SAFEGUARDS), CAUSE_CONTENT_FILTERED),
+            (LLMTimeoutError("Command timed out after 855s"), "the model call timed out"),
+            # A suspended account or provider quota is not SOVA's own review budget.
+            (BillingError("insufficient_quota"), "a budget or billing limit was reached"),
+            (PromptInjectionError(ScanResult(safe=False, risk_score=0.9)), "the prompt injection guard"),
+            (RuntimeError("down"), "the model call failed"),
+        ],
+    )
+    def test_cause_names_the_failure_category(self, exc: Exception, expected: str) -> None:
+        assert expected in review_failure_cause(exc)
+
+    def test_mark_unreviewed_records_each_cause_once_in_order(self) -> None:
+        review = ReviewResult()
+        review.mark_unreviewed(["a.py"], cause="timed out")
+        review.mark_unreviewed(["b.py"], cause="filtered")
+        review.mark_unreviewed(["c.py"], cause="timed out")
+        review.mark_unreviewed(["d.py"])
+
+        assert review.unreviewed_files == ["a.py", "b.py", "c.py", "d.py"]
+        assert review.unreviewed_causes == ["timed out", "filtered"]
+
+    def test_finding_names_the_causes(self) -> None:
+        finding = _make_incomplete_review_finding(["a.py"], revise_at=3, causes=["timed out", "filtered"])
+
+        assert finding.description.startswith("Review incomplete (timed out; filtered): 1 file(s)")
+
+    def test_finding_without_a_cause_keeps_its_wording(self) -> None:
+        finding = _make_incomplete_review_finding(["a.py"], revise_at=3)
+
+        assert finding.description.startswith("Review incomplete: 1 file(s)")
+
+    # A provider that still raises a bare RuntimeError must not get the same-model retry back either.
+    @pytest.mark.parametrize("error_cls", [ContentFilteredError, RuntimeError])
+    async def test_content_filtered_chunk_is_not_retried_and_the_review_says_why(
+        self, tmp_path: Path, error_cls: type[Exception]
+    ) -> None:
+        error = error_cls(SAFEGUARDS)
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=error) as mock_invoke:
+            result = await ReviewerRole()._run_review(_ctx(tmp_path), _task(), ONE_FILE_DIFF, ["a.py"])
+
+        assert mock_invoke.await_count == 1
+        assert result.unreviewed_files == ["a.py"]
+        assert result.summary == (f"LLM review unavailable ({CAUSE_CONTENT_FILTERED}): manual review recommended")
+        assert CAUSE_CONTENT_FILTERED in result.findings[-1].description
+
+    async def test_timed_out_chunk_is_still_retried_and_named(self, tmp_path: Path) -> None:
+        error = LLMTimeoutError("Command timed out after 855s")
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=error) as mock_invoke:
+            result = await ReviewerRole()._run_review(_ctx(tmp_path), _task(), ONE_FILE_DIFF, ["a.py"])
+
+        assert mock_invoke.await_count == 2
+        assert "the model call timed out" in result.summary
+
+    async def test_every_distinct_cause_is_named(self, tmp_path: Path) -> None:
+        responses = [ContentFilteredError(SAFEGUARDS), LLMTimeoutError("timed out"), LLMTimeoutError("timed out")]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=responses):
+            result = await ReviewerRole()._run_review(_ctx(tmp_path), _task(), TWO_FILE_DIFF, ["a.py", "b.py"])
+
+        assert result.unreviewed_files == ["a.py", "b.py"]
+        assert result.summary == (
+            f"LLM review unavailable ({CAUSE_CONTENT_FILTERED}; the model call timed out): manual review recommended"
+        )
+
+    async def test_unparseable_response_is_named(self, tmp_path: Path) -> None:
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=GARBAGE):
+            result = await ReviewerRole()._run_single_review(_ctx(tmp_path), _task(), ONE_FILE_DIFF, ["a.py"], None)
+
+        assert "no parseable review" in result.summary
+
+    @pytest.mark.parametrize("error_cls", [ContentFilteredError, RuntimeError])
+    async def test_panel_content_filtered_call_is_not_retried_and_named(self, error_cls: type[Exception]) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness"])
+        error = error_cls(SAFEGUARDS)
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, side_effect=error) as invoke:
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel)
+
+        assert invoke.await_count == 1
+        assert result.unreviewed_files == ["a.py"]
+        assert result.unreviewed_causes == [CAUSE_CONTENT_FILTERED]
+        assert CAUSE_CONTENT_FILTERED in result.summary
+
+    async def test_panel_budget_skip_is_named(self) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness"])
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, return_value=_ok()):
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel, budget_remaining=Decimal("0"))
+
+        assert result.unreviewed_causes == ["the review budget ran out"]
+        assert "the review budget ran out" in result.summary
+
+    async def test_filtered_primary_with_a_failing_fallback_is_not_retried_and_names_the_filter(
+        self, tmp_path: Path
+    ) -> None:
+        error = _filtered_then_failed(LLMTimeoutError("Command timed out after 855s"))
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=error) as mock_invoke:
+            result = await ReviewerRole()._run_review(_ctx(tmp_path), _task(), ONE_FILE_DIFF, ["a.py"])
+
+        assert mock_invoke.await_count == 1
+        assert result.unreviewed_causes == [CAUSE_CONTENT_FILTERED]
+        assert CAUSE_CONTENT_FILTERED in result.summary
+
+    async def test_panel_filtered_primary_with_a_failing_fallback_is_not_retried_and_names_the_filter(self) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness"])
+        error = _filtered_then_failed(LLMTimeoutError("Command timed out after 855s"))
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, side_effect=error) as invoke:
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel)
+
+        assert invoke.await_count == 1
+        assert result.unreviewed_causes == [CAUSE_CONTENT_FILTERED]
+
+    async def test_panel_combined_group_content_filtered_call_names_the_filter(self) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=True, dimensions=["correctness", "security"])
+        with patch(
+            "sova.roles.panel_review.invoke", new_callable=AsyncMock, side_effect=ContentFilteredError(SAFEGUARDS)
+        ) as invoke:
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel)
+
+        assert invoke.await_count == 1
+        assert result.unreviewed_files == ["a.py"]
+        assert result.unreviewed_causes == [CAUSE_CONTENT_FILTERED]
+
+    async def test_panel_retry_stopped_by_the_budget_keeps_the_first_attempts_cause(self) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness"])
+        error = LLMTimeoutError("Command timed out after 855s")
+        # The first call is affordable (0.01 estimate) and its charge leaves too little for the retry.
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, side_effect=error) as invoke:
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel, budget_remaining=Decimal("0.015"))
+
+        assert invoke.await_count == 1
+        assert result.unreviewed_causes == ["the model call timed out"]
+
+    async def test_panel_timeout_then_unparseable_retry_names_the_unparseable_response(self) -> None:
+        panel = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness"])
+        responses = [LLMTimeoutError("timed out"), GARBAGE]
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, side_effect=responses):
+            result = await run_panel_review(_task(), ONE_FILE_DIFF, ["a.py"], panel)
+
+        assert result.unreviewed_causes == [CAUSE_UNPARSEABLE]
+
+    async def test_panel_failure_state_is_cleared_by_the_next_call(self) -> None:
+        state = _PanelState(result=ReviewResult(), budget_remaining=None)
+        state.last_call_failure = "stale cause from a previous call"
+        request = MagicMock()
+        request.index = 0
+        request.cwd = None
+        request.diff = ONE_FILE_DIFF
+        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, return_value=_ok()):
+            parsed = await _review_call(
+                state,
+                "prompt",
+                model="sonnet",
+                task_type="review_x",
+                request=request,
+                estimated_cost=Decimal("0.01"),
+                parse=_try_parse_findings,
+            )
+
+        assert parsed is not None
+        assert state.last_call_failure is None
+
+    async def test_later_reviewed_chunk_makes_the_unavailable_summary_partial(self, tmp_path: Path) -> None:
+        responses = [ContentFilteredError(SAFEGUARDS), _ok()]
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=responses):
+            result = await ReviewerRole()._run_single_review(
+                _ctx(tmp_path), _task(), TWO_FILE_DIFF, ["a.py", "b.py"], None
+            )
+
+        assert result.unreviewed_files == ["a.py"]
+        assert result.summary == (
+            f"LLM review unavailable for part of the diff ({CAUSE_CONTENT_FILTERED}): manual review recommended"
+        )

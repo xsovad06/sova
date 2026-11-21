@@ -13,6 +13,18 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sova.adapters.base import Task
+from sova.llm.errors import (
+    BillingError,
+    ConfigurationError,
+    ContentFilteredError,
+    LLMTimeoutError,
+    ModelUnavailableError,
+    ProviderUnavailableError,
+    RateLimitError,
+    resolve_error_category,
+    was_content_filtered,
+)
+from sova.llm.guard import PromptInjectionError
 from sova.llm.models import LLMResult
 from sova.llm.payload import trim_payload
 from sova.roles._review_format import (
@@ -150,6 +162,9 @@ class ReviewResult:
     # Files of every diff chunk that still failed after a retry, so the verdict is never APPROVE for a diff
     # that was only partly reviewed.
     unreviewed_files: list[str] = field(default_factory=list)
+    # Why those chunks went unreviewed (``review_failure_cause()`` phrases), named in the posted summary and
+    # incomplete-review finding so a content-filter block reads differently from a hung call (issue #1531).
+    unreviewed_causes: list[str] = field(default_factory=list)
 
     @property
     def actionable(self) -> list[ReviewFinding]:
@@ -160,9 +175,17 @@ class ReviewResult:
         """Findings that decide the verdict: the actionable ones plus the incomplete-review cap."""
         return [f for f in self.findings if f.category != "protected-path"]
 
-    def mark_unreviewed(self, files: list[str]) -> None:
-        """Record *files* as unreviewed, keeping first-seen order without duplicates."""
+    def mark_unreviewed(self, files: list[str], cause: str | None = None) -> None:
+        """Record *files* as unreviewed for *cause*, keeping first-seen order without duplicates."""
         self.unreviewed_files.extend(f for f in dict.fromkeys(files) if f not in self.unreviewed_files)
+        if cause and cause not in self.unreviewed_causes:
+            self.unreviewed_causes.append(cause)
+
+    def unavailable_summary(self, *, partial: bool = False) -> str:
+        """The review summary for a diff the model could not review, naming every recorded cause."""
+        scope = " for part of the diff" if partial else ""
+        causes = f" ({'; '.join(self.unreviewed_causes)})" if self.unreviewed_causes else ""
+        return f"LLM review unavailable{scope}{causes}: manual review recommended"
 
     def blocking(self, revise_at: int) -> list[ReviewFinding]:
         """Actionable findings at or above *revise_at*: the subset that blocks the verdict.
@@ -714,6 +737,39 @@ def _verdict_label(
 _DIFF_HEADER_PREFIX = "diff --git "
 _MAX_UNREVIEWED_FILES_LISTED = 20
 
+CAUSE_CONTENT_FILTERED = "blocked by the model provider's content filter"
+CAUSE_UNPARSEABLE = "no parseable review in the model's response"
+CAUSE_BUDGET = "the review budget ran out"
+_CAUSE_CALL_FAILED = "the model call failed"
+
+# One phrase per resolve_error_category() result. LLMInvocationError (unmatched) falls through to
+# _CAUSE_CALL_FAILED, so a new category added to sova/llm/errors.py reads as a plain failure until named here.
+_CATEGORY_CAUSES: dict[type, str] = {
+    ContentFilteredError: CAUSE_CONTENT_FILTERED,
+    LLMTimeoutError: "the model call timed out",
+    RateLimitError: "the model provider was rate limiting",
+    ModelUnavailableError: "the review model is not available",
+    ProviderUnavailableError: "the model provider could not be reached",
+    # Not CAUSE_BUDGET: BillingError also covers a suspended account or exhausted provider quota, which
+    # agent.max_budget cannot fix. CAUSE_BUDGET is kept for the panel's own budget gate.
+    BillingError: "a budget or billing limit was reached",
+    ConfigurationError: "an LLM configuration error",
+}
+
+
+def review_failure_cause(exc: BaseException) -> str:
+    """Name why a review call failed, from the error's category rather than its raw text.
+
+    The raw message can quote provider output and is never posted to the PR: the category is enough for an
+    operator to tell a content-filter false positive (try another model) from a hung call (re-run).
+    """
+    if isinstance(exc, PromptInjectionError):
+        return "the prompt injection guard rejected the prompt"
+    # A filtered primary whose fallback then failed differently is still a content-filter block.
+    if was_content_filtered(exc):
+        return CAUSE_CONTENT_FILTERED
+    return _CATEGORY_CAUSES.get(resolve_error_category(exc), _CAUSE_CALL_FAILED)
+
 
 _GIT_SIMPLE_ESCAPES = {
     "a": 7,
@@ -797,22 +853,27 @@ def _neutralize_marker_syntax(path: str) -> str:
     return path.replace("<", "&lt;")
 
 
-def _make_incomplete_review_finding(unreviewed_files: list[str], *, revise_at: int) -> ReviewFinding:
+def _make_incomplete_review_finding(
+    unreviewed_files: list[str], *, revise_at: int, causes: list[str] | None = None
+) -> ReviewFinding:
     """Create the synthetic finding that caps the verdict at REVISE when part of the diff was not reviewed.
 
     ``unreviewed_files`` must contain at least one entry (the caller guards with ``if result.unreviewed_files:``).
+    *causes* (``ReviewResult.unreviewed_causes``) are named in the description, which is posted even when the
+    review summary is the model's own text from a chunk that did succeed.
     """
     if not unreviewed_files:
         raise ValueError("unreviewed_files must not be empty")
     listed = ", ".join(_neutralize_marker_syntax(path) for path in unreviewed_files[:_MAX_UNREVIEWED_FILES_LISTED])
     hidden = len(unreviewed_files) - _MAX_UNREVIEWED_FILES_LISTED
     more = f" (and {hidden} more)" if hidden > 0 else ""
+    reason = f" ({'; '.join(causes)})" if causes else ""
     return ReviewFinding(
         file=_neutralize_marker_syntax(unreviewed_files[0]),
         severity=revise_at,
         category=INCOMPLETE_REVIEW_CATEGORY,
         description=(
-            f"Review incomplete: {len(unreviewed_files)} file(s) could not be reviewed and are not covered by "
+            f"Review incomplete{reason}: {len(unreviewed_files)} file(s) could not be reviewed and are not covered by "
             f"this verdict: {listed}{more}. Re-run the review before merging."
         ),
     )
