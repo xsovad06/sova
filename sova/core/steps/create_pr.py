@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import TaskState
-from sova.config.models import DEFAULT_COMMIT_SCOPES, DEFAULT_COMMIT_TYPES, TaskSourceConfig
+from sova.config.models import FALLBACK_COMMIT_TYPES, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import (
     _ISSUE_BODY_EXCERPT_LIMIT,
@@ -76,16 +76,14 @@ def _queue_wait_seconds(ctx: ExecutionContext) -> float:
     return max(0.0, min(_QUEUE_WAIT_CAP_SECONDS, remaining - _QUEUE_WAIT_MARGIN_SECONDS))
 
 
-def _infer_scope(changed_files: list[str] | None, scopes: Collection[str] | None = None) -> str:
+def _infer_scope(changed_files: list[str] | None, scopes: Collection[str]) -> str:
     """Infer a conventional-commit scope from the PR's changed paths.
 
     Thin wrapper around :func:`~sova.core.steps.commit_convention.infer_scope_from_paths`
-    (shared with ``CommitStep``) defaulting *scopes* to ``DEFAULT_COMMIT_SCOPES``
-    (SOVA's own convention) when omitted, kept here so existing call sites and
-    tests can keep importing ``_infer_scope`` from this module.
+    (shared with ``CommitStep``), kept here so existing call sites and tests can
+    keep importing ``_infer_scope`` from this module. *scopes* is required: no
+    project's scopes are a safe default.
     """
-    if scopes is None:
-        scopes = DEFAULT_COMMIT_SCOPES
     return infer_scope_from_paths(changed_files, scopes, preferred=_DEFAULT_SCOPE)
 
 
@@ -103,8 +101,8 @@ def _build_pr_title(
     integration auto-links the PR to the ticket.
 
     For GitHub projects, the scope is inferred from *changed_files* against
-    *scopes* (see :func:`_infer_scope`; defaults to SOVA's own convention
-    when *scopes* is omitted) so the title is a valid ``type(scope): ...``
+    *scopes* (see :func:`_infer_scope`; no scope restriction when
+    *scopes* is omitted) so the title is a valid ``type(scope): ...``
     that ``invariants/commit-format.sh`` accepts. The issue number is
     deliberately not in the title: it is linked via ``Closes #N`` in the
     body, and a ``feat(#N): ...`` title parses to an invalid scope that
@@ -119,7 +117,7 @@ def _build_pr_title(
     title this builder is the fallback for, so a verbatim issue title well
     over the limit cannot reach the PR just because the LLM call failed.
     """
-    resolved_types = types or DEFAULT_COMMIT_TYPES
+    resolved_types = types or FALLBACK_COMMIT_TYPES
     match = match_type_prefix(task_title, resolved_types)
     if match:
         commit_type = match.group("type")
@@ -133,7 +131,7 @@ def _build_pr_title(
         jira_key = f"[{task_source.jira_issue_key(issue_number)}]"
         return truncate_commit_line(f"{jira_key} {commit_type}: {description}")
 
-    scope = _infer_scope(changed_files, scopes)
+    scope = _infer_scope(changed_files, scopes or ())
     return truncate_commit_line(f"{format_type_scope(commit_type, scope)}: {description}")
 
 

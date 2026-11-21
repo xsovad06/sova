@@ -14,7 +14,15 @@ import pytest
 from sqlalchemy import select
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import AgentConfig, LLMConfig, ProjectConfig, TaskSourceConfig
+from sova.config.models import (
+    DEFAULT_COMMIT_SCOPES,
+    DEFAULT_COMMIT_TYPES,
+    AgentConfig,
+    CommitConfig,
+    LLMConfig,
+    ProjectConfig,
+    TaskSourceConfig,
+)
 from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -41,11 +49,22 @@ def _mock_adapter() -> AsyncMock:
     return adapter
 
 
+def _sova_commit_config() -> ProjectConfig:
+    """A config with SOVA's own commit lists, which the loader gives only the SOVA repository.
+
+    A bare ``ProjectConfig()`` carries the neutral defaults (conventional types, no scopes), so a test that
+    asserts a ``type(scope):`` subject names the scope list it depends on.
+    """
+    return ProjectConfig(
+        commit=CommitConfig(types=list(DEFAULT_COMMIT_TYPES), scopes=list(DEFAULT_COMMIT_SCOPES)),
+    )
+
+
 def _make_ctx(tmp_path: Path, **kwargs) -> ExecutionContext:
     """Create a test ExecutionContext with sensible defaults."""
     defaults = {
         "project_dir": tmp_path,
-        "config": ProjectConfig(),
+        "config": _sova_commit_config(),
         "adapter": _mock_adapter(),
         "issue_number": "42",
         "role": "developer",
@@ -4448,7 +4467,7 @@ class TestCreatePRStepJira:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, branch_name="feat/issue-42")
-        ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
+        ctx.config = _sova_commit_config().model_copy(update={"task_source": TaskSourceConfig(type="github")})
         step = CreatePRStep()
         await step.execute(ctx)
 
@@ -12406,7 +12425,7 @@ class TestHandleSigtermShutdown:
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
-        ctx.config = ProjectConfig()
+        ctx.config = _sova_commit_config()
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, run_id)
@@ -12448,7 +12467,7 @@ class TestHandleSigtermShutdown:
 
         ctx = MagicMock()
         ctx.worktree_dir = tmp_path / "does-not-matter"
-        ctx.config = ProjectConfig()
+        ctx.config = _sova_commit_config()
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)) as mock_preserve:
             await _handle_sigterm_shutdown(ctx, None)
@@ -12475,7 +12494,7 @@ class TestHandleSigtermShutdown:
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("0")
-        ctx.config = ProjectConfig()
+        ctx.config = _sova_commit_config()
 
         with (
             patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=False)),

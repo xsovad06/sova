@@ -26,7 +26,14 @@ from sova.adapters.external_reviews import (
     format_findings_for_prompt,
     get_check_statuses,
 )
-from sova.config.models import ExternalReviewsConfig, ProjectConfig, SonarCloudConfig
+from sova.config.models import (
+    DEFAULT_COMMIT_SCOPES,
+    DEFAULT_COMMIT_TYPES,
+    CommitConfig,
+    ExternalReviewsConfig,
+    ProjectConfig,
+    SonarCloudConfig,
+)
 from sova.core.context import ExecutionContext
 from sova.llm.payload import TRUNCATION_MARKER
 from sova.utils.shell import ShellResult
@@ -41,6 +48,12 @@ def _mock_adapter() -> AsyncMock:
     adapter.get_state.return_value = TaskState.RESEARCHED
     adapter.get_task.return_value = Task(id="1", title="Test issue")
     return adapter
+
+
+def _sova_commit_config(**kwargs: Any) -> ProjectConfig:
+    """A config with SOVA's own commit lists (the loader gives them only to the SOVA repository)."""
+    commit = CommitConfig(types=list(DEFAULT_COMMIT_TYPES), scopes=list(DEFAULT_COMMIT_SCOPES))
+    return ProjectConfig(commit=commit, **kwargs)
 
 
 def _make_ctx(**kwargs: Any) -> ExecutionContext:
@@ -721,7 +734,7 @@ class TestAddressExternalFindingsStep:
         """The fallback commit message must use a scope invariants/commit-format.sh accepts."""
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
-        cfg = ProjectConfig(external_reviews=_ext_config())
+        cfg = _sova_commit_config(external_reviews=_ext_config())
         ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
         sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
         mock_llm = AsyncMock()
@@ -756,7 +769,7 @@ class TestAddressExternalFindingsStep:
         """
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
-        cfg = ProjectConfig(external_reviews=_ext_config())
+        cfg = _sova_commit_config(external_reviews=_ext_config())
         ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
         sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
         cr = _ThreadsResult(
@@ -1421,7 +1434,7 @@ class TestAddressExternalFindingsStep:
         and the step continues the pipeline since the push reached the PR branch."""
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
-        cfg = ProjectConfig(external_reviews=_ext_config())
+        cfg = _sova_commit_config(external_reviews=_ext_config())
         ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
         sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
 

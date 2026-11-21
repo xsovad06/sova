@@ -265,8 +265,14 @@ class TestBuildPromptTitleRequest:
     """A PR title is requested for a non-JIRA project, never for JIRA."""
 
     def test_github_project_requests_a_title_scoped_to_configured_lists(self, tmp_path: Path) -> None:
+        ctx = _ctx(tmp_path)
+        ctx.config = ProjectConfig(
+            commit=CommitConfig(
+                types=["feat", "fix", "refactor", "test", "docs", "chore", "ci"], scopes=["core", "cli"]
+            )
+        )
         prompt = build_pr_body_prompt(
-            _ctx(tmp_path),
+            ctx,
             task_title="Fix the bug",
             issue_body="",
             commit_log="",

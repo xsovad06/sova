@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sova.config.models import DEFAULT_COMMIT_SCOPES, DEFAULT_COMMIT_TYPES
+from sova.config.models import FALLBACK_COMMIT_TYPES
 from sova.core.context import BUDGET_SKIP_HOOKS_THRESHOLD, ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.steps.commit_convention import (
+    describe_line_form,
+    describe_scope_choice,
     format_type_scope,
     infer_scope_from_paths,
     infer_type_from_paths,
@@ -57,13 +59,13 @@ def _normalize_commit_subject(
     characters, the same two rules :func:`is_valid_commit_line` enforces on
     an LLM-proposed subject: this is the fallback that runs whenever that
     proposal fails, so it has to satisfy the convention by itself. Validates
-    against the configured *types*/*scopes* (defaulting to SOVA's own
-    convention when omitted), not a hardcoded type list, so a project whose
+    against the configured *types*/*scopes* (defaulting to the conventional
+    types and no scope restriction when omitted), not a hardcoded type list, so a project whose
     ``commit.types`` carries its own vocabulary (e.g. ``["feature",
     "bugfix"]``) does not raise here on every single fallback commit.
     """
-    types = types if types is not None else DEFAULT_COMMIT_TYPES
-    scopes = scopes if scopes is not None else DEFAULT_COMMIT_SCOPES
+    types = types if types is not None else FALLBACK_COMMIT_TYPES
+    scopes = scopes if scopes is not None else ()
 
     subject = " ".join(subject.strip().split())
     subject = strip_type_prefix(subject, types)
@@ -103,9 +105,8 @@ def _resolve_task_title(ctx: ExecutionContext) -> str:
 
 _COMMIT_SUBJECT_PROMPT = """\
 Propose a single conventional-commit subject line for this change. Output \
-ONLY that one line, in the exact form "type(scope): subject" (or \
-"type: subject" only when type is "ci"), with no fences, commentary, or \
-quotes. type must be one of: {types}. scope must be one of: {scopes}. \
+ONLY that one line, in the exact form {line_form}, with no fences, \
+commentary, or quotes. type must be one of: {types}. scope must be {scopes}. \
 Choose the type and the scope from the changed paths below, not from the \
 task title: a change confined to documentation is "docs", one confined to \
 tests is "test", and the scope must name the area those paths belong to. \
@@ -274,8 +275,9 @@ class CommitStep(BaseStep):
 
         nonce, task_title_block = _quote_untrusted("task_title", task_title)
         prompt = _COMMIT_SUBJECT_PROMPT.format(
+            line_form=describe_line_form(ctx.config.commit.scopes),
             types=", ".join(ctx.config.commit.types),
-            scopes=", ".join(ctx.config.commit.scopes),
+            scopes=describe_scope_choice(ctx.config.commit.scopes),
             nonce=nonce,
             task_title_block=task_title_block,
             change_summary=survey.summary(),

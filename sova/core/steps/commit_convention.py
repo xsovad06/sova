@@ -37,7 +37,8 @@ def commit_line_problem(
     unknown type, an unknown or missing scope, a capitalized subject) so a
     caller can report it; :func:`is_valid_commit_line` is the boolean form.
     With *require_scope* False a missing scope is accepted on every type, as
-    on ``"ci"``; a scope that is present must still be configured.
+    on ``"ci"``; a scope that is present must still be configured. An empty
+    *scopes* places no restriction on the scope.
     """
     candidate = line.strip()
     if not candidate:
@@ -56,17 +57,19 @@ def commit_line_problem(
     if commit_type not in types:
         return f"unknown type '{commit_type}'"
 
-    if commit_type == _SCOPELESS_TYPE or not require_scope:
-        # Scope-optional, not scope-forbidden: invariants/commit-format.sh
-        # accepts both "ci: subject" and "ci(scope): subject" (the latter via
-        # its general type(scope) pattern, which "ci" also matches), so a
-        # scope is only rejected here when present but not configured.
-        if scope is not None and scope not in scopes:
+    if scopes:
+        if commit_type == _SCOPELESS_TYPE or not require_scope:
+            # Scope-optional, not scope-forbidden: invariants/commit-format.sh
+            # accepts both "ci: subject" and "ci(scope): subject" (the latter via
+            # its general type(scope) pattern, which "ci" also matches), so a
+            # scope is only rejected here when present but not configured.
+            if scope is not None and scope not in scopes:
+                return f"unknown scope '{scope}'"
+        elif not scope:
+            return "missing scope"
+        elif scope not in scopes:
             return f"unknown scope '{scope}'"
-    elif not scope:
-        return "missing scope"
-    elif scope not in scopes:
-        return f"unknown scope '{scope}'"
+    # An empty *scopes* is no restriction: any scope, or none, is accepted.
 
     # An all-caps opening word (e.g. "LLM provider abstraction") is an
     # acronym lowercase_first_letter() deliberately leaves alone; reject
@@ -139,10 +142,12 @@ def resolve_default_scope(scopes: list[str] | frozenset[str] | tuple[str, ...], 
     commit-format check accepts, rather than always "core", which it may
     well reject: literally emitting *preferred* regardless of *scopes* is
     the exact drift this configuration exists to stop. An empty *scopes*
-    (a misconfigured project) returns *preferred* as a last resort, since
-    something has to be emitted and that is at least SOVA's default.
+    (a project with no scope convention) returns "", which
+    :func:`format_type_scope` renders as no scope at all.
     """
-    if not scopes or preferred in scopes:
+    if not scopes:
+        return ""
+    if preferred in scopes:
         return preferred
     return next(iter(scopes))
 
@@ -175,7 +180,7 @@ def resolve_default_type(types: list[str] | frozenset[str] | tuple[str, ...], *,
 
 
 def format_type_scope(commit_type: str, scope: str) -> str:
-    """Return ``"type(scope)"``, or bare ``"type"`` when *commit_type* is scopeless.
+    """Return ``"type(scope)"``, or bare ``"type"`` when *commit_type* is scopeless or *scope* is empty.
 
     "ci" is the one configured type :func:`is_valid_commit_line` requires to
     carry no scope at all; every other caller building a ``type(scope):
@@ -183,7 +188,7 @@ def format_type_scope(commit_type: str, scope: str) -> str:
     appending ``(scope)`` unconditionally, which would hand "ci" a scope its
     own convention rejects.
     """
-    if commit_type == _SCOPELESS_TYPE:
+    if commit_type == _SCOPELESS_TYPE or not scope:
         return commit_type
     return f"{commit_type}({scope})"
 
@@ -343,6 +348,20 @@ def infer_type_from_paths(
         if "test" in types and all(_is_test_only_path(p) for p in changed_files):
             return "test"
     return resolve_default_type(types, preferred=preferred)
+
+
+def describe_line_form(scopes: list[str] | frozenset[str] | tuple[str, ...]) -> str:
+    """The line form for an LLM prompt: scope required (bar "ci") when *scopes* is set, optional when empty."""
+    if scopes:
+        return '"type(scope): subject" (or "type: subject" only when type is "ci")'
+    return '"type: subject" or "type(scope): subject"'
+
+
+def describe_scope_choice(scopes: list[str] | frozenset[str] | tuple[str, ...]) -> str:
+    """The scope rule for an LLM prompt: the configured list, or a free choice when the project has none."""
+    if scopes:
+        return f"one of: {', '.join(scopes)}"
+    return "a short lowercase name for the area the paths belong to, or omitted when none fits"
 
 
 def lowercase_first_letter(text: str) -> str:

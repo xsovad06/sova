@@ -8,6 +8,7 @@ from sova.core.steps.commit_convention import (
     MAX_LINE_LENGTH,
     build_merge_subject,
     commit_line_problem,
+    describe_scope_choice,
     format_type_scope,
     infer_scope_from_paths,
     infer_type_from_paths,
@@ -59,8 +60,18 @@ class TestIsValidCommitLine:
         assert len(line) == 72
         assert is_valid_commit_line(line, types=TYPES, scopes=SCOPES)
 
-    def test_empty_configured_scopes_rejects_every_non_ci_type(self) -> None:
-        assert not is_valid_commit_line("feat(core): add widget", types=TYPES, scopes=[])
+    @pytest.mark.parametrize("line", ["feat(core): add widget", "feat: add widget"])
+    def test_empty_configured_scopes_places_no_restriction_on_scope(self, line: str) -> None:
+        assert is_valid_commit_line(line, types=TYPES, scopes=[])
+
+
+class TestScopelessProject:
+    def test_format_type_scope_omits_an_empty_scope(self) -> None:
+        assert format_type_scope("feat", "") == "feat"
+
+    def test_prompt_rule_names_the_list_or_a_free_choice(self) -> None:
+        assert describe_scope_choice(["api", "web"]) == "one of: api, web"
+        assert "or omitted" in describe_scope_choice([])
 
 
 class TestCommitLineProblem:
@@ -166,7 +177,7 @@ class TestResolveDefaultScope:
             # A project whose scopes are entirely its own must get a scope its own commit-format check
             # accepts, not "core".
             pytest.param(["accounts", "billing"], "accounts", id="first-configured-when-core-absent"),
-            pytest.param([], "core", id="empty-scopes-last-resort"),
+            pytest.param([], "", id="empty-scopes-means-no-scope"),
         ],
     )
     def test_resolves(self, scopes: list[str], expected: str) -> None:
