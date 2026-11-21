@@ -17,10 +17,13 @@ from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
 from sova.llm import client
 from sova.llm.errors import (
     BillingError,
+    ContentFilteredError,
     LLMInvocationError,
+    LLMTimeoutError,
     ModelUnavailableError,
     ProviderUnavailableError,
     RateLimitError,
+    was_content_filtered,
 )
 from sova.llm.models import LLMResult
 from sova.llm.provider import LLMProvider
@@ -186,6 +189,44 @@ class TestInvokeWithFallbackLoop:
         )
         assert result.model == "sonnet"
         assert [c[0] for c in attempt.calls] == ["opus", "sonnet"]
+
+    async def test_content_filtered_primary_advances_to_next_candidate(self) -> None:
+        """A safety-classifier block on one model is no reason to skip a model that may accept the prompt."""
+        blocked = ContentFilteredError("API Error: Opus 5.5's safeguards flagged this message")
+        attempt = _Recorder(blocked, _ok("sonnet"))
+        result = await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+        )
+        assert result.model == "sonnet"
+        assert [c[0] for c in attempt.calls] == ["opus", "sonnet"]
+        assert not client.get_availability_cache().is_unavailable(_IDENTITY, "opus")
+
+    @pytest.mark.parametrize("fallback_error", [LLMTimeoutError("timed out"), RateLimitError("429")])
+    async def test_exhausted_chain_records_an_earlier_content_filter_block(self, fallback_error: Exception) -> None:
+        """The last hop's error is what propagates, so a block by an earlier hop is recorded on it."""
+        attempt = _Recorder(ContentFilteredError("safeguards flagged this message"), fallback_error)
+        with pytest.raises(type(fallback_error)) as caught:
+            await client._invoke_with_fallback(
+                attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+            )
+        assert was_content_filtered(caught.value)
+        assert caught.value.content_filtered_models == ("opus",)
+
+    async def test_non_eligible_later_error_records_an_earlier_content_filter_block(self) -> None:
+        attempt = _Recorder(ContentFilteredError("safeguards flagged this message"), BillingError("budget_exhausted"))
+        with pytest.raises(BillingError) as caught:
+            await client._invoke_with_fallback(
+                attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+            )
+        assert was_content_filtered(caught.value)
+
+    async def test_failures_without_a_content_filter_block_are_not_marked(self) -> None:
+        attempt = _Recorder(LLMTimeoutError("timed out"), LLMTimeoutError("timed out"))
+        with pytest.raises(LLMTimeoutError) as caught:
+            await client._invoke_with_fallback(
+                attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+            )
+        assert not was_content_filtered(caught.value)
 
     async def test_chain_hop_overrides_caller_fallback(self) -> None:
         """SOVA is the source of truth: the CLI gets the chain's next hop."""

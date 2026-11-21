@@ -6,6 +6,7 @@ import pytest
 
 from sova.llm.errors import (
     BillingError,
+    ContentFilteredError,
     LLMError,
     LLMInvocationError,
     LLMTimeoutError,
@@ -17,7 +18,9 @@ from sova.llm.errors import (
     format_fix_llm_failure,
     is_billing_failure,
     is_fallback_eligible,
+    note_content_filtered_models,
     resolve_error_category,
+    was_content_filtered,
 )
 
 _ALL_ERRORS = (
@@ -27,7 +30,14 @@ _ALL_ERRORS = (
     RateLimitError,
     ProviderUnavailableError,
     LLMTimeoutError,
+    ContentFilteredError,
     LLMInvocationError,
+)
+
+# The detail the Claude CLI reported when Opus 5.5's safety classifier blocked a review prompt (2026-11-21).
+_SAFEGUARDS_DETAIL = (
+    "terminal_reason=api_error; is_error=true; API Error: Opus 5.5's safeguards flagged this message "
+    "(https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations."
 )
 
 
@@ -94,6 +104,33 @@ class TestClassifyError:
     @pytest.mark.parametrize(
         "detail",
         [
+            _SAFEGUARDS_DETAIL,
+            "Your request was flagged as potentially violating our usage policy",
+        ],
+    )
+    def test_content_filtered(self, detail: str) -> None:
+        assert classify_error(detail) is ContentFilteredError
+
+    def test_content_filter_wins_over_a_timeout_mention(self) -> None:
+        """A blocked prompt names the block, not the retry timing: another model can serve it."""
+        assert classify_error(f"{_SAFEGUARDS_DETAIL} Retrying timed out.") is ContentFilteredError
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "the safeguards in this module flag nothing",
+            "see our usage policy",
+            "content filter settings page",
+            "FAILED tests/test_views.py::test_content_filter_rejects_empty_query",
+        ],
+    )
+    def test_generic_policy_wording_is_not_content_filtered(self, detail: str) -> None:
+        """classify_error() also sees an agent's failure output, so only provider error text counts as a block."""
+        assert classify_error(detail) is not ContentFilteredError
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
             "TypeError: cannot iterate",
             "test assertion failed: expected 3 got 4",
             "ruff check failed with 3 errors",
@@ -124,7 +161,9 @@ class TestClassifyError:
 
 
 class TestIsFallbackEligible:
-    @pytest.mark.parametrize("cls", [ModelUnavailableError, RateLimitError, ProviderUnavailableError, LLMTimeoutError])
+    @pytest.mark.parametrize(
+        "cls", [ModelUnavailableError, RateLimitError, ProviderUnavailableError, LLMTimeoutError, ContentFilteredError]
+    )
     def test_eligible(self, cls: type[LLMError]) -> None:
         assert is_fallback_eligible(cls("boom"))
 
@@ -176,6 +215,7 @@ class TestUntypedErrorEligibility:
             "Claude CLI failed (exit 1): HTTP 429 rate_limit",
             "Claude CLI failed (exit 1): connection refused",
             "Claude CLI failed (exit 1): request timed out",
+            f"Claude CLI failed (exit 1): {_SAFEGUARDS_DETAIL}",
         ],
     )
     def test_untyped_recoverable_error_is_eligible(self, message: str) -> None:
@@ -218,6 +258,7 @@ class TestIsBillingFailure:
             "step_hard_timeout",
             "connection refused",
             "feature not available in free tier",
+            _SAFEGUARDS_DETAIL,
             "",
             None,
         ],
@@ -252,6 +293,7 @@ class TestClassifyException:
             (_sdk_exc("BudgetExceededError", "over cap"), BillingError),
             (_sdk_exc("NotFoundError", "unknown model"), ModelUnavailableError),
             (_sdk_exc("APIConnectionError", "unreachable"), ProviderUnavailableError),
+            (_sdk_exc("ContentPolicyViolationError", "litellm.ContentPolicyViolationError"), ContentFilteredError),
             (TimeoutError("deadline"), LLMTimeoutError),
             (ConnectionRefusedError("no listener"), ProviderUnavailableError),
             (_VendorConnectionError("socket closed"), ProviderUnavailableError),
@@ -339,3 +381,25 @@ class TestFormatFixLlmFailure:
     def test_cycle_number_is_embedded(self) -> None:
         result = format_fix_llm_failure(RuntimeError("boom"), cycle=3)
         assert "cycle 3" in result
+
+
+class TestWasContentFiltered:
+    @pytest.mark.parametrize(
+        "exc",
+        [ContentFilteredError("blocked"), RuntimeError(_SAFEGUARDS_DETAIL)],
+    )
+    def test_a_filtered_last_hop_counts(self, exc: Exception) -> None:
+        assert was_content_filtered(exc)
+
+    def test_an_earlier_filtered_hop_counts_through_a_different_last_error(self) -> None:
+        exc = LLMTimeoutError("timed out")
+        note_content_filtered_models(exc, ["opus"])
+
+        assert resolve_error_category(exc) is LLMTimeoutError
+        assert was_content_filtered(exc)
+
+    def test_no_recorded_hop_leaves_the_error_unmarked(self) -> None:
+        exc = LLMTimeoutError("timed out")
+        note_content_filtered_models(exc, [])
+
+        assert not was_content_filtered(exc)

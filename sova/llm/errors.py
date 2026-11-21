@@ -60,6 +60,17 @@ class LLMTimeoutError(LLMError):
     """Raised when an invocation exceeds its time budget."""
 
 
+class ContentFilteredError(LLMError):
+    """Raised when the provider's safety classifier refuses the prompt or the response.
+
+    A block is a verdict of one model's classifier on one prompt, not a fault
+    of the prompt itself: the classifiers produce false positives on ordinary
+    code (the Claude CLI's own message says so), and another model's
+    classifier can accept the same text. That makes it fallback-eligible, but
+    resending the identical prompt to the same model is not worth a retry.
+    """
+
+
 class LLMInvocationError(LLMError):
     """Raised for failures that do not match a more specific category."""
 
@@ -118,12 +129,28 @@ _TIMEOUT_PATTERNS: tuple[str, ...] = (
     "deadline exceeded",
 )
 
+# Provider wording for a safety-classifier block, kept to the exact error text:
+# classify_error() also reads a coding agent's failure detail, which can quote
+# the target project's own code and output, so a bare "usage policy",
+# "safeguards" or "content_filter" (a plausible identifier) would misfile an
+# unrelated failure. "safeguards flagged" is the Claude CLI/API text ("Opus
+# 5.5's safeguards flagged this message") and "violating our usage policy" the
+# OpenAI moderation rejection ("flagged as potentially violating our usage
+# policy"). LiteLLM's own block is matched by class name in _EXCEPTION_NAMES.
+_CONTENT_FILTER_PATTERNS: tuple[str, ...] = (
+    "safeguards flagged",
+    "violating our usage policy",
+)
+
 # Scanned terminal-first: a detail mentioning both an exhausted budget and a
 # 429 classifies as terminal rather than triggering a pointless fallback.
 # ConfigurationError is scanned before BillingError for the same reason.
 _CATEGORIES: tuple[tuple[type[LLMError], tuple[str, ...]], ...] = (
     (ConfigurationError, _CONFIGURATION_PATTERNS),
     (BillingError, _BILLING_PATTERNS),
+    # Ahead of the transient categories: a block names its cause exactly, while a
+    # timeout or rate-limit word in the same detail is incidental.
+    (ContentFilteredError, _CONTENT_FILTER_PATTERNS),
     (ModelUnavailableError, _MODEL_UNAVAILABLE_PATTERNS),
     (RateLimitError, _RATE_LIMIT_PATTERNS),
     (ProviderUnavailableError, _PROVIDER_UNAVAILABLE_PATTERNS),
@@ -132,7 +159,9 @@ _CATEGORIES: tuple[tuple[type[LLMError], tuple[str, ...]], ...] = (
 
 # A different model cannot fix an exhausted budget, and an unclassified
 # failure gives no reason to expect a retry elsewhere to behave differently.
+# A content-filter block can: each model runs its own safety classifier.
 _FALLBACK_ELIGIBLE: tuple[type[LLMError], ...] = (
+    ContentFilteredError,
     ModelUnavailableError,
     RateLimitError,
     ProviderUnavailableError,
@@ -156,6 +185,7 @@ _EXCEPTION_NAMES: dict[str, type[LLMError]] = {
     "BudgetExceededError": BillingError,
     "ConnectError": ProviderUnavailableError,
     "ConnectionError": ProviderUnavailableError,
+    "ContentPolicyViolationError": ContentFilteredError,
     "InternalServerError": ProviderUnavailableError,
     "NotFoundError": ModelUnavailableError,
     "RateLimitError": RateLimitError,
@@ -231,6 +261,29 @@ def resolve_error_category(exc: object) -> type[LLMError]:
     if isinstance(exc, Exception):
         return classify_error(str(exc))
     return LLMInvocationError
+
+
+# Attribute ``walk_model_chain()`` sets on the error it finally raises when an earlier hop was content-filtered:
+# the walk re-raises the last candidate's error, which would otherwise hide that a model refused the prompt.
+CONTENT_FILTERED_MODELS_ATTR = "content_filtered_models"
+
+
+def note_content_filtered_models(exc: BaseException, models: list[str]) -> None:
+    """Record on *exc* which chain hops a safety classifier blocked before it was raised."""
+    if models:
+        setattr(exc, CONTENT_FILTERED_MODELS_ATTR, tuple(models))
+
+
+def was_content_filtered(exc: object) -> bool:
+    """Return True if a safety classifier blocked the prompt, on any hop of the model chain.
+
+    ``resolve_error_category()`` alone reports only the last hop's category: a primary that was filtered and
+    a fallback that then timed out reads as a timeout, and a caller that retries on that sends the identical
+    prompt to the filtering model again.
+    """
+    if resolve_error_category(exc) is ContentFilteredError:
+        return True
+    return bool(getattr(exc, CONTENT_FILTERED_MODELS_ATTR, ()))
 
 
 def is_fallback_eligible(exc: object) -> bool:

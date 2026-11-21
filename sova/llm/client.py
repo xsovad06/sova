@@ -34,9 +34,11 @@ from sova.llm.backends import (
 from sova.llm.complexity import ComplexityTier
 from sova.llm.errors import (
     BillingError,
+    ContentFilteredError,
     LLMInvocationError,
     ModelUnavailableError,
     is_fallback_eligible,
+    note_content_filtered_models,
     resolve_error_category,
 )
 from sova.llm.models import (
@@ -785,6 +787,7 @@ async def walk_model_chain(
 
     deadline = time.monotonic() + timeout * _DEADLINE_SAFETY_MARGIN
     last_error: Exception | None = None
+    filtered_models: list[str] = []
 
     for index, model in enumerate(chain):
         remaining = deadline - time.monotonic()
@@ -808,12 +811,16 @@ async def walk_model_chain(
         try:
             return await attempt(model, next_hop, attempt_timeout, attempt_budget)
         except Exception as exc:
+            # A later hop's error is what finally propagates, so a block by an earlier hop is recorded on it.
+            category = resolve_error_category(exc)
+            if category is ContentFilteredError:
+                filtered_models.append(str(model))
             if not is_fallback_eligible(exc) or not is_eligible(exc):
+                note_content_filtered_models(exc, filtered_models)
                 raise
             # Providers still raise bare RuntimeError, so eligibility and the
             # unavailable-model signal both come from the resolved category,
             # never from the raised type alone.
-            category = resolve_error_category(exc)
             if category is ModelUnavailableError and identity is not None:
                 get_availability_cache().mark_unavailable(identity, normalize(model))
             # A failed attempt reports no cost, so there is nothing to deduct.
@@ -834,6 +841,7 @@ async def walk_model_chain(
     if last_error is None:  # pragma: no cover (the loop always returns or sets it)
         raise LLMInvocationError("Model fallback chain produced no attempt")
     log.error("llm.fallback.exhausted", chain=[str(m) for m in chain], error=str(last_error)[:200])
+    note_content_filtered_models(last_error, filtered_models)
     raise last_error
 
 
