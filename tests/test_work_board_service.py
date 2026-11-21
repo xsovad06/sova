@@ -93,6 +93,8 @@ def _sources(
     ranking_graph: DependencyGraph | None = None,
     github_user: str = "",
     jira_display_name: str = "",
+    open_prs: dict[int, set[int]] | None = None,
+    open_prs_unavailable: bool = False,
 ):
     graph = DependencyGraph(tasks or [])
     ranking = ranking_graph or graph
@@ -111,7 +113,11 @@ def _sources(
                 }
             ),
         ),
-        patch.object(board, "next_task_exclusions", AsyncMock(return_value=(running or set(), set()))),
+        patch.object(
+            board,
+            "board_exclusions",
+            AsyncMock(return_value=(running or set(), set(), None if open_prs_unavailable else open_prs or {})),
+        ),
         patch.object(board, "load_task_queue", AsyncMock(return_value=list(queue or []))),
         patch.object(board, "load_hidden_issues", AsyncMock(return_value=list(hidden or []))),
         patch.object(board, "_active_runs", AsyncMock(return_value=None if runs_unavailable else runs or {})),
@@ -121,6 +127,26 @@ def _sources(
         patch.object(board, "remove_from_task_queue", remove),
     ):
         yield SimpleNamespace(remove=remove, loaded=loaded)
+
+
+def _merged_entry(number: int, pr_number: int, *, closes: bool = False, age_seconds: float = 30.0) -> dict:
+    """A ``_done_today()`` entry: one merged PR linking *number* *age_seconds* ago, closing it when *closes*."""
+    return {
+        **board._issue_entry(
+            number,
+            title=f"PR {pr_number}",
+            url=f"https://example.test/{number}",
+            stage=board.WorkStage.DONE,
+            state="merged",
+            priority="",
+        ),
+        "pr_number": pr_number,
+        "merged_at": (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat(),
+        "pr_author": "",
+        "pr_assignees": [],
+        "_pr_url": f"https://example.test/pull/{pr_number}",
+        "_closes": closes,
+    }
 
 
 def _numbers(entries: list[dict]) -> list[int | None]:
@@ -159,7 +185,8 @@ class TestColumns:
             result = await board.build_board(PROJECT)
 
         assert _numbers(result["running"]) == [1066]
-        assert result["review"] == result["other_runs"] == result["done_today"] == []
+        assert result["review"] == result["other_runs"] == []
+        assert _numbers(result["done_today"]) == [None]  # the open issue's earlier merge, without its number
         assert (result["running"][0]["run_id"], result["running"][0]["role"]) == (7, "supervisor:rebase")
         assert result["running"][0]["elapsed_seconds"] == 70
 
@@ -608,6 +635,7 @@ class TestDoneToday:
             entries = await board._done_today(PROJECT, self.NOW)
 
         assert sorted(e["number"] for e in entries) == [21, 22]
+        assert all(e["_closes"] is True for e in entries)
 
     async def test_jira_board_uses_project_key_and_ignores_another_projects_pr(self) -> None:
         from sova.config.models import ProjectConfig, TaskSourceConfig
@@ -631,11 +659,12 @@ class TestDoneToday:
             entries = await board._done_today(PROJECT, self.NOW)
 
         assert [(entry["number"], entry["pr_number"]) for entry in entries] == [(7, 2)]
+        assert entries[0]["_closes"] is False  # a Jira issue rests on the graph alone, never on closing references
         assert entries[0]["jira_key"] == "ARVAC-7"
         assert entries[0]["url"] == "https://jira.example.test/browse/ARVAC-7"
         assert entries[0]["pr_author"] == "dsova"
 
-    async def test_an_issue_two_merged_prs_link_appears_once_with_the_latest_merge(self) -> None:
+    async def test_every_merged_pr_is_listed_newest_first_with_its_own_entry(self) -> None:
         midnight = board._local_midnight(self.NOW)
         prs = [
             self._merged(4, midnight + timedelta(hours=1), closing=[30]),
@@ -646,26 +675,46 @@ class TestDoneToday:
         with self._merged_prs(prs):
             entries = await board._done_today(PROJECT, self.NOW)
 
-        assert [(e["number"], e["pr_number"]) for e in entries] == [(None, 7), (30, 5), (None, 6)]
+        assert [(e["number"], e["pr_number"]) for e in entries] == [(None, 7), (30, 5), (None, 6), (30, 4)]
+        assert [e["_closes"] for e in entries] == [False, True, False, True]
 
     async def test_a_merged_issue_the_cached_items_still_show_in_another_column_is_only_done(self) -> None:
-        stale = _item(5, "pr_ready_to_merge", pr_number=50)
-        merged = {
-            "number": 5,
-            "title": "Issue 5",
-            "url": "",
-            "stage": "done",
-            "state": "merged",
-            "state_label": "",
-            "state_color": "",
-            "priority": "",
-        }
+        stale = _item(5, "pr_ready_to_merge", pr_number=50, pr_details={"number": 50})
+        merged = _merged_entry(5, 50)
         with _sources(items=[stale, _item(6)], tasks=[_task(5), _task(6)], done_today=[merged]):
             result = await board.build_board(PROJECT)
 
         assert _numbers(result["done_today"]) == [5]
         assert result["needs"] == []
         assert _numbers(result["up_next"]) == [6]
+
+    async def test_a_jira_merge_the_cached_graph_and_item_still_show_open_is_done(self) -> None:
+        stale = _item(5, "pr_ready_to_merge", pr_number=50, pr_details={"number": 50})
+        merged = _merged_entry(5, 50)  # a Jira entry never has closing references
+        merged["jira_key"] = "ARVAC-5"
+        with _sources(items=[stale], tasks=[_task(5)], done_today=[merged]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+        assert result["needs"] == []
+
+    async def test_an_item_whose_earlier_pr_is_gone_does_not_keep_a_closed_issue_open(self) -> None:
+        stale = _item(5, "pr_merged_issue_open", pr_number=40, pr_details={"number": 40})
+        merged = _merged_entry(5, 50, closes=True)
+        with _sources(items=[stale], tasks=[_task(5, state=TaskState.DONE)], done_today=[merged]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+        assert result["needs"] == []
+
+    async def test_an_item_whose_earlier_pr_is_gone_yields_to_a_closing_merge_within_the_graph_lag(self) -> None:
+        stale = _item(5, "pr_merged_issue_open", pr_number=40, pr_details={"number": 40})
+        merged = _merged_entry(5, 50, closes=True)
+        with _sources(items=[stale], tasks=[_task(5)], done_today=[merged]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+        assert result["needs"] == []
 
     async def test_the_search_day_is_the_utc_day_of_local_midnight(self) -> None:
         with self._merged_prs([]) as fetch:
@@ -688,6 +737,216 @@ class TestDoneToday:
             result = await board.build_board(PROJECT)
         assert result["unavailable"] == ["done_today"]
         assert result["done_today"] == []
+
+
+class TestPartOfMerges:
+    """A merged phase PR finishes its issue only when nothing else keeps the issue open."""
+
+    async def test_an_open_issue_with_another_open_pr_keeps_its_column_and_the_merge_loses_its_number(self) -> None:
+        item = _item(5, "pr_ready_to_merge", pr_number=51, pr_details={"number": 51})
+        with _sources(items=[item], tasks=[_task(5)], done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"], e["url"]) for e in result["done_today"]] == [
+            (None, 50, "https://example.test/pull/50")
+        ]
+        assert _numbers(result["needs"] + result["review"] + result["yours"]) == [5]
+
+    async def test_an_open_issue_with_no_open_pr_is_not_claimed_by_done(self) -> None:
+        with _sources(items=[_item(5)], tasks=[_task(5)], done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None]
+        assert 5 in [n for column in COLUMNS[:-1] for n in _numbers(result[column])]
+
+    async def test_two_phase_prs_on_an_open_issue_are_two_entries_without_a_number(self) -> None:
+        done = [_merged_entry(5, 52), _merged_entry(5, 50)]
+        with _sources(tasks=[_task(5)], done_today=done):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(None, 52), (None, 50)]
+
+    async def test_two_prs_on_a_closed_issue_are_one_entry_with_the_newest_merge(self) -> None:
+        done = [_merged_entry(5, 52), _merged_entry(5, 50)]
+        with _sources(tasks=[_task(5, state=TaskState.DONE)], done_today=done):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(5, 52)]
+
+    async def test_a_closing_merge_wins_over_a_graph_and_items_that_still_show_the_issue_open(self) -> None:
+        stale = _item(5, "pr_ready_to_merge", pr_number=50, pr_details={"number": 50})
+        with _sources(items=[stale], tasks=[_task(5)], done_today=[_merged_entry(5, 50, closes=True)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+        assert all(result[column] == [] for column in COLUMNS[:-1])
+
+    async def test_a_closing_merge_older_than_the_graph_lag_no_longer_overrides_the_graph(self) -> None:
+        # reopened after a closing merge (or never closed by it): the fresh graph shows it open, so it keeps its column
+        age = board._GRAPH_LAG_SECONDS + 60
+        with _sources(
+            tasks=[_task(5)], items=[_item(5)], done_today=[_merged_entry(5, 50, closes=True, age_seconds=age)]
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None]
+        assert 5 in [n for column in COLUMNS[:-1] for n in _numbers(result[column])]
+
+    async def test_an_old_closing_merge_on_an_issue_the_graph_shows_closed_is_done(self) -> None:
+        age = board._GRAPH_LAG_SECONDS + 60
+        with _sources(
+            tasks=[_task(5, state=TaskState.DONE)], done_today=[_merged_entry(5, 50, closes=True, age_seconds=age)]
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_a_pr_linking_an_open_and_a_closed_issue_shows_once_under_the_closed_one(self) -> None:
+        done = [_merged_entry(5, 50), _merged_entry(6, 50, closes=True)]
+        with _sources(tasks=[_task(5), _task(6, state=TaskState.DONE)], done_today=done):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(6, 50)]
+
+    async def test_a_demoted_merge_stays_when_its_numbered_entry_lost_to_a_newer_merge(self) -> None:
+        # PR 50 links open 5 and closed 6, but newer PR 52 finished 6: PR 50's merge must stay visible
+        done = [_merged_entry(6, 52, closes=True), _merged_entry(5, 50), _merged_entry(6, 50, closes=True)]
+        with _sources(tasks=[_task(5), _task(6, state=TaskState.DONE)], done_today=done):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(6, 52), (None, 50)]
+
+    async def test_a_failed_open_pr_lookup_is_named_unavailable(self) -> None:
+        with _sources(tasks=[_task(5, state=TaskState.DONE)], open_prs_unavailable=True):
+            result = await board.build_board(PROJECT)
+
+        assert result["unavailable"] == ["open_prs"]
+
+    async def test_an_issue_on_qa_after_its_merge_is_done(self) -> None:
+        with _sources(
+            items=[_item(5, "on_qa")], tasks=[_task(5, state=TaskState.ON_QA)], done_today=[_merged_entry(5, 50)]
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_a_finished_issue_a_run_owns_stays_out_of_done(self) -> None:
+        run = {"id": 7, "issue_number": "5", "role": "developer", "status": "running", "started_at": ""}
+        with _sources(
+            tasks=[_task(5, state=TaskState.DONE)],
+            runs={"run:7": run, "issue:5": run},
+            done_today=[_merged_entry(5, 50)],
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert result["done_today"] == []
+
+    async def test_an_issue_missing_from_the_graph_is_closed_so_done_wins(self) -> None:
+        with _sources(done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(5, 50)]
+
+    async def test_a_demoted_jira_entry_drops_its_key_and_keeps_the_pr_link(self) -> None:
+        entry = _merged_entry(7, 50)
+        entry["jira_key"] = "ARVAC-7"
+        entry["url"] = "https://jira.example.test/browse/ARVAC-7"
+        with _sources(tasks=[_task(7)], done_today=[entry]):
+            result = await board.build_board(PROJECT)
+
+        (demoted,) = result["done_today"]
+        assert demoted["number"] is None
+        assert "jira_key" not in demoted
+        assert demoted["url"] == "https://example.test/pull/50"
+        assert "_pr_url" not in demoted
+        assert "_closes" not in demoted
+
+    async def test_an_open_pr_linking_the_issue_second_keeps_it_out_of_done(self) -> None:
+        # merged PR 50 closes 5; open PR 51 links 6 first and 5 second, so no work item carries it for 5
+        with _sources(
+            tasks=[_task(5), _task(6)],
+            done_today=[_merged_entry(5, 50, closes=True)],
+            open_prs={6: {51}, 5: {51}},
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None]
+
+    async def test_an_open_pr_linking_a_finished_issue_second_does_not_hide_it(self) -> None:
+        with _sources(
+            tasks=[_task(5, state=TaskState.DONE), _task(6)],
+            done_today=[_merged_entry(5, 50)],
+            open_prs={6: {51}, 5: {51}},
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_a_merge_an_item_shows_open_past_the_graph_lag_keeps_the_issue_in_its_column(self) -> None:
+        stale = _item(5, "pr_ready_to_merge", pr_number=50, pr_details={"number": 50})
+        age = board._GRAPH_LAG_SECONDS + 60
+        with _sources(items=[stale], tasks=[_task(5)], done_today=[_merged_entry(5, 50, age_seconds=age)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None]
+
+    async def test_a_demoted_merge_stays_when_a_run_owns_the_issue_its_numbered_entry_was_for(self) -> None:
+        run = {"id": 7, "issue_number": "6", "role": "developer", "status": "running", "started_at": ""}
+        done = [_merged_entry(5, 50), _merged_entry(6, 50, closes=True)]
+        with _sources(
+            tasks=[_task(5), _task(6, state=TaskState.DONE)],
+            runs={"run:7": run, "issue:6": run},
+            done_today=done,
+        ):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(None, 50)]
+
+    async def test_the_merged_pr_still_listed_open_does_not_keep_the_issue_out_of_done(self) -> None:
+        with _sources(tasks=[_task(5, state=TaskState.DONE)], done_today=[_merged_entry(5, 50)], open_prs={5: {50}}):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_an_open_item_the_graph_lacks_is_not_settled_as_done(self) -> None:
+        with _sources(items=[_item(5, "researched")], done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None]
+
+    async def test_a_done_item_the_graph_lacks_settles_as_done(self) -> None:
+        with _sources(items=[_item(5, "merged")], done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_an_item_the_graph_lacks_still_showing_the_merged_pr_settles_as_done(self) -> None:
+        item = _item(5, "pr_ci_running", pr_number=50, pr_details={"number": 50})
+        with _sources(items=[item], done_today=[_merged_entry(5, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_a_closing_merge_wins_over_an_open_item_the_graph_lacks(self) -> None:
+        with _sources(items=[_item(5, "researched")], done_today=[_merged_entry(5, 50, closes=True)]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [5]
+
+    async def test_a_pr_demoted_for_two_issues_shows_once(self) -> None:
+        with _sources(tasks=[_task(5), _task(6)], done_today=[_merged_entry(5, 50), _merged_entry(6, 50)]):
+            result = await board.build_board(PROJECT)
+
+        assert [(e["number"], e["pr_number"]) for e in result["done_today"]] == [(None, 50)]
+
+    async def test_unnumbered_entries_without_a_pr_number_are_all_kept(self) -> None:
+        first, second = _merged_entry(5, 50), _merged_entry(6, 51)
+        for entry in (first, second):
+            entry.update({"number": None, "pr_number": None})
+        with _sources(done_today=[first, second]):
+            result = await board.build_board(PROJECT)
+
+        assert _numbers(result["done_today"]) == [None, None]
 
 
 class TestChains:
