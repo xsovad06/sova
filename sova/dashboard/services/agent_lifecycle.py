@@ -592,6 +592,18 @@ async def _record_budget_override(issue: str, run_id: int, budget_error: dict, p
         log.warning("agent.budget_override_record_failed", issue=issue, run_id=run_id, exc_info=True)
 
 
+async def issue_conflict(issue: str, *, slug: str | None = None) -> dict | None:
+    """The error ``start_agent()`` would answer for an agent already running on *issue*, or None when clear.
+
+    A read-only peek for a caller that writes tracker state before starting an agent, so a refused start does not
+    leave that write behind. It takes no slot, so the answer can go stale: ``start_agent()`` still decides.
+    """
+    issue = issue.lstrip("#").strip()
+    pa = _get_project_agents(slug)
+    async with pa._lock:
+        return await _check_issue_conflict(issue, pa)
+
+
 async def start_agent(
     issue: str,
     *,

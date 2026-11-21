@@ -35,6 +35,17 @@ from sova.dashboard.services.spec_service import find_spec_file
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 
+@pytest.fixture(autouse=True)
+def _no_active_agent_on_the_issue():
+    """/revise peeks at the process-wide agent registry, which an earlier test's agent can still occupy."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.dashboard.services import control_service
+
+    with patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=None)):
+        yield
+
+
 def _mock_adapter(state: TaskState = TaskState.TRIAGED) -> AsyncMock:
     adapter = AsyncMock()
     adapter.get_state.return_value = state
@@ -1661,7 +1672,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1691,7 +1702,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1716,7 +1727,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers") as mock_write,
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 1}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1732,6 +1743,8 @@ class TestSpecRouter:
         call_order: list[str] = []
 
         with (
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.RESEARCHED)),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1753,7 +1766,7 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1842,6 +1855,8 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.RESEARCHED)),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1974,7 +1989,7 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -2229,7 +2244,7 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -2266,7 +2281,7 @@ class TestSpecRouterTaskRunTransition:
         run_id = await self._create_awaiting_run("42")
 
         with (
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 456}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -2285,6 +2300,8 @@ class TestSpecRouterTaskRunTransition:
         run_id = await self._create_awaiting_run("42")
 
         with (
+            patch("sova.dashboard.routers.spec._issue_state", new=AsyncMock(return_value=TaskState.RESEARCHED)),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 789}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -2302,10 +2319,278 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
-            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
+            patch("sova.dashboard.routers.spec._transition_issue", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):
             result = await approve_spec("42")
 
         assert result["status"] == "approved"
+
+
+class _Tracker:
+    """A tracker that keeps one issue's state, so a transition is visible to a later read."""
+
+    def __init__(self, state: TaskState, calls: list[str], *, fail_on: frozenset[TaskState] = frozenset()) -> None:
+        self.state = state
+        self.calls = calls
+        self.fail_on = fail_on
+
+    async def get_state(self, issue: str) -> TaskState:
+        self.calls.append("get_state")
+        return self.state
+
+    async def transition_state(self, issue: str, state: TaskState) -> None:
+        self.calls.append(f"transition:{state.value}")
+        if state in self.fail_on:
+            raise RuntimeError("gh: token=abc rejected")
+        self.state = state
+
+    async def get_task(self, issue: str) -> Task:
+        return Task(id=issue, title="Test issue", body="body", state=self.state)
+
+
+class TestReviseReturnsIssueToTriaged:
+    """/revise moves the issue back to TRIAGED, the only state the researcher accepts, before starting it.
+
+    A spec awaiting review belongs to a RESEARCHED issue (the researcher moves it there when the spec is
+    drafted), so before this every revise started a researcher that failed its own precondition at once.
+    """
+
+    def _patches(self, tracker: _Tracker, start: AsyncMock, *, conflict: dict | None = None):
+        from contextlib import ExitStack
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import control_service, handoff_service
+
+        stack = ExitStack()
+        stack.enter_context(patch("sova.dashboard.routers.spec.load_config", return_value=MagicMock()))
+        stack.enter_context(patch("sova.adapters.create_adapter", return_value=tracker))
+        self.complete = AsyncMock(return_value=None)
+        stack.enter_context(patch.object(control_service, "complete_awaiting_approval_by_issue", new=self.complete))
+        stack.enter_context(patch.object(control_service, "start_agent", new=start))
+        stack.enter_context(patch.object(control_service, "issue_conflict", new=AsyncMock(return_value=conflict)))
+        clear = stack.enter_context(patch.object(handoff_service, "clear_handoff"))
+        return stack, clear
+
+    async def test_moves_a_researched_issue_to_triaged_before_starting_the_researcher(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.RESEARCHED, calls)
+        start = AsyncMock(side_effect=lambda *a, **kw: calls.append("start_agent") or {"pid": 1})
+        stack, clear = self._patches(tracker, start)
+        with stack:
+            result = await revise_spec("42")
+
+        assert result["status"] == "revision_started"
+        assert calls == ["get_state", "transition:triaged", "start_agent"]
+        start.assert_awaited_once_with("42", role="researcher")
+        clear.assert_called_once_with(issue="42")
+        assert tracker.state == TaskState.TRIAGED
+
+    async def test_a_failed_start_restores_the_prior_state_and_answers_409(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.RESEARCHED, calls)
+        start = AsyncMock(return_value={"error": "Issue #42 already has an active agent (run 9)"})
+        stack, clear = self._patches(tracker, start)
+        with stack, pytest.raises(HTTPException) as exc_info:
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 409
+        assert "already has an active agent" in exc_info.value.detail
+        assert tracker.state == TaskState.RESEARCHED
+        assert calls == ["get_state", "transition:triaged", "get_state", "transition:researched"]
+        clear.assert_not_called()
+        # The run stays awaiting approval, matching the restored issue state.
+        self.complete.assert_not_called()
+
+    async def test_a_failed_start_puts_back_a_state_past_researched_too(self) -> None:
+        """An approved spec's issue can be IN_PROGRESS; a refused start must not rewrite it to RESEARCHED."""
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.IN_PROGRESS, [])
+        start = AsyncMock(return_value={"error": "conflict", "detail": "Issue #42 already has an active agent"})
+        stack, _ = self._patches(tracker, start)
+        with stack, pytest.raises(HTTPException):
+            await revise_spec("42")
+
+        assert tracker.state == TaskState.IN_PROGRESS
+
+    async def test_a_start_that_raises_restores_the_prior_state(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.RESEARCHED, [])
+        stack, clear = self._patches(tracker, AsyncMock(side_effect=RuntimeError("No slots")))
+        with stack, pytest.raises(RuntimeError, match="No slots"):
+            await revise_spec("42")
+
+        assert tracker.state == TaskState.RESEARCHED
+        clear.assert_not_called()
+
+    async def test_a_running_agent_is_refused_before_any_state_is_written(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.IN_PROGRESS, calls)
+        start = AsyncMock()
+        stack, clear = self._patches(tracker, start, conflict={"error": "Issue #42 already has an active agent"})
+        with stack, pytest.raises(HTTPException) as exc_info:
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 409
+        assert "already has an active agent" in exc_info.value.detail
+        assert calls == ["get_state"]
+        assert tracker.state == TaskState.IN_PROGRESS
+        start.assert_not_called()
+        clear.assert_not_called()
+        self.complete.assert_not_called()
+
+    async def test_a_restore_leaves_a_state_that_moved_on_meanwhile(self) -> None:
+        """A running agent advanced the issue between the TRIAGED write and the restore: its state stays."""
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.RESEARCHED, calls)
+
+        async def _refused(*a: object, **kw: object) -> dict:
+            tracker.state = TaskState.IN_REVIEW  # another actor advanced the issue
+            return {"error": "No slots"}
+
+        stack, _ = self._patches(tracker, AsyncMock(side_effect=_refused))
+        with stack, pytest.raises(HTTPException) as exc_info:
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 409
+        assert tracker.state == TaskState.IN_REVIEW
+        assert calls == ["get_state", "transition:triaged", "get_state"]
+
+    async def test_a_started_revision_rejects_the_awaiting_approval_run_after_the_start(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.RESEARCHED, calls)
+        stack, _ = self._patches(tracker, AsyncMock(side_effect=lambda *a, **kw: calls.append("start") or {"pid": 1}))
+        self.complete.side_effect = lambda *a, **kw: calls.append("reject_run")
+        with stack:
+            await revise_spec("42")
+        self.complete.assert_awaited_once_with("42", "rejected")
+
+        assert calls == ["get_state", "transition:triaged", "start", "reject_run"]
+
+    async def test_a_failed_restore_is_logged_and_the_original_409_still_raised(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.RESEARCHED, [], fail_on=frozenset({TaskState.RESEARCHED}))
+        start = AsyncMock(return_value={"error": "No slots"})
+        stack, _ = self._patches(tracker, start)
+        with (
+            stack,
+            patch("sova.dashboard.routers.spec.log") as log,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "No slots"
+        restore_logs = [c for c in log.error.call_args_list if c.args[0] == "spec.revise.restore_failed"]
+        assert len(restore_logs) == 1
+        assert restore_logs[0].kwargs["exc_info"] is True
+
+    async def test_a_failed_triaged_transition_is_a_502_and_starts_no_agent(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.RESEARCHED, [], fail_on=frozenset({TaskState.TRIAGED}))
+        start = AsyncMock()
+        stack, clear = self._patches(tracker, start)
+        with stack, pytest.raises(HTTPException) as exc_info:
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == "Failed to transition issue #42 to TRIAGED"
+        start.assert_not_called()
+        clear.assert_not_called()
+
+    async def test_an_unreadable_state_is_a_502_and_starts_no_agent(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.RESEARCHED, [])
+        tracker.get_state = AsyncMock(side_effect=RuntimeError("gh: rate limited"))  # type: ignore[method-assign]
+        start = AsyncMock()
+        stack, _ = self._patches(tracker, start)
+        with stack, pytest.raises(HTTPException) as exc_info:
+            await revise_spec("42")
+
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail == "Failed to read the state of issue #42"
+        start.assert_not_called()
+
+    async def test_an_unreadable_state_leaves_the_awaiting_approval_run_untouched(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import revise_spec
+
+        tracker = _Tracker(TaskState.RESEARCHED, [])
+        tracker.get_state = AsyncMock(side_effect=RuntimeError("gh: rate limited"))  # type: ignore[method-assign]
+        stack, _ = self._patches(tracker, AsyncMock())
+        with stack:
+            with pytest.raises(HTTPException):
+                await revise_spec("42")
+            self.complete.assert_not_called()
+
+    async def test_an_already_triaged_issue_is_not_written(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+
+        calls: list[str] = []
+        tracker = _Tracker(TaskState.TRIAGED, calls)
+        stack, _ = self._patches(tracker, AsyncMock(return_value={"pid": 1}))
+        with stack:
+            await revise_spec("42")
+
+        assert calls == ["get_state"]
+
+    async def test_the_researcher_precondition_rejects_the_issue_until_revise_moves_it(self, tmp_path: Path) -> None:
+        """The regression: run the researcher's real state check instead of a stubbed start_agent."""
+        from sova.core.steps.fetch_task import FetchTaskStep
+        from sova.dashboard.routers.spec import revise_spec
+        from sova.roles.researcher import ResearcherRole
+
+        tracker = _Tracker(TaskState.RESEARCHED, [])
+
+        async def _researcher_fetch() -> tuple[bool, str]:
+            ctx = ExecutionContext(
+                project_dir=tmp_path, config=ProjectConfig(), adapter=tracker, issue_number="42", role="researcher"
+            )
+            ctx.allowed_input_states = ResearcherRole.allowed_input_states
+            result = await FetchTaskStep().execute(ctx)
+            return result.success, result.error or ""
+
+        ok, error = await _researcher_fetch()
+        assert not ok
+        assert "Precondition failed: issue state researched not in allowed states (triaged)" in error
+
+        async def _start(*a: object, **kw: object) -> dict:
+            ok, error = await _researcher_fetch()
+            return {"pid": 1} if ok else {"error": error}
+
+        stack, _ = self._patches(tracker, AsyncMock(side_effect=_start))
+        with stack:
+            result = await revise_spec("42")
+
+        assert result["status"] == "revision_started"
