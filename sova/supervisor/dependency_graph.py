@@ -34,6 +34,7 @@ from sova.utils.markdown import extract_section
 log = get_logger(component="supervisor.dependency_graph")
 
 _GRAPH_CACHE_TTL = 180.0  # 3 minutes
+GRAPH_CACHE_TTL = _GRAPH_CACHE_TTL  # public alias: how long a consumer may see a stale graph
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
 # Bumped by every invalidation of a repo. A build captures it before its first await and caches only if
 # it is unchanged, so a fetch that began before an invalidation (an agent spawn or epic close) cannot put
