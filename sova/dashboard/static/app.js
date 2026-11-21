@@ -353,10 +353,22 @@ function statusBadge(status, classMap) {
   return '<span class="text-xs px-2 py-0.5 rounded ' + cls + '">' + escapeHtml(status) + '</span>';
 }
 
-// A CPU reading in the API's unit (percent of one core: 100 is one full core, and a multi-core process tree
-// exceeds it, so it is never clamped to 100). null or undefined is "no reading yet", never 0%.
+// The system-wide CPU reading: a share of the whole machine, so 100 is every core busy.
+// null or undefined is "no reading yet", never 0%.
 function formatCpuPercent(value) {
   return value != null ? Number(value).toFixed(1) + '%' : '--';
+}
+
+// An agent's CPU reading, given in the API's unit (percent of one core: 100 is one full core, and a multi-core
+// process tree exceeds it), shown as the number of cores it keeps busy so it never reads as a share of the
+// machine. Under one core keeps two decimals, and a nonzero reading too small for them is "<0.01", not idle.
+// null or undefined is "no reading yet", never 0.
+function formatCpuCores(value) {
+  if (value == null) return '--';
+  var cores = Number(value) / 100;
+  if (cores > 0 && cores < 0.005) return '<0.01 cores';
+  // 0.995 and up rounds to 1.00, so it takes the one-decimal form as 1.0 itself does.
+  return cores.toFixed(cores < 0.995 ? 2 : 1) + ' cores';
 }
 
 function setText(id, text) {

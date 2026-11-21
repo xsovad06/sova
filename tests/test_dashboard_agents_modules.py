@@ -1482,6 +1482,7 @@ class TestSharedHelpersHaveOneDefinition:
             "renderSectionError",
             "statusBadge",
             "formatCpuPercent",
+            "formatCpuCores",
             *_COMPONENT_HELPERS,
         ],
     )
