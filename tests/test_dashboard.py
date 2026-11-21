@@ -6813,6 +6813,10 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99) as mock_create,
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            # Branch lookup is not under test: it calls load_config(project_dir), which now resolves unset commit
+            # lists from project files and git history (sova/config/commit_lists.py), and project_dir here is a
+            # bare MagicMock that nothing can read.
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "check_stale_command", return_value=None),
@@ -6874,6 +6878,10 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            # Branch lookup is not under test: it calls load_config(project_dir), which now resolves unset commit
+            # lists from project files and git history (sova/config/commit_lists.py), and project_dir here is a
+            # bare MagicMock that nothing can read.
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "check_stale_command", return_value=None),
@@ -6928,6 +6936,10 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            # Branch lookup is not under test: it calls load_config(project_dir), which now resolves unset commit
+            # lists from project files and git history (sova/config/commit_lists.py), and project_dir here is a
+            # bare MagicMock that nothing can read.
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "check_stale_command", return_value=None),
@@ -6984,6 +6996,10 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            # Branch lookup is not under test: it calls load_config(project_dir), which now resolves unset commit
+            # lists from project files and git history (sova/config/commit_lists.py), and project_dir here is a
+            # bare MagicMock that nothing can read.
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch.object(agent_lifecycle, "check_stale_command", return_value=None),

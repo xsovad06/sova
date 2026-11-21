@@ -11,7 +11,13 @@ import typer
 from typer.testing import CliRunner
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import CommitConfig, IntegrationConfig, ProjectConfig
+from sova.config.models import (
+    DEFAULT_COMMIT_SCOPES,
+    DEFAULT_COMMIT_TYPES,
+    CommitConfig,
+    IntegrationConfig,
+    ProjectConfig,
+)
 from sova.utils.shell import ShellResult
 
 runner = CliRunner()
@@ -2320,7 +2326,12 @@ class TestMergeSubjectCommand:
         cfg = MagicMock(
             github_repo=repo,
             github_user="sova-bot",
-            commit=CommitConfig(pr_title_format=pr_title_format, **({"types": types} if types else {})),
+            # SOVA's own lists, set explicitly: the field defaults are neutral (no scope restriction).
+            commit=CommitConfig(
+                pr_title_format=pr_title_format,
+                types=types or list(DEFAULT_COMMIT_TYPES),
+                scopes=list(DEFAULT_COMMIT_SCOPES),
+            ),
             integration=IntegrationConfig(merge_method=method),
             task_source=MagicMock(is_jira=is_jira),
         )

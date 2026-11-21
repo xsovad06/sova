@@ -207,11 +207,12 @@ class TestPartialWorkPreservation:
 
         assert result is True
 
-        # A new commit is created, conformant with invariants/commit-format.sh.
+        # A new commit is created. The repository has no scoped history, so the project's scope list resolves
+        # empty and the subject carries no scope.
         log_result = await run("git", "log", "--oneline", cwd=tmp_path)
         lines = log_result.stdout.strip().splitlines()
         assert len(lines) == commit_count_before + 1
-        assert "chore(core): preserve partial work from develop (timeout)" in lines[0]
+        assert "chore: preserve partial work from develop (timeout)" in lines[0]
         committed = await run("git", "diff", "--name-only", "HEAD~1", "HEAD", cwd=tmp_path)
         assert "test.txt" in committed.stdout
 

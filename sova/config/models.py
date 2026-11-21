@@ -442,11 +442,10 @@ class WorktreeConfig(BaseSettings):
 
 # Conventional-commit types/scopes accepted from an LLM-proposed commit subject
 # or PR title (sova/core/steps/commit_convention.py). SOVA's own convention
-# (AGENTS.md "Commit Messages", invariants/commit-format.sh), used as the
-# CommitConfig default so an unconfigured project's generated commits/PR titles
-# are unaffected; a project installing SOVA can override either list to match
-# its own convention instead. The single copy of each list: sova/core/steps/
-# create_pr.py reads them too, for scope inference on an unconfigured project.
+# (AGENTS.md "Commit Messages", invariants/commit-format.sh). They are not the
+# CommitConfig field defaults: the loader resolves an unset list per project
+# (sova/config/commit_lists.py) and yields these lists only for the SOVA
+# repository itself.
 # The shape every configured commit.types entry must match: a
 # conventional-commit type segment, never capitalized or hyphenated, matching
 # sova/core/steps/commit_convention.py's _LINE_RE type group exactly, so a
@@ -462,6 +461,10 @@ _TYPE_RE = re.compile(r"^[a-z][a-z0-9]*$")
 _SCOPE_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 DEFAULT_COMMIT_TYPES: tuple[str, ...] = ("feat", "fix", "refactor", "test", "docs", "chore", "ci")
+
+# What a project with no commit convention of its own gets: the conventional set without "ci" (which needs a
+# scopeless form). The CommitConfig field defaults, so only the loader's SOVA-repository gate yields the SOVA lists.
+FALLBACK_COMMIT_TYPES: tuple[str, ...] = ("feat", "fix", "refactor", "test", "docs", "chore")
 DEFAULT_COMMIT_SCOPES: tuple[str, ...] = (
     "dashboard",
     "commands",
@@ -495,8 +498,8 @@ class CommitConfig(BaseSettings):
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
     branch_naming: Literal["conventional", "freeform"] = "conventional"
     pr_auto_link_issues: bool = True
-    types: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_TYPES))
-    scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_COMMIT_SCOPES))
+    types: list[str] = Field(default_factory=lambda: list(FALLBACK_COMMIT_TYPES))
+    scopes: list[str] = Field(default_factory=list)
     # Time budget of one PR-body LLM call. A timed-out first call is retried once with half the diff it
     # first sent (at most half of pr_body_diff_cap). 120s used to cut off a real diff at ~114s.
     pr_body_timeout: int = Field(300, gt=0)
@@ -508,7 +511,7 @@ class CommitConfig(BaseSettings):
     @field_validator("types", "scopes", mode="after")
     @classmethod
     def _validate_type_scope_entries(cls, value: list[str], info: ValidationInfo) -> list[str]:
-        """Reject an empty list or an entry a conventional-commit line could never carry.
+        """Reject an empty types list or an entry a conventional-commit line could never carry.
 
         ``sova/core/steps/commit_convention.py``'s ``is_valid_commit_line()``
         rejects any type/scope outside this list, and its fallback builder
@@ -532,8 +535,9 @@ class CommitConfig(BaseSettings):
             raise ValueError(
                 f"commit.{info.field_name} entries must match {pattern.pattern!r} ({shape}); invalid: {invalid!r}"
             )
-        if not cleaned:
-            raise ValueError(f"commit.{info.field_name} must not be empty")
+        # An empty scope list is valid: it means no scope restriction (a project whose history has no scopes).
+        if not cleaned and info.field_name == "types":
+            raise ValueError("commit.types must not be empty")
         return cleaned
 
 

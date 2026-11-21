@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,6 +120,37 @@ async def _kill_process_group(proc: asyncio.subprocess.Process, cmd: str, *, gra
             await proc.wait()
     except TimeoutError:
         log.warning(event, cmd=cmd, pid=proc.pid)
+
+
+def run_sync(
+    *args: str,
+    cwd: Path | str | None = None,
+    timeout: float | None = 300,
+    env: dict[str, str] | None = None,
+) -> ShellResult:
+    """Run a command synchronously and return the result, for a caller that cannot await (config loading).
+
+    Same contract as :func:`run`: no shell expansion, stdin closed, output decoded as UTF-8 with replacement,
+    and a timeout comes back as ``ShellResult(returncode=-1, timed_out=True)`` rather than an exception.
+    A failure to start the process (a missing binary) raises ``OSError``.
+    """
+    log.debug("shell.run_sync", cmd=args, cwd=str(cwd) if cwd else None)
+    try:
+        completed = subprocess.run(
+            list(args),
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s", timed_out=True)
+    return ShellResult(returncode=completed.returncode, stdout=completed.stdout or "", stderr=completed.stderr or "")
 
 
 async def run(

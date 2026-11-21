@@ -955,7 +955,8 @@ _REGISTRY: list[SettingMeta] = [
         "commit.types",
         "Commit types",
         "Conventional-commit types accepted from an LLM-proposed commit subject or PR title "
-        "(defaults to SOVA's own convention: feat, fix, refactor, test, docs, chore, ci)",
+        "(when unset: the project's AGENTS.md/CLAUDE.md 'Valid types:' line, else its git history; "
+        "sova install and sova commands update store the result)",
         "commit",
         "list",
     ),
@@ -963,7 +964,7 @@ _REGISTRY: list[SettingMeta] = [
         "commit.scopes",
         "Commit scopes",
         "Conventional-commit scopes accepted from an LLM-proposed commit subject or PR title "
-        "(defaults to SOVA's own convention)",
+        "(empty = no restriction; when unset: the project's 'Valid scopes:' line, else its git history)",
         "commit",
         "list",
     ),

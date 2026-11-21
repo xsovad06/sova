@@ -369,3 +369,25 @@ class TestShellKillsDescendants:
         with patch("sova.utils.shell._TERM_GRACE_SECONDS", 0.2):
             pid = await self._run_and_read_grandchild(script, tmp_path)
         self._assert_dead(pid)
+
+
+class TestRunSync:
+    def test_returns_output_and_status(self) -> None:
+        from sova.utils.shell import run_sync
+
+        result = run_sync("python3", "-c", "import sys; print('out'); sys.stderr.write('err'); sys.exit(3)")
+        assert (result.returncode, result.stdout.strip(), result.stderr.strip()) == (3, "out", "err")
+        assert not result.timed_out
+
+    def test_a_timeout_is_a_result_not_an_exception(self) -> None:
+        from sova.utils.shell import run_sync
+
+        result = run_sync("python3", "-c", "import time; time.sleep(5)", timeout=0.2)
+        assert result.timed_out
+        assert result.returncode == -1
+
+    def test_a_missing_binary_raises_oserror(self) -> None:
+        from sova.utils.shell import run_sync
+
+        with pytest.raises(OSError):
+            run_sync("sova-no-such-binary-xyz")
