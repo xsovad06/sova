@@ -19,9 +19,16 @@ from typing import Any
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 
-from sova.config.models import (
-    ProjectConfig,
+from sova.config.commit_lists import (
+    Kind,
+    ResolvedList,
+    clear_resolution_cache,
+    docs_stamp,
+    is_sova_repository,
+    resolve_commit_lists,
+    resolve_commit_lists_cached,
 )
+from sova.config.models import DEFAULT_COMMIT_SCOPES, ProjectConfig
 from sova.config.root import owning_config_dir, resolve_config_root
 from sova.utils.logging import get_logger
 
@@ -87,6 +94,7 @@ def invalidate_config_cache(project_dir: Path | None = None) -> None:
         # A write through a worktree can create its own settings database, which changes what
         # owning_config_dir() answers for it: forget the cached worktree-to-primary mapping.
         resolve_config_root.cache_clear()
+    clear_resolution_cache(project_dir.resolve() if project_dir is not None else None)
     with _cache_lock:
         if project_dir is None:
             _generation += 1
@@ -120,6 +128,9 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
     )
 
     fingerprint, ttl = config_fingerprint(project_dir)
+    # AGENTS.md and CLAUDE.md can fill an unset commit list, so an edit to either must miss the cache. Appended
+    # (never inserted) so `fingerprint[:2]` stays (env, toml) for the degraded-entry comparison.
+    fingerprint = (*fingerprint, docs_stamp(project_dir))
     with _cache_lock:
         entry = _cache.get(project_dir)
         generation = _generation_of(project_dir)
@@ -168,8 +179,8 @@ def _store(project_dir: Path, generation: tuple[int, int], entry: _CacheEntry) -
             _cache[project_dir] = entry
 
 
-def _build_config(project_dir: Path) -> ProjectConfig:
-    """Read every layer from disk, DB and environment (the uncached load)."""
+def _merged_layers(project_dir: Path) -> dict[str, Any]:
+    """TOML overlaid with the database, before environment overrides (the stored layers)."""
     toml_path = project_dir / "sova.toml"
     toml_flat: dict[str, Any] = {}
     if toml_path.exists():
@@ -191,11 +202,132 @@ def _build_config(project_dir: Path) -> ProjectConfig:
             logger.debug("loader.auto_migrated_to_db")
 
     if db_overrides:
-        merged = _deep_merge(toml_flat, db_overrides)
-    else:
-        merged = toml_flat
+        return _deep_merge(toml_flat, db_overrides)
+    return toml_flat
+
+
+def _unset_commit_kinds(merged: dict[str, Any]) -> tuple[Kind, ...]:
+    """The commit lists no layer sets: a key absent from *merged* (an explicit empty list is set) and from the env."""
+    section = merged.get("commit")
+    stored = section if isinstance(section, dict) else {}
+    kinds: tuple[Kind, ...] = ("types", "scopes")
+    return tuple(kind for kind in kinds if kind not in stored and env_override_var(f"commit.{kind}") is None)
+
+
+def unset_commit_kinds(project_dir: Path) -> tuple[Kind, ...]:
+    """The commit lists no stored layer or env var sets for *project_dir*."""
+    return _unset_commit_kinds(_merged_layers(owning_config_dir(project_dir)))
+
+
+def commit_convention_findings(project_dir: Path) -> list[tuple[str, str]]:
+    """``(check name, detail)`` for each commit-list problem `sova doctor` should warn about.
+
+    Two separate findings: a list whose git history could not be read (nothing was derived), and a scope list a
+    project other than SOVA still resolves to SOVA's own default. SOVA's own repository has none. Types are not
+    checked: SOVA's types are the standard conventional set, so a match proves nothing about a leak.
+    """
+    project_dir = owning_config_dir(project_dir)
+    if is_sova_repository(project_dir):
+        return []
+    findings: list[tuple[str, str]] = []
+    unset = unset_commit_kinds(project_dir)
+    unresolved = [
+        kind for kind, entry in resolve_commit_lists(project_dir, unset).items() if entry.source == "unresolved"
+    ]
+    if unresolved:
+        names = ", ".join(f"commit.{kind}" for kind in unresolved)
+        findings.append(
+            ("commit convention", f"git history unreadable, {names} not derived: set them with sova config set")
+        )
+
+    if _looks_like_sova_scopes(load_config(project_dir).commit.scopes):
+        findings.append(
+            ("commit.scopes", "still SOVA's default list: set this project's with sova config set commit.scopes")
+        )
+    return findings
+
+
+# Scopes that name a SOVA subsystem and nothing a generic project would call its own.
+_SOVA_ONLY_SCOPES = frozenset({"supervisor", "adapters", "scheduler", "ipc", "personas", "invariants", "oversight"})
+_SOVA_ONLY_SCOPES_NEEDED = 3
+
+
+def _looks_like_sova_scopes(scopes: list[str]) -> bool:
+    """True when *scopes* is a copy of SOVA's own list, current or an earlier or partial version of it.
+
+    Equality with the current constant would go silent the moment SOVA adds or drops a scope, which is exactly
+    when a stored copy leaks. Instead: most entries are SOVA's, and a few of them are subsystems only SOVA has.
+    """
+    if not scopes:
+        return False
+    sova = set(DEFAULT_COMMIT_SCOPES)
+    in_sova = sum(1 for scope in scopes if scope in sova)
+    return in_sova * 2 > len(scopes) and len(_SOVA_ONLY_SCOPES & set(scopes)) >= _SOVA_ONLY_SCOPES_NEEDED
+
+
+def _fill_unset_commit_lists(merged: dict[str, Any], project_dir: Path) -> None:
+    """Resolve the unset commit lists for this project (docs, then git history) without storing them."""
+    unset = _unset_commit_kinds(merged)
+    if not unset:
+        return
+    resolved = resolve_commit_lists_cached(project_dir, unset)
+    section = merged.get("commit")
+    if not isinstance(section, dict):
+        section = merged["commit"] = {}
+    for kind, entry in resolved.items():
+        section[kind] = entry.values
+
+
+# "fallback" (history read, but no conventional subject in it) is a guess like "empty": storing it would pin
+# it as configured, and the history would never be derived from once SOVA starts writing scoped commits.
+_NOT_PERSISTED_SOURCES = ("sova", "empty", "fallback", "unresolved")
+
+
+def persist_commit_lists(project_dir: Path) -> dict[Kind, ResolvedList]:
+    """Store the resolved commit lists no layer sets, so Settings shows and edits them; return what was stored.
+
+    A key already set anywhere (database row, sova.toml, env) is never touched, even when it equals SOVA's
+    default. A list that is SOVA's own, whose git history could not be read, or whose history has too little
+    conventional evidence (no commits, or none or too few ``type(scope):`` subjects) stays unstored, so a later
+    run tries again. The rows are written insert-only, in one transaction with the existence check, so a value
+    saved after the unset check above (Settings, another shell) is never overwritten. Nothing is
+    written when the database could not be read (a locked database would make every stored key look unset), and
+    the result names only the keys a re-read confirms stored, since the database save is best-effort.
+    """
+    project_dir = owning_config_dir(project_dir)
+    from sova.config.db_loader import _save_config_to_db_sync, db_read_failed, reset_db_read_failure
+
+    reset_db_read_failure()
+    unset = unset_commit_kinds(project_dir)
+    if db_read_failed():
+        logger.warning("loader.commit_lists_skipped_db_unreadable", project_dir=str(project_dir))
+        return {}
+    resolved = {
+        kind: entry
+        for kind, entry in resolve_commit_lists(project_dir, unset).items()
+        if entry.source not in _NOT_PERSISTED_SOURCES
+    }
+    if not resolved:
+        return {}
+    _save_config_to_db_sync(
+        project_dir, {f"commit.{kind}": entry.values for kind, entry in resolved.items()}, insert_only=True
+    )
+    invalidate_config_cache(project_dir)
+    still_unset = unset_commit_kinds(project_dir)
+    stored = {kind: entry for kind, entry in resolved.items() if kind not in still_unset}
+    if len(stored) < len(resolved):
+        logger.warning("loader.commit_lists_not_stored", kinds=sorted(set(resolved) - set(stored)))
+    if stored:
+        logger.info("loader.commit_lists_persisted", sources={kind: entry.source for kind, entry in stored.items()})
+    return stored
+
+
+def _build_config(project_dir: Path) -> ProjectConfig:
+    """Read every layer from disk, DB and environment (the uncached load)."""
+    merged = _merged_layers(project_dir)
 
     _apply_env_overrides(merged)
+    _fill_unset_commit_lists(merged, project_dir)
 
     task_source = merged.get("task_source")
     if isinstance(task_source, dict):

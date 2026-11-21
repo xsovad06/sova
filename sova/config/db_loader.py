@@ -341,8 +341,12 @@ async def save_config_to_db(session: AsyncSession, config: dict[str, Any]) -> No
         await save_setting(session, key, value)
 
 
-def _write_flat_config(conn: Any, config: dict[str, Any], flat: dict[str, Any]) -> None:
-    """Write flat config entries into DB, deleting stale keys under replaced sections."""
+def _write_flat_config(conn: Any, config: dict[str, Any], flat: dict[str, Any], *, insert_only: bool = False) -> None:
+    """Write flat config entries into DB, deleting stale keys under replaced sections.
+
+    With *insert_only* a key that already has a row is left as it is, so the existence check and the insert
+    share one transaction and a value stored by someone else is never overwritten.
+    """
     from sqlalchemy import text
 
     section_prefixes = [f"{k}." for k, v in config.items() if isinstance(v, dict)]
@@ -359,6 +363,8 @@ def _write_flat_config(conn: Any, config: dict[str, Any], flat: dict[str, Any]) 
             {"key": key},
         ).fetchone()
         if row is not None:
+            if insert_only:
+                continue
             conn.execute(
                 text("UPDATE project_settings SET value = :value WHERE key = :key"),
                 {"key": key, "value": json_value},
@@ -403,7 +409,9 @@ def _save_with_immediate_lock(engine: Any, config: dict[str, Any], flat: dict[st
         conn.close()
 
 
-def _save_within_transaction(engine: Any, config: dict[str, Any], flat: dict[str, Any]) -> None:
+def _save_within_transaction(
+    engine: Any, config: dict[str, Any], flat: dict[str, Any], *, insert_only: bool = False
+) -> None:
     """Standard save path using SQLAlchemy's managed transaction."""
     from sqlalchemy import text
 
@@ -414,10 +422,12 @@ def _save_within_transaction(engine: Any, config: dict[str, Any], flat: dict[str
             logger.debug("db_loader.project_settings_table_missing")
             return
 
-        _write_flat_config(conn, config, flat)
+        _write_flat_config(conn, config, flat, insert_only=insert_only)
 
 
-def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_if_empty: bool = False) -> None:
+def _save_config_to_db_sync(
+    project_dir: Path, config: dict[str, Any], *, only_if_empty: bool = False, insert_only: bool = False
+) -> None:
     """Sync bridge: save config dict to DB using a sync engine.
 
     Follows the same pattern as ``_try_load_from_db`` to avoid
@@ -427,6 +437,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
         project_dir: Project directory containing the DB.
         config: Nested config dict to flatten and save.
         only_if_empty: When True, migration is skipped if any rows exist (atomic check).
+        insert_only: When True, a key that already has a row is not overwritten (checked in the same transaction).
     """
     try:
         url = _sync_url_for(project_dir)
@@ -456,7 +467,7 @@ def _save_config_to_db_sync(project_dir: Path, config: dict[str, Any], *, only_i
             if only_if_empty:
                 _save_with_immediate_lock(engine, config, flat)
             else:
-                _save_within_transaction(engine, config, flat)
+                _save_within_transaction(engine, config, flat, insert_only=insert_only)
         finally:
             engine.dispose()
         touch_settings_stamp(project_dir)

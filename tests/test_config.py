@@ -1985,6 +1985,11 @@ class TestCommitConfigTypeScopeValidation:
         with pytest.raises(ValidationError, match="commit.types"):
             CommitConfig(types=["feat", "my-type"], scopes=["web"])
 
+    def test_empty_scopes_are_allowed_but_empty_types_are_not(self) -> None:
+        assert CommitConfig(types=["feat"], scopes=[]).scopes == []
+        with pytest.raises(ValidationError, match="commit.types must not be empty"):
+            CommitConfig(types=[], scopes=["web"])
+
     def test_capitalized_scope_is_still_rejected(self) -> None:
         with pytest.raises(ValidationError, match="commit.scopes"):
             CommitConfig(types=["feat"], scopes=["Web"])
