@@ -17,7 +17,7 @@ from rich.console import Console
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters import create_adapter
-from sova.config.loader import invalidate_config_cache, load_config
+from sova.config.loader import invalidate_config_cache, load_config, persist_commit_lists
 from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
 from sova.db.session import get_session
 from sova.git.artifact_exclusions import INFO_EXCLUDE_ENTRIES
@@ -115,6 +115,12 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         log.warning("setup.database_init_failed", project_dir=str(project_dir), exc_info=True)
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         failed_stages.append("database")
+
+    # Store the commit types/scopes this project's docs or history define, so Settings shows them (non-fatal)
+    try:
+        persist_commit_lists(project_dir)
+    except Exception:  # noqa: BLE001 (setup stage is non-fatal; lists resolve lazily when unstored)
+        log.warning("setup.commit_lists_failed", project_dir=str(project_dir), exc_info=True)
 
     # Load config once: used by Stage 4 (commands) and Stage 5 (RTK)
     cfg = load_config(project_dir)

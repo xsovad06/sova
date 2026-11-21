@@ -237,6 +237,13 @@ def _validate_sova_config(project_dir: Path) -> list[DiagnosticCheck]:
     return checks
 
 
+def _check_commit_convention(project_dir: Path) -> list[DiagnosticCheck]:
+    """Warn when a non-SOVA project uses SOVA's commit lists, or its git history is unreadable."""
+    from sova.config.loader import commit_convention_findings
+
+    return [DiagnosticCheck(name, False, detail, False) for name, detail in commit_convention_findings(project_dir)]
+
+
 def _check_github_config(cfg: ProjectConfig) -> list[DiagnosticCheck]:
     """Check GitHub-specific configuration fields."""
     return [
@@ -976,6 +983,7 @@ async def run_all_checks(project_dir: Path) -> list[DiagnosticCheck]:
     checks.extend(await _guarded(_LABEL_GIT_IDENTITY, _check_git_identity, project_dir))
     checks.extend(await _guarded(_LABEL_GIT_HOOKS, _check_git_hooks, project_dir))
     checks.extend(await _guarded("config", _check_sova_config, project_dir))
+    checks.extend(await _guarded("commit convention", _check_commit_convention, project_dir))
     checks.extend(await _guarded("install completeness", _check_install_completeness, project_dir))
     checks.extend(await _guarded(_LABEL_DATABASE_SCHEMA, _check_database_schema, project_dir))
     checks.extend(await _guarded(_LABEL_LLM_PROVIDER, _check_llm_provider, project_dir))
