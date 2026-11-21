@@ -86,6 +86,16 @@ class MonitorCIStep(BaseStep):
             if resume_result is not None:
                 return resume_result
 
+        return await self.watch(ctx)
+
+    async def watch(self, ctx: ExecutionContext) -> StepResult:
+        """Poll CI on the working tree's HEAD and run the fix loop when it fails.
+
+        The part of :meth:`execute` a later step reuses after it pushes a
+        commit of its own (``address_sonarcloud_findings``), without the
+        no-new-commits and resume shortcuts, which describe this step's own
+        push rather than the later one.
+        """
         result, failed = await self._poll_ci(ctx)
         if result.success or not failed:
             return result
