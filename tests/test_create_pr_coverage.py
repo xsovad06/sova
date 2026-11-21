@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig, TaskSourceConfig
+from sova.config.models import DEFAULT_COMMIT_SCOPES, ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps._pr_body import _closing_keyword_re
 from sova.llm.models import LLMResult
@@ -706,48 +706,50 @@ class TestInferScope:
     def test_single_scope(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
-        assert _infer_scope(["sova/dashboard/app.py", "sova/dashboard/routers/x.py"]) == "dashboard"
+        assert (
+            _infer_scope(["sova/dashboard/app.py", "sova/dashboard/routers/x.py"], DEFAULT_COMMIT_SCOPES) == "dashboard"
+        )
 
     def test_dominant_scope_wins(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
         files = ["sova/core/a.py", "sova/core/b.py", "sova/cli/c.py"]
-        assert _infer_scope(files) == "core"
+        assert _infer_scope(files, DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_tie_breaks_to_first_seen(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
-        assert _infer_scope(["sova/cli/a.py", "sova/db/b.py"]) == "cli"
+        assert _infer_scope(["sova/cli/a.py", "sova/db/b.py"], DEFAULT_COMMIT_SCOPES) == "cli"
 
     def test_empty_falls_back_to_core(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
-        assert _infer_scope([]) == "core"
-        assert _infer_scope(None) == "core"
+        assert _infer_scope([], DEFAULT_COMMIT_SCOPES) == "core"
+        assert _infer_scope(None, DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_non_sova_paths_fall_back_to_core(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
-        assert _infer_scope(["tests/test_x.py", "docs/guide.md", "README.md"]) == "core"
+        assert _infer_scope(["tests/test_x.py", "docs/guide.md", "README.md"], DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_unknown_sova_dir_falls_back_to_core(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
         # sova/notascope/ is not in VALID_SCOPES
-        assert _infer_scope(["sova/notascope/x.py"]) == "core"
+        assert _infer_scope(["sova/notascope/x.py"], DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_top_level_sova_file_falls_back_to_core(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
         # sova/__init__.py has only 2 parts: no scope segment
-        assert _infer_scope(["sova/__init__.py"]) == "core"
+        assert _infer_scope(["sova/__init__.py"], DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_mixed_sova_and_non_sova_paths_fall_back_to_core(self) -> None:
         from sova.core.steps.create_pr import _infer_scope
 
         # A non-sova path (README.md) makes this a mixed change even though
         # the other path is validly scoped, so it must not return "dashboard".
-        assert _infer_scope(["sova/dashboard/app.py", "README.md"]) == "core"
+        assert _infer_scope(["sova/dashboard/app.py", "README.md"], DEFAULT_COMMIT_SCOPES) == "core"
 
     def test_configured_scopes_override_sovas_own_list(self) -> None:
         """A project's own commit.scopes, not SOVA's own DEFAULT_COMMIT_SCOPES,
@@ -769,12 +771,11 @@ class TestInferScope:
 
         assert _infer_scope(["sova/dashboard/app.py"], scopes=["widgets", "core"]) == "core"
 
-    def test_empty_configured_scopes_falls_back_to_core(self) -> None:
-        """An empty commit.scopes (misconfigured project) never crashes or
-        emits an unconfigured scope: it falls back to the safe default."""
+    def test_empty_configured_scopes_infers_no_scope(self) -> None:
+        """An empty commit.scopes (a project with no scope convention) never emits a scope."""
         from sova.core.steps.create_pr import _infer_scope
 
-        assert _infer_scope(["sova/dashboard/app.py"], scopes=[]) == "core"
+        assert _infer_scope(["sova/dashboard/app.py"], scopes=[]) == ""
 
     def test_non_sova_directory_segment_matches_a_configured_scope(self) -> None:
         """A project whose layout isn't SOVA's own (no "sova/" top-level
@@ -797,27 +798,37 @@ class TestGithubTitleScope:
     def test_github_title_infers_scope(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
 
-        title = _build_pr_title("Add widget support", "1245", changed_files=["sova/dashboard/app.py"])
+        title = _build_pr_title(
+            "Add widget support", "1245", changed_files=["sova/dashboard/app.py"], scopes=DEFAULT_COMMIT_SCOPES
+        )
         assert title == "feat(dashboard): add widget support"
 
     def test_github_title_no_issue_number_in_title(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
 
-        title = _build_pr_title("Fix the thing", "99", changed_files=["sova/cli/app.py"])
+        title = _build_pr_title("Fix the thing", "99", changed_files=["sova/cli/app.py"], scopes=DEFAULT_COMMIT_SCOPES)
         assert "#99" not in title
         assert title == "feat(cli): fix the thing"
 
     def test_github_title_preserves_existing_type(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
 
-        title = _build_pr_title("fix: broken login", "42", changed_files=["sova/core/auth.py"])
+        title = _build_pr_title(
+            "fix: broken login", "42", changed_files=["sova/core/auth.py"], scopes=DEFAULT_COMMIT_SCOPES
+        )
         assert title == "fix(core): broken login"
 
     def test_github_title_defaults_to_core_without_files(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
 
-        title = _build_pr_title("Do a thing", "42")
+        title = _build_pr_title("Do a thing", "42", scopes=DEFAULT_COMMIT_SCOPES)
         assert title == "feat(core): do a thing"
+
+    def test_github_title_has_no_scope_when_the_project_has_none(self) -> None:
+        from sova.core.steps.create_pr import _build_pr_title
+
+        title = _build_pr_title("Do a thing", "42", changed_files=["sova/dashboard/app.py"])
+        assert title == "feat: do a thing"
 
     def test_github_title_uses_configured_scopes(self) -> None:
         from sova.core.steps.create_pr import _build_pr_title
@@ -830,7 +841,9 @@ class TestGithubTitleScope:
         own commit-format check rejects just because the LLM call failed."""
         from sova.core.steps.create_pr import _build_pr_title
 
-        title = _build_pr_title("Add a widget", "42", changed_files=["sova/widgets/app.py"], types=["feature"])
+        title = _build_pr_title(
+            "Add a widget", "42", changed_files=["sova/widgets/app.py"], types=["feature"], scopes=["widgets"]
+        )
         assert title.startswith("feature(")
 
     def test_long_issue_title_is_lowercased_and_trimmed_to_72_chars(self) -> None:
@@ -849,7 +862,7 @@ class TestGithubTitleScope:
         )
         assert len(gwym_title) > MAX_LINE_LENGTH
 
-        title = _build_pr_title(gwym_title, "42", changed_files=["sova/dashboard/app.py"])
+        title = _build_pr_title(gwym_title, "42", changed_files=["sova/dashboard/app.py"], scopes=DEFAULT_COMMIT_SCOPES)
 
         assert len(title) <= MAX_LINE_LENGTH
         assert title.startswith("feat(dashboard): make the pricing claims match the app")
@@ -1002,8 +1015,6 @@ class TestValidScopesNoDrift:
 
     def test_valid_scopes_match_invariant(self) -> None:
         import re
-
-        from sova.config.models import DEFAULT_COMMIT_SCOPES
 
         root = Path(__file__).resolve().parent.parent
         shell = (root / "invariants" / "commit-format.sh").read_text(encoding="utf-8")

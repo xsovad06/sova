@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from sova.core.steps.commit_convention import describe_line_form, describe_scope_choice
 from sova.llm.errors import LLMTimeoutError
 from sova.llm.payload import trim_payload
 from sova.utils.formatting import truncate
@@ -148,9 +149,8 @@ TITLE_MARKER = "<!-- PR_TITLE -->"
 
 _TITLE_PROMPT = """
 After the above, add a line containing exactly "{marker}", then on the next \
-line a single candidate PR title in the exact form "type(scope): subject" \
-(or "type: subject" only when type is "ci"), where type is one of: {types} \
-and scope is one of: {scopes}. Choose the type and the scope from the \
+line a single candidate PR title in the exact form {line_form}, where \
+type is one of: {types} and scope is {scopes}. Choose the type and the scope from the \
 changed paths shown above, not from the task title: a change confined to \
 documentation is "docs", one confined to tests is "test", and the scope \
 must name the area those paths belong to. The subject must start with a \
@@ -257,8 +257,9 @@ def build_prompt(
     if request_title:
         prompt += "\n" + _TITLE_PROMPT.format(
             marker=TITLE_MARKER,
+            line_form=describe_line_form(ctx.config.commit.scopes),
             types=", ".join(ctx.config.commit.types),
-            scopes=", ".join(ctx.config.commit.scopes),
+            scopes=describe_scope_choice(ctx.config.commit.scopes),
         )
     return prompt
 
