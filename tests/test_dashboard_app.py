@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -172,6 +173,20 @@ class TestDashboardHealth:
             resp = await client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json()["checks"]["scheduler"] == "ok"
+
+    async def test_phone_page_is_standalone_and_unscoped(self, client: AsyncClient) -> None:
+        """/phone has no sidebar and leaves the API prefix to its unscoped default (the single project)."""
+        resp = await client.get("/phone")
+        assert resp.status_code == 200
+        assert 'window.SOVA_PROJECT_SLUG = "";' in resp.text
+        assert 'id="phone-waiting"' in resp.text
+        assert 'id="phone-running"' in resp.text
+        assert 'id="phone-start-form"' in resp.text
+        assert 'class="sidebar' not in resp.text
+        assert 'href="/work"' in resp.text
+        assert "window.SOVA_RUN_ACTIONS = {" in resp.text
+        assert re.search(r"<h1[^>]*>\s*SOVA\s*</h1>", resp.text)
+        assert "sova_csrf=" in resp.headers["set-cookie"]
 
     @pytest.mark.parametrize(
         ("path", "status"),
@@ -784,6 +799,18 @@ class TestMultiProject:
         resp = await multi_client.get(path)
         assert resp.status_code == 200
         assert expected in resp.text
+
+    async def test_project_phone_page_scopes_the_api_to_its_project(self, multi_client: AsyncClient) -> None:
+        """A missing slug would silently fall back to the unscoped /api, which belongs to the primary project."""
+        resp = await multi_client.get("/p/alpha/phone")
+        assert resp.status_code == 200
+        assert 'window.SOVA_PROJECT_SLUG = "alpha";' in resp.text
+        assert (
+            'window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api"' in resp.text
+        )
+        assert 'href="/p/alpha/work"' in resp.text
+        assert "window.SOVA_RUN_ACTIONS = {" in resp.text
+        assert "sova_csrf=" in resp.headers["set-cookie"]
 
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")
