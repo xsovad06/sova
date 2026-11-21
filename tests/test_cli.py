@@ -361,12 +361,15 @@ class TestDashboardCommand:
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["reload"] is True
         reload_dirs = call_kwargs["reload_dirs"]
-        assert len(reload_dirs) == 2
-        assert any("dashboard" in d for d in reload_dirs)
-        assert any("cli" in d for d in reload_dirs)
-        assert not any("core" in d for d in reload_dirs)
-        assert not any("ipc" in d for d in reload_dirs)
-        assert not any("roles" in d for d in reload_dirs)
+        # Compared as paths under the sova package, never as substrings of the full path: a checkout under a
+        # directory such as ".claude/worktrees/cpu-cores" would otherwise read as watching sova/core.
+        import sova
+
+        package_dir = Path(sova.__file__).resolve().parent
+        assert sorted(Path(d).resolve().relative_to(package_dir).as_posix() for d in reload_dirs) == [
+            "cli",
+            "dashboard",
+        ]
 
     def test_dashboard_non_reload_mode_omits_reload_dirs(self, tmp_path: Path) -> None:
         """Verify non-reload mode does not use reload_dirs."""
