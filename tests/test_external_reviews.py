@@ -227,6 +227,27 @@ class TestFetchSonarCloudIssues:
     async def test_curl_failure(self) -> None:
         with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_result(returncode=1, stderr="timeout")
+            assert await fetch_sonarcloud_issues("org_repo", 94) is None
+
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            "{not json",
+            json.dumps({"errors": [{"msg": "Insufficient privileges"}]}),
+            json.dumps({"total": 0}),
+            json.dumps({"issues": None}),
+            json.dumps([]),
+        ],
+        ids=["malformed-json", "error-body", "missing-issues-key", "null-issues", "non-object"],
+    )
+    async def test_an_unreadable_payload_is_none_not_no_findings(self, stdout: str) -> None:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_result(stdout=stdout)
+            assert await fetch_sonarcloud_issues("org_repo", 94) is None
+
+    async def test_a_real_empty_result_is_an_empty_list(self) -> None:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_result(stdout=json.dumps({"issues": []}))
             assert await fetch_sonarcloud_issues("org_repo", 94) == []
 
 
