@@ -36,8 +36,8 @@ def _invalidate_ranking_caches(project_dir: pathlib.Path | None, adapter: TaskAd
     from sova.supervisor.dependency_graph import invalidate_graph_cache
 
     invalidate_graph_cache(getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or "")
-    # The queue cache is matched by resolved path, the shared graph build by the key its callers pass.
     invalidate_queue_cache(resolve_project_dir(project_dir, default_project_dir=get_default_project_dir()))
+    # forget_graph() resolves the project itself, so the board and every other caller share the one entry it drops.
     forget_graph(project_dir)
 
 

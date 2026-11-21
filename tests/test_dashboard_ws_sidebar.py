@@ -499,6 +499,70 @@ class TestWorkItemsSnapshotWiring:
         assert ws.send_json.await_args_list[0].args[0] == {"type": "work_items_changed"}
 
 
+class TestGraphChangeReachesTheStatusSocket:
+    """A rebuilt dependency graph tells open boards to reload, in single-project mode too (#1459)."""
+
+    @staticmethod
+    async def _rebuild_with_a_changed_graph() -> None:
+        from sova.dashboard.services import work_item_service
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        def graph(title: str) -> DependencyGraph:
+            from sova.adapters.base import Task
+
+            return DependencyGraph([Task(id="1", title=title)])
+
+        work_item_service.reset_graph_load_state()
+        loads = [graph("old"), graph("new")]
+        with patch.object(work_item_service, "load_dependency_graph", AsyncMock(side_effect=loads)):
+            await work_item_service.load_ranking_graph(None)  # a cold build, awaited
+            await work_item_service.load_ranking_graph(None)  # answers from it, rebuild runs behind
+            await asyncio.gather(*work_item_service._graph_builds.values(), return_exceptions=True)
+            await asyncio.gather(*work_item_service._graph_notify_tasks)
+        work_item_service.reset_graph_load_state()
+
+    def test_the_status_router_registers_itself_as_the_graph_change_listener(self) -> None:
+        from sova.dashboard.services import work_item_service
+
+        assert work_item_service._graph_change_listener is agents_router._on_graph_changed
+
+    async def test_a_socket_registered_under_the_default_project_gets_work_items_changed(self, tmp_path: Path) -> None:
+        mgr = _ConnectionManager()
+        ws = _socket()
+        mgr._groups[tmp_path.resolve()] = [ws]  # where a socket lands once a default project is set
+        with (
+            patch.object(agents_router, "_ws_manager", mgr),
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path),
+        ):
+            await self._rebuild_with_a_changed_graph()
+
+        assert _sent_types(ws) == ["work_items_changed"]
+
+    async def test_a_socket_registered_under_none_gets_work_items_changed(self) -> None:
+        mgr = _ConnectionManager()
+        ws = _socket()
+        mgr._groups[None] = [ws]  # no default project: the socket registers under None
+        with (
+            patch.object(agents_router, "_ws_manager", mgr),
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=None),
+        ):
+            await self._rebuild_with_a_changed_graph()
+
+        assert _sent_types(ws) == ["work_items_changed"]
+
+    async def test_a_socket_of_another_project_hears_nothing(self, tmp_path: Path) -> None:
+        mgr = _ConnectionManager()
+        other = _socket()
+        mgr._groups[(tmp_path / "other").resolve()] = [other]
+        with (
+            patch.object(agents_router, "_ws_manager", mgr),
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path),
+        ):
+            await self._rebuild_with_a_changed_graph()
+
+        assert _sent_types(other) == []
+
+
 class TestStatusUpdateCarriesTheRunRole:
     def test_a_status_update_run_names_its_role_and_pipeline_variant(self) -> None:
         # The step-less run badge is built from these two fields on every push, so a push without them would

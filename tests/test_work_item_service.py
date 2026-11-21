@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +27,7 @@ from sova.dashboard.services.work_item_service import (
     _format_running_agent,
     _format_sova_context,
     _get_actions,
+    _graph_key,
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
@@ -3211,6 +3214,13 @@ class TestJiraDisplayName:
 # ---------------------------------------------------------------------------
 
 
+def _known(graph: DependencyGraph):
+    """A graph as ``work_item_service`` remembers a finished build."""
+    from sova.dashboard.services.work_item_service import _KnownGraph
+
+    return _KnownGraph(graph=graph, built_at=time.monotonic(), digest="")
+
+
 def _graph_task(
     issue: int,
     *,
@@ -3521,12 +3531,12 @@ class TestBoundedGraphLoad:
     async def test_a_successful_build_clears_the_recorded_failure(self, _no_real_dependency_graph) -> None:
         from sova.dashboard.services import work_item_service
 
-        work_item_service._graph_failures["None"] = (0.0, RuntimeError("old"))  # long past any backoff
+        work_item_service._graph_failures[_graph_key(None)] = (0.0, RuntimeError("old"))  # long past any backoff
         _no_real_dependency_graph.return_value = DependencyGraph([])
 
         await _load_graph_or_none(None)
 
-        assert "None" not in work_item_service._graph_failures
+        assert _graph_key(None) not in work_item_service._graph_failures
 
     @pytest.mark.asyncio
     async def test_a_hung_build_is_capped_and_recorded_as_a_failure(self, _no_real_dependency_graph) -> None:
@@ -3541,8 +3551,8 @@ class TestBoundedGraphLoad:
             assert await _load_graph_or_none(None) is None
             await asyncio.sleep(0.1)
 
-        assert "None" in work_item_service._graph_failures
-        assert "None" not in work_item_service._graph_builds
+        assert _graph_key(None) in work_item_service._graph_failures
+        assert _graph_key(None) not in work_item_service._graph_builds
 
     @pytest.mark.asyncio
     async def test_a_timeout_warns_once_per_window(self, _no_real_dependency_graph) -> None:
@@ -3594,6 +3604,8 @@ class TestBoundedGraphLoad:
     @pytest.mark.asyncio
     async def test_a_slow_rebuild_is_classified_from_the_previous_graph(self, _no_real_dependency_graph) -> None:
         """The cache expiring (or an agent spawn invalidating it) must not read as an outage for one poll."""
+        from sova.dashboard.services import work_item_service
+
         first = DependencyGraph([_graph_task(1)])
         second = DependencyGraph([_graph_task(1), _graph_task(2)])
         release = asyncio.Event()
@@ -3610,8 +3622,12 @@ class TestBoundedGraphLoad:
         _no_real_dependency_graph.side_effect = load
 
         assert await _load_graph_or_none(None) is first
-        assert await _load_graph_or_none(None) is first  # the rebuild outlasts the wait: the old graph answers
+        with patch("sova.dashboard.services.work_item_service._GRAPH_WAIT_SECONDS", 30.0):
+            # Not awaited at all: the previous graph answers well inside a wait that would otherwise run 30 s.
+            assert await asyncio.wait_for(_load_graph_or_none(None), timeout=1.0) is first
+        rebuild = work_item_service._graph_builds[_graph_key(None)]
         release.set()
+        await rebuild
         assert await _load_graph_or_none(None) is second
 
     @pytest.mark.asyncio
@@ -3649,43 +3665,294 @@ class TestBoundedGraphLoad:
         assert builds == 2
 
     @pytest.mark.asyncio
-    async def test_a_failed_rebuild_drops_the_previous_graph(self, _no_real_dependency_graph) -> None:
-        """Once the tracker fails, an ever older snapshot must not keep answering: it reads as blocked."""
+    async def test_a_failed_rebuild_keeps_the_previous_graph_and_says_it_is_old(
+        self, _no_real_dependency_graph
+    ) -> None:
+        """One transient tracker error must not turn every card to blocked (the spec's stale-graph edge case)."""
         from sova.dashboard.services import work_item_service
 
         graph = DependencyGraph([_graph_task(1)])
         _no_real_dependency_graph.side_effect = [graph, RuntimeError("tracker down")]
 
         assert await _load_graph_or_none(None) is graph
-        assert await _load_graph_or_none(None) is None
+        assert work_item_service.graph_age_meta(None)["graph_refresh_failed"] is False
+        assert await _load_graph_or_none(None) is graph  # answers while the rebuild runs
+        await asyncio.gather(work_item_service._graph_builds[_graph_key(None)], return_exceptions=True)
 
-        assert "None" not in work_item_service._last_graphs
-        assert await _load_graph_or_none(None) is None  # inside the backoff
+        assert await _load_graph_or_none(None) is graph  # inside the backoff, still the previous graph
+        meta = work_item_service.graph_age_meta(None)
+        assert meta["graph_refresh_failed"] is True
+        assert meta["graph_age_seconds"] >= 0
+        assert _no_real_dependency_graph.await_count == 2  # the backoff started no third fetch
 
     @pytest.mark.asyncio
-    async def test_a_slow_rebuild_after_a_failure_has_no_previous_graph_to_fall_back_on(
+    async def test_a_previous_graph_answers_however_old_it_is_while_the_rebuild_hangs(
         self, _no_real_dependency_graph
     ) -> None:
+        """The spec keeps serving the last graph and surfaces its age: no age ever sends a caller back to waiting."""
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
         release = asyncio.Event()
-        calls = 0
 
         async def load(project_dir, milestone=""):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return DependencyGraph([_graph_task(1)])
-            if calls == 2:
-                raise RuntimeError("tracker down")
+            if _no_real_dependency_graph.await_count == 1:
+                return graph
+            await release.wait()
+            return graph
+
+        _no_real_dependency_graph.side_effect = load
+
+        assert await _load_graph_or_none(None) is graph
+        key = _graph_key(None)
+        work_item_service._last_graphs[key] = replace(
+            work_item_service._last_graphs[key], built_at=time.monotonic() - 10_000.0
+        )
+        with patch("sova.dashboard.services.work_item_service._GRAPH_WAIT_SECONDS", 30.0):
+            assert await asyncio.wait_for(_load_graph_or_none(None), timeout=1.0) is graph
+        assert work_item_service.graph_age_meta(None)["graph_age_seconds"] > 1000
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_a_warm_cache_rebuild_does_not_reset_the_graphs_age(self, _no_real_dependency_graph) -> None:
+        """The graph cache hands back the graph already held: it was not fetched again, so it is no younger."""
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.return_value = graph
+        key = _graph_key(None)
+
+        assert await _load_graph_or_none(None) is graph
+        fetched = time.monotonic() - 10_000.0
+        work_item_service._last_graphs[key] = replace(work_item_service._last_graphs[key], built_at=fetched)
+        assert await _load_graph_or_none(None) is graph  # starts a rebuild that returns the same object
+        await asyncio.gather(work_item_service._graph_builds[key], return_exceptions=True)
+
+        assert work_item_service._last_graphs[key].built_at == fetched
+        assert work_item_service.graph_age_meta(None)["graph_age_seconds"] > 1000
+
+    @pytest.mark.asyncio
+    async def test_the_age_is_when_the_graph_was_fetched(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
+        graph.fetched_at = time.monotonic() - 150.0  # served from the graph cache 150 s after its fetch
+        _no_real_dependency_graph.return_value = graph
+
+        assert await _load_graph_or_none(None) is graph
+
+        assert 149.0 <= work_item_service.graph_age_meta(None)["graph_age_seconds"] <= 160.0
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_that_changed_the_graph_tells_the_status_socket(self, _no_real_dependency_graph) -> None:
+        """The board answered from the previous graph, so nothing else would tell it the new one has landed."""
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        old = DependencyGraph([_graph_task(1)])
+        unblocked = DependencyGraph([_graph_task(1, state=TaskState.DONE)])
+        same = DependencyGraph([_graph_task(1, state=TaskState.DONE)])
+        _no_real_dependency_graph.side_effect = [old, unblocked, same]
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            assert await _load_graph_or_none(None) is old  # a cold build is awaited: nobody to tell
+            await asyncio.sleep(0)
+            assert notified == []
+
+            assert await _load_graph_or_none(None) is old  # the rebuild runs behind it
+            await asyncio.gather(work_item_service._graph_builds[_graph_key(None)], return_exceptions=True)
+            await asyncio.gather(*work_item_service._graph_notify_tasks)
+            assert notified == [Path(_graph_key(None))]
+
+            assert await _load_graph_or_none(None) is unblocked
+            await asyncio.gather(work_item_service._graph_builds[_graph_key(None)], return_exceptions=True)
+            await asyncio.sleep(0)
+            assert len(notified) == 1, "a rebuild that changed nothing a board reads sends nothing"
+        finally:
+            work_item_service.set_graph_change_listener(None)
+
+    @staticmethod
+    async def _settle(work_item_service) -> None:
+        """Let the build in flight finish and its change notice (if any) be sent."""
+        await asyncio.gather(*work_item_service._graph_builds.values(), return_exceptions=True)
+        await asyncio.gather(*work_item_service._graph_notify_tasks)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "before", "after"),
+        [
+            ("milestone", "Phase 1", "Phase 2"),
+            ("assignees", ["a"], ["b"]),
+            ("title", "old title", "new title"),
+        ],
+    )
+    async def test_a_rebuild_that_changed_only_what_the_ranking_reads_tells_the_status_socket(
+        self, _no_real_dependency_graph, field, before, after
+    ) -> None:
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        old_task, new_task = _graph_task(1), _graph_task(1)
+        setattr(old_task, field, before)
+        setattr(new_task, field, after)
+        _no_real_dependency_graph.side_effect = [DependencyGraph([old_task]), DependencyGraph([new_task])]
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            await _load_graph_or_none(None)
+            await _load_graph_or_none(None)
+            await self._settle(work_item_service)
+        finally:
+            work_item_service.set_graph_change_listener(None)
+
+        assert notified == [Path(_graph_key(None))]
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_that_only_reorders_the_listing_sends_nothing(self, _no_real_dependency_graph) -> None:
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        _no_real_dependency_graph.side_effect = [
+            DependencyGraph([_graph_task(1), _graph_task(2)]),
+            DependencyGraph([_graph_task(2), _graph_task(1)]),
+        ]
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            await _load_graph_or_none(None)
+            await _load_graph_or_none(None)
+            await self._settle(work_item_service)
+        finally:
+            work_item_service.set_graph_change_listener(None)
+
+        assert notified == []
+
+    @pytest.mark.asyncio
+    async def test_the_build_that_follows_a_forgotten_graph_tells_the_status_socket(
+        self, _no_real_dependency_graph
+    ) -> None:
+        """Other open boards showed the graph forget_graph() dropped (a priority change), so the next one is news."""
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        _no_real_dependency_graph.side_effect = [DependencyGraph([_graph_task(1)]), DependencyGraph([_graph_task(1)])]
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            await _load_graph_or_none(None)
+            work_item_service.forget_graph(None)
+            await _load_graph_or_none(None)
+            await self._settle(work_item_service)
+        finally:
+            work_item_service.set_graph_change_listener(None)
+
+        assert notified == [Path(_graph_key(None))]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_rebuild_tells_the_status_socket_once_and_its_recovery_again(
+        self, _no_real_dependency_graph
+    ) -> None:
+        """The board must hear that its ranking is old, and that it is current again, not every failed attempt."""
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.side_effect = [graph, RuntimeError("down"), RuntimeError("down"), graph]
+        key = _graph_key(None)
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            await _load_graph_or_none(None)
+            await _load_graph_or_none(None)  # rebuild 1 fails
+            await self._settle(work_item_service)
+            assert len(notified) == 1
+
+            work_item_service._graph_failures.pop(key)  # the backoff over, the next rebuild runs
+            await _load_graph_or_none(None)  # rebuild 2 fails again
+            await self._settle(work_item_service)
+            assert len(notified) == 1, "a second consecutive failure changes nothing a board shows"
+
+            work_item_service._graph_failures.pop(key)
+            await _load_graph_or_none(None)  # rebuild 3 succeeds
+            await self._settle(work_item_service)
+            assert len(notified) == 2
+            assert work_item_service.graph_age_meta(None)["graph_refresh_failed"] is False
+        finally:
+            work_item_service.set_graph_change_listener(None)
+
+    @pytest.mark.asyncio
+    async def test_a_forgotten_graph_is_not_announced_when_its_stale_build_lands(
+        self, _no_real_dependency_graph
+    ) -> None:
+        from sova.dashboard.services import work_item_service
+
+        notified: list[Path] = []
+
+        async def listener(project_dir: Path) -> None:
+            notified.append(project_dir)
+
+        release = asyncio.Event()
+
+        async def load(project_dir, milestone=""):
             await release.wait()
             return DependencyGraph([_graph_task(1)])
 
         _no_real_dependency_graph.side_effect = load
+        work_item_service.set_graph_change_listener(listener)
+        try:
+            build = work_item_service._shared_graph_build(_graph_key(None))
+            work_item_service.forget_graph(None)
+            release.set()
+            await build
+            await asyncio.sleep(0)
+        finally:
+            work_item_service.set_graph_change_listener(None)
 
-        with patch("sova.dashboard.services.work_item_service._GRAPH_FAILURE_BACKOFF_SECONDS", 0.0):
-            assert await _load_graph_or_none(None) is not None
-            assert await _load_graph_or_none(None) is None
-            assert await _load_graph_or_none(None) is None
-        release.set()
+        assert notified == []
+
+    @pytest.mark.asyncio
+    async def test_callers_naming_the_same_project_differently_share_one_build(
+        self, _no_real_dependency_graph, tmp_path: Path
+    ) -> None:
+        """The board passes the resolved path and other callers the request's value (None): one fetch, one graph."""
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
+        release = asyncio.Event()
+
+        async def load(project_dir, milestone=""):
+            await release.wait()
+            return graph
+
+        _no_real_dependency_graph.side_effect = load
+        with patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=tmp_path):
+            by_path = asyncio.create_task(load_ranking_graph(tmp_path))
+            by_default = asyncio.create_task(_load_graph_or_none(None))
+            await asyncio.sleep(0.01)
+            release.set()
+            assert await by_path is graph
+            assert await by_default is graph
+            assert _no_real_dependency_graph.await_count == 1
+            assert list(work_item_service._last_graphs) == [str(tmp_path)]
+
+            work_item_service.forget_graph(None)  # one forget drops the entry the other caller's key shares
+            assert not work_item_service._last_graphs
 
     @pytest.mark.asyncio
     async def test_the_previous_graph_is_remembered_per_project(
@@ -3759,13 +4026,13 @@ class TestBoundedGraphLoad:
 
         _no_real_dependency_graph.side_effect = hang
         assert await _load_graph_or_none(None) is None
-        build = work_item_service._graph_builds["None"]
+        build = work_item_service._graph_builds[_graph_key(None)]
 
         await cancel_graph_builds()
 
         assert build.cancelled()
         assert not work_item_service._graph_builds
-        assert "None" not in work_item_service._graph_failures  # a cancelled build is not a tracker failure
+        assert _graph_key(None) not in work_item_service._graph_failures  # a cancelled build is not a tracker failure
 
     @pytest.mark.asyncio
     async def test_cancel_graph_builds_is_a_no_op_without_a_build(self) -> None:
@@ -3784,13 +4051,13 @@ class TestForgetGraph:
     async def test_the_last_graph_and_a_recorded_failure_are_dropped(self) -> None:
         from sova.dashboard.services import work_item_service
 
-        work_item_service._last_graphs["None"] = DependencyGraph([_graph_task(1)])
-        work_item_service._graph_failures["None"] = (0.0, RuntimeError("old"))
+        work_item_service._last_graphs[_graph_key(None)] = _known(DependencyGraph([_graph_task(1)]))
+        work_item_service._graph_failures[_graph_key(None)] = (0.0, RuntimeError("old"))
 
         work_item_service.forget_graph(None)
 
-        assert "None" not in work_item_service._last_graphs
-        assert "None" not in work_item_service._graph_failures
+        assert _graph_key(None) not in work_item_service._last_graphs
+        assert _graph_key(None) not in work_item_service._graph_failures
 
     @pytest.mark.asyncio
     async def test_a_build_in_flight_when_it_is_called_is_not_remembered(self, _no_real_dependency_graph) -> None:
@@ -3804,14 +4071,14 @@ class TestForgetGraph:
             return stale
 
         _no_real_dependency_graph.side_effect = slow_load
-        build = work_item_service._shared_graph_build(None)
+        build = work_item_service._shared_graph_build(_graph_key(None))
 
         work_item_service.forget_graph(None)
         release.set()
         assert await build is stale  # callers already waiting on it still get an answer
 
-        assert "None" not in work_item_service._last_graphs
-        assert work_item_service._shared_graph_build(None) is not build  # the next caller starts afresh
+        assert _graph_key(None) not in work_item_service._last_graphs
+        assert work_item_service._shared_graph_build(_graph_key(None)) is not build  # the next caller starts afresh
 
     @pytest.mark.asyncio
     async def test_a_retired_build_is_still_cancelled_at_shutdown(self, _no_real_dependency_graph) -> None:
@@ -3821,7 +4088,7 @@ class TestForgetGraph:
             await asyncio.Event().wait()
 
         _no_real_dependency_graph.side_effect = hang
-        build = work_item_service._shared_graph_build(None)
+        build = work_item_service._shared_graph_build(_graph_key(None))
         await asyncio.sleep(0)
 
         work_item_service.forget_graph(None)
@@ -3843,7 +4110,7 @@ class TestForgetGraph:
             return DependencyGraph([])
 
         _no_real_dependency_graph.side_effect = slow_load
-        build = work_item_service._shared_graph_build(None)
+        build = work_item_service._shared_graph_build(_graph_key(None))
         work_item_service.forget_graph(None)
         release.set()
         await build
@@ -3906,6 +4173,74 @@ class TestRankingGraphLoad:
             assert await load_ranking_graph(None) is graph
 
     @pytest.mark.asyncio
+    async def test_a_previous_graph_answers_at_once_while_the_rebuild_hangs(self, _no_real_dependency_graph) -> None:
+        """The board and Up next must not stall on the tracker each time the 180 s graph cache expires (#1459)."""
+        from sova.dashboard.services import work_item_service
+
+        first = DependencyGraph([_graph_task(1)])
+        second = DependencyGraph([_graph_task(1), _graph_task(2)])
+        release = asyncio.Event()
+        builds = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal builds
+            builds += 1
+            if builds == 1:
+                return first
+            await release.wait()
+            return second
+
+        _no_real_dependency_graph.side_effect = load
+
+        assert await load_ranking_graph(None) is first
+        assert await asyncio.wait_for(load_ranking_graph(None), timeout=1.0) is first
+        rebuild = work_item_service._graph_builds[_graph_key(None)]
+        assert not rebuild.done()  # still hanging after the call returned, so the call did not await it
+        assert await load_ranking_graph(None) is first
+        assert (
+            work_item_service._graph_builds[_graph_key(None)] is rebuild
+        )  # joins the rebuild in flight, starts no other
+
+        release.set()
+        await rebuild
+        assert builds == 2
+        assert await load_ranking_graph(None) is second
+
+    @pytest.mark.asyncio
+    async def test_a_failed_rebuild_behind_a_previous_graph_keeps_answering_whatever_its_age(
+        self, _no_real_dependency_graph
+    ) -> None:
+        """A transient failure keeps the previous graph, and so does a long outage: the age says how stale it is."""
+        from sova.dashboard.services import work_item_service
+
+        graph = DependencyGraph([_graph_task(1)])
+        _no_real_dependency_graph.side_effect = [graph, RuntimeError("tracker down")]
+
+        assert await load_ranking_graph(None) is graph
+        assert await load_ranking_graph(None) is graph
+        await asyncio.gather(work_item_service._graph_builds[_graph_key(None)], return_exceptions=True)
+        key = _graph_key(None)
+        work_item_service._last_graphs[key] = replace(
+            work_item_service._last_graphs[key], built_at=time.monotonic() - 10_000.0
+        )
+
+        assert await load_ranking_graph(None) is graph
+        assert work_item_service.graph_age_meta(None)["graph_refresh_failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_forgotten_graph_is_awaited_afresh(self, _no_real_dependency_graph) -> None:
+        """After a priority change the ranking must come from a new build, not the graph it replaced."""
+        from sova.dashboard.services import work_item_service
+
+        old = DependencyGraph([_graph_task(1)])
+        new = DependencyGraph([_graph_task(1), _graph_task(2)])
+        _no_real_dependency_graph.side_effect = [old, new]
+
+        assert await load_ranking_graph(None) is old
+        work_item_service.forget_graph(None)
+        assert await load_ranking_graph(None) is new
+
+    @pytest.mark.asyncio
     async def test_a_failure_raises_to_every_sharing_caller(self, _no_real_dependency_graph) -> None:
         _no_real_dependency_graph.side_effect = RuntimeError("tracker down")
 
@@ -3943,7 +4278,7 @@ class TestRankingGraphLoad:
         _no_real_dependency_graph.side_effect = GraphConfigError("bad config")
         with pytest.raises(GraphConfigError):
             await load_ranking_graph(None)
-        recorded = work_item_service._graph_failures["None"][1]
+        recorded = work_item_service._graph_failures[_graph_key(None)][1]
         frames_before = _traceback_length(recorded)
 
         raised = []
@@ -3966,7 +4301,7 @@ class TestRankingGraphLoad:
         _no_real_dependency_graph.side_effect = ValueError("tracker down")
         with pytest.raises(ValueError, match="tracker down"):
             await load_ranking_graph(None)
-        recorded = work_item_service._graph_failures["None"][1]
+        recorded = work_item_service._graph_failures[_graph_key(None)][1]
 
         with pytest.raises(RuntimeError, match="tracker down") as excinfo:
             await load_ranking_graph(None)
