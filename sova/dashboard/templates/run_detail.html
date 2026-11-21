@@ -58,7 +58,7 @@
     <div id="resource-chart-container" class="hidden">
       <canvas id="resource-chart" width="800" height="200" class="w-full rounded" style="max-height:200px"></canvas>
       <div class="flex justify-center gap-6 mt-2 text-xs text-gray-500">
-        <span><span class="inline-block w-3 h-0.5 rounded" style="background:var(--ctp-blue)"></span> CPU %</span>
+        <span><span class="inline-block w-3 h-0.5 rounded" style="background:var(--ctp-blue)"></span> CPU cores</span>
         <span><span class="inline-block w-3 h-0.5 rounded" style="background:var(--ctp-green)"></span> Memory MB</span>
       </div>
     </div>
@@ -915,8 +915,8 @@ async function loadResources() {
     var section = document.getElementById('resource-section');
     section.classList.remove('hidden');
     document.getElementById('resource-cards').innerHTML =
-      resourceCard('Peak CPU', formatCpuPercent(s.peak_cpu_percent), 'text-accent') +
-      resourceCard('Avg CPU', formatCpuPercent(s.avg_cpu_percent), 'text-accent') +
+      resourceCard('Peak CPU', formatCpuCores(s.peak_cpu_percent), 'text-accent') +
+      resourceCard('Avg CPU', formatCpuCores(s.avg_cpu_percent), 'text-accent') +
       resourceCard('Peak Memory', formatBytes(s.peak_memory_rss_bytes), 'text-accent-green') +
       resourceCard('Peak Threads', s.peak_num_threads, 'text-accent-yellow') +
       (s.total_io_read_bytes != null ? resourceCard('I/O Read', formatBytes(s.total_io_read_bytes), 'text-gray-300') : '') +
@@ -950,12 +950,16 @@ function drawResourceChart(samples) {
   var ch = h - pad.top - pad.bottom;
 
   // Extract data
-  // The first sample of a run has no CPU reading (null): the line starts at the first measured one.
-  var cpuVals = samples.map(function(s) { return s.cpu_percent != null ? parseFloat(s.cpu_percent) : null; });
+  // CPU is plotted in cores (the API's percent of one core / 100). The first sample of a run has no CPU
+  // reading (null): the line starts at the first measured one.
+  var cpuVals = samples.map(function(s) { return s.cpu_percent != null ? parseFloat(s.cpu_percent) / 100 : null; });
   var memVals = samples.map(function(s) { return s.memory_rss_bytes / 1048576; }); // MB
 
   var measuredCpu = cpuVals.filter(function(v) { return v !== null; });
-  var maxCpu = Math.max(10, Math.ceil(Math.max.apply(null, measuredCpu.concat([0])) * 1.1));
+  // Rounded up to the precision the axis label prints (hundredths under one core, else tenths).
+  var peakCpu = Math.max.apply(null, measuredCpu.concat([0])) * 1.1;
+  var cpuScale = peakCpu < 1 ? 100 : 10;
+  var maxCpu = Math.max(0.1, Math.ceil(peakCpu * cpuScale) / cpuScale);
   var maxMem = Math.max(10, Math.ceil(Math.max.apply(null, memVals) * 1.1));
 
   // Background
@@ -994,8 +998,8 @@ function drawResourceChart(samples) {
   ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ctp-overlay1').trim() || '#7f849c';
   ctx.font = '10px monospace';
   ctx.textAlign = 'right';
-  ctx.fillText(maxCpu.toFixed(0) + '%', pad.left - 4, pad.top + 10);
-  ctx.fillText('0%', pad.left - 4, pad.top + ch);
+  ctx.fillText(maxCpu.toFixed(maxCpu < 1 ? 2 : 1), pad.left - 4, pad.top + 10);
+  ctx.fillText('0', pad.left - 4, pad.top + ch);
   ctx.textAlign = 'left';
   ctx.fillText(maxMem.toFixed(0) + 'M', w - pad.right + 4, pad.top + 10);
   ctx.fillText('0M', w - pad.right + 4, pad.top + ch);

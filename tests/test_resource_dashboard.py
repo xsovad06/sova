@@ -1422,53 +1422,72 @@ class TestCo2GramsColumn:
 
 
 class TestCpuRenderingInTheClient:
-    """The documented unit (percent of one core, unbounded) and null as "no reading" reach the page unchanged."""
+    """An agent's CPU (percent of one core, unbounded) is shown as cores; the system line is a share of the machine."""
 
     _STATIC = Path(__file__).parent.parent / "sova" / "dashboard" / "static"
     _TEMPLATES = Path(__file__).parent.parent / "sova" / "dashboard" / "templates"
 
     @staticmethod
-    def _format(values: list[float | None]) -> list[str]:
+    def _format(values: list[float | None], name: str = "formatCpuCores") -> list[str]:
         import json
         import shutil
         import subprocess
 
         if shutil.which("node") is None:
             if os.environ.get("CI"):
-                pytest.fail("node is required in CI: formatCpuPercent is evaluated with node")
+                pytest.fail(f"node is required in CI: {name} is evaluated with node")
             pytest.skip("node is not installed")
         app_js = (TestCpuRenderingInTheClient._STATIC / "app.js").read_text(encoding="utf-8")
         script = (
             "const src = process.argv[1];\n"
-            "const start = src.indexOf('function formatCpuPercent(');\n"
+            "const name = process.argv[3];\n"
+            "const start = src.indexOf('function ' + name + '(');\n"
             "const body = src.slice(start, src.indexOf('\\n}\\n', start) + 2);\n"
-            "const fn = new Function(body + '; return formatCpuPercent;')();\n"
+            "const fn = new Function(body + '; return ' + name + ';')();\n"
             "console.log(JSON.stringify(JSON.parse(process.argv[2]).map((v) => fn(v))));\n"
         )
         result = subprocess.run(
-            ["node", "-e", script, app_js, json.dumps(values)], capture_output=True, text=True, timeout=30, check=True
+            ["node", "-e", script, app_js, json.dumps(values), name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
         )
         return json.loads(result.stdout)
 
     def test_null_is_a_placeholder_not_zero_or_nan(self) -> None:
         assert self._format([None]) == ["--"]
+        assert self._format([None], "formatCpuPercent") == ["--"]
 
     def test_zero_is_a_measured_reading(self) -> None:
-        assert self._format([0]) == ["0.0%"]
+        assert self._format([0]) == ["0.00 cores"]
 
-    def test_a_multi_core_tree_is_shown_above_one_hundred(self) -> None:
-        assert self._format([250.04, 100, 99.96]) == ["250.0%", "100.0%", "100.0%"]
+    def test_a_multi_core_tree_is_shown_as_several_cores(self) -> None:
+        assert self._format([250.04, 1400, 100, 99.96]) == ["2.5 cores", "14.0 cores", "1.0 cores", "1.0 cores"]
 
-    def test_the_pages_format_cpu_through_the_shared_helper(self) -> None:
+    def test_under_one_core_keeps_two_decimals(self) -> None:
+        assert self._format([45, 1.4]) == ["0.45 cores", "0.01 cores"]
+
+    def test_a_barely_busy_agent_is_not_shown_as_idle(self) -> None:
+        assert self._format([0.4]) == ["<0.01 cores"]
+
+    def test_the_system_line_stays_a_percent_of_the_machine(self) -> None:
+        assert self._format([50.54, 0], "formatCpuPercent") == ["50.5%", "0.0%"]
+
+    def test_the_pages_format_cpu_through_the_shared_helpers(self) -> None:
         widget = (self._STATIC / "resource-widget.js").read_text(encoding="utf-8")
         run_detail = (self._TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
-        assert widget.count("formatCpuPercent(") == 3
-        assert "formatCpuPercent(s.peak_cpu_percent)" in run_detail
-        assert "formatCpuPercent(s.avg_cpu_percent)" in run_detail
+        assert "formatCpuPercent(sys.cpu_percent)" in widget
+        assert widget.count("formatCpuPercent(") == 1
+        assert "formatCpuCores(a.cpu_percent)" in widget
+        assert "formatCpuCores(totals.total_agent_cpu_percent)" in widget
+        assert "formatCpuCores(s.peak_cpu_percent)" in run_detail
+        assert "formatCpuCores(s.avg_cpu_percent)" in run_detail
+        assert "formatCpuPercent(" not in run_detail
         # No clamp to one core anywhere a CPU value is drawn or formatted.
         assert not re.search(r"Math\.min\([^)]*cpu[^)]*100", widget + run_detail)
 
     def test_the_run_chart_skips_a_null_sample_instead_of_plotting_nan(self) -> None:
         run_detail = (self._TEMPLATES / "run_detail.html").read_text(encoding="utf-8")
-        assert "s.cpu_percent != null ? parseFloat(s.cpu_percent) : null" in run_detail
+        assert "s.cpu_percent != null ? parseFloat(s.cpu_percent) / 100 : null" in run_detail
         assert "if (vals[j] === null)" in run_detail
