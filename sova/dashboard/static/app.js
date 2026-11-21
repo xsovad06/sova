@@ -305,6 +305,7 @@ var _STEP_LABELS = {
   resolve_external_reviews: 'Resolving reviews',
   resolve_review_threads: 'Resolving threads',
   address_external_findings: 'Addressing findings',
+  address_sonarcloud_findings: 'SonarCloud findings',
   ensure_worktree: 'Ensuring worktree',
   fetch_task: 'Fetching task',
   research: 'Researching',
@@ -2617,7 +2618,7 @@ var PIPELINE_STEPS = [
   'sync', 'assess', 'create_worktree', 'capture_baseline', 'develop', 'simplify',
   'self_review', 'commit', 'validate', 'push', 'create_pr',
   'wait_for_external_reviews', 'address_external_findings',
-  'monitor_ci', 'confidence_score', 'extract_memory', 'handoff_to_reviewer'
+  'monitor_ci', 'address_sonarcloud_findings', 'confidence_score', 'extract_memory', 'handoff_to_reviewer'
 ];
 
 var STEP_LABELS = {
@@ -2625,7 +2626,7 @@ var STEP_LABELS = {
   capture_baseline: 'Baseline', develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
   commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
   wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
-  monitor_ci: 'CI', confidence_score: 'Confidence', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
+  monitor_ci: 'CI', address_sonarcloud_findings: 'Sonar', confidence_score: 'Confidence', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
   rebase: 'Rebase', address_review: 'Address', resolve_external_reviews: 'Resolve', resolve_review_threads: 'Threads', refresh_pr_body: 'PR Body',
   handoff_to_user: 'Handoff', fetch_task: 'Fetch', research: 'Research', spec: 'Spec'
 };
@@ -2733,8 +2734,8 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var steps = PIPELINE_STEPS;
   var labels = STEP_LABELS;
   if (pipelineVariant === 'address_review') {
-    steps = ['ensure_worktree', 'rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'resolve_review_threads', 'refresh_pr_body', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_reviewer'];
-    labels = {ensure_worktree: 'Worktree', rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', resolve_review_threads: 'Threads', refresh_pr_body: 'PR Body', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'};
+    steps = ['ensure_worktree', 'rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'resolve_review_threads', 'refresh_pr_body', 'monitor_ci', 'address_sonarcloud_findings', 'resolve_external_reviews', 'extract_memory', 'handoff_to_reviewer'];
+    labels = {ensure_worktree: 'Worktree', rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', resolve_review_threads: 'Threads', refresh_pr_body: 'PR Body', monitor_ci: 'CI', address_sonarcloud_findings: 'Sonar', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'};
   } else if (pipelineVariant === 'researcher') {
     steps = ['fetch_task', 'research', 'spec', 'extract_memory'];
     labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};

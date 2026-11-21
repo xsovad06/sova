@@ -67,13 +67,13 @@ class TestStepProgress:
                 {"role": "developer", "pr_number": 147},
                 "address_review",
                 0,
-                12,
+                13,
                 id="none-step-with-pr-number-is-address-review",
             ),
             pytest.param(None, {"role": "command:integrate-pr"}, "command", 0, 1, id="command-role-is-command"),
             pytest.param(None, {"role": "reviewer"}, "command", 0, 1, id="reviewer-role-is-command"),
-            pytest.param("capture_baseline", {}, "developer", 3, 17, id="capture-baseline-in-developer-pipeline"),
-            pytest.param("ensure_worktree", {}, "address_review", 0, 12, id="ensure-worktree-in-address-review"),
+            pytest.param("capture_baseline", {}, "developer", 3, 18, id="capture-baseline-in-developer-pipeline"),
+            pytest.param("ensure_worktree", {}, "address_review", 0, 13, id="ensure-worktree-in-address-review"),
         ],
     )
     async def test_variant_index_and_total(

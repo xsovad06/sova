@@ -66,6 +66,9 @@ from sova.dashboard.services.agent_lifecycle import (
     get_unified_agents as get_unified_agents,
 )
 from sova.dashboard.services.agent_lifecycle import (
+    issue_conflict as issue_conflict,
+)
+from sova.dashboard.services.agent_lifecycle import (
     reject_spec as reject_spec,
 )
 from sova.dashboard.services.agent_lifecycle import (

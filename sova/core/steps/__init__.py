@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 from sova.core.steps.address_review import AddressReviewStep
+from sova.core.steps.address_sonarcloud_findings import AddressSonarCloudFindingsStep
 from sova.core.steps.assess import AssessStep
 from sova.core.steps.base import BaseStep
 from sova.core.steps.capture_baseline import CaptureBaselineStep
@@ -68,6 +69,7 @@ def get_developer_steps() -> list[BaseStep]:
         WaitForExternalReviewsStep(),
         AddressExternalFindingsStep(),
         MonitorCIStep(),
+        AddressSonarCloudFindingsStep(),
         ConfidenceScoreStep(),
         ExtractMemoryStep(),
         HandoffToReviewerStep(),
@@ -94,6 +96,7 @@ def get_address_review_steps() -> list[BaseStep]:
         ResolveReviewThreadsStep(),
         RefreshPrBodyStep(),
         MonitorCIStep(),
+        AddressSonarCloudFindingsStep(),
         ResolveExternalReviewsStep(),
         ExtractMemoryStep(),
         HandoffToReviewerStep(),
@@ -149,6 +152,7 @@ STEP_REGISTRY: dict[str, type[BaseStep]] = {
     for step_cls in (
         AddressExternalFindingsStep,
         AddressReviewStep,
+        AddressSonarCloudFindingsStep,
         AssessStep,
         CaptureBaselineStep,
         CommitStep,
@@ -190,6 +194,7 @@ _ORDERING_CONSTRAINTS: tuple[tuple[str, str], ...] = (
     ("push", "create_pr"),
     ("push", "refresh_pr_body"),
     ("push", "resolve_review_threads"),
+    ("monitor_ci", "address_sonarcloud_findings"),
 )
 
 

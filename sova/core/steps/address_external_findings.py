@@ -105,7 +105,7 @@ class AddressExternalFindingsStep(BaseStep):
         coverage_prompt = ""
 
         tasks: list[tuple[str, Any]] = []
-        if "sonarcloud" in ext.tools and ext.sonarcloud.project_key:
+        if ext.sonarcloud_configured:
             pk = ext.sonarcloud.project_key
             tasks.append(("sonar_issues", fetch_sonarcloud_issues(pk, ctx.pr_number)))
             tasks.append(
@@ -125,7 +125,8 @@ class AddressExternalFindingsStep(BaseStep):
             result_map = {}
 
         if "sonar_issues" in result_map:
-            all_findings.extend(result_map["sonar_issues"])
+            # None is a failed fetch; address_sonarcloud_findings reads it again after CI.
+            all_findings.extend(result_map["sonar_issues"] or [])
         if "sonar_coverage" in result_map:
             report = result_map["sonar_coverage"]
             if report and (report.coverage_pct < report.required_pct or report.findings):

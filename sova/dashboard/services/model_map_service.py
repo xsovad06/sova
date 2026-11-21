@@ -120,7 +120,7 @@ _ROLE_BLOCKS: tuple[tuple[str, str, str, str, tuple[_Step, ...]], ...] = (
                 "developer",
                 tools=True,
                 pipelines=(_DEV, _ADDRESS),
-                note="Also the route for address_external_findings in the developer pipeline.",
+                note="Also the route for address_external_findings and address_sonarcloud_findings.",
             ),
             _Step("rearrange_commits", "Reorganize commits", "dev", "developer", tools=True, pipelines=(_ADDRESS,)),
             _Step(
