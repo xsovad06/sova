@@ -1252,6 +1252,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             _project_page(request, templates, slug, "work.html", "work", status_options=_STATUS_OPTIONS),
         )
 
+    @app.get("/p/{slug}/phone")
+    async def project_phone(request: Request, slug: str) -> Response:
+        return _with_csrf_cookie(request, _project_page(request, templates, slug, "phone.html", "phone"))
+
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
         return _with_csrf_cookie(
@@ -1437,6 +1441,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             request,
             templates.TemplateResponse(request, "work.html", {"page": "work", "status_options": _STATUS_OPTIONS}),
         )
+
+    @app.get("/phone")
+    async def phone_page(request: Request) -> Response:
+        return _with_csrf_cookie(request, templates.TemplateResponse(request, "phone.html", {"page": "phone"}))
 
     @app.get("/agents")
     async def agents_redirect() -> RedirectResponse:

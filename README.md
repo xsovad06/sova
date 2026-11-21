@@ -153,6 +153,8 @@ Both settings apply to the whole server and are read once at startup, from the p
 
 Enable HTTPS certificates in the Tailscale admin console first, and consider restricting the access policy to your own devices (`autogroup:self`). A request through the proxy origin without an allowed login, and any Funnel request, gets 403. If the first HTTPS request fails with a TLS error, `tailscale cert <machine>.<tailnet>.ts.net` prints the underlying certificate error. The security model is in `docs/security-guidelines.md`, "Dashboard Security Model".
 
+On a phone, open `/phone` (`/p/<slug>/phone` on the hub) instead of the Work page: one narrow column with what waits on you (handoffs and the supervisor's pending plan), the running agents with Stop, and a field to start an issue. It uses the same endpoints as the Work page, so it needs no extra setup.
+
 ## Configuration
 
 **Note**: SOVA uses database-backed configuration (`.claude/sova.db`). Edit it with `sova config set <key> <value>`, the dashboard Settings page, or `SOVA_*` environment variables. Read a single value (for scripts or commands) with `sova config get <key>`; lists and dicts print as JSON, and a secret key always prints `(secret)`. A legacy `sova.toml` is still read once and auto-migrated into the database if one is present. See [Configuration Troubleshooting](CLAUDE.md#configuration) for details.

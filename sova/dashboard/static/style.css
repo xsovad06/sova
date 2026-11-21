@@ -469,6 +469,10 @@ input[type="date"] { color-scheme: dark; }
   outline: none;
 }
 
+/* Phone page (templates/phone.html): 44px tap targets, and a 16px field so iOS does not zoom on focus */
+.sova-phone-tap { min-height: 44px; justify-content: center; }
+.sova-phone-input { min-height: 44px; font-size: 1rem; }
+
 /* Tables */
 .sova-table { width: 100%; font-size: 0.875rem; }
 .sova-table thead { color: var(--ctp-overlay0); font-size: 0.75rem; text-transform: uppercase; }
