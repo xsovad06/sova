@@ -125,7 +125,8 @@ class AddressExternalFindingsStep(BaseStep):
             result_map = {}
 
         if "sonar_issues" in result_map:
-            all_findings.extend(result_map["sonar_issues"])
+            # None is a failed fetch; address_sonarcloud_findings reads it again after CI.
+            all_findings.extend(result_map["sonar_issues"] or [])
         if "sonar_coverage" in result_map:
             report = result_map["sonar_coverage"]
             if report and (report.coverage_pct < report.required_pct or report.findings):

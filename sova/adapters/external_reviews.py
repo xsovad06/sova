@@ -162,8 +162,12 @@ def _parse_sonarcloud_issues(
 async def fetch_sonarcloud_issues(
     project_key: str,
     pr_number: int,
-) -> list[ExternalFinding]:
-    """Fetch open issues from SonarCloud for a PR."""
+) -> list[ExternalFinding] | None:
+    """Fetch open issues from SonarCloud for a PR.
+
+    Returns ``None`` when the request or its JSON failed, so a caller can tell
+    "SonarCloud could not be read" from "SonarCloud reports no open issues".
+    """
     url = (
         f"https://sonarcloud.io/api/issues/search"
         f"?componentKeys={quote(project_key, safe='')}"
@@ -174,9 +178,14 @@ async def fetch_sonarcloud_issues(
 
     data = await _fetch_sonarcloud_json(url, _get_sonarcloud_auth_header(), log_context="sonarcloud_fetch")
     if data is None:
-        return []
+        return None
+    issues = data.get("issues") if isinstance(data, dict) else None
+    if not isinstance(issues, list):
+        # An error body such as {"errors": [...]} or a payload with no "issues" key is a failed read, not "no findings".
+        log.warning("external_reviews.sonarcloud_unexpected_payload", pr=pr_number)
+        return None
 
-    findings = _parse_sonarcloud_issues(data.get("issues", []), source="sonarcloud")
+    findings = _parse_sonarcloud_issues(issues, source="sonarcloud")
     log.info("external_reviews.sonarcloud_fetched", count=len(findings), pr=pr_number)
     return findings
 
