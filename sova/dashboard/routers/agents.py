@@ -33,6 +33,7 @@ from sova.dashboard.services.snapshot_service import (
     refresh_snapshot,
     set_change_listener,
 )
+from sova.dashboard.services.work_item_service import set_graph_change_listener
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
@@ -313,8 +314,25 @@ async def _on_snapshot_changed(kind: str, project_dir: Path | None) -> None:
         await _ws_manager.broadcast_event("work_items_changed", project_dir)
 
 
+async def _on_graph_changed(project_dir: Path) -> None:
+    """A rebuilt dependency graph differs from the one a board answered from: tell its sockets to reload.
+
+    ``project_dir`` is the resolved project. A socket registers under the resolved default project, or under
+    ``None`` when no default is set (``agents_status_websocket()``), so the group that registered under ``None``
+    is told too whenever it can only be this project's.
+    """
+    from sova.config.context import resolve_project_dir_or_none
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    await _ws_manager.broadcast_event("work_items_changed", project_dir)
+    default = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
+    if default is None or default.resolve() == project_dir.resolve():
+        await _ws_manager.broadcast_event("work_items_changed", None)
+
+
 _ws_manager = _ConnectionManager()
 set_change_listener(_on_snapshot_changed)
+set_graph_change_listener(_on_graph_changed)
 
 
 class StartAgentRequest(BaseModel):

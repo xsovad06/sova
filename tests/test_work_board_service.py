@@ -149,6 +149,25 @@ def _merged_entry(number: int, pr_number: int, *, closes: bool = False, age_seco
     }
 
 
+@contextmanager
+def _tracker(states: dict[int, TaskState | Exception]):
+    """The tracker a queue lookup asks (a DONE in the graph is confirmed against it before a queue entry is pruned)."""
+
+    async def get_state(issue: str) -> TaskState:
+        result = states[int(issue)]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    adapter = SimpleNamespace(get_state=AsyncMock(side_effect=get_state))
+    with (
+        patch("sova.adapters.create_adapter", return_value=adapter),
+        patch("sova.adapters.close_adapter", AsyncMock()),
+        patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
+    ):
+        yield adapter
+
+
 def _numbers(entries: list[dict]) -> list[int | None]:
     return [e["number"] for e in entries]
 
@@ -476,11 +495,41 @@ class TestQueue:
 
     async def test_closed_issues_leave_the_queue_and_are_saved_once(self) -> None:
         tasks = [_task(1), _task(2, state=TaskState.DONE), _task(3, state=TaskState.DONE)]
-        with _sources(items=[_item(1)], tasks=tasks, queue=[2, 1, 3]) as src:
+        with (
+            _sources(items=[_item(1)], tasks=tasks, queue=[2, 1, 3]) as src,
+            _tracker({2: TaskState.DONE, 3: TaskState.DONE}),
+        ):
             result = await board.build_board(PROJECT)
 
         assert _numbers(result["queued"]) == [1]
         src.remove.assert_awaited_once_with(PROJECT, [2, 3])
+
+    async def test_an_issue_the_previous_graph_shows_closed_but_the_tracker_reopened_stays_queued(self) -> None:
+        # The graph may be the previous one (answered while a rebuild runs), so its DONE is not proof of a close
+        tasks = [_task(1), _task(2, state=TaskState.DONE)]
+        with (
+            _sources(items=[_item(1)], tasks=tasks, queue=[2, 1]) as src,
+            _tracker({2: TaskState.IN_PROGRESS}),
+        ):
+            await board.build_board(PROJECT)
+
+        src.remove.assert_not_awaited()
+
+    async def test_an_issue_the_graph_shows_closed_is_kept_when_the_tracker_cannot_confirm_it(self) -> None:
+        tasks = [_task(2, state=TaskState.DONE)]
+        with (
+            _sources(items=[], tasks=tasks, queue=[2]) as src,
+            _tracker({2: RuntimeError("tracker down")}),
+        ):
+            await board.build_board(PROJECT)
+
+        src.remove.assert_not_awaited()
+
+    async def test_an_issue_the_graph_shows_open_is_not_looked_up(self) -> None:
+        with _sources(items=[_item(1)], tasks=[_task(1)], queue=[1]), _tracker({}) as adapter:
+            await board.build_board(PROJECT)
+
+        adapter.get_state.assert_not_awaited()
 
     async def test_an_unchanged_queue_is_not_saved(self) -> None:
         with _sources(items=[_item(1)], tasks=[_task(1)], queue=[1]) as src:
@@ -497,7 +546,7 @@ class TestQueue:
 
     async def test_a_failed_save_still_hides_the_closed_issue(self) -> None:
         tasks = [_task(1), _task(2, state=TaskState.DONE)]
-        with _sources(items=[_item(1)], tasks=tasks, queue=[2, 1]) as src:
+        with _sources(items=[_item(1)], tasks=tasks, queue=[2, 1]) as src, _tracker({2: TaskState.DONE}):
             src.remove.side_effect = RuntimeError("db gone")
             result = await board.build_board(PROJECT)
 
@@ -505,7 +554,7 @@ class TestQueue:
 
     async def test_a_failed_save_is_named_unavailable(self) -> None:
         tasks = [_task(1), _task(2, state=TaskState.DONE)]
-        with _sources(items=[_item(1)], tasks=tasks, queue=[2, 1]) as src:
+        with _sources(items=[_item(1)], tasks=tasks, queue=[2, 1]) as src, _tracker({2: TaskState.DONE}):
             src.remove.side_effect = RuntimeError("db gone")
             result = await board.build_board(PROJECT)
 
@@ -556,6 +605,52 @@ class TestQueue:
 
         src.remove.assert_awaited_once_with(PROJECT, [7])
         assert _numbers(result["queued"]) == [8]
+
+    async def test_a_stalled_queue_lookup_does_not_hold_up_the_board_and_keeps_its_entry(self) -> None:
+        import asyncio
+
+        async def get_state(issue: str) -> TaskState:
+            if issue == "8":
+                await asyncio.Event().wait()  # the tracker never answers for 8
+            return TaskState.DONE
+
+        adapter = SimpleNamespace(get_state=AsyncMock(side_effect=get_state))
+        with (
+            _sources(items=[], tasks=[], queue=[7, 8]) as src,
+            patch.object(board, "_QUEUE_LOOKUP_TIMEOUT", 0.05),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.adapters.close_adapter", AsyncMock()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
+        ):
+            result = await asyncio.wait_for(board.build_board(PROJECT), timeout=2.0)
+
+        src.remove.assert_awaited_once_with(PROJECT, [7])
+        assert _numbers(result["queued"]) == [8]
+
+    async def test_stalled_queue_lookups_run_under_one_deadline_not_one_after_another(self) -> None:
+        import asyncio
+        import time
+
+        async def get_state(issue: str) -> TaskState:
+            if issue in ("8", "9"):
+                await asyncio.Event().wait()  # the tracker never answers for 8 and 9
+            return TaskState.DONE
+
+        adapter = SimpleNamespace(get_state=AsyncMock(side_effect=get_state))
+        with (
+            _sources(items=[], tasks=[], queue=[7, 8, 9]) as src,
+            patch.object(board, "_QUEUE_LOOKUP_TIMEOUT", 0.3),
+            patch("sova.adapters.create_adapter", return_value=adapter),
+            patch("sova.adapters.close_adapter", AsyncMock()),
+            patch("sova.dashboard.services.work_board_service.load_config", return_value=SimpleNamespace()),
+        ):
+            started = time.monotonic()
+            result = await asyncio.wait_for(board.build_board(PROJECT), timeout=3.0)
+            elapsed = time.monotonic() - started
+
+        assert elapsed < 0.55, f"two stalled lookups took {elapsed:.2f}s: they ran one after another"
+        src.remove.assert_awaited_once_with(PROJECT, [7])
+        assert _numbers(result["queued"]) == [8, 9]
 
 
 class TestDoneToday:
@@ -1177,3 +1272,44 @@ class TestSearchIssues:
 
         assert result == {"results": [], "more": 0}
         sources.loaded.assert_not_awaited()
+
+
+class TestGraphRebuild:
+    """The board answers from the previous graph while a rebuild is slow, instead of waiting on the tracker (#1459)."""
+
+    @pytest.fixture(autouse=True)
+    async def _cancel_builds_left_running(self):
+        from sova.dashboard.services.work_item_service import cancel_graph_builds
+
+        yield
+        await cancel_graph_builds()
+
+    async def test_a_hanging_rebuild_does_not_hold_up_the_board(self) -> None:
+        import asyncio
+
+        from sova.dashboard.services import work_item_service
+
+        release = asyncio.Event()
+        builds = 0
+
+        async def load(project_dir, milestone=""):
+            nonlocal builds
+            builds += 1
+            if builds > 1:
+                await release.wait()  # the tracker stops answering once the first graph is built
+            return DependencyGraph([_task(1)])
+
+        with (
+            _sources(),
+            patch.object(board, "load_ranking_graph", work_item_service.load_ranking_graph),
+            patch.object(work_item_service, "load_dependency_graph", AsyncMock(side_effect=load)),
+        ):
+            cold = await board.build_board(PROJECT)
+            warm = await asyncio.wait_for(board.build_board(PROJECT), timeout=1.0)
+            # The rebuild is still hanging after the board answered, so the board did not await it.
+            rebuild = work_item_service._graph_builds[work_item_service._graph_key(PROJECT)]
+            assert not rebuild.done()
+            release.set()
+
+        assert _numbers(cold["up_next"]) == _numbers(warm["up_next"]) == [1]
+        assert builds == 2

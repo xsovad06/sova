@@ -14,8 +14,11 @@ Split into focused modules:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -177,21 +180,49 @@ async def load_dependency_graph(project_dir: Path | None, milestone: str = "") -
     return await build_dependency_graph(adapter, milestone=milestone)
 
 
-# The Agents page polls the work items, so classification may wait only briefly for a graph build
-# (up to 500 issues plus every older open issue and one fetch per missing dependency). A slower build
-# keeps running in the background and warms the graph cache for the next poll; this response classifies
-# from the previous graph meanwhile, or as blocked when there has never been a good one.
+# A graph build lists up to 500 issues plus every older open issue and fetches each missing dependency,
+# so no caller waits on one while a recent previous graph exists: it answers from that graph and the rebuild runs
+# in the background (``_previous_graph_refreshing()``). With no previous graph, the work-items poll waits
+# only this long before classifying as blocked, while the build keeps running and warms the next poll.
 _GRAPH_WAIT_SECONDS = 3.0
 # Cap on the background build itself, so a hung tracker call cannot leave every later poll waiting on it.
 _GRAPH_BUILD_TIMEOUT_SECONDS = 120.0
 # After a failed build, polls skip the rebuild for this long instead of re-fetching the whole tracker each time.
 _GRAPH_FAILURE_BACKOFF_SECONDS = 30.0
 
+
+@dataclass(frozen=True)
+class _KnownGraph:
+    """A finished build's graph with what a response needs to say how old it is."""
+
+    graph: DependencyGraph
+    built_at: float  # time.monotonic() when the graph was fetched (``DependencyGraph.fetched_at``), not when read
+    digest: str  # what a ranking or classification reads, so a rebuild that changed none of it stays quiet
+    refresh_failed: bool = False  # the latest rebuild after this one failed, so the graph is older than it should be
+
+
 _graph_builds: dict[str, asyncio.Task[DependencyGraph]] = {}  # project -> the build in flight, shared by every caller
 _graph_failures: dict[str, tuple[float, BaseException]] = {}  # project -> (monotonic time, error) of its last failure
-_last_graphs: dict[str, DependencyGraph] = {}  # project -> the graph of its last build, until a build fails
+_last_graphs: dict[str, _KnownGraph] = {}  # project -> its last build, kept through any number of failed rebuilds
+# Projects whose graph forget_graph() dropped: the next build that lands owes open boards a reload notice, since
+# it replaces a graph they showed (or ranked from) and there is no previous digest left to compare it with.
+_graph_notice_owed: set[str] = set()
 # Builds forget_graph() retired while still running: no longer shared or cached from, but still cancelled at shutdown.
 _retired_graph_builds: set[asyncio.Task[DependencyGraph]] = set()
+# Change notifications in flight, held by reference so they are not collected mid-send and cancelled at shutdown.
+_graph_notify_tasks: set[asyncio.Task[None]] = set()
+GraphChangeListener = Callable[[Path], Awaitable[None]]
+_graph_change_listener: GraphChangeListener | None = None
+
+
+def set_graph_change_listener(listener: GraphChangeListener | None) -> None:
+    """Register the coroutine called as ``listener(project_dir)`` when a rebuild replaced a graph with a different one.
+
+    This is how the status socket learns to tell open boards to reload: a board answered from the previous
+    graph while the rebuild ran, and nothing else would tell it the new graph has landed.
+    """
+    global _graph_change_listener
+    _graph_change_listener = listener
 
 
 def reset_graph_load_state() -> None:
@@ -199,7 +230,22 @@ def reset_graph_load_state() -> None:
     _graph_builds.clear()
     _graph_failures.clear()
     _last_graphs.clear()
+    _graph_notice_owed.clear()
     _retired_graph_builds.clear()
+    _graph_notify_tasks.clear()
+
+
+def _graph_key(project_dir: Path | None) -> str:
+    """The key every graph map is stored under: the resolved project, so one project has one build and one graph.
+
+    Callers pass the project differently (the board resolves it, a work-items request passes its own value,
+    ``None`` outside multi-project mode). Keyed by that value, one project would run two full builds at once
+    and keep two previous graphs that refresh at different times.
+    """
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    return str(resolve_project_dir(project_dir, default_project_dir=get_default_project_dir()))
 
 
 def forget_graph(project_dir: Path | None) -> None:
@@ -209,36 +255,85 @@ def forget_graph(project_dir: Path | None) -> None:
     flight is not cancelled, since other callers still wait on it, but nothing it fetches is kept. It stays
     tracked in ``_retired_graph_builds`` until it finishes, so ``cancel_graph_builds()`` still stops it.
     """
-    key = str(project_dir)
+    key = _graph_key(project_dir)
     retired = _graph_builds.pop(key, None)
     if retired is not None and not retired.done():
         _retired_graph_builds.add(retired)
     _graph_failures.pop(key, None)
-    _last_graphs.pop(key, None)
+    if _last_graphs.pop(key, None) is not None:
+        _graph_notice_owed.add(key)
 
 
 async def cancel_graph_builds() -> None:
-    """Cancel every graph build in flight, retired ones included, so none outlives the lifespan shutdown."""
-    builds = [*_graph_builds.values(), *_retired_graph_builds]
+    """Cancel every graph build and change notification in flight, retired builds included, at lifespan shutdown."""
+    builds = [*_graph_builds.values(), *_retired_graph_builds, *_graph_notify_tasks]
     for build in builds:
         build.cancel()
     if builds:
         await asyncio.gather(*builds, return_exceptions=True)
     _graph_builds.clear()
     _retired_graph_builds.clear()
+    _graph_notify_tasks.clear()
 
 
 async def _build_graph_bounded(project_dir: Path | None) -> DependencyGraph:
     return await asyncio.wait_for(load_dependency_graph(project_dir), timeout=_GRAPH_BUILD_TIMEOUT_SECONDS)
 
 
+def _graph_digest(graph: DependencyGraph) -> str:
+    """A digest of what a board or ranking reads from a graph, independent of listing order.
+
+    Per node: state, priority, labels, milestone (the ranking's phase and the milestone grouping), assignees
+    (the Mine filter), title and issue type (cards and epics). Plus the edges (unblock counts, blockers).
+    """
+    nodes = []
+    for number in sorted(graph.nodes):
+        task = graph.get_task(number)
+        if task is not None:
+            nodes.append(
+                (
+                    number,
+                    str(task.state),
+                    str(task.priority),
+                    sorted(task.labels),
+                    task.milestone,
+                    sorted(task.assignees),
+                    task.title,
+                    task.issue_type,
+                )
+            )
+    edges = sorted(tuple(edge) for edge in graph.edges)
+    return hashlib.sha256(json.dumps([nodes, edges], default=str).encode("utf-8")).hexdigest()
+
+
+async def _notify_graph_changed(project_dir: Path) -> None:
+    listener = _graph_change_listener
+    if listener is None:
+        return
+    try:
+        await listener(project_dir)
+    except Exception:  # noqa: BLE001 (a failed notification only delays an open board's reload to its next event)
+        log.warning("work_items.graph_change_notify_failed", exc_info=True)
+
+
+def _schedule_graph_change_notice(key: str) -> None:
+    if _graph_change_listener is None:
+        return
+    task = asyncio.get_running_loop().create_task(_notify_graph_changed(Path(key)))
+    _graph_notify_tasks.add(task)
+    task.add_done_callback(_graph_notify_tasks.discard)
+
+
 def _on_graph_build_done(key: str, build: asyncio.Task[DependencyGraph]) -> None:
     """Forget a finished build, and remember its graph or how it failed.
 
-    A failure also drops the last graph: a tracker that keeps failing must read as an outage,
-    not keep classifying from an ever older snapshot. Reading the exception marks it
-    retrieved, so a build whose waiters all timed out and walked away does not log
-    "Task exception was never retrieved".
+    A failure keeps the previous graph, marked as having a failed refresh: one transient tracker error must not
+    turn every card to blocked, and an older graph is still better than none (its age is reported, never hidden).
+    The status socket hears of every change a board can show: a rebuild that replaced a different graph, one
+    that landed after ``forget_graph()`` dropped the graph, and a refresh that started or stopped failing, so an
+    open board (which does not poll) reloads onto the new graph or shows how old its ranking is. Reading the
+    exception marks it retrieved, so a build whose waiters all timed out and walked away does not log "Task
+    exception was never retrieved".
     """
     is_current = _graph_builds.get(key) is build
     if is_current:
@@ -249,12 +344,27 @@ def _on_graph_build_done(key: str, build: asyncio.Task[DependencyGraph]) -> None
     failure = build.exception()
     if not is_current:
         return  # forget_graph() replaced it: what it fetched predates the change that caused that
+    previous = _last_graphs.get(key)
     if failure is not None:
         _graph_failures[key] = (time.monotonic(), failure)
-        _last_graphs.pop(key, None)
+        if previous is not None and not previous.refresh_failed:
+            _last_graphs[key] = replace(previous, refresh_failed=True)
+            _schedule_graph_change_notice(key)  # the board now has to say its ranking is old
+        return
+    _graph_failures.pop(key, None)
+    graph = build.result()
+    owed = key in _graph_notice_owed
+    _graph_notice_owed.discard(key)
+    if previous is not None and previous.graph is graph:
+        # The graph cache answered with the graph already held: same graph, same age, nothing to hash again.
+        _last_graphs[key] = replace(previous, refresh_failed=False)
+        changed = previous.refresh_failed
     else:
-        _graph_failures.pop(key, None)
-        _last_graphs[key] = build.result()
+        digest = _graph_digest(graph)
+        _last_graphs[key] = _KnownGraph(graph=graph, built_at=graph.fetched_at, digest=digest)
+        changed = previous is None or previous.digest != digest or previous.refresh_failed
+    if owed or (previous is not None and changed):
+        _schedule_graph_change_notice(key)
 
 
 def _recent_graph_failure(key: str) -> BaseException | None:
@@ -282,18 +392,17 @@ def _backoff_error(failure: BaseException) -> GraphConfigError | RuntimeError:
     return error
 
 
-def _shared_graph_build(project_dir: Path | None) -> asyncio.Task[DependencyGraph]:
-    """The project's build in flight, started when there is none.
+def _shared_graph_build(key: str) -> asyncio.Task[DependencyGraph]:
+    """The project's build in flight, started when there is none. ``key`` is ``_graph_key(project_dir)``.
 
     The one build every caller of the unfiltered graph shares, so a work-items poll and a
     next-tasks request on a cold cache run one full fetch between them. Callers await it
     through ``asyncio.shield()``, so one of them leaving does not cancel it for the rest.
     ``cancel_graph_builds()`` is the only thing that cancels it.
     """
-    key = str(project_dir)
     build = _graph_builds.get(key)
     if build is None:
-        build = asyncio.create_task(_build_graph_bounded(project_dir))
+        build = asyncio.create_task(_build_graph_bounded(Path(key)))
         _graph_builds[key] = build
         build.add_done_callback(partial(_on_graph_build_done, key))
     return build
@@ -307,22 +416,57 @@ def _build_hit_its_cap(build: asyncio.Task[DependencyGraph]) -> bool:
     return build.done() and not build.cancelled() and isinstance(build.exception(), TimeoutError)
 
 
+def _previous_graph_refreshing(key: str) -> DependencyGraph | None:
+    """The project's previous graph, with the shared rebuild started (or joined) behind it; None without one.
+
+    Callers answer from it at once instead of awaiting the rebuild, so the 180s graph cache expiring never
+    makes a request wait on the tracker. The rebuild's graph answers the next call, and a rebuild that changed
+    the graph tells the status socket (``_on_graph_build_done()``), so an open board reloads onto it. The
+    previous graph answers whatever its age, through failed rebuilds too, and ``graph_age_meta()`` reports how
+    old it is; it is gone only after ``forget_graph()``, so a priority change still waits for a fresh ranking.
+    Within the failure backoff no rebuild starts, but the previous graph still answers.
+    """
+    known = _last_graphs.get(key)
+    if known is None:
+        return None
+    if _recent_graph_failure(key) is None:
+        _shared_graph_build(key)
+    return known.graph
+
+
+def graph_age_meta(project_dir: Path | None) -> dict | None:
+    """How old the graph a board or work-items response may have used is, or None when no graph is held.
+
+    ``graph_age_seconds`` is the age of the graph a caller is answered from while a rebuild runs, and
+    ``graph_refresh_failed`` says the latest rebuild failed, so a client can show that its data is older than
+    the refresh interval instead of looking current.
+    """
+    known = _last_graphs.get(_graph_key(project_dir))
+    if known is None:
+        return None
+    return {
+        "graph_age_seconds": round(time.monotonic() - known.built_at, 1),
+        "graph_refresh_failed": known.refresh_failed,
+    }
+
+
 async def _load_graph_or_none(project_dir: Path | None) -> DependencyGraph | None:
     """Load the dependency graph for work item classification; None when it is unavailable.
 
-    Never waits longer than ``_GRAPH_WAIT_SECONDS``. Concurrent callers share one build per
-    project, the build outlives a caller that stops waiting (it is shielded), and a failed
-    build is not retried for ``_GRAPH_FAILURE_BACKOFF_SECONDS``. While a rebuild is slower
-    than the wait (the graph cache expired, or an agent spawn or epic close invalidated it),
-    the previous build's graph answers, so a working tracker does not flip every task card to
-    blocked for one poll. A failure, a backoff, or no build ever finished all return None, so
-    every queue task classifies as blocked rather than the response stalling or the tracker
-    being hit on every poll.
+    A previous graph answers at once while the rebuild runs in the background
+    (``_previous_graph_refreshing()``), even within the failure backoff. Without one, waits at most
+    ``_GRAPH_WAIT_SECONDS``. Concurrent callers share one build per project, the build outlives a caller that
+    stops waiting (it is shielded), and a failed build is not retried for ``_GRAPH_FAILURE_BACKOFF_SECONDS``.
+    A failure, a backoff, or no build finished within the wait all return None, so every queue task
+    classifies as blocked rather than the response stalling or the tracker being hit on every poll.
     """
-    key = str(project_dir)
+    key = _graph_key(project_dir)
+    previous = _previous_graph_refreshing(key)
+    if previous is not None:
+        return previous
     if _recent_graph_failure(key) is not None:
         return None
-    build = _shared_graph_build(project_dir)
+    build = _shared_graph_build(key)
     try:
         return await asyncio.wait_for(asyncio.shield(build), timeout=_GRAPH_WAIT_SECONDS)
     except TimeoutError:
@@ -330,7 +474,7 @@ async def _load_graph_or_none(project_dir: Path | None) -> DependencyGraph | Non
             log.warning("work_items.graph_failed", exc_info=True)
             return None
         warn_once(log, "work_items.graph_timeout", key, ttl_seconds=60.0, wait_seconds=_GRAPH_WAIT_SECONDS)
-        return _last_graphs.get(key)
+        return None
     except Exception:  # noqa: BLE001 (work items must keep rendering; each classifies as blocked without a graph)
         log.warning("work_items.graph_failed", exc_info=True)
         return None
@@ -349,18 +493,24 @@ async def load_classification_graph(project_dir: Path | None) -> DependencyGraph
 async def load_ranking_graph(project_dir: Path | None, milestone: str = "") -> DependencyGraph:
     """The dependency graph the "Up next" ranking reads. A failure raises: it must not look like an empty list.
 
-    Without ``milestone`` this awaits the same shared build as the work-items poll, with no wait
-    limit of its own (the build is capped by ``_GRAPH_BUILD_TIMEOUT_SECONDS``), so concurrent
-    cold-cache callers run one fetch. Within ``_GRAPH_FAILURE_BACKOFF_SECONDS`` of a failed build
-    it raises a new error chained to that failure instead of fetching again. A milestone-filtered
-    graph is a rare, manual build that bypasses the graph cache, so it is built on its own.
+    Without ``milestone``, a previous graph answers at once while the shared rebuild runs in the
+    background (``_previous_graph_refreshing()``). Without one, this awaits the same shared build as
+    the work-items poll, with no wait limit of its own (the build is capped by
+    ``_GRAPH_BUILD_TIMEOUT_SECONDS``), so concurrent cold-cache callers run one fetch. Within
+    ``_GRAPH_FAILURE_BACKOFF_SECONDS`` of a failed build it raises a new error chained to that failure
+    instead of fetching again. A milestone-filtered graph is a rare, manual build that bypasses the
+    graph cache, so it is built on its own.
     """
     if milestone:
         return await load_dependency_graph(project_dir, milestone)
-    failure = _recent_graph_failure(str(project_dir))
+    key = _graph_key(project_dir)
+    previous = _previous_graph_refreshing(key)
+    if previous is not None:
+        return previous
+    failure = _recent_graph_failure(key)
     if failure is not None:
         raise _backoff_error(failure)
-    return await asyncio.shield(_shared_graph_build(project_dir))
+    return await asyncio.shield(_shared_graph_build(key))
 
 
 def _classify_queue_item(task: dict, graph: DependencyGraph | None) -> dict:
@@ -823,6 +973,8 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         "github_user": github_user,
         "jira_display_name": jira_display_name,
         "api_health": api_health,
+        # How old the graph the classification came from is, and whether its rebuild failed (None without one).
+        "graph": graph_age_meta(project_dir),
     }
 
 
@@ -833,7 +985,7 @@ async def build_work_items(project_dir: Path | None) -> dict:
 
 # Fields that advance with the clock rather than with a change, so they stay out of the change digest: a
 # rebuild whose only difference is an age must not tell every client to refetch.
-_VOLATILE_ITEM_KEYS = ("elapsed_seconds", "age_seconds")
+_VOLATILE_ITEM_KEYS = ("elapsed_seconds", "age_seconds", "graph_age_seconds")
 _VOLATILE_API_HEALTH_KEYS = ("down_seconds", "cooldown_seconds")
 
 

@@ -168,6 +168,8 @@ class DependencyGraph:
 
     def __init__(self, tasks: list[Task], *, requested: Iterable[int] | None = None) -> None:
         self._tasks: dict[int, Task] = {int(t.id): t for t in tasks}
+        # When this graph was fetched (time.monotonic()), so a holder of a cached graph can say how old it is.
+        self.fetched_at: float = time.monotonic()
         # The issues the build was asked for, as opposed to the out-of-scope dependencies it also fetched
         # individually so blockers classify. None means every node was asked for.
         self._requested: frozenset[int] | None = None if requested is None else frozenset(requested)

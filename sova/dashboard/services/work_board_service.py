@@ -23,6 +23,7 @@ from sova.dashboard.services.work_item_service import (
     _parse_issue_number,
     board_exclusions,
     get_work_items,
+    graph_age_meta,
     load_ranking_graph,
     rank_graph_entries,
 )
@@ -51,6 +52,10 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.work_board")
 
 UP_NEXT_LIMIT = 5
+
+# A queue lookup asks the tracker once per issue, and `gh` alone defaults to 300 s: one stalled call must not hold
+# the board, so a lookup that is not answered in this long leaves its issue unknown (the queue entry stays).
+_QUEUE_LOOKUP_TIMEOUT = 5.0
 
 # One `gh pr list` per window, not per board refresh: the board reloads on every live-update event.
 _MERGED_CACHE_TTL = 60.0
@@ -604,15 +609,20 @@ async def _enrich_done_assignees(project_dir: Path | None, graph: DependencyGrap
 
 
 async def _queued_states(project_dir: Path | None, queue: list[int], graph: DependencyGraph) -> dict[int, TaskState]:
-    """The tracker state of each queued issue there is evidence for: the graph's, else a lookup.
+    """The tracker state of each queued issue there is evidence for: the graph's open state, else a lookup.
 
-    A lookup that fails leaves its issue out, so an outage reads as "unknown" and never as "closed".
+    The graph may be the previous one, answered while a rebuild runs, so its DONE is not proof: an issue closed
+    and then reopened still reads DONE there, and pruning it would delete a live queue entry. A DONE issue, like
+    one the graph lacks, is therefore confirmed against the tracker, and a lookup that fails leaves its issue
+    out, so an outage or a stalled lookup (bounded by ``_QUEUE_LOOKUP_TIMEOUT``) reads as "unknown" and never as
+    "closed". A graph state other than DONE is used as is:
+    it only keeps the entry, which a stale graph cannot make wrong in a destructive way.
     """
     states: dict[int, TaskState] = {}
     unknown: list[int] = []
     for issue in queue:
         task = graph.get_task(issue)
-        if task is not None:
+        if task is not None and task.state != TaskState.DONE:
             states[issue] = task.state
         else:
             unknown.append(issue)
@@ -627,7 +637,13 @@ async def _queued_states(project_dir: Path | None, queue: list[int], graph: Depe
         log.warning("work_board.queue_lookup_adapter_failed", exc_info=True)
         return states
     try:
-        results = await asyncio.gather(*(adapter.get_state(str(i)) for i in unknown), return_exceptions=True)
+
+        async def lookup(issue: int) -> TaskState:
+            # Bound each lookup, not the gather: cancelling the gather would discard lookups that already answered.
+            async with asyncio.timeout(_QUEUE_LOOKUP_TIMEOUT):
+                return await adapter.get_state(str(issue))
+
+        results = await asyncio.gather(*(lookup(i) for i in unknown), return_exceptions=True)
     finally:
         await close_adapter(adapter)  # on every path, a cancelled board request included
     for issue, result in zip(unknown, results, strict=True):
@@ -1084,8 +1100,9 @@ async def build_board(
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
     now = now or datetime.now(timezone.utc)
-    # The graph first: a cold build is awaited without the work-items poll's short wait, so the items that
-    # follow classify from this graph rather than from none (a just-changed priority is only in a fresh one).
+    # The graph first: with no previous graph (a cold start, or a priority change that forgot it) the build is
+    # awaited without the work-items poll's short wait, so the items that follow classify from this graph rather
+    # than from none. With one, it answers at once and the rebuild runs in the background.
     graph = await load_ranking_graph(project_dir)
     ranking_graph = await load_ranking_graph(project_dir, milestone) if milestone else graph
     items_data, (running, open_prs, prs_by_issue), queue, hidden_list, runs, done_today = await asyncio.gather(
@@ -1191,6 +1208,8 @@ async def build_board(
         "columns": _columns(),
         "agents": {"running": items_data.get("agents_running"), "limit": items_data.get("max_concurrent")},
         "api_health": items_data.get("api_health") or {"status": "ok"},
+        # Age of the graph the board ranked from and whether its refresh failed, so the client can say it is old.
+        "graph": graph_age_meta(project_dir),
         "github_user": items_data.get("github_user") or "",
         "jira_display_name": items_data.get("jira_display_name") or "",
         "milestones": _milestones(graph, running=running, open_prs=open_prs),
