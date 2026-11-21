@@ -23,6 +23,7 @@ from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.llm.errors import (
     BillingError,
     ConfigurationError,
+    ContentFilteredError,
     LLMTimeoutError,
     ModelUnavailableError,
     ProviderUnavailableError,
@@ -84,6 +85,7 @@ _GATE_CHECK_MARKERS: tuple[str, ...] = (
 _LLM_ERROR_LABELS: dict[type, str] = {
     ConfigurationError: "llm_configuration",
     BillingError: "llm_billing",
+    ContentFilteredError: "llm_content_filtered",
     ModelUnavailableError: "llm_model_unavailable",
     RateLimitError: "llm_rate_limit",
     ProviderUnavailableError: "llm_provider_unavailable",

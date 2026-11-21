@@ -129,6 +129,11 @@ class TestClassifyFailureCause:
                 id="llm-model-unavailable",
             ),
             pytest.param("claude code rate_limit exceeded, backing off", "llm_rate_limit", id="llm-rate-limit-backoff"),
+            pytest.param(
+                "Claude CLI failed (exit 1): API Error: Opus 5.5's safeguards flagged this message",
+                "llm_content_filtered",
+                id="llm-content-filtered",
+            ),
             # "is not available" alone (classify_error()'s ModelUnavailableError pattern) could just as easily
             # describe an unrelated feature-gating message.
             pytest.param(
