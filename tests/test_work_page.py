@@ -150,7 +150,7 @@ async def _build(
     with (
         patch.object(work_board_service, "load_ranking_graph", AsyncMock(return_value=graph)),
         patch.object(work_board_service, "get_work_items", AsyncMock(return_value=items_data)),
-        patch.object(work_board_service, "next_task_exclusions", AsyncMock(return_value=(set(), set()))),
+        patch.object(work_board_service, "board_exclusions", AsyncMock(return_value=(set(), set(), {}))),
         patch.object(work_board_service, "load_task_queue", AsyncMock(return_value=list(queue or []))),
         patch.object(work_board_service, "load_hidden_issues", AsyncMock(return_value=[])),
         patch.object(work_board_service, "_active_runs", AsyncMock(return_value={})),

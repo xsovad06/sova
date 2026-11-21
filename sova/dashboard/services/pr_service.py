@@ -267,6 +267,7 @@ def _extract_all_linked_issues(raw: dict) -> list[int]:
 
 
 extract_all_linked_issues = _extract_all_linked_issues  # for callers outside this module (the Work board)
+closing_references = _closing_references  # for callers outside this module (the Work board)
 
 
 def _summarize_ci(rollup: list[dict] | None) -> str:

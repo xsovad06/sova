@@ -21,9 +21,9 @@ from sova.config.db_loader import load_hidden_issues, load_task_queue, remove_fr
 from sova.config.loader import load_config
 from sova.dashboard.services.work_item_service import (
     _parse_issue_number,
+    board_exclusions,
     get_work_items,
     load_ranking_graph,
-    next_task_exclusions,
     rank_graph_entries,
 )
 from sova.dashboard.services.work_state import (
@@ -39,6 +39,7 @@ from sova.dashboard.services.work_state import (
 )
 from sova.db.session import get_session
 from sova.git.pr import list_merged_prs_since
+from sova.supervisor.dependency_graph import GRAPH_CACHE_TTL
 from sova.supervisor.labels import is_epic
 from sova.supervisor.queue_maintenance import prune_closed
 from sova.supervisor.suitability import assess_suitability, unblock_count, unsatisfied_dependencies
@@ -53,6 +54,9 @@ UP_NEXT_LIMIT = 5
 
 # One `gh pr list` per window, not per board refresh: the board reloads on every live-update event.
 _MERGED_CACHE_TTL = 60.0
+# How long after a merge the cached dependency graph may still show the issue open: its cache TTL, plus a margin
+# for the build time (the cache entry is stamped when a build finishes, but the data reflects its start).
+_GRAPH_LAG_SECONDS = GRAPH_CACHE_TTL + 60.0
 _merged_cache: dict[tuple[str, date], tuple[float, list[dict]]] = {}
 _done_assignees_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
 
@@ -340,13 +344,15 @@ def _parse_merged_at(raw: str | None) -> datetime | None:
 
 
 async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | None:
-    """Issues merged since local midnight, one entry per issue a merged PR links; ``None`` when unavailable.
+    """PRs merged since local midnight, newest first, one entry per issue a PR links; ``None`` when unavailable.
 
-    An issue two merged PRs link appears once, with its most recent merge; a PR that links no issue keeps its
-    own entry. A PR merged at exactly midnight belongs to the new day. The merged list is cached for
-    ``_MERGED_CACHE_TTL`` seconds, so a failure is never cached as an empty day.
+    A PR that links no issue has an entry with no number. Every merge is listed, so ``_settle_done_today()``
+    decides per issue which entry stays. Each entry carries a private ``_pr_url``, and ``_closes`` (the PR's
+    closing references name the issue), that function removes. A PR merged at exactly midnight belongs to the
+    new day. The merged list is cached for ``_MERGED_CACHE_TTL`` seconds, so a failure is never cached as an
+    empty day.
     """
-    from sova.dashboard.services.pr_service import extract_all_linked_issues, extract_jira_key
+    from sova.dashboard.services.pr_service import closing_references, extract_all_linked_issues, extract_jira_key
 
     midnight = _local_midnight(now)
     since_day = midnight.astimezone(timezone.utc).date()
@@ -381,6 +387,7 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
         merged_at = _parse_merged_at(pr.get("mergedAt"))
         if merged_at is None or merged_at < midnight:
             continue
+        closes = set() if jira_key else set(closing_references(pr))
         for number in issue_numbers:
             entry = _issue_entry(
                 number,
@@ -402,22 +409,151 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
                     "merged_at": merged_at.isoformat(),
                     "pr_author": author,
                     "pr_assignees": assignees,
+                    "_pr_url": pr.get("url", ""),
+                    "_closes": number in closes,
                 }
             )
             if jira_key:
                 entry["jira_key"] = jira_key
             entries.append((merged_at, entry))
     entries.sort(key=lambda pair: pair[0], reverse=True)
-    seen: set[int] = set()
-    unique: list[dict] = []
-    for _at, entry in entries:
+    return [entry for _at, entry in entries]
+
+
+def _settle_done_today(
+    done_today: list[dict],
+    items: list[dict],
+    graph: DependencyGraph,
+    open_prs: dict[int, set[int]] | None = None,
+    now: datetime | None = None,
+    running_issues: set[int] | None = None,
+) -> list[dict]:
+    """Keep an issue in Done only when a merged PR finished it; one entry per issue, newest merge.
+
+    A PR that only does part of an issue ("Part of #N") merges while the issue stays open, often with its next
+    PR already open. Such an issue keeps its own column and the merged PR stays here as an entry with no number,
+    like a PR that links no issue; a PR demoted for several issues keeps one entry, and none when the same PR
+    also keeps a numbered entry for an issue it finished. An issue a run in *running_issues* owns has no
+    numbered entry (decided before that check, so a PR's merge never vanishes with it).
+
+    The checks run in this order. A work item whose PR is not one merged today is an open PR. An issue the
+    graph lists in a state the board does not put in ``done`` (``work_stage()``: on_qa counts as done) is
+    finished, whatever else links it. Any open PR in *open_prs* (every issue a PR links, from
+    ``board_exclusions()``) that is not one merged today then keeps the issue open (the PR list lags a merge by
+    up to its cache TTL, and that stale case is the one Done wins). Within ``_GRAPH_LAG_SECONDS`` of *now* the
+    cached graph (about ``GRAPH_CACHE_TTL``, plus the build time) can still show the issue open, so there a
+    merge counts as finishing it when GitHub's closing references name the issue, or when it is the work item's
+    own PR (the item lags the merge the same way, and a Jira issue has no closing references). Past the window
+    the graph is trusted again, so an issue reopened after a closing merge, or one the keyword never closed,
+    keeps its own column. Otherwise the graph state decides. An issue the graph lacks (opened after the graph
+    was cached) is judged by its work item's state the same way.
+    """
+    merged_prs, closed_by_merge, recent_prs = _merged_today_index(done_today, now)
+    items_by_issue = _items_by_issue(items)
+    seen: set[tuple[str, int | None]] = set()
+    settled: list[dict] = []
+    for entry in done_today:
         number = entry["number"]
+        pr_url = entry.pop("_pr_url", "")
+        entry.pop("_closes", None)
+        if number is not None and _merge_left_open(
+            number,
+            merged_prs[number],
+            (open_prs or {}).get(number, set()),
+            items_by_issue.get(number),
+            graph,
+            closed_by_merge,
+            recent_prs[number],
+        ):
+            log.debug("work_board.done_demoted", issue=number, pr=entry.get("pr_number"))
+            entry.update({"number": None, "url": pr_url})
+            entry.pop("jira_key", None)
+            number = None
+        key = ("issue", number) if number is not None else ("pr", entry.get("pr_number"))
+        if key in seen and key[1] is not None:
+            continue
+        seen.add(key)
+        settled.append(entry)
+    settled = [entry for entry in settled if entry["number"] not in (running_issues or ())]
+    finished_prs = {entry["pr_number"] for entry in settled if entry["number"] is not None}
+    return [entry for entry in settled if entry["number"] is not None or entry.get("pr_number") not in finished_prs]
+
+
+def _merged_today_index(
+    done_today: list[dict], now: datetime | None
+) -> tuple[defaultdict[int, set[int]], set[int], defaultdict[int, set[int]]]:
+    """Each issue's PRs merged today, the issues a closing merge within the graph lag of *now* closes, and each
+    issue's PRs merged within that lag."""
+    merged_prs: defaultdict[int, set[int]] = defaultdict(set)
+    recent_prs: defaultdict[int, set[int]] = defaultdict(set)
+    closed_by_merge: set[int] = set()
+    for entry in done_today:
+        number = entry["number"]
+        if number is None:
+            continue
+        recent = _within_graph_lag(entry.get("merged_at"), now)
+        if entry.get("pr_number") is not None:
+            merged_prs[number].add(entry["pr_number"])
+            if recent:
+                recent_prs[number].add(entry["pr_number"])
+        if entry.get("_closes") and recent:
+            closed_by_merge.add(number)
+    return merged_prs, closed_by_merge, recent_prs
+
+
+def _within_graph_lag(merged_at: str | None, now: datetime | None) -> bool:
+    """Whether a merge at *merged_at* is recent enough that the cached dependency graph may not show it yet."""
+    if now is None:
+        return False
+    merged = _parse_merged_at(merged_at)
+    return merged is not None and (now - merged).total_seconds() <= _GRAPH_LAG_SECONDS
+
+
+def _items_by_issue(items: list[dict]) -> dict[int, dict]:
+    """Each issue's work item."""
+    by_issue: dict[int, dict] = {}
+    for item in items:
+        number = _parse_issue_number(item.get("issue_number"))
         if number is not None:
-            if number in seen:
-                continue  # newest first, so the entry already kept is the most recent merge
-            seen.add(number)
-        unique.append(entry)
-    return unique
+            by_issue[number] = item
+    return by_issue
+
+
+# A work item in one of these states carries a PR that is no longer open (merged earlier, or closed unmerged),
+# so its number says nothing about whether another PR is open.
+_ITEM_PR_NOT_OPEN_STATES = frozenset({WorkItemState.PR_MERGED_ISSUE_OPEN, WorkItemState.MERGED, WorkItemState.DONE})
+
+
+def _merge_left_open(
+    number: int,
+    merged: set[int],
+    open_prs: set[int],
+    item: dict | None,
+    graph: DependencyGraph,
+    closed_by_merge: set[int],
+    recent_merged: set[int],
+) -> bool:
+    """Whether issue *number* is still open after today's merges: another PR is open, or its state says so.
+
+    The item's own PR counts as open only when its state says the PR is open, and an item whose PR is gone
+    (merged earlier, or closed unmerged) falls through to the graph and closing-reference checks.
+    """
+    item_pr = (item.get("pr_details") or {}).get("number") if item else None
+    if item_pr is not None and item_pr not in merged and item.get("state") not in _ITEM_PR_NOT_OPEN_STATES:
+        return True
+    task = graph.get_task(number)
+    graph_stage = work_stage(task.state.value) if task is not None else None
+    if graph_stage is WorkStage.DONE:
+        return False  # no column holds a finished issue, so an open PR that only links it second cannot keep it
+    if open_prs - merged:
+        return True
+    if number in closed_by_merge or (item_pr is not None and item_pr in recent_merged):
+        return False  # the graph lags this merge
+    if task is not None:
+        return True
+    if item is None or item_pr in merged:
+        return False  # no evidence, or the item still shows a merged PR as open (stale, so Done wins)
+    return work_stage(item.get("state", "")) is not WorkStage.DONE
 
 
 async def _enrich_done_assignees(project_dir: Path | None, graph: DependencyGraph, entries: list[dict]) -> bool:
@@ -952,9 +1088,9 @@ async def build_board(
     # follow classify from this graph rather than from none (a just-changed priority is only in a fresh one).
     graph = await load_ranking_graph(project_dir)
     ranking_graph = await load_ranking_graph(project_dir, milestone) if milestone else graph
-    items_data, (running, open_prs), queue, hidden_list, runs, done_today = await asyncio.gather(
+    items_data, (running, open_prs, prs_by_issue), queue, hidden_list, runs, done_today = await asyncio.gather(
         get_work_items(project_dir),
-        next_task_exclusions(project_dir),
+        board_exclusions(project_dir),
         load_task_queue(project_dir),
         load_hidden_issues(project_dir),
         _active_runs(project_dir),
@@ -971,11 +1107,14 @@ async def build_board(
     }
     done_assignees_failed = False
     if done_today is not None:
-        done_today = [
-            entry
-            for entry in done_today
-            if not (run := (runs or {}).get(f"issue:{entry['number']}")) or run.get("status") != "running"
-        ]
+        # A merge that does not finish its issue keeps its entry (no number) even while a run owns the issue.
+        run_owned = {
+            number
+            for key, run in (runs or {}).items()
+            if key.startswith("issue:") and run.get("status") == "running"
+            if (number := _parse_issue_number(key.removeprefix("issue:"))) is not None
+        }
+        done_today = _settle_done_today(done_today, items_data["items"], graph, prs_by_issue, now, run_owned)
         done_assignees_failed = not await _enrich_done_assignees(project_dir, graph, done_today)
 
     board = _classify_items(items_data["items"], queue_set, runs or {})
@@ -1073,6 +1212,7 @@ async def build_board(
             name
             for name, failed in (
                 ("done_today", done_today is None),
+                ("open_prs", prs_by_issue is None),
                 ("done_assignees", done_assignees_failed),
                 ("active_runs", runs is None),
                 ("queue_prune", prune_failed),

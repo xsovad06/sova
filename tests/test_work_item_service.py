@@ -32,6 +32,7 @@ from sova.dashboard.services.work_item_service import (
     _load_graph_or_none,
     _parse_issue_number,
     _sort_items,
+    board_exclusions,
     cancel_graph_builds,
     compute_work_item_resolution,
     compute_work_item_state,
@@ -4303,6 +4304,82 @@ class TestNextTaskExclusions:
             ),
         ):
             assert await next_task_exclusions(None) == (set(), set())
+
+
+async def board_exclusions_map(project_dir: Path | None) -> dict[int, set[int]] | None:
+    """The per-issue open PR map of ``board_exclusions()`` with no running agents."""
+    with patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={})):
+        return (await board_exclusions(project_dir))[2]
+
+
+class TestBoardExclusions:
+    @pytest.mark.asyncio
+    async def test_the_open_prs_are_fetched_once_for_the_exclusions_and_the_map(self) -> None:
+        fetched = AsyncMock(return_value=[{"number": 51, "linked_issue": 6, "linked_issues": [6, 5]}])
+        with (
+            patch("sova.dashboard.services.work_item_service._safe_prs", fetched),
+            patch("sova.dashboard.services.work_item_service._safe_agents", AsyncMock(return_value={})),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=ProjectConfig()),
+        ):
+            running, open_prs, by_issue = await board_exclusions(Path("/tmp/project"))
+
+        assert (running, open_prs, by_issue) == (set(), {5, 6}, {5: {51}, 6: {51}})
+        fetched.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_every_linked_issue_maps_to_its_open_prs(self) -> None:
+        prs = [
+            {"number": 51, "linked_issue": 6, "linked_issues": [6, 5]},
+            {"number": 52, "linked_issue": 5, "linked_issues": [5]},
+            {"number": 53},
+            {"linked_issue": 9},
+        ]
+        with (
+            patch("sova.dashboard.services.work_item_service._safe_prs", AsyncMock(return_value=prs)),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=ProjectConfig()),
+        ):
+            result = await board_exclusions_map(Path("/tmp/project"))
+
+        assert result == {5: {51, 52}, 6: {51}}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pr_fetch_is_none_not_an_empty_map(self) -> None:
+        with patch("sova.dashboard.services.work_item_service._safe_prs", AsyncMock(return_value=None)):
+            assert await board_exclusions_map(Path("/tmp/project")) is None
+
+    @pytest.mark.asyncio
+    async def test_a_config_failure_is_none_not_an_empty_map(self) -> None:
+        with (
+            patch("sova.dashboard.services.work_item_service._safe_prs", AsyncMock(return_value=[])),
+            patch("sova.dashboard.services.work_item_service.load_config", side_effect=ValueError("bad")),
+        ):
+            assert await board_exclusions_map(Path("/tmp/project")) is None
+
+    @pytest.mark.asyncio
+    async def test_jira_prs_map_to_this_project_key_only(self) -> None:
+        cfg = ProjectConfig(task_source=TaskSourceConfig(type="jira", jira_project_key="ARVAC"))
+        prs = [
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-7"},
+        ]
+        with (
+            patch("sova.dashboard.services.work_item_service._safe_prs", AsyncMock(return_value=prs)),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg),
+        ):
+            assert await board_exclusions_map(Path("/tmp/jira-project")) == {7: {301}}
+
+    @pytest.mark.asyncio
+    async def test_the_default_project_is_resolved(self) -> None:
+        project = Path("/tmp/configured-checkout")
+        fetched = AsyncMock(return_value=[])
+        with (
+            patch("sova.dashboard.services.agent_pool.get_default_project_dir", return_value=project),
+            patch("sova.dashboard.services.work_item_service._safe_prs", fetched),
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=ProjectConfig()),
+        ):
+            assert await board_exclusions_map(None) == {}
+
+        fetched.assert_awaited_once_with(project)
 
 
 class TestGetNextTasks:

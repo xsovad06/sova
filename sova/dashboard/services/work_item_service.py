@@ -957,20 +957,51 @@ async def next_task_exclusions(project_dir: Path | None) -> tuple[set[int], set[
     degrades to no exclusions and is logged), leaving the ``triaged``/``researched`` state
     filter as the only exclusion.
     """
+    running, open_prs, _by_issue = await board_exclusions(project_dir)
+    return running, open_prs
+
+
+async def board_exclusions(project_dir: Path | None) -> tuple[set[int], set[int], dict[int, set[int]] | None]:
+    """``next_task_exclusions()`` plus each issue's open PR numbers, from one open-PR fetch.
+
+    The third item counts every issue a PR links (a work item carries only the PR of its primary
+    ``linked_issue``), and is ``None`` when the PR source is down, so a lookup that failed never reads as
+    "no open PRs". The Work board's Done today settlement reads it; sharing the fetch keeps the exclusion
+    set and that map from disagreeing within one board build.
+    """
     from sova.config.context import resolve_project_dir
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
     slug = project_dir.name
-    prs, agents_data = await asyncio.gather(_safe_prs(project_dir), _safe_agents(slug))
+    prs, agents_data = await asyncio.gather(_scoped_open_prs(project_dir), _safe_agents(slug))
+    return _running_issues(agents_data), _open_pr_issues(prs or []), _open_prs_by_issue(prs)
+
+
+def _open_prs_by_issue(prs: list[dict] | None) -> dict[int, set[int]] | None:
+    """Each issue's open PR numbers, counting every issue a PR links; ``None`` when *prs* is ``None``."""
+    if prs is None:
+        return None
+    by_issue: dict[int, set[int]] = {}
+    for pr in prs:
+        if pr.get("number") is None:
+            continue
+        for issue in _open_pr_issues([pr]):
+            by_issue.setdefault(issue, set()).add(pr["number"])
+    return by_issue
+
+
+async def _scoped_open_prs(project_dir: Path) -> list[dict] | None:
+    """Open PRs scoped to a Jira project's own keys when the tracker is Jira; ``None`` when unavailable."""
+    prs = await _safe_prs(project_dir)
     try:
         cfg = load_config(project_dir)
         if prs is not None and cfg.task_source.type == "jira" and cfg.task_source.jira_project_key:
             prs = _jira_project_prs(prs, cfg.task_source.jira_project_key)
-    except Exception:  # noqa: BLE001 (exclusions fail open when config is unavailable)
+    except Exception:  # noqa: BLE001 (open PR lookups fail open when config is unavailable)
         log.warning("work_items.exclusions_config_failed", exc_info=True)
-        prs = None
-    return _running_issues(agents_data), _open_pr_issues(prs or [])
+        return None
+    return prs
 
 
 async def get_next_tasks(project_dir: Path | None = None, *, limit: int | None = None) -> dict:
