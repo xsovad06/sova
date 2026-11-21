@@ -105,7 +105,7 @@ class AddressExternalFindingsStep(BaseStep):
         coverage_prompt = ""
 
         tasks: list[tuple[str, Any]] = []
-        if "sonarcloud" in ext.tools and ext.sonarcloud.project_key:
+        if ext.sonarcloud_configured:
             pk = ext.sonarcloud.project_key
             tasks.append(("sonar_issues", fetch_sonarcloud_issues(pk, ctx.pr_number)))
             tasks.append(

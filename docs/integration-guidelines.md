@@ -89,7 +89,8 @@ For setup instructions, JQL filter recipes, and status mapping configuration, se
 
 - **SonarCloud**: `curl` via `run()` with Bearer `SONAR_TOKEN` from env. Proceeds without auth for public projects.
 - **CodeRabbit**: `gh api graphql` via `run()`. Filters threads by bot author, skips resolved.
-- Both return empty lists on any failure
+- `fetch_sonarcloud_issues()` returns `None` on a failed request so a caller can tell "unreadable" from "no issues"; the CodeRabbit fetch returns an empty result on any failure
+- **When they are read**: `address_external_findings` reads both before `monitor_ci`; `address_sonarcloud_findings` reads SonarCloud again once CI has passed (SonarCloud analyses only a green PR), in both the developer and address-review pipelines, and skips itself unless SonarCloud is enabled, listed in `external_reviews.tools` and has a `project_key` (full entry: docs/architecture-deep-dive.md, "SonarCloud findings are read again after CI passes")
 - `_fetch_coderabbit_threads()` condenses each comment with `condense_coderabbit_comment()` (drops badge markup, HTML comments and the collapsed script-log, learnings and agent-prompt sections; keeps the title, explanation and suggested fix), then caps it at 4000 chars via `trim_payload(keep="head")`; the re-review prompt shows each addressed finding capped at 500 chars (`_format_addressed_findings()`)
 
 ## LLM Providers
