@@ -78,6 +78,7 @@ class TestStepAreaMap:
         known_steps = {
             "address_external_findings",
             "address_review",
+            "address_sonarcloud_findings",
             "assess",
             "capture_baseline",
             "commit",

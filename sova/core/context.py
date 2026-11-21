@@ -224,6 +224,10 @@ class ExecutionContext:
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
     addressed_external_findings: list[dict] = field(default_factory=list)
+    # The HEAD SHA a fix was pushed to by address_sonarcloud_findings while its CI watch has not
+    # yet passed, so a retry of that step re-watches CI on it instead of waiting for SonarCloud,
+    # which never analyses a red head and would read as "did not report".
+    sonarcloud_unverified_head: str = ""
     # Set by AddressReviewStep once the LLM has addressed the reviewer's findings,
     # read by ResolveReviewThreadsStep to post the address summary on the PR
     # after the push, and by the handoff step to record what was addressed.

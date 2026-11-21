@@ -883,7 +883,13 @@ class WorkflowEngine:
             return self._ctx.config.ci.max_wait + 120
 
         cfg = self._ctx.config.develop if step_name == "develop" else self._ctx.config.agent
-        return tier_timeout(self._ctx.complexity, cfg.step_timeout_normal, cfg.step_timeout_complex)
+        agent_timeout = tier_timeout(self._ctx.complexity, cfg.step_timeout_normal, cfg.step_timeout_complex)
+        if step_name == "address_sonarcloud_findings":
+            # Three phases in one step: wait for SonarCloud's analysis, one agent
+            # fix, then a full monitor_ci watch of the pushed fix.
+            wait = self._ctx.config.external_reviews.timeout * 60
+            return wait + agent_timeout + self._ctx.config.ci.max_wait + 120
+        return agent_timeout
 
     def _effective_step_timeout(self, step_name: str) -> tuple[int, bool]:
         """Return ``(timeout_seconds, capped_by_runaway)`` for the active attempt.
