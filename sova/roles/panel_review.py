@@ -20,9 +20,12 @@ from typing import TYPE_CHECKING, TypeVar
 from sova.adapters.base import Task
 from sova.config.models import ReviewPanelConfig
 from sova.llm.client import invoke
+from sova.llm.errors import was_content_filtered
 from sova.llm.guard import PromptInjectionError
 from sova.llm.routing import get_model_family
 from sova.roles._review_comments import (
+    CAUSE_BUDGET,
+    CAUSE_UNPARSEABLE,
     ReviewFinding,
     ReviewResult,
     _chunk_diff,
@@ -34,6 +37,7 @@ from sova.roles._review_comments import (
     _load_findings_json,
     _quote_untrusted,
     _try_parse_findings,
+    review_failure_cause,
 )
 from sova.roles._review_format import _SEVERITY_MEDIUM
 from sova.utils.logging import get_logger
@@ -424,6 +428,8 @@ class _PanelState:
     skipped_dimensions: set[str] = field(default_factory=set)
     findings: list[ReviewFinding] = field(default_factory=list)
     critical_exit: bool = False
+    # Why the last ``_review_call()`` returned None, for the caller that then marks its chunk unreviewed.
+    last_call_failure: str | None = None
 
     def record_call(self, llm_result: LLMResult) -> None:
         """Charge one LLM call against the review total and remaining budget, and keep it for its CostRecord."""
@@ -518,7 +524,7 @@ def _affordable_dimensions(state: _PanelState, dimensions: list[str], model: str
             active = []
 
     if len(active) < len(dimensions):
-        state.result.mark_unreviewed(request.chunk_files)
+        state.result.mark_unreviewed(request.chunk_files, cause=CAUSE_BUDGET)
     return active
 
 
@@ -533,7 +539,7 @@ def _finalize_panel_result(state: _PanelState, panel_config: ReviewPanelConfig) 
     if result.summary:
         return result
     if result.unreviewed_files:
-        result.summary = "LLM review unavailable for part of the diff: manual review recommended"
+        result.summary = result.unavailable_summary(partial=True)
     elif not result.findings:
         result.summary = "All dimensions report no issues: code looks good."
     return result
@@ -562,12 +568,18 @@ async def _review_call(
     A transient failure or a response *parse* rejects (returns None for) is retried once. Every attempt
     is capped at the panel budget still left (``max_budget_usd``), and the retry runs only while that
     budget covers *estimated_cost*; a failed attempt reports no cost, so its estimate is charged instead.
-    A ``PromptInjectionError`` is not retried: the guard is deterministic.
+    A ``PromptInjectionError`` is not retried: the guard is deterministic. Nor is a content-filter block,
+    on any hop of the model chain (``was_content_filtered()``), which has already offered the prompt to each
+    model in ``agent.fallback_models`` (issue #1531).
 
     The call is tool-free (``isolated=True``), which is what lets the guard score the embedded diff as
     data. Returns None when no attempt produced a parseable review, and the caller then reports the chunk
-    unreviewed: an unparseable response is a review that did not happen, never a clean one.
+    unreviewed: an unparseable response is a review that did not happen, never a clean one. Before
+    returning None it records why on ``state.last_call_failure``.
     """
+    cause = CAUSE_UNPARSEABLE
+    # Cleared up front so a caller never reads a previous call's failure as this one's.
+    state.last_call_failure = None
     for attempt in range(1, _PANEL_CALL_ATTEMPTS + 1):
         if attempt > 1 and not state.can_afford(estimated_cost):
             log.warning(
@@ -576,6 +588,8 @@ async def _review_call(
                 chunk=request.index + 1,
                 budget_remaining=str(state.budget_remaining),
             )
+            # The budget only stopped the retry: the first attempt's failure is why the chunk went unreviewed.
+            state.last_call_failure = cause
             return None
         try:
             llm_result = await invoke(
@@ -587,21 +601,28 @@ async def _review_call(
                 isolated=True,
                 untrusted_segments=(request.diff,),
             )
-        except PromptInjectionError:
+        except PromptInjectionError as exc:
             log.warning("panel_review.call_rejected", task_type=task_type, chunk=request.index + 1, exc_info=True)
+            state.last_call_failure = review_failure_cause(exc)
             return None
-        except Exception:  # noqa: BLE001 (a failed call is retried once, then its chunk is reported unreviewed)
+        except Exception as exc:  # noqa: BLE001 (a failed call is retried once, then its chunk is reported unreviewed)
             log.warning(
                 "panel_review.call_failed", task_type=task_type, chunk=request.index + 1, attempt=attempt, exc_info=True
             )
             state.charge_estimate(estimated_cost)
+            cause = review_failure_cause(exc)
+            if was_content_filtered(exc):
+                state.last_call_failure = cause
+                return None
             continue
 
         state.record_call(llm_result)
         parsed = parse(llm_result.text)
         if parsed is not None:
             return parsed
+        cause = CAUSE_UNPARSEABLE
         log.warning("panel_review.response_unparseable", task_type=task_type, chunk=request.index + 1, attempt=attempt)
+    state.last_call_failure = cause
     return None
 
 
@@ -633,7 +654,7 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
         if parsed is None:
             # One dimension failing must not abort the panel review, but its chunk is not reviewed.
             log.warning("panel_review.dimension_failed", dimension=dim, chunk=request.index + 1)
-            state.result.mark_unreviewed(request.chunk_files)
+            state.result.mark_unreviewed(request.chunk_files, cause=state.last_call_failure)
             continue
 
         findings, summary = parsed
@@ -690,7 +711,7 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
         if response is None:
             # One group failing must not abort the panel review, but its chunk is not reviewed.
             log.warning("panel_review.group_failed", dimensions=active, chunk=request.index + 1)
-            state.result.mark_unreviewed(request.chunk_files)
+            state.result.mark_unreviewed(request.chunk_files, cause=state.last_call_failure)
             continue
 
         if not response.parsed:
