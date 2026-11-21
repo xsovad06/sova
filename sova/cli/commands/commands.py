@@ -27,7 +27,7 @@ from sova.commands.distribution import (
     update_skills,
 )
 from sova.commands.templates import build_variables, reverse_render
-from sova.config.loader import load_config
+from sova.config.loader import load_config, persist_commit_lists
 from sova.config.models import ProjectConfig
 from sova.config.registry import list_projects
 from sova.utils.logging import get_logger
@@ -108,6 +108,11 @@ def update_cmd(
     """Sync commands to latest canonical versions."""
     project_dir = (project or Path.cwd()).resolve()
     target_dir = project_dir / _COMMANDS_SUBDIR
+    # Store the commit types/scopes this project's docs or history define (best-effort: lists resolve lazily)
+    try:
+        persist_commit_lists(project_dir)
+    except Exception:  # noqa: BLE001 (best-effort convenience step must not block the command sync)
+        log.warning("commands.commit_lists_failed", project_dir=str(project_dir), exc_info=True)
     cfg = load_config(project_dir)
     canonical_dir = get_canonical_dir()
 
