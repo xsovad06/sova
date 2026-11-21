@@ -20,6 +20,7 @@ from sova.llm.complexity import ComplexityTier, assess_complexity
 from sova.llm.cost import record_cost
 from sova.llm.errors import (
     BillingError,
+    ContentFilteredError,
     LLMError,
     LLMInvocationError,
     LLMTimeoutError,
@@ -42,6 +43,7 @@ __all__ = [
     "BatchTimeoutError",
     "BillingError",
     "ComplexityTier",
+    "ContentFilteredError",
     "LLMError",
     "LLMInvocationError",
     "LLMProvider",
