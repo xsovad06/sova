@@ -198,7 +198,7 @@ up front, so a fast-failing primary does not starve a healthy fallback of
 budget. A failed attempt reports no cost back to SOVA, so an exhausted budget
 (`BillingError`) cannot repeat: it is not fallback-eligible and re-raises
 before the next candidate runs. A fallback-eligible failure (rate limit,
-timeout, provider unavailable) that occurs after the CLI subprocess has
+timeout, provider unavailable, content filter) that occurs after the CLI subprocess has
 already billed partial output within that attempt's own window is not
 tracked, since the exception carries no cost data. The practical worst case
 for spend across one call is therefore `chain_length x max_budget_usd`, not

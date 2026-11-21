@@ -17,6 +17,7 @@ from sova.config.models import AgentConfig, LLMConfig, ProjectConfig
 from sova.llm import client
 from sova.llm.errors import (
     BillingError,
+    ContentFilteredError,
     LLMInvocationError,
     ModelUnavailableError,
     ProviderUnavailableError,
@@ -186,6 +187,17 @@ class TestInvokeWithFallbackLoop:
         )
         assert result.model == "sonnet"
         assert [c[0] for c in attempt.calls] == ["opus", "sonnet"]
+
+    async def test_content_filtered_primary_advances_to_next_candidate(self) -> None:
+        """A safety-classifier block on one model is no reason to skip a model that may accept the prompt."""
+        blocked = ContentFilteredError("API Error: Opus 5.5's safeguards flagged this message")
+        attempt = _Recorder(blocked, _ok("sonnet"))
+        result = await client._invoke_with_fallback(
+            attempt, primary="opus", cfg=_cfg("sonnet"), caller_fallback=None, timeout=900.0
+        )
+        assert result.model == "sonnet"
+        assert [c[0] for c in attempt.calls] == ["opus", "sonnet"]
+        assert not client.get_availability_cache().is_unavailable(_IDENTITY, "opus")
 
     async def test_chain_hop_overrides_caller_fallback(self) -> None:
         """SOVA is the source of truth: the CLI gets the chain's next hop."""
