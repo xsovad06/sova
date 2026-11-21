@@ -1064,8 +1064,9 @@ class TestPollingUsesVisibilityAwarePoll:
 
     def test_the_only_raw_timeouts_are_the_documented_exceptions(self) -> None:
         """Every poll goes through visibilityAwarePoll except pollLogs()'s backoff chain. The other raw
-        timeouts are one-shot debounces (the Work page's issue search among them) and a fetch abort, none of
-        which reschedules itself. A new self-rescheduling setTimeout elsewhere fails here instead of passing as
+        timeouts are one-shot debounces (the Work page's issue search among them), a fetch abort, and the Work
+        board's single retry after a failed load (it arms the next one only by failing again), none of which
+        reschedules itself on success. A new self-rescheduling setTimeout elsewhere fails here instead of passing as
         an undocumented poller."""
         found = {
             (name, line.strip())
@@ -1080,6 +1081,7 @@ class TestPollingUsesVisibilityAwarePoll:
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
             ("work/board", "var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);"),
+            ("work/board", "_retryTimer = setTimeout(function() {"),
             ("work/search", "_timer = setTimeout(function() { _search(query); }, _DEBOUNCE_MS);"),
             ("history", "_refreshTimer = setTimeout(function() {"),
             (

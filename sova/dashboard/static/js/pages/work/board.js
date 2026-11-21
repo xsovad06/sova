@@ -12,8 +12,8 @@ import { clearSelection, getSelected, onSelectionChange, relationChip, relationC
 //
 // Refreshes come from the shared socket only (#1459): work_items_changed, agent_finished and
 // graph_invalidated reload the board, a status_update whose set of runs changed reloads it, actions_changed
-// reloads the per-card action states, and the hub's own fallback runs while the socket is down. This
-// module starts no timer of its own.
+// reloads the per-card action states, and the hub's own fallback runs while the socket is down. The only timer
+// this module starts is the one-shot retry after a failed load (below).
 
 var _board = null;
 var _boardOwner = null;
@@ -30,6 +30,55 @@ var _redrawAfterDrag = false;
 var _load = null;
 var _reloadAfter = false;
 var _LOAD_TIMEOUT_MS = 30000;
+
+// The age marker shows only after a failure: the board is not polled, so its age alone says nothing.
+var _STALE_AFTER_MS = Infinity;
+
+// A failed load is retried once after this delay, because the marker tells the user it is "retrying" and a quiet
+// tracker may send no change message for a long time. At most one retry is pending: a retry that fails arms the
+// next one, a success cancels it, and a retry that fires while the tab is hidden is dropped (the hub reloads the
+// board when the tab returns).
+var _RETRY_AFTER_MS = 15000;
+var _retryTimer = null;
+
+function _cancelRetry() {
+  if (_retryTimer === null) return;
+  clearTimeout(_retryTimer);
+  _retryTimer = null;
+}
+
+function _scheduleRetry() {
+  if (_retryTimer !== null) return;
+  _retryTimer = setTimeout(function() {
+    _retryTimer = null;
+    if (document.hidden) return;
+    loadBoard();
+  }, _RETRY_AFTER_MS);
+}
+
+// The marker is bookkeeping: a missing or throwing helper must never turn a rendered board into a reported failure.
+function _markRefresh(ok) {
+  if (typeof markRefresh !== 'function') return;
+  try {
+    markRefresh('work-board', ok, _STALE_AFTER_MS);
+  } catch (e) {
+    console.warn('work board refresh marker failed', e);
+  }
+}
+
+// What the board says about its own data after a good load: details that could not be loaded, and a ranking that
+// is older than the refresh interval because the tracker refresh behind it failed.
+function _boardNotice(board) {
+  var parts = [];
+  if (board.unavailable && board.unavailable.length) {
+    parts.push('Some details could not be loaded (' + board.unavailable.join(', ').replace(/_/g, ' ') + ')');
+  }
+  var graph = board.graph;
+  if (graph && graph.graph_refresh_failed) {
+    parts.push('The ranking is ' + formatElapsed(graph.graph_age_seconds || 0) + ' old: refreshing it from the tracker failed');
+  }
+  return parts.join('. ');
+}
 
 export function getBoard() { return _board; }
 
@@ -77,6 +126,8 @@ async function _fetchBoard() {
   var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);
   var savesBefore = settingSaveCount();
   var requestedOwner = _ownerFilter;
+  var previousBoard = _board;
+  var previousOwner = _boardOwner;
   try {
     var params = new URLSearchParams();
     if (_milestone) params.set('milestone', _milestone);
@@ -91,13 +142,14 @@ async function _fetchBoard() {
     }
     _board = response;
     _boardOwner = requestedOwner;
-    _setError(_board.unavailable && _board.unavailable.length
-      ? 'Some details could not be loaded (' + _board.unavailable.join(', ').replace(/_/g, ' ') + ')'
-      : '');
     setSelectionBoard(_board);
     _updateApiHealthBanner(_board.api_health);
     renderHeader(_board, settingSaveCount() !== savesBefore);
     renderBoard();
+    // Only a board that rendered counts as a refresh: a throw above is a failure, not a success then a failure.
+    _cancelRetry();
+    _markRefresh(true);
+    _setError(_boardNotice(_board));
     _listeners.forEach(function(fn) {
       try {
         fn(_board);
@@ -108,7 +160,14 @@ async function _fetchBoard() {
   } catch (e) {
     // A failed refresh keeps the last good board on screen and says so; it never shows an empty board.
     var message = e && e.name === 'AbortError' ? 'Loading the board timed out' : (e && e.message) || 'Failed to load the board';
+    if (_board !== previousBoard) {
+      // The new response failed to render, so the board on screen is still the previous one.
+      _board = previousBoard;
+      _boardOwner = previousOwner;
+    }
     _setError(_board && _boardOwner === _ownerFilter ? message + '. Showing the last board loaded.' : message);
+    _markRefresh(false);
+    _scheduleRetry();
     if (!_board) {
       var host = document.getElementById('work-board');
       if (host) host.innerHTML = '<p class="text-accent-red text-sm py-6">' + escapeHtml(message) + '</p>';
@@ -140,11 +199,12 @@ async function _loadActions() {
   }
 }
 
+// The error and the age marker (markRefresh(), #work-board-stale) share one line, which shows while there is an error.
 function _setError(message) {
   var el = document.getElementById('work-board-error');
-  if (!el) return;
-  el.textContent = message;
-  el.classList.toggle('hidden', !message);
+  if (el) el.textContent = message;
+  var line = document.getElementById('work-board-status');
+  if (line) line.classList.toggle('hidden', !message);
 }
 
 // Rendering ----------------------------------------------------------------

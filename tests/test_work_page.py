@@ -565,6 +565,13 @@ if (scenario === 'start-no-slot') {
     'work-board-error': { textContent: '', classList: { toggle() {} } },
   };
   document.getElementById = (id) => els[id] || null;
+  // A failed load arms a 15 s retry: unreferenced here, so a pending one never keeps Node alive.
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    const handle = realSetTimeout(fn, ms, ...rest);
+    if (ms === 15000 && handle && handle.unref) handle.unref();
+    return handle;
+  };
   let releaseAll;
   let calls = 0;
   globalThis.fetch = async (url) => {
@@ -999,7 +1006,16 @@ if (scenario === 'start-no-slot') {
     },
   });
   // Every other element (icons, header tiles) is absent, which the modules handle.
-  document.getElementById = (id) => (id === 'work-board' || id === 'work-board-error') ? el(id) : null;
+  const shown = ['work-board', 'work-board-error', 'work-board-status', 'work-board-stale'];
+  document.getElementById = (id) => shown.includes(id) ? el(id) : null;
+  // The real age marker from app.js (section 6b), so what the user reads is what is asserted. Its 5 s refresh
+  // tick is not needed here, and a real interval would keep Node alive.
+  real('formatElapsed');
+  globalThis.setInterval = () => 0;
+  const markStart = appSrc.indexOf('var _refreshMarks = {};');
+  const markEnd = appSrc.indexOf('/* ====', markStart);
+  new Function(appSrc.slice(markStart, markEnd) + '; globalThis.markRefresh = markRefresh;')();
+  let graph = null;
   const good = {
     columns: [{ stage: 'next', column: 'next', label: 'Up next', color: 'blue', entries: 'up_next' }],
     up_next: [{ number: 5, title: 'Five' }], queued: [], needs: [], yours: [], agents: {},
@@ -1017,28 +1033,51 @@ if (scenario === 'start-no-slot') {
       }));
     }
     if (mode === 'gate') return new Promise((resolve) => gates.push(() => resolve(response(200, good))));
-    return Promise.resolve(response(200, good));
+    return Promise.resolve(response(200, { ...good, graph }));
   };
-  // The board's 30 s request timeout fires at once while a request hangs.
+  // The board's 30 s request timeout fires at once while a request hangs. Every delay asked for is recorded. The
+  // board's 15 s retry is held here instead of scheduled, so a test fires it (or finds it cancelled) on demand.
   const realSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, mode === 'hang' && ms === 30000 ? 0 : ms, ...rest);
+  const realClearTimeout = globalThis.clearTimeout;
+  const delays = [];
+  const retries = [];
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    delays.push(ms);
+    if (ms === 15000) {
+      const retry = { fn, live: true };
+      retries.push(retry);
+      return retry;
+    }
+    return realSetTimeout(fn, mode === 'hang' && ms === 30000 ? 0 : ms, ...rest);
+  };
+  globalThis.clearTimeout = (handle) => {
+    if (handle && typeof handle === 'object' && 'live' in handle) handle.live = false;
+    else realClearTimeout(handle);
+  };
+  const pendingRetries = () => retries.filter((r) => r.live).length;
   const board = await work('board');
   const host = el('work-board');
   const error = el('work-board-error');
+  const line = el('work-board-status');
+  const stale = el('work-board-stale');
 
   await board.loadBoard();
   out.emptyHost = host.innerHTML;
   out.emptyError = error.textContent;
+  out.pendingRetriesAfterFirstFailure = pendingRetries();
 
   mode = 'hang';
   await board.loadBoard();
   out.timeoutError = error.textContent;
+  out.pendingRetriesAfterSecondFailure = pendingRetries();  // a failure while one is pending adds none
   mode = 'ok';
   const before = boardFetches;
   await board.loadBoard();
   out.nextLoadFetched = boardFetches - before;
+  out.pendingRetriesAfterSuccess = pendingRetries();
   out.loadedHost = host.innerHTML;
-  out.errorHiddenAfterLoad = error.hiddenClass;
+  out.errorHiddenAfterLoad = line.hiddenClass;
+  out.staleMarkerHiddenAfterLoad = stale.hiddenClass;
   out.loadError = error.textContent;
 
   mode = 'gate';
@@ -1058,6 +1097,40 @@ if (scenario === 'start-no-slot') {
   await board.loadBoard();
   out.keptHost = host.innerHTML;
   out.staleError = error.textContent;
+  out.lineShownAfterFailure = !line.hiddenClass;
+  out.staleMarkerAfterFailure = { hidden: stale.hiddenClass, text: stale.textContent };
+
+  // The retry reloads the board once when it fires, and a retry that fails arms the next one.
+  const retry = retries.find((r) => r.live);
+  const fetchesBeforeRetry = boardFetches;
+  retry.live = false;
+  retry.fn();
+  while (!retries.some((r) => r.live)) await tick();
+  out.retryFetched = boardFetches - fetchesBeforeRetry;
+  out.pendingRetriesAfterFailedRetry = pendingRetries();
+  mode = 'ok';
+  retries.find((r) => r.live).fn();  // a retry that fires after a success is harmless: it just reloads
+  await tick(); await tick();
+
+  // A ranking whose tracker refresh failed is named on the board, with its age.
+  mode = 'ok';
+  graph = { graph_age_seconds: 400, graph_refresh_failed: true };
+  await board.loadBoard();
+  out.graphNotice = error.textContent;
+  out.graphNoticeShown = !line.hiddenClass;
+  graph = { graph_age_seconds: 4, graph_refresh_failed: false };
+  await board.loadBoard();
+  out.freshGraphNotice = error.textContent;
+
+  // The marker is bookkeeping: one that throws or is missing must not turn a rendered board into a failure.
+  globalThis.markRefresh = () => { throw new Error('marker broke'); };
+  await board.loadBoard();
+  out.throwingMarkerError = error.textContent;
+  delete globalThis.markRefresh;
+  await board.loadBoard();
+  out.missingMarkerError = error.textContent;
+  out.missingMarkerHost = host.innerHTML;
+  out.delays = [...new Set(delays.filter((ms) => ms !== 0))].sort((a, b) => a - b);  // 0 is this harness's own tick()
 } else if (scenario === 'action-state') {
   // The real #1146 helper from app.js, section 6c.
   const start = appSrc.indexOf('var ACTION_SUCCESS_SHOW_MS');
@@ -1497,6 +1570,44 @@ class TestBoardRefreshUnderNode:
         assert out["coalescedFetches"] == 2, "three overlapping asks cost one extra fetch, not two"
         assert "#5" in out["keptHost"], "a failed refresh keeps the last good board on screen"
         assert out["staleError"] == "boom. Showing the last board loaded."
+
+    def test_a_failed_refresh_shows_the_age_of_the_board_and_only_then(self, tmp_path: Path) -> None:
+        """Criterion 13 of #1459: the real marker from app.js shows the age after a failure, never on a fresh board."""
+        out = _run_node(tmp_path, "board-refresh")
+
+        assert out["staleMarkerHiddenAfterLoad"] is True, "a freshly rendered board shows no age marker"
+        assert out["lineShownAfterFailure"] is True
+        assert out["staleMarkerAfterFailure"]["hidden"] is False
+        assert re.fullmatch(r"Updated .+ ago, retrying", out["staleMarkerAfterFailure"]["text"])
+
+    def test_a_failed_load_arms_one_retry_that_a_success_cancels(self, tmp_path: Path) -> None:
+        """The marker says "retrying", so a failed load is retried once, not left until the next change message."""
+        out = _run_node(tmp_path, "board-refresh")
+
+        assert out["pendingRetriesAfterFirstFailure"] == 1
+        assert out["pendingRetriesAfterSecondFailure"] == 1, "at most one retry is pending, however often loads fail"
+        assert out["pendingRetriesAfterSuccess"] == 0
+        assert out["retryFetched"] == 1, "the retry reloads the board once"
+        assert out["pendingRetriesAfterFailedRetry"] == 1, "a retry that fails arms the next one"
+
+    def test_the_only_timers_a_board_load_starts_are_its_request_timeout_and_the_retry(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "board-refresh")
+
+        assert out["delays"] == [15000, 30000]
+
+    def test_a_ranking_with_a_failed_refresh_is_named_with_its_age(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "board-refresh")
+
+        assert out["graphNotice"] == "The ranking is 6m 40s old: refreshing it from the tracker failed"
+        assert out["graphNoticeShown"] is True
+        assert out["freshGraphNotice"] == ""
+
+    def test_a_broken_age_marker_does_not_turn_a_rendered_board_into_a_failure(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "board-refresh")
+
+        assert out["throwingMarkerError"] == ""
+        assert out["missingMarkerError"] == ""
+        assert "#5" in out["missingMarkerHost"]
 
 
 class TestRunsWithNoCard:
