@@ -98,10 +98,10 @@ async def test_running_run(session: AsyncSession):
     assert status.pipeline_variant == "developer"
     assert status.current_step == "develop"
     assert status.step_index == 4  # develop is index 4 in developer pipeline
-    assert status.total_steps == 17
+    assert status.total_steps == 18
     assert status.completed_steps == ["sync", "assess", "create_worktree"]
-    # 3 completed out of 17 steps
-    assert abs(status.step_progress_pct - (3 / 17 * 100)) < 0.01
+    # 3 completed out of 18 steps
+    assert abs(status.step_progress_pct - (3 / 18 * 100)) < 0.01
     # Should have positive time in step (at least ~30 seconds)
     assert status.time_in_step_ms > 0
     assert status.time_in_step_known is True  # from the in-progress "develop" StepExecution
@@ -162,7 +162,7 @@ async def test_passed_status_counted_as_completed(session: AsyncSession):
     status = await _status_for(run.id)
     assert status is not None
     assert status.completed_steps == ["sync", "assess", "create_worktree"]
-    assert abs(status.step_progress_pct - (3 / 17 * 100)) < 0.01
+    assert abs(status.step_progress_pct - (3 / 18 * 100)) < 0.01
 
 
 @pytest.mark.asyncio
@@ -285,6 +285,7 @@ async def test_estimation_with_history(session: AsyncSession):
             ("wait_for_external_reviews", 30000),
             ("address_external_findings", 25000),
             ("monitor_ci", 120000),
+            ("address_sonarcloud_findings", 60000),
             ("confidence_score", 4000),
             ("extract_memory", 8000),
             ("handoff_to_reviewer", 2000),
@@ -338,10 +339,24 @@ async def test_estimation_with_history(session: AsyncSession):
     assert status is not None
     assert status.estimated_remaining_ms is not None
     assert status.estimated_remaining_ms > 0
-    # Remaining steps: capture_baseline through handoff_to_reviewer (14 steps)
-    # Expected: sum of averages = 640000
+    # Remaining steps: capture_baseline through handoff_to_reviewer (15 steps)
+    # Expected: sum of averages = 700000
     expected = (
-        1000 + 300000 + 60000 + 40000 + 10000 + 20000 + 5000 + 15000 + 30000 + 25000 + 120000 + 4000 + 8000 + 2000
+        1000
+        + 300000
+        + 60000
+        + 40000
+        + 10000
+        + 20000
+        + 5000
+        + 15000
+        + 30000
+        + 25000
+        + 120000
+        + 60000
+        + 4000
+        + 8000
+        + 2000
     )
     assert abs(status.estimated_remaining_ms - expected) < 1000
 
@@ -652,7 +667,7 @@ async def test_address_review_pipeline(session: AsyncSession):
     status = await _status_for(run.id)
     assert status is not None
     assert status.pipeline_variant == "address_review"
-    assert status.total_steps == 12
+    assert status.total_steps == 13
 
 
 @pytest.mark.asyncio

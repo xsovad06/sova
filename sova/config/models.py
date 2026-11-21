@@ -758,6 +758,7 @@ class PipelineDefinitions(BaseSettings):
             "wait_for_external_reviews",
             "address_external_findings",
             "monitor_ci",
+            "address_sonarcloud_findings",
             "confidence_score",
             "extract_memory",
             "handoff_to_reviewer",
@@ -774,6 +775,7 @@ class PipelineDefinitions(BaseSettings):
             "resolve_review_threads",
             "refresh_pr_body",
             "monitor_ci",
+            "address_sonarcloud_findings",
             "resolve_external_reviews",
             "extract_memory",
             "handoff_to_reviewer",
@@ -813,6 +815,11 @@ class ExternalReviewsConfig(BaseSettings):
     coderabbit: CodeRabbitConfig = Field(default_factory=CodeRabbitConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_EXTERNAL_REVIEWS_")
+
+    @property
+    def sonarcloud_configured(self) -> bool:
+        """True when this project has SonarCloud set up for SOVA to read: enabled, listed, and keyed."""
+        return self.enabled and "sonarcloud" in self.tools and bool(self.sonarcloud.project_key)
 
 
 class LdapConfig(BaseSettings):

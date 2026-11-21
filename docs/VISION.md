@@ -128,11 +128,11 @@ The wizard (CLI or UI) walks the user through these decisions:
 
 ## Agent Pipeline
 
-### Developer Pipeline (15 steps)
-Sync -> Assess -> CreateWorktree -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> WaitForExternalReviews -> AddressExternalFindings -> MonitorCI -> ExtractMemory -> HandoffToReviewer
+### Developer Pipeline (18 steps)
+Sync -> Assess -> CreateWorktree -> CaptureBaseline -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> WaitForExternalReviews -> AddressExternalFindings -> MonitorCI -> AddressSonarCloudFindings -> ConfidenceScore -> ExtractMemory -> HandoffToReviewer
 
-### Address-Review Pipeline (12 steps)
-EnsureWorktree -> Rebase -> AddressReview -> RearrangeCommits -> Validate -> Push -> ResolveReviewThreads -> RefreshPrBody -> MonitorCI -> ResolveExternalReviews -> ExtractMemory -> HandoffToReviewer
+### Address-Review Pipeline (13 steps)
+EnsureWorktree -> Rebase -> AddressReview -> RearrangeCommits -> Validate -> Push -> ResolveReviewThreads -> RefreshPrBody -> MonitorCI -> AddressSonarCloudFindings -> ResolveExternalReviews -> ExtractMemory -> HandoffToReviewer
 
 ### Role Chaining
 Developer -> Reviewer -> Developer runs autonomously via `HandoffAction.auto_execute`. The Developer writes a handoff to the Reviewer (auto-spawn), the Reviewer writes back to the Developer if findings exist (auto-spawn) or to the user if clean (manual "Integrate PR" button). Issues stay `IN_REVIEW` until the human merges.
