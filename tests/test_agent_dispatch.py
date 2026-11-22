@@ -798,6 +798,24 @@ class TestFailureDetailPrefersStdoutOverStderr:
                 await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
         assert "Warning: deprecated flag" not in str(excinfo.value)
 
+    async def test_decoded_agent_output_is_not_taken_for_the_failure(self, tmp_path: Path) -> None:
+        """A tool call naming "rate_limit" must not classify a crash with no result event as a rate limit."""
+
+        class _ChatterRuntime(_StubRuntime):
+            def parse_output(self, line: str) -> StreamEvent | None:
+                return StreamEvent(type="content", text=line, lines=[line])
+
+        _write_command(tmp_path, "develop", "Do the thing")
+        step = _ToolStep()
+        process = _StubProcess(stdout=["[Grep] rate_limit"], exit_code=1)
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=_ChatterRuntime(process)),
+            _stub_preflight(),
+        ):
+            with pytest.raises(LLMInvocationError, match="without a terminal result event") as excinfo:
+                await dispatch_command(step, "/develop", args="42", cwd=tmp_path)
+        assert type(excinfo.value) is LLMInvocationError
+
 
 class TestRuntimeBudgetCap:
     """Every step passes ``max_budget - ctx.cost_usd``, so a non-positive value
@@ -1334,6 +1352,43 @@ class TestOutputSinkFeedsContentEvents:
             await dispatch_command(step, "/develop", args="42", cwd=tmp_path, ctx=ctx)
 
         assert written == ["first line", "second line"]
+
+    async def test_a_multi_line_event_is_written_one_row_per_line(self, tmp_path: Path) -> None:
+        """An event carrying several display lines writes each as its own row, never the joined text."""
+
+        class _MultiLineRuntime(_StubRuntime):
+            def parse_output(self, line: str) -> StreamEvent | None:
+                if line == "__RESULT__":
+                    return super().parse_output(line)
+                return StreamEvent(type="content", text="a\nb", lines=["a", "b"])
+
+        _write_command(tmp_path, "develop", "Do the thing")
+        written: list[str] = []
+
+        class _FakeOutputWriter:
+            def write_line(self, text: str) -> None:
+                written.append(text)
+
+            def should_flush(self) -> bool:
+                return False
+
+        ctx = ExecutionContext(
+            project_dir=tmp_path,
+            config=ProjectConfig(),
+            adapter=AsyncMock(),
+            issue_number="1",
+            role="developer",
+            run_label="test",
+        )
+        ctx.output_writer = _FakeOutputWriter()  # type: ignore[assignment]
+        runtime = _MultiLineRuntime(_StubProcess(stdout=["event", "__RESULT__"]))
+        with (
+            patch("sova.core.agent_dispatch.get_runtime", return_value=runtime),
+            _stub_preflight(),
+        ):
+            await dispatch_command(_ToolStep(), "/develop", args="42", cwd=tmp_path, ctx=ctx)
+
+        assert written == ["a", "b"]
 
     async def test_no_ctx_means_no_output_writer_call_and_no_crash(self, tmp_path: Path) -> None:
         _write_command(tmp_path, "develop", "Do the thing")

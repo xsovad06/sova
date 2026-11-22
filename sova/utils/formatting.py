@@ -7,6 +7,13 @@ import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[ -/]+[0-~]|[@-Z\\-_])")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences (colors, cursor moves, OSC titles) from *text*."""
+    return _ANSI_ESCAPE_RE.sub("", text)
+
 
 def slugify(text: str, max_length: int = 50) -> str:
     """Convert text to a URL/branch-safe slug.
