@@ -696,10 +696,14 @@ async def _run_agent_process(
                 # otherwise silently drop every earlier turn's spend.
                 result = accumulate_llm_result(result, event.result)
                 continue
-            if event.text and len(stdout_lines) < _STDOUT_FAILURE_BUFFER_MAX_LINES:
+            # A decoded agent event (``event.lines``: its text and tool calls) is the agent's own
+            # output, not the CLI's error, and classify_error() would read a word in it ("rate_limit",
+            # "is not available") as the failure's category.
+            if event.text and not event.lines and len(stdout_lines) < _STDOUT_FAILURE_BUFFER_MAX_LINES:
                 stdout_lines.append(event.text)
             if event.type == "content" and event.text and ctx is not None and ctx.output_writer is not None:
-                ctx.output_writer.write_line(event.text)
+                for text in event.lines or [event.text]:
+                    ctx.output_writer.write_line(text)
                 if ctx.output_writer.should_flush():
                     await ctx.output_writer.flush()
 
@@ -785,7 +789,7 @@ async def _run_agent_process(
         # (sova/llm/providers/claude_code.py:_extract_failure_detail()): the
         # CLI writes its real error to stdout, while stderr often carries
         # only an incidental warning. "\n".join(stdout_lines) covers content
-        # events parse_line() already decoded as text; extract_claude_cli_failure_detail()
+        # events other than the agent's own decoded output (see _drain_stdout()); extract_claude_cli_failure_detail()
         # additionally tries to parse that joined text as a structured JSON
         # payload the way the provider's own stdout fallback does.
         stdout_text = "\n".join(stdout_lines).strip()

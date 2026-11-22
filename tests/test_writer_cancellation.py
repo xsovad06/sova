@@ -138,8 +138,241 @@ async def test_output_writer_rebuffers_when_insert_itself_is_cancelled(
     with pytest.raises(asyncio.CancelledError):
         await writer.flush()
 
-    assert writer._buffer == ["keep-me"]
-    assert writer._next_line_number == 0
+    assert [text for text, _ in writer._buffer] == ["keep-me"]
+
+
+@pytest.mark.asyncio
+async def test_output_writer_timed_flush_rearms_after_its_insert_is_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed flush whose insert alone was cancelled keeps the lines and schedules the next attempt.
+
+    Without the re-arm the batch would sit in the buffer until the next write_line(), flush() or close().
+    """
+    project = await _make_project(tmp_path, "timer-rearm")
+    writer = OutputWriter(project, 1, flush_interval=0.01)
+    real_insert = writer._insert
+    attempts = 0
+
+    async def _cancel_first(records: list) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise asyncio.CancelledError
+        await real_insert(records)
+
+    monkeypatch.setattr(writer, "_insert", _cancel_first)
+    writer.write_line("retry-me")
+    for _ in range(200):
+        if attempts >= 2 and not writer._buffer:
+            break
+        await asyncio.sleep(0.01)
+
+    assert attempts >= 2, "the timer was not re-armed after the insert was cancelled"
+    assert _row_count(project, "output_lines") == 1
+    await writer.close()
+
+
+@pytest.mark.asyncio
+async def test_output_writer_timed_flush_propagates_its_own_cancellation(tmp_path: Path) -> None:
+    """Cancelling the timed flush task itself still propagates instead of re-arming the timer."""
+    project = await _make_project(tmp_path, "timer-cancel")
+    writer = OutputWriter(project, 1, flush_interval=3600)
+    writer.write_line("line")
+    writer._timer_handle.cancel()
+    writer._timer_handle = None
+    task = asyncio.create_task(writer._timed_flush())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.wait(pending, timeout=10)
+    assert writer._timer_handle is None
+    await writer.close()
+
+
+@pytest.mark.asyncio
+async def test_output_writer_timed_flush_crash_does_not_stop_close_from_persisting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed flush that raises outside the insert is logged and re-armed, and close() still flushes."""
+    project = await _make_project(tmp_path, "timer-crash")
+    writer = OutputWriter(project, 1, flush_interval=0.01)
+    real_flush = writer._flush_locked
+    attempts = 0
+
+    async def _crash_first() -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("seeding blew up")
+        return await real_flush()
+
+    monkeypatch.setattr(writer, "_flush_locked", _crash_first)
+    writer.write_line("survives")
+    for _ in range(200):
+        if attempts >= 1:
+            break
+        await asyncio.sleep(0.01)
+    assert attempts >= 1
+    await asyncio.sleep(0.02)  # let the crashed task finish and its re-arm land
+    await writer.close()
+
+    assert writer._buffer == []
+    assert writer._timer_handle is None
+    assert _row_count(project, "output_lines") == 1
+
+
+@pytest.mark.asyncio
+async def test_output_writer_close_leaves_no_timer_when_a_line_arrives_during_a_timed_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write_line() during close()'s wait for the running timed flush cannot leave a new timer scheduled."""
+    project = await _make_project(tmp_path, "timer-close-race")
+    writer = OutputWriter(project, 1, flush_interval=0.01)
+    real_insert = writer._insert
+    in_flush = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_insert(records: list) -> None:
+        in_flush.set()
+        await release.wait()
+        await real_insert(records)
+
+    monkeypatch.setattr(writer, "_insert", _slow_insert)
+    writer.write_line("first")
+    await asyncio.wait_for(in_flush.wait(), timeout=5)
+    closing = asyncio.create_task(writer.close())
+    await asyncio.sleep(0.01)
+    writer.write_line("during close")  # close() is waiting on the timed flush
+    release.set()
+    await closing
+
+    assert writer._timer_handle is None
+    assert _row_count(project, "output_lines") == 2
+
+
+@pytest.mark.asyncio
+async def test_output_writer_timer_backs_off_while_flushes_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consecutive failed timed flushes lengthen the retry delay, and a success resets it."""
+    project = await _make_project(tmp_path, "timer-backoff")
+    writer = OutputWriter(project, 1, flush_interval=5.0)
+    delays: list[float] = []
+    loop = asyncio.get_running_loop()
+    real_call_later = loop.call_later
+
+    def _record(delay: float, callback, *args):
+        delays.append(delay)
+        return real_call_later(3600, callback, *args)
+
+    monkeypatch.setattr(loop, "call_later", _record)
+    writer.write_line("a")
+    writer._timer_handle.cancel()
+    writer._timer_handle = None
+    writer._failed_flushes = 2
+    writer._ensure_timer()
+    assert delays[-1] == 20.0
+    writer._timer_handle.cancel()
+    writer._timer_handle = None
+    writer._failed_flushes = 20
+    writer._ensure_timer()
+    assert delays[-1] == 60.0
+    writer._timer_handle.cancel()
+    writer._timer_handle = None
+    await writer.close()
+
+
+@pytest.mark.asyncio
+async def test_output_writer_two_writers_on_one_run_store_unique_contiguous_line_numbers(tmp_path: Path) -> None:
+    """The engine and the dashboard both persist a pipeline run's output; their flushes must not collide."""
+    project = await _make_project(tmp_path, "two-writers")
+    engine_writer = OutputWriter(project, 1)
+    dashboard_writer = OutputWriter(project, 1)
+    for round_no in range(4):
+        engine_writer.write_line(f"engine {round_no} a")
+        engine_writer.write_line(f"engine {round_no} b")
+        dashboard_writer.write_line(f"dashboard {round_no}")
+        # Alternate, and flush concurrently on odd rounds: both read the stored maximum at the same moment.
+        if round_no % 2:
+            await asyncio.gather(engine_writer.flush(), dashboard_writer.flush())
+        else:
+            await engine_writer.flush()
+            await dashboard_writer.flush()
+    await engine_writer.close()
+    await dashboard_writer.close()
+
+    conn = sqlite3.connect(str(project / ".claude" / "sova.db"))
+    try:
+        rows = conn.execute("SELECT line_number, text FROM output_lines WHERE task_run_id = 1").fetchall()
+    finally:
+        conn.close()
+    assert sorted(n for n, _ in rows) == list(range(12))
+    assert len({text for _, text in rows}) == 12
+
+
+@pytest.mark.asyncio
+async def test_output_writer_explicit_flush_success_resets_the_backoff(tmp_path: Path) -> None:
+    """A successful flush from any caller (not only the timer) ends the failure streak."""
+    project = await _make_project(tmp_path, "backoff-reset")
+    writer = OutputWriter(project, 1)
+    writer._failed_flushes = 3
+    writer.write_line("a")
+    assert await writer.flush() is True
+    assert writer._failed_flushes == 0
+    with patch.object(writer, "_insert", side_effect=RuntimeError("db down")):
+        writer.write_line("b")
+        assert await writer.flush() is False
+        assert await writer.flush() is False
+    assert writer._failed_flushes == 2
+    await writer.close()
+
+
+@pytest.mark.asyncio
+async def test_output_writer_close_persists_every_accepted_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader still writing while close() flushes cannot leave an accepted line behind in the buffer."""
+    project = await _make_project(tmp_path, "close-race")
+    writer = OutputWriter(project, 1)
+    real_insert = writer._insert
+
+    async def _insert_while_reader_writes(records: list) -> None:
+        writer.write_line("written during the final flush")
+        await real_insert(records)
+
+    monkeypatch.setattr(writer, "_insert", _insert_while_reader_writes)
+    writer.write_line("before close")
+    await writer.close()
+
+    assert writer._buffer == []
+    assert writer._timer_handle is None
+    assert _row_count(project, "output_lines") == 1
+
+
+@pytest.mark.asyncio
+async def test_output_writer_close_stops_after_a_failed_final_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A final flush that fails keeps its lines once and returns, rather than retrying in a tight loop."""
+    project = await _make_project(tmp_path, "close-fail")
+    writer = OutputWriter(project, 1)
+    attempts = 0
+
+    async def _fail(_records: list) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(writer, "_insert", _fail)
+    writer.write_line("kept")
+    await writer.close()
+
+    assert attempts == 1
+    assert [text for text, _ in writer._buffer] == ["kept"]
 
 
 @pytest.mark.asyncio
@@ -151,14 +384,14 @@ async def test_output_writer_detached_insert_failure_is_observed_and_rebuffered(
     When task.cancelling() > 0 the shielded insert keeps running independently
     of the cancelled flush() call. If that detached insert later raises,
     nothing else is awaiting it; the done-callback must observe the failure
-    and re-queue the batch instead of losing it. It must not rewind
-    _next_line_number: a later flush() can already have committed records on
-    top of the reserved range, and reusing those numbers would collide.
+    and re-queue the batch instead of losing it. Line numbers are allocated
+    inside the insert transaction, so the retry lands on the next free number:
+    the failed batch left no gap.
     """
     project = await _make_project(tmp_path, "detached-failure")
     writer = OutputWriter(project, 1, flush_threshold=1)
     writer.write_line("keep-me-too")
-    writer._next_line_number = 1  # skip the DB-seeding await so flush() reaches the shield synchronously
+    real_insert = writer._insert
 
     insert_failed = asyncio.Event()
 
@@ -178,10 +411,24 @@ async def test_output_writer_detached_insert_failure_is_observed_and_rebuffered(
     await asyncio.wait_for(insert_failed.wait(), timeout=5)
     await asyncio.sleep(0)  # let the done-callback run
 
-    assert writer._buffer == ["keep-me-too"]
-    # Line number is NOT rewound: flush() already advanced it past this batch
-    # before the shield, and the callback must not hand it back out.
-    assert writer._next_line_number == 2
+    assert [text for text, _ in writer._buffer] == ["keep-me-too"]
+
+    # The retry takes the first free number: the failed batch stored nothing, so there is no hole.
+    monkeypatch.setattr(writer, "_insert", real_insert)
+    await writer.flush()
+    from sova.core.output import read_lines
+
+    lines, total = await read_lines(project, 1)
+    assert (lines, total) == (["keep-me-too"], 1)
+    async with await get_session(project_dir=project) as session:
+        from sqlalchemy import select
+
+        from sova.db.models import OutputLine
+
+        numbers = list(
+            (await session.execute(select(OutputLine.line_number).where(OutputLine.task_run_id == 1))).scalars()
+        )
+    assert sorted(numbers) == list(range(len(numbers))) == [0]
 
 
 @pytest.mark.asyncio
@@ -190,15 +437,12 @@ async def test_output_writer_detached_failure_does_not_reuse_committed_line_numb
 ) -> None:
     """A retried batch must never collide with line numbers a later flush already committed.
 
-    Sequence: flush() #1 reserves line 0, is cancelled, and its detached insert
-    keeps running. Before it fails, flush() #2 runs normally and commits line 1.
-    Only then does flush() #1's detached insert fail. The re-buffered line from
-    flush() #1 must get a fresh line number (2), not reuse line 0 or collide
-    with the already-committed line 1.
+    Sequence: flush() #1 is cancelled and its detached insert keeps running. Before it fails,
+    flush() #2 runs normally and commits line 0. Only then does flush() #1's detached insert fail.
+    The re-buffered line must take the next free number (1): no collision, no gap.
     """
     project = await _make_project(tmp_path, "no-line-reuse")
     writer = OutputWriter(project, 1, flush_threshold=1)
-    writer._next_line_number = 0  # skip the DB-seeding await
 
     first_insert_started = asyncio.Event()
     release_first_insert = asyncio.Event()
@@ -221,23 +465,51 @@ async def test_output_writer_detached_failure_does_not_reuse_committed_line_numb
     monkeypatch.setattr(writer, "_insert", real_insert)
     writer.write_line("second")
     await writer.flush()
-    assert writer._next_line_number == 2
 
     # Now let the first (detached) insert fail and re-buffer its line.
     release_first_insert.set()
     await asyncio.sleep(0.01)
 
-    assert writer._buffer == ["first"]
-    assert writer._next_line_number == 2  # unchanged: must not reuse line 0 or 1
+    assert [text for text, _ in writer._buffer] == ["first"]
 
-    await writer.flush()  # retry: must land on line 2, not collide with "second"'s line 1
+    await writer.flush()  # retry: must land on line 1, right after "second" (line 0), with no gap or collision
     await writer.close()
 
     from sova.core.output import read_lines
 
     lines, total = await read_lines(project, 1)
     assert total == 2
-    assert lines == ["second", "first"]  # "first" retried after "second" already committed line 1
+    assert lines == ["second", "first"]  # "first" retried after "second" already committed line 0
+
+
+@pytest.mark.asyncio
+async def test_output_writer_cancelled_close_keeps_the_timer_armable(tmp_path: Path) -> None:
+    """A close() cancelled while it waits for a running timed flush leaves the writer open and still timed."""
+    project = await _make_project(tmp_path, "close-cancel")
+    writer = OutputWriter(project, 1, flush_interval=0.01)
+    flush_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_flush() -> bool:
+        flush_started.set()
+        await release.wait()
+        return True
+
+    with patch.object(writer, "flush", _slow_flush):
+        writer.write_line("a")
+        await asyncio.wait_for(flush_started.wait(), timeout=5)
+        closer = asyncio.create_task(writer.close())
+        await asyncio.sleep(0.01)
+        closer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closer
+        release.set()
+        await asyncio.sleep(0.01)
+
+    assert not writer._closed
+    writer.write_line("b")
+    assert writer._timer_handle is not None
+    await writer.close()
 
 
 @pytest.mark.asyncio
