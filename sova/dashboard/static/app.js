@@ -457,11 +457,42 @@ function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSe
 
 var _elapsedTickerStarted = false;
 
+/* A timer that counts up from elapsedSeconds ago. */
 function liveElapsed(elapsedSeconds) {
   if (elapsedSeconds == null) return formatElapsed(0);
   startElapsedTicker();
   var startTs = Date.now() - (elapsedSeconds * 1000);
   return '<span class="sova-status-elapsed" data-start="' + startTs + '">' + formatElapsed(elapsedSeconds) + '</span>';
+}
+
+/* How long a running agent has been in its current step and since its last output line, from a status_update
+   run, as ticking timers (empty when the run is unknown). Only the facts are shown, with no judgment of them: a
+   develop step routinely runs for twenty minutes, and a single long command can print nothing for minutes. Time in
+   step shows only when it is a real step time (time_in_step_known); the last-output segment is omitted until the run
+   has a stored output line. */
+function runActivityHtml(run) {
+  if (!run) return '';
+  var parts = [];
+  if (run.time_in_step_known && run.time_in_step_ms != null) {
+    parts.push('<span>' + liveElapsed(Math.round(run.time_in_step_ms / 1000)) + ' in step</span>');
+  }
+  if (run.last_output_age_seconds != null) {
+    parts.push('<span>last output ' + liveElapsed(run.last_output_age_seconds) + ' ago</span>');
+  }
+  return parts.join('<span class="text-gray-600 mx-1">·</span>');
+}
+
+/* A pushed status_update run with its time in step and last output age advanced by the time since receivedAt (a
+   Date.now() value), so a redraw or a fallback reload between pushes keeps the timers running instead of restarting
+   them from the pushed values. Returns run itself when nothing has elapsed or run is unknown. */
+function advanceRunStatus(run, receivedAt) {
+  if (!run) return run;
+  var elapsedMs = Date.now() - (receivedAt || Date.now());
+  if (elapsedMs <= 0) return run;
+  var advanced = Object.assign({}, run);
+  if (advanced.time_in_step_ms != null) advanced.time_in_step_ms += elapsedMs;
+  if (advanced.last_output_age_seconds != null) advanced.last_output_age_seconds += Math.round(elapsedMs / 1000);
+  return advanced;
 }
 
 /* Shared 1s tick that keeps every .sova-status-elapsed timer on the page current. liveElapsed() starts it, so every

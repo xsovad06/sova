@@ -142,6 +142,10 @@ var _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
 var _runStatusChannel = null;
 // The status the last full render or the last push carried, so a push only costs a refetch when it moved.
 var _pushedStatus = null;
+// The latest status_update run for this page and when it arrived, so a full re-render between pushes seeds the
+// activity slot from it (advanced by the time since) instead of leaving it blank until the next push.
+var _lastPushedRun = null;
+var _lastPushedAt = 0;
 var _pushedStep = null;
 // A push lists only non-terminal runs, so this run's absence means "finished" only after it was listed once.
 var _runSeenInPush = false;
@@ -267,6 +271,8 @@ function _renderRunInfo(run, livePatch) {
   infoEl._infoKey = key;
   var durationEl = infoEl.querySelector('[data-field="duration"]');
   var duration = livePatch && durationEl ? durationEl.innerHTML : escapeHtml(run.duration_formatted || '');
+  var activityEl = infoEl.querySelector('[data-field="activity"]');
+  var activity = livePatch && activityEl ? activityEl.innerHTML : runActivityHtml(advanceRunStatus(_lastPushedRun, _lastPushedAt));
   var infoParts = [];
   if (run.branch_name) infoParts.push('Branch: <span class="text-gray-300">' + escapeHtml(run.branch_name) + '</span>');
   if (run.pr_number) infoParts.push('PR: ' + prLink(run.pr_number));
@@ -274,6 +280,8 @@ function _renderRunInfo(run, livePatch) {
   if (duration || _isLive(run.status)) {
     infoParts.push('Duration: <span class="text-gray-300" data-field="duration">' + duration + '</span>');
   }
+  // Time in step and last output, filled by _handleRunStatusMessage() from each push while the run is live.
+  if (_isLive(run.status)) infoParts.push('<span data-field="activity">' + activity + '</span>');
   if (infoParts.length > 0) {
     infoEl.classList.remove('hidden');
     infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
@@ -509,9 +517,13 @@ function _handleRunStatusMessage(msg) {
     return;
   }
   _runSeenInPush = true;
+  _lastPushedRun = run;
+  _lastPushedAt = Date.now();
   document.getElementById('detail-cost').textContent = '$' + parseFloat(run.cost_usd || 0).toFixed(4);
   var durationEl = document.querySelector('#run-info [data-field="duration"]');
   if (durationEl) durationEl.innerHTML = run.elapsed_seconds != null ? liveElapsed(run.elapsed_seconds) : '';
+  var activityEl = document.querySelector('#run-info [data-field="activity"]');
+  if (activityEl) activityEl.innerHTML = runActivityHtml(run);
   if ((run.status !== _pushedStatus || run.current_step !== _pushedStep) && !_runRefreshBackoff()) {
     _pushedStatus = run.status;
     _pushedStep = run.current_step;

@@ -691,6 +691,51 @@ async def test_no_steps_yet(session: AsyncSession):
     assert status.time_in_step_known is False  # fallback is not a genuine in-step measurement
 
 
+@pytest.mark.asyncio
+async def test_last_output_age_is_from_the_newest_stored_line(session: AsyncSession):
+    """Each run's age comes from its own newest output line; a run with none reports None."""
+    from sova.db.models import OutputLine
+
+    # The current time, not the module's NOW: on a slow runner this test can start a minute after import.
+    now = datetime.now(timezone.utc)
+    quiet = TaskRun(issue_number="61", role="developer", status="running", started_at=now - timedelta(minutes=30))
+    silent = TaskRun(issue_number="62", role="developer", status="running", started_at=now - timedelta(minutes=1))
+    session.add_all([quiet, silent])
+    await session.flush()
+    session.add_all(
+        [
+            OutputLine(task_run_id=quiet.id, line_number=1, text="first", created_at=now - timedelta(minutes=25)),
+            OutputLine(task_run_id=quiet.id, line_number=2, text="second", created_at=now - timedelta(minutes=20)),
+            # Stored last (the highest line number), so it is the one the age comes from.
+            OutputLine(task_run_id=quiet.id, line_number=3, text="newest", created_at=now - timedelta(minutes=12)),
+        ]
+    )
+    await session.commit()
+
+    quiet_status = await _status_for(quiet.id)
+    silent_status = await _status_for(silent.id)
+    assert quiet_status is not None
+    assert silent_status is not None
+    assert 12 * 60 <= quiet_status.last_output_age_seconds < 12 * 60 + 30
+    assert silent_status.last_output_age_seconds is None
+
+
+@pytest.mark.asyncio
+async def test_newest_output_query_is_index_backed(session: AsyncSession):
+    """The per-push lookup probes ix_output_lines_run_lineno instead of scanning a run's stored lines."""
+    from sqlalchemy import text
+
+    from sova.dashboard.services.agent_status import _newest_output_time_stmt
+
+    compiled = _newest_output_time_stmt([1, 2]).compile(
+        dialect=session.get_bind().dialect, compile_kwargs={"literal_binds": True}
+    )
+    rows = (await session.execute(text(f"EXPLAIN QUERY PLAN {compiled}"))).all()
+    plan = " ".join(str(row[-1]) for row in rows)
+    assert "ix_output_lines_run_lineno" in plan
+    assert "SCAN output_lines" not in plan
+
+
 # REST-parity fields (issue #1051) --------------------------------------
 #
 # AgentStatus must be a strict superset of a single agent dict from
@@ -1309,6 +1354,7 @@ def test_format_status_update():
             "completed_steps": [],
             "error_message": None,
             "output_lines": 0,
+            "last_output_age_seconds": None,
             "cpu_percent": None,
             "memory_rss_bytes": None,
             "source": "dashboard",

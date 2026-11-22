@@ -994,6 +994,18 @@ if (scenario === 'start-no-slot') {
   sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'validate' }] });
   await tick(); await tick();
   out.afterStepChange = boardFetches();
+  // A running card's activity slot is patched in place from each push, with no board reload.
+  globalThis.advanceRunStatus = (run) => run;
+  globalThis.runActivityHtml = (run) => (run ? 'last output ' + run.last_output_age_seconds : 'none');
+  const slot = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '1' : null) };
+  const gone = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '9' : null) };
+  document.querySelectorAll = (sel) => (sel === '[data-run-activity]' ? [slot, gone] : []);
+  sub.onMessage({ type: 'status_update', runs: [
+    { run_id: 1, status: 'running', current_step: 'validate', last_output_age_seconds: 42 }] });
+  await tick(); await tick();
+  out.activity = slot.innerHTML;
+  out.finishedActivity = gone.innerHTML;
+  out.afterActivity = boardFetches();
   out.timers = timers;
   out.fallbackIsTheHubs = typeof sub.onFallbackPoll === 'function';
 } else if (scenario === 'board-refresh') {
@@ -1552,6 +1564,9 @@ class TestBoardRefreshUnderNode:
         assert out["afterFeed"] == 2, "an unrelated message does not"
         assert out["afterSameRuns"] == 2, "an unchanged set of runs does not"
         assert out["afterStepChange"] == 3, "a run moving to a new step does"
+        assert out["activity"] == "last output 42", "each push patches the running card's last output"
+        assert out["finishedActivity"] == "none", "a run the push no longer lists shows nothing"
+        assert out["afterActivity"] == 3, "and does not reload the board"
         assert out["timers"] == []
         assert out["fallbackIsTheHubs"] is True
 
