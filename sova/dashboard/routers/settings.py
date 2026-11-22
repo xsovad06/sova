@@ -22,6 +22,7 @@ from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.settings_service import (
     apply_config_update,
     config_value_to_str,
+    reload_key,
     reload_pinned,
 )
 from sova.dashboard.settings_meta import get_meta
@@ -275,7 +276,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
         raise HTTPException(status_code=422, detail=result["error"])
     _raise_for_write_error(result)
     if result.get("status") == "ok":
-        await apply_config_update(project_dir, settings_service.reload_key(req.key), result)
+        await apply_config_update(project_dir, reload_key(req.key), result)
     return result
 
 
@@ -300,7 +301,7 @@ async def reset_config(req: ConfigResetRequest) -> dict:
     result = await settings_service.reset_config(project_dir, key=req.key)
     _raise_for_write_error(result)
     # One route (``llm.routing.<step>``) reloads what the whole table does, as the Models view's step clear does.
-    setting = settings_service.reload_key(req.key)
+    setting = reload_key(req.key)
     if get_meta(setting) is not None:
         await apply_config_update(project_dir, setting, result)
     return result
