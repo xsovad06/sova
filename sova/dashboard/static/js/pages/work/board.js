@@ -11,9 +11,10 @@ import { clearSelection, getSelected, onSelectionChange, relationChip, relationC
 // called, its color and where it shows all come from the server (work_state.py, work_board_service.py).
 //
 // Refreshes come from the shared socket only (#1459): work_items_changed, agent_finished and
-// graph_invalidated reload the board, a status_update whose set of runs changed reloads it, actions_changed
-// reloads the per-card action states, and the hub's own fallback runs while the socket is down. The only timer
-// this module starts is the one-shot retry after a failed load (below).
+// graph_invalidated reload the board, a status_update whose set of runs changed reloads it (and every one patches
+// the running cards' time in step and last output in place), actions_changed reloads the per-card action states,
+// and the hub's own fallback runs while the socket is down. The only timer this module starts is the one-shot
+// retry after a failed load (below).
 
 var _board = null;
 var _boardOwner = null;
@@ -489,7 +490,8 @@ export function cardParts(entry, stage) {
     body = (pct != null ? '<div class="h-1 rounded bg-surface-hover overflow-hidden"><div class="h-full bg-accent-yellow" style="width:' + pct + '%"></div></div>' : '') +
       _sub([stepText ? _span(stepText) : '']) + _prStrip(entry) +
       _sub([entry.elapsed_seconds != null ? '<span>' + liveElapsed(entry.elapsed_seconds) + ' running</span>' : '',
-        entry.cost_usd != null ? _span('$' + parseFloat(entry.cost_usd || 0).toFixed(2) + ' so far') : '']);
+        entry.cost_usd != null ? _span('$' + parseFloat(entry.cost_usd || 0).toFixed(2) + ' so far') : '']) +
+      _runActivity(entry.run_id);
     if (entry.run_id) {
       if (entry.role !== 'supervisor:rebase') {
         buttons = _btn('', 'Stop', 'work-stop', [entry.run_id, n, entry.pr_number || null], Object.assign({ icon: 'stop' }, off));
@@ -643,6 +645,7 @@ function _otherRunCard(run) {
     (run.run_label ? '<div class="text-sm text-gray-200 line-clamp-2">' + escapeHtml(run.run_label) + '</div>' : '') +
     _contributors(run) +
     _sub([run.step_name ? _span(_humanStep(run.step_name)) : '']) +
+    _runActivity(run.run_id) +
     actionStatusHtml(key) +
     '<div class="flex flex-wrap items-center gap-0.5">' +
       (run.role === 'supervisor:rebase' ? '' :
@@ -803,6 +806,29 @@ export function setOwnerFilter(value) {
 
 // The runs a status_update reports, as one string: a run starting, ending or changing status changes it.
 var _runSignature = null;
+// The latest status_update run per run id, for the running cards' time in step and last output.
+var _runStatus = {};
+// When each _runStatus entry was received, so a redraw between pushes can advance its durations.
+var _runStatusAt = {};
+
+// The cached status with both durations advanced by the time since it was received (advanceRunStatus, app.js).
+function _advancedRun(runId) {
+  return advanceRunStatus(_runStatus[runId], _runStatusAt[runId]);
+}
+
+// A running card's time in step and last output line, filled from the latest status_update and patched in place by
+// every later one (_patchRunActivity), so the 2 s push never redraws the board. Empty until the first push.
+function _runActivity(runId) {
+  if (!runId) return '';
+  return '<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-400" data-run-activity="' +
+    escapeHtml(String(runId)) + '">' + runActivityHtml(_advancedRun(runId)) + '</div>';
+}
+
+function _patchRunActivity() {
+  document.querySelectorAll('[data-run-activity]').forEach(function(el) {
+    el.innerHTML = runActivityHtml(_advancedRun(el.getAttribute('data-run-activity')));
+  });
+}
 
 function _handleMessage(msg) {
   if (msg.type === 'work_items_changed' || msg.type === 'agent_finished' || msg.type === 'graph_invalidated') {
@@ -817,6 +843,11 @@ function _handleMessage(msg) {
     var signature = msg.runs.map(function(r) { return r.run_id + ':' + r.status + ':' + (r.current_step || ''); }).sort().join(',');
     if (_runSignature !== null && signature !== _runSignature) loadBoard();
     _runSignature = signature;
+    _runStatus = {};
+    _runStatusAt = {};
+    var receivedAt = Date.now();
+    msg.runs.forEach(function(r) { _runStatus[r.run_id] = r; _runStatusAt[r.run_id] = receivedAt; });
+    _patchRunActivity();
   }
 }
 

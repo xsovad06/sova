@@ -114,7 +114,7 @@ With `owner=mine`, Up next filters before the five-card limit; each entry's `min
 
 | `type` | Body | Sent |
 |--------|------|------|
-| `status_update` | `runs: [...]` | every 2 s |
+| `status_update` | `runs: [...]`, one `AgentStatus` per active run, including `time_in_step_ms` with `time_in_step_known` and `last_output_age_seconds` (seconds since the created_at of the run's highest-numbered stored output line, read with one `ix_output_lines_run_lineno` index probe per active run rather than a scan of its lines, `null` before the first); the Work page's running cards and `run_detail.html` show both through `runActivityHtml()` (`app.js`), as plain facts with no quiet or stuck styling and no last-output segment while it is `null`, patch them from each message, and re-seed them after a full render from the cached push advanced by `advanceRunStatus()` | every 2 s |
 | `status_unavailable` | none | the status fetch failed; the socket is up but proves nothing is fresh |
 | `agent_finished`, `graph_invalidated` | per `broadcast_event()` | on the event |
 | `feed` | `event`: a feed event as `FeedEvent.to_dict()` | each event the process emits, in order (process-wide: a feed event carries no project, so every project's sockets receive every event, as with `/feed/stream`) |

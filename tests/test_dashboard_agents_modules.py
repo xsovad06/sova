@@ -2216,12 +2216,13 @@ let _RUN_ID = 7, _runSeenInPush = false, _pushedStatus = 'running', _pushedStep 
 let _runUnavailableStreak = 0, _runUnavailableToasted = false;
 const _RUN_UNAVAILABLE_THRESHOLD = 3;
 const showToast = () => {{}};
-const els = {{ cost: {{ textContent: '' }}, duration: {{ innerHTML: 'x' }} }};
+const els = {{ cost: {{ textContent: '' }}, duration: {{ innerHTML: 'x' }}, activity: {{ innerHTML: '' }} }};
 globalThis.document = {{
   getElementById: () => els.cost,
-  querySelector: () => els.duration,
+  querySelector: (sel) => (sel.includes('activity') ? els.activity : els.duration),
 }};
 const liveElapsed = (s) => 'live:' + s;
+const runActivityHtml = (run) => 'quiet:' + run.last_output_age_seconds;
 const _refreshRun = () => {{ refreshes++; }};
 const _runRefreshBackoff = () => false;
 {handler}
@@ -2234,6 +2235,7 @@ push([mine()]);
 const unchanged = refreshes;
 const duration = els.duration.innerHTML;
 const cost = els.cost.textContent;
+const activity = els.activity.innerHTML;
 push([mine({{ current_step: 'validate' }})]);
 const stepMoved = refreshes;
 push([mine({{ current_step: 'validate', elapsed_seconds: null }})]);
@@ -2250,7 +2252,8 @@ _handleRunStatusMessage({{ type: 'agent_finished', run_id: '7', status: 'done' }
 const stringIdFinished = refreshes;
 push([mine({{ run_id: '7', current_step: 'assess' }})]);
 const stringIdPush = refreshes;
-console.log(JSON.stringify({{ stringIdFinished, stringIdPush, absentFirst, unchanged, duration, cost, stepMoved,
+console.log(JSON.stringify({{ stringIdFinished, stringIdPush, absentFirst, unchanged, duration, cost, activity,
+  stepMoved,
   nullElapsed, absentAfterSeen,
   absentAgain, otherFinished, mineFinished }}));
 """
@@ -2261,6 +2264,7 @@ console.log(JSON.stringify({{ stringIdFinished, stringIdPush, absentFirst, uncha
             "unchanged": 0,
             "duration": "live:60",
             "cost": "$1.5000",
+            "activity": "quiet:undefined",
             "stepMoved": 1,
             "nullElapsed": "",
             "absentAfterSeen": 2,
@@ -2344,6 +2348,9 @@ console.log(JSON.stringify({{ toasts, reloads, refreshes }}));
 const _isLive = (s) => s === 'running';
 const escapeHtml = (s) => String(s);
 const prLink = (n) => '<a>#' + n + '</a>';
+let _lastPushedRun = null, _lastPushedAt = 0;
+const advanceRunStatus = (r) => r;
+const runActivityHtml = (r) => (r ? 'act:' + r.last_output_age_seconds : '');
 const info = {{
   innerHTML: '', hidden: false, classList: {{ remove() {{ info.hidden = false; }}, add() {{ info.hidden = true; }} }},
   querySelector() {{
@@ -2358,6 +2365,11 @@ const _renderInfoEmpty = () => _renderRunInfo({{ status: 'interrupted', branch_n
 const run = {{ status: 'running', branch_name: 'feat/x', pr_number: null, duration_formatted: '' }};
 _renderRunInfo(run, false);
 const initial = info.innerHTML;
+_lastPushedRun = {{ last_output_age_seconds: 5 }};
+_renderRunInfo(run, false);
+const seeded = info.innerHTML;
+_lastPushedRun = null;
+_renderRunInfo(run, false);
 info.innerHTML = info.innerHTML.replace('data-field="duration">', 'data-field="duration">3m');
 const ticked = info.innerHTML;
 _renderRunInfo(run, true);
@@ -2367,10 +2379,13 @@ const withPr = info.innerHTML;
 _renderRunInfo({{ status: 'done', branch_name: 'feat/x', pr_number: 42, duration_formatted: '9m' }}, false);
 const final = info.innerHTML;
 _renderInfoEmpty();
-console.log(JSON.stringify({{ initial, unchanged, withPr, final, emptied: info.innerHTML, hidden: info.hidden }}));
+console.log(JSON.stringify({{ initial, seeded, unchanged, withPr, final,
+  emptied: info.innerHTML, hidden: info.hidden }}));
 """
         out = self._run_node(script)
         assert "PR:" not in out["initial"]
+        assert 'data-field="activity"></span>' in out["initial"]
+        assert 'data-field="activity">act:5</span>' in out["seeded"], "a full render seeds the slot from the last push"
         assert out["unchanged"] is True
         assert "PR: <a>#42</a>" in out["withPr"]
         assert 'data-field="duration">3m<' in out["withPr"], "a live patch keeps the duration the push ticked in"
@@ -2532,6 +2547,9 @@ let _runQueuedForce = false, _waitingChecking = false;
 const _WAITING = ['paused', 'awaiting_approval'];
 let _pushedStatus = null, _pushedStep = null, _runRenderSeq = 0, _runRefreshFailures = 0, _runRefreshRetryAt = 0;
 let _RUN_ID = 7;
+let _lastPushedRun = null, _lastPushedAt = 0;
+const advanceRunStatus = (r) => r;
+const runActivityHtml = () => '';
 let _runUnavailableStreak = 0, _runUnavailableToasted = false;
 const _RUN_UNAVAILABLE_THRESHOLD = 3;
 const _RUN_REFRESH_TOAST_AFTER = 3;
@@ -2867,6 +2885,45 @@ console.log(JSON.stringify({{ none, afterNull, polls, html: html.includes('sova-
         assert out["polls"] == [["tickElapsedTimers", 1000]], "every timer shares the one ticker"
         assert out["html"] is True
         assert out["tick"] == "5s"
+
+    def test_run_activity_shows_only_the_facts_and_omits_a_missing_last_output(self) -> None:
+        _require_node("node is required to run the run activity helper")
+        parts = []
+        for name in ("liveElapsed", "tickElapsedTimers", "startElapsedTicker", "runActivityHtml", "advanceRunStatus"):
+            start = _APP_JS.index(f"function {name}(")
+            parts.append(_APP_JS[start : _APP_JS.index("\n}\n", start) + 2])
+        script = f"""
+const visibilityAwarePoll = () => {{}};
+const formatElapsed = (s) => s + 's';
+var _elapsedTickerStarted = false;
+{chr(10).join(parts)}
+const text = (html) => html.replace(/<[^>]+>/g, '');
+const busy = runActivityHtml({{ time_in_step_known: true, time_in_step_ms: 90400, last_output_age_seconds: 12 }});
+const quiet = runActivityHtml({{ time_in_step_known: false, time_in_step_ms: 5000, last_output_age_seconds: 700 }});
+const fresh = runActivityHtml({{ time_in_step_known: true, time_in_step_ms: 3000, last_output_age_seconds: null }});
+const pushed = {{ time_in_step_ms: 1000, last_output_age_seconds: 5, run_id: 7 }};
+const advanced = advanceRunStatus(pushed, Date.now() - 10000);
+const attrs = {{ 'data-start': String(Date.now() - 601000) }};
+const node = {{ textContent: '', parentElement: null, getAttribute: (a) => attrs[a] ?? null }};
+globalThis.document = {{ querySelectorAll: () => [node] }};
+tickElapsedTimers();
+console.log(JSON.stringify({{ busy: text(busy), quiet: text(quiet), fresh: text(fresh),
+  none: runActivityHtml(undefined),
+  peach: [busy, quiet, fresh].some((h) => h.includes('peach')), quietAttr: busy.includes('data-quiet-after'),
+  ticked: node.textContent, unknown: advanceRunStatus(undefined, 1) === undefined,
+  advanced: [advanced.time_in_step_ms >= 11000, advanced.last_output_age_seconds, advanced.run_id,
+    pushed.time_in_step_ms] }}));
+"""
+        out = self._run_node(script)
+        assert out["busy"] == "90s in step·last output 12s ago"
+        assert out["quiet"] == "last output 700s ago", "a fallback step time is not shown as time in step"
+        assert out["fresh"] == "3s in step", "no stored output line yet omits the last-output segment"
+        assert out["none"] == ""
+        assert out["peach"] is False, "the UI shows the facts and adds no stuck judgment"
+        assert out["quietAttr"] is False
+        assert out["ticked"] == "601s"
+        assert out["unknown"] is True
+        assert out["advanced"] == [True, 15, 7, 1000], "a cached push advances by the time since it arrived"
 
     def test_queue_label_dropdown_leaves_an_unchanged_set_alone_and_reapplies_the_search_on_a_rebuild(self) -> None:
         _require_node("node is required to run the queue label dropdown")

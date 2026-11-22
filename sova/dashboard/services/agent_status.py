@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.core.state import STEP_DONE_STATUSES
@@ -68,9 +68,34 @@ class AgentStatus:
     completed_steps: list[str] = field(default_factory=list)
     error_message: str | None = None
     output_lines: int = 0
+    # Seconds since the run's newest stored output line, None when it has none yet. Lines are stored at most a few
+    # seconds after they are written (``OutputWriter``'s timed flush), so a long silence means the agent printed
+    # nothing, which a steady ``time_in_step_ms`` alone cannot tell apart from busy work.
+    last_output_age_seconds: int | None = None
     cpu_percent: float | None = None
     memory_rss_bytes: int | None = None
     source: str = "dashboard"
+
+
+def _newest_output_time_stmt(run_ids: list[int]) -> Select[Any]:
+    """Select ``(run id, created_at of the run's highest-numbered stored line)`` for each run.
+
+    A correlated ``ORDER BY line_number DESC LIMIT 1`` walks ``ix_output_lines_run_lineno`` straight to each run's
+    last row, so the cost is one index probe per active run rather than a scan of every line the run has stored
+    (a develop run stores tens of thousands, and this runs on every status push). ``OutputWriter`` numbers lines in
+    write order, so the highest line number is the newest line.
+    """
+    from sova.db.models import OutputLine, TaskRun
+
+    newest = (
+        select(OutputLine.created_at)
+        .where(OutputLine.task_run_id == TaskRun.id)
+        .order_by(OutputLine.line_number.desc())
+        .limit(1)
+        .correlate(TaskRun)
+        .scalar_subquery()
+    )
+    return select(TaskRun.id, newest).where(TaskRun.id.in_(run_ids))
 
 
 async def get_all_agent_statuses(
@@ -80,7 +105,7 @@ async def get_all_agent_statuses(
 ) -> list[AgentStatus]:
     """Return AgentStatus for all non-terminal TaskRuns.
 
-    Uses at most 2 DB queries (TaskRuns + StepExecutions) to avoid N+1.
+    Uses at most 3 DB queries (TaskRuns, StepExecutions, newest output line per run) to avoid N+1.
     """
     from sova.dashboard.services.agent_lifecycle import get_step_progress
     from sova.db.models import StepExecution, TaskRun
@@ -104,6 +129,10 @@ async def get_all_agent_statuses(
         steps_by_run: dict[int, list[StepExecution]] = {}
         for s in all_steps:
             steps_by_run.setdefault(s.task_run_id, []).append(s)
+
+        # Query 3: the newest stored output line per run
+        output_result = await session.execute(_newest_output_time_stmt(run_ids))
+        last_output_by_run = {run_id: last for run_id, last in output_result.all() if last is not None}
 
     # Cache estimation per pipeline variant
     estimation_cache: dict[str, dict[str, float]] = {}
@@ -164,6 +193,7 @@ async def get_all_agent_statuses(
                     completed_steps=completed,
                     error_message=run.error_message,
                     output_lines=live_fields["output_lines"],
+                    last_output_age_seconds=_seconds_since(last_output_by_run.get(run.id), now),
                     cpu_percent=live_fields["cpu_percent"],
                     memory_rss_bytes=live_fields["memory_rss_bytes"],
                     source=live_fields["source"],
@@ -238,10 +268,15 @@ def _as_utc(dt: datetime) -> datetime:
 
 def _compute_elapsed_seconds(task_run: TaskRun, now: datetime) -> int:
     """Seconds since the run started; 0 if it has no recorded start time."""
-    started = task_run.started_at
-    if started is None:
-        return 0
-    return max(0, round((now - _as_utc(started)).total_seconds()))
+    seconds = _seconds_since(task_run.started_at, now)
+    return seconds if seconds is not None else 0
+
+
+def _seconds_since(moment: datetime | None, now: datetime) -> int | None:
+    """Whole seconds from *moment* to *now*, never negative; None when there is no moment."""
+    if moment is None:
+        return None
+    return max(0, round((now - _as_utc(moment)).total_seconds()))
 
 
 def _compute_progress_pct(step_index: int, total_steps: int, completed_count: int) -> float:
