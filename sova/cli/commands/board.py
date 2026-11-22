@@ -44,6 +44,11 @@ _MISSING_SCOPES_RES = (
 )
 # gh's INSUFFICIENT_SCOPES message names read:project when the token has no project scope at all.
 _PROJECT_SCOPES = frozenset({"project", "read:project"})
+# A project lookup failing with one of these will fail the same way for every URL (an org-owned board or a
+# wrong project number), unlike a timeout or HTTP 5xx; matched ignoring case. "empty result" is a null project.
+_DETERMINISTIC_PROJECT_FAILURES = ("could not resolve to a", "empty result")
+# gh's owner-type lookup (which needs read:org) can fail with only this text, naming no scope; matched ignoring case.
+_UNKNOWN_OWNER_TYPE = "unknown owner type"
 # Any of these supplying auth makes `gh auth refresh` refuse to run.
 _TOKEN_ENV_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN")
 
@@ -139,23 +144,30 @@ class _GraphqlFallback:
         self._board_owner = board_owner
         self._number = number
         self._project_id: str | None = None
-        self._project_failure = ""
+        self._project_failure: str | None = None
         self.title = ""
 
     async def add(self, url: str, issue_owner: str, issue_repo: str, issue_number: int) -> _Outcome:
-        """Add the issue the URL names, looked up in the URL's own repository, to the board owner's board."""
-        if self._project_id is None and not self._project_failure:
-            project, self._project_failure = await _graphql_id(
+        """Add the issue the URL names, looked up in the URL's own repository, to the board owner's board.
+
+        A resolved project id and title are reused. A failed lookup is retried by the next URL only when it may be
+        transient; a deterministic one (project not found, null project) is reused, so it costs no further calls.
+        """
+        if self._project_failure is not None:
+            return _Outcome(url, "failed", self._project_failure)
+        if self._project_id is None:
+            project, project_failure = await _graphql_id(
                 _PROJECT_ID_QUERY, _PROJECT_JQ, "-f", f"owner={self._board_owner}", "-F", f"number={self._number}"
             )
-            if project is not None:
-                self._project_id, _, self.title = project.partition("\t")
-        if self._project_id is None:
-            detail = (
-                f"could not resolve project id for {self._board_owner}#{self._number}: {self._project_failure}; "
-                "the board may be org-owned, which needs a token with read:org, or the project number may be wrong"
-            )
-            return _Outcome(url, "failed", detail)
+            if project is None:
+                detail = (
+                    f"could not resolve project id for {self._board_owner}#{self._number}: {project_failure}; "
+                    "the board may be org-owned, which needs a token with read:org, or the project number may be wrong"
+                )
+                if any(marker in project_failure.lower() for marker in _DETERMINISTIC_PROJECT_FAILURES):
+                    self._project_failure = detail
+                return _Outcome(url, "failed", detail)
+            self._project_id, _, self.title = project.partition("\t")
         issue_id, issue_failure = await _graphql_id(
             _ISSUE_ID_QUERY,
             _ISSUE_ID_JQ,
@@ -259,12 +271,19 @@ async def _add_all(urls: list[str], number: int) -> list[_Outcome]:
             # The fallback mutation needs this scope too, so it is not attempted.
             project_scope_blocked = True
             outcomes.append(_Outcome(url, "failed", _project_scope_remedy()))
-        elif "read:org" in scopes:
+        elif "read:org" in scopes or _UNKNOWN_OWNER_TYPE in result.stderr.lower():
+            # gh's owner-type lookup fails for the token, not the URL, so every later item-add would too.
             read_org_blocked = True
             outcomes.append(await fallback.add(url, *issue))
         else:
-            detail = f"could not add to board: owner {repo_owner}, project {number}: {_first_line(result.stderr)}"
-            outcomes.append(_Outcome(url, "failed", detail))
+            # The cause is unknown and may be specific to this URL, so later URLs still try item-add first.
+            outcome = await fallback.add(url, *issue)
+            if outcome.failed:
+                gh_detail = (
+                    f"could not add to board: owner {repo_owner}, project {number}: {_first_line(result.stderr)}"
+                )
+                outcome = _Outcome(url, "failed", f"{gh_detail}; fallback: {outcome.detail}")
+            outcomes.append(outcome)
     if fallback.title:
         # Phase D matches membership by title; only the fallback has it, since item-add prints none.
         detail = f'{repo_owner}#{number} "{fallback.title}"' + (

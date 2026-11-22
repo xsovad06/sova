@@ -75,8 +75,29 @@ GRAPHQL_MUTATION_SCOPE = ShellResult(
 _TOKEN_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN")
 
 
+def _arg(args: tuple[str, ...], prefix: str) -> str:
+    found = next((arg.removeprefix(prefix) for arg in args if arg.startswith(prefix)), None)
+    if found is None:
+        raise AssertionError(f"no {prefix!r} argument in {args}")
+    return found
+
+
+def _default_graphql(args: tuple[str, ...]) -> ShellResult:
+    """A title-less project id, an issue id derived from the issue number, and a successful mutation."""
+    query = _arg(args, "query=")
+    if "repository(" in query:
+        return ShellResult(0, f"I_{_arg(args, 'num=')}\n", "")
+    if "addProjectV2ItemById" in query:
+        return ShellResult(0, "", "")
+    return ShellResult(0, "NODE_ID\n", "")
+
+
 class FakeGh:
-    """Records every gh call; `item_add` maps the --url argument to a result."""
+    """Records every gh call; `item_add` maps the --url argument to a result.
+
+    Without a `graphql` callable, each issue lookup returns ``I_<number>``, so a mutation that adds the wrong
+    issue is visible in `mutation_items()`.
+    """
 
     def __init__(
         self,
@@ -87,7 +108,7 @@ class FakeGh:
         self._project_list = project_list or ShellResult(1, "", "project list not scripted")
         self.calls: list[tuple[str, ...]] = []
         self._item_add = item_add
-        self._graphql = graphql or (lambda _query: ShellResult(0, "NODE_ID\n", ""))
+        self._graphql = graphql
 
     async def __call__(self, *args: str) -> ShellResult:
         self.calls.append(args)
@@ -98,11 +119,28 @@ class FakeGh:
         if args[:2] == ("project", "item-add"):
             return self._item_add(args[args.index("--url") + 1])
         if args[:2] == ("api", "graphql"):
-            return self._graphql(next(arg for arg in args if arg.startswith("query=")))
+            if self._graphql is None:
+                return _default_graphql(args)
+            return self._graphql(_arg(args, "query="))
         raise AssertionError(f"unexpected gh call {args}")
 
     def count(self, *prefix: str) -> int:
         return sum(1 for call in self.calls if call[: len(prefix)] == prefix)
+
+    def item_add_urls(self) -> list[str]:
+        return [call[call.index("--url") + 1] for call in self._calls("project", "item-add")]
+
+    def issue_lookups(self) -> list[str]:
+        return [_arg(call, "num=") for call in self._graphql_calls("repository(")]
+
+    def mutation_items(self) -> list[str]:
+        return [_arg(call, "item=") for call in self._graphql_calls("addProjectV2ItemById")]
+
+    def _calls(self, *prefix: str) -> list[tuple[str, ...]]:
+        return [call for call in self.calls if call[: len(prefix)] == prefix]
+
+    def _graphql_calls(self, marker: str) -> list[tuple[str, ...]]:
+        return [call for call in self._calls("api", "graphql") if marker in _arg(call, "query=")]
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, fake: FakeGh) -> None:
@@ -123,7 +161,7 @@ class TestAddAll:
         def item_add(url: str) -> ShellResult:
             return ShellResult(0, "", "") if url == URL_1 else ShellResult(1, "", "GraphQL: not found")
 
-        _install(monkeypatch, FakeGh(item_add))
+        _install(monkeypatch, FakeGh(item_add, lambda _query: ShellResult(1, "", "GraphQL: not found")))
 
         outcomes = _run([URL_1, URL_2])
 
@@ -131,7 +169,10 @@ class TestAddAll:
         assert "owner acme, project 7" in outcomes[1].detail
 
     def test_nonzero_exit_with_partial_stdout_is_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _install(monkeypatch, FakeGh(lambda _url: ShellResult(1, '{"id":"PVTI_partial"}', "boom")))
+        _install(
+            monkeypatch,
+            FakeGh(lambda _url: ShellResult(1, '{"id":"PVTI_partial"}', "boom"), lambda _q: ShellResult(1, "", "no")),
+        )
 
         (outcome,) = _run([URL_1])
 
@@ -142,7 +183,7 @@ class TestAddAll:
         self, monkeypatch: pytest.MonkeyPatch, stderr: str
     ) -> None:
         """Re-adding an item succeeds in the API, so error text with "already" is still a failure."""
-        _install(monkeypatch, FakeGh(lambda _url: ShellResult(1, "", stderr)))
+        _install(monkeypatch, FakeGh(lambda _url: ShellResult(1, "", stderr), lambda _q: ShellResult(1, "", "no")))
 
         (outcome,) = _run([URL_1])
 
@@ -198,7 +239,77 @@ class TestAddAll:
         # The project id is resolved once, then one issue lookup and one mutation per URL.
         assert fake.count("api", "graphql") == 1 + 2 * 2
         # Once item-add reports the missing scope, later URLs go straight to the fallback.
-        assert fake.count("project", "item-add") == 1
+        assert fake.item_add_urls() == [URL_1]
+        assert fake.issue_lookups() == ["11", "12"]
+        assert fake.mutation_items() == ["I_11", "I_12"]
+
+    @pytest.mark.parametrize("stderr", ["unknown owner type", "gh: Unknown Owner Type for acme"])
+    def test_unknown_owner_type_is_sticky_and_uses_the_fallback(
+        self, monkeypatch: pytest.MonkeyPatch, stderr: str
+    ) -> None:
+        fake = FakeGh(lambda _url: ShellResult(1, "", stderr))
+        _install(monkeypatch, fake)
+
+        outcomes = _run([URL_1, URL_2])
+
+        assert [o.line() for o in outcomes] == [f"{URL_1}: added", f"{URL_2}: added"]
+        assert fake.item_add_urls() == [URL_1]
+        assert fake.issue_lookups() == ["11", "12"]
+        assert fake.mutation_items() == ["I_11", "I_12"]
+
+    def test_unknown_owner_type_failed_fallback_reports_only_the_fallback_reason_and_stays_sticky(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeGh(lambda _url: ShellResult(1, "", "unknown owner type"), lambda _q: ShellResult(1, "", "gone"))
+        _install(monkeypatch, fake)
+
+        outcomes = _run([URL_1, URL_2])
+
+        assert [o.failed for o in outcomes] == [True, True]
+        for outcome in outcomes:
+            assert "could not resolve project id" in outcome.detail
+            assert "; fallback:" not in outcome.detail
+            assert "could not add to board" not in outcome.detail
+        assert fake.item_add_urls() == [URL_1]
+
+    def test_unknown_owner_type_with_a_project_scope_skips_the_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in _TOKEN_VARS:
+            monkeypatch.delenv(var, raising=False)
+        both = ShellResult(1, "", "unknown owner type\nmissing required scopes [project]")
+        fake = FakeGh(lambda _url: both)
+        _install(monkeypatch, fake)
+
+        (outcome,) = _run([URL_1])
+
+        assert "gh auth refresh -s project" in outcome.detail
+        assert fake.count("api", "graphql") == 0
+
+    def test_unrecognised_failure_tries_the_fallback_without_becoming_sticky(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeGh(lambda _url: ShellResult(1, "", "HTTP 502"))
+        _install(monkeypatch, fake)
+
+        outcomes = _run([URL_1, URL_2])
+
+        assert [o.line() for o in outcomes] == [f"{URL_1}: added", f"{URL_2}: added"]
+        assert fake.item_add_urls() == [URL_1, URL_2]
+        assert fake.issue_lookups() == ["11", "12"]
+        assert fake.mutation_items() == ["I_11", "I_12"]
+
+    @pytest.mark.parametrize(
+        ("stderr", "expected_line"), [("HTTP 502\nmore", "HTTP 502"), ("", "no output")], ids=["line", "empty"]
+    )
+    def test_unrecognised_failure_whose_fallback_fails_keeps_both_reasons(
+        self, monkeypatch: pytest.MonkeyPatch, stderr: str, expected_line: str
+    ) -> None:
+        _install(monkeypatch, FakeGh(lambda _url: ShellResult(1, "", stderr), lambda _q: ShellResult(1, "", "gone")))
+
+        (outcome,) = _run([URL_1])
+
+        assert outcome.failed
+        assert f"owner acme, project 7: {expected_line}; fallback:" in outcome.detail
+        assert "may be org-owned" in outcome.detail
 
     def test_fallback_looks_the_issue_up_in_the_urls_own_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """gh repo view resolves acme/widgets, but the URL names upstream/gadgets: the URL wins."""
@@ -227,14 +338,57 @@ class TestAddAll:
         assert "may be org-owned" in outcome.detail
         assert "read:org" in outcome.detail
 
-    def test_fallback_project_failure_is_looked_up_once_for_all_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fallback_project_failure_is_retried_for_the_next_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A failed project lookup is never cached: each URL retries it, so both report the failure."""
         fake = FakeGh(lambda _url: READ_ORG, lambda _query: ShellResult(1, "", "GraphQL: not found"))
         _install(monkeypatch, fake)
 
         outcomes = _run([URL_1, URL_2])
 
         assert [o.failed for o in outcomes] == [True, True]
+        assert fake.count("api", "graphql") == 2
+
+    @pytest.mark.parametrize(
+        "lookup",
+        [ShellResult(1, "", "GraphQL: Could not resolve to a ProjectV2 with the number 7"), ShellResult(0, "", "")],
+        ids=["not-found", "null-project"],
+    )
+    def test_deterministic_project_lookup_failure_is_not_retried_for_later_urls(
+        self, monkeypatch: pytest.MonkeyPatch, lookup: ShellResult
+    ) -> None:
+        fake = FakeGh(lambda _url: READ_ORG, lambda _query: lookup)
+        _install(monkeypatch, fake)
+
+        outcomes = _run([URL_1, URL_2, "https://github.com/acme/widgets/issues/13"])
+
+        assert [o.failed for o in outcomes] == [True, True, True]
+        assert all("could not resolve project id" in o.detail for o in outcomes)
         assert fake.count("api", "graphql") == 1
+
+    @pytest.mark.parametrize(
+        "failure", [READ_ORG, ShellResult(1, "", "HTTP 502")], ids=["sticky-read-org", "one-shot-unrecognised"]
+    )
+    def test_fallback_recovers_after_a_transient_project_lookup_failure(
+        self, monkeypatch: pytest.MonkeyPatch, failure: ShellResult
+    ) -> None:
+        """A project lookup that fails once and then succeeds adds the later URL, then reuses the resolved id."""
+        project_lookups: list[str] = []
+
+        def graphql(query: str) -> ShellResult:
+            if "projectV2" in query:
+                project_lookups.append(query)
+                if len(project_lookups) == 1:
+                    return ShellResult(1, "", "HTTP 502")
+                return ShellResult(0, "PVT_1\tSOVA Roadmap\n", "")
+            return ShellResult(0, "NODE\n", "")
+
+        _install(monkeypatch, FakeGh(lambda _url: failure, graphql))
+
+        outcomes = _run([URL_1, URL_2, "https://github.com/acme/widgets/issues/13"])
+
+        assert [o.status for o in outcomes] == ["board", "failed", "added", "added"]
+        assert "could not resolve project id" in outcomes[1].detail
+        assert len(project_lookups) == 2
 
     def test_fallback_project_scope_failure_gives_the_refresh_remedy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for var in _TOKEN_VARS:
@@ -260,13 +414,20 @@ class TestAddAll:
         assert outcome.failed
         assert "gh auth refresh -s project" in outcome.detail
 
-    def test_fallback_names_the_board_title_for_phase_d(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "failure",
+        [READ_ORG, ShellResult(1, "", "unknown owner type"), ShellResult(1, "", "HTTP 502")],
+        ids=["read-org", "unknown-owner-type", "unrecognised"],
+    )
+    def test_fallback_names_the_board_title_for_phase_d(
+        self, monkeypatch: pytest.MonkeyPatch, failure: ShellResult
+    ) -> None:
         """The title comes from the fallback's own project query, so Phase D needs no `gh project view`."""
 
         def graphql(query: str) -> ShellResult:
             return ShellResult(0, "PVT_1\tSOVA Roadmap\n", "") if "projectV2" in query else ShellResult(0, "NODE\n", "")
 
-        _install(monkeypatch, FakeGh(lambda _url: READ_ORG, graphql))
+        _install(monkeypatch, FakeGh(lambda _url: failure, graphql))
 
         outcomes = _run([URL_1])
 
@@ -521,7 +682,7 @@ class TestAddCommand:
         def item_add(url: str) -> ShellResult:
             return ShellResult(0, "", "") if url == URL_1 else ShellResult(1, "", "boom")
 
-        _install(monkeypatch, FakeGh(item_add))
+        _install(monkeypatch, FakeGh(item_add, lambda _q: ShellResult(1, "", "no")))
         monkeypatch.setattr("sova.cli.commands.board.load_config", lambda _root: _config(7))
 
         result = runner.invoke(app, ["board", "add", URL_1, URL_2])

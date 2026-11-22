@@ -106,7 +106,7 @@ Moved from `.claude/rules/workflow.md` (issue #1338).
 
 - **Add a newly created issue to the board**: `gh project item-add 2 --owner xsovad06 --url <issue-url>`.
   - Missing `project` scope: the command fails with a scope error; run `gh auth refresh -s project` and retry rather than leaving the issue off the board. If `GH_TOKEN`, `GITHUB_TOKEN` or `GH_ENTERPRISE_TOKEN` is set in the environment, `gh auth refresh` refuses to run while it supplies auth; in that case rotate to a replacement token with the `project` scope instead.
-  - Missing `read:org` scope: `gh`'s own owner-type resolution inside `project item-add` can demand `read:org` even to add an item to a user-owned board (this repo's board is owned by `xsovad06`, a user, not an org). `sova board add` (`sova/cli/commands/board.py`) falls back to a GraphQL mutation in that case, the single copy to edit when the mutation changes.
+  - Missing `read:org` scope: `gh`'s own owner-type resolution inside `project item-add` can demand `read:org` even to add an item to a user-owned board (this repo's board is owned by `xsovad06`, a user, not an org). `sova board add` (`sova/cli/commands/board.py`) falls back to a GraphQL mutation in that case, the single copy to edit when the mutation changes. It also falls back when gh reports only `unknown owner type` (sticky for later URLs) and, for that URL only, on any other unrecognised `item-add` failure; if the fallback fails too, the line keeps gh's first error line before the fallback's reason. A project lookup that fails deterministically (project not found, null project) is remembered for the rest of the run, while a transient one is retried for each URL.
 
 ## Related Issues
 
