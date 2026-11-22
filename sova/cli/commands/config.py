@@ -95,19 +95,20 @@ def get_setting(
     and its `get_config()` masking, so `get` and `set` cannot drift apart on
     which keys exist or which of them are credentials.
     """
-    from sova.dashboard.services.settings_service import _flatten_dict, get_config
+    from sova.dashboard.services.settings_service import _flatten_dict, get_config, routing_task
     from sova.dashboard.settings_meta import _META_BY_KEY
 
     # Both checks that depend only on the key run before the config is loaded,
     # so an unknown key reports itself as such even when the config is
     # unloadable (this command is config-tolerant), and a secret never needs a
     # load at all.
+    step = routing_task(key)
     meta = _META_BY_KEY.get(key)
-    if meta is None:
+    if meta is None and step is None:
         typer.echo(f"Unknown setting: '{key}'", err=True)
         raise typer.Exit(code=1)
 
-    if meta.value_type == "secret":
+    if meta is not None and meta.value_type == "secret":
         typer.echo("(secret)")
         return
 
@@ -119,6 +120,10 @@ def get_setting(
     except Exception as exc:  # noqa: BLE001 (a rejected config, unreadable TOML and a bad DB row all land here)
         _echo_config_error(exc)
         raise typer.Exit(code=1) from exc
+
+    if step is not None:
+        _echo_route(key, step, cfg.llm.routing)
+        return
 
     flat: dict = {}
     _flatten_dict("", cfg.model_dump(), flat)
@@ -132,6 +137,18 @@ def get_setting(
         typer.echo(json.dumps(value))
     else:
         typer.echo(str(value))
+
+
+def _echo_route(key: str, step: str, routing: dict[str, str]) -> None:
+    """Print one route of the routing table; an unset or unknown step exits 1, so it never reads as an empty value."""
+    from sova.dashboard.services.model_map_service import ROUTING_KEYS
+
+    model = routing.get(step)
+    if model is None:
+        reason = "is not set" if step in ROUTING_KEYS else "is not a routing key"
+        typer.echo(f"{key} {reason}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(model)
 
 
 @config_app.command("set")
@@ -166,7 +183,9 @@ def set_setting(
             console.print(f"[yellow]{warning}[/yellow]")
         return
 
-    console.print(f"[green]{key} = {value}[/green]")
+    console.print(f"[green]{key} cleared.[/green]" if result.get("cleared") else f"[green]{key} = {value}[/green]")
+    if result.get("warning"):
+        console.print(f"[yellow]{result['warning']}[/yellow]")
     _warn_if_reload_required(key, meta)
 
 
