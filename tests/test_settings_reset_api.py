@@ -138,14 +138,57 @@ class TestResetRoute:
         assert res.status_code == 404
         assert "Unknown setting" in res.json()["detail"]
 
+    async def test_resetting_the_whole_routing_table_deletes_every_route_and_the_legacy_row(
+        self, startup: tuple[AsyncClient, Path]
+    ) -> None:
+        import json
+
+        from sqlalchemy import select
+
+        from sova.config.loader import invalidate_config_cache, load_config
+        from sova.db.models import ProjectSetting
+        from sova.db.session import get_session
+
+        client, project = startup
+        async with await get_session(project_dir=project) as session, session.begin():
+            for key, value in {
+                "llm.routing.review": "claude-opus-5-5",
+                "llm.routing.develop": "claude-sonnet-5-5",
+                "llm.routing": {"triage": "claude-haiku-5-5"},
+            }.items():
+                session.add(ProjectSetting(key=key, value=json.dumps(value)))
+        invalidate_config_cache(project)
+
+        res = await client.post(
+            "/api/settings/config/reset", json={"key": "llm.routing"}, headers=_csrf_request_headers(client)
+        )
+
+        assert res.status_code == 200, res.text
+        async with await get_session(project_dir=project) as session:
+            left = (await session.execute(select(ProjectSetting.key))).scalars().all()
+        assert [key for key in left if key.startswith("llm.routing")] == []
+        assert load_config(project).llm.routing == {}
+
+    @pytest.mark.parametrize(
+        ("key", "applied_as"),
+        [("max_parallel_agents", "max_parallel_agents"), ("llm.routing.review", "llm.routing")],
+    )
     async def test_a_reset_applies_the_update_like_a_save(
-        self, startup: tuple[AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
+        self, startup: tuple[AsyncClient, Path], monkeypatch: pytest.MonkeyPatch, key: str, applied_as: str
     ) -> None:
         """A reset changes the value in effect just as a save does, so running components hear about it."""
         from sova.dashboard.routers import settings as settings_router
 
         client, _project = startup
-        await _save(client, "max_parallel_agents", 5)
+        if applied_as == "llm.routing":
+            step = await client.post(
+                "/api/settings/models/step",
+                json={"step": "review", "model": "claude-opus-5-5"},
+                headers=_csrf_request_headers(client),
+            )
+            assert step.status_code == 200, step.text
+        else:
+            await _save(client, key, 5)
         seen: list[str] = []
 
         async def _record(_project_dir: Path, key: str, _result: dict) -> None:
@@ -153,12 +196,27 @@ class TestResetRoute:
 
         # The reset route calls the name it imported, so the patch goes where the router looks it up.
         monkeypatch.setattr(settings_router, "apply_config_update", _record)
-        res = await client.post(
-            "/api/settings/config/reset", json={"key": "max_parallel_agents"}, headers=_csrf_request_headers(client)
-        )
+        res = await client.post("/api/settings/config/reset", json={"key": key}, headers=_csrf_request_headers(client))
 
-        assert res.status_code == 200
-        assert seen == ["max_parallel_agents"]
+        assert res.status_code == 200, res.text
+        assert seen == [applied_as]
+
+    async def test_a_save_of_one_route_applies_the_update_as_the_whole_table(
+        self, startup: tuple[AsyncClient, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A per-step save reloads what a reset of the same key does."""
+        from sova.dashboard.routers import settings as settings_router
+
+        client, _project = startup
+        seen: list[str] = []
+
+        async def _record(_project_dir: Path, key: str, _result: dict) -> None:
+            seen.append(key)
+
+        monkeypatch.setattr(settings_router, "apply_config_update", _record)
+        await _save(client, "llm.routing.review", "claude-opus-5-5")
+
+        assert seen == ["llm.routing"]
 
 
 class TestResetFailureStatuses:
@@ -301,8 +359,29 @@ class TestModelsView:
         for path, body in (
             ("/api/settings/models/step", {"step": "review", "model": "x"}),
             ("/api/settings/models/pin", {}),
+            ("/api/settings/models/profile", {}),
         ):
             assert (await client.post(path, json=body, headers={"Origin": "http://evil.example"})).status_code == 403
+
+    async def test_saving_the_default_profile(self, startup: tuple[AsyncClient, Path]) -> None:
+        client, _project = startup
+        headers = _csrf_request_headers(client)
+
+        empty = await client.post("/api/settings/models/profile", headers=headers)
+        assert empty.status_code == 422
+        assert "stores none of the model settings" in empty.json()["detail"]
+
+        await _save(client, "roles.reviewer_model", "claude-opus-5-5")
+        saved = await client.post("/api/settings/models/profile", headers=headers)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["keys"] == ["roles.reviewer_model"]
+
+        from sova.dashboard.services.model_profile_service import profile_path
+
+        assert saved.json()["path"] == "~/.config/sova/model-profile.json"
+        profile_path().write_text("{broken", encoding="utf-8")
+        refused = await client.post("/api/settings/models/profile", headers=headers)
+        assert refused.status_code == 409
 
     async def test_pin_all_pins_every_short_name(self, startup: tuple[AsyncClient, Path]) -> None:
         client, _project = startup

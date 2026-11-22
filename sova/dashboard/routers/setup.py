@@ -17,6 +17,7 @@ from sova.config.registry import register_project
 from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.services import setup_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
+from sova.dashboard.services.model_profile_service import apply_model_profile, keep_stored_model_settings
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
@@ -119,7 +120,8 @@ class ConfigureRequest(BaseModel):
     base_branch: str = "main"
     branch_naming: str = "conventional"
     commit_format: str = "conventional"
-    agent_model: str = "opus"
+    # Omitted: the project keeps a model it already stores, else the saved model profile or the built-in default.
+    agent_model: str | None = None
     max_budget: str = "10.00"
     test_cmd: str = ""
     lint_cmd: str = ""
@@ -283,14 +285,26 @@ async def configure_project(req: ConfigureRequest) -> dict:
     await init_db_for_project(project)
     async with await get_session(project_dir=project) as session:
         async with session.begin():
+            had_models = await keep_stored_model_settings(
+                session, config_dict, replace_agent_model=req.agent_model is not None
+            )
             await save_config_to_db(session, config_dict)
 
     from sova.config.loader import invalidate_config_cache
 
     invalidate_config_cache(project)
 
+    # The wizard has just chosen the project's own values; the user's saved model profile fills only the gaps of a
+    # project that had chosen no model before. One that had (a reconfigure) keeps its rows and cleared routes.
+    profile = {} if had_models else await apply_model_profile(project)
+
     slug = register_project(project)
-    return {"status": "ok", "config_source": "database", "slug": slug}
+    result = {"status": "ok", "config_source": "database", "slug": slug, "profile_applied": profile.get("applied", [])}
+    # The service logs why a profile could not be applied; the response carries its fixed text only.
+    warning = profile.get("error") or profile.get("warning")
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 _SKILL_FILENAME_RE = re.compile(r"^[^/\\]+/SKILL\.md$")

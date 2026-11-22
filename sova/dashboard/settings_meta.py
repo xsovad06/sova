@@ -253,7 +253,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.routing",
         "Model routing",
-        "Model routing by complexity tier or task type (values: haiku/sonnet/opus/ollama/model-name)",
+        "Model per task type or issue size, as a JSON object of explicit model IDs. Set one with "
+        "sova config set llm.routing.<task> <model ID>, or choose it per step in the Models view",
         "llm",
         "object",
     ),

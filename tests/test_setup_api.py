@@ -5,13 +5,19 @@ Split from tests/test_dashboard.py; see docs/testing-guidelines.md, "Test File L
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.app import create_app
+from sova.dashboard.services import model_profile_service
+from sova.db.models import ProjectSetting
+from sova.db.session import get_session
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -439,6 +445,181 @@ class TestSetupAPI:
         assert "Directory not found" in resp.json()["detail"]
 
 
+@pytest.mark.usefixtures("setup_root_tmp")
+class TestSetupModelProfile:
+    """The saved model profile (#1323) on the setup wizard's configure and install routes."""
+
+    @pytest.fixture(autouse=True)
+    def _profile_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Point the profile at this test's own directory, so none of these tests can touch the real one."""
+        path = tmp_path / "profile-home" / "model-profile.json"
+        monkeypatch.setattr(model_profile_service, "profile_path", lambda: path)
+        assert tmp_path in model_profile_service.profile_path().parents
+        return path
+
+    @staticmethod
+    def _write_profile(data: object) -> None:
+        path = model_profile_service.profile_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+
+    @staticmethod
+    async def _stored_settings(project: Path) -> dict[str, object]:
+        async with await get_session(project_dir=project) as session:
+            rows = (await session.execute(select(ProjectSetting))).scalars().all()
+        return {row.key: json.loads(row.value) for row in rows}
+
+    @staticmethod
+    async def _configure(client: AsyncClient, project: Path, **fields: object):
+        return await client.post(
+            "/api/setup/configure", json={"project_path": str(project), "github_repo": "u/t", **fields}
+        )
+
+    async def test_configure_fills_only_the_gaps_from_the_saved_model_profile(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        self._write_profile({"agent.model": "claude-sonnet-5-5", "roles.reviewer_model": "claude-opus-5-5"})
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        resp = await self._configure(client, project, agent_model="claude-haiku-5-5")
+
+        assert resp.status_code == 200, resp.text
+        assert "warning" not in resp.json()
+        stored = await self._stored_settings(project)
+        # The wizard's own model choice stays; the profile fills the setting the wizard does not ask for.
+        assert (stored["agent.model"], stored["roles.reviewer_model"]) == ("claude-haiku-5-5", "claude-opus-5-5")
+        assert resp.json()["profile_applied"] == ["roles.reviewer_model"]
+
+    async def test_configure_without_agent_model_takes_the_saved_profile_model(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        self._write_profile({"agent.model": "claude-sonnet-5-5"})
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        resp = await self._configure(client, project)
+
+        assert resp.status_code == 200, resp.text
+        assert (await self._stored_settings(project))["agent.model"] == "claude-sonnet-5-5"
+        assert resp.json()["profile_applied"] == ["agent.model"]
+
+    async def test_configure_without_agent_model_or_profile_stores_no_model_row(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        resp = await self._configure(client, project)
+
+        assert resp.status_code == 200, resp.text
+        stored = await self._stored_settings(project)
+        # No row: the built-in default model applies, and a later change to that default still reaches it.
+        assert "agent.model" not in stored
+        assert "agent.max_budget" in stored
+
+    async def test_reconfigure_without_agent_model_keeps_the_stored_model(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        first = await self._configure(client, project, agent_model="claude-haiku-5-5")
+        self._write_profile({"agent.model": "claude-sonnet-5-5"})
+
+        resp = await self._configure(client, project)
+
+        assert (first.status_code, resp.status_code) == (200, 200), resp.text
+        assert (await self._stored_settings(project))["agent.model"] == "claude-haiku-5-5"
+
+    async def test_reconfigure_keeps_stored_model_rows_and_never_refills_from_the_profile(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        """A reconfigure of a project that chose models keeps them, and a route it cleared stays cleared."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        first = await self._configure(client, project, agent_model="claude-haiku-5-5")
+        assert first.status_code == 200, first.text
+        async with await get_session(project_dir=project) as session, session.begin():
+            session.add(ProjectSetting(key="agent.fallback_models", value=json.dumps(["claude-x-5"])))
+            session.add(ProjectSetting(key="roles.reviewer_model", value=json.dumps("claude-opus-5-5")))
+        self._write_profile(
+            {
+                "agent.fallback_models": ["claude-y-5"],
+                "roles.reviewer_model": "claude-sonnet-5-5",
+                "llm.routing.review": "claude-opus-5-5",
+            }
+        )
+
+        resp = await self._configure(client, project)
+
+        assert resp.status_code == 200, resp.text
+        stored = await self._stored_settings(project)
+        assert stored["agent.fallback_models"] == ["claude-x-5"]
+        assert stored["roles.reviewer_model"] == "claude-opus-5-5"
+        assert stored["agent.model"] == "claude-haiku-5-5"
+        assert "llm.routing.review" not in stored
+        assert resp.json()["profile_applied"] == []
+
+    async def test_configure_reports_a_failed_profile_without_the_exception_text(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        self._write_profile({"roles.reviewer_model": "claude-opus-5-5"})
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        with patch.object(model_profile_service, "get_session", side_effect=SQLAlchemyError("/secret/path.db")):
+            resp = await self._configure(client, project)
+
+        assert resp.status_code == 200, resp.text
+        assert "could not be applied" in resp.json()["warning"]
+        assert "/secret/path.db" not in resp.text
+        stored = await self._stored_settings(project)
+        # The wizard's own settings were written, and no profile row was.
+        assert "agent.max_budget" in stored
+        assert "roles.reviewer_model" not in stored
+
+    @pytest.mark.parametrize("content", ["{not json", "[]"], ids=["invalid-json", "not-an-object"])
+    async def test_configure_with_a_corrupt_profile_warns_and_applies_nothing(
+        self, client: AsyncClient, tmp_path: Path, content: str
+    ) -> None:
+        self._write_profile(content)
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        resp = await self._configure(client, project)
+
+        assert resp.status_code == 200, resp.text
+        assert "unreadable or malformed" in resp.json()["warning"]
+        assert str(tmp_path) not in resp.text
+        stored = await self._stored_settings(project)
+        assert "agent.max_budget" in stored
+        assert not any(key.startswith("llm.routing") or key.endswith("_model") for key in stored)
+
+    async def test_configure_expands_profile_routes_and_skips_an_unknown_task_for_a_project_with_no_models(
+        self, client: AsyncClient, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        # A first configure that chose no model, so the profile written afterwards still applies.
+        first = await self._configure(client, project)
+        self._write_profile(
+            {
+                "llm.routing.review": "profile-model",
+                "llm.routing.develop": "claude-sonnet-5-5",
+                "llm.routing.no_such_task": "claude-sonnet-5-5",
+            }
+        )
+
+        resp = await self._configure(client, project)
+
+        assert (first.status_code, resp.status_code) == (200, 200), resp.text
+        stored = await self._stored_settings(project)
+        assert stored["llm.routing.develop"] == "claude-sonnet-5-5"
+        assert stored["llm.routing.review"] == "profile-model"
+        assert "llm.routing.no_such_task" not in stored
+        assert "llm.routing.no_such_task" in resp.json()["warning"]
+
+
 class TestSyncFilenameValidation:
     """Direct unit coverage for the path-traversal guard, independent of the endpoint."""
 
@@ -493,7 +674,7 @@ class TestTomlConfigGeneration:
         cfg = TomlConfig()
         assert cfg.base_branch == "main"
         assert cfg.task_source == "github"
-        assert cfg.agent_model == "opus"
+        assert cfg.agent_model is None
         assert cfg.max_budget == "10.00"
         assert cfg.ai_coauthor is True
         assert cfg.pr_auto_link is True

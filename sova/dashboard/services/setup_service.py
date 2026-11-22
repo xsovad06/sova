@@ -185,7 +185,8 @@ class TomlConfig:
     lint_cmd: str = "make lint"
     format_cmd: str = "make format"
     task_source: str = "github"
-    agent_model: str = "opus"
+    # None stores no agent.model row: the saved model profile, else the built-in default, then applies.
+    agent_model: str | None = None
     max_budget: str = "10.00"
     branch_naming: str = "conventional"
     commit_format: str = "conventional"
@@ -216,7 +217,9 @@ def generate_config_dict(config: TomlConfig) -> dict:
         "lint_cmd": config.lint_cmd,
         "format_cmd": config.format_cmd,
         "task_source": {"type": config.task_source},
-        "agent": {"model": config.agent_model, "max_budget": config.max_budget},
+        "agent": {"max_budget": config.max_budget}
+        if config.agent_model is None
+        else {"model": config.agent_model, "max_budget": config.max_budget},
         "review": {"enabled": True},
         "commit": {
             "format": config.commit_format,
