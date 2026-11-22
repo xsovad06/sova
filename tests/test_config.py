@@ -1491,7 +1491,7 @@ class TestDefaultConfig:
         assert result["github_repo"] == ""
         assert result["base_branch"] == "main"
         assert result["task_source"]["type"] == "github"
-        assert result["agent"]["model"] == "opus"
+        assert "model" not in result["agent"]
 
     def test_with_overrides(self) -> None:
         from sova.cli.commands.project import _default_config

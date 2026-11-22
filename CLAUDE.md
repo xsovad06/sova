@@ -60,6 +60,7 @@ SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova
 - **Edit**: `sova config set <key> <value>`, or the dashboard settings page. Both go through the same
   validation, so neither can persist a value that makes `load_config()` raise. List-valued keys accept
   a JSON array or comma-separated text: `sova config set awareness.providers "gmail, gcal"`
+- **Model routes**: `sova config set llm.routing '{"develop": "<model ID>"}'` replaces every per-task route (`'{}'` clears them), `llm.routing.<task>` sets one or, with an empty value, clears it. The Models view's "Save as default for new projects" writes `~/.config/sova/model-profile.json`, which `sova install` (run by `sova setup` too) and the dashboard setup wizard apply to keys a new project has no value for (docs/model-selection-architecture.md)
 - **Last resort**: `sqlite3 .claude/sova.db` (all values stored as JSON; see troubleshooting below).
   Prefer `sova config set`, which writes valid JSON for you
 - **Environment overrides**: `SOVA_GITHUB_REPO=owner/repo` (prefix with `SOVA_`, replace dots with underscores: `SOVA_AGENT_MODEL`)

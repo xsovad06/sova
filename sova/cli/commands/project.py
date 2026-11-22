@@ -122,6 +122,9 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     except Exception:  # noqa: BLE001 (setup stage is non-fatal; lists resolve lazily when unstored)
         log.warning("setup.commit_lists_failed", project_dir=str(project_dir), exc_info=True)
 
+    if not update and "database" not in failed_stages:
+        await _apply_model_profile(project_dir)
+
     # Load config once: used by Stage 4 (commands) and Stage 5 (RTK)
     cfg = load_config(project_dir)
 
@@ -253,6 +256,20 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     if not no_dashboard and not update:
         console.print("[dim]Dashboard available via: sova dashboard[/dim]")
+
+
+async def _apply_model_profile(project_dir: Path) -> None:
+    """Fill the model settings this project has no row for from the user's saved profile (non-fatal)."""
+    from sova.dashboard.services.model_profile_service import apply_model_profile
+
+    result = await apply_model_profile(project_dir)
+    if "error" in result:
+        console.print(f"[yellow]Warning: {result['error']}[/yellow]")
+        return
+    if result.get("warning"):
+        console.print(f"[yellow]Warning: {result['warning']}[/yellow]")
+    if result["applied"]:
+        console.print(f"[green]Applied the default model profile: {', '.join(result['applied'])}.[/green]")
 
 
 async def _configure_git_hooks(project_dir: Path) -> None:
@@ -953,7 +970,8 @@ def _default_config(repo: str = "", test_cmd: str = "make test", github_user: st
         "lint_cmd": "make lint",
         "check_cmd": "",
         "task_source": {"type": "github"},
-        "agent": {"model": "opus", "max_budget": "10.00"},
+        # No agent.model row: the built-in default (opus) applies, and a saved model profile may fill it in.
+        "agent": {"max_budget": "10.00"},
         "review": {"enabled": True},
         "triage": {"auto_label": True, "min_confidence": 0.7},
         "roles": {"default": "developer"},
