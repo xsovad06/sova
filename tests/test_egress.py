@@ -109,6 +109,31 @@ class TestScanAndRedactPatterns:
         assert not result.clean
         assert "private_key" in result.flags
 
+    _RSA_BLOCK = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----"
+
+    def test_private_key_full_block_is_redacted_whole(self) -> None:
+        result = scan_and_redact(f"before\n{self._RSA_BLOCK}\nafter")
+        assert result.redacted_text == "before\n[REDACTED:private_key]\nafter"
+
+    def test_private_key_begin_without_end_redacts_only_the_marker(self) -> None:
+        result = scan_and_redact("-----BEGIN PRIVATE KEY-----\nkeep this line")
+        assert result.redacted_text == "[REDACTED:private_key]\nkeep this line"
+
+    def test_two_private_key_blocks_keep_the_text_between_them(self) -> None:
+        result = scan_and_redact(f"{self._RSA_BLOCK}\nmiddle text\n{self._RSA_BLOCK}")
+        assert result.redacted_text == "[REDACTED:private_key]\nmiddle text\n[REDACTED:private_key]"
+
+    def test_unrelated_end_marker_far_later_does_not_swallow_the_text_between(self) -> None:
+        filler = "unrelated text\n" * 1000
+        text = f"-----BEGIN RSA PRIVATE KEY-----\n{filler}-----END RSA PRIVATE KEY-----"
+        result = scan_and_redact(text)
+        assert result.redacted_text.startswith("[REDACTED:private_key]\nunrelated text")
+        assert "-----BEGIN" not in result.redacted_text
+
+    def test_end_marker_of_a_different_key_type_does_not_close_the_block(self) -> None:
+        text = "-----BEGIN RSA PRIVATE KEY-----\nfixture\n-----END EC PRIVATE KEY-----"
+        assert scan_and_redact(text).redacted_text == "[REDACTED:private_key]\nfixture\n-----END EC PRIVATE KEY-----"
+
     def test_jwt_token(self) -> None:
         text = (
             "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9."

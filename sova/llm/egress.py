@@ -113,7 +113,14 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
     ),
     # Private key blocks
     (
-        re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"),
+        # The whole block when a matching END marker (same key type) follows within a key's length and no other
+        # BEGIN marker intervenes, else just the BEGIN marker, so an unrelated END marker later in the text
+        # cannot swallow what lies between.
+        re.compile(
+            r"-----BEGIN (?P<ktype>(?:RSA |EC |DSA |OPENSSH )?)PRIVATE KEY-----"
+            r"(?:(?:(?!-----BEGIN ).){0,10000}?-----END (?P=ktype)PRIVATE KEY-----)?",
+            re.DOTALL,
+        ),
         "private_key",
         "[REDACTED:private_key]",
     ),
