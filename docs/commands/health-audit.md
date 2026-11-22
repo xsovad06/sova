@@ -129,7 +129,11 @@ A token can lack `project` or `read:org`, and they need different remedies:
   may be org-owned, which needs `read:org`, or the project number may be wrong), so a
   transient error or a wrong number is not blamed on the token. Once `item-add` reports
   the missing scope, later URLs go straight to the fallback instead of failing the same
-  way and waiting out a timeout each. A board listing that fails for `read:org` has no
+  way and waiting out a timeout each. gh can also report this case as only `unknown owner
+  type`, naming no scope; that text is treated the same way. Any other unrecognised
+  `item-add` failure tries the fallback for that URL only (the cause may be specific to
+  it), and when the fallback fails too the line keeps gh's first error line before the
+  fallback's reason. A board listing that fails for `read:org` has no
   GraphQL fallback, so its `failed:` line says to set `task_source.github_project_number`
   or use a token with `read:org`.
 
