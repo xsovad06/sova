@@ -56,6 +56,27 @@ async def save_setting(session: AsyncSession, key: str, value: Any) -> None:
     await session.flush()
 
 
+async def insert_setting_if_absent(session: AsyncSession, key: str, value: Any) -> bool:
+    """Insert a setting row for *key* unless one exists; never updates. True when a row was inserted.
+
+    A row another process commits in between counts as present (False). An integrity failure that leaves no
+    such row (a NOT NULL or CHECK violation) is re-raised, so it is never mistaken for a lost race.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    if (await session.execute(select(ProjectSetting.key).where(ProjectSetting.key == key))).first() is not None:
+        return False
+    try:
+        async with session.begin_nested():
+            session.add(ProjectSetting(key=key, value=json.dumps(value)))
+            await session.flush()
+        return True
+    except IntegrityError:
+        if (await session.execute(select(ProjectSetting.key).where(ProjectSetting.key == key))).first() is None:
+            raise
+        return False
+
+
 async def delete_setting(session: AsyncSession, key: str, *, with_children: bool = False) -> int:
     """Delete the row for *key* and, with *with_children*, every ``key.<child>`` row under it.
 

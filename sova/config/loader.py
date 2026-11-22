@@ -179,15 +179,24 @@ def _store(project_dir: Path, generation: tuple[int, int], entry: _CacheEntry) -
             _cache[project_dir] = entry
 
 
+def toml_layer(project_dir: Path) -> dict[str, Any]:
+    """The settings *project_dir*'s ``sova.toml`` sets, nested as the loader merges them (``{}`` without a file).
+
+    Raises ``OSError`` for an unreadable file and ``ValueError`` (``TOMLDecodeError``) for a malformed one.
+    """
+    toml_path = project_dir / "sova.toml"
+    if not toml_path.exists():
+        return {}
+    with open(toml_path, "rb") as f:
+        data = tomllib.load(f)
+    toml_flat = _flatten_toml(data)
+    _migrate_deprecated_keys(toml_flat)
+    return toml_flat
+
+
 def _merged_layers(project_dir: Path) -> dict[str, Any]:
     """TOML overlaid with the database, before environment overrides (the stored layers)."""
-    toml_path = project_dir / "sova.toml"
-    toml_flat: dict[str, Any] = {}
-    if toml_path.exists():
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-        toml_flat = _flatten_toml(data)
-        _migrate_deprecated_keys(toml_flat)
+    toml_flat = toml_layer(project_dir)
 
     from sova.config.db_loader import _is_db_confirmed_empty, _try_load_from_db
 
