@@ -201,6 +201,7 @@
             <div>
               <label class="block text-xs text-gray-400 mb-1">Model</label>
               <select name="agent_model" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+                <option value="">My default profile (else built-in)</option>
                 <option value="opus">Opus (smarter)</option>
                 <option value="sonnet">Sonnet (faster)</option>
               </select>
@@ -410,7 +411,7 @@ function prefillForm(data) {
   f('github_repo', c['github_repo'] || data.github_repo);
   f('base_branch', c['base_branch'] || data.base_branch);
   f('task_source', c['task_source.type'] || 'github');
-  f('agent_model', c['agent.model'] || 'opus');
+  f('agent_model', c['agent.model']);
   f('max_budget', c['agent.max_budget'] || '10.00');
   f('test_cmd', c['test_cmd'] || data.test_cmd);
   f('lint_cmd', c['lint_cmd'] || data.lint_cmd);
@@ -610,7 +611,8 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     base_branch: fd.get('base_branch'),
     branch_naming: fd.get('branch_naming'),
     commit_format: fd.get('commit_format'),
-    agent_model: fd.get('agent_model'),
+    // An empty choice sends no model, so the saved default profile (else the built-in default) applies.
+    agent_model: fd.get('agent_model') || null,
     max_budget: fd.get('max_budget'),
     test_cmd: fd.get('test_cmd'),
     lint_cmd: fd.get('lint_cmd'),
@@ -647,8 +649,11 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   }
   const result = await res.json();
   if (result.status === 'ok') {
-    status.textContent = 'Saved to ' + result.config_path;
-    status.className = 'self-center text-xs text-accent-green';
+    const applied = (result.profile_applied || []).length
+      ? ' Applied your default model profile: ' + result.profile_applied.join(', ') + '.'
+      : '';
+    status.textContent = (result.warning ? 'Saved to the database. ' + result.warning : 'Saved to the database') + applied;
+    status.className = 'self-center text-xs ' + (result.warning ? 'text-accent-yellow' : 'text-accent-green');
     const slug = result.slug || installedSlug;
     if (slug) {
       const formEnd = document.getElementById('setup-form').parentElement;

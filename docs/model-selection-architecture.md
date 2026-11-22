@@ -795,7 +795,7 @@ dropdown writes exactly one `llm.routing.<step>` row, and "Use the role model" d
 (`settings_service.set_step_model()`, `clear_step_model()`, `POST /api/settings/models/step`; the
 names are task types in `TASK_TYPE_KEYS` and the issue sizes). An older whole-table `llm.routing` row
 is split into per-step rows on the first write, since it would otherwise replace them when the config
-is assembled. #1323's `sova config set llm.routing...` forms reuse these two functions.
+is assembled. The `sova config set llm.routing` forms (#1323) reuse these two functions.
 
 **Short model names and Pin.** `model_map_service.short_name_settings()` lists every LLM-layer model
 setting whose value in effect is a short name (`sonnet`, `opus`, `haiku`, `fable`, `fast`, `smart`,
@@ -814,6 +814,64 @@ when the routing write fails after the first committed, the error lists the stor
 and the route still reloads those. Every write here (the bulk transaction, a step's row, and a clear with its
 `sova.toml` removal) runs through `_run_to_completion()`, so a cancelled request finishes it before the
 cancellation propagates.
+
+**Routes from the terminal.** `sova config set llm.routing '<JSON object>'` replaces the whole routing
+table in one transaction (`settings_service.replace_routing()`): a task or issue size left out loses its
+row, `'{}'` clears every route, and a stray whole-table `llm.routing` row goes with them. Every entry is
+checked first, so an unknown name (the error lists the valid task types and issue sizes), a non-string or
+empty or whitespace-bearing model, or JSON that is not an object rejects the whole write. `sova config
+set llm.routing.<step> <model>` sets one step through `set_step_model()` and an empty value deletes its row
+through `clear_step_model()`; a value already in effect and already stored as per-step rows answers
+`unchanged` without a write (a whole-table `llm.routing` row can mask a per-step row a later write would bring
+back, so it is normalized instead), and a short model name is stored with a warning to pin an explicit ID.
+When a whole-table replace cannot remove `llm.routing` from `sova.toml` and a step it drops still applies,
+the result carries a warning naming that step. `sova config get llm.routing` prints the table
+as JSON (`{}` when empty) and `get llm.routing.<step>` prints the model, or exits 1 for an unset or
+unknown step. `POST /settings/config/reset` accepts `llm.routing.<step>` and deletes that one row. A
+`SOVA_LLM_ROUTING` variable refuses every write, as it does in the Models view; a per-step
+`SOVA_LLM_ROUTING_<STEP>` variable is not supported (the settings models set no nested delimiter, so
+`load_config()` ignores it) and needs no check. When the routing rows are committed but the `sova.toml` mirror
+cannot be updated, the write still succeeds and carries a warning, since the new table is already in effect.
+`sova config set llm.routing.<step>` checks "unchanged" under the update lock, so a concurrent write cannot
+invalidate it.
+
+**Default profile for new projects.** "Save as default for new projects" (Models view,
+`POST /api/settings/models/profile`, `model_profile_service.save_model_profile()`) copies the model
+settings a project stores into `~/.config/sova/model-profile.json`, beside `projects.json`: `agent.model`,
+`agent.fallback_models`, `oversight.analysis_model`, `roles.<role>_model`, `roles.<role>_fallback_models`
+and `llm.routing.<step>`. Only stored rows are saved, never a resolved built-in default, so a later change
+to a default still reaches projects that never chose a value. A short model name (`opus`, which older installs
+seeded into `agent.model`) is left out, since it would spread an unpinned alias: the result lists it in
+`skipped` with a `warning` that the Models view shows, pointing to Pin. User-facing text names the file as
+`~/.config/sova/model-profile.json`; the absolute path stays out of responses. It is refused, with nothing written, when
+the project stores none of them (422), when the profile file exists but cannot be read (409, never
+replaced behind the user's back) and when the home directory is unknown or not writable (503). `sova
+install` (which `sova setup` runs, so it applies the profile too) and the dashboard wizard's configure step
+then call `model_profile_service.apply_model_profile()`, which inserts the profile's keys a project has no row for in
+one transaction through `db_loader.insert_setting_if_absent()` and never updates one (a row another install
+commits in between, a row holding the
+default, and a whole-table `llm.routing` row all keep the project's own value). A key the project's
+`sova.toml` sets is skipped too: the install's default rows keep `sova.toml` from being migrated into the
+database, and a row would override it. An unreadable `sova.toml` applies nothing and is reported. Errors
+carry fixed text; the exception goes to the server log only. `sova install --update`
+does not apply it. A missing profile applies nothing; an unreadable one, or an entry outside the allowed
+set, a stale task name or a value of the wrong shape, is logged with the file path, skipped and returned as
+a `warning` the install prints (and the wizard shows), so an install never fails on it. A short model name
+(`opus`) in the profile is skipped the same way, as `save` already leaves it out, so the profile never spreads an
+unpinned alias. The install defaults
+write no `agent.model` row (the built-in `opus` applies), which is what lets the profile fill it; the
+dashboard wizard's Model select starts on "My default profile (else built-in)", which sends no `agent_model`;
+choosing Opus or Sonnet stores that model and the profile fills the other keys. A configure request that names no
+`agent_model` keeps the model the project already stores, else stores none, so the profile, else the built-in
+default, applies. A reconfigure keeps every model row the project stores (`agent.model`, `agent.fallback_models`,
+`roles.<role>_model` and `roles.<role>_fallback_models`, which saving the rewritten `agent` and `roles` sections
+would otherwise delete), and applies the profile only when the project stored no model setting before the
+request, so a reconfigure never replaces the project's own choices or brings back a route it cleared
+(`model_profile_service.keep_stored_model_settings()`). The response lists the keys the profile filled in
+`profile_applied`. A stored `llm.routing.<step>` row for a step no longer named in `TASK_TYPE_KEYS` can still be
+deleted (`sova config set llm.routing.<step> ""`, or Reset on the Settings page); only setting one is refused.
+`SOVA_` variables still win over stored rows. Editing the profile changes no project by itself; re-running
+`sova install` (without `--update`) on an existing project fills only the keys it still has no row for.
 
 ---
 

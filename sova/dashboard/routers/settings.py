@@ -17,7 +17,7 @@ from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.dashboard.config_errors import load_config_or_http
 from sova.dashboard.security import require_same_origin_csrf
-from sova.dashboard.services import github_labels_service, settings_service
+from sova.dashboard.services import github_labels_service, model_profile_service, settings_service
 from sova.dashboard.services.agent_pool import get_default_project_dir
 from sova.dashboard.services.settings_service import (
     apply_config_update,
@@ -275,7 +275,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
         raise HTTPException(status_code=422, detail=result["error"])
     _raise_for_write_error(result)
     if result.get("status") == "ok":
-        await apply_config_update(project_dir, req.key, result)
+        await apply_config_update(project_dir, settings_service.reload_key(req.key), result)
     return result
 
 
@@ -299,8 +299,10 @@ async def reset_config(req: ConfigResetRequest) -> dict:
     project_dir = _settings_project_dir()
     result = await settings_service.reset_config(project_dir, key=req.key)
     _raise_for_write_error(result)
-    if get_meta(req.key) is not None:
-        await apply_config_update(project_dir, req.key, result)
+    # One route (``llm.routing.<step>``) reloads what the whole table does, as the Models view's step clear does.
+    setting = settings_service.reload_key(req.key)
+    if get_meta(setting) is not None:
+        await apply_config_update(project_dir, setting, result)
     return result
 
 
@@ -377,11 +379,28 @@ async def pin_short_names(req: PinRequest) -> dict:
     return result
 
 
+@router.post(
+    "/settings/models/profile",
+    responses={
+        409: {"description": "The saved profile file exists but cannot be read, so it was not replaced"},
+        422: {"description": "The project stores no model settings to save"},
+        503: {"description": "The project database or the profile file could not be read or written"},
+        500: {"description": "Internal error"},
+    },
+    dependencies=[Depends(require_same_origin_csrf)],
+)
+async def save_model_profile() -> dict:
+    """Save this project's model settings as the default for new projects (``~/.config/sova/model-profile.json``)."""
+    result = await asyncio.to_thread(model_profile_service.save_model_profile, _settings_project_dir())
+    _raise_for_write_error(result)
+    return result
+
+
 def _raise_for_write_error(result: dict) -> None:
     """Answer a refused write with a client error carrying its message as ``detail``."""
     if result.get("unknown"):
         raise HTTPException(status_code=404, detail=result["error"])
-    if result.get("env_var") or result.get("conflict"):
+    if result.get("env_var") or result.get("conflict") or result.get("unreadable_profile"):
         raise HTTPException(status_code=409, detail=result["error"])
     if result.get("unavailable") or result.get("unreadable_database"):
         raise HTTPException(status_code=503, detail=result["error"])

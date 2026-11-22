@@ -306,7 +306,7 @@ def _reset_refusal(project_dir: Path | None, key: str, meta: SettingMeta | None)
         stored = read_stored_settings(project_dir)
         if stored is None:
             # Not "nothing stored": the rows could not be read, so nothing can be said about this key.
-            return _unreadable_database_error(project_dir) or {
+            return unreadable_database_error(project_dir) or {
                 "error": "The stored values could not be read",
                 "unavailable": True,
             }
@@ -362,8 +362,12 @@ async def reset_config(project_dir: Path | None = None, *, key: str) -> dict:
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
+    step = routing_task(key)
+    if step is not None:
+        return await _reset_route(project_dir, key, step)
+
     meta = _META_BY_KEY.get(key)
-    refusal = _reset_refusal(project_dir, key, meta) or _unreadable_database_error(project_dir)
+    refusal = _reset_refusal(project_dir, key, meta) or unreadable_database_error(project_dir)
     if refusal:
         return refusal
     toml_cleared = True
@@ -385,27 +389,39 @@ async def reset_config(project_dir: Path | None = None, *, key: str) -> dict:
     if meta is not None:
         result["value"] = get_config(project_dir).get(key)
         if meta.value_type != "secret" and result["value"] != _default_values().get(key):
-            reason = (
-                "it could not be removed from sova.toml, which may still set it"
-                if not toml_cleared
-                else "another config layer still sets it"
-            )
-            warning = warning or f"The stored value was removed, but '{key}' is still {result['value']!r}: {reason}."
+            warning = warning or _still_set_warning(key, result["value"], toml_cleared=toml_cleared)
     if warning:
         result["warning"] = warning
     return result
 
 
+async def _reset_route(project_dir: Path | None, key: str, step: str) -> dict:
+    """``reset_config()`` for one route: the Models view's "Use the role model", under the key the CLI names."""
+    cleared = await clear_step_model(project_dir, step=step)
+    return cleared if "error" in cleared else {**cleared, "key": key, "value": cleared["model"]}
+
+
+def _still_set_warning(key: str, value: object, *, toml_cleared: bool) -> str:
+    """The warning for a removed stored value that *key* still has (*value*), naming the layer that may set it."""
+    reason = (
+        "it could not be removed from sova.toml, which may still set it"
+        if not toml_cleared
+        else "another config layer still sets it"
+    )
+    return f"The stored value was removed, but '{key}' is still {value!r}: {reason}."
+
+
 _ROUTING_KEY = "llm.routing"
 
 
-def _routing_refusal(step: str) -> dict | None:
-    """Why ``llm.routing.<step>`` cannot be written here, as an error result, or None when it can."""
-    from sova.config.loader import env_override_var
-    from sova.dashboard.services.model_map_service import ROUTING_KEYS
+def _routing_env_refusal() -> dict | None:
+    """An error result when a ``SOVA_`` variable sets the routing table, so a stored route would never apply.
 
-    if step not in ROUTING_KEYS:
-        return {"error": f"Unknown step '{step}': routing names a task type or an issue size", "unknown": True}
+    Only ``SOVA_LLM_ROUTING`` (a JSON object) overrides routes: the settings models set no nested delimiter, so a
+    per-step ``SOVA_LLM_ROUTING_<STEP>`` variable is ignored by ``load_config()`` and needs no check here.
+    """
+    from sova.config.loader import env_override_var
+
     env_var = env_override_var(_ROUTING_KEY)
     if env_var:
         return {
@@ -413,6 +429,32 @@ def _routing_refusal(step: str) -> dict | None:
             "env_var": env_var,
         }
     return None
+
+
+def _routing_refusal(step: str) -> dict | None:
+    """Why ``llm.routing.<step>`` cannot be written here, as an error result, or None when it can."""
+    from sova.dashboard.services.model_map_service import ROUTING_KEYS
+
+    if step not in ROUTING_KEYS:
+        return {
+            "error": f"Unknown step '{step}': routing names a task type or an issue size ({_routing_names_hint()})",
+            "unknown": True,
+        }
+    return _routing_env_refusal()
+
+
+def _clear_refusal(project_dir: Path | None, step: str) -> dict | None:
+    """``_routing_refusal()`` for deleting a route: a stored row for a step no longer named may still be removed.
+
+    Only setting an unknown step is refused. A stale ``llm.routing.<old_task>`` row (a task renamed or dropped
+    from ``TASK_TYPE_KEYS``) would otherwise be impossible to reset one key at a time.
+    """
+    from sova.config.db_loader import read_stored_settings
+
+    stored = read_stored_settings(project_dir)
+    if stored is not None and f"{_ROUTING_KEY}.{step}" in stored:
+        return _routing_env_refusal()
+    return _routing_refusal(step)
 
 
 async def _write_routing_rows(
@@ -478,23 +520,27 @@ async def _write_routing_rows_to_completion(
     return await _run_to_completion(_write_routing_rows(project_dir, set_rows=set_rows, delete=delete))
 
 
-async def set_step_model(project_dir: Path | None, *, step: str, model: str) -> dict:
+async def set_step_model(project_dir: Path | None, *, step: str, model: str, skip_if_unchanged: bool = False) -> dict:
     """Set the model one step runs on: writes exactly the ``llm.routing.<step>`` row (Settings, Models view).
 
     *step* is a task type (``TASK_TYPE_KEYS``) or an issue size. An empty *model* deletes the row instead, so the
     step uses its role's model again (``clear_step_model()``). Refused for an unknown step, a model ID with
     whitespace, a routing table a ``SOVA_`` variable sets (``env_var``), and a value that would make the config
-    unloadable. Returns ``{"status": "ok", "step", "model"}`` or ``{"error": ...}``.
+    unloadable. With *skip_if_unchanged*, a step already at *model* (checked under the update lock, so a
+    concurrent write cannot invalidate the check) is not written and the result carries ``unchanged``. Returns
+    ``{"status": "ok", "step", "model"}`` or ``{"error": ...}``.
     """
     model = model.strip()
     if not model:
-        return await clear_step_model(project_dir, step=step)
-    refusal = _routing_refusal(step) or _unreadable_database_error(project_dir)
+        return await clear_step_model(project_dir, step=step, skip_if_unchanged=skip_if_unchanged)
+    refusal = _routing_refusal(step) or unreadable_database_error(project_dir)
     if refusal:
         return refusal
-    if any(ch.isspace() for ch in model):
-        return {"error": f"'{model}' is not a model ID: it contains whitespace"}
+    if error := model_id_error(model):
+        return {"error": error}
     async with _get_update_lock(project_dir):
+        if skip_if_unchanged and _step_unchanged(project_dir, step, model):
+            return {"status": "ok", "step": step, "model": model, "unchanged": True}
         routing = _current_routing(project_dir) or {}
         consistency_error = _validate_config_consistency(project_dir, _ROUTING_KEY, {**routing, step: model})
         if consistency_error:
@@ -508,16 +554,19 @@ async def set_step_model(project_dir: Path | None, *, step: str, model: str) -> 
     return {"status": "ok", "step": step, "model": model}
 
 
-async def clear_step_model(project_dir: Path | None, *, step: str) -> dict:
+async def clear_step_model(project_dir: Path | None, *, step: str, skip_if_unchanged: bool = False) -> dict:
     """Delete ``llm.routing.<step>``, so the step uses its role's model again ("Use the role model").
 
-    Also removes the step from ``sova.toml``, which would otherwise set it again on the next load. Returns
-    ``{"status": "ok", "step", "model": None, "deleted"}`` or ``{"error": ...}``.
+    Also removes the step from ``sova.toml``, which would otherwise set it again on the next load. With
+    *skip_if_unchanged*, a step already unset (checked under the update lock) is not written and the result
+    carries ``unchanged``. Returns ``{"status": "ok", "step", "model": None, "deleted"}`` or ``{"error": ...}``.
     """
-    refusal = _routing_refusal(step) or _unreadable_database_error(project_dir)
+    refusal = _clear_refusal(project_dir, step) or unreadable_database_error(project_dir)
     if refusal:
         return refusal
     async with _get_update_lock(project_dir):
+        if skip_if_unchanged and _step_unchanged(project_dir, step, None):
+            return {"status": "ok", "step": step, "model": None, "unchanged": True}
 
         async def clear() -> tuple[int, bool]:
             # One unit that a cancellation cannot split: a row deleted while sova.toml still sets the step would
@@ -541,13 +590,211 @@ async def clear_step_model(project_dir: Path | None, *, step: str) -> dict:
             "so whether another config layer still sets it is unknown."
         )
     elif still is not None:
-        reason = (
-            "it could not be removed from sova.toml, which may still set it"
-            if not toml_cleared
-            else "another config layer still sets it"
-        )
-        result["warning"] = f"The stored value was removed, but '{_ROUTING_KEY}.{step}' is still {still!r}: {reason}."
+        result["warning"] = _still_set_warning(f"{_ROUTING_KEY}.{step}", still, toml_cleared=toml_cleared)
     return result
+
+
+def reload_key(key: str) -> str:
+    """The key for ``apply_config_update()``: one route (``llm.routing.<step>``) reloads the whole table."""
+    return _ROUTING_KEY if routing_task(key) is not None else key
+
+
+def routing_task(key: str) -> str | None:
+    """The step a ``llm.routing.<step>`` key names, or None for any other key (``llm.routing`` itself included)."""
+    prefix = f"{_ROUTING_KEY}."
+    return key.removeprefix(prefix) if key.startswith(prefix) else None
+
+
+def _routing_names_hint() -> str:
+    """The valid names a routing key may take, for an error message."""
+    from sova.llm.complexity import ComplexityTier
+    from sova.llm.routing import TASK_TYPE_KEYS
+
+    return (
+        f"valid task types: {', '.join(sorted(TASK_TYPE_KEYS))}; "
+        f"valid issue sizes: {', '.join(tier.value for tier in ComplexityTier)}"
+    )
+
+
+def model_id_error(model: object) -> str | None:
+    """Why *model* cannot be stored as a route's model ID, or None when it can."""
+    if not isinstance(model, str) or not model.strip():
+        return f"{model!r} is not a model ID: a route needs a non-empty model ID string"
+    if any(ch.isspace() for ch in model):
+        return f"'{model}' is not a model ID: it contains whitespace"
+    return None
+
+
+def _parse_routes(value: str) -> tuple[dict[str, str], str | None]:
+    """Parse a ``llm.routing`` JSON object into ``{step: model}``, or return why it cannot be stored.
+
+    Every entry is checked before anything is written, so one bad entry rejects the whole object.
+    """
+    from sova.dashboard.services.model_map_service import ROUTING_KEYS
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        return {}, f'\'{_ROUTING_KEY}\' expects a JSON object such as {{"develop": "<model ID>"}}: {exc.msg}'
+    if not isinstance(parsed, dict):
+        return {}, f"'{_ROUTING_KEY}' expects a JSON object, got {type(parsed).__name__}"
+    unknown = sorted(set(parsed) - ROUTING_KEYS)
+    if unknown:
+        return {}, f"Unknown routing key {', '.join(repr(name) for name in unknown)} ({_routing_names_hint()})"
+    for step, model in parsed.items():
+        error = model_id_error(model)
+        if error:
+            return {}, f"'{_ROUTING_KEY}.{step}': {error}"
+    return parsed, None
+
+
+def _short_name_warning(models: Iterable[str]) -> str | None:
+    """A warning naming the short model names (``sonnet``) among *models*, which the Claude CLI resolves itself."""
+    from sova.dashboard.services.model_map_service import is_short_name
+
+    short = sorted({model for model in models if is_short_name(model)})
+    if not short:
+        return None
+    names = ", ".join(short)
+    if len(short) > 1:
+        return f"{names} are short model names that the Claude CLI resolves; pin explicit model IDs instead."
+    return f"{names} is a short model name that the Claude CLI resolves; pin an explicit model ID instead."
+
+
+async def _replace_routing_rows(project_dir: Path | None, routes: dict[str, str]) -> None:
+    """Make *routes* the whole routing table in one transaction: every ``llm.routing`` row goes, then one row a step.
+
+    The whole-table ``llm.routing`` row an older write left, and any row for a step that is no longer named,
+    go with them, so a failure never leaves a half-replaced table.
+    """
+    from sova.config.db_loader import delete_setting, save_setting
+
+    async with await get_session(project_dir=project_dir) as session, session.begin():
+        await delete_setting(session, _ROUTING_KEY, with_children=True)
+        for step, model in routes.items():
+            await save_setting(session, f"{_ROUTING_KEY}.{step}", model)
+    _invalidate_config_cache(project_dir)
+
+
+async def replace_routing(project_dir: Path | None, *, routes: dict[str, str]) -> dict:
+    """Make *routes* the project's whole routing table (``sova config set llm.routing '{...}'``).
+
+    A step missing from *routes* loses its row and goes back to the model its role picks, so ``{}`` clears every
+    route. Refused for a routing table a ``SOVA_`` variable sets (``env_var``), an unreadable database, and a
+    table that would make the config unloadable. Returns ``{"status": "ok", "key", "value"}`` (``unchanged``
+    when the table in effect already is *routes*, with no write) or ``{"error": ...}``.
+    """
+    refusal = _routing_env_refusal() or unreadable_database_error(project_dir)
+    if refusal:
+        return refusal
+    result: dict[str, Any] = {"status": "ok", "key": _ROUTING_KEY, "value": json.dumps(routes)}
+    async with _get_update_lock(project_dir):
+        if _stored_routing(project_dir) == routes and _current_routing(project_dir) == routes:
+            return {**result, "unchanged": True}
+        consistency_error = _validate_config_consistency(project_dir, _ROUTING_KEY, routes)
+        if consistency_error:
+            return {"error": consistency_error}
+
+        async def replace() -> bool:
+            # One unit that a cancellation cannot split: a table replaced while sova.toml still lists a dropped
+            # step would bring that route back on the next config load.
+            await _replace_routing_rows(project_dir, routes)
+            try:
+                cleared = _remove_setting_from_toml(project_dir, _ROUTING_KEY)
+                if routes:
+                    # False here can only mean there is no sova.toml, so it is no sign of a route left behind.
+                    _save_setting_to_toml(project_dir, _ROUTING_KEY, routes)
+            except OSError:
+                # The rows are committed and in effect: only the sova.toml mirror failed, which is no DB failure.
+                log.warning("settings.routes_toml_failed", exc_info=True)
+                return False
+            return cleared
+
+        try:
+            toml_cleared = await _run_to_completion(replace())
+        except (OSError, RuntimeError, SQLAlchemyError):
+            log.warning("settings.routes_replace_failed", exc_info=True)
+            return {"error": "Failed to save the routing table (DB unavailable)", "unavailable": True}
+    left_behind = None if toml_cleared else _routes_left_behind_warning(project_dir, routes)
+    warning = " ".join(w for w in (left_behind, _short_name_warning(routes.values())) if w)
+    return {**result, "warning": warning} if warning else result
+
+
+def _routes_left_behind_warning(project_dir: Path | None, routes: dict[str, str]) -> str | None:
+    """After a whole-table replace whose ``sova.toml`` cleanup failed: a warning naming a dropped step still set."""
+    effective = _current_routing(project_dir)
+    if effective is None:
+        return (
+            f"The routing table was replaced, but '{_ROUTING_KEY}' could not be read back and could not be removed "
+            "from sova.toml, so whether sova.toml still sets a dropped step is unknown."
+        )
+    left = sorted(set(effective) - set(routes))
+    if not left:
+        return None
+    names = ", ".join(f"'{_ROUTING_KEY}.{step}'" for step in left)
+    return (
+        f"The routing table was replaced, but {names} still applies: it could not be removed from sova.toml, "
+        "which may still set it."
+    )
+
+
+def _stored_routing(project_dir: Path | None) -> dict[str, Any] | None:
+    """The per-step routing rows the database stores, as ``{step: model}``.
+
+    None when they cannot be read, or when a whole-table ``llm.routing`` row (an older write) is stored: that row
+    masks the per-step rows, so the stored table is not normalized and a write is needed to make it so.
+    """
+    from sova.config.db_loader import read_stored_settings
+
+    stored = read_stored_settings(project_dir)
+    if stored is None or _ROUTING_KEY in stored:
+        return None
+    return {step: value for key, value in stored.items() if (step := routing_task(key)) is not None}
+
+
+async def update_routing(project_dir: Path | None, *, key: str, value: str) -> dict:
+    """``update_config()`` for ``llm.routing`` (a JSON object, replacing every route) and ``llm.routing.<step>``.
+
+    The object form is ``replace_routing()``. The single-key form sets one step and leaves the others alone; an
+    empty value deletes that step's row (``clear_step_model()``). A step already at the value, or already unset,
+    answers ``unchanged`` without a write. Returns what those functions return, with ``key`` and ``value``.
+    """
+    step = routing_task(key)
+    if step is None:
+        routes, error = _parse_routes(value)
+        return {"error": error} if error else await replace_routing(project_dir, routes=routes)
+
+    model = value.strip()
+    refusal = _routing_refusal(step) if model else _clear_refusal(project_dir, step)
+    if refusal:
+        return refusal
+    if model and (error := model_id_error(model)):
+        return {"error": error}
+    result = await (
+        set_step_model(project_dir, step=step, model=model, skip_if_unchanged=True)
+        if model
+        else clear_step_model(project_dir, step=step, skip_if_unchanged=True)
+    )
+    if "error" in result:
+        return result
+    if result.get("unchanged"):
+        return {"status": "ok", "key": key, "value": model, "unchanged": True}
+    out: dict[str, Any] = {"status": "ok", "key": key, "value": model, "cleared": not model}
+    warning = result.get("warning") or _short_name_warning([model])
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def _step_unchanged(project_dir: Path | None, step: str, model: str | None) -> bool:
+    """True when *step* already runs on *model* (None: unset) and the stored rows say so too, so no write is needed.
+
+    The stored rows are checked as well as the effective table: a whole-table ``llm.routing`` row can mask a
+    per-step row that a later write would bring back.
+    """
+    routing = _current_routing(project_dir)
+    stored = _stored_routing(project_dir)
+    return routing is not None and stored is not None and routing.get(step) == model == stored.get(step)
 
 
 def _changed_since_read(project_dir: Path | None, expected: dict[str, Any] | None) -> dict | None:
@@ -630,7 +877,7 @@ async def pin_short_names(
     # so the caller still applies their reloads: they are stored, and a retry will not pin them again.
     committed = sorted(updates)
     if routes:
-        unreadable = _unreadable_database_error(project_dir)
+        unreadable = unreadable_database_error(project_dir)
         if unreadable:
             return {**unreadable, "committed": committed}
         async with _get_update_lock(project_dir):
@@ -734,6 +981,9 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
 
+    if key == _ROUTING_KEY or routing_task(key) is not None:
+        return await update_routing(project_dir, key=key, value=value)
+
     meta = _META_BY_KEY.get(key)
     if meta is None:
         return {"error": f"Unknown setting: '{key}'", "unknown": True}
@@ -749,7 +999,7 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
 
     cast = _cast_value(value, meta.value_type, meta.item_type)
 
-    unreadable = _unreadable_database_error(project_dir)
+    unreadable = unreadable_database_error(project_dir)
     if unreadable:
         return unreadable
 
@@ -829,7 +1079,7 @@ async def update_config_many(
             return {"error": validation_error}
         casted[key] = _cast_value(value, meta.value_type, meta.item_type)
 
-    unreadable = _unreadable_database_error(project_dir)
+    unreadable = unreadable_database_error(project_dir)
     if unreadable:
         return unreadable
 
@@ -1068,7 +1318,7 @@ async def migrate_secret_to_keyring(project_dir: Path | None, key: str) -> dict:
     return {"status": "ok", "key": key}
 
 
-def _unreadable_database_error(project_dir: Path | None) -> dict | None:
+def unreadable_database_error(project_dir: Path | None) -> dict | None:
     """An error result when a write would land in a database ``load_config()`` cannot read back.
 
     The flag lets the HTTP layer answer with a client error instead of a 200 body.
@@ -1708,7 +1958,7 @@ async def reload_pinned(project_dir: Path, keys: Iterable[str], result: dict) ->
     """Apply the config update for each reload target the pinned *keys* belong to, once per target."""
     reloaded: set[str] = set()
     for key in keys:
-        setting = "llm.routing" if key.startswith("llm.routing.") else key
+        setting = reload_key(key)
         target = match_reload_target(setting) or setting
         if target not in reloaded:
             reloaded.add(target)

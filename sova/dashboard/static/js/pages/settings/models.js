@@ -29,6 +29,16 @@ let replayRefresh = false;
 const savedLists = new Map();
 // Fallback lists with a save in flight: further edits to them are ignored until it settles.
 const pendingLists = new Set();
+// Every model-setting write in flight (steps, keys, lists, pins): "Save as default" waits for them first.
+const pendingWrites = new Set();
+
+/* Records *work* as a write in flight until it settles, and returns it. */
+function track(work) {
+  pendingWrites.add(work);
+  const done = () => pendingWrites.delete(work);
+  work.then(done, done);
+  return work;
+}
 
 function host() { return document.querySelector('[data-part="models-view"]'); }
 function attr(value) { return escapeHtml(String(value == null ? '' : value)); }
@@ -166,6 +176,14 @@ function shortPill(key) {
   if (!item.pin_to) return pill + '<span class="sova-settings-status-muted">Pick a model: the name matches several</span>';
   const to = Array.isArray(item.pin_to) ? item.pin_to.map(nameOf).join(', ') : nameOf(item.pin_to);
   return pill + '<button type="button" class="sova-setting-link" data-mm="pin" data-key="' + attr(key) + '">Pin to ' + escapeHtml(to) + '</button>';
+}
+
+let profileSaving = false;
+
+function profileHtml() {
+  return '<div class="sova-mm-pinall" data-mm-row="save-profile"><div class="sova-mm-pinall-text"><span class="sova-mm-pinall-title">Default for new projects</span> ' +
+    'Replaces your saved default with the models set in this project (<code>~/.config/sova/model-profile.json</code>). sova install, sova setup and the setup wizard then fill a new project with them, only where it has not set its own.</div>' +
+    '<button type="button" class="sova-btn" data-mm="save-profile"' + (profileSaving ? ' disabled' : '') + '>Save as default for new projects</button>' + msgHtml('save-profile') + '</div>';
 }
 
 function pinAllHtml() {
@@ -348,7 +366,7 @@ function render() {
         '<span class="sova-settings-note">Used by every role without its own fallbacks, and by calls made outside a role. <code>agent.fallback_models</code></span>' +
         msgHtml('list:agent.fallback_models') + '</div></div>' +
     '</div>' +
-    pinAllHtml() +
+    pinAllHtml() + profileHtml() +
     '<div class="sova-mm-grid sova-mm-colhead"><span>Role and step</span><span>Model set here</span><span>Runs on, and fallbacks</span></div>' +
     map.roles.map(roleBlock).join('') + writingBlock() + tiersBlock() + otherBlock();
   el.innerHTML = html;
@@ -461,9 +479,9 @@ async function resetKey(key, rowId) {
 }
 
 function applyModel(target, value) {
-  if (target.indexOf('step:') === 0) return setStepModel(target.slice(5), value);
+  if (target.indexOf('step:') === 0) return track(setStepModel(target.slice(5), value));
   const key = target.slice(4);
-  return saveKey(key, value, target);
+  return track(saveKey(key, value, target));
 }
 
 /* The Models view row a setting's messages show on. */
@@ -497,6 +515,34 @@ async function pin(keys) {
   scheduleRefresh();
 }
 
+async function saveProfile() {
+  if (profileSaving) return;
+  profileSaving = true;
+  const button = document.querySelector('[data-mm="save-profile"]');
+  if (button) button.disabled = true;
+  try {
+    setMessage('save-profile', 'Saving...', 'muted');
+    // A model chosen just now must be stored before the profile reads the project's settings.
+    while (pendingWrites.size) await Promise.allSettled(Array.from(pendingWrites));
+    const result = await post('/settings/models/profile', {});
+    if (!result.ok) {
+      setMessage('save-profile', 'Not saved. ' + result.message, 'err');
+      return;
+    }
+    const keys = result.data.keys || [];
+    const n = keys.length;
+    // Name what was saved, so a default nobody chose never goes in unseen.
+    const saved = 'Saved ' + n + (n === 1 ? ' setting' : ' settings') + ' (' + keys.join(', ') + ') to ' + result.data.path;
+    if (result.data.warning) setMessage('save-profile', saved + '. ' + result.data.warning, 'warn');
+    else setMessage('save-profile', saved, 'ok');
+  } finally {
+    profileSaving = false;
+    // The map refresh a write triggers re-renders the view, which rebuilds the button.
+    const again = document.querySelector('[data-mm="save-profile"]');
+    if (again) again.disabled = false;
+  }
+}
+
 function currentList(key) {
   if (savedLists.has(key)) return savedLists.get(key).slice();
   if (key === 'agent.fallback_models') return map.fallbacks.models.slice();
@@ -505,13 +551,17 @@ function currentList(key) {
 }
 
 /* Saves a fallback list and remembers it as the list the next edit starts from, until the map is read again. */
-async function saveList(key, rowId, list) {
+function saveList(key, rowId, list) {
   pendingLists.add(key);
-  try {
-    if (await saveKey(key, JSON.stringify(list), rowId)) savedLists.set(key, list);
-  } finally {
-    pendingLists.delete(key);
-  }
+  return track((async () => {
+    try {
+      const stored = await saveKey(key, JSON.stringify(list), rowId);
+      if (stored) savedLists.set(key, list);
+      return stored;
+    } finally {
+      pendingLists.delete(key);
+    }
+  })());
 }
 
 /* Starts saving the changed list and returns the save (true when it was stored), or null when nothing was started. */
@@ -552,8 +602,9 @@ export function handleClick(target) {
   const btn = target.closest('[data-mm]');
   if (!btn || btn.tagName === 'SELECT' || !btn.closest('[data-part="models-view"]')) return false;
   const act = btn.dataset.mm;
-  if (act === 'pin') pin([btn.dataset.key]);
-  else if (act === 'pin-all') pin(null);
+  if (act === 'pin') track(pin([btn.dataset.key]));
+  else if (act === 'pin-all') track(pin(null));
+  else if (act === 'save-profile') saveProfile();
   else if (act === 'refresh') refreshList();
   else if (act === 'custom-save') {
     const input = customInput(document, btn.dataset.target);
@@ -588,7 +639,7 @@ export function handleChange(target) {
   if (act === 'fb-mode') {
     const key = target.dataset.key;
     if (target.value === 'own') saveList(key, 'fb:' + key, currentList('agent.fallback_models'));
-    else resetKey(key, 'fb:' + key);
+    else track(resetKey(key, 'fb:' + key));
     return true;
   }
   if (act === 'fb-add') {
