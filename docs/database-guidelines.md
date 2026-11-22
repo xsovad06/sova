@@ -68,6 +68,8 @@ transaction a write lands in, and the injected session can outlive the work it w
 
 24 models in `sova/db/models.py`: `TaskRun`, `OutputLine`, `StepExecution`, `FailureRecord`, `CostRecord`, `TaskAssessmentRecord`, `IssueLifecycle`, `LifecyclePhaseRecord`, `WorkflowDefinition`, `CommandContract`, `CodeRabbitEvent`, `ResourceSampleRecord`, `ResourceSummaryRecord`, `ActionFeedback`, `OversightRun`, `OversightFinding`, `PRCreationQueue`, `TelemetryEvent`, `SupervisorDecision`, `PREvent`, `ProjectSetting`, `MergeQueueEntry`, `FeedEventRecord`, `BudgetOverride`.
 
+`OutputLine.created_at` is the time `OutputWriter.write_line()` received the line; rows written before that change carry the flush time of their batch instead. `OutputLine.line_number` is allocated inside the insert transaction, under the run's write lock (`BEGIN IMMEDIATE` on SQLite, a transaction-scoped advisory lock on PostgreSQL, namespaced by the two-key form), as the next free number after the stored maximum, so two writers on one `task_run_id` never collide and a retried batch leaves no gap. A pipeline run's engine is its only persisting writer; the dashboard writes rows only for runs without an engine writer.
+
 | Convention | Example |
 |---|---|
 | Type-annotated columns | `Mapped[str]` with `mapped_column(String(50))` |

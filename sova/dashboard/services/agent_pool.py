@@ -31,6 +31,9 @@ log = get_logger(component="dashboard.pool")
 
 _DEFAULT_SLUG = "__default__"
 
+# How many stderr lines a run without a dashboard writer keeps for finalization to store.
+STDERR_TAIL_LINES = 500
+
 MAX_RECENTLY_COMPLETED = 5
 RECENTLY_COMPLETED_TTL = 30.0
 
@@ -48,6 +51,9 @@ class AgentState:
     # evicts, so a log viewer can tell exactly how many lines a snapshot has that its stream also sent.
     output_seq: int = 0
     output_writer: OutputWriter | None = None
+    # The last stderr lines of a run whose own engine persists its output (``output_writer`` is None): the dashboard
+    # never stores that process's stderr as it arrives, so finalization writes these after the engine's rows.
+    stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=STDERR_TAIL_LINES))
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)

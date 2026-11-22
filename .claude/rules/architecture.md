@@ -13,7 +13,7 @@ SOVA has four main components:
 - `core/workflow.py` (WorkflowEngine): executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
 - `core/state.py`: 19-state TaskStatus StrEnum (no transition validation: `TaskRun.status` writes come from several pipeline variants and recovery paths that don't fit one table)
 - `core/context.py`: ExecutionContext dataclass threading state through steps
-- `core/output.py`: OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
+- `core/output.py`: OutputWriter for per-run DB-backed output (timed flush), read_lines, retention cleanup
 - `core/steps/`: 32 BaseStep implementations with execute/validate_output/verify_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (18 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> address_sonarcloud_findings -> confidence_score -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (13 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> resolve_review_threads -> refresh_pr_body -> monitor_ci -> address_sonarcloud_findings -> resolve_external_reviews -> extract_memory -> handoff_to_reviewer. With Codex, dashboard `/address-pr` runs it and SOVA owns Git and validation (`docs/codex-runtime-setup.md`).

@@ -243,6 +243,22 @@ NO_FREE_SLOT = "no_free_slot"
 # runtime sandbox is correct regardless of ``agent.runtime``.
 _DIRECT_SPAWN_ROLES = _PIPELINE_ROLES | {"reviewer"}
 
+# Roles whose ``sova run --run-id`` process runs a WorkflowEngine and persists its own output rows to the run
+# (step markers, agent text). The dashboard buffers and streams that process's stdout for such a run but never
+# persists it, so the engine's rows are the run's one stored, ordered line sequence; its stderr is stored once at
+# finalization (``_persist_stderr_tail``). Reviewer and planner runs have no engine writer, so the dashboard's is
+# their only one. ``tests/test_agent_output.py`` pins this set to the roles that construct a WorkflowEngine, and
+# ``start_command()`` never consults it: a command run is ``claude -p /<command>``, never an engine process.
+ENGINE_WRITER_ROLES = frozenset({"developer", "researcher"})
+
+
+def make_output_writer(project_dir: Path, run_id: int, role: str | None) -> OutputWriter | None:
+    """The dashboard's persisting writer for a ``sova run`` run, or ``None`` when its engine persists the output."""
+    if (role or "developer") in ENGINE_WRITER_ROLES:
+        return None
+    return OutputWriter(project_dir, run_id)
+
+
 # Roles whose spawned ``sova run`` child reads the per-run "Internal LLM model"
 # override (``RUN_MODEL_OVERRIDE_ENV``) in ``_invoke_with_fallback``. That env
 # var only reaches the child through ``spawn_direct(extra_env=...)`` below, so
@@ -900,7 +916,7 @@ async def start_agent(
         if issue:
             await _link_run_to_lifecycle(run_id, issue, role or "developer", project_dir, pr_number=pr_number)
 
-        writer = OutputWriter(project_dir, run_id)
+        writer = make_output_writer(project_dir, run_id, role)
 
         agent = AgentState(
             run_id=run_id,
@@ -1141,6 +1157,7 @@ async def start_command(
 
         await _link_run_to_lifecycle(run_id, issue, role, project_dir)
 
+        # A command run (claude -p /<command>) is never an engine process, whatever its role.
         writer = OutputWriter(project_dir, run_id)
 
         agent = AgentState(

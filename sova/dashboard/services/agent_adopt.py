@@ -380,8 +380,8 @@ async def adopt_orphaned_run(run: TaskRun, project_dir: Path | None) -> bool:
     cannot be told from a recycled one) is left alone and reported as not adopted. Any failure is logged and
     leaves the run untouched and unmanaged.
     """
-    from sova.core.output import OutputWriter
     from sova.dashboard.services.agent_finalize import _wait_and_finalize
+    from sova.dashboard.services.agent_lifecycle import make_output_writer
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
     from sova.dashboard.services.agent_pool import AgentState
     from sova.dashboard.services.agent_resource import _background_tasks, _start_resource_monitoring
@@ -430,7 +430,7 @@ async def adopt_orphaned_run(run: TaskRun, project_dir: Path | None) -> bool:
             stream_reader_drain_timeout=drain_timeout,
             runtime_name=runtime_name,
             process=process,
-            output_writer=OutputWriter(root, run_id),
+            output_writer=make_output_writer(root, run_id, role),
             pr_number=pr_number,
             project_dir=root,
             worktree_path=await _resolve_adopted_worktree(run, root, role),

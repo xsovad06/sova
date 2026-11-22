@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from sova.dashboard.services.output_stream_service import get_output_stream_service
+from sova.ipc.claude_stream import claude_event_lines
+from sova.utils.formatting import strip_ansi
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -62,8 +64,14 @@ async def _buffer_line(agent: AgentState, text: str) -> None:
 
     The append, the sequence count and the publish run with no ``await`` between them, so a subscriber
     that reads ``output_seq`` when it subscribes receives exactly the lines numbered from there on. The
-    DB flush may suspend, so it comes after.
+    DB flush may suspend, so it comes after. ANSI escapes and trailing newlines are stripped first, and a line
+    left empty is dropped, the same rule ``OutputWriter.write_line()`` applies. The live sequence matches the stored
+    ``line_number`` only for a run this writer alone persists (``agent.output_writer`` set); a developer or researcher
+    run is persisted by its own engine (``make_output_writer()``), so its stream and buffer are not the stored rows.
     """
+    text = strip_ansi(text).rstrip("\n")
+    if not text:
+        return
     agent.output_lines.append(text)
     agent.output_seq += 1
 
@@ -83,8 +91,7 @@ async def _read_output(agent: AgentState) -> None:
         if agent.process is None:
             return
         async for line in agent.process.stdout_lines():
-            text = _parse_stream_line(line, agent)
-            if text:
+            for text in _parse_stream_lines(line, agent):
                 await _buffer_line(agent, text)
     except asyncio.CancelledError:
         raise
@@ -176,36 +183,40 @@ def _add_reported_tokens(total: int | None, usage: dict[str, Any], key: str) -> 
 
 
 def _parse_stream_line(line: str, agent: AgentState) -> str:
-    """Extract readable text from an agent output line.
+    """Readable text of an agent output line, with the lines of a multi-line event joined by newlines."""
+    return "\n".join(_parse_stream_lines(line, agent))
 
-    Delegates to the agent's own per-process runtime parser when it has one
-    (Codex); otherwise parses Claude Code's stream-json format inline.
+
+def _parse_stream_lines(line: str, agent: AgentState) -> list[str]:
+    """Extract the readable output lines from one agent output line.
+
+    A Claude assistant event yields a line per text block and per tool call, an errored tool
+    result yields one line, and every other event at most one.
     """
     if not line.strip():
-        return ""
-
+        return []
     if agent.stream_parser is not None:
-        return _parse_runtime_stream_line(line, agent, agent.stream_parser)
+        text = _parse_runtime_stream_line(line, agent, agent.stream_parser)
+        return [text] if text else []
 
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        return line
+        return [line]
+    if not isinstance(data, dict):
+        return [line]
 
-    if agent.phase_tally is not None and isinstance(data, dict):
+    if agent.phase_tally is not None:
         agent.phase_tally.observe(data)
+    if data.get("type") in ("assistant", "user"):
+        return claude_event_lines(data)
+    text = _parse_claude_stream_text(data, agent)
+    return [text] if text else []
 
+
+def _parse_claude_stream_text(data: dict[str, Any], agent: AgentState) -> str:
+    """Extract text from a Claude Code stream-json event that is not an assistant or user event."""
     msg_type = data.get("type", "")
-
-    if msg_type == "assistant":
-        content = data.get("message", {}).get("content", [])
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "".join(parts)
 
     if msg_type == "content_block_delta":
         delta = data.get("delta", {})
@@ -253,13 +264,20 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
 
 
 async def _read_stderr(agent: AgentState) -> None:
-    """Background task to capture stderr lines into the agent's output deque and DB."""
+    """Background task to capture stderr lines into the agent's output deque and DB.
+
+    A run with no dashboard writer (its own engine persists its rows) also keeps the last lines in
+    ``agent.stderr_tail``, which finalization stores once the engine's rows are committed.
+    """
     try:
         if agent.process is None:
             return
         async for line in agent.process.stderr_lines():
             if line.strip():
-                await _buffer_line(agent, f"[stderr] {line}")
+                text = f"[stderr] {line}"
+                if agent.output_writer is None:
+                    agent.stderr_tail.append(strip_ansi(text).rstrip("\n"))
+                await _buffer_line(agent, text)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 (reader task must report and exit cleanly, never crash the event loop)

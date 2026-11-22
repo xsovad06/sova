@@ -239,6 +239,64 @@ class TestOutputService:
         assert lines == ["Before close"]
 
     @pytest.mark.asyncio
+    async def test_lines_keep_their_write_time_and_ansi_is_stripped(self, session, tmp_path: Path) -> None:
+        import asyncio
+
+        from sqlalchemy import select
+
+        from sova.core.output import OutputWriter, read_lines
+        from sova.db.models import OutputLine
+
+        await self._create_run(session, 6)
+        writer = OutputWriter(tmp_path / "fake", run_id=6)
+        writer.write_line("\x1b[31mred\x1b[0m text")
+        writer.write_line("\x1b[2K\x1b[0m")
+        writer.write_line("")
+        await asyncio.sleep(0.05)
+        writer.write_line("later")
+        await writer.close()
+
+        lines, total = await read_lines(tmp_path / "fake", run_id=6)
+        assert (lines, total) == (["red text", "later"], 2)
+        rows = (await session.execute(select(OutputLine).where(OutputLine.task_run_id == 6))).scalars().all()
+        first, second = sorted(rows, key=lambda r: r.line_number)
+        assert (second.created_at - first.created_at).total_seconds() >= 0.04
+
+    @pytest.mark.asyncio
+    async def test_timer_flushes_pending_lines_and_close_stops_it(self, session, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 7)
+        writer = OutputWriter(tmp_path / "fake", run_id=7, flush_interval=0.05)
+        writer.write_line("pending")
+        assert await read_lines(tmp_path / "fake", run_id=7) == ([], 0)
+        await asyncio.sleep(0.3)
+        assert await read_lines(tmp_path / "fake", run_id=7) == (["pending"], 1)
+
+        timer = writer._timer
+        assert timer is not None
+        await writer.close()
+        assert timer.done()
+        assert writer._timer is None
+
+    @pytest.mark.asyncio
+    async def test_new_writer_continues_after_the_stored_maximum(self, session, tmp_path: Path) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 8)
+        first = OutputWriter(tmp_path / "fake", run_id=8)
+        first.write_line("one")
+        first.write_line("two")
+        await first.close()
+        resumed = OutputWriter(tmp_path / "fake", run_id=8)
+        resumed.write_line("three")
+        await resumed.close()
+
+        assert await read_lines(tmp_path / "fake", run_id=8, since=2) == (["three"], 3)
+
+    @pytest.mark.asyncio
     async def test_cleanup_old_output(self, session, tmp_path: Path) -> None:
         from sova.core.output import OutputWriter, cleanup_old_output, read_lines
 
@@ -408,6 +466,35 @@ class TestOutputService:
 # ---------------------------------------------------------------------------
 
 
+class TestBufferLine:
+    """_buffer_line() keeps the live buffer, the stream and the stored rows numbered alike."""
+
+    @pytest.mark.asyncio
+    async def test_ansi_only_line_changes_nothing_and_publishes_nothing(self) -> None:
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_output import _buffer_line
+
+        agent = MagicMock()
+        agent.output_lines = deque()
+        agent.output_seq = 0
+        agent.run_id = 1
+        agent.output_writer = MagicMock()
+        agent.output_writer.should_flush.return_value = False
+        stream = MagicMock()
+        with patch("sova.dashboard.services.agent_output.get_output_stream_service", return_value=stream):
+            await _buffer_line(agent, "\x1b[2K\x1b[0m\n")
+            assert (list(agent.output_lines), agent.output_seq) == ([], 0)
+            stream.publish.assert_not_called()
+            agent.output_writer.write_line.assert_not_called()
+
+            await _buffer_line(agent, "\x1b[31mred\x1b[0m")
+        assert (list(agent.output_lines), agent.output_seq) == (["red"], 1)
+        stream.publish.assert_called_once_with(1, "red")
+        agent.output_writer.write_line.assert_called_once_with("red")
+
+
 class TestParseStreamLine:
     """Tests for _parse_stream_line in agent_output.py."""
 
@@ -442,6 +529,34 @@ class TestParseStreamLine:
             }
         )
         assert _parse_stream_line(line, self._agent()) == "Hello"
+
+    def test_assistant_message_yields_a_line_per_block(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_lines
+
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Checking"},
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "git status"}},
+                    ]
+                },
+            }
+        )
+        assert _parse_stream_lines(line, self._agent()) == ["Checking", "[Bash] git status"]
+
+    def test_errored_tool_result_is_reported(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_lines
+
+        line = json.dumps(
+            {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True, "content": "denied"}]}}
+        )
+        assert _parse_stream_lines(line, self._agent()) == ["[tool error] denied"]
 
     def test_content_block_delta(self) -> None:
         import json
@@ -920,3 +1035,138 @@ class TestReadStderrFlushTrigger:
         mock_writer.write_line.assert_called_once()
         mock_writer.flush.assert_awaited_once()
         assert any("stderr" in line for line in agent.output_lines)
+
+
+class TestEngineRunStderrPersistence:
+    """A run whose engine persists its output still keeps its process stderr: it is stored at finalization."""
+
+    async def test_stderr_of_a_run_without_a_writer_is_kept_for_finalization(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_output import _read_stderr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def stderr_lines():
+            yield "Traceback (most recent call last):\n"
+            yield "   \n"
+            yield "ImportError: boom"
+
+        mock_process.stderr_lines = stderr_lines
+        agent = AgentState(run_id=81, issue="400", role="developer", process=mock_process)
+
+        await _read_stderr(agent)
+
+        assert list(agent.stderr_tail) == ["[stderr] Traceback (most recent call last):", "[stderr] ImportError: boom"]
+
+    async def test_stderr_of_a_run_with_a_writer_is_not_kept_twice(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_output import _read_stderr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def stderr_lines():
+            yield "warning"
+
+        mock_process.stderr_lines = stderr_lines
+        writer = MagicMock()
+        writer.should_flush.return_value = False
+        agent = AgentState(run_id=82, issue="400", role="reviewer", process=mock_process, output_writer=writer)
+
+        await _read_stderr(agent)
+
+        assert not agent.stderr_tail
+
+    async def test_finalize_appends_stderr_after_the_engines_rows(self, session, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.core.output import OutputWriter, read_lines
+        from sova.dashboard.services.agent_finalize import _persist_stderr_tail
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with session.begin():
+            session.add(TaskRun(id=201, role="developer", status="running"))
+        project = tmp_path / "fake"
+        engine_writer = OutputWriter(project, run_id=201)
+        engine_writer.write_line("=== Workflow started ===")
+        await engine_writer.close()
+
+        agent = AgentState(run_id=201, issue="1", role="developer", process=AsyncMock(), project_dir=project)
+        agent.stderr_tail.extend(["[stderr] Traceback", "[stderr] ImportError: boom"])
+
+        await _persist_stderr_tail(agent, 201)
+
+        lines, total = await read_lines(project, 201)
+        assert lines == ["=== Workflow started ===", "[stderr] Traceback", "[stderr] ImportError: boom"]
+        assert total == 3
+
+    async def test_finalize_leaves_a_run_with_a_writer_alone(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_finalize import _persist_stderr_tail
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState(
+            run_id=202, issue="1", role="reviewer", process=AsyncMock(), output_writer=MagicMock(), project_dir=tmp_path
+        )
+        agent.stderr_tail.append("[stderr] x")
+
+        with patch("sova.dashboard.services.agent_finalize.OutputWriter") as writer_cls:
+            await _persist_stderr_tail(agent, 202)
+
+        writer_cls.assert_not_called()
+
+
+class TestMakeOutputWriter:
+    """A run's engine persists its own output, so the dashboard adds a second persisting writer only without one."""
+
+    @pytest.mark.parametrize("role", ["developer", "researcher", None])
+    def test_engine_roles_get_no_dashboard_writer(self, tmp_path: Path, role: str | None) -> None:
+        from sova.dashboard.services.agent_lifecycle import make_output_writer
+
+        assert make_output_writer(tmp_path, 1, role) is None
+
+    @pytest.mark.parametrize("role", ["reviewer", "planner", "command:review"])
+    def test_other_roles_get_a_writer(self, tmp_path: Path, role: str) -> None:
+        from sova.core.output import OutputWriter
+        from sova.dashboard.services.agent_lifecycle import make_output_writer
+
+        writer = make_output_writer(tmp_path, 7, role)
+        assert isinstance(writer, OutputWriter)
+        assert writer.run_id == 7
+
+
+class TestEngineWriterRolesMatchTheEngine:
+    """ENGINE_WRITER_ROLES is hand-kept, so a role that gains or loses a WorkflowEngine must change it too."""
+
+    def test_set_equals_the_roles_that_construct_a_workflow_engine(self) -> None:
+        import sova.roles
+        from sova.dashboard.services.agent_lifecycle import ENGINE_WRITER_ROLES
+
+        roles_dir = Path(sova.roles.__file__).parent
+        engine_roles = {
+            path.stem for path in roles_dir.glob("*.py") if "WorkflowEngine(" in path.read_text(encoding="utf-8")
+        }
+
+        assert engine_roles == set(ENGINE_WRITER_ROLES)
+
+    async def test_start_command_always_gives_a_command_run_a_writer(self) -> None:
+        import inspect
+
+        from sova.dashboard.services import agent_lifecycle
+
+        source = inspect.getsource(agent_lifecycle.start_command)
+
+        assert "make_output_writer" not in source
+        assert "OutputWriter(project_dir, run_id)" in source
+
+
+class TestStripAnsiCharsetDesignation:
+    def test_nf_escape_from_tput_sgr0_is_stripped(self) -> None:
+        from sova.utils.formatting import strip_ansi
+
+        assert strip_ansi("\x1b(B\x1b[mdone") == "done"
+        assert strip_ansi("\x1b[31mred\x1b[0m") == "red"

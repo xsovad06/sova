@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.loader import load_config
 from sova.config.models import CodexConfig
+from sova.core.output import OutputWriter
 from sova.dashboard.services.agent_context import (
     _resolve_issue_from_pr,
 )
@@ -44,6 +45,9 @@ log = get_logger(component="dashboard.control")
 _MERGE_ROLES = frozenset({"integrate-pr"})
 
 _DB_TERMINAL_POLL_INTERVAL = 30.0
+
+# How long finalization waits for the stderr reader to drain an exited process before storing its tail.
+_STDERR_DRAIN_TIMEOUT_S = 5.0
 
 # Upper bound on how long finalization waits for the output reader to finish
 # draining an already-exited process, used when the spawning runtime declared
@@ -403,6 +407,30 @@ async def _drain_stream_reader(agent: AgentState) -> None:
     _log_if_task_failed(next(iter(done)), agent.run_id)
 
 
+async def _persist_stderr_tail(agent: AgentState, run_id: int) -> None:
+    """Store the stderr a run's engine never wrote, appended after the engine's own rows.
+
+    A run whose ``sova run`` process persists its own output has no dashboard writer, so a traceback or a failure
+    before the engine opened its writer (config load, import error) would otherwise survive only in memory. The
+    process has exited and the engine closed its writer, so a short-lived writer here is the only one active and its
+    rows land after the engine's in order.
+    """
+    if agent.output_writer is not None:
+        return
+    task = agent.stderr_task
+    if task is not None and not task.done():
+        await asyncio.wait({task}, timeout=_STDERR_DRAIN_TIMEOUT_S)
+    if not agent.stderr_tail:
+        return
+    writer = OutputWriter(agent.project_dir, run_id)
+    try:
+        for text in agent.stderr_tail:
+            writer.write_line(text)
+        await writer.close()
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("finalize.stderr_tail_persist_failed", run_id=run_id, exc_info=True)
+
+
 def invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None) -> None:
     """Drop the cached task, PR, and verdict state an exiting agent or a finished dashboard action made stale.
 
@@ -604,6 +632,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             await agent.output_writer.close()
         except (OSError, RuntimeError, SQLAlchemyError):
             log.warning("output_writer.close_failed", run_id=run_id, exc_info=True)
+
+    await _persist_stderr_tail(agent, run_id)
 
     await _finalize_resource_monitoring(agent)
 
