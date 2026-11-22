@@ -1615,7 +1615,7 @@ class TestClaudeCodeRuntime:
         from sova.ipc.runtime import ClaudeCodeRuntime
 
         rt = ClaudeCodeRuntime()
-        line = json.dumps({"type": "assistant", "content": [{"type": "text", "text": "Hello"}]})
+        line = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Hello"}]}})
         event = rt.parse_output(line)
         assert event is not None
         assert event.type == "content"
@@ -3589,25 +3589,6 @@ class TestProbeCodexStdinPromptSupport:
 
 
 class TestClaudeCodeParseEdgeCases:
-    @pytest.mark.parametrize(
-        ("content", "expected_text"),
-        [
-            pytest.param("plain string", "plain string", id="string-content"),
-            pytest.param(42, "42", id="other-content-type"),
-        ],
-    )
-    def test_parse_output_assistant_content(self, content: object, expected_text: str) -> None:
-        import json
-
-        from sova.ipc.runtime import ClaudeCodeRuntime
-
-        rt = ClaudeCodeRuntime()
-        line = json.dumps({"type": "assistant", "content": content})
-        event = rt.parse_output(line)
-        assert event is not None
-        assert event.type == "content"
-        assert event.text == expected_text
-
     def test_parse_output_unknown_event_type(self) -> None:
         import json
 

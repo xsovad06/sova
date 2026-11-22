@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES, CodexConfig, ProjectConfig
+from sova.ipc.claude_stream import claude_event_lines
 from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.cli_args import build_claude_cli_args
 from sova.llm.errors import ComponentMisconfiguredError
@@ -675,16 +676,9 @@ class ClaudeCodeRuntime(AgentRuntime):
             return StreamEvent(type="content", text=line)
 
         event_type = data.get("type", "")
-        if event_type == "assistant":
-            content = data.get("content", "")
-            if isinstance(content, list):
-                parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-                text = "".join(parts)
-            elif isinstance(content, str):
-                text = content
-            else:
-                text = str(content)
-            return StreamEvent(type="content", text=text) if text else None
+        if event_type in ("assistant", "user"):
+            lines = claude_event_lines(data)
+            return StreamEvent(type="content", text="\n".join(lines), lines=lines) if lines else None
 
         if event_type == "result":
             result_text = str(data.get("result", ""))

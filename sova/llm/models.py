@@ -265,11 +265,15 @@ class StreamEvent:
     Types:
     - "content": partial text output (text field populated)
     - "result": final result with costs (result field populated)
+
+    ``lines`` is set when one event stands for several output lines (a Claude assistant event with a
+    tool call after its text); ``text`` is then those lines joined by newlines.
     """
 
     type: str
     text: str = ""
     result: LLMResult | None = field(default=None)
+    lines: list[str] = field(default_factory=list)
 
 
 @dataclass
