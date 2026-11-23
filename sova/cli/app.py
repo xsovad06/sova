@@ -23,6 +23,7 @@ from sova.cli.commands.mcp import app as mcp_app
 from sova.cli.commands.migrate import migrate_config
 from sova.cli.commands.pr import (
     address_pr,
+    handoff_summary,
     linked_issues,
     maintain_pr,
     merge_subject,
@@ -65,6 +66,7 @@ app.command(name="review-pr")(review_pr)
 app.command(name="linked-issues")(linked_issues)
 app.command(name="pr-verdict")(pr_verdict)
 app.command(name="merge-subject")(merge_subject)
+app.command(name="handoff-summary")(handoff_summary)
 
 # Configuration
 app.add_typer(config_app, name="config")

@@ -1,9 +1,10 @@
-"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, merge-subject."""
+"""CLI commands: sova address-pr, maintain-pr, review-pr, linked-issues, pr-verdict, merge-subject, handoff-summary."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Optional
 
@@ -228,6 +229,41 @@ async def _read_pr_verdict(*, pr: int, project_dir: Path | None) -> str:
         trusted_login=config.github_user or await get_active_gh_user() or "",
         handoffs=read_all_handoff_files(root),
     )
+
+
+def handoff_summary(
+    pr: Annotated[str, typer.Option("--pr", help="PR number the command worked on (a leading # is accepted).")],
+    source: Annotated[str, typer.Option("--source", help="The command writing it, e.g. command:address-pr.")],
+    issue: Annotated[str, typer.Option("--issue", help="The linked issue; empty for a PR with none.")] = "",
+    merged: Annotated[
+        Optional[bool],
+        typer.Option("--merged/--not-merged", help="Whether an Integrate run merged the PR (Integrate only)."),
+    ] = None,
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Record a command's closing one-line summary (read from stdin) as its run's result.
+
+    Merges into the PR's handoff file in the primary checkout (from any worktree), so a next action already
+    there survives. The summary comes from stdin so free text is never part of a shell word: pass it through a
+    quoted heredoc. Exits 1 with the reason on stderr when nothing was recorded.
+    """
+    from sova.git.worktree import get_primary_worktree_root
+    from sova.ipc.handoff import COMMAND_SOURCE_PREFIX, ClosingSummaryError, record_closing_summary
+
+    number = pr.strip().lstrip("#").strip()
+    try:
+        if not number.isdigit():
+            raise ClosingSummaryError(f"Closing summary not recorded: {pr!r} is not a PR number")
+        if not source.startswith(COMMAND_SOURCE_PREFIX):
+            raise ClosingSummaryError(f"Closing summary not recorded: {source!r} is not a command source")
+        root = project or asyncio.run(get_primary_worktree_root())
+        path = record_closing_summary(
+            root, source=source, issue=issue, pr_number=int(number), summary=sys.stdin.read(), merged=merged
+        )
+    except (ClosingSummaryError, OSError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"Closing summary recorded in {escape(str(path))}")
 
 
 # `sova merge-subject` exits 4 for an invalid title (the user edits it) and 3 when the title could not be

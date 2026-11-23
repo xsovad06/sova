@@ -2,7 +2,7 @@
   "version": 1,
   "commands": {
     "address-pr.md": {
-      "hash": "4737c6f09aa3fd50",
+      "hash": "b8c7a6234044c73e",
       "managed": true
     },
     "after-merge.md": {
@@ -50,7 +50,7 @@
       "managed": true
     },
     "integrate-pr.md": {
-      "hash": "620627e638f76678",
+      "hash": "e4467e747be89ef0",
       "managed": true
     },
     "issue.md": {

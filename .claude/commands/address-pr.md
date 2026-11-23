@@ -16,7 +16,9 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 ## CRITICAL: Complete ALL Steps
 
-This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 9-18 first (capture knowledge, squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-12 (capture knowledge, squash, rebase and push) to fold in pending documentation and resolve any merge conflicts, then skip to step 13 to handle thread resolution before the summary.
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 9-19 first (capture knowledge, squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-12 (capture knowledge, squash, rebase and push) to fold in pending documentation and resolve any merge conflicts, then skip to step 13 to handle thread resolution before the summary.
+
+**Every exit records a closing summary first**: once the PR number is known, any end of the run (the normal finish, a closed or merged PR, nothing to address, a guard STOP in step 3, a failed push, `NEEDS_HUMAN_INPUT`) runs step 18 before it ends, with what happened or why it stopped as the one-line summary. A stop still ends as a failure where this command says so; step 18 only makes the run history say why.
 
 **Incomplete execution is worse than failure**: a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
 
@@ -317,7 +319,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
    **Run each poll loop as a synchronous foreground command**, never as a background task: in headless mode nothing resumes you when a background task finishes, and ending a turn without a tool call ends the run. The Bash tool caps a single call at 10 minutes (600000 ms) and defaults to 2, so pass an explicit `timeout` of at least 540000 ms on every poll call, and keep each call to at most 16 polls of 30 seconds (8 minutes). When a call ends with checks still pending, start another call the same way, until every check completes or the 30 minute total is used up.
 
-   **If checks are still pending when the 30 minutes are used up**, that is not a failure: continue to step 13. The fixes are pushed, so the review threads and the address summary must still be written; stopping here would leave every fixed thread open on the PR. Record the head SHA and the names of the checks still pending, state in the step 15 summary that CI was still running on that commit, and report it in step 18. The `/integrate-pr` workflow re-checks CI before merging, so an unfinished run is never merged unverified.
+   **If checks are still pending when the 30 minutes are used up**, that is not a failure: continue to step 13. The fixes are pushed, so the review threads and the address summary must still be written; stopping here would leave every fixed thread open on the PR. Record the head SHA and the names of the checks still pending, state in the step 15 summary that CI was still running on that commit, and report it in step 19. The `/integrate-pr` workflow re-checks CI before merging, so an unfinished run is never merged unverified.
 
    **If any check fails**: gather failure evidence, trying progressively looser sources until one actually produces text (GitHub Actions is not the only CI backend a project may run, but it is still the common case, so the GitHub Actions log stays in the chain rather than being replaced):
 
@@ -507,9 +509,17 @@ This command runs as a headless agent. You MUST execute every step below through
       echo "Bot re-review skipped: address cycle cap reached ($ROUND of $MAX_CYCLES)"
     fi
     ```
-    Set `SOURCERY_ADDRESSED=1` / `CODERABBIT_ADDRESSED=1` based on whether step 5-7 addressed at least one finding from that bot on this PR; leave a variable unset (or `0`) when the bot posted no comments this round. Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 18 summary so the next reviewer knows the cap ended the loop, not a clean pass.
+    Set `SOURCERY_ADDRESSED=1` / `CODERABBIT_ADDRESSED=1` based on whether step 5-7 addressed at least one finding from that bot on this PR; leave a variable unset (or `0`) when the bot posted no comments this round. Only request re-review for bots whose comments were actually addressed. When the cap skips the trigger, say so in the step 19 summary so the next reviewer knows the cap ended the loop, not a clean pass.
 
-18. **Print summary**:
+18. **Record the closing summary** (before the report: a headless run can end its turn after the report text, which would skip a block placed after it): the run history shows this one line as the run's result, so state what happened in plain words, for example `Fixed 3 of 4 review comments, 1 needs your input`. It merges into the handoff file rather than replacing it, so a next action already there survives. `<ISSUE_NUMBER or empty>` is the linked issue, empty for a PR with none. Put the summary between the quoted `SUMMARY` lines exactly as written: the delimiter is quoted so backticks, `$` and quotes in it are never interpreted by the shell, and never move it into a shell argument. **Run this on every exit once the PR is known**, including a stop (the PR is closed or merged, nothing to address, the identity or push-access guard in step 3, a failed push): run it first with the stop reason as the summary, then end the run.
+
+    ```bash
+    sova handoff-summary --source command:address-pr --issue "<ISSUE_NUMBER or empty>" --pr <PR_NUMBER> <<'SUMMARY'
+    <SUMMARY>
+    SUMMARY
+    ```
+
+19. **Print summary**:
     - Table: | Comment | Source | Score | Action |
     - Source column distinguishes human vs bot reviewers
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
