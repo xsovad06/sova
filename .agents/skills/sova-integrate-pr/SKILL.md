@@ -15,6 +15,8 @@ PR: the arguments provided when this skill is invoked
 
 **Shell blocks.** Every fenced block below runs as its own shell invocation: no variable survives from one block to the next, so each block assigns every variable it reads. `<PR_NUMBER>`, `<BASE_BRANCH>`, `<HEAD_BRANCH>` and `<ISSUE_NUMBER>` are filled in from the Phase 1 metadata.
 
+**Every STOP records first.** Each STOP below (Phases 1, 1b, 2, 2b, 3, 4, 5 and 6) and every Error Recovery exit, once the PR number is known, runs Phase 8 with `<MERGED_FLAG>` as `--not-merged` and the stop reason as the summary before the run ends; a merge runs it with `--merged` before the Phase 7 report. A stop that skips it leaves the run history with a generic line.
+
 **Primary checkout.** State shared between phases lives in the PRIMARY checkout's `.claude/agent-control/`. The Update subroutine may `cd` into a per-issue worktree, and `.claude/agent-control/` is not mirrored into worktrees, so a bare relative path would read and write a different file depending on where each phase runs. Every block that needs it opens with these two lines (the first is `git rev-parse --git-common-dir`; the `case` maps a linked worktree to its primary checkout), never assuming the current directory is it:
 
 ```bash
@@ -949,6 +951,8 @@ sova cleanup --all --project <PROJECT_DIR>
 
 ### Phase 7: Report
 
+Record the closing summary (Phase 8, `<MERGED_FLAG>` as the merge outcome) **before** printing the report: a headless run can end its turn after the report text, which would skip a block placed after it.
+
 ```bash
 echo "::sova-phase::report"
 ```
@@ -973,9 +977,19 @@ Output a concise summary covering:
   - new keys in env templates (`*.env.example` and similar): the host env files need updating
   - for any infrastructure change, the check that verifies the outcome on the host itself, since a merged PR is not proof the outcome is live
 
+### Phase 8: Record the closing summary
+
+The run history shows one line as this run's result: write it in plain words, for example `Merged PR #524, issue closed`, or what stopped the merge, and `<MERGED_FLAG>` as `--merged` only when this run merged the PR, else `--not-merged`. This block runs on **every** exit once the PR is known: a stop in Phase 1, 1b, 2, 2b or any later phase (a gate, a conflict, a closed PR, a red CI) runs it first with `--not-merged` and the stop reason as the summary, then ends the run. It merges into the handoff file rather than replacing it, so a next action already there survives. `<ISSUE_NUMBER or empty>` is the linked issue, empty for a PR with none. Put the summary between the quoted `SUMMARY` lines exactly as written: the delimiter is quoted so backticks, `$` and quotes in it are never interpreted by the shell, and never move it into a shell argument.:
+
+```bash
+sova handoff-summary --source command:integrate-pr --issue "<ISSUE_NUMBER or empty>" --pr <PR_NUMBER> <MERGED_FLAG> <<'SUMMARY'
+<SUMMARY>
+SUMMARY
+```
+
 ## Error Recovery
 
-When the pipeline stops at any phase, report clearly:
+When the pipeline stops at any phase, run Phase 8 first (`--not-merged`, the stop reason as the summary), then report clearly:
 
 - Which phase failed
 - The specific error

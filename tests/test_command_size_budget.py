@@ -36,7 +36,9 @@ _SLACK_CHARS = 1_000
 _COMMAND_CAPS: dict[str, int] = {
     # Issue #1361 lowered this from 40,000: dropping the per-round cookbook append freed more than the
     # no-double-dash rule on replies and summary comments added.
-    "address-pr.md": 39_200,
+    # Issue #1479 raised this by 1,500 for step 18: the closing summary, recorded before the report on every exit
+    # through `sova handoff-summary` (the summary goes through a quoted heredoc, never a shell word).
+    "address-pr.md": 41_500,
     "find-task.md": 15_500,
     # Raised from the #1363 target of 24,000 by 2,500 for folding open issues before filing: the fold search,
     # the fold comment posted only after confirmation, and the separate `folded=` and `deferred=` tracker
@@ -51,7 +53,10 @@ _COMMAND_CAPS: dict[str, int] = {
     # Issue #1361 lowered this by 1,000 by dropping the Phase 3 check for uncaptured review learnings.
     # Issue #1521 raised this by 1,000 for the Phase 5 PR title validation (`sova merge-subject`) and the
     # squash `--subject` it feeds `gh pr merge`.
-    "integrate-pr.md": 67_000,
+    # Issue #1479 raised this by 1,700 for Phase 8: the closing summary and the `merged` marker that keeps a stopped
+    # run from reading Merged, recorded through `sova handoff-summary` on every exit (a stop in an earlier phase,
+    # a headless end after the report) and pointed at from the top of the instructions and from Error Recovery.
+    "integrate-pr.md": 69_500,
     # Issue #1321 raised this by 3,700 for the required-check name lookup in step 15: the rulesets (every page),
     # the matching against the registered checks, and the required-only verdict (every `--required` row decides).
     # Issue #1361 raised this by 1,000 for the push guard (the branch step 2 recorded must still be checked out

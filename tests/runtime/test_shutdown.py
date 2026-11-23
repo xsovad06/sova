@@ -73,6 +73,10 @@ class TestShutdownCancelsWsProducerTasks:
         mock_ws = AsyncMock()
         ws_manager._groups[None] = [mock_ws]
 
+        from sova.dashboard.routers import agents as agents_router
+
+        # The loop spawns real activity, handoff and work-items builds beside each tick; a build blocked on a
+        # thread (a tracker or git call in CI) cannot be cancelled and held the test's teardown past its timeout.
         with (
             patch(
                 "sova.dashboard.services.agent_status.get_all_agent_statuses",
@@ -83,6 +87,9 @@ class TestShutdownCancelsWsProducerTasks:
                 "sova.dashboard.services.agent_status.format_status_update",
                 return_value={"type": "status_update", "runs": []},
             ),
+            patch.object(agents_router, "_build_activity_message", AsyncMock(return_value={"type": "activity"})),
+            patch.object(agents_router, "_build_handoff_message", AsyncMock(return_value={"type": "handoff"})),
+            patch.object(agents_router, "_refresh_work_items_snapshot", AsyncMock()),
         ):
             task = asyncio.create_task(ws_manager._produce_loop(None))
             await asyncio.sleep(0.1)

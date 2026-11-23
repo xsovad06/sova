@@ -150,6 +150,84 @@ def read_handoff_file(project_dir: Path, issue: str | None = None) -> DashboardH
     return _parse_handoff(newest)
 
 
+class ClosingSummaryError(ValueError):
+    """The closing summary could not be recorded (a bad argument, or a file that belongs to another issue or PR)."""
+
+
+# The details key naming the command that wrote the closing summary. A command's summary is the run's result, so
+# the run history prefers it over per-run counters an earlier pipeline run left in the same merged file.
+SUMMARY_SOURCE_KEY = "summary_source"
+COMMAND_SOURCE_PREFIX = "command:"
+
+
+def _closing_handoff_path(cdir: Path, issue: str, pr_number: int) -> Path:
+    """The file a command's closing summary goes to: the issue's file, else one keyed by the PR.
+
+    A PR with no issue (a Dependabot merge) gets its own ``handoff-pr-<n>.json``: the shared legacy file would hold
+    whichever PR wrote it last, and every later no-issue PR would be refused for it.
+    """
+    return cdir / (handoff_filename(issue) if issue else f"handoff-pr-{pr_number}.json")
+
+
+def _closing_handoff_data(cdir: Path, path: Path, source: str, issue: str, pr_number: int) -> dict:
+    """The handoff data a closing summary merges into: the keyed file, this run's legacy file, else a fresh one."""
+    data = _read_json_object(path)
+    if data is not None:
+        return data
+    # A handoff written before the keyed file existed: keep its next actions when it is this run's.
+    legacy = _read_json_object(cdir / "handoff.json")
+    if legacy is not None and str(legacy.get("issue") or "") == issue:
+        if issue or legacy.get("pr_number") in (None, pr_number):
+            return legacy
+    return {"source": source, "status": "completed", "issue": issue, "pr_number": pr_number}
+
+
+def record_closing_summary(
+    project_dir: Path,
+    *,
+    source: str,
+    issue: str,
+    pr_number: int,
+    summary: str,
+    merged: bool | None = None,
+) -> Path:
+    """Merge a command's closing one-line ``summary`` into its handoff file, creating one when there is none.
+
+    The run history shows ``details.summary`` as the run's result, and ``details.merged`` (when given) says whether
+    an Integrate run merged. The merge keeps everything else the file holds (``next_actions``, ``status``, the
+    reviewer's findings), so a next action already there survives. A per-issue file may start from the legacy
+    ``handoff.json`` when that is this issue's; a PR with no issue starts from the legacy file only when it is
+    this PR's. Raises ``ClosingSummaryError`` for a bad argument or a file that belongs to another issue or PR.
+    """
+    issue = issue.lstrip("#").strip()
+    if issue and not _SAFE_ISSUE_RE.fullmatch(issue):
+        raise ClosingSummaryError(f"Closing summary not recorded: {issue!r} is not an issue number or key")
+    if pr_number <= 0:
+        raise ClosingSummaryError(f"Closing summary not recorded: {pr_number} is not a PR number")
+    summary = " ".join(summary.split())
+    if not summary:
+        raise ClosingSummaryError("Closing summary not recorded: the summary is empty")
+
+    cdir = _control_dir(project_dir)
+    path = _closing_handoff_path(cdir, issue, pr_number)
+    data = _closing_handoff_data(cdir, path, source, issue, pr_number)
+    if str(data.get("issue") or "") != issue:
+        raise ClosingSummaryError("Closing summary not recorded: the handoff file belongs to another issue")
+    if data.get("pr_number") not in (None, pr_number) and not issue:
+        raise ClosingSummaryError("Closing summary not recorded: the handoff file belongs to another PR")
+
+    earlier = data.get("details")
+    details = {**(earlier if isinstance(earlier, dict) else {}), "summary": summary, SUMMARY_SOURCE_KEY: source}
+    if merged is not None:
+        details["merged"] = merged
+    data["summary"] = summary
+    data["details"] = details
+    cdir.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(path, json.dumps(data, indent=2))
+    log.info("handoff_file.closing_summary", path=str(path), source=source, issue=issue, pr_number=pr_number)
+    return path
+
+
 def read_all_handoff_files(project_dir: Path) -> list[DashboardHandoff]:
     """Read all active handoff files (per-issue + legacy)."""
     cdir = _control_dir(project_dir)

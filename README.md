@@ -126,7 +126,7 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | Page | Purpose |
 |------|---------|
 | **Home** | Project list (command center) for multi-project installations |
-| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, run success and merged PRs over 7 days, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history. `/agents` redirects here |
+| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, run success and merged PRs over 7 days, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history (by issue, with its state and result, or every run). `/agents` redirects here |
 | **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
 | **Lifecycle** | Issue lifecycle rail (development through post-merge) |
 | **Costs** | Per-task and per-model cost tracking and aggregation |
@@ -448,7 +448,7 @@ log_backup_count = 5
 | **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
-| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply | --mark-in-review]`, `sova pr-verdict <pr>`, `sova merge-subject <pr>` |
+| **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova linked-issues <pr> [--apply | --mark-in-review]`, `sova pr-verdict <pr>`, `sova handoff-summary --source command:<name> --pr <pr>` (closing run summary, from stdin), `sova merge-subject <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova briefing` ([setup](docs/awareness-setup.md)), `sova config`, `sova dashboard` |
 | **Knowledge** | `sova assess set\|get\|clear <issue>` |
 | **Commands** | `sova commands list\|diff\|update\|sync` |
