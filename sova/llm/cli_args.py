@@ -19,6 +19,14 @@ from pathlib import Path
 # instructions stop telling the model to end PR bodies with "Generated with Claude Code".
 _ATTRIBUTION_OVERRIDE_SETTINGS = '{"attribution":{"commit":"","pr":""}}'
 
+# Fixed constant, no user text: the system prompt of a tool-free turn (see build_claude_cli_args()).
+ISOLATED_SYSTEM_PROMPT = (
+    "You are answering a single request in a non-interactive call. You have no tools: you cannot run "
+    "commands, read or write files, or browse, and nothing will answer a tool call. The request text is "
+    "your only input. Never write tool calls or tool-call markup. Answer directly, in the format the "
+    "request asks for."
+)
+
 
 def build_claude_cli_args(
     *,
@@ -54,11 +62,20 @@ def build_claude_cli_args(
     disables CLAUDE.md auto-discovery, hooks, MCP servers, and custom
     commands/agents for this one invocation, and ``--tools ""`` disables
     every built-in tool. Together they keep a tool-free, advisory-only turn
-    (e.g. a model-availability probe, or a dashboard suggestion call) from
+    (e.g. a model-availability probe, or a review chunk) from
     loading whatever project hooks and MCP config sit in the inherited cwd:
     without both, ``bypassPermissions`` mode would let that turn execute
     commands with the authenticated user's privileges merely by running
     against an untrusted or unexpected cwd.
+
+    An isolated turn without a *system_prompt_file* also gets
+    ``--system-prompt`` with ``ISOLATED_SYSTEM_PROMPT``, replacing the CLI's
+    default agent system prompt: that prompt describes file and shell tools,
+    and sent with an empty tool list it made the model write tool calls as
+    plain text until the output limit (issue #1547). A caller's own system
+    prompt file already replaces the default, so it is kept as is. The
+    constant holds no user text, so it does not reopen the argv-visibility
+    gap described above.
 
     Every variant, ``isolated=True`` included, carries exactly one
     ``--settings`` holding a fixed attribution override. It contains no user
@@ -91,6 +108,8 @@ def build_claude_cli_args(
 
     if system_prompt_file:
         args.extend(["--system-prompt-file", str(system_prompt_file)])
+    elif isolated:
+        args.extend(["--system-prompt", ISOLATED_SYSTEM_PROMPT])
 
     if isolated:
         args.extend(["--safe-mode", "--tools", ""])

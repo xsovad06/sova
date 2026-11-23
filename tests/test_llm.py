@@ -2693,6 +2693,20 @@ class TestClaudeCodeProvider:
 
         mock_write.assert_not_called()
 
+    async def test_isolated_invoke_replaces_the_agent_system_prompt(self, mock_run: AsyncMock) -> None:
+        """An isolated call with no system prompt of its own gets the tool-free one, not the CLI default (#1547)."""
+        from sova.llm.cli_args import ISOLATED_SYSTEM_PROMPT
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(returncode=0, stdout=_make_cli_json(), stderr="")
+
+        await ClaudeCodeProvider().invoke("Review this diff", isolated=True)
+
+        call_args = mock_run.call_args[0]
+        assert call_args[call_args.index("--system-prompt") + 1] == ISOLATED_SYSTEM_PROMPT
+        assert "--tools" in call_args
+
     async def test_invoke_streaming(self, mock_run: AsyncMock) -> None:
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
@@ -6733,3 +6747,4 @@ class TestClaudeCodeListAvailableModels:
             assert "--safe-mode" in args
             tools_idx = args.index("--tools")
             assert args[tools_idx + 1] == ""
+            assert "--system-prompt" in args

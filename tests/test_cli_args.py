@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sova.llm.cli_args import build_claude_cli_args, write_system_prompt_file
+from sova.llm.cli_args import ISOLATED_SYSTEM_PROMPT, build_claude_cli_args, write_system_prompt_file
 
 
 class TestBuildClaudeCliArgs:
@@ -74,6 +74,24 @@ class TestBuildClaudeCliArgs:
         args = build_claude_cli_args(system_prompt_file=tmp_path / "sp.txt")
         sp_idx = args.index("--system-prompt-file")
         assert args[sp_idx + 1] == str(tmp_path / "sp.txt")
+
+    def test_isolated_without_file_replaces_the_agent_system_prompt(self) -> None:
+        """A tool-free turn must not keep the CLI's agent prompt, which makes the model fake tool calls (#1547)."""
+        args = build_claude_cli_args(isolated=True)
+        assert args.count("--system-prompt") == 1
+        assert args[args.index("--system-prompt") + 1] == ISOLATED_SYSTEM_PROMPT
+        assert "--system-prompt-file" not in args
+
+    def test_isolated_system_prompt_forbids_tool_calls(self) -> None:
+        assert "no tools" in ISOLATED_SYSTEM_PROMPT
+        assert "Never write tool calls" in ISOLATED_SYSTEM_PROMPT
+
+    def test_isolated_with_file_keeps_only_the_callers_prompt(self, tmp_path: Path) -> None:
+        prompt_file = str(tmp_path / "sp.txt")
+        args = build_claude_cli_args(isolated=True, system_prompt_file=prompt_file)
+        assert args[args.index("--system-prompt-file") + 1] == prompt_file
+        assert "--system-prompt" not in args
+        assert "--safe-mode" in args
 
     def test_stream_json_adds_verbose(self) -> None:
         args = build_claude_cli_args(output_format="stream-json")
