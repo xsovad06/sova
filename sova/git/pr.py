@@ -458,10 +458,23 @@ async def list_open_prs(
 
 # Merged PRs read for the Work board's "done today"; a day with more merges is read in part.
 MERGED_PR_LIST_LIMIT = 100
+# What the board needs of each merged PR; a caller that only counts asks for less (bodies dominate the payload).
+MERGED_PR_FIELDS = "number,title,url,mergedAt,body,headRefName,closingIssuesReferences,author,assignees"
 
 
-async def list_merged_prs_since(*, repo: str, since: date, github_user: str = "") -> list[dict]:
+async def list_merged_prs_since(
+    *,
+    repo: str,
+    since: date,
+    github_user: str = "",
+    limit: int = MERGED_PR_LIST_LIMIT,
+    fields: str = MERGED_PR_FIELDS,
+) -> list[dict]:
     """PRs merged on or after the calendar day ``since`` (GitHub compares the day in UTC), newest first.
+
+    At most ``limit`` PRs come back (a result of exactly ``limit`` may be cut short), each with the ``--json``
+    ``fields``. A caller needing a deadline shorter than the shell default wraps the call in ``asyncio.timeout()``:
+    cancellation kills the ``gh`` process group.
 
     The day is a coarse filter: callers cut at the exact instant with each PR's ``mergedAt``. A failed or
     unparseable call raises :class:`PRLookupError`, never ``[]``, so an outage does not read as "nothing merged".
@@ -478,9 +491,9 @@ async def list_merged_prs_since(*, repo: str, since: date, github_user: str = ""
         "--search",
         f"merged:>={since.isoformat()}",
         "--json",
-        "number,title,url,mergedAt,body,headRefName,closingIssuesReferences,author,assignees",
+        fields,
         "--limit",
-        str(MERGED_PR_LIST_LIMIT),
+        str(limit),
         env=env,
     )
     _track_gh_rate_limit(result, github_user)
