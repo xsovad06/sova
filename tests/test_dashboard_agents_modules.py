@@ -30,6 +30,19 @@ _STATIC = DASHBOARD_DIR / "static"
 _TEMPLATES = DASHBOARD_DIR / "templates"
 _APP_JS = (_STATIC / "app.js").read_text(encoding="utf-8")
 
+# The shared output helpers end at this comment in app.js, so code added after them never leaks into the sources below.
+_OUTPUT_HELPERS_END = "// end of the agent output helpers"
+# The shared output stream helper's source (app.js), from the function itself to the end marker.
+_OUTPUT_STREAM_JS = _APP_JS[_APP_JS.index("function sovaOutputStream(") : _APP_JS.index(_OUTPUT_HELPERS_END)]
+
+
+def _js_function(source: str, header: str) -> str:
+    """The text of the function declared by *header*, up to its closing brace at the same indent (or none)."""
+    start = source.index(header)
+    indent = start - (source.rfind("\n", 0, start) + 1)
+    return source[start : source.index("\n" + " " * indent + "}\n", start) + 2 + indent]
+
+
 _APP_JS_HELPER_CALL = re.compile(r"\b(?:escapeHtml|timeAgo|esc|statusBadge|setText|renderSectionError)\(")
 _PAGES_JS = _STATIC / "js" / "pages"
 _WORK_TEMPLATE = _TEMPLATES / "work.html"
@@ -308,12 +321,36 @@ class FakeEventSource {
   emit(type, data) { for (const fn of this.handlers[type] || []) fn({ data }); }
 }
 
-const content = {
-  html: '', scrollTop: 0, scrollHeight: 0,
-  get innerHTML() { return this.html; }, set innerHTML(v) { this.html = v; },
-  set textContent(v) { this.html = v; },
-  insertAdjacentHTML(_, h) { this.html += h; },
-};
+// A pane that records what sovaOutputRenderer() inserts. Every block of lines is a child <details> with its own body
+// and counters, as in the real DOM: pane.lastElementChild is the block, whose querySelector() hands back its parts and
+// whose open property and classList the renderer toggles when it folds.
+class FakePane {
+  constructor() {
+    this.chunks = []; this.classes = new Set(); this.lastElementChild = null;
+    this.scrollTop = 0; this.scrollHeight = 0; this.clears = 0;
+  }
+  get classList() {
+    return {
+      add: (c) => this.classes.add(c), remove: (c) => this.classes.delete(c), toggle() {},
+      contains: (c) => this.classes.has(c),
+    };
+  }
+  set textContent(_v) { this.chunks = []; this.lastElementChild = null; this.clears++; }
+  insertAdjacentHTML(_pos, html) {
+    if (!html.startsWith('<details')) { this.chunks.push(html); return; }
+    const fold = { body: new FakePane(), count: { textContent: '' }, last: { textContent: '' }, classes: new Set() };
+    const part = (sel) => (sel.includes('body') ? fold.body : sel.includes('count') ? fold.count : fold.last);
+    fold.el = { querySelector: part, open: true, classList: { add: (c) => fold.classes.add(c) } };
+    this.chunks.push(fold);
+    this.lastElementChild = fold.el;
+  }
+  get html() {
+    const draw = (c) => (typeof c === 'string' ? c : '[fold ' + c.count.textContent + ' ' + c.body.html + ']');
+    return this.chunks.map(draw).join('');
+  }
+  get folds() { return this.chunks.filter((c) => typeof c !== 'string'); }
+}
+const content = new FakePane();
 const viewer = { classList: { add() {}, remove() {}, toggle() {}, contains: () => false } };
 const doc = {
   hidden: false,
@@ -324,7 +361,11 @@ const doc = {
     return id === 'log-tabs' ? (globalThis.__logTabs || null) : proxy();
   },
   querySelector: () => null, querySelectorAll: () => [], createElement: () => proxy(),
-  addEventListener: (type, fn) => docListeners.push([type, fn]), removeEventListener() {},
+  addEventListener: (type, fn) => docListeners.push([type, fn]),
+  removeEventListener: (type, fn) => {
+    const i = docListeners.findIndex(([t, f]) => t === type && f === fn);
+    if (i >= 0) docListeners.splice(i, 1);
+  },
   body: { addEventListener() {} },
 };
 globalThis.window = globalThis;
@@ -347,6 +388,17 @@ globalThis.visibilityAwarePoll = () => ({ id: null });
 globalThis.createSovaStatusChannel = () => ({ stop() {} });
 globalThis.apiUrl = (p) => '/api' + p;
 globalThis.LOG_LEVEL_COLORS = {};
+// The real shared output helpers: the terminal set, the finished-run rule and the renderer/stream block.
+globalThis._STATUS_TERMINAL = new Function('return ' + /^var _STATUS_TERMINAL = (.*);$/m.exec(appSrc)[1])();
+// A renamed marker must fail loudly here, not slice the wrong range and surface as a confusing ReferenceError.
+const mustFind = (marker, from = 0) => {
+  const i = appSrc.indexOf(marker, from);
+  if (i < 0) throw new Error('app.js marker not found: ' + marker);
+  return i;
+};
+const finishedStart = mustFind('function sovaOutputFinished(');
+(0, eval)(appSrc.slice(finishedStart, mustFind('\n}\n', finishedStart) + 2)
+  + appSrc.slice(mustFind('var _OUTPUT_POLL_BASE_MS'), mustFind('// end of the agent output helpers')));
 
 globalThis.__onFetch = () => Promise.reject(new Error('offline'));
 globalThis.fetchAPI = (url, opts) => globalThis.__onFetch(url, opts);
@@ -361,7 +413,8 @@ viewerModule.init();
 
 const fire = () => docListeners.filter(([t]) => t === 'visibilitychange').forEach(([, fn]) => fn());
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-const texts = () => [...content.html.matchAll(/<span class="text-gray-300">([^<]*)<\/span>/g)].map(m => m[1]);
+const textsOf = (pane) => [...pane.html.matchAll(/<span class="out-text">([^<]*)<\/span>/g)].map(m => m[1]);
+const texts = () => textsOf(content);
 // Opens run 7's logs and lets the first-open backfill (an empty run) land, so the viewer streams live. The
 // helper answers that one backfill itself, then restores the scenario's own fetch handler.
 async function openRunLive() {
@@ -450,6 +503,67 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
+# The log viewer opens a run that is also in the active list (every tab-strip repaint calls ensure() for it): the
+# stream is opened once, by start(), not by ensure() first and then again by start().
+_LOG_OPEN_ACTIVE_RUN_SCENARIO = r"""
+globalThis.__logTabs = { innerHTML: '' };
+const fetches = [];
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  if (url.includes('/agents/active')) {
+    return Promise.resolve({ agents: [{ run_id: 7, status: 'running', role: 'developer', issue: 1 }], completed: [] });
+  }
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const agentCards = await load('agent-cards');
+await agentCards.loadAgents();
+await tick();
+out.sourcesBeforeOpen = FakeEventSource.all.length;
+viewerModule._autoOpenLogsIfIdle(7);
+await tick();
+out.sources = FakeEventSource.all.length;
+out.sourceUrls = FakeEventSource.all.map((es) => es.url);
+out.closedSources = FakeEventSource.all.filter((es) => es.closed).length;
+out.outputFetches = fetches.filter((u) => u.includes('/output')).length;
+process.stdout.write(JSON.stringify(out), () => process.exit(0));
+"""
+
+# A run whose stream failed over to polling is told by the tab strip that it finished: the next poll is the last.
+_LOG_STATUS_CHANGE_SCENARIO = r"""
+const realSetTimeout = setTimeout;
+const settle = () => new Promise((resolve) => realSetTimeout(resolve, 0));
+const timers = [];
+globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+globalThis.clearTimeout = () => {};
+globalThis.__logTabs = { innerHTML: '' };
+const fetches = [];
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const agent = (status) => ({ run_id: 7, status, role: 'developer', issue: 1 });
+viewerModule._autoOpenLogsIfIdle(7);
+FakeEventSource.all[0].onerror();
+await settle(); await settle();
+// Still running: the chain carries on after its next read.
+viewerModule.updateLogTabs([agent('running')]);
+let before = timers.length;
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.rescheduledWhileRunning = timers.length - before;
+// The run finished: the next read is the last one.
+viewerModule.updateLogTabs([agent('done')]);
+before = timers.length;
+const fetchesBefore = fetches.length;
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.rescheduledAfterDone = timers.length - before;
+out.lastReads = fetches.length - fetchesBefore;
+out.newSources = FakeEventSource.all.length;
+process.stdout.write(JSON.stringify(out), () => process.exit(0));
+"""
+
+
 # The reconnect's three less usual endings. In each, the viewer opens run 7, the tab is hidden and shown, and the
 # resumed stream (FakeEventSource.all[1]) says it is subscribed while the backfill fetch is still in flight.
 _LOG_EXACT_OVERLAP_SCENARIO = r"""
@@ -488,14 +602,30 @@ doc.hidden = false; fire();
 const resumed = FakeEventSource.all[1];
 resumed.emit('connected', '{}');
 await tick();
+// From here timers are recorded, so a poll chain that is never ended shows up as a pending timer.
+const realSetTimeout = setTimeout;
+const timers = [];
+globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+const realClearTimeout = clearTimeout;
+globalThis.clearTimeout = (id) => { if (typeof id === 'object') realClearTimeout(id); };
+const settle = () => new Promise((resolve) => realSetTimeout(resolve, 0));
 // The run ends while the backfill is slow: the stream reports "done" before the snapshot lands.
 resumed.emit('output', 'last');
 resumed.emit('done', '{}');
 out.closedOnDone = resumed.closed;
 out.beforeBackfill = texts();
 release({ lines: ['first'], total: 1 });
-await tick(); await tick();
+await settle(); await settle();
 out.afterBackfill = texts();
+// The page still counts the run as live, so the viewer polls it on from line 0 (its first read is in flight).
+release({ lines: ['first', 'last'], times: [null, null], total: 2, seq: 2 });
+await settle(); await settle();
+out.pollingContinues = timers.length === 1;
+// The agent then leaves memory (seq is null) and an idle read comes back: the chain must end there.
+globalThis.__onFetch = () => Promise.resolve({ lines: [], times: [], total: 2, seq: null });
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.timersAfterIdleRead = timers.length - 1;
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -526,6 +656,509 @@ await tick();
 out.afterPoll = texts();
 // The poll chain reschedules itself and the stub rejects its next fetch, so end the process explicitly.
 process.stdout.write(JSON.stringify(out), () => process.exit(0));
+"""
+
+
+# The shared row renderer, driven against FakePane: write times, the time column rule, folding, escaping, re-attaching
+# to a rebuilt pane and following the tail.
+_OUTPUT_RENDERER_SCENARIO = r"""
+const iso = (sec) => new Date(Date.UTC(2026, 10, 1, 12, 0, sec)).toISOString();
+const labels = (pane) => [...pane.html.matchAll(/<span class="out-time">([^<]*)<\/span>/g)].map((m) => m[1] !== '');
+
+const equal = new FakePane(); const rEqual = sovaOutputRenderer(); rEqual.setTarget(equal);
+rEqual.replace(['a', 'b', 'c'], [iso(0), iso(0), iso(0)]);
+out.equalTimesColumn = equal.classes.has('out-has-times');
+
+const legacy = new FakePane(); const rLegacy = sovaOutputRenderer(); rLegacy.setTarget(legacy);
+rLegacy.replace(['a', 'b'], [null, null]);
+out.legacyColumn = legacy.classes.has('out-has-times');
+out.legacyHtmlMentionsNull = /null|NaN|Invalid/.test(legacy.html);
+rLegacy.append('bad', 'not a date');
+out.badTimeHtml = /null|NaN|Invalid/.test(legacy.html);
+
+const mixed = new FakePane(); const rMixed = sovaOutputRenderer(); rMixed.setTarget(mixed);
+rMixed.replace(['old 1', 'old 2', 'new'], [iso(0), iso(0), iso(30)]);
+out.mixedColumn = mixed.classes.has('out-has-times');
+out.mixedLabels = labels(mixed);
+
+const live = new FakePane(); const rLive = sovaOutputRenderer(); rLive.setTarget(live);
+rLive.append('one', iso(0)); rLive.append('two', iso(0));
+out.liveBefore = live.classes.has('out-has-times');
+rLive.append('three', iso(5));
+out.liveAfter = live.classes.has('out-has-times');
+out.liveLabels = labels(live);
+
+// Folding: a same-kind block collapses once it passes 20 lines, whatever its kind; shorter blocks stay open.
+const blockOf = (texts, secs) => {
+  const pane = new FakePane(); const r = sovaOutputRenderer(); r.setTarget(pane);
+  texts.forEach((t, i) => r.append(t, iso(secs === undefined ? 0 : secs)));
+  return { pane, r };
+};
+const tools = (n) => Array.from({ length: n }, (_, i) => '[Bash] cmd ' + i);
+const foldState = (pane) => pane.folds.map((f) => (
+  { count: f.count.textContent, open: f.el.open, folded: f.classes.has('out-folded') }));
+out.foldOne = foldState(blockOf(tools(1)).pane);
+out.foldNineteen = foldState(blockOf(tools(19)).pane);
+out.foldTwenty = foldState(blockOf(tools(20)).pane);
+out.foldTwentyFive = foldState(blockOf(tools(25)).pane);
+out.foldTextLines = foldState(blockOf(Array.from({ length: 25 }, (_, i) => 'prose ' + i)).pane);
+const logLine = (i) => '2026-11-01T12:00:00Z [info     ] event k=' + i;
+out.foldLogLines = foldState(blockOf(Array.from({ length: 22 }, (_, i) => logLine(i))).pane);
+
+const grown = blockOf(tools(21));
+const grownFold = grown.pane.folds[0];
+const chunksBefore = grown.pane.chunks.length;
+grown.r.append('[Grep] last one', iso(0));
+out.foldLast = grownFold.last.textContent;
+out.foldCountGrown = grownFold.count.textContent;
+out.foldGrewInPlace = grown.pane.chunks.length === chunksBefore && grown.pane.folds[0] === grownFold;
+grownFold.el.open = true;
+grown.r.append('[Grep] after the reader opened it', iso(0));
+out.readerToggleKept = grownFold.el.open;
+out.foldBodyHasEveryRow = textsOf(grownFold.body).length;
+
+const mixedKinds = blockOf(['prose', '[Bash] ls', 'more prose']);
+out.mixedKindBlocks = mixedKinds.pane.folds.length;
+
+const errs = blockOf(tools(3));
+errs.r.append('[tool error] boom', iso(3));
+errs.r.append('ERROR: boom again', iso(4));
+errs.r.append('[Edit] f.py', iso(5));
+out.foldsAfterErrors = errs.pane.folds.length;
+out.visibleOutsideFold = errs.pane.chunks.filter((c) => typeof c === 'string').map((h) => /out-error/.test(h));
+out.foldBodyTexts = textsOf(errs.pane.folds[0].body);
+
+// A structlog line is its own kind, with its level coloured.
+const logged = blockOf(['2026-11-01T12:00:00Z [info     ] event key=v']);
+out.logKind = /out-row out-log/.test(logged.pane.html);
+out.logPlainText = /out-row out-text/.test(blockOf(['plain']).pane.html);
+
+// SOVA logs through stderr, so the line carries the [stderr] prefix: it is still a log line, an error-level one is an
+// error row that stays visible outside a folded stderr run, and unstructured stderr text stays a stderr line.
+out.stderrLogKind = /out-row out-log/.test(blockOf(['[stderr] 2026-11-23T12:00:00Z [info     ] event k=v']).pane.html);
+out.stdoutLogKind = /out-row out-log/.test(blockOf(['[stdout] 2026-11-23T12:00:00Z [warning  ] event k=v']).pane.html);
+out.stderrTraceKind = /out-row out-stderr/.test(blockOf(['[stderr] Traceback (most recent call last):']).pane.html);
+const stderrRun = blockOf(Array.from({ length: 25 }, (_, i) => '[stderr] Traceback line ' + i));
+stderrRun.r.append('[stderr] 2026-11-23T12:00:00Z [error    ] boom k=v', iso(0));
+out.stderrRunFolds = foldState(stderrRun.pane);
+const outside = stderrRun.pane.chunks.filter((c) => typeof c === 'string');
+out.stderrErrorVisible = outside.map((h) => /out-row out-error/.test(h));
+
+// A plain error line a process wrote to stderr carries the prefix too: it is still an error row, outside the fold.
+const stderrPlain = blockOf(Array.from({ length: 25 }, (_, i) => '[stderr] trace ' + i));
+stderrPlain.r.append('[stderr] ERROR: boom', iso(0));
+stderrPlain.r.append('[stderr] [ERROR] bracketed boom', iso(1));
+out.stderrPlainFolds = foldState(stderrPlain.pane);
+out.stderrPlainErrorsVisible = stderrPlain.pane.chunks
+  .filter((c) => typeof c === 'string').map((h) => /out-row out-error/.test(h));
+
+// A row after a folded block is labelled even in the same second: the block hides its rows, so the reader sees no
+// clock for that second. A row after a short, visible run is not.
+const allLabels = (pane) => [...pane.html.matchAll(/<span class="out-time">([^<]*)<\/span>/g)].map((m) => m[1] !== '');
+const afterFold = new FakePane(); const rAfter = sovaOutputRenderer(); rAfter.setTarget(afterFold);
+rAfter.append('start', iso(0)); tools(22).forEach((t) => rAfter.append(t, iso(0))); rAfter.append('after', iso(0));
+out.labelAfterFold = allLabels(afterFold).slice(-1)[0];
+const afterShort = new FakePane(); const rShort = sovaOutputRenderer(); rShort.setTarget(afterShort);
+rShort.append('start', iso(0)); rShort.append('[Bash] ls', iso(0)); rShort.append('after', iso(0));
+out.labelsAfterShortRun = allLabels(afterShort);
+
+// A held run is capped: the oldest lines go, a marker says how many, and the run's total is still known.
+const capped = new FakePane(); const rCap = sovaOutputRenderer(); rCap.setTarget(capped);
+for (let i = 0; i < 5600; i++) rCap.append('line ' + i, iso(0));
+out.cappedHeld = rCap.count();
+out.cappedTotal = rCap.total();
+out.cappedMarker = /\d+ earlier lines not shown/.exec(capped.html)?.[0] ?? null;
+out.cappedFirstKept = textsOf(capped.folds[0].body)[0];
+const bigRead = new FakePane(); const rBig = sovaOutputRenderer(); rBig.setTarget(bigRead);
+rBig.replace(Array.from({ length: 5200 }, (_, i) => 'r' + i), null);
+out.bigReadHeld = rBig.count();
+out.bigReadTotal = rBig.total();
+
+// A read that only extends what is held draws just the new lines: the fold the reader opened stays open and the
+// pane is not cleared. Following the tail is decided before a redraw, not forced by it.
+const ext = new FakePane(); const rExt = sovaOutputRenderer(); rExt.setTarget(ext);
+const base = Array.from({ length: 25 }, (_, i) => 'p' + i);
+rExt.replace(base, null);
+const extFold = ext.folds[0];
+extFold.el.open = true;
+rExt.replace(base.concat(['p25']), null);
+out.extendKeepsFold = ext.folds[0] === extFold && extFold.el.open === true;
+out.extendRows = textsOf(ext).length;
+const scrolled = new FakePane(); scrolled.scrollHeight = 1000; scrolled.clientHeight = 100; scrolled.scrollTop = 200;
+const rScrolled = sovaOutputRenderer(); rScrolled.setTarget(scrolled);
+rScrolled.replace(['a', 'b'], null);
+out.redrawKeepsScroll = scrolled.scrollTop;
+rScrolled.replace(['c'], null);
+out.rewriteKeepsScroll = scrolled.scrollTop;
+scrolled.scrollTop = 900;
+rScrolled.replace(['d', 'e'], null);
+out.redrawAtBottomFollows = scrolled.scrollTop;
+
+const escaped = new FakePane(); const rEsc = sovaOutputRenderer(); rEsc.setTarget(escaped);
+rEsc.append('<script>alert(1)</script> & "q"', iso(0));
+out.escaped = escaped.html;
+
+const first = new FakePane(); const second = new FakePane(); const third = new FakePane();
+const rAttach = sovaOutputRenderer();
+rAttach.setTarget(first); rAttach.append('a', iso(0)); rAttach.append('b', iso(1));
+rAttach.setTarget(second);
+rAttach.append('c', iso(2));
+rAttach.setTarget(null); rAttach.append('d', iso(3));
+rAttach.setTarget(third);
+out.attached = [textsOf(first), textsOf(second), textsOf(third)];
+out.attachedCount = rAttach.count();
+
+const away = new FakePane(); away.scrollHeight = 1000; away.clientHeight = 100; away.scrollTop = 0;
+const rTail = sovaOutputRenderer(); rTail.setTarget(away);
+rTail.append('x', iso(0));
+out.scrolledUpStays = away.scrollTop;
+away.scrollTop = 900;
+rTail.append('y', iso(1));
+out.atBottomFollows = away.scrollTop;
+
+// A rebuilt pane carries a placeholder: an empty read already landed clears it, a read still in flight keeps it.
+const emptyRead = new FakePane(); emptyRead.chunks.push('Loading...');
+const rEmpty = sovaOutputRenderer(); rEmpty.replace([], []); rEmpty.setTarget(emptyRead);
+out.emptyReadPane = emptyRead.html;
+const unread = new FakePane(); unread.chunks.push('Loading...');
+const rUnread = sovaOutputRenderer(); rUnread.setTarget(unread);
+out.unreadPane = unread.html;
+process.stdout.write(JSON.stringify(out));
+"""
+
+# The shared stream helper without the Work page: a JSON output event, a finished run read once, several instances on
+# one page, re-attaching a rebuilt pane, and stop() releasing everything.
+_OUTPUT_STREAM_SCENARIO = r"""
+const realSetTimeout = setTimeout;
+const settle = () => new Promise((resolve) => realSetTimeout(resolve, 0));
+const timers = [];
+const cleared = [];
+globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+globalThis.clearTimeout = (id) => { cleared.push(id); };
+const fetches = [];
+globalThis.__run21 = [];
+const bigLines = Array.from({ length: 6000 }, (_, i) => 'big ' + i);
+// A live run past the 5000-line deque: the snapshot is the last 5000 of 6000 lines written.
+const evictedLines = Array.from({ length: 5000 }, (_, i) => 'ev ' + (i + 1000));
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  if (url.includes('/agents/41/')) return Promise.resolve({ lines: bigLines, total: 6000, seq: null });
+  if (url.includes('/agents/31/')) {
+    return Promise.resolve({ lines: evictedLines, times: [], total: 5000, seq: 6000 });
+  }
+  if (url.includes('/agents/21/')) {
+    const n = globalThis.__run21.length;
+    return Promise.resolve({ lines: globalThis.__run21, times: [], total: n, seq: n });
+  }
+  if (url.includes('/runs/9/') || url.includes('/agents/9/')) {
+    const times = ['2026-11-01T12:00:00+00:00', null];
+    return Promise.resolve({ lines: ['done a', 'done b'], times, total: 2, seq: null });
+  }
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const allTexts = (pane) => pane.chunks.flatMap(
+  (c) => (typeof c === 'string' ? textsOf({ html: c }) : allTexts(c.body)));
+const visibilityListeners = () => docListeners.filter(([t]) => t === 'visibilitychange').length;
+
+// A finished run is read once and never rescheduled; its null time renders no clock.
+const paneDone = new FakePane(); const rDone = sovaOutputRenderer(); rDone.setTarget(paneDone);
+const sDone = sovaOutputStream(rDone);
+sDone.start(9, 'done');
+await settle(); await settle();
+out.finishedFetches = fetches.length;
+out.finishedTexts = textsOf(paneDone);
+out.finishedTimers = timers.length;
+out.finishedEventSources = FakeEventSource.all.length;
+sDone.ensure(9, 'done');
+await settle();
+out.finishedEnsureFetches = fetches.length;
+sDone.stop();
+
+// A paused run still streams.
+const paneLive = new FakePane(); const rLive = sovaOutputRenderer(); rLive.setTarget(paneLive);
+const sLive = sovaOutputStream(rLive);
+sLive.start(5, 'paused');
+out.pausedUsesStream = FakeEventSource.all.length === 1
+  && FakeEventSource.all[0].url.endsWith('/agents/5/output/stream');
+const esLive = FakeEventSource.all[0];
+esLive.emit('connected', '{"seq": 0}');
+await settle(); await settle();
+const wire = { time: '2026-11-01T12:00:00+00:00', text: 'line with\nnewline and \\ backslash' };
+esLive.emit('output', JSON.stringify(wire));
+out.jsonEventTexts = textsOf(paneLive);
+out.jsonEventHasTimeSpan = /<span class="out-time">\d\d:\d\d:\d\d<\/span>/.test(paneLive.html);
+
+// A second instance on the same page owns its own stream and pane.
+const paneOther = new FakePane(); const rOther = sovaOutputRenderer(); rOther.setTarget(paneOther);
+const sOther = sovaOutputStream(rOther);
+sOther.start(6, 'running');
+const esOther = FakeEventSource.all[1];
+esOther.emit('connected', '{"seq": 0}');
+await settle(); await settle();
+esOther.emit('output', 'only on the other pane');
+out.panes = [textsOf(paneLive).length, textsOf(paneOther)];
+out.listeners = visibilityListeners();
+
+// Re-attaching a rebuilt pane keeps the stream and the lines.
+const rebuilt = new FakePane();
+rLive.setTarget(rebuilt);
+sLive.ensure(5, 'running');
+out.eventSourcesAfterEnsure = FakeEventSource.all.length;
+out.rebuiltTexts = textsOf(rebuilt);
+
+// stop() closes the stream and removes its listener, and leaves the other instance alone.
+sLive.stop();
+out.stoppedClosed = esLive.closed;
+out.otherClosed = esOther.closed;
+out.listenersAfterStop = visibilityListeners();
+out.runIdAfterStop = sLive.runId();
+sOther.stop();
+out.listenersAfterBoth = visibilityListeners();
+
+// A live run whose stream failed over to polling: once the page learns the run finished, the next read is the last.
+const paneFall = new FakePane(); const rFall = sovaOutputRenderer(); rFall.setTarget(paneFall);
+const sFall = sovaOutputStream(rFall);
+sFall.start(11, 'running');
+const sourcesBeforeFinish = FakeEventSource.all.length;
+FakeEventSource.all[sourcesBeforeFinish - 1].onerror();
+await settle(); await settle();
+const fallbackPoll = timers[timers.length - 1];
+sFall.ensure(11, 'done');
+const timersBeforeLastRead = timers.length;
+const fetchesBeforeLastRead = fetches.length;
+fallbackPoll.fn();
+await settle(); await settle();
+out.finishedFallbackReads = fetches.length - fetchesBeforeLastRead;
+out.finishedFallbackReschedules = timers.length - timersBeforeLastRead;
+out.finishedFallbackNewSources = FakeEventSource.all.length - sourcesBeforeFinish;
+sFall.stop();
+
+// The server ends the stream of a run the page still considers live: the lines stay, the run is read on by polling
+// from where it left off, and ensure() (every step expansion calls it) neither clears nor reopens anything.
+const paneEnd = new FakePane(); const rEnd = sovaOutputRenderer(); rEnd.setTarget(paneEnd);
+const sEnd = sovaOutputStream(rEnd);
+sEnd.start(21, 'paused');
+const esEnd = FakeEventSource.all[FakeEventSource.all.length - 1];
+esEnd.emit('connected', '{"seq": 0}');
+await settle(); await settle();
+esEnd.emit('output', 'kept line');
+globalThis.__run21 = ['kept line'];
+const sourcesBeforeDone = FakeEventSource.all.length;
+const fetchesBeforeDone = fetches.length;
+esEnd.emit('done', '');
+await settle(); await settle();
+out.doneLivePollUrls = fetches.slice(fetchesBeforeDone);
+const fetchesAfterDone = fetches.length;
+sEnd.ensure(21, 'paused'); sEnd.ensure(21, 'running');
+await settle();
+out.doneEnsureFetches = fetches.length - fetchesAfterDone;
+out.doneEnsureNewSources = FakeEventSource.all.length - sourcesBeforeDone;
+out.doneKeepsLines = textsOf(paneEnd);
+// The status push then says finished: the next read is the last.
+const timersBeforeFinish = timers.length;
+sEnd.ensure(21, 'done');
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.doneFinalReschedules = timers.length - timersBeforeFinish;
+sEnd.stop();
+
+// A run read once as finished whose status becomes live again under the same run id (a restart of a failed or
+// stopped run) is streamed again, and its new lines render.
+const paneRe = new FakePane(); const rRe = sovaOutputRenderer(); rRe.setTarget(paneRe);
+const sRe = sovaOutputStream(rRe);
+sRe.start(9, 'failed');
+await settle(); await settle();
+const sourcesBeforeRestart = FakeEventSource.all.length;
+sRe.ensure(9, 'running');
+out.restartNewSources = FakeEventSource.all.length - sourcesBeforeRestart;
+const esRe = FakeEventSource.all[FakeEventSource.all.length - 1];
+esRe.emit('connected', '{"seq": 2}');
+await settle(); await settle();
+esRe.emit('output', 'after restart');
+out.restartTexts = textsOf(paneRe);
+sRe.stop();
+
+// A run past the 5000-line deque whose stream ends while the page still shows it live: the read that follows starts
+// at line 0 (a count of drawn lines is no valid `since` for the evicted snapshot) and duplicates nothing.
+const paneEv = new FakePane(); const rEv = sovaOutputRenderer(); rEv.setTarget(paneEv);
+const sEv = sovaOutputStream(rEv);
+sEv.start(31, 'running');
+const esEv = FakeEventSource.all[FakeEventSource.all.length - 1];
+esEv.emit('connected', '{"seq": 6000}');
+await settle(); await settle();
+const fetchesBeforeEvDone = fetches.length;
+esEv.emit('done', '');
+await settle(); await settle();
+out.evictedPollUrls = fetches.slice(fetchesBeforeEvDone);
+out.evictedHeld = rEv.count();
+out.evictedTotal = rEv.total();
+out.evictedFirst = textsOf(paneEv.folds[0].body)[0];
+sEv.stop();
+
+// A long finished run is read in one pass: one redraw, capped at the lines the renderer holds.
+const paneBig = new FakePane(); const rBigRun = sovaOutputRenderer(); rBigRun.setTarget(paneBig);
+const sBig = sovaOutputStream(rBigRun);
+sBig.start(41, 'done');
+const clearsAfterStart = paneBig.clears;
+await settle(); await settle();
+out.bigRunRedraws = paneBig.clears - clearsAfterStart;
+out.bigRunHeld = rBigRun.count();
+out.bigRunTotal = rBigRun.total();
+sBig.stop();
+
+// A live run past the 5000-line deque whose stream fails over to polling. The server counts `since` in lifetime lines
+// while the agent is in memory, so the cursor is its `seq`: new lines are appended once, none dropped.
+const life = Array.from({ length: 6000 }, (_, i) => 'life ' + i);
+globalThis.__life = life;
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  if (url.includes('/agents/51/')) {
+    const since = Number(/since=(\d+)/.exec(url)[1]);
+    const held = globalThis.__life.slice(-5000);
+    const evicted = globalThis.__life.length - held.length;
+    const lines = held.slice(Math.max(0, since - evicted));
+    return Promise.resolve({ lines, times: [], total: since + lines.length, seq: globalThis.__life.length });
+  }
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const paneLife = new FakePane(); const rLife = sovaOutputRenderer(); rLife.setTarget(paneLife);
+const sLife = sovaOutputStream(rLife);
+sLife.start(51, 'running');
+const esLife = FakeEventSource.all[FakeEventSource.all.length - 1];
+esLife.emit('connected', '{"seq": 6000}');
+await settle(); await settle();
+esLife.emit('gap', '');
+await settle(); await settle();
+globalThis.__life = life.concat(['life 6000', 'life 6001', 'life 6002']);
+const fetchesBeforeLife = fetches.length;
+timers[timers.length - 1].fn();
+await settle(); await settle();
+globalThis.__life = globalThis.__life.concat(['life 6003']);
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.lifePollUrls = fetches.slice(fetchesBeforeLife);
+out.lifeHeld = rLife.count();
+const lifeTexts = allTexts(paneLife);
+out.lifeLast = lifeTexts.slice(-4);
+out.lifeDistinct = new Set(lifeTexts).size === lifeTexts.length;
+sLife.stop();
+
+// A paused run whose stream the server ends while its agent leaves memory with a different stored line count than the
+// buffer held: the read after it re-reads from line 0 (a stored line number is no index into the buffer), draws each
+// stored line once, ends the chain, and ensure() then leaves the pane alone until the status changes.
+globalThis.__mem = true;
+globalThis.__stored = Array.from({ length: 12003 }, (_, i) => 'st ' + i);
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  if (url.includes('/agents/52/')) {
+    const since = Number(/since=(\d+)/.exec(url)[1]);
+    if (globalThis.__mem) {
+      const held = globalThis.__stored.slice(0, 12000).slice(-5000);
+      const lines = held.slice(Math.max(0, since - 7000));
+      return Promise.resolve({ lines, times: [], total: since + lines.length, seq: 12000 });
+    }
+    const lines = globalThis.__stored.slice(since);
+    return Promise.resolve({ lines, times: [], total: since + lines.length, seq: null });
+  }
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const paneGone = new FakePane(); const rGone = sovaOutputRenderer(); rGone.setTarget(paneGone);
+const sGone = sovaOutputStream(rGone);
+sGone.start(52, 'paused');
+const esGone = FakeEventSource.all[FakeEventSource.all.length - 1];
+esGone.emit('connected', '{"seq": 12000}');
+await settle(); await settle();
+esGone.emit('done', '');
+await settle(); await settle();
+out.goneHeldInMemory = rGone.count();
+const fetchesBeforeLeave = fetches.length;
+globalThis.__mem = false;
+timers[timers.length - 1].fn();
+await settle(); await settle();
+out.gonePollUrls = fetches.slice(fetchesBeforeLeave);
+out.goneHeld = rGone.count();
+out.goneTotal = rGone.total();
+const goneTexts = allTexts(paneGone);
+out.goneDistinct = new Set(goneTexts).size === goneTexts.length;
+out.goneLast = goneTexts.slice(-3);
+const timersAfterGone = timers.length;
+const clearsAfterGone = paneGone.clears;
+const fetchesAfterGone = fetches.length;
+const sourcesAfterGone = FakeEventSource.all.length;
+sGone.ensure(52, 'paused'); sGone.ensure(52, 'paused');
+await settle();
+out.goneEnsureFetches = fetches.length - fetchesAfterGone;
+out.goneEnsureClears = paneGone.clears - clearsAfterGone;
+out.goneEnsureSources = FakeEventSource.all.length - sourcesAfterGone;
+out.goneEnsureTimers = timers.length - timersAfterGone;
+sGone.ensure(52, 'running');
+out.goneResumeSources = FakeEventSource.all.length - sourcesAfterGone;
+sGone.stop();
+
+// The same for a run that was never in memory: server `done`, one idle read, then ensure() twice changes nothing.
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: null });
+};
+const paneIdle = new FakePane(); const rIdle = sovaOutputRenderer(); rIdle.setTarget(paneIdle);
+const sIdle = sovaOutputStream(rIdle);
+sIdle.start(53, 'paused');
+const esIdle = FakeEventSource.all[FakeEventSource.all.length - 1];
+esIdle.emit('connected', '{}');
+await settle(); await settle();
+esIdle.emit('done', '');
+await settle(); await settle();
+const idleTimers = timers.length;
+const idleFetches = fetches.length;
+const idleClears = paneIdle.clears;
+const idleSources = FakeEventSource.all.length;
+sIdle.ensure(53, 'paused'); sIdle.ensure(53, 'paused');
+await settle();
+out.idleNewFetches = fetches.length - idleFetches;
+out.idleNewClears = paneIdle.clears - idleClears;
+out.idleNewSources = FakeEventSource.all.length - idleSources;
+out.idleNewTimers = timers.length - idleTimers;
+sIdle.stop();
+
+// A tab return on a polling chain whose agent left memory while the tab was hidden: the chain's own memory of which
+// numbering the cursor is in is reset on resume, so the cursor (a lifetime seq) must not be sent as a stored line
+// number. The resume reads the whole run again and draws each line once.
+globalThis.__mem = true;
+globalThis.__onFetch = (url) => {
+  fetches.push(url);
+  if (url.includes('/agents/52/')) {
+    const since = Number(/since=(\d+)/.exec(url)[1]);
+    if (globalThis.__mem) {
+      const held = globalThis.__stored.slice(0, 12000).slice(-5000);
+      const lines = held.slice(Math.max(0, since - 7000));
+      return Promise.resolve({ lines, times: [], total: since + lines.length, seq: 12000 });
+    }
+    const lines = globalThis.__stored.slice(since);
+    return Promise.resolve({ lines, times: [], total: since + lines.length, seq: null });
+  }
+  return Promise.resolve({ lines: [], times: [], total: 0, seq: 0 });
+};
+const paneTab = new FakePane(); const rTab = sovaOutputRenderer(); rTab.setTarget(paneTab);
+const sTab = sovaOutputStream(rTab);
+sTab.start(52, 'paused');
+const esTab = FakeEventSource.all[FakeEventSource.all.length - 1];
+esTab.emit('connected', '{"seq": 12000}');
+await settle(); await settle();
+esTab.emit('done', '');
+await settle(); await settle();
+doc.hidden = true; fire();
+globalThis.__mem = false;
+const fetchesBeforeReturn = fetches.length;
+doc.hidden = false; fire();
+await settle(); await settle();
+out.tabReturnUrls = fetches.slice(fetchesBeforeReturn);
+const tabTexts = allTexts(paneTab);
+out.tabReturnDistinct = new Set(tabTexts).size === tabTexts.length;
+out.tabReturnLast = tabTexts.slice(-3);
+out.tabReturnTotal = rTab.total();
+sTab.stop();
+
+process.stdout.write(JSON.stringify(out));
 """
 
 
@@ -1203,8 +1836,6 @@ class TestPollingUsesVisibilityAwarePoll:
             if "setTimeout(" in line and not line.lstrip().startswith("//")
         }
         assert found == {
-            ("log-viewer", "logPollInterval = setTimeout(pollLogs, _logBackoffMs);"),
-            ("log-viewer", "resume.connectTimer = setTimeout(function() {"),
             ("agent-cards", "_completedCleanupTimer = setTimeout(function() {"),
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
             ("work/board", "var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);"),
@@ -1221,52 +1852,54 @@ class TestPollingUsesVisibilityAwarePoll:
                 "_state.number = typed; _reload(); }, 300);",
             ),
         }
-        assert "pollLogs() below" in _module_source("log-viewer")
+        # The shared output helper owns the one self-rescheduling chain (poll()), the backfill deadline and the
+        # stream's connect wait.
+        helper = _OUTPUT_STREAM_JS
+        timeouts = [
+            line.strip() for line in helper.splitlines() if "setTimeout(" in line and not line.lstrip().startswith("//")
+        ]
+        assert timeouts == [
+            "if (isCurrent()) pollTimer = setTimeout(poll, backoffMs);",
+            "var deadline = setTimeout(function() { controller.abort(); }, _OUTPUT_BACKFILL_TIMEOUT_MS);",
+            "resume.connectTimer = setTimeout(function() {",
+        ]
 
-    def test_log_poll_drops_a_response_for_a_run_no_longer_shown(self) -> None:
-        source = _module_source("log-viewer")
-        body = source[source.index("async function pollLogs()") :]
-        body = body[: body.index("\n}\n")]
-        assert "var gen = _logPollGen;" in body
-        assert "runId === activeLogRunId && gen === _logPollGen && !document.hidden" in body
-        assert body.count("if (!isCurrent()) return;") == 2, "both the success and failure path must drop a stale poll"
-        assert "if (isCurrent()) {" in body
+    def test_output_poll_drops_a_response_for_a_run_no_longer_shown(self) -> None:
+        body = _js_function(_OUTPUT_STREAM_JS, "async function poll()")
+        assert "var gen = pollGen;" in body
+        assert "id === runId && gen === pollGen && !document.hidden" in body
+        assert body.count("if (!isCurrent()) return;") == 3, (
+            "every await continuation (the read, the re-read after the agent left memory) and the failure path "
+            "must drop a stale poll"
+        )
+        assert "if (isCurrent()) pollTimer" in body
 
     def test_every_poll_chain_stop_bumps_the_generation(self) -> None:
-        """A fetch in flight cannot be cancelled, so the hide, close and restart paths must all invalidate it."""
-        source = _module_source("log-viewer")
-        cancel = source[source.index("function _cancelLogPolling()") :]
-        cancel = cancel[: cancel.index("\n}\n")]
-        assert "_logPollGen++" in cancel
-        for fn in ("_startLogPolling", "closeLogViewer"):
-            body = source[source.index(f"function {fn}()") :]
-            assert "_cancelLogPolling();" in body[: body.index("\n}\n")], fn
-        handler = source[source.index("document.addEventListener('visibilitychange'") :]
-        hidden_branch = handler[: handler.index("} else {")]
-        assert "_cancelLogPolling();" in hidden_branch
+        """A fetch in flight cannot be cancelled, so the hide, stop and restart paths must all invalidate it."""
+        assert "pollGen++" in _js_function(_OUTPUT_STREAM_JS, "function cancelPolling()")
+        for fn in ("function startPolling(once, afterServerDone)", "function stop()"):
+            assert "cancelPolling();" in _js_function(_OUTPUT_STREAM_JS, fn), fn
+        handler = _js_function(_OUTPUT_STREAM_JS, "function onVisibility()")
+        assert "cancelPolling();" in handler[: handler.index("} else")]
 
     def test_resume_opens_the_stream_before_the_backfill_lands(self) -> None:
         """The backfill runs only once the stream reports it is subscribed, and the stream holds its lines meanwhile."""
-        source = _module_source("log-viewer")
-        resume = source[source.index("function _resumeLogStream(") :]
-        resume = resume[: resume.index("\n}\n")]
+        resume = _js_function(_OUTPUT_STREAM_JS, "function openStream(id)")
         assert "{ holding: true, held: [], connectedSeq: null, done: false, connectTimer: null }" in resume
-        assert "_connectLogSSE(runId, resume);" in resume
+        assert "connect(id, " in resume
         assert "since=0" not in resume
-        connect = source[source.index("function _connectLogSSE(") :]
-        connect = connect[: connect.index("\n}\n")]
+        connect = _js_function(_OUTPUT_STREAM_JS, "function connect(id, resume)")
         assert "addEventListener('connected'" in connect
-        assert "resume.held.push(text)" in connect
-        reconcile = source[source.index("async function _reconcileLogStream(") :]
+        assert "resume.held.push(line)" in connect
+        reconcile = _js_function(_OUTPUT_STREAM_JS, "async function reconcile(id, es, resume)")
         assert "/output?since=0" in reconcile
-        assert "_logOverlap(snapshot, resume.held, resume.connectedSeq, snapshotSeq)" in reconcile
+        assert "_outputOverlap(snapshot, resume.held, resume.connectedSeq, snapshotSeq)" in reconcile
 
     def test_first_open_of_a_running_agent_backfills_like_a_tab_return(self) -> None:
-        source = _module_source("log-viewer")
-        view = source[source.index("function viewLogs(") :]
-        view = view[: view.index("\n}\n")]
-        assert "_resumeLogStream(runId);" in view
-        assert "_connectLogSSE(runId)" not in view, "a bare connect would show only lines written after the click"
+        view = _js_function(_module_source("log-viewer"), "function viewLogs(runId, runStatus)")
+        assert "_logStream.start(runId, runStatus);" in view
+        start = _js_function(_OUTPUT_STREAM_JS, "function start(id, runStatus)")
+        assert "else openStream(id);" in start, "a bare connect would show only lines written after the click"
 
     @pytest.mark.parametrize(
         ("snapshot", "held", "connected_seq", "snapshot_seq", "expected"),
@@ -1294,12 +1927,13 @@ class TestPollingUsesVisibilityAwarePoll:
     ) -> None:
         """A line written between the subscription and the snapshot is in both; only that one is dropped."""
         _require_node("node is required to run the log overlap helper")
-        source = _module_source("log-viewer")
-        start = source.index("function _logOverlap(")
-        fn = source[start : source.index("\n}\n", start) + 2]
-        args = ", ".join(json.dumps(v) for v in (snapshot, held, connected_seq, snapshot_seq))
+        fn = _js_function(_APP_JS, "function _outputOverlap(snapshot, held, connectedSeq, snapshotSeq)")
+        args = ", ".join(
+            json.dumps(v)
+            for v in (snapshot, [{"text": text, "time": None} for text in held], connected_seq, snapshot_seq)
+        )
         proc = subprocess.run(
-            ["node", "-e", f"{fn}\nconsole.log(_logOverlap({args}));"],
+            ["node", "-e", f"{fn}\nconsole.log(_outputOverlap({args}));"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1946,8 +2580,11 @@ class TestAgentsModuleResponsibilities:
             assert name not in viewer, name
         for name in ("loadHistory", "renderHistoryTable", "rerunAgent", "enhancePlannerCards"):
             assert name not in viewer, name
-        assert "function formatLogLine(" in viewer
         assert "function viewLogs(" in viewer
+        for shared in ("EventSource", "fetchAPI(", "setTimeout(", "function formatLogLine("):
+            assert shared not in viewer, f"{shared} belongs to the shared output helper in app.js"
+        assert "sovaOutputStream(" in viewer
+        assert "sovaOutputRenderer(" in viewer
 
     @pytest.mark.parametrize(
         ("module", "names"),
@@ -1991,17 +2628,15 @@ class TestAgentsModuleResponsibilities:
             ("pending", False),
         ],
     )
-    def test_log_viewer_finished_runs_come_from_the_shared_terminal_set(self, status: str, finished: bool) -> None:
+    def test_finished_runs_come_from_the_shared_terminal_set(self, status: str, finished: bool) -> None:
         """A paused run or one awaiting approval can still write, so it streams; the rest are read from line 0."""
-        _require_node("node is required to run the log viewer helper")
-        source = _module_source("log-viewer")
-        assert "_TERMINAL" not in source.replace("_STATUS_TERMINAL", "")
+        _require_node("node is required to run the finished-run helper")
+        assert "_TERMINAL" not in _module_source("log-viewer").replace("_STATUS_TERMINAL", "")
         terminal = re.search(r"^var _STATUS_TERMINAL = .*;$", _APP_JS, re.MULTILINE)
         assert terminal
-        start = source.index("function _isFinishedRun(")
-        fn = source[start : source.index("\n}\n", start) + 2]
+        fn = _js_function(_APP_JS, "function sovaOutputFinished(status)")
         proc = subprocess.run(
-            ["node", "-e", f"{terminal.group(0)}\n{fn}\nconsole.log(_isFinishedRun({json.dumps(status)}));"],
+            ["node", "-e", f"{terminal.group(0)}\n{fn}\nconsole.log(sovaOutputFinished({json.dumps(status)}));"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -2124,6 +2759,21 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["afterStalePoll"] == [], "the pre-hide response must be dropped"
         assert result["afterCurrentPoll"] == ["a"], "the line is appended once, not once per chain"
 
+    def test_opening_a_run_that_is_in_the_active_list_opens_one_stream_and_one_backfill(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _LOG_OPEN_ACTIVE_RUN_SCENARIO)
+        assert result["sourcesBeforeOpen"] == 0, "the tab strip alone never opens a stream for a log nobody opened"
+        assert result["sources"] == 1, "ensure() from the tab repaint must not open a stream that start() replaces"
+        assert result["closedSources"] == 0
+        assert result["sourceUrls"] == ["/api/agents/7/output/stream"]
+        assert result["outputFetches"] == 0, "the backfill waits for the stream's connected event, and runs once"
+
+    def test_the_tab_strip_telling_the_stream_its_run_finished_ends_the_poll_chain(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _LOG_STATUS_CHANGE_SCENARIO)
+        assert result["rescheduledWhileRunning"] == 1, "a run still running keeps being polled"
+        assert result["lastReads"] == 1
+        assert result["rescheduledAfterDone"] == 0, "the read after the status turned done is the last one"
+        assert result["newSources"] == 1, "no new stream is opened for the status change"
+
     def test_an_empty_active_list_clears_the_tab_strip_but_keeps_the_open_log(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _LOG_EMPTY_TABS_SCENARIO)
         assert result["openRun"] == 7, "a finished run's log opened from the board must stay open"
@@ -2151,6 +2801,10 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["closedOnDone"] is True, "no further events are wanted from a finished run"
         assert result["beforeBackfill"] == []
         assert result["afterBackfill"] == ["first", "last"], "the snapshot and the held line must both appear"
+        assert result["pollingContinues"] is True, (
+            "a run the page thinks is live is read on while its agent is in memory"
+        )
+        assert result["timersAfterIdleRead"] == 0, "the poll chain ends once the agent has left memory"
 
     def test_a_failed_backfill_rereads_the_run_instead_of_hiding_the_gap(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _LOG_BACKFILL_FAILS_SCENARIO)
@@ -2189,6 +2843,198 @@ class TestLogViewerResumeAfterHiddenTab:
         assert result["waitCancelled"] is True
         assert result["liveStreamClosed"] is False
         assert result["rendered"] == ["a", "b"]
+
+    def test_renderer_shows_the_time_column_only_when_the_times_differ(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["equalTimesColumn"] is False, "rows stored with one flush time show no column"
+        assert result["legacyColumn"] is False
+        assert result["legacyHtmlMentionsNull"] is False, "a row without a time must not render null"
+        assert result["badTimeHtml"] is False, "an unparseable time is treated as missing"
+        assert result["mixedColumn"] is True
+        assert result["mixedLabels"] == [True, False, True], "a time is drawn only where the second changes"
+        assert (result["liveBefore"], result["liveAfter"]) == (False, True)
+        assert result["liveLabels"] == [True, False, True]
+
+    def test_renderer_folds_only_blocks_over_twenty_lines_whatever_their_kind(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        open_block = [{"count": "", "open": True, "folded": False}]
+        assert result["foldOne"] == open_block, "a single tool call stays visible"
+        assert result["foldNineteen"] == open_block
+        assert result["foldTwenty"] == open_block, "a block folds when it passes 20 lines, not at 20"
+        assert result["foldTwentyFive"] == [{"count": "25 tool calls", "open": False, "folded": True}]
+        assert result["foldTextLines"] == [{"count": "25 lines", "open": False, "folded": True}]
+        assert result["foldLogLines"] == [{"count": "22 lines", "open": False, "folded": True}]
+        assert result["mixedKindBlocks"] == 3, "a block ends where the kind changes"
+
+    def test_renderer_updates_a_fold_in_place_and_keeps_the_readers_toggle(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["foldLast"] == " [Grep] last one"
+        assert result["foldCountGrown"] == "22 tool calls"
+        assert result["foldGrewInPlace"] is True, "a growing block updates its count without redrawing the pane"
+        assert result["readerToggleKept"] is True, "a fold the reader opened is not collapsed again by a new line"
+        assert result["foldBodyHasEveryRow"] == 23
+
+    def test_renderer_keeps_errors_visible_outside_any_fold(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["foldsAfterErrors"] == 2, "an error row ends the block and the next call opens a new one"
+        assert result["visibleOutsideFold"] == [True, True], "repeated errors stay outside the fold"
+        assert result["foldBodyTexts"] == ["[Bash] cmd 0", "[Bash] cmd 1", "[Bash] cmd 2"]
+
+    def test_renderer_styles_a_structlog_line_as_its_own_kind(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["logKind"] is True
+        assert result["logPlainText"] is True
+
+    def test_a_stderr_prefixed_sova_log_line_is_a_log_row_and_an_error_level_one_an_error_row(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["stderrLogKind"] is True, "SOVA logs through stderr: the prefix must not hide its kind"
+        assert result["stdoutLogKind"] is True
+        assert result["stderrTraceKind"] is True, "unstructured stderr text stays a stderr line"
+        assert result["stderrRunFolds"] == [{"count": "25 lines", "open": False, "folded": True}]
+        assert result["stderrErrorVisible"] == [True], "an error-level line stays visible outside the folded run"
+
+    def test_a_prefixed_plain_error_line_is_an_error_row_outside_the_fold(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["stderrPlainFolds"] == [{"count": "25 lines", "open": False, "folded": True}]
+        assert result["stderrPlainErrorsVisible"] == [True, True], "both prefixed error forms stay outside the fold"
+
+    def test_a_row_after_a_folded_block_is_labelled_but_not_after_a_visible_run(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["labelAfterFold"] is True
+        assert result["labelsAfterShortRun"] == [True, False, False]
+
+    def test_renderer_caps_the_lines_it_holds_and_says_so(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["cappedHeld"] == 5099, "trims back to 5000 once 500 over, then keeps appending"
+        assert result["cappedTotal"] == 5600
+        assert result["cappedMarker"] == "501 earlier lines not shown"
+        assert result["cappedFirstKept"] == "line 501"
+        assert (result["bigReadHeld"], result["bigReadTotal"]) == (5000, 5200)
+
+    def test_a_redraw_follows_the_tail_only_for_a_reader_at_the_bottom(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["extendKeepsFold"] is True, "a read that extends the held lines draws only the new ones"
+        assert result["extendRows"] == 26
+        assert result["redrawKeepsScroll"] == 200
+        assert result["rewriteKeepsScroll"] == 200
+        assert result["redrawAtBottomFollows"] == 1000
+
+    def test_renderer_escapes_text_and_survives_a_rebuilt_pane(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert "<script>" not in result["escaped"]
+        assert "&lt;script&gt;" in result["escaped"]
+        assert "&quot;q&quot;" in result["escaped"]
+        first, second, third = result["attached"]
+        assert first == ["a", "b"], "the detached pane is left as it was"
+        assert second == ["a", "b", "c"], "a new pane gets every held line and then follows"
+        assert third == ["a", "b", "c", "d"], "a line appended with no pane is held for the next one"
+        assert result["attachedCount"] == 4
+
+    def test_renderer_follows_the_tail_only_while_the_reader_is_at_the_bottom(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["scrolledUpStays"] == 0
+        assert result["atBottomFollows"] == 1000
+
+    def test_renderer_clears_a_rebuilt_panes_placeholder_only_once_a_read_landed(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["emptyReadPane"] == "", "a run with no output must not show Loading... forever"
+        assert result["unreadPane"] == "Loading...", "a pane waiting for its first read keeps the placeholder"
+
+    def test_stream_reads_a_finished_run_once_and_keeps_a_paused_one_streaming(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["finishedFetches"] == 1
+        assert result["finishedTexts"] == ["done a", "done b"]
+        assert result["finishedTimers"] == 0, "a finished run's one read is not rescheduled"
+        assert result["finishedEventSources"] == 0
+        assert result["finishedEnsureFetches"] == 1, "a fully read finished run is not read again"
+        assert result["pausedUsesStream"] is True
+
+    def test_a_polling_fallback_ends_once_the_run_is_finished(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["finishedFallbackReads"] == 1, "the last read still picks up the run's final lines"
+        assert result["finishedFallbackReschedules"] == 0, "a finished run is not polled forever"
+        assert result["finishedFallbackNewSources"] == 0, "ensure() does not reopen the stream"
+
+    def test_a_stream_the_server_ends_on_a_live_run_is_polled_on_not_restarted(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["doneLivePollUrls"] == ["/api/agents/21/output?since=0"], "a read from line 0, never a count"
+        assert result["doneEnsureFetches"] == 0, "ensure() on a polled run neither re-reads nor restarts it"
+        assert result["doneEnsureNewSources"] == 0
+        assert result["doneKeepsLines"] == ["kept line"]
+        assert result["doneFinalReschedules"] == 0
+
+    def test_a_run_restarted_under_the_same_id_is_streamed_again(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["restartNewSources"] == 1, "ensure() moves a fully read finished run back to a live stream"
+        assert result["restartTexts"] == ["done a", "done b", "after restart"]
+
+    def test_a_stream_ended_on_an_evicted_snapshot_rereads_from_zero_without_duplicates(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["evictedPollUrls"] == ["/api/agents/31/output?since=0"]
+        assert (result["evictedHeld"], result["evictedTotal"]) == (5000, 5000)
+        assert result["evictedFirst"] == "ev 1000"
+
+    def test_a_gap_fallback_on_a_run_past_the_buffer_cap_keeps_appending_new_lines(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["lifePollUrls"] == ["/api/agents/51/output?since=6000", "/api/agents/51/output?since=6003"], (
+            "the cursor is the run's lifetime line count (seq), not a count of the lines drawn from the capped buffer"
+        )
+        assert result["lifeLast"] == ["life 6000", "life 6001", "life 6002", "life 6003"]
+        assert result["lifeHeld"] == 5004
+        assert result["lifeDistinct"] is True
+
+    def test_an_agent_leaving_memory_mid_chain_is_re_read_from_zero_with_no_duplicates(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["goneHeldInMemory"] == 5000
+        assert result["gonePollUrls"] == ["/api/agents/52/output?since=12000", "/api/agents/52/output?since=0"], (
+            "a stored line number is no index into the buffer, so the read after it left memory starts over"
+        )
+        assert (result["goneHeld"], result["goneTotal"]) == (5000, 12003)
+        assert result["goneDistinct"] is True, "no line is drawn twice"
+        assert result["goneLast"] == ["st 12000", "st 12001", "st 12002"], "the stderr lines stored at finalize show"
+
+    def test_a_tab_return_after_the_agent_left_memory_rereads_the_run_from_zero(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["tabReturnUrls"] == ["/api/agents/52/output?since=0"], (
+            "the in-memory seq must not go out as a stored line_number after the agent left memory"
+        )
+        assert result["tabReturnDistinct"] is True, "no line is drawn twice"
+        assert result["tabReturnLast"] == ["st 12000", "st 12001", "st 12002"]
+        assert result["tabReturnTotal"] == 12003
+
+    def test_a_chain_that_ended_on_a_paused_run_is_not_restarted_until_its_status_changes(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        for prefix in ("gone", "idle"):
+            assert result.get(prefix + "EnsureFetches", result.get(prefix + "NewFetches")) == 0, prefix
+            assert result.get(prefix + "EnsureClears", result.get(prefix + "NewClears")) == 0, prefix
+            assert result.get(prefix + "EnsureSources", result.get(prefix + "NewSources")) == 0, prefix
+        assert result["goneEnsureTimers"] == 0
+        assert result["idleNewTimers"] == 0
+        assert result["goneResumeSources"] == 1, "a status change (resume) opens the stream again"
+
+    def test_a_long_finished_run_is_drawn_in_one_pass(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["bigRunRedraws"] == 1, "a first read must not lay the pane out once per line"
+        assert (result["bigRunHeld"], result["bigRunTotal"]) == (5000, 6000)
+
+    def test_stream_output_event_is_json_with_the_time_and_the_exact_text(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["jsonEventTexts"] == ["line with\nnewline and \\ backslash"]
+        assert result["jsonEventHasTimeSpan"] is True
+
+    def test_two_streams_on_one_page_keep_their_own_state_and_stop_cleanly(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_STREAM_SCENARIO)
+        assert result["panes"] == [1, ["only on the other pane"]]
+        assert result["listeners"] == 2
+        assert result["eventSourcesAfterEnsure"] == 2, "re-attaching the same running run never reopens the stream"
+        assert result["rebuiltTexts"] == ["line with\nnewline and \\ backslash"]
+        assert result["stoppedClosed"] is True
+        assert result["otherClosed"] is False
+        assert result["listenersAfterStop"] == 1
+        assert result["runIdAfterStop"] is None
+        assert result["listenersAfterBoth"] == 0
 
     def test_pr_tracker_never_turns_a_failed_load_into_no_open_prs(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _PR_TRACKER_FAILED_LOAD_SCENARIO)
@@ -2703,22 +3549,69 @@ const _setRunStatusAndCost = () => {{}};
 const _renderRunInfo = () => {{}};
 const _applyActionButtons = () => {{}};
 const _renderPipelineBar = () => {{}};
+const ensured = [];
+let _outputPane = null;
+const _outputStream = {{ ensure: (id, status) => ensured.push([id, status]) }};
 {element}
 {insert}
 {sync}
 {patch_fn}
-const run = {{ status: 'running' }};
+const run = {{ id: 7, status: 'running' }};
 patchRunHeader(run, [{{ step_name: 'sync', status: 'running' }}]);
 const first = {{ order: order.slice(), placeholder: list.innerHTML, controls: controls.style.display }};
 patchRunHeader(run, [{{ step_name: 'sync', status: 'done' }}, {{ step_name: 'develop', status: 'running' }}]);
 patchRunHeader(run, [{{ step_name: 'sync', status: 'done' }}, {{ step_name: 'assess', status: 'done' }},
   {{ step_name: 'develop', status: 'running' }}]);
-console.log(JSON.stringify({{ first, order }}));
+const withoutPane = ensured.length;
+_outputPane = {{}};
+patchRunHeader({{ id: 7, status: 'paused' }}, [{{ step_name: 'sync', status: 'done' }}]);
+patchRunHeader({{ id: 7, status: 'running' }}, [{{ step_name: 'sync', status: 'done' }}]);
+console.log(JSON.stringify({{ first, order, withoutPane, ensured }}));
 """
         assert self._run_node(script) == {
             "first": {"order": ["step-row-sync"], "placeholder": "", "controls": ""},
             "order": ["step-row-sync", "step-row-assess", "step-row-develop"],
+            "withoutPane": 0,
+            "ensured": [[7, "paused"], [7, "running"]],
         }
+
+    def test_a_rebuilt_step_list_gives_the_moved_pane_its_scroll_position_back(self) -> None:
+        state_fn = self._function(self._RUN_DETAIL, "_outputScrollState")
+        show = self._function(self._RUN_DETAIL, "_showOutput")
+        script = f"""
+const _OUTPUT_TAIL_SLACK = 80;
+const makePane = (top, height) => ({{ id: 'inline-output-content', isConnected: true, scrollTop: top,
+  scrollHeight: height, clientHeight: 100 }});
+let _outputPane = null, _outputPaneRun = null;
+let target = null;
+const _outputRenderer = {{ setTarget: (el) => {{ target = el; }} }};
+const _outputStream = {{ ensure() {{}} }};
+let fresh = null;
+globalThis.document = {{ getElementById: () => fresh }};
+{state_fn}
+{show}
+const result = {{}};
+// A reader scrolled up: the offset comes back. The element is detached by the rebuild, which reset its offset.
+const run = {{ id: 7, status: 'running' }};
+_outputPane = makePane(300, 1000); _outputPaneRun = 7;
+const upState = _outputScrollState();
+_outputPane.isConnected = false; _outputPane.scrollTop = 0;
+fresh = {{ id: 'inline-output-content', replaceWith(el) {{ el.isConnected = true; }} }};
+_showOutput(run, 'inline-output-content', upState);
+result.up = [upState.tail, _outputPane.scrollTop];
+// A reader following the tail lands at the bottom of the (possibly longer) content.
+_outputPane = makePane(900, 1000); _outputPaneRun = 7;
+const tailState = _outputScrollState();
+_outputPane.isConnected = false; _outputPane.scrollTop = 0;
+fresh = {{ id: 'inline-output-content', replaceWith(el) {{ el.isConnected = true; }} }};
+_showOutput(run, 'inline-output-content', tailState);
+result.tail = [tailState.tail, _outputPane.scrollTop];
+// No pane attached: nothing to read.
+_outputPane = null;
+result.none = _outputScrollState();
+console.log(JSON.stringify(result));
+"""
+        assert self._run_node(script) == {"up": [False, 300], "tail": [True, 1000], "none": None}
 
     def test_queue_label_dropdown_skips_unchanged_labels_and_reapplies_the_search(self) -> None:
         populate = self._function(self._QUEUE, "populateFilterDropdowns")
@@ -2767,7 +3660,7 @@ console.log(JSON.stringify({{ fetches, rendered }}));
         assert json.loads(proc.stdout) == {"fetches": 2, "rendered": ["patch:running", "full:done"]}
 
     def _terminal_decl(self) -> str:
-        match = re.search(r"var _TERMINAL = \[[^\]]*\];", self._RUN_DETAIL)
+        match = re.search(r"^var _STATUS_TERMINAL = .*;$", _APP_JS, re.MULTILINE)
         assert match is not None
         return match.group(0)
 
@@ -2775,15 +3668,21 @@ console.log(JSON.stringify({{ fetches, rendered }}));
         body = self._function(source, name).replace("{{ run_id }}", "7")
         return ("async " if f"async function {name}(" in source else "") + body
 
-    def test_the_page_terminal_list_matches_the_server_terminal_list(self) -> None:
-        """One list decides liveness: a status the server pushes as live must not be terminal here."""
+    def test_the_dashboard_terminal_table_matches_the_server_terminal_list(self) -> None:
+        """One table decides liveness: a status the server pushes as live must not be terminal in app.js."""
         from sova.core.state import TASK_RUN_TERMINAL
 
-        match = re.search(r"var _TERMINAL = \[([^\]]*)\];", self._RUN_DETAIL)
+        match = re.search(r"^var _STATUS_TERMINAL = \{(.*)\};$", _APP_JS, re.MULTILINE)
         assert match is not None
-        listed = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
+        listed = {item.split(":")[0].strip() for item in match.group(1).split(",") if item.strip()}
         assert listed == set(TASK_RUN_TERMINAL)
         assert "_NON_TERMINAL" not in self._RUN_DETAIL
+
+    def test_the_run_page_keeps_no_terminal_list_of_its_own(self) -> None:
+        assert "var _TERMINAL" not in self._RUN_DETAIL
+        assert "_OUTPUT_STREAM_DONE" not in self._RUN_DETAIL
+        assert "_TERMINAL.indexOf" not in self._RUN_DETAIL
+        assert "hasOwnProperty.call(_STATUS_TERMINAL, status)" in self._function(self._RUN_DETAIL, "_isLive")
 
     def test_the_run_detail_channel_leaves_the_socket_and_its_watchdog_to_the_shared_hub(self) -> None:
         start = self._function(self._RUN_DETAIL, "_startRunStatusChannel")
@@ -2831,6 +3730,7 @@ const _RUN_REFRESH_TOAST_AFTER = 3;
 const toasts = [];
 const showToast = (m) => toasts.push(m);
 const spies = { renderStepList: 0, closeStream: 0 };
+const _outputPane = null; // a page with no pane attached has no stream to tell about a status patch
 const renderStepList = () => { spies.renderStepList++; };
 const _closeOutputStream = () => { spies.closeStream++; };
 const _startRunStatusChannel = () => {};
@@ -3061,7 +3961,7 @@ console.log(JSON.stringify({ waiting, unchanged, resumed, idleFetches: fetches -
         assert match is not None
         waiting = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
         assert waiting == {"paused", "awaiting_approval"}
-        assert waiting <= set(re.findall(r"'(\w+)'", self._terminal_decl()))
+        assert waiting <= set(re.findall(r"(\w+): 1", self._terminal_decl()))
 
     def test_a_live_patch_rebuilds_a_changed_step_row_and_keeps_the_output_embed(self) -> None:
         sync = self._function(self._RUN_DETAIL, "_syncStepRow")
@@ -3122,15 +4022,61 @@ console.log(JSON.stringify({{ changed, unchanged, header: header.innerHTML, repl
         assert "_stepKey = JSON.stringify(s)" in render
         assert render.index("renderStepList(steps, run);") < render.index("_stepKey = JSON.stringify(s)")
 
-    def test_the_output_stream_keeps_its_own_finished_list(self) -> None:
-        match = re.search(r"var _OUTPUT_STREAM_DONE = \[([^\]]*)\];", self._RUN_DETAIL)
-        assert match is not None
-        listed = {item.strip().strip("'") for item in match.group(1).split(",") if item.strip()}
-        assert listed == {"done", "failed", "rejected", "interrupted", "stopped"}, "paused runs still stream (#1052)"
-        for name in ("tryLoadOutput", "_pollOutput"):
-            assert "_TERMINAL" not in self._function(self._RUN_DETAIL, name), name
+    def test_a_rebuilt_step_list_gets_the_existing_output_pane_moved_into_it(self) -> None:
+        body = self._function(self._RUN_DETAIL, "_showOutput")
+        assert "replaceWith(_outputPane)" in body, "a redraw would lose the open folds and the scroll position"
+        assert "_outputPaneRun === run.id" in body
+        assert "if (el && el === pane) return;" in _js_function(_APP_JS, "function sovaOutputRenderer()")
+
+    def test_showing_the_output_twice_moves_the_readers_pane_back_instead_of_a_fresh_one(self) -> None:
+        show = self._function(self._RUN_DETAIL, "_showOutput")
+        script = f"""
+var _outputPane = null;
+var _outputPaneRun = null;
+const dom = {{}};
+const targets = [];
+const ensures = [];
+const _outputRenderer = {{ setTarget: (el) => targets.push(el) }};
+const _outputStream = {{ ensure: (id, status) => ensures.push([id, status]) }};
+globalThis.document = {{ getElementById: (id) => dom[id] || null }};
+function makePane(id) {{
+  const p = {{ id, isConnected: true, replaceWith(other) {{ dom[id] = other; other.isConnected = true;
+    p.isConnected = false; }} }};
+  dom[id] = p;
+  return p;
+}}
+{show}
+const original = makePane('inline-output-content');
+_showOutput({{ id: 5, status: 'running' }}, 'inline-output-content');
+original.isConnected = false;
+const fresh = makePane('inline-output-content');
+_showOutput({{ id: 5, status: 'running' }}, 'inline-output-content');
+const keptOriginal = dom['inline-output-content'] === original && targets[1] === original;
+// Another run's rebuilt pane is used as it is.
+original.isConnected = false;
+const other = makePane('inline-output-content');
+_showOutput({{ id: 6, status: 'running' }}, 'inline-output-content');
+console.log(JSON.stringify({{ keptOriginal, ensures,
+  otherRunKeepsItsPane: dom['inline-output-content'] === other && targets[2] === other }}));
+"""
+        out = self._run_node(script)
+        assert out["keptOriginal"] is True, "the pane the reader folded and scrolled is the one that ends up in the DOM"
+        assert out["ensures"] == [[5, "running"], [5, "running"], [6, "running"]]
+        assert out["otherRunKeepsItsPane"] is True
+
+    def test_the_log_viewer_tells_the_stream_the_status_of_the_run_it_shows(self) -> None:
+        body = _js_function(_module_source("log-viewer"), "export function updateLogTabs(agents)")
+        assert "_logStream.ensure(a.run_id, a.status)" in body
+
+    def test_the_output_stream_is_the_shared_helper_with_its_one_finished_rule(self) -> None:
+        """A paused run still streams (#1052): the page keeps no finished list or stream code of its own."""
+        assert "_OUTPUT_STREAM_DONE" not in self._RUN_DETAIL
+        assert "new EventSource" not in self._RUN_DETAIL
+        assert "renderMarkdown" not in self._RUN_DETAIL
+        assert "sovaOutputStream(_outputRenderer)" in self._RUN_DETAIL
+        assert "_TERMINAL" not in self._function(self._RUN_DETAIL, "_showOutput").replace("_STATUS_TERMINAL", "")
         visibility = self._RUN_DETAIL[self._RUN_DETAIL.index("addEventListener('visibilitychange'") :]
-        assert "_TERMINAL" not in visibility
+        assert "_TERMINAL" not in visibility.replace("_STATUS_TERMINAL", "")
 
     def test_a_rendered_live_timer_registers_the_shared_ticker_once(self) -> None:
         _require_node("node is required to run the elapsed ticker")

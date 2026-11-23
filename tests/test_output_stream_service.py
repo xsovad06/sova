@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.responses import StreamingResponse
 
 from sova.dashboard.services.output_stream_service import (
+    OutputEvent,
     OutputStreamService,
     get_output_stream_service,
 )
+
+_T0 = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 # Unit tests for OutputStreamService
 
@@ -26,31 +31,31 @@ class TestOutputStreamService:
     def test_publish_delivers_to_subscriber(self) -> None:
         svc = OutputStreamService()
         sub_id, queue = svc.subscribe(run_id=1)
-        svc.publish(1, "hello")
+        svc.publish(1, "hello", _T0)
         assert not queue.empty()
-        assert queue.get_nowait() == "hello"
+        assert queue.get_nowait().text == "hello"
         svc.unsubscribe(1, sub_id)
 
     def test_publish_to_wrong_run_does_not_deliver(self) -> None:
         svc = OutputStreamService()
         _sub_id, queue = svc.subscribe(run_id=1)
-        svc.publish(2, "wrong run")
+        svc.publish(2, "wrong run", _T0)
         assert queue.empty()
 
     def test_unsubscribe_stops_delivery(self) -> None:
         svc = OutputStreamService()
         sub_id, queue = svc.subscribe(run_id=1)
         svc.unsubscribe(1, sub_id)
-        svc.publish(1, "missed")
+        svc.publish(1, "missed", _T0)
         assert queue.empty()
 
     def test_multiple_subscribers_same_run(self) -> None:
         svc = OutputStreamService()
         id1, q1 = svc.subscribe(run_id=1)
         id2, q2 = svc.subscribe(run_id=1)
-        svc.publish(1, "broadcast")
-        assert q1.get_nowait() == "broadcast"
-        assert q2.get_nowait() == "broadcast"
+        svc.publish(1, "broadcast", _T0)
+        assert q1.get_nowait().text == "broadcast"
+        assert q2.get_nowait().text == "broadcast"
         svc.unsubscribe(1, id1)
         svc.unsubscribe(1, id2)
 
@@ -58,16 +63,16 @@ class TestOutputStreamService:
         svc = OutputStreamService()
         _id1, q1 = svc.subscribe(run_id=1)
         _id2, q2 = svc.subscribe(run_id=2)
-        svc.publish(1, "run1 line")
-        svc.publish(2, "run2 line")
-        assert q1.get_nowait() == "run1 line"
-        assert q2.get_nowait() == "run2 line"
+        svc.publish(1, "run1 line", _T0)
+        svc.publish(2, "run2 line", _T0)
+        assert q1.get_nowait().text == "run1 line"
+        assert q2.get_nowait().text == "run2 line"
 
     def test_slow_consumer_drops_lines(self) -> None:
         svc = OutputStreamService()
         _sub_id, queue = svc.subscribe(run_id=1)
         for i in range(210):
-            svc.publish(1, f"line {i}")
+            svc.publish(1, f"line {i}", _T0)
         assert queue.qsize() == 200  # capped at _QUEUE_MAX
 
     def test_overflow_is_reported_once_to_the_subscriber_that_lost_a_line(self) -> None:
@@ -75,10 +80,10 @@ class TestOutputStreamService:
         slow_id, _slow = svc.subscribe(run_id=1)
         fast_id, fast = svc.subscribe(run_id=1)
         for i in range(200):
-            svc.publish(1, f"line {i}")
+            svc.publish(1, f"line {i}", _T0)
         fast.get_nowait()  # the fast reader keeps up; only the slow one is full
         assert not svc.take_overflow(1, slow_id)
-        svc.publish(1, "one too many")
+        svc.publish(1, "one too many", _T0)
         assert svc.take_overflow(1, slow_id) is True
         assert svc.take_overflow(1, slow_id) is False, "reading the mark clears it"
         assert svc.take_overflow(1, fast_id) is False
@@ -87,7 +92,7 @@ class TestOutputStreamService:
         svc = OutputStreamService()
         sub_id, _ = svc.subscribe(run_id=1)
         for i in range(201):
-            svc.publish(1, f"line {i}")
+            svc.publish(1, f"line {i}", _T0)
         svc.unsubscribe(1, sub_id)
         assert not svc.take_overflow(1, sub_id)
         assert not svc._overflowed
@@ -197,7 +202,7 @@ async def test_output_stream_delivers_published_lines(reset_db_rows) -> None:
 
     # Pre-publish a line so it's available when the generator reads the queue
     sub_id, queue = svc.subscribe(run_id=42)
-    await queue.put("test output line")
+    await queue.put(OutputEvent("test output line", _T0))
     svc.unsubscribe(42, sub_id)
 
     # The endpoint creates its own subscription; publish only once it exists,
@@ -205,7 +210,7 @@ async def test_output_stream_delivers_published_lines(reset_db_rows) -> None:
     subscribed = asyncio.Event()
     original_subscribe = svc.subscribe
 
-    def recording_subscribe(run_id: int) -> tuple[int, asyncio.Queue[str]]:
+    def recording_subscribe(run_id: int) -> tuple[int, asyncio.Queue[OutputEvent]]:
         result = original_subscribe(run_id)
         if run_id == 42:
             subscribed.set()
@@ -213,7 +218,7 @@ async def test_output_stream_delivers_published_lines(reset_db_rows) -> None:
 
     async def publish_after_subscribe() -> None:
         await asyncio.wait_for(subscribed.wait(), timeout=5)
-        svc.publish(42, "hello from agent")
+        svc.publish(42, "hello from agent", _T0)
 
     async def collect(response: StreamingResponse) -> list[str]:
         return [chunk async for chunk in response.body_iterator]
@@ -231,7 +236,7 @@ async def test_output_stream_delivers_published_lines(reset_db_rows) -> None:
 
     combined = "".join(chunks)
     assert "event: output" in combined
-    assert "hello from agent" in combined
+    assert '"text": "hello from agent"' in combined
 
 
 @pytest.mark.asyncio
@@ -257,7 +262,7 @@ async def test_output_stream_reports_a_dropped_line_as_a_gap_event(reset_db_rows
     try:
         response = await stream_agent_output(run_id=77, request=mock_request)
         for i in range(201):  # the 201st finds the 200-line queue full
-            svc.publish(77, f"line {i}")
+            svc.publish(77, f"line {i}", _T0)
         chunks = [chunk async for chunk in response.body_iterator]
     finally:
         mod._output_stream_service = None
@@ -288,7 +293,7 @@ async def test_output_stream_sends_no_gap_when_nothing_was_dropped(reset_db_rows
 
     try:
         response = await stream_agent_output(run_id=78, request=mock_request)
-        svc.publish(78, "only line")
+        svc.publish(78, "only line", _T0)
         chunks = [chunk async for chunk in response.body_iterator]
     finally:
         mod._output_stream_service = None
@@ -353,13 +358,17 @@ async def test_buffer_line_publishes_to_output_stream(reset_db_rows) -> None:
             super().append(item)
 
     agent.output_lines = FakeDeque()
+    agent.output_times = FakeDeque()
+    agent.output_seq = 0
     agent.output_writer = None
 
     _sub_id, queue = svc.subscribe(run_id=10)
     await _buffer_line(agent, "test line")
 
     assert not queue.empty()
-    assert queue.get_nowait() == "test line"
+    event = queue.get_nowait()
+    assert event.text == "test line"
+    assert agent.output_times[0] == event.time
 
     mod._output_stream_service = None
 
@@ -385,6 +394,7 @@ def _fake_agent(run_id: int, existing: list[str] | None = None):
     agent = AgentState.__new__(AgentState)
     agent.run_id = run_id
     agent.output_lines = deque(existing or [], maxlen=5000)
+    agent.output_times = deque([_T0] * len(existing or []), maxlen=5000)
     agent.output_seq = len(existing or [])
     agent.output_writer = None
     return agent
@@ -399,10 +409,12 @@ async def test_buffer_line_counts_every_line_and_keeps_counting_past_the_deque_c
 
     agent = _fake_agent(11)
     agent.output_lines = deque(maxlen=2)
+    agent.output_times = deque(maxlen=2)
     for text in ("a", "b", "c"):
         await _buffer_line(agent, text)
 
     assert list(agent.output_lines) == ["b", "c"]
+    assert len(agent.output_times) == 2
     assert agent.output_seq == 3
 
 
@@ -436,7 +448,7 @@ async def test_buffer_line_publishes_before_the_db_flush_can_suspend(reset_db_ro
         task = asyncio.create_task(_buffer_line(agent, "line"))
         await asyncio.wait_for(flush_started.wait(), timeout=5)
         assert agent.output_seq == 1
-        assert queue.get_nowait() == "line", "published while the flush is still suspended"
+        assert queue.get_nowait().text == "line", "published while the flush is still suspended"
         release_flush.set()
         await asyncio.wait_for(task, timeout=5)
     finally:
@@ -467,8 +479,9 @@ async def test_output_endpoint_returns_the_sequence_read_with_the_lines(reset_db
         in_memory = await get_agent_output(run_id=42, since=0)
         absent = await get_agent_output(run_id=99, since=0)
 
-    assert in_memory == {"lines": ["x", "y", "z"], "total": 3, "seq": 3}
+    assert in_memory == {"lines": ["x", "y", "z"], "times": [_T0.isoformat()] * 3, "total": 3, "seq": 3}
     assert absent["seq"] is None
+    assert absent["times"] == []
 
 
 @pytest.mark.asyncio
@@ -492,8 +505,9 @@ async def test_connected_event_carries_the_sequence_at_subscribe_time(reset_db_r
     try:
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=pa):
             response = await stream_agent_output(run_id=42, request=mock_request)
-            svc.publish(42, "z")
+            svc.publish(42, "z", _T0)
             agent.output_lines.append("z")
+            agent.output_times.append(_T0)
             agent.output_seq += 1
             chunks = [chunk async for chunk in response.body_iterator]
     finally:
@@ -501,7 +515,7 @@ async def test_connected_event_carries_the_sequence_at_subscribe_time(reset_db_r
 
     connected = next(c for c in chunks if c.startswith("event: connected"))
     assert json.loads(connected.split("data: ", 1)[1]) == {"seq": 2}
-    assert any("data: z" in c for c in chunks)
+    assert any('"text": "z"' in c for c in chunks)
 
 
 @pytest.mark.asyncio
@@ -521,3 +535,25 @@ async def test_connected_event_has_no_sequence_for_an_agent_not_in_memory(reset_
 
     connected = next(c for c in chunks if c.startswith("event: connected"))
     assert json.loads(connected.split("data: ", 1)[1]) == {}
+
+
+@pytest.mark.asyncio
+async def test_output_event_is_one_json_object_with_the_time_and_the_unescaped_text(reset_db_rows) -> None:
+    """A line holding a backslash, a newline and a quote round-trips through json.loads, with no hand escaping."""
+    import sova.dashboard.services.output_stream_service as mod
+    from sova.dashboard.routers.agents import stream_agent_output
+
+    svc = OutputStreamService()
+    mod._output_stream_service = svc
+    mock_request = AsyncMock()
+    mock_request.is_disconnected = AsyncMock(side_effect=[False, True])
+    text = 'path C:\\tmp\nsecond "quoted" line'
+    try:
+        response = await stream_agent_output(run_id=79, request=mock_request)
+        svc.publish(79, text, _T0)
+        chunks = [chunk async for chunk in response.body_iterator]
+    finally:
+        mod._output_stream_service = None
+
+    output = next(c for c in chunks if c.startswith("event: output"))
+    assert json.loads(output.split("data: ", 1)[1]) == {"time": _T0.isoformat(), "text": text}

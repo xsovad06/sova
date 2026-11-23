@@ -116,27 +116,16 @@
 
 {% block scripts %}
 <script>
-// The one list of statuses a run no longer progresses in. It mirrors sova/core/state.py TASK_RUN_TERMINAL, the list
-// the status push and mark_run_failed() use (tests/test_dashboard_agents_modules.py checks they match), so "live" is
-// decided the same way here and on the server: a status outside it is live, whatever its name.
-var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted', 'paused', 'awaiting_approval', 'stopped'];
-// The output stream's own list, kept as it was before the page went live (#1052 owns the stream): a paused or
-// awaiting_approval run still opens and reconnects the stream, which a widened _TERMINAL would have changed.
-var _OUTPUT_STREAM_DONE = ['done', 'failed', 'rejected', 'interrupted', 'stopped'];
 // Statuses the push stops listing but a run can leave under the same run id (a resume, an approval). The status
 // channel is closed for them, so a slow REST check (_checkWaitingRun) notices the run going live again.
 var _WAITING = ['paused', 'awaiting_approval'];
 var _WAITING_POLL_MS = 10000;
-var _outputCursor = 0;
-var _outputPollTimer = null;
 var _outputTargetStep = null;
-var _outputEventSource = null;
-var _outputBackoffMs = 2000;
-var _OUTPUT_BACKOFF_BASE = 2000;
-var _OUTPUT_BACKOFF_MAX = 5000;
-var _outputActiveRun = null;
-var _outputActiveTarget = null;
-var _outputBuffer = '';
+// The agent output pane and its stream (app.js, shared with the Work page log viewer). The renderer keeps the lines, so
+// renderStepList() can draw them into a rebuilt pane without reopening the stream (a paused or awaiting_approval
+// run still streams: sovaOutputFinished() is the one "finished" rule).
+var _outputRenderer = sovaOutputRenderer();
+var _outputStream = sovaOutputStream(_outputRenderer);
 var _RUN_ID = parseInt('{{ run_id }}', 10);
 var _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
 var _runStatusChannel = null;
@@ -168,8 +157,10 @@ var _runUnavailableStreak = 0;
 var _runUnavailableToasted = false;
 var _RUN_UNAVAILABLE_THRESHOLD = 3;
 
+// "Live" is decided from app.js's _STATUS_TERMINAL (a copy of sova/core/state.py TASK_RUN_TERMINAL, which the status
+// push and mark_run_failed() use, checked by tests/test_dashboard_agents_modules.py): a status outside it is live.
 function _isLive(status) {
-  return _TERMINAL.indexOf(status) === -1;
+  return !Object.prototype.hasOwnProperty.call(_STATUS_TERMINAL, status);
 }
 
 function safeStepId(name) {
@@ -381,7 +372,7 @@ function _syncStepRow(row, s) {
 }
 
 // Updates the header fields, the pipeline bar and the step rows already on the page, and adds a row for a step
-// that started since. It never calls renderStepList(), which closes and restarts the output stream. A page opened
+// that started since. It never calls renderStepList(), which redraws the whole output pane. A page opened
 // before the first step keeps its output in the fallback area, since a row inserted here carries no embed (#1052).
 function patchRunHeader(run, steps) {
   _setRunStatusAndCost(run.status, run.total_cost_usd);
@@ -398,6 +389,9 @@ function patchRunHeader(run, steps) {
     prevRow = row;
     _syncStepRow(row, s);
   });
+  // The stream learns a status change here, not only from a full render: a paused run that resumes restarts its
+  // chain, and a polling fallback ends once the run is finished. A page with no pane attached has no stream to tell.
+  if (_outputPane !== null) _outputStream.ensure(run.id, run.status);
 }
 
 // True while a push must not start a refresh: after n consecutive failures it waits min(2^n * 2s, 60s), so a
@@ -548,11 +542,6 @@ function _stopRunStatusChannel() {
   _runStatusChannel = null;
 }
 
-function _closeOutputStream() {
-  if (_outputPollTimer) { clearTimeout(_outputPollTimer); _outputPollTimer = null; }
-  if (_outputEventSource) { _outputEventSource.close(); _outputEventSource = null; }
-}
-
 // One step row: the header line and its collapsed body, with the agent output embed when isOutputTarget.
 function _stepRowHtml(s, isOutputTarget) {
   var statusClasses = _stepStatusClasses(s.status);
@@ -619,23 +608,53 @@ function _stepRowHtml(s, isOutputTarget) {
   return row;
 }
 
-function renderStepList(steps, run) {
-  _closeOutputStream();
-  _outputCursor = 0;
-  _outputBuffer = '';
-  _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
+// Draws the run's output into the pane just rendered and makes sure its stream is running: the same run keeps the
+// stream it has, so a rebuilt DOM never reopens it or loses the lines already read.
+// A rebuilt step list brings a fresh empty pane, so the pane the reader has been folding and scrolling is moved into
+// its place instead of redrawing every held line into the new one (a redraw would lose the open folds). A browser
+// drops an element's scroll offset when it leaves the document, so renderStepList() reads the offset before it
+// rebuilds the list and _showOutput() puts it back (the bottom for a reader following the tail). A restart of a run keeps its run id: ensure() moves the stream from finished back to live.
+// Agent text is drawn as preformatted rows, not as rendered markdown: headings, lists and code fences show as the
+// agent wrote them, and padded columns survive.
+var _outputPane = null;
+var _outputPaneRun = null;
 
+var _OUTPUT_TAIL_SLACK = 80;
+
+// Where the reader of the attached pane is: the offset, and whether they follow the tail. Null when no pane is attached.
+function _outputScrollState() {
+  var p = _outputPane;
+  if (!p || !p.isConnected) return null;
+  return { top: p.scrollTop, tail: (p.scrollHeight - p.scrollTop - p.clientHeight) < _OUTPUT_TAIL_SLACK };
+}
+
+function _showOutput(run, targetId, scrollState) {
+  var pane = document.getElementById(targetId);
+  if (pane && _outputPane && _outputPane !== pane && !_outputPane.isConnected &&
+      _outputPane.id === targetId && _outputPaneRun === run.id) {
+    pane.replaceWith(_outputPane);
+    pane = _outputPane;
+    if (scrollState) pane.scrollTop = scrollState.tail ? pane.scrollHeight : scrollState.top;
+  }
+  _outputPane = pane;
+  _outputPaneRun = run.id;
+  _outputRenderer.setTarget(pane);
+  _outputStream.ensure(run.id, run.status);
+}
+
+function renderStepList(steps, run) {
   if (steps.length === 0) {
     document.getElementById('step-list').innerHTML = '<p class="text-gray-500 text-sm p-4">No steps recorded</p>';
     // Show fallback output area
     var fallback = document.getElementById('run-output-fallback');
     fallback.classList.remove('hidden');
     _outputTargetStep = null;
-    tryLoadOutput(run, 'fallback-output-content');
+    _showOutput(run, 'fallback-output-content');
     return;
   }
 
   document.getElementById('step-list-controls').style.display = '';
+  var scrollState = _outputScrollState();
 
   // Determine which step gets the raw output
   _outputTargetStep = null;
@@ -660,9 +679,14 @@ function renderStepList(steps, run) {
     toggleStep(_outputTargetStep);
   }
 
-  // Start output loading
   if (_outputTargetStep) {
-    tryLoadOutput(run, 'inline-output-content');
+    _showOutput(run, 'inline-output-content', scrollState);
+  } else {
+    _outputPane = null;
+    _outputPaneRun = null;
+    _outputRenderer.setTarget(null);
+    _outputStream.stop();
+    _outputRenderer.clear();
   }
 }
 
@@ -717,83 +741,6 @@ function scrollToStep(stepName) {
   row.scrollIntoView({behavior: 'smooth', block: 'center'});
   row.classList.add('sova-step-highlight');
   setTimeout(function() { row.classList.remove('sova-step-highlight'); }, 1500);
-}
-
-function tryLoadOutput(run, targetId) {
-  _outputActiveRun = run;
-  _outputActiveTarget = targetId;
-
-  if (_OUTPUT_STREAM_DONE.indexOf(run.status) === -1) {
-    _connectOutputSSE(run, targetId);
-  } else {
-    _pollOutput(run, targetId);
-  }
-}
-
-function _connectOutputSSE(run, targetId) {
-  _closeOutputStream();
-
-  var url = apiUrl('/agents/' + run.id + '/output/stream');
-  var es = new EventSource(url);
-  _outputEventSource = es;
-
-  es.addEventListener('output', function(e) {
-    if (es !== _outputEventSource) return;
-    var el = document.getElementById(targetId);
-    if (el) {
-      var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
-      if (_outputCursor === 0) {
-        _outputBuffer = text;
-      } else {
-        _outputBuffer += '\n' + text;
-      }
-      _outputCursor++;
-      try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
-      el.scrollTop = el.scrollHeight;
-    }
-  });
-
-  es.addEventListener('done', function() {
-    if (es === _outputEventSource) { es.close(); _outputEventSource = null; }
-  });
-
-  es.onerror = function() {
-    if (es === _outputEventSource) { es.close(); _outputEventSource = null; }
-    _outputCursor = 0;
-    _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
-    _outputBuffer = '';
-    var el = document.getElementById(targetId);
-    if (el) el.innerHTML = '';
-    _pollOutput(run, targetId);
-  };
-}
-
-async function _pollOutput(run, targetId) {
-  try {
-    var data = await fetchAPI(apiUrl('/agents/' + run.id + '/output?since=' + _outputCursor));
-    if (data.lines && data.lines.length > 0) {
-      var el = document.getElementById(targetId);
-      if (el) {
-        if (_outputCursor === 0) {
-          _outputBuffer = data.lines.join('\n');
-        } else {
-          _outputBuffer += '\n' + data.lines.join('\n');
-        }
-        _outputCursor += data.lines.length;
-        try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
-        el.scrollTop = el.scrollHeight;
-      }
-      _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
-    } else {
-      _outputBackoffMs = Math.min(_outputBackoffMs * 1.5, _OUTPUT_BACKOFF_MAX);
-    }
-  } catch (e) {
-    _outputBackoffMs = Math.min(_outputBackoffMs * 1.5, _OUTPUT_BACKOFF_MAX);
-  }
-
-  if (_OUTPUT_STREAM_DONE.indexOf(run.status) === -1) {
-    _outputPollTimer = setTimeout(function() { _pollOutput(run, targetId); }, _outputBackoffMs);
-  }
 }
 
 async function loadRunChain(issueNumber, currentRunId) {
@@ -1027,16 +974,9 @@ function drawResourceChart(samples) {
   ctx.fillText(fmt(last), pad.left + cw, h - 4);
 }
 
+// The output stream closes and reconciles itself on tab visibility (sovaOutputStream()).
 document.addEventListener('visibilitychange', function() {
-  if (document.hidden) {
-    _closeOutputStream();
-    return;
-  }
-  if (_runStatusChannel) _refreshRun();
-  if (_outputActiveRun && _OUTPUT_STREAM_DONE.indexOf(_outputActiveRun.status) === -1) {
-    _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
-    _connectOutputSSE(_outputActiveRun, _outputActiveTarget);
-  }
+  if (!document.hidden && _runStatusChannel) _refreshRun();
 });
 
 // Registered once: it does nothing unless the page shows a waiting run (see _checkWaitingRun()).

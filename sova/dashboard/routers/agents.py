@@ -37,6 +37,7 @@ from sova.dashboard.services.work_item_service import set_graph_change_listener
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
+from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
@@ -527,21 +528,31 @@ async def get_pipeline() -> dict:
 async def get_agent_output(run_id: int, since: int = 0) -> dict:
     """Get output lines for a specific agent.
 
+    ``since`` counts the run's lifetime lines while the agent is in memory (see ``seq``), and is a stored
+    ``line_number`` once it is not.
+
     ``seq`` is the agent's lifetime line count at the moment these lines were read (``None`` when the
     agent is not in memory, so nothing is still being produced). A log viewer that reconnects its SSE
     stream pairs it with the ``seq`` in that stream's ``connected`` event to drop exactly the lines the
-    snapshot and the stream both carry.
+    snapshot and the stream both carry. ``total`` is the cursor after the returned lines: for an agent in
+    memory the lifetime line count (``seq``), for stored output ``since`` plus the lines returned.
+    ``times`` is parallel to ``lines``: each line's write time as ISO 8601 UTC, or ``null`` for a line with
+    no recorded time (a legacy log file).
     """
     seq = control_service.get_output_seq(run_id=run_id)
-    lines = await control_service.get_output(since, run_id=run_id)
-    return {"lines": lines, "total": since + len(lines), "seq": seq}
+    lines, times = await control_service.get_output(since, run_id=run_id)
+    # The deque holds only the tail of a long run, so ``since + len(lines)`` is not the next lifetime line number once
+    # it evicted: the lines read end at ``seq`` (read with no await before get_output()).
+    total = seq if seq is not None and lines else since + len(lines)
+    return {"lines": lines, "times": [iso_utc(t) for t in times], "total": total, "seq": seq}
 
 
 @router.get("/agents/{run_id}/output/stream")
 async def stream_agent_output(run_id: int, request: Request) -> StreamingResponse:
     """SSE endpoint: streams output lines for a specific agent run in real time.
 
-    Events: ``connected`` (carries ``seq``), ``output``, ``done``, and ``gap``, sent when a slow reader's
+    Events: ``connected`` (carries ``seq``), ``output`` (a JSON object with ``time``, ISO 8601 UTC, and ``text``),
+    ``done``, and ``gap``, sent when a slow reader's
     queue overflowed and a line was dropped; the client then discards the stream and re-reads the run.
     """
     oss = get_output_stream_service()
@@ -557,12 +568,12 @@ async def stream_agent_output(run_id: int, request: Request) -> StreamingRespons
                 if await request.is_disconnected():
                     break
                 try:
-                    line = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
                     if oss.take_overflow(run_id, sub_id):
                         # A full queue dropped a line: the client cannot tell which, so it must re-read the run.
                         yield "event: gap\ndata: {}\n\n"
-                    escaped = line.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
-                    yield f"event: output\ndata: {escaped}\n\n"
+                    payload = json.dumps({"time": iso_utc(event.time), "text": event.text})
+                    yield f"event: output\ndata: {payload}\n\n"
                 except asyncio.TimeoutError:
                     # Check if the run has reached a terminal state
                     is_done = await _check_run_terminal(run_id)

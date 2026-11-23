@@ -1437,9 +1437,10 @@ class TestCpuRenderingInTheClient:
             if os.environ.get("CI"):
                 pytest.fail(f"node is required in CI: {name} is evaluated with node")
             pytest.skip("node is not installed")
-        app_js = (TestCpuRenderingInTheClient._STATIC / "app.js").read_text(encoding="utf-8")
+        # Pass the path, not the source: app.js is larger than Linux's 128 KiB per-argument limit (E2BIG).
+        app_js = str(TestCpuRenderingInTheClient._STATIC / "app.js")
         script = (
-            "const src = process.argv[1];\n"
+            "const src = require('fs').readFileSync(process.argv[1], 'utf8');\n"
             "const name = process.argv[3];\n"
             "const start = src.indexOf('function ' + name + '(');\n"
             "const body = src.slice(start, src.indexOf('\\n}\\n', start) + 2);\n"

@@ -282,6 +282,13 @@ var STATUS_COLORS = {
 };
 
 var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1, awaiting_approval: 1, stopped: 1 };
+
+// A run whose output is complete, so reading it from line 0 shows everything: TASK_RUN_TERMINAL (sova/core/state.py,
+// which _STATUS_TERMINAL copies) minus paused and awaiting_approval, the two states a run resumes from, which can
+// still write and so keep streaming. The Work page log viewer and the run page both decide "finished" here.
+function sovaOutputFinished(status) {
+  return Object.prototype.hasOwnProperty.call(_STATUS_TERMINAL, status) && status !== 'paused' && status !== 'awaiting_approval';
+}
 var _STUCK_THRESHOLD_S = 300;
 
 var _STEP_LABELS = {
@@ -3060,3 +3067,603 @@ function createSovaStatusChannel(options) {
     }
   };
 }
+
+
+/* ============================================================
+   Agent output: one renderer and one stream helper (#1052)
+   Shared by the Work page log viewer and the run page. sovaOutputRenderer() appends one row per line and
+   sovaOutputStream() feeds it from the snapshot, the SSE stream and the polling fallback. Both are plain
+   closures: each instance owns its own state, and stop() releases its EventSource, timers and listener.
+   ============================================================ */
+
+var _OUTPUT_POLL_BASE_MS = 1000;
+var _OUTPUT_POLL_MAX_MS = 5000;
+// A backfill still unanswered after this long is aborted: its rejection falls back to polling instead of holding the
+// live lines back for as long as the request hangs.
+var _OUTPUT_BACKFILL_TIMEOUT_MS = 15000;
+// How long a backfilled stream waits for its "connected" event before giving up on SSE for polling.
+var _OUTPUT_CONNECT_WAIT_MS = 3000;
+// A pane within this many pixels of its bottom counts as following the tail.
+var _OUTPUT_TAIL_SLACK_PX = 24;
+// A block of same-kind lines longer than this collapses into a summary (see sovaOutputRenderer()).
+var _OUTPUT_FOLD_OVER = 20;
+// The renderer holds at most this many lines (the server keeps 5000 per run too); it trims in steps of the slack so
+// a long run does not redraw the pane on every line.
+var _OUTPUT_MAX_ENTRIES = 5000;
+var _OUTPUT_TRIM_SLACK = 500;
+// A tool call is "[Name] argument" and an errored tool result "[tool error] detail" (sova/ipc/claude_stream.py).
+// The line carries no type, so only a known Claude Code tool name, an MCP tool (mcp__server__tool) or the producer's
+// "[tool]" fallback counts as a call: agent prose such as "[Note] check the migration" stays visible text.
+var _OUTPUT_TOOL_NAMES = [
+  'Agent', 'Task', 'Bash', 'BashOutput', 'KillShell', 'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS',
+  'NotebookEdit', 'NotebookRead', 'WebFetch', 'WebSearch', 'TodoWrite', 'TodoRead', 'Skill', 'SlashCommand',
+  'ToolSearch', 'ExitPlanMode', 'EnterPlanMode', 'AskUserQuestion', 'Monitor', 'TaskOutput', 'TaskStop',
+  'ListMcpResourcesTool', 'ReadMcpResourceTool', 'tool'
+];
+var _OUTPUT_TOOL_RE = new RegExp('^\\[(?:' + _OUTPUT_TOOL_NAMES.join('|') + '|mcp__[\\w-]+)\\](?: |$)');
+var _OUTPUT_ERROR_RE = /^(?:\[tool error\]|\[ERROR\]|ERROR:)/;
+var _OUTPUT_RESULT_RE = /^\s*--- Result/;
+var _OUTPUT_PREFIX_RE = /^\[(stderr|stdout)\]\s?(.*)$/;
+var _OUTPUT_STRUCT_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[\s*(\w+)\s*\]\s*(.*)$/;
+var _OUTPUT_CTX_RE = /\s([A-Za-z_][\w.]*)=/;
+
+var _OUTPUT_ERROR_LEVELS = ['error', 'critical', 'exception'];
+
+// A SOVA log line is classified after its [stderr]/[stdout] prefix is stripped: structlog writes to stderr, so
+// nearly every one carries the prefix. An error-level one is an error row (it stays visible outside any fold);
+// only unstructured stderr text, such as a traceback, is a stderr line.
+function _outputKind(text) {
+  var prefixed = _OUTPUT_PREFIX_RE.exec(text);
+  // An error line stays an error row (outside any fold) whether or not the process stream tagged it first.
+  if (_OUTPUT_ERROR_RE.test(text) || (prefixed && _OUTPUT_ERROR_RE.test(prefixed[2]))) return 'error';
+  if (_OUTPUT_TOOL_RE.test(text)) return 'tool';
+  if (_OUTPUT_RESULT_RE.test(text)) return 'result';
+  var sm = _OUTPUT_STRUCT_RE.exec(prefixed ? prefixed[2] : text);
+  if (sm) return _OUTPUT_ERROR_LEVELS.indexOf(sm[2].toLowerCase()) >= 0 ? 'error' : 'log';
+  if (prefixed && prefixed[1] === 'stderr') return 'stderr';
+  return 'text';
+}
+
+// The clock of a structlog row's own timestamp. One that names its zone (the UTC `...Z` form SOVA logs) goes through
+// the same local-time formatter as the time column, so the two never show different hours side by side; one that
+// does not is shown as written.
+function _outputStructClock(ts) {
+  var ms = /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(ts) ? _outputTimeMs(ts) : null;
+  if (ms !== null) return _outputClock(ms);
+  return ts.length >= 19 ? ts.substring(11, 19) : ts;
+}
+
+// The inner HTML of one line's text. Lines that follow structlog's ConsoleRenderer layout (timestamp, level, event,
+// then key=value context, prefixed [stderr]/[stdout] by agent_output.py) get their parts coloured; every other line
+// is escaped plain text, so a traceback or an agent's padded columns survive untouched.
+function _outputTextHtml(raw) {
+  var stream = '';
+  var rest = raw;
+  var pm = _OUTPUT_PREFIX_RE.exec(raw);
+  if (pm) { stream = pm[1]; rest = pm[2]; }
+  var streamTag = stream ? '<span class="text-gray-600">' + stream + '</span> ' : '';
+  var sm = _OUTPUT_STRUCT_RE.exec(rest);
+  if (!sm) return streamTag + escapeHtml(rest);
+  var ts = sm[1], level = sm[2].toUpperCase(), body = sm[3];
+  var color = LOG_LEVEL_COLORS[level] || 'text-gray-400';
+  var ctxMatch = _OUTPUT_CTX_RE.exec(body);
+  var event = ctxMatch ? body.slice(0, ctxMatch.index).trim() : body.trim();
+  var context = ctxMatch ? body.slice(ctxMatch.index).trim() : '';
+  return streamTag +
+    '<span class="text-gray-600">' + escapeHtml(_outputStructClock(ts)) + '</span> ' +
+    '<span class="' + color + '">' + escapeHtml(level.padEnd(8)) + '</span> ' +
+    '<span class="text-gray-200">' + escapeHtml(event) + '</span>' +
+    (context ? '  <span class="text-gray-500">' + escapeHtml(context) + '</span>' : '');
+}
+
+// Epoch milliseconds of an ISO time, or null for a missing or unparseable one (a legacy row has no time).
+function _outputTimeMs(iso) {
+  if (iso === null || iso === undefined) return null;
+  var ms = Date.parse(iso);
+  return isNaN(ms) ? null : ms;
+}
+
+function _outputClock(ms) {
+  var d = new Date(ms);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(function(n) { return String(n).padStart(2, '0'); }).join(':');
+}
+
+// Appends agent output to a pane, one row per line, never rebuilding what is already there:
+//  - a row carries its write time only when the second changed since the previous visible row, and the pane shows
+//    the time column only once its times show more than one whole second (rows stored before write times were
+//    recorded all share the flush time, and a legacy file has none, so such a run shows no column);
+//  - a block of consecutive same-kind lines (agent text, tool calls, results, stderr, SOVA log lines) is drawn
+//    open; once it passes _OUTPUT_FOLD_OVER lines it collapses once into a summary (count and last line, both
+//    updated in place as it grows), and the reader's own toggle is kept after that. An error row ends the block and
+//    stays visible outside it;
+//  - the pane follows the tail only while the reader is at the bottom, on a redraw too;
+//  - at most _OUTPUT_MAX_ENTRIES lines are held: older ones are dropped and a marker says how many.
+// The renderer keeps the lines it was given, so setTarget() can draw them into a rebuilt pane.
+function sovaOutputRenderer() {
+  var pane = null;
+  var entries = [];
+  // Lines dropped off the front of entries (over the cap): the run's line number of entries[0].
+  var dropped = 0;
+  // A read has landed since the last clear(), even an empty one, so a rebuilt pane is redrawn (its placeholder goes).
+  var filled = false;
+  var view = freshView();
+
+  function freshView() {
+    return { prevSec: null, minMs: null, maxMs: null, block: null };
+  }
+
+  function atTail() {
+    var gap = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+    return !(gap > _OUTPUT_TAIL_SLACK_PX);
+  }
+
+  // scope is the block the row joins, or the view itself for a row outside any block. A row inside a folded block
+  // is not visible, so it must neither take the clock label for its second nor use up the label of the row after
+  // the block: it tracks its own previous second.
+  function rowHtml(entry, kind, scope) {
+    var sec = entry.ms === null ? null : Math.floor(entry.ms / 1000);
+    var label = '';
+    if (sec !== null) {
+      var prev = scope.folded ? scope.prevSec : view.prevSec;
+      if (sec !== prev) label = _outputClock(entry.ms);
+      scope.prevSec = sec;
+      if (!scope.folded) view.prevSec = sec;
+    }
+    return '<div class="out-row out-' + kind + '"><span class="out-time">' + label + '</span>' +
+      '<span class="out-text">' + _outputTextHtml(entry.text) + '</span></div>';
+  }
+
+  function noteTime(ms) {
+    if (ms === null) return;
+    view.minMs = view.minMs === null ? ms : Math.min(view.minMs, ms);
+    view.maxMs = view.maxMs === null ? ms : Math.max(view.maxMs, ms);
+    // Whole seconds, as rowHtml() labels them: 12:00:00.900 and 12:00:01.100 show two different clocks.
+    if (Math.floor(view.maxMs / 1000) !== Math.floor(view.minMs / 1000)) pane.classList.add('out-has-times');
+  }
+
+  function openBlock(kind) {
+    pane.insertAdjacentHTML('beforeend',
+      '<details class="out-fold out-fold-' + kind + '" open><summary class="out-fold-summary">' +
+      '<span class="out-fold-count"></span><span class="out-fold-last"></span></summary>' +
+      '<div class="out-fold-body"></div></details>');
+    var el = pane.lastElementChild;
+    view.block = {
+      kind: kind,
+      el: el,
+      body: el.querySelector('.out-fold-body'),
+      count: el.querySelector('.out-fold-count'),
+      last: el.querySelector('.out-fold-last'),
+      n: 0,
+      folded: false,
+      prevSec: null
+    };
+    return view.block;
+  }
+
+  function summarize(block, text) {
+    var noun = block.kind === 'tool' ? (block.n === 1 ? ' tool call' : ' tool calls') : ' lines';
+    block.count.textContent = block.n + noun;
+    block.last.textContent = ' ' + text;
+  }
+
+  function draw(entry) {
+    var kind = _outputKind(entry.text);
+    noteTime(entry.ms);
+    if (kind === 'error') {
+      view.block = null;
+      pane.insertAdjacentHTML('beforeend', rowHtml(entry, kind, view));
+      return;
+    }
+    var block = view.block;
+    if (block === null || block.kind !== kind) block = openBlock(kind);
+    block.body.insertAdjacentHTML('beforeend', rowHtml(entry, kind, block));
+    block.n += 1;
+    if (!block.folded && block.n > _OUTPUT_FOLD_OVER) {
+      // Collapse once. The row after the block is labelled whatever its second, as the block hides its own rows.
+      block.folded = true;
+      block.el.open = false;
+      block.el.classList.add('out-folded');
+      view.prevSec = null;
+    }
+    if (block.folded) summarize(block, entry.text);
+  }
+
+  function drawAll() {
+    var follow = atTail();
+    var top = pane.scrollTop;
+    view = freshView();
+    pane.textContent = '';
+    pane.classList.remove('out-has-times');
+    if (dropped > 0) {
+      pane.insertAdjacentHTML('beforeend', '<div class="out-trimmed">' + dropped + ' earlier lines not shown</div>');
+    }
+    entries.forEach(draw);
+    pane.scrollTop = follow ? pane.scrollHeight : top;
+  }
+
+  function toEntry(text, time) {
+    return { text: text, ms: _outputTimeMs(time) };
+  }
+
+  // Replaces everything with a full read of the run; times is parallel to lines and may be missing. A read that
+  // only extends what is held draws just the new lines, so a tab return leaves the open folds and the scroll alone.
+  function replace(lines, times) {
+    var next = lines.map(function(text, i) { return toEntry(text, Array.isArray(times) ? times[i] : null); });
+    var cut = Math.max(0, next.length - _OUTPUT_MAX_ENTRIES);
+    if (cut > 0) next = next.slice(cut);
+    var extend = pane !== null && filled && entries.length > 0 && cut === dropped && next.length >= entries.length &&
+      entries.every(function(e, i) { return e.text === next[i].text; });
+    var added = extend ? next.slice(entries.length) : null;
+    entries = next;
+    dropped = cut;
+    filled = true;
+    if (pane === null) return;
+    if (!extend) { drawAll(); return; }
+    var follow = atTail();
+    added.forEach(draw);
+    if (follow) pane.scrollTop = pane.scrollHeight;
+  }
+
+  return {
+    // Draws the held lines into a pane (null detaches). The lines survive a rebuilt pane, so a page that
+    // re-renders its DOM keeps the output of the run it is streaming.
+    setTarget: function(el) {
+      // The pane it already draws into keeps its rows, open folds and scroll position.
+      if (el && el === pane) return;
+      pane = el || null;
+      if (pane !== null && filled) drawAll();
+    },
+    append: function(text, time) {
+      var entry = toEntry(text, time);
+      entries.push(entry);
+      filled = true;
+      if (entries.length > _OUTPUT_MAX_ENTRIES + _OUTPUT_TRIM_SLACK) {
+        var over = entries.length - _OUTPUT_MAX_ENTRIES;
+        entries.splice(0, over);
+        dropped += over;
+        if (pane !== null) drawAll();
+        return;
+      }
+      if (pane === null) return;
+      var follow = atTail();
+      draw(entry);
+      if (follow) pane.scrollTop = pane.scrollHeight;
+    },
+    replace: replace,
+    clear: function() { dropped = 0; replace([], null); filled = false; },
+    // Lines held, and lines the run has produced as far as this renderer was told (held plus trimmed).
+    count: function() { return entries.length; },
+    total: function() { return dropped + entries.length; }
+  };
+}
+
+// How many leading held lines the backfill already contains: the lines written after the subscription but
+// before the snapshot was read. The stream sent every line from connectedSeq on and the snapshot holds every
+// line before snapshotSeq, so when both are known the answer is exact, repeated lines included, as long as the
+// stream dropped nothing: the server reports a dropped line as a "gap" event, which abandons the stream for a
+// full re-read before this arithmetic is trusted. Without them (an agent no longer in memory, or a server that
+// sends no seq) it falls back to matching text, which cannot tell an identical line the agent wrote again from
+// one it has already seen, so it may drop genuinely new repeated lines. held entries are {text, time}.
+function _outputOverlap(snapshot, held, connectedSeq, snapshotSeq) {
+  if (connectedSeq !== null && snapshotSeq !== null) {
+    return Math.max(0, Math.min(snapshotSeq - connectedSeq, held.length));
+  }
+  for (var m = Math.min(snapshot.length, held.length); m > 0; m--) {
+    var tail = snapshot.length - m;
+    var same = true;
+    for (var i = 0; i < m && same; i++) same = held[i].text === snapshot[tail + i];
+    if (same) return m;
+  }
+  return 0;
+}
+
+// The line count a "connected" event or an output response carries, or null when it carries none
+// (a server that predates it, or an agent that is no longer in memory).
+function _outputParseSeq(raw) {
+  try {
+    var seq = JSON.parse(raw).seq;
+    return Number.isInteger(seq) ? seq : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// An "output" event is {time, text}; a server that predates the JSON payload sent the text alone.
+function _outputParseEvent(raw) {
+  try {
+    var data = JSON.parse(raw);
+    if (data !== null && typeof data === 'object' && typeof data.text === 'string') {
+      return { text: data.text, time: data.time === undefined ? null : data.time };
+    }
+  } catch (e) { /* not JSON: the text itself */ }
+  return { text: raw, time: null };
+}
+
+// Streams one run's output into a renderer: sovaOutputStream(renderer) -> { start, ensure, stop, runId }.
+//  - start(runId, status): a finished run is read once by polling; any other run (paused and awaiting_approval
+//    included, they can still write) opens the SSE stream first and backfills from a full read, holding the
+//    lines pushed meanwhile, then drops the lines the snapshot already has (_outputOverlap).
+//  - ensure(runId, status): start() unless this run is already streaming (or polling after the server ended its
+//    stream), or finished and fully read, so a page that rebuilds its DOM re-attaches without reopening the stream. A polling fallback for a run that has since
+//    finished ends after its next read instead of polling a run that writes nothing more.
+//  - stop(): closes the EventSource, cancels the poll chain and removes the visibility listener.
+// A failed stream, a "gap" event, a failed backfill or a late "connected" falls back to polling from line 0, so the
+// pane never keeps a log with a silent hole. The stream closes while the tab is hidden and reconciles on return.
+// The one self-rescheduling setTimeout chain is poll(): it backs off (1s up to 5s) while a run is quiet, which
+// visibilityAwarePoll() (fixed interval) cannot do, so it checks document.hidden itself.
+function sovaOutputStream(renderer) {
+  var runId = null;
+  var transport = null;   // 'sse' or 'poll' while streaming, null otherwise: the tab resumes with the same one
+  var source = null;
+  var cursor = 0;
+  var pollTimer = null;
+  var pollGen = 0;
+  var backoffMs = _OUTPUT_POLL_BASE_MS;
+  var readOnce = false;   // a finished run's poll ends after one successful read
+  var loaded = false;     // a full read of this run has been drawn since start()
+  var pageStatus = null;  // the status the page last reported for this run (start() or ensure())
+  var listening = false;
+  var untilGone = false;  // polling on after the server ended the stream: ends once the agent has left memory
+  var lastInMemory = null; // whether the previous read of this poll chain found the agent in memory (null: none yet)
+  var idleAt = null;      // the status the page reported when the untilGone chain ended: ensure() restarts on a change
+
+  function cancelPolling() {
+    pollGen++;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function closeSource() {
+    if (source) { source.close(); source = null; }
+  }
+
+  async function poll() {
+    if (runId === null) return;
+    // The stream may switch runs, or the chain may be cancelled or restarted, while this fetch is in flight;
+    // whichever poll owns the stream now started its own chain, so a stale response neither draws nor reschedules.
+    var id = runId;
+    var gen = pollGen;
+    var isCurrent = function() { return id === runId && gen === pollGen && !document.hidden; };
+    // Only a read that started once the run was known to be finished is the last one: a read already in flight
+    // when ensure() learns the run ended may have sampled the output before its final lines were written, so it
+    // keeps its cursor and the chain schedules one more read from there (retried until it succeeds).
+    var finalRead = readOnce;
+    var finishedRead = false;
+    try {
+      var data = await fetchAPI(apiUrl('/agents/' + id + '/output?since=' + cursor));
+      if (!isCurrent()) return;
+      var inMemory = Number.isInteger(data.seq);
+      var left = false;
+      if (cursor > 0 && lastInMemory !== null && inMemory !== lastInMemory) {
+        // The agent left memory (or came back into it) since the last read, so `since` now names a different
+        // numbering: a stored line number is not an index into the in-memory buffer, and an engine-persisted run
+        // stores a different set of lines than it streamed. This answer is no continuation of what is drawn, so
+        // read the whole run again; replace() then draws only what is new, or redraws.
+        left = true;
+        cursor = 0;
+        data = await fetchAPI(apiUrl('/agents/' + id + '/output?since=0'));
+        if (!isCurrent()) return;
+        inMemory = Number.isInteger(data.seq);
+      }
+      lastInMemory = inMemory;
+      var lines = data.lines || [];
+      var times = Array.isArray(data.times) ? data.times : null;
+      // A full read goes through replace(), which caps the lines and draws once; appending a long run line by
+      // line would lay the pane out again for every line.
+      if (cursor === 0) renderer.replace(lines, times);
+      else lines.forEach(function(text, i) { renderer.append(text, times ? times[i] : null); });
+      if (lines.length > 0 || left) {
+        // In memory the cursor is the run's lifetime line count (seq): the server counts `since` the same way, so it
+        // stays valid after the buffer evicts. A count of the lines drawn is not (the buffer holds only the tail).
+        // Out of memory it is the stored line count the read returned.
+        cursor = inMemory ? data.seq : data.total;
+        backoffMs = _OUTPUT_POLL_BASE_MS;
+      } else {
+        backoffMs = Math.min(backoffMs * 1.5, _OUTPUT_POLL_MAX_MS);
+      }
+      loaded = true;
+      finishedRead = finalRead;
+      // After the server ended the stream of a run the page still thinks is live, a read of an agent that is no
+      // longer in memory that adds nothing (idle, or the re-read after it left) means nothing more will be written:
+      // stop instead of polling for good, and remember the status so ensure() does not restart a run that is still
+      // paused or awaiting approval.
+      if (untilGone && !inMemory && (lines.length === 0 || left)) {
+        finishedRead = true;
+        idleAt = pageStatus;
+      }
+    } catch (e) {
+      if (!isCurrent()) return;
+      backoffMs = Math.min(backoffMs * 1.5, _OUTPUT_POLL_MAX_MS);
+    }
+    if (finishedRead) { transport = null; return; }
+    if (isCurrent()) pollTimer = setTimeout(poll, backoffMs);
+  }
+
+  function startPolling(once, afterServerDone) {
+    cancelPolling();
+    transport = 'poll';
+    readOnce = once;
+    untilGone = afterServerDone === true;
+    lastInMemory = null;
+    idleAt = null;
+    backoffMs = _OUTPUT_POLL_BASE_MS;
+    poll();
+  }
+
+  // Drops the stream and re-reads the run from line 0 by polling.
+  function fallBackToPolling(es, id) {
+    if (es === source) closeSource();
+    if (runId === id) {
+      cursor = 0;
+      renderer.clear();
+      startPolling(false);
+    }
+  }
+
+  async function reconcile(id, es, resume) {
+    var snapshot = null;
+    var times = null;
+    var snapshotSeq = null;
+    var controller = new AbortController();
+    var deadline = setTimeout(function() { controller.abort(); }, _OUTPUT_BACKFILL_TIMEOUT_MS);
+    try {
+      var data = await fetchAPI(apiUrl('/agents/' + id + '/output?since=0'), { signal: controller.signal });
+      snapshot = data.lines || [];
+      times = data.times;
+      snapshotSeq = Number.isInteger(data.seq) ? data.seq : null;
+    } catch (e) {
+      console.warn('Output backfill failed', e);
+    } finally {
+      clearTimeout(deadline);
+    }
+    // Switched runs, stopped, or hid the tab again: this stream is no longer the live one.
+    if (id !== runId || es !== source) return;
+    if (snapshot === null) {
+      // The lines written while the tab was hidden are unknown, and appending the held ones to the old content
+      // would hide the gap. Re-read the whole run instead.
+      fallBackToPolling(es, id);
+      return;
+    }
+    renderer.replace(snapshot, times);
+    loaded = true;
+    var held = resume.held.slice(_outputOverlap(snapshot, resume.held, resume.connectedSeq, snapshotSeq));
+    resume.holding = false;
+    resume.held = [];
+    held.forEach(function(h) { renderer.append(h.text, h.time); });
+    if (resume.done) endStream();
+  }
+
+  // The server ended the stream. A run the page still considers live (a paused one, or one whose status push has not
+  // landed yet) keeps being read by polling until the agent has left memory, so ensure() has no reason to restart
+  // (clear and re-read) it meanwhile; when the chain ends on a status that is not finished, idleAt remembers it and
+  // ensure() restarts only once the status changes. A finished run is fully read. The read starts from line 0: the
+  // in-memory buffer holds only the last 5000 lines, so no count of the lines drawn is a valid `since` (poll() counts
+  // it in the run's lifetime lines while the agent is in memory, and in stored lines after). replace() draws only the
+  // lines the held ones do not already show.
+  function endStream() {
+    source = null;
+    transport = null;
+    if (runId !== null && !sovaOutputFinished(pageStatus)) {
+      cursor = 0;
+      startPolling(false, true);
+    }
+  }
+
+  // resume is the state of a backfilled stream: lines pushed while the backfill is in flight are held in
+  // resume.held instead of drawn (see reconcile()).
+  function connect(id, resume) {
+    closeSource();
+    var es = new EventSource(apiUrl('/agents/' + id + '/output/stream'));
+    source = es;
+    transport = 'sse';
+
+    es.addEventListener('output', function(e) {
+      if (runId !== id) return;
+      var line = _outputParseEvent(e.data);
+      if (resume.holding) { resume.held.push(line); return; }
+      renderer.append(line.text, line.time);
+    });
+
+    // The server subscribes before it sends "connected" and reports in it how many lines the run had buffered by
+    // then (seq): everything written from here on is pushed to this stream, everything before it is in the backfill.
+    es.addEventListener('connected', function(e) {
+      // A late "connected" after the wait timer already gave the stream up has nothing left to reconcile.
+      if (!resume.holding) return;
+      clearTimeout(resume.connectTimer);
+      resume.connectedSeq = _outputParseSeq(e.data);
+      reconcile(id, es, resume);
+    });
+
+    // The server dropped a line for this subscriber (its queue was full), so the stream has a hole the reader
+    // cannot locate: the sequence arithmetic would be off by the missing lines. Re-read the whole run instead.
+    es.addEventListener('gap', function() {
+      if (runId !== id || es !== source) return;
+      fallBackToPolling(es, id);
+    });
+
+    es.addEventListener('done', function() {
+      if (resume.holding) {
+        // The run ended while the backfill is in flight. This stays the live stream until reconcile() has drawn
+        // the backfill and the held lines, and retires it then.
+        resume.done = true;
+        es.close();
+        return;
+      }
+      if (es === source) { es.close(); endStream(); }
+    });
+
+    es.onerror = function() { fallBackToPolling(es, id); };
+
+    // Every line is held until "connected" arrives, and onerror does not fire while a socket stays open, so a
+    // proxy that buffers the first event would leave the pane empty for good. Past the wait the stream is given
+    // up for polling, which reads the run from line 0 and needs no subscription point to be exact.
+    resume.connectTimer = setTimeout(function() {
+      if (resume.holding && resume.connectedSeq === null && es === source && runId === id) {
+        fallBackToPolling(es, id);
+      }
+    }, _OUTPUT_CONNECT_WAIT_MS);
+  }
+
+  // The SSE stream does not replay output, so the lines produced before it connected come from a full fetch. The
+  // stream is opened first and holds its lines back until that fetch lands: connecting only afterwards would lose
+  // whatever the agent wrote in between.
+  function openStream(id) {
+    backoffMs = _OUTPUT_POLL_BASE_MS;
+    connect(id, { holding: true, held: [], connectedSeq: null, done: false, connectTimer: null });
+  }
+
+  function onVisibility() {
+    if (runId === null) return;
+    if (document.hidden) {
+      closeSource();
+      cancelPolling();
+    } else if (transport === 'poll') {
+      // The agent may have left memory while the tab was hidden, which changes what `since` means, and the chain's
+      // memory of which numbering the cursor is in is reset by startPolling(). Read the whole run again: replace()
+      // draws only what is new, or redraws.
+      cursor = 0;
+      startPolling(readOnce, untilGone);
+    } else if (transport === 'sse') {
+      openStream(runId);
+    }
+  }
+
+  function stop() {
+    runId = null;
+    pageStatus = null;
+    transport = null;
+    idleAt = null;
+    cursor = 0;
+    loaded = false;
+    cancelPolling();
+    closeSource();
+    if (listening) { document.removeEventListener('visibilitychange', onVisibility); listening = false; }
+  }
+
+  function start(id, runStatus) {
+    stop();
+    runId = id;
+    pageStatus = runStatus;
+    renderer.clear();
+    document.addEventListener('visibilitychange', onVisibility);
+    listening = true;
+    if (sovaOutputFinished(runStatus)) startPolling(true);
+    else openStream(id);
+  }
+
+  return {
+    start: start,
+    stop: stop,
+    ensure: function(id, runStatus) {
+      if (runId === id) pageStatus = runStatus;
+      // A run that failed over to polling while live is now finished: its next read is the last one.
+      if (runId === id && transport === 'poll' && sovaOutputFinished(runStatus)) { readOnce = true; return; }
+      if (runId === id && (transport !== null || (loaded && sovaOutputFinished(runStatus)))) return;
+      // The poll chain ended on an agent that has left memory while the run is paused or awaiting approval: nothing
+      // more is written until its status changes, so a page re-render must not clear and re-read the pane.
+      if (runId === id && loaded && idleAt !== null && idleAt === runStatus) return;
+      start(id, runStatus);
+    },
+    runId: function() { return runId; }
+  };
+}
+// end of the agent output helpers

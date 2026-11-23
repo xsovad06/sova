@@ -50,6 +50,12 @@ class AgentState:
     # Lines buffered over the run's life. Unlike len(output_lines) it keeps counting once the deque
     # evicts, so a log viewer can tell exactly how many lines a snapshot has that its stream also sent.
     output_seq: int = 0
+    # The moment each line in ``output_lines`` was buffered, index-aligned with it (same cap). ``buffer()`` is the
+    # only writer of ``output_lines``, ``output_times`` and ``output_seq``, so the three never drift apart.
+    output_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=5000))
+    # Set by ``get_output()`` the first time it finds ``output_times`` out of step with ``output_lines``. Once the two
+    # have drifted, equal lengths (both deques at the cap) no longer prove alignment, so no time is served again.
+    times_misaligned: bool = False
     output_writer: OutputWriter | None = None
     # The last stderr lines of a run whose own engine persists its output (``output_writer`` is None): the dashboard
     # never stores that process's stderr as it arrives, so finalization writes these after the engine's rows.
@@ -140,6 +146,12 @@ class AgentState:
     def __post_init__(self) -> None:
         if self.phase_tally is None and self.role.startswith("command:"):
             self.phase_tally = PhaseTally(started_at=self.started_at)
+
+    def buffer(self, text: str, stamp: datetime) -> None:
+        """Append one output line with its write time and count it: the only writer of the three output fields."""
+        self.output_lines.append(text)
+        self.output_times.append(stamp)
+        self.output_seq += 1
 
 
 @dataclass

@@ -277,10 +277,11 @@ async def read_lines(
     project_dir: Path,
     run_id: int,
     since: int = 0,
-) -> tuple[list[str], int]:
+) -> tuple[list[str], list[datetime | None], int]:
     """Read output lines from the database.
 
-    Returns ``(lines_from_offset, total_line_count)``.
+    Returns ``(lines_from_offset, write_times, total_line_count)``. ``write_times`` has one entry per line, the
+    moment ``write_line()`` received it (``None`` when the row has no stored time).
     """
     from sqlalchemy import func, select
 
@@ -294,31 +295,35 @@ async def read_lines(
                 ).scalar() or 0
 
                 if total == 0:
-                    return [], 0
+                    return [], [], 0
 
                 rows = await session.execute(
-                    select(OutputLine.text)
+                    select(OutputLine.text, OutputLine.created_at)
                     .where(OutputLine.task_run_id == run_id, OutputLine.line_number >= since)
                     .order_by(OutputLine.line_number)
                 )
-                lines = [row[0] for row in rows]
-                return lines, total
+                pairs = rows.all()
+                return [text for text, _ in pairs], [stamp for _, stamp in pairs], total
     except Exception:  # noqa: BLE001 (fail-open: output read must not crash the caller)
         log.warning("read_lines.failed", run_id=run_id, exc_info=True)
-        return [], 0
+        return [], [], 0
 
 
-def read_lines_from_file(path: Path, since: int = 0) -> tuple[list[str], int]:
-    """Read output lines from a legacy log file (backward compat)."""
+def read_lines_from_file(path: Path, since: int = 0) -> tuple[list[str], list[datetime | None], int]:
+    """Read output lines from a legacy log file (backward compat).
+
+    A file records no write times, so every returned time is ``None``.
+    """
     if not path.exists():
-        return [], 0
+        return [], [], 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             all_lines = [line.rstrip("\n") for line in f]
     except (OSError, UnicodeDecodeError):
-        return [], 0
+        return [], [], 0
     total = len(all_lines)
-    return all_lines[since:], total
+    lines = all_lines[since:]
+    return lines, [None] * len(lines), total
 
 
 async def cleanup_old_output(project_dir: Path, retention_days: int = 30) -> int:

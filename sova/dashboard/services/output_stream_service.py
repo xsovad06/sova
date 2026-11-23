@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from datetime import datetime
+from typing import NamedTuple
 
 from sova.utils.logging import get_logger
 
@@ -17,20 +19,27 @@ log = get_logger(component="dashboard.output_stream")
 _QUEUE_MAX = 200
 
 
+class OutputEvent(NamedTuple):
+    """One published output line and the moment the agent buffered it."""
+
+    text: str
+    time: datetime
+
+
 class OutputStreamService:
     """Fan-out output lines to per-run SSE subscribers."""
 
     def __init__(self) -> None:
         # run_id -> {sub_id -> Queue}
-        self._subscribers: dict[int, dict[int, asyncio.Queue[str]]] = {}
+        self._subscribers: dict[int, dict[int, asyncio.Queue[OutputEvent]]] = {}
         self._sub_counter = itertools.count(1)
         # (run_id, sub_id) of subscribers that lost a line to a full queue since their stream last asked.
         self._overflowed: set[tuple[int, int]] = set()
 
-    def subscribe(self, run_id: int) -> tuple[int, asyncio.Queue[str]]:
+    def subscribe(self, run_id: int) -> tuple[int, asyncio.Queue[OutputEvent]]:
         """Register a subscriber for a run's output. Returns (sub_id, queue)."""
         sub_id = next(self._sub_counter)
-        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_QUEUE_MAX)
+        queue: asyncio.Queue[OutputEvent] = asyncio.Queue(maxsize=_QUEUE_MAX)
         run_subs = self._subscribers.setdefault(run_id, {})
         run_subs[sub_id] = queue
         log.debug("output_stream.subscribed", run_id=run_id, sub_id=sub_id)
@@ -46,14 +55,15 @@ class OutputStreamService:
         self._overflowed.discard((run_id, sub_id))
         log.debug("output_stream.unsubscribed", run_id=run_id, sub_id=sub_id)
 
-    def publish(self, run_id: int, line: str) -> None:
-        """Push an output line to all subscribers of a given run."""
+    def publish(self, run_id: int, line: str, time: datetime) -> None:
+        """Push an output line, with the time it was buffered, to all subscribers of a given run."""
         run_subs = self._subscribers.get(run_id)
         if not run_subs:
             return
+        event = OutputEvent(line, time)
         for sub_id, queue in run_subs.items():
             try:
-                queue.put_nowait(line)
+                queue.put_nowait(event)
             except asyncio.QueueFull:
                 # Drop for slow consumers, but remember it: a stream that silently lost a line shows a log
                 # with a hole in it, so the SSE endpoint reports the loss (take_overflow) and the viewer re-reads.
