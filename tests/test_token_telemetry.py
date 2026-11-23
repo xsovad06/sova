@@ -683,6 +683,35 @@ class TestNumTurnsParsing:
         assert accumulate_llm_result(_llm_result(), _llm_result()).num_turns is None
 
 
+class TestPrimaryModelParsing:
+    """build_claude_cli_result() records the model that did the work, not the CLI's own Haiku side calls."""
+
+    def test_costliest_model_wins_over_first_listed(self) -> None:
+        """The CLI lists its Haiku side calls first: a Sonnet session must not be recorded as Haiku."""
+        from sova.llm.models import build_claude_cli_result
+
+        data = {
+            "modelUsage": {
+                "claude-haiku-5-5": {"outputTokens": 17, "costUSD": 0.000127},
+                "claude-sonnet-5-5": {"outputTokens": 78, "costUSD": 0.0624},
+            }
+        }
+        assert build_claude_cli_result(data).model == "claude-sonnet-5-5"
+
+    def test_output_tokens_break_a_cost_tie(self) -> None:
+        from sova.llm.models import build_claude_cli_result
+
+        data = {"modelUsage": {"a": {"outputTokens": 1}, "b": {"outputTokens": 9}}}
+        assert build_claude_cli_result(data).model == "b"
+
+    def test_malformed_entries_fall_back_to_listing_order(self) -> None:
+        """A non-dict entry or a non-numeric field counts as zero, so the first listed model wins the tie."""
+        from sova.llm.models import build_claude_cli_result
+
+        data = {"modelUsage": {"first": "junk", "second": {"costUSD": "1.0", "outputTokens": True}}}
+        assert build_claude_cli_result(data).model == "first"
+
+
 class TestTurnCounters:
     def test_add_usage_counts_turns_and_reporting_calls(self, ctx: ExecutionContext) -> None:
         ctx.add_usage(_llm_result(num_turns=5))
