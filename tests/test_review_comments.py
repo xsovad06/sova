@@ -592,12 +592,14 @@ class TestBuildReviewPrompt:
         prompt = _build_review_prompt(_task(), "diff", ["f.py"], revise_at=5)
         assert "severity 5 or above block the PR" in prompt
 
-    def test_rereview_rule_present_only_with_addressed_findings(self) -> None:
+    def test_rereview_rule_present_only_on_a_rereview(self) -> None:
         addressed = [{"source": "ruff", "file_path": "a.py", "message": "unused"}]
-        with_addressed = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed)
-        without_addressed = _build_review_prompt(_task(), "diff", ["f.py"])
-        assert "On a re-review" in with_addressed
-        assert "On a re-review" not in without_addressed
+        rereview = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed, rereview=True)
+        first_with_findings = _build_review_prompt(_task(), "diff", ["f.py"], addressed_findings=addressed)
+        first = _build_review_prompt(_task(), "diff", ["f.py"])
+        assert "On a re-review" in rereview
+        assert "On a re-review" not in first_with_findings
+        assert "On a re-review" not in first
 
     def test_repo_context_included_when_present(self) -> None:
         prompt = _build_review_prompt(

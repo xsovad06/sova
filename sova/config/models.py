@@ -276,6 +276,9 @@ class ReviewPanelConfig(BaseSettings):
         return self
 
 
+_DEFAULT_REREVIEW_REVISE_SEVERITY = 5
+
+
 class ReviewConfig(BaseSettings):
     """Automated review configuration."""
 
@@ -288,6 +291,12 @@ class ReviewConfig(BaseSettings):
     # Findings at or above this severity verdict as BLOCK rather than REVISE.
     # Default matches the existing _SEVERITY_CRITICAL boundary.
     block_severity: int = Field(7, ge=1, le=10)
+    # The revise threshold for a re-review (a round after a fix cycle). A
+    # re-review is never stricter than the first round: the higher of this and
+    # revise_severity applies. Default 5 (HIGH): later rounds kept raising new
+    # medium findings, few of them worth another full cycle, so they become
+    # advisory there and the loop converges.
+    rereview_revise_severity: int = Field(_DEFAULT_REREVIEW_REVISE_SEVERITY, ge=1, le=10)
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
     protected_paths: list[str] = Field(default_factory=list)
     # Optional, narrowly-scoped sub-call: asks a read-only Codex sandbox for
@@ -316,7 +325,25 @@ class ReviewConfig(BaseSettings):
                 f"review.revise_severity ({self.revise_severity}) must be <= "
                 f"review.block_severity ({self.block_severity})"
             )
+        # The default is not rejected: a config valid before this field existed (block_severity below 5) must
+        # still load, and revise_at() caps the default at block_severity. Tracking "was it set" through
+        # model_fields_set would break on a dump and re-validate, which marks every field as set.
+        if (
+            self.rereview_revise_severity != _DEFAULT_REREVIEW_REVISE_SEVERITY
+            and self.rereview_revise_severity > self.block_severity
+        ):
+            raise ValueError(
+                f"review.rereview_revise_severity ({self.rereview_revise_severity}) must be <= "
+                f"review.block_severity ({self.block_severity})"
+            )
         return self
+
+    def revise_at(self, *, rereview: bool) -> int:
+        """Return the revise threshold for a first review or a re-review (never stricter than the first)."""
+        if not rereview:
+            return self.revise_severity
+        # The cap only ever changes the default (the validator rejects any other value above block_severity).
+        return max(self.revise_severity, min(self.rereview_revise_severity, self.block_severity))
 
 
 class DevelopConfig(BaseSettings):

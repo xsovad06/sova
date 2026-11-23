@@ -36,7 +36,7 @@ from sova.llm.client import invoke
 from sova.utils.files import read_text_or_none
 from sova.utils.json import extract_json
 from sova.utils.logging import get_logger
-from sova.utils.review_markers import INCOMPLETE_REVIEW_CATEGORY
+from sova.utils.review_markers import INCOMPLETE_REVIEW_CATEGORY, reviewed_nothing
 from sova.utils.shell import run
 
 log = get_logger(component="knowledge.retro")
@@ -348,6 +348,10 @@ async def collect_pr_review_data(session: AsyncSession, pr_number: int) -> PrRev
         if handoff is None:
             continue
         if task_run.role == "reviewer":
+            if reviewed_nothing(str(handoff.get("summary") or "")):
+                # The model reviewed none of the diff (content filter, timeout): no verdict, no findings,
+                # so it is not a review round, and counting it would shift every later round's number.
+                continue
             data.review_rounds += 1
             if data.first_review_at is None and task_run.started_at is not None:
                 data.first_review_at = _aware(task_run.started_at)

@@ -75,6 +75,7 @@ from sova.roles._review_comments import (
     _diff_file_excerpts,
     _extract_json,
     _extract_spec_sections,
+    _findings_from_data,
     _format_addressed_findings,
     _format_findings_body,
     _format_findings_comment,
@@ -90,6 +91,7 @@ from sova.roles._review_comments import (
     _try_parse_findings,
     _verdict_label,
     review_failure_cause,
+    verify_evidence,
 )
 from sova.roles._review_format import _SEVERITY_HIGH
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
@@ -263,6 +265,17 @@ class ReviewerRole(AgentRole):
         addressed = await self._load_addressed_findings(ctx)
         if addressed:
             log.info("reviewer.addressed_findings_loaded", count=len(addressed))
+        # Panel review keeps its own thresholds: the re-review adjustment is the single-reviewer path's.
+        rereview = not ctx.config.review.panel.enabled and await self._is_rereview(ctx, addressed)
+        if rereview:
+            # Every threshold reader below (prompt, verdict, label, incomplete-review finding) takes
+            # review.revise_severity from ctx.config, so raising it for this run keeps them in agreement.
+            # model_copy leaves the cached config other runs share untouched.
+            revise_at = ctx.config.review.revise_at(rereview=True)
+            log.info("reviewer.rereview", pr=ctx.pr_number, revise_at=revise_at)
+            ctx.config = ctx.config.model_copy(
+                update={"review": ctx.config.review.model_copy(update={"revise_severity": revise_at})}
+            )
 
         # The panel path never consumes repo_context (see _run_review's panel
         # branch), so skip paying for the sub-call's wall clock and Codex
@@ -274,7 +287,14 @@ class ReviewerRole(AgentRole):
         accumulator = ReviewResult()
         try:
             review = await self._run_review(
-                ctx, task, diff, files, addressed_findings=addressed, repo_context=repo_context, result=accumulator
+                ctx,
+                task,
+                diff,
+                files,
+                addressed_findings=addressed,
+                repo_context=repo_context,
+                result=accumulator,
+                rereview=rereview,
             )
         except BaseException:
             await asyncio.shield(self._record_review_costs(ctx, accumulator))
@@ -288,6 +308,13 @@ class ReviewerRole(AgentRole):
 
         self._append_review_rationale(ctx, review)
 
+        # Decided before posting, so the posted marker and the handoff agree on it.
+        # Panel review keeps its own routing: an incomplete panel result goes to the fix step as before.
+        review.rerun_pending = (
+            not ctx.config.review.panel.enabled
+            and bool(review.unreviewed_files)
+            and not await self._incomplete_before(ctx, head_sha or None)
+        )
         post_succeeded = await self._post_review(ctx, review, diff, sha=head_sha or None)
         if not post_succeeded:
             review.post_failed = True
@@ -527,6 +554,41 @@ class ReviewerRole(AgentRole):
             return True
         return await self._post_review_once(ctx, review, diff, sha=sha)
 
+    async def _review_history(self, ctx: ExecutionContext) -> dict | None:
+        """Return the PR's parsed SOVA review history (``parse_review_history()``), or None when unreadable.
+
+        Raises the read's own errors (RuntimeError, OSError, ValueError, KeyError) for the caller to fail open on.
+        """
+        from sova.dashboard.services.work_verdict import parse_review_history
+        from sova.git.pr import get_pr_review_data
+        from sova.utils.gh import get_active_gh_user
+
+        data = (await get_pr_review_data([ctx.pr_number], repo=ctx.repo, github_user=ctx.config.github_user)).get(
+            ctx.pr_number
+        )
+        trusted_login = ctx.config.github_user or await get_active_gh_user() or ""
+        if data is None or not trusted_login:
+            return None
+        return parse_review_history(data.review_history, trusted_login=trusted_login)
+
+    async def _is_rereview(self, ctx: ExecutionContext, addressed: list[dict]) -> bool:
+        """True when a fix cycle already ran on this PR, so this review is a later round.
+
+        The PR's own ``sova-addressed`` markers decide it: they are what the address-review budget counts.
+        Only when that history cannot be read does the fix step's handoff decide, since its DB fallback
+        is keyed by issue and can carry findings from an earlier PR for the same issue.
+        """
+        if not ctx.pr_number:
+            return bool(addressed)
+        try:
+            marker = await self._review_history(ctx)
+        except (RuntimeError, OSError, ValueError, KeyError):
+            log.warning("reviewer.rereview_check_failed", pr=ctx.pr_number, exc_info=True)
+            marker = None
+        if marker is None:
+            return bool(addressed)
+        return marker["address_cycles"] > 0
+
     async def _marker_posted_since(self, ctx: ExecutionContext, sha: str | None, since: datetime) -> bool:
         """True when GitHub already holds this run's ``sova-review`` marker for ``sha``, posted after ``since``.
 
@@ -535,17 +597,9 @@ class ReviewerRole(AgentRole):
         if not sha:
             return False
         try:
-            from sova.dashboard.services.work_verdict import parse_review_history
-            from sova.git.pr import get_pr_review_data
-            from sova.utils.gh import get_active_gh_user
-
-            data = (await get_pr_review_data([ctx.pr_number], repo=ctx.repo, github_user=ctx.config.github_user)).get(
-                ctx.pr_number
-            )
-            trusted_login = ctx.config.github_user or await get_active_gh_user() or ""
-            if data is None or not trusted_login:
+            marker = await self._review_history(ctx)
+            if marker is None:
                 return False
-            marker = parse_review_history(data.review_history, trusted_login=trusted_login)
             reviewed_at = marker["reviewed_at"]
             return bool(
                 marker["has_sova_review"]
@@ -589,6 +643,7 @@ class ReviewerRole(AgentRole):
             revise_at=revise_at,
             block_at=block_at,
             inline_comment_keys=inline_comment_keys,
+            rerun_pending=review.rerun_pending,
         )
         # Rebuild without the inline-comment collapse: the adapter retries body-only
         # internally (without raising) when GitHub rejects the inline comments, so
@@ -600,6 +655,7 @@ class ReviewerRole(AgentRole):
             sha,
             revise_at=revise_at,
             block_at=block_at,
+            rerun_pending=review.rerun_pending,
         )
 
         try:
@@ -630,7 +686,12 @@ class ReviewerRole(AgentRole):
                 log.warning("reviewer.review_api_failed", exc_info=True)
 
         fallback = _format_findings_comment(
-            review.findings, review.summary, sha, revise_at=revise_at, block_at=block_at
+            review.findings,
+            review.summary,
+            sha,
+            revise_at=revise_at,
+            block_at=block_at,
+            rerun_pending=review.rerun_pending,
         )
         try:
             await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
@@ -654,6 +715,7 @@ class ReviewerRole(AgentRole):
         addressed_findings: list[dict] | None = None,
         repo_context: str = "",
         result: ReviewResult | None = None,
+        rereview: bool = False,
     ) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large.
 
@@ -690,6 +752,7 @@ class ReviewerRole(AgentRole):
                 addressed_findings=addressed_findings,
                 repo_context=repo_context,
                 result=result,
+                rereview=rereview,
             )
 
         if result.unreviewed_files:
@@ -702,8 +765,9 @@ class ReviewerRole(AgentRole):
             )
 
         if staleness_note:
-            prefix = f"[Spec freshness: {staleness_note}]"
-            result.summary = f"{prefix} {result.summary}".strip() if result.summary else prefix
+            # Appended, never prepended: reviewed_nothing() reads the failure marker at the start of the summary.
+            note = f"[Spec freshness: {staleness_note}]"
+            result.summary = f"{result.summary} {note}".strip() if result.summary else note
         return result
 
     def _resolve_review_model(self, ctx: ExecutionContext) -> str:
@@ -803,6 +867,7 @@ class ReviewerRole(AgentRole):
         addressed_findings: list[dict] | None = None,
         repo_context: str = "",
         result: ReviewResult | None = None,
+        rereview: bool = False,
     ) -> ReviewResult:
         """Original single-reviewer path."""
         chunks = _chunk_diff(diff)
@@ -836,6 +901,8 @@ class ReviewerRole(AgentRole):
                     repo_context=chunk_repo_context,
                     whole_diff=len(chunks) == 1,
                     block_at=ctx.config.review.block_severity,
+                    # Like the addressed findings, the later-round note rides on the first chunk only.
+                    rereview=rereview and i == 0,
                 )
                 findings, summary = await self._review_chunk_with_retry(
                     ctx, prompt, chunk, i, model, share_budget, result
@@ -1013,19 +1080,10 @@ class ReviewerRole(AgentRole):
                 raise _UnparseableReviewError(
                     f"{label or f'chunk {chunk_index + 1}'}: no parseable review response"
                 ) from ve
-            return recovered
+            findings, summary = recovered
+            return verify_evidence(findings, prompt, ctx.config.review.revise_severity), summary
 
-        findings = [
-            ReviewFinding(
-                file=item.get("file", "unknown"),
-                severity=_safe_severity(item.get("severity", 5)),
-                category=item.get("category", "other"),
-                description=item.get("description", ""),
-                suggestion=item.get("suggestion", ""),
-                line=item.get("line"),
-            )
-            for item in data.get("findings", [])
-        ]
+        findings = verify_evidence(_findings_from_data(data), prompt, ctx.config.review.revise_severity)
         return findings, data.get("summary", "")
 
     def _load_spec_sections(self, ctx: ExecutionContext, task: Task) -> dict[str, str] | None:
@@ -1284,6 +1342,42 @@ class ReviewerRole(AgentRole):
         except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("reviewer.verdict_label_failed", issue=issue, label=label, exc_info=True)
 
+    async def _incomplete_before(self, ctx: ExecutionContext, head_sha: str | None) -> bool:
+        """True when an earlier review of this PR was also left incomplete at *head_sha*.
+
+        An incomplete review re-runs itself once per head; a second gap at the same head is likely
+        deterministic (the same chunk blocked again), so it must not loop. Fails closed to True (no
+        automatic re-run) when the head is unknown or the history cannot be read.
+        """
+        if not head_sha or not ctx.pr_number:
+            return True
+        try:
+            from sqlalchemy import select
+
+            async with await get_session(project_dir=ctx.project_dir) as session:
+                stmt = select(TaskRun.handoff_json).where(
+                    TaskRun.role == "reviewer",
+                    TaskRun.pr_number == ctx.pr_number,
+                    TaskRun.handoff_json.isnot(None),
+                )
+                if ctx.task_run_id:
+                    stmt = stmt.where(TaskRun.id != ctx.task_run_id)
+                handoffs = (await session.execute(stmt)).scalars().all()
+        except (OSError, SQLAlchemyError):
+            log.warning("reviewer.incomplete_history_failed", pr=ctx.pr_number, exc_info=True)
+            return True
+        for handoff in handoffs:
+            if not isinstance(handoff, dict):
+                continue
+            # The subprocess writes the AgentHandoff shape (fields under "metadata"); the dashboard's
+            # backstop writes the handoff file's details, which carry them at the top level.
+            meta = handoff.get("metadata") if isinstance(handoff.get("metadata"), dict) else handoff
+            if meta.get("review_head_sha") != head_sha:
+                continue
+            if meta.get("review_incomplete") or handoff.get("next_action") == "review_incomplete":
+                return True
+        return False
+
     async def _write_handoff(
         self, ctx: ExecutionContext, review: ReviewResult, *, review_head_sha: str | None = None
     ) -> None:
@@ -1323,6 +1417,7 @@ class ReviewerRole(AgentRole):
             "finding_summary": _build_finding_summary(review),
             "review_head_sha": review_head_sha,
             "verdict": verdict,
+            "review_incomplete": bool(review.unreviewed_files),
         }
 
         build = _post_failed_handoffs if review.post_failed else _review_handoffs
@@ -1426,7 +1521,14 @@ def _review_handoffs(
 
 
 def _review_next_action(review: ReviewResult, blocking: list[ReviewFinding]) -> str:
-    """The handoff ``next_action`` for a posted review: blocking findings first, then a review gap."""
+    """The handoff ``next_action`` for a posted review.
+
+    A review gap that will be re-run (``ReviewResult.rerun_pending``) comes first: a fix cycle started on
+    half a review spends budget and leaves the unreviewed files to surface as new findings a round later.
+    Otherwise blocking findings come first, then a gap.
+    """
+    if review.rerun_pending:
+        return "review_incomplete"
     if blocking:
         return "address_review"
     if review.unreviewed_files:
@@ -1436,8 +1538,12 @@ def _review_next_action(review: ReviewResult, blocking: list[ReviewFinding]) -> 
     return "approve"
 
 
-def _rerun_review_action(ctx: ExecutionContext, description: str) -> HandoffAction:
-    """A manual Re-run Review action: never auto-executed, so it cannot loop on a deterministic failure."""
+def _rerun_review_action(ctx: ExecutionContext, description: str, *, auto: bool = False) -> HandoffAction:
+    """A Re-run Review action, manual unless *auto*.
+
+    Only the first gap at a head is *auto* (``ReviewerRole._incomplete_before``), so a deterministic
+    failure cannot loop.
+    """
     return HandoffAction(
         id="rerun_review",
         label="Re-run Review",
@@ -1446,7 +1552,7 @@ def _rerun_review_action(ctx: ExecutionContext, description: str) -> HandoffActi
         mode="agent",
         command="",
         args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "reviewer"},
-        auto_execute=False,
+        auto_execute=auto,
     )
 
 
@@ -1468,7 +1574,11 @@ def _review_next_handoff_action(
     if next_action == "review_incomplete":
         # An address-review run cannot fix an unreviewed chunk and would spend one of
         # pipeline.max_address_review_cycles, so offer a manual re-review instead.
-        return _rerun_review_action(ctx, f"{len(review.unreviewed_files)} file(s) were not reviewed: re-run the review")
+        return _rerun_review_action(
+            ctx,
+            f"{len(review.unreviewed_files)} file(s) were not reviewed: re-run the review",
+            auto=review.rerun_pending,
+        )
     if next_action == "needs_human_review":
         return HandoffAction(
             id="integrate",

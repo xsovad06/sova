@@ -65,6 +65,7 @@ def _show_config(project: Path | None) -> None:
     table.add_row("agent.max_budget", str(cfg.agent.max_budget))
     table.add_row("review.enabled", str(cfg.review.enabled))
     table.add_row("review.revise_severity", str(cfg.review.revise_severity))
+    table.add_row("review.rereview_revise_severity", str(cfg.review.rereview_revise_severity))
     table.add_row("review.block_severity", str(cfg.review.block_severity))
     table.add_row("roles.default", cfg.roles.default)
     table.add_row("commit.format", cfg.commit.format)

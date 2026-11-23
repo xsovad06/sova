@@ -626,6 +626,14 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "review.rereview_revise_severity",
+        "Re-review revise severity",
+        "On a review after a fix round, only findings at or above this severity (1-10) start another round. "
+        "The higher of this and Revise severity applies, so a re-review is never stricter than the first",
+        "review",
+        "number",
+    ),
+    SettingMeta(
         "review.block_severity",
         "Block severity",
         "Findings at or above this severity (1-10) verdict as BLOCK instead of REVISE",

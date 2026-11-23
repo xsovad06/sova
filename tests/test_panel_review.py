@@ -485,6 +485,56 @@ class TestRunPanelReview:
         assert len(result.findings) == 1
         assert result.findings[0].category == "correctness"
 
+    async def test_every_call_failing_reads_as_a_review_that_reviewed_nothing(self) -> None:
+        """No chunk was reviewed, so the summary is the total-failure form `sova retro` does not count as a round."""
+        from sova.utils.review_markers import reviewed_nothing
+
+        panel_config = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness", "security"])
+
+        with patch("sova.roles.panel_review.invoke", side_effect=RuntimeError("LLM unavailable")):
+            result = await _run(panel_config)
+
+        assert result.unreviewed_files
+        assert reviewed_nothing(result.summary) is True
+
+    async def test_one_dimension_failing_still_counts_as_a_partial_review(self) -> None:
+        from sova.utils.review_markers import reviewed_nothing
+
+        panel_config = ReviewPanelConfig(enabled=True, combined=False, dimensions=["correctness", "security"])
+
+        async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
+            if "security" in (task_type or ""):
+                raise RuntimeError("LLM unavailable")
+            return LLMResult(text=_llm_response([], ""), model="sonnet", cost_usd=Decimal("0.01"))
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            result = await _run(panel_config)
+
+        assert result.unreviewed_files
+        assert result.summary.startswith("LLM review unavailable for part of the diff")
+        assert reviewed_nothing(result.summary) is False
+
+    async def test_combined_response_reporting_no_dimension_reads_as_a_review_that_reviewed_nothing(self) -> None:
+        """Named-but-null summaries cover no dimension, so when every fallback fails nothing was reviewed."""
+        from sova.utils.review_markers import reviewed_nothing
+
+        panel_config = ReviewPanelConfig(enabled=True, combined=True, dimensions=["correctness", "security"])
+        calls: list[str] = []
+
+        async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
+            calls.append(task_type or "")
+            if len(calls) == 1:
+                text = json.dumps({"findings": [], "summaries": {"correctness": None, "security": None}})
+                return LLMResult(text=text, model="sonnet", cost_usd=Decimal("0.01"))
+            raise RuntimeError("LLM unavailable")
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            result = await _run(panel_config)
+
+        assert len(calls) > 1
+        assert result.unreviewed_files
+        assert reviewed_nothing(result.summary) is True
+
     async def test_budget_guard_skips_later_model_group(self) -> None:
         """The first group spends the budget, so the pricier second group never runs."""
         panel_config = ReviewPanelConfig(

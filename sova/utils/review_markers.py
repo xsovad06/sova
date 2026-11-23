@@ -23,6 +23,20 @@ from __future__ import annotations
 
 import re
 
+# Opens the summary of a review the model could not complete (``ReviewResult.unavailable_summary()``).
+# A review that failed outright carries exactly ``REVIEW_UNAVAILABLE_PREFIX`` followed by the causes;
+# one that reviewed part of the diff carries ``REVIEW_UNAVAILABLE_PREFIX + REVIEW_UNAVAILABLE_PARTIAL``.
+REVIEW_UNAVAILABLE_PREFIX = "LLM review unavailable"
+REVIEW_UNAVAILABLE_PARTIAL = " for part of the diff"
+
+
+def reviewed_nothing(summary: str) -> bool:
+    """True when a reviewer run's summary says the model reviewed none of the diff."""
+    return summary.startswith(REVIEW_UNAVAILABLE_PREFIX) and not summary.startswith(
+        REVIEW_UNAVAILABLE_PREFIX + REVIEW_UNAVAILABLE_PARTIAL
+    )
+
+
 SOVA_ADDRESSED_MARKER_RE = re.compile(
     r"<!--\s*sova-addressed(?:\s*:\s*sha=([0-9a-f]{7,40}))?\s*-->",
     re.IGNORECASE,

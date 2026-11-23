@@ -430,6 +430,8 @@ class _PanelState:
     critical_exit: bool = False
     # Why the last ``_review_call()`` returned None, for the caller that then marks its chunk unreviewed.
     last_call_failure: str | None = None
+    # True once any call returned a parseable review, so a diff nothing reviewed is told from a partly reviewed one.
+    reviewed_any: bool = False
 
     def record_call(self, llm_result: LLMResult) -> None:
         """Charge one LLM call against the review total and remaining budget, and keep it for its CostRecord."""
@@ -539,7 +541,8 @@ def _finalize_panel_result(state: _PanelState, panel_config: ReviewPanelConfig) 
     if result.summary:
         return result
     if result.unreviewed_files:
-        result.summary = result.unavailable_summary(partial=True)
+        # Nothing reviewed is the total-failure summary, which `sova retro` does not count as a review round.
+        result.summary = result.unavailable_summary(partial=state.reviewed_any)
     elif not result.findings:
         result.summary = "All dimensions report no issues: code looks good."
     return result
@@ -658,6 +661,7 @@ async def _review_dimensions(state: _PanelState, dimensions: list[str], request:
             continue
 
         findings, summary = parsed
+        state.reviewed_any = True
         state.findings.extend(findings)
         if request.is_first and summary:
             state.add_summary(f"{dim}: {summary}")
@@ -721,6 +725,10 @@ async def _review_groups(state: _PanelState, groups: list[tuple[str, list[str]]]
                 return
             continue
 
+        # A combined response that names dimensions yet reports none reviewed nothing: its per-dimension
+        # fallbacks below set the flag when they recover one.
+        if response.reported_dimensions or not response.summaries_named:
+            state.reviewed_any = True
         _log_unknown_categories(response.findings, active)
         state.findings.extend(response.findings)
         if request.is_first:

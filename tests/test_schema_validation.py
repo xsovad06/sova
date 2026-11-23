@@ -549,6 +549,8 @@ async def test_reviewer_validation_fallback_uses_parse_findings(tmp_path: Path):
     mock_ctx = AsyncMock()
     mock_ctx.working_dir = str(tmp_path)
     mock_ctx.config.agent.max_budget = Decimal("1.00")
+    # The parsed findings go through verify_evidence(), which compares against this threshold.
+    mock_ctx.config.review.revise_severity = 3
     mock_ctx.cost_usd = Decimal("0")
 
     mock_task = AsyncMock()

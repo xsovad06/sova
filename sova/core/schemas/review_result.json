@@ -15,7 +15,8 @@
           "severity": {"type": "integer", "minimum": 1, "maximum": 10},
           "category": {"type": "string"},
           "description": {"type": "string"},
-          "suggestion": {"type": "string"}
+          "suggestion": {"type": "string"},
+          "evidence": {"type": "string"}
         },
         "additionalProperties": false
       }

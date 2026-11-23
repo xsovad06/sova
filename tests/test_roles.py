@@ -3415,7 +3415,7 @@ class TestSpecAnchoredReview:
                 "message": "Bug found",
             },
         ]
-        prompt = _build_review_prompt(task, "diff", ["a.py"], addressed_findings=addressed)
+        prompt = _build_review_prompt(task, "diff", ["a.py"], addressed_findings=addressed, rereview=True)
 
         assert "## Already Addressed in Earlier Rounds" in prompt
         assert "sonarcloud (2 findings)" in prompt
@@ -3423,7 +3423,9 @@ class TestSpecAnchoredReview:
         assert "[S1192]" in prompt
         assert "Unused import" in prompt
         assert "Coverage gap remediation applied" in prompt
-        assert "complementary dimensions" in prompt
+        # A re-review verifies the fixes and their surroundings; it must not invite a fresh review of the diff.
+        assert "not a fresh review" in prompt
+        assert "complementary dimensions" not in prompt
 
     def test_build_review_prompt_without_addressed_findings(self) -> None:
         from sova.roles.reviewer import _build_review_prompt
