@@ -73,24 +73,8 @@ async def get_history(
     """
     if group == "issue":
         project_dir = get_project_dir()
-        async with await get_session() as session:
-            async with session.begin():
-                payload = await work_history_service.get_grouped_history(
-                    session,
-                    status=status,
-                    role=role,
-                    action=action,
-                    number=number,
-                    since=since,
-                    until=until,
-                    limit=limit,
-                    offset=offset,
-                )
-        # Titles may need a tracker round trip: resolved after the transaction closed, never inside it.
-        return await work_history_service.attach_titles(project_dir, payload)
-    async with await get_session() as session:
-        async with session.begin():
-            return await work_service.get_work_history(
+        async with await get_session() as session, session.begin():
+            payload = await work_history_service.get_grouped_history(
                 session,
                 status=status,
                 role=role,
@@ -101,6 +85,20 @@ async def get_history(
                 limit=limit,
                 offset=offset,
             )
+        # Titles may need a tracker round trip: resolved after the transaction closed, never inside it.
+        return await work_history_service.attach_titles(project_dir, payload)
+    async with await get_session() as session, session.begin():
+        return await work_service.get_work_history(
+            session,
+            status=status,
+            role=role,
+            action=action,
+            number=number,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
 
 
 @router.get("/work/summary")
