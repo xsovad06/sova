@@ -32,7 +32,7 @@ API contract patterns, request/response models, and integration conventions used
 | prs | PR tracker |
 | queue | Priority-sorted issue queue |
 | quota | CodeRabbit quota: rate-limit status, sync, and PR queue |
-| reliability | Success rate, failure taxonomy, spend by outcome, and per-role monthly and per-step usage averages |
+| reliability | Success rate, failure taxonomy, spend by outcome, and per-role monthly and per-step usage averages. A per-role row carries `paused_by_sova` and `stopped_by_user` (the former `incomplete` key is gone); `success_rate` is `done / (done + failures)` and null when no run counts toward it, and `insufficient_data` keys on those rated runs |
 | resources | Resource monitoring data for agent runs |
 | roles | CRUD for workflow definitions and role introspection |
 | runs | Task run history from the database |

@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import ColumnElement, ScalarSelect, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sova.core.state import TASK_RUN_TERMINAL
+from sova.core.state import FAILURE_STATUSES, TASK_RUN_TERMINAL, RunOutcome, classify_run_outcome
 from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.llm.errors import (
     BillingError,
@@ -35,17 +35,11 @@ from sova.utils.network import looks_like_network_outage
 
 log = get_logger(component="dashboard.reliability_service")
 
-# Below this many terminal runs in the window, a role's success rate is too
-# noisy to act on. Mirrors get_monthly_projection()'s insufficient_data
-# convention in cost_service.py rather than inventing a new one.
-_MIN_RUNS_FOR_RATE = 10
-
-# Terminal but not a failure: excluded from the failure taxonomy, reported as
-# their own bucket in the per-role breakdown so the counts reconcile. "stopped"
-# is a deliberate user-initiated stop (see TASK_RUN_TERMINAL in
-# sova/core/state.py), not a pipeline failure like "interrupted".
-_INCOMPLETE_STATUSES = frozenset({"paused", "awaiting_approval", "stopped"})
-_FAILURE_STATUSES = frozenset({"failed", "rejected", "interrupted"})
+# Below this many successful plus failed runs in the window, a success rate is
+# too noisy to act on. Mirrors get_monthly_projection()'s insufficient_data
+# convention in cost_service.py rather than inventing a new one. The Work
+# header (overview_stats_service) uses the same threshold.
+MIN_RUNS_FOR_RATE = 10
 
 _STEP_TIMEOUT_MARKER = "step_hard_timeout"
 _FIX_LLM_TIMEOUT_PREFIX = "fix_llm_timeout on cycle"
@@ -191,18 +185,20 @@ def classify_failure_cause(error_message: str | None) -> str:
 async def get_success_by_role(session: AsyncSession, days: int = 30) -> list[dict]:
     """Per-role success rate over the trailing window.
 
-    Denominator: every run started in the window whose status is terminal
-    (TASK_RUN_TERMINAL). Still-running rows are excluded so an in-flight run
-    never depresses the rate. paused/awaiting_approval/stopped count toward
-    the denominator as "incomplete", not as a failure. A role string present in
-    the DB but not in any current role set still appears here: grouping is by
-    the raw column value, never filtered against a hard-coded role list.
+    Every run started in the window whose status is terminal (TASK_RUN_TERMINAL)
+    is bucketed by classify_run_outcome(); still-running rows are excluded so an
+    in-flight run never depresses the rate. The rate is success / (success +
+    failure): a run SOVA paused or the user stopped is neither, and is reported
+    in its own column. ``success_rate`` is None when no run succeeded or failed.
+    A role string present in the DB but not in any current role set still
+    appears here: grouping is by the raw column value, never filtered against a
+    hard-coded role list.
     """
     cutoff = _window_cutoff(days)
     stmt = (
-        select(TaskRun.role, TaskRun.status, func.count(TaskRun.id).label("count"))
+        select(TaskRun.role, TaskRun.status, TaskRun.termination_reason, func.count(TaskRun.id).label("count"))
         .where(TaskRun.started_at >= cutoff, TaskRun.status.in_(TASK_RUN_TERMINAL))
-        .group_by(TaskRun.role, TaskRun.status)
+        .group_by(TaskRun.role, TaskRun.status, TaskRun.termination_reason)
     )
     result = await session.execute(stmt)
 
@@ -210,29 +206,26 @@ async def get_success_by_role(session: AsyncSession, days: int = 30) -> list[dic
     # historical data corruption) is normalized to a sentinel string here so
     # it groups and sorts predictably instead of crashing sorted() below,
     # which raises TypeError comparing None to str.
-    by_role: dict[str, dict[str, int]] = {}
+    by_role: dict[str, Counter[RunOutcome]] = defaultdict(Counter)
     for row in result.all():
-        by_role.setdefault(row.role or "unknown", {})[row.status] = row.count
+        by_role[row.role or "unknown"][classify_run_outcome(row.status, row.termination_reason)] += row.count
 
     rows = []
     for role in sorted(by_role):
-        status_counts = by_role[role]
-        # Always >= 1: by_role only ever gains a role key from a grouped row
-        # with count >= 1 (COUNT never yields a zero-row group), so total_runs
-        # is never 0 for a role present in this dict.
-        total = sum(status_counts.values())
-        done = status_counts.get("done", 0)
-        failures = sum(status_counts.get(s, 0) for s in _FAILURE_STATUSES)
-        incomplete = sum(status_counts.get(s, 0) for s in _INCOMPLETE_STATUSES)
+        counts = by_role[role]
+        done = counts[RunOutcome.SUCCESS]
+        failures = counts[RunOutcome.FAILURE]
+        rated = done + failures
         rows.append(
             {
                 "role": role,
-                "total_runs": total,
+                "total_runs": sum(counts.values()),
                 "done": done,
                 "failures": failures,
-                "incomplete": incomplete,
-                "success_rate": round(done / total, 4),
-                "insufficient_data": total < _MIN_RUNS_FOR_RATE,
+                "paused_by_sova": counts[RunOutcome.PAUSED_BY_SOVA],
+                "stopped_by_user": counts[RunOutcome.STOPPED_BY_USER],
+                "success_rate": round(done / rated, 4) if rated else None,
+                "insufficient_data": rated < MIN_RUNS_FOR_RATE,
             }
         )
     return rows
@@ -248,7 +241,7 @@ async def get_failure_taxonomy(session: AsyncSession, days: int = 30) -> list[di
     failure). Highest count first.
     """
     cutoff = _window_cutoff(days)
-    window = (TaskRun.started_at >= cutoff, TaskRun.status.in_(_FAILURE_STATUSES))
+    window = (TaskRun.started_at >= cutoff, TaskRun.status.in_(FAILURE_STATUSES))
     rows = (await session.execute(select(TaskRun.id, TaskRun.error_message).where(*window))).all()
     if not rows:
         return []
@@ -344,8 +337,8 @@ async def get_spend_by_outcome(session: AsyncSession, days: int = 30) -> dict:
         "non_completing": _bucket(TASK_RUN_TERMINAL - {"done"}),
         # Sorted for deterministic rendering. The template derives its "Non-Completing"
         # card label from this list rather than hardcoding the status set, so a future
-        # addition to TASK_RUN_TERMINAL (already forced into _FAILURE_STATUSES or
-        # _INCOMPLETE_STATUSES by TestStatusPartition) cannot leave the UI label stale.
+        # addition to TASK_RUN_TERMINAL (already forced into an outcome bucket by
+        # TestStatusPartition) cannot leave the UI label stale.
         "non_completing_statuses": sorted(TASK_RUN_TERMINAL - {"done"}),
     }
 
