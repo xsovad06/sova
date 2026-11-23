@@ -126,7 +126,7 @@ sova dashboard --project /path/to/project    # http://localhost:8111
 | Page | Purpose |
 |------|---------|
 | **Home** | Project list (command center) for multi-project installations |
-| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, run success and merged PRs over 7 days, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history. `/agents` redirects here |
+| **Work** | What runs, what needs you and what to start next: a header (agents and their limit, run success and merged PRs over 7 days, spend, CodeRabbit, supervisor switch), a board (Up next, Queued, Running, In review, Needs you, Done today) with an issue drawer and Mine/All owner filter, the dependency chains, open PRs and run history (by issue, with its state and result, or every run). `/agents` redirects here |
 | **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
 | **Lifecycle** | Issue lifecycle rail (development through post-merge) |
 | **Costs** | Per-task and per-model cost tracking and aggregation |

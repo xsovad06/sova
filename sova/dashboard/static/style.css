@@ -665,6 +665,50 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   text-align: left;
 }
 
+/* Start-aligned variant: the bubble opens from the host's left edge and wraps, for the full text of a line the page
+   truncates. It takes no layout until the host is hovered or focused (display: none, since a transparent bubble
+   still counts toward the scrollable width and would widen the page), and its width is capped by the host itself,
+   with a floor for a small host such as a pill, never by where the host sits in the viewport. */
+[data-tooltip][data-tooltip-align="start"]::after {
+  display: none;
+  left: 0;
+  transform: none;
+  white-space: normal;
+  width: max-content;
+  max-width: min(320px, max(100%, 14rem));
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+[data-tooltip][data-tooltip-align="start"]:hover::after,
+[data-tooltip][data-tooltip-align="start"]:focus-visible::after {
+  display: block;
+}
+
+/* Flipped: a host near the right edge of a narrow screen opens its bubble from its right edge instead (set by the
+   page on hover or focus when the bubble would pass the viewport edge). */
+[data-tooltip][data-tooltip-align="start"][data-tooltip-flip]::after {
+  left: auto;
+  right: 0;
+}
+
+/* Desktop-only variant, for text inside a phone's overflow-x-auto table box (its overflow would clip any bubble):
+   below the sm breakpoint the tooltip is off and the text wraps in full instead of truncating. */
+@media (max-width: 639px) {
+  [data-tooltip][data-tooltip-desktop][data-tooltip-align="start"]::after,
+  [data-tooltip][data-tooltip-desktop][data-tooltip-align="start"]:hover::after,
+  [data-tooltip][data-tooltip-desktop][data-tooltip-align="start"]:focus-visible::after {
+    display: none;
+  }
+
+  [data-tooltip-desktop] > .truncate {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* Position: bottom */
 [data-tooltip][data-tooltip-pos="bottom"]::after {
   bottom: auto;

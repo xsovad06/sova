@@ -507,6 +507,7 @@ function el(id) {
       setAttribute: (k, v) => { attrs[k] = String(v); }, getAttribute: (k) => attrs[k] ?? null,
       addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
       fire: (type) => (listeners[type] || []).forEach((fn) => fn({ target: els.get(id) })),
+      emit: (type, evt) => (listeners[type] || []).forEach((fn) => fn(evt)),
     });
   }
   return els.get(id);
@@ -522,6 +523,9 @@ globalThis.document = {
 };
 globalThis.addEventListener = () => {};
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+const stored = 'STORED_VIEW' in process.env ? { 'sova.history.view': process.env.STORED_VIEW } : {};
+globalThis.safeStorageGet = (k) => (k in stored ? stored[k] : null);
+globalThis.safeStorageSet = (k, v) => { stored[k] = v; };
 
 const appSrc = fs.readFileSync(path.join(staticDir, 'app.js'), 'utf8');
 const grab = (name) => {
@@ -539,6 +543,7 @@ const colorsStart = appSrc.indexOf('var _SOVA_COLOR_FALLBACK');
 window.SOVA_RUN_ACTIONS = JSON.parse(process.env.RUN_ACTIONS);
 (0, eval)(appSrc.slice(start, end) + '; globalThis.runActionColors = runActionColors;');
 globalThis.statusDot = (s) => 'dot-' + s;
+globalThis.stateBadgeClasses = (token) => 'badge-' + token;
 globalThis.issueLink = (n) => '<a class="issue">#' + n + '</a>';
 globalThis.prLink = (n) => (n ? '<a class="pr">PR #' + n + '</a>' : '--');
 globalThis.apiUrl = (p) => '/api' + p;
@@ -548,8 +553,37 @@ const pollFns = [];
 globalThis.visibilityAwarePoll = (fn, ms) => { polls.push(ms); pollFns.push(fn); fn(); return { id: null }; };
 const pending = [];
 const urls = [];
-globalThis.fetchAPI = (url) => new Promise((resolve) => { urls.push(url); pending.push({ url, resolve }); });
+// The totals request for one day under a split page (limit 1, a window of one local day, no grouping). The tests that
+// are not about it let it answer at once; the ones that are set manualDay and answer it themselves.
+let manualDay = false;
+const isDayTotal = (url) => {
+  const p = new URL('http://x' + url).searchParams;
+  const span = new RealDate(p.get('until')).getTime() - new RealDate(p.get('since')).getTime();
+  const oneDay = span >= 23 * 3600e3 && span <= 25 * 3600e3;
+  return p.get('limit') === '1' && p.get('offset') === '0' && !p.get('group') && oneDay;
+};
+globalThis.fetchAPI = (url) => new Promise((resolve, reject) => {
+  urls.push(url);
+  if (!manualDay && url.includes('until=') && url.includes('since=') && isDayTotal(url)) {
+    resolve({ total: 1, total_cost_usd: '0.5' });
+    return;
+  }
+  pending.push({ url, resolve, reject });
+});
 const tick = () => new Promise((r) => setTimeout(r, 0));
+// Wait until a request has been sent (bounded), instead of sleeping past a debounce delay the page may change.
+async function until(cond) {
+  const limit = RealDate.now() + 5000;
+  while (!cond()) {
+    if (RealDate.now() > limit) throw new Error('timed out waiting for a request');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+async function refreshed() {
+  const before = pending.length;
+  history.refreshHistoryAfterRun();
+  await until(() => pending.length > before);
+}
 async function respond(data) { const p = pending.shift(); p.resolve(data); await tick(); await tick(); return p.url; }
 function click(action, args) {
   const attrs = { 'data-action': action, 'data-args': args ? JSON.stringify(args) : null };
@@ -570,24 +604,146 @@ const history = await import(pathToFileURL(path.join(dir, 'history.js')).href);
 actions.init();
 history.init();
 
+// --- prelude end ---
 const page = (over) => Object.assign({ total: 60, failed_total: 4, total_cost_usd: '412.5', tasks: [
   { id: 9, issue_number: '1452', pr_number: 1457, role: 'developer', action: 'address-review',
     action_label: 'Address review', action_color: 'blue', status: 'done', total_cost_usd: '1234.834787',
-    duration_formatted: '11m 11s', error_message: null,
+    duration_formatted: '11m 11s', error_message: null, outcome: 'Fixed 2 findings, sent back for re-review',
     started_at: '2026-11-12T15:29:13+00:00', ended_at: '2026-11-12T15:40:24+00:00' },
   { id: 8, issue_number: null, pr_number: 1451, role: 'command:integrate-pr', action: 'integrate',
     action_label: 'Integrate',
     action_color: 'teal', status: 'done', total_cost_usd: '0.003', duration_formatted: '3m 37s', error_message: null,
+    outcome: 'Merged PR #1451',
     started_at: '2025-12-31T09:00:00+00:00', ended_at: '2025-12-31T09:03:37+00:00' },
   { id: 7, issue_number: '1453', pr_number: null, role: 'developer', action: 'develop', action_label: 'Develop',
     action_color: 'blue', status: 'failed', total_cost_usd: '0', duration_formatted: null,
-    error_message: 'Timed out <after> 1500s', started_at: '2026-11-12T10:00:00+00:00', ended_at: null },
+    error_message: 'Timed out <after> 1500s', outcome: 'Timed out <after> 1500s',
+    started_at: '2026-11-12T10:00:00+00:00', ended_at: null },
 ] }, over || {});
+
+const run = (id, action, label, color, status, extra) => Object.assign({
+  id, issue_number: '42', pr_number: 7, role: 'developer', action, action_label: label, action_color: color, status,
+  total_cost_usd: '0.5', duration_formatted: '2m 0s', error_message: null, outcome: label + ' outcome',
+  started_at: '2026-11-12T10:' + String(id % 60).padStart(2, '0') + ':00+00:00', ended_at: null }, extra || {});
+const group = (key, runs, over) => Object.assign({
+  key, issue_number: key.startsWith('issue:') ? key.slice(6) : null, pr_number: 7, title: 'Add <b>history</b> grouping',
+  state: 'merged', state_label: 'Merged', state_color: 'green-strong', run_count: runs.length,
+  duration_formatted: '10m 0s', total_cost_usd: '1.5', last_started_at: runs[0].started_at,
+  result: { text: runs[0].outcome, color: runs[0].status === 'failed' ? 'red' : 'gray' }, runs }, over || {});
+// Runs of one issue, newest first, from actions listed oldest first.
+const label = (a) => a.replace('-', ' ').replace(/^./, (c) => c.toUpperCase());
+const runsOf = (first, actions) => actions.map((a, i) => run(first + i, a, label(a), 'green', 'done')).reverse();
+const groupedPage = (over) => Object.assign({ total: 60, runs_total: 90, failed_total: 4, total_cost_usd: '412.5',
+  summary: { groups: 60, merged: 30, need_you: 2, failed: 5 }, groups: [
+  group('issue:42', runsOf(14, ['review', 'develop', 'review', 'rebase', 'review', 'address-review', 'review'])),
+  group('pr:9', [run(9, 'integrate', 'Integrate', 'teal', 'done', { issue_number: null, pr_number: 9 })],
+    { issue_number: null, pr_number: 9, title: 'Bump <x> from 1 to 2', state: 'failed', state_label: 'Failed',
+      state_color: 'red' }),
+  group('issue:43', [run(30, 'develop', 'Develop', 'blue', 'failed', { issue_number: '43', outcome: 'Failed' })],
+    { title: 'A very long title '.repeat(20), state: 'failed', state_label: 'Failed', state_color: 'red' }),
+  group('issue:44', runsOf(47, ['review', 'address-review', 'review', 'develop', 'address-review', 'review'])),
+  group('issue:45', runsOf(60, ['rebase', 'address-review', 'rebase'])),
+  // A PR-only group whose title lookup found nothing: the row shows the bare PR number.
+  group('pr:10', [run(70, 'integrate', 'Integrate', 'teal', 'done', { issue_number: null, pr_number: 10 })],
+    { issue_number: null, pr_number: 10, title: null }),
+  // A lone run with neither issue nor PR.
+  group('run:80', [run(80, 'plan', 'Plan', 'mauve', 'done', { issue_number: null, pr_number: null })],
+    { issue_number: null, pr_number: null, title: null }),
+] }, over || {});
+const sections = (html) => Object.fromEntries(
+  html.split('data-group="').slice(1).map((p) => [p.slice(0, p.indexOf('"')), p]));
 
 const out = {};
 out.polls = polls;
+out.firstGrouped = q(await respond(groupedPage()));
+out.groupedTotals = el('history-totals').innerHTML;
+out.groupedPageInfo = el('history-page-info').textContent;
+out.groupedCollapsed = sections(el('history-table').innerHTML);
+// Hovering a start-aligned tooltip host: a phone-width viewport flips a bubble that would pass its right edge.
+globalThis.innerWidth = 400;
+const hostAt = (left, width) => {
+  const attrs = {};
+  return { attrs, getBoundingClientRect: () => ({ left, right: left + width, width }),
+    setAttribute: (k, v) => { attrs[k] = v; }, removeAttribute: (k) => { delete attrs[k]; } };
+};
+const hover = (host) => el('history-table').emit('mouseover', { target: { closest: () => host } });
+const pillRight = hostAt(300, 50); hover(pillRight);
+const pillLeft = hostAt(20, 50); hover(pillLeft);
+const wholeRow = hostAt(40, 330); hover(wholeRow);
+out.flip = { right: 'data-tooltip-flip' in pillRight.attrs, left: 'data-tooltip-flip' in pillLeft.attrs,
+  wholeRow: 'data-tooltip-flip' in wholeRow.attrs };
+pillRight.getBoundingClientRect = () => ({ left: 20, right: 70, width: 50 }); hover(pillRight);
+out.flipClearedWhenItFits = !('data-tooltip-flip' in pillRight.attrs);
+click('history-toggle', ['issue:42']);
+out.groupedExpanded = sections(el('history-table').innerHTML);
+out.requestsAfterToggle = pending.length;
+await refreshed();
+out.groupedRefresh = q(await respond(groupedPage()));
+out.stillExpanded = el('history-table').innerHTML.includes('aria-expanded="true"');
+click('switch-tab', ['failed']);
+out.groupedFailedTab = q(await respond(groupedPage({ total: 1, groups: groupedPage().groups.slice(2, 3) })));
+out.groupedFailedTotals = el('history-totals').innerHTML;
+click('switch-tab', ['history']);
+await respond(groupedPage());
+// Every filter reaches the grouped query, and an inverted Custom range is swapped as it is in the flat list.
+click('history-range', ['custom']);
+await respond(groupedPage());
+el('history-from').value = '2026-11-04'; el('history-from').fire('change');
+await respond(groupedPage());
+el('history-to').value = '2026-11-02'; el('history-to').fire('change');
+out.groupedCustom = q(await respond(groupedPage()));
+out.groupedCustomInputs = [el('history-from').value, el('history-to').value];
+el('filter-action').value = 'review'; el('filter-action').fire('change');
+await respond(groupedPage());
+el('filter-status').value = 'done'; el('filter-status').fire('change');
+await respond(groupedPage());
+el('filter-number').value = ' #11 '; el('filter-number').fire('input');
+await until(() => pending.length > 0);
+out.groupedFiltered = q(await respond(groupedPage()));
+click('history-clear');
+out.groupedCleared = q(await respond(groupedPage()));
+click('history-view', ['runs']);
+out.storedView = stored['sova.history.view'];
 out.first = q(await respond(page()));
 out.since7 = localMidnight(-6);
+// A run just after local midnight is under today, one just before it under yesterday (the viewer is on UTC+1).
+await refreshed();
+await respond(page({ total: 4, tasks: [
+  run(1, 'develop', 'Develop', 'blue', 'done', { started_at: '2026-11-12T22:40:00+00:00' }),  // 23:40 local: today
+  run(4, 'develop', 'Develop', 'blue', 'done', { started_at: '2026-11-11T23:30:00+00:00' }),  // 00:30 local: today
+  run(2, 'develop', 'Develop', 'blue', 'done', { started_at: '2026-11-11T22:30:00+00:00' }),
+  run(3, 'develop', 'Develop', 'blue', 'failed', { started_at: '2026-11-10T12:00:00+00:00', outcome: 'Failed' }),
+] }));
+out.dayTable = el('history-table').innerHTML;
+// A day the page does not hold whole takes its count and cost from the server, not from the rows on screen.
+const splitTasks = [
+  run(5, 'develop', 'Develop', 'blue', 'done', { started_at: '2026-11-12T10:00:00+00:00' }),
+  run(6, 'develop', 'Develop', 'blue', 'done', { started_at: '2026-11-12T09:00:00+00:00' }),
+];
+// Answers the page request, then hands back the day-total request the page sent because more rows follow.
+async function dayRequestFor(data) {
+  pending.shift().resolve(data);
+  await until(() => pending.length > 0);
+  return pending.shift();
+}
+manualDay = true;
+const urlsBefore = urls.length;
+await refreshed();
+const dayAsk = await dayRequestFor(page({ total: 7, tasks: splitTasks }));
+out.splitDayRequest = q(dayAsk.url);
+out.splitDayRequests = urls.slice(urlsBefore).filter((u) => u.includes('limit=1&')).length;
+dayAsk.resolve({ total: 5, total_cost_usd: '2.5' });
+await tick(); await tick();
+out.splitDayTable = el('history-table').innerHTML;
+// A day total that cannot be read leaves the date alone, never the page's share passed off as the day's total.
+await refreshed();
+const brokenAsk = await dayRequestFor(page({ total: 7, tasks: splitTasks }));
+brokenAsk.reject(new Error('down'));
+await tick(); await tick();
+out.brokenDayTable = el('history-table').innerHTML;
+manualDay = false;
+await refreshed();
+await respond(page());
 const table = el('history-table').innerHTML;
 out.table = table;
 out.failedCount = el('tab-failed-count').textContent;
@@ -608,8 +764,7 @@ await respond(page());
 click('history-next');
 await respond(page({ tasks: page().tasks.slice(0, 1) }));
 const tableOnPage2 = el('history-table').innerHTML;
-history.refreshHistoryAfterRun();
-await new Promise((r) => setTimeout(r, 400));
+await refreshed();
 out.checkNew = q(await respond(page({ total: 61, tasks: page().tasks.slice(0, 1) })));
 out.newRunsHidden = el('history-new-runs').classList.contains('hidden');
 out.newRunsText = el('history-new-runs-btn').textContent;
@@ -623,8 +778,7 @@ click('history-first-page');
 out.backToFirst = q(await respond(page({ total: 61 })));
 out.newRunsHiddenAfter = el('history-new-runs').classList.contains('hidden');
 
-history.refreshHistoryAfterRun();
-await new Promise((r) => setTimeout(r, 400));
+await refreshed();
 out.refreshPage1 = q(await respond(page({ total: 61 })));
 
 click('switch-tab', ['failed']);
@@ -638,7 +792,7 @@ await respond(page());
 el('filter-action').value = 'integrate'; el('filter-action').fire('change');
 out.action = q(await respond(page()));
 el('filter-number').value = ' #11 '; el('filter-number').fire('input');
-await new Promise((r) => setTimeout(r, 400));
+await until(() => pending.length > 0);
 out.number = q(await respond(page()));
 out.clearShown = !el('history-clear').classList.contains('hidden');
 
@@ -677,6 +831,13 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
+# Everything up to the page's init(): the stubs, the app.js helpers and the module under test, loaded. The flow after
+# it drives the page; the remembered-view test stops here and reads what init() already did.
+_PRELUDE_END = "\n// --- prelude end ---\n"
+assert _PRELUDE_END in _HISTORY_HARNESS, "the harness lost its prelude sentinel"
+_HISTORY_PRELUDE = _HISTORY_HARNESS.split(_PRELUDE_END, 1)[0]
+
+
 @pytest.fixture(scope="module")
 def history_page(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """The history.js harness run once: what the page requested and rendered."""
@@ -698,7 +859,7 @@ class TestHistoryTableInTheBrowser:
     def test_columns_and_no_steps(self, history_page: dict) -> None:
         table = history_page["table"]
         headers = re.findall(r"<th[^>]*>([^<]*)</th>", table)
-        assert headers == ["When", "Issue", "Action", "Status", "PR", "Duration", "Cost", ""]
+        assert headers == ["When", "Issue", "Action", "PR", "Duration", "Cost", ""]
         assert "Steps" not in table
 
     def test_when_shows_local_time_and_hovering_shows_start_and_end(self, history_page: dict) -> None:
@@ -720,21 +881,19 @@ class TestHistoryTableInTheBrowser:
         assert "$0.00" in table
         assert "1234.83" not in table
 
-    def test_action_is_a_pill_in_its_colour_and_status_is_a_dot(self, history_page: dict) -> None:
+    def test_action_is_a_pill_in_its_colour_and_a_failed_run_has_a_red_outlined_pill_and_no_status_column(
+        self, history_page: dict
+    ) -> None:
         table = history_page["table"]
         assert 'text-accent-teal">Integrate</a>' in table
         assert 'text-accent">Address review</a>' in table
-        assert "dot-done" in table
         assert '<a href="/work/9" data-action="stop"' in table
-        assert re.search(r'text-accent-red[^"]*">Failed<', table)
-
-    def test_the_failed_error_row_wraps_a_long_unbroken_token_inside_the_table(self) -> None:
-        """`break-words` does not lower an auto-layout cell's min-content width; `anywhere` does."""
-        source = (_STATIC / "js" / "pages" / "agents" / "history.js").read_text(encoding="utf-8")
-        assert "[overflow-wrap:anywhere]" in source
-        assert "break-words" not in source
-        css = (_STATIC / "tailwind.min.css").read_text(encoding="utf-8")
-        assert "overflow-wrap:anywhere" in css
+        # The failed Develop run: red outlined pill, red result line, Re-run; the others are not outlined.
+        assert re.search(r'border border-accent-red [^"]*">Develop</a>', table)
+        assert table.count("border-accent-red") == 1
+        assert re.search(r'truncate text-accent-red">Timed out', table)
+        assert "dot-" not in table
+        assert ">Status<" not in table
 
     def test_history_shows_the_error_on_hover_escaped(self, history_page: dict) -> None:
         assert 'data-tooltip="Timed out &lt;after&gt; 1500s"' in history_page["table"]
@@ -804,6 +963,218 @@ class TestHistoryTableInTheBrowser:
         assert history_page["cleared"] == {"limit": "25", "offset": "0", "since": history_page["since7"]}
         assert history_page["actionAfterClear"] == ""
         assert history_page["pending"] == 0
+
+
+class TestGroupedHistoryInTheBrowser:
+    """The default By issue view: what it asks for and how a group row reads."""
+
+    def test_first_load_asks_for_groups_in_the_last_seven_days(self, history_page: dict) -> None:
+        assert history_page["firstGrouped"] == {
+            "group": "issue",
+            "limit": "25",
+            "offset": "0",
+            "since": history_page["since7"],
+        }
+
+    def test_totals_count_issues_with_the_server_summary(self, history_page: dict) -> None:
+        totals = re.sub(r"<[^>]+>", "", history_page["groupedTotals"])
+        # Rows are issues, or PRs with no issue, so the count says both; `summary.failed` (groups whose newest run
+        # failed) is what the line shows, not `failed_total` (failed runs, which feeds the Failed tab badge).
+        assert totals.startswith("60 issues and PRs, 30 merged, 2 need you, 5 failed, $412.50")
+        assert history_page["groupedPageInfo"] == "1 to 7 of 60"
+
+    def test_the_failed_tab_counts_issues_with_failed_runs(self, history_page: dict) -> None:
+        assert history_page["groupedFailedTab"]["status"] == "failed"
+        assert history_page["groupedFailedTab"]["group"] == "issue"
+        assert "1</span> issue or PR with failed runs" in history_page["groupedFailedTotals"]
+
+    def test_a_row_shows_the_number_the_title_and_the_servers_state(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["issue:42"]
+        assert '<a class="issue">#42</a>' in row
+        assert "badge-green-strong" in row
+        assert ">Merged<" in row
+        assert "Add &lt;b&gt;history&lt;/b&gt; grouping" in row
+        assert "<b>" not in row
+
+    def test_a_pr_only_group_shows_the_pr_and_its_title(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["pr:9"]
+        assert "PR #9" in row
+        assert "badge-red" in row
+        assert "Bump &lt;x&gt; from 1 to 2" in row
+        assert "<x>" not in row
+        assert "Add &lt;b&gt;" not in row  # another group's title never leaks in
+
+    def test_a_pr_only_group_with_no_title_shows_just_the_pr_number(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["pr:10"]
+        assert "PR #10" in row
+        # No title span at all (the pill's status and the result line are the only two tooltips), and no placeholder.
+        assert "min-w-0 flex-1 text-sm text-gray-300" not in row
+        assert row.count('data-tooltip-align="start"') == 2
+        assert 'data-tooltip=""' not in row
+        assert "null" not in row
+        assert "undefined" not in row
+        assert row.count('class="block truncate ') == 1
+
+    def test_a_long_title_and_result_truncate_and_keep_the_full_text_in_a_tooltip(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["issue:43"]
+        assert row.count('class="block truncate ') == 2
+        assert row.count('data-tooltip-align="start"') >= 2
+        assert "A very long title " * 3 in re.search(r'data-tooltip="([^"]*)"', row).group(1)
+        assert re.search(r'truncate text-accent-red">Failed<', row)
+        assert row.count('data-action="rerun"') == 1
+
+    def test_the_start_aligned_tooltip_takes_no_layout_until_hovered_and_is_capped_by_its_host(self) -> None:
+        """A hidden bubble still counts toward the scrollable width unless it is display: none, and a cap measured
+        from the viewport only holds if the host sits near the left edge; the host's own width does not depend on it."""
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        rule = re.search(r'\[data-tooltip-align="start"\]::after\s*\{([^}]*)\}', css)
+        assert rule
+        body = rule.group(1)
+        assert "display: none" in body
+        assert "left: 0" in body
+        assert "max-width: min(320px, max(100%, 14rem))" in body
+        assert "100vw" not in body
+        assert "overflow-wrap: anywhere" in body
+        shown = re.search(r'\[data-tooltip-align="start"\]:hover::after[^{]*\{([^}]*)\}', css)
+        assert shown
+        assert "display: block" in shown.group(1)
+
+    def test_three_review_rounds_collapse_into_one_pill_and_the_rest_stay_single(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["issue:42"]
+        pills = re.findall(r"font-medium [^\"]*text-\S+\"[^>]*>([^<]+)</span>", row)
+        assert [p for p in pills if p in ("Review", "Develop") or p.endswith("review rounds")] == [
+            "Review",
+            "Develop",
+            "3 review rounds",
+        ]
+
+    def test_stretches_split_by_another_action_are_judged_on_their_own(self, history_page: dict) -> None:
+        row = history_page["groupedCollapsed"]["issue:44"]
+        assert "2 review rounds" in row
+        assert row.count(">Address review<") == 1
+        assert row.count(">Review<") == 1  # the short stretch stays single
+
+    def test_a_stretch_with_no_review_never_collapses(self, history_page: dict) -> None:
+        """Agreed refinement of "three or more consecutive": N counts Review runs, so a stretch with none would read
+        "0 review rounds"; it stays one pill per run (docs/design-system.md, run history)."""
+        row = history_page["groupedCollapsed"]["issue:45"]
+        assert "review round" not in row
+        assert row.count(">Rebase<") == 2
+
+    @pytest.mark.parametrize(
+        ("key", "noun"), [("issue:42", "issue"), ("pr:9", "PR"), ("pr:10", "PR"), ("run:80", "run")]
+    )
+    def test_the_expand_button_names_what_the_row_stands_for(self, history_page: dict, key: str, noun: str) -> None:
+        assert f'aria-label="Show the runs of this {noun}"' in history_page["groupedCollapsed"][key]
+
+    def test_an_open_row_says_hide_and_names_the_same_thing(self, history_page: dict) -> None:
+        assert 'aria-label="Hide the runs of this issue"' in history_page["groupedExpanded"]["issue:42"]
+
+    def test_a_tooltip_that_would_pass_the_right_edge_flips_and_one_that_fits_does_not(
+        self, history_page: dict
+    ) -> None:
+        assert history_page["flip"] == {"right": True, "left": False, "wholeRow": False}
+        assert history_page["flipClearedWhenItFits"] is True
+
+    def test_the_flipped_bubble_opens_from_the_hosts_right_edge(self) -> None:
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+        rule = re.search(r'\[data-tooltip-align="start"\]\[data-tooltip-flip\]::after\s*\{([^}]*)\}', css)
+        assert rule
+        assert "left: auto" in rule.group(1)
+        assert "right: 0" in rule.group(1)
+
+    def test_a_lone_run_shows_its_action_name(self, history_page: dict) -> None:
+        assert ">Plan<" in history_page["groupedCollapsed"]["run:80"]
+
+    def test_opening_a_group_shows_its_runs_without_asking_the_server(self, history_page: dict) -> None:
+        assert "<table" not in history_page["groupedCollapsed"]["issue:42"]
+        opened = history_page["groupedExpanded"]["issue:42"]
+        assert 'aria-expanded="true"' in opened
+        assert "<table" in opened
+        assert "<table" not in history_page["groupedExpanded"]["issue:43"]
+        assert history_page["requestsAfterToggle"] == 0
+
+    def test_a_refresh_asks_for_the_current_view_and_keeps_the_group_open(self, history_page: dict) -> None:
+        assert history_page["groupedRefresh"]["group"] == "issue"
+        assert history_page["groupedRefresh"]["since"] == history_page["since7"]
+        assert history_page["stillExpanded"] is True
+
+    def test_every_filter_reaches_the_grouped_query_and_an_inverted_range_is_swapped(self, history_page: dict) -> None:
+        custom = history_page["groupedCustom"]
+        assert custom["group"] == "issue"
+        assert (custom["since"], custom["until"]) == (history_page["customSince"], history_page["customUntil"])
+        assert history_page["groupedCustomInputs"] == ["2026-11-02", "2026-11-04"]
+        filtered = history_page["groupedFiltered"]
+        assert filtered["group"] == "issue"
+        assert (filtered["action"], filtered["status"], filtered["number"]) == ("review", "done", "11")
+        assert (filtered["since"], filtered["until"]) == (custom["since"], custom["until"])
+
+    def test_clearing_filters_in_the_grouped_view_returns_to_the_last_seven_days(self, history_page: dict) -> None:
+        assert history_page["groupedCleared"] == {
+            "group": "issue",
+            "limit": "25",
+            "offset": "0",
+            "since": history_page["since7"],
+        }
+
+
+class TestEveryRunInTheBrowser:
+    def test_every_run_asks_for_the_plain_list_and_the_choice_is_remembered(self, history_page: dict) -> None:
+        assert "group" not in history_page["first"]
+        assert history_page["storedView"] == "runs"
+
+    @pytest.mark.parametrize(
+        ("stored", "grouped", "pressed"),
+        [("runs", False, "runs"), (None, True, "issue"), ("", True, "issue"), ("junk", True, "issue")],
+    )
+    def test_the_remembered_view_is_read_before_the_first_request(
+        self, tmp_path: Path, stored: str | None, grouped: bool, pressed: str
+    ) -> None:
+        """Absent or unknown means By issue; the pressed toggle is set before the first fetch, not after it."""
+        _require_node()
+        script = _HISTORY_PRELUDE + (
+            "\nconst pressed = (v) => el('history-view-' + v).attrs['aria-pressed'];\n"
+            "process.stdout.write(JSON.stringify({ url: urls[0], issue: pressed('issue'), runs: pressed('runs') }));\n"
+        )
+        env = {"STATIC_DIR": str(_STATIC), "RUN_ACTIONS": json.dumps(run_actions_payload()), "TZ": "Europe/Prague"}
+        if stored is not None:
+            env["STORED_VIEW"] = stored
+        result = _run_node(tmp_path, script, env=env)
+        assert isinstance(result, dict)
+        assert ("group=issue" in result["url"]) is grouped
+        assert (result["issue"], result["runs"]) == (("true", "false") if pressed == "issue" else ("false", "true"))
+
+    def test_day_headers_follow_the_viewers_local_date(self, history_page: dict) -> None:
+        table = history_page["dayTable"]
+        headers = re.findall(r'uppercase tracking-wider text-gray-500 border-t border-gray-700/30">([^<]+)<span', table)
+        assert headers == ["Today", "Yesterday", "Nov 10"]
+        sums = re.findall(r'font-normal text-gray-600">([^<]+)</span></td>', table)
+        # Two runs on one local day add up (count, plural and cost); the other days stay at one run each.
+        assert sums == ["2 runs, $1.00", "1 run, $0.50", "1 run, $0.50"]
+        assert table.index('/work/1"') < table.index('/work/4"') < table.index("Yesterday") < table.index('/work/2"')
+
+    def test_a_day_a_page_splits_shows_the_servers_totals_not_the_pages_share(self, history_page: dict) -> None:
+        asked = history_page["splitDayRequest"]
+        # One request for the day (both rows are on it), for that local day under the page's own filters.
+        assert (asked["limit"], asked["offset"]) == ("1", "0")
+        assert asked["since"] == history_page["todayStart"]
+        assert history_page["splitDayRequests"] == 1
+        header = re.search(r'text-gray-500 border-t border-gray-700/30">Today(.*?)</td>', history_page["splitDayTable"])
+        assert header
+        assert "5 runs, $2.50" in header.group(1)
+
+    def test_a_day_total_that_cannot_be_read_shows_the_date_alone(self, history_page: dict) -> None:
+        table = history_page["brokenDayTable"]
+        header = re.search(r'text-gray-500 border-t border-gray-700/30">Today(.*?)</td>', table)
+        assert header
+        assert "run" not in header.group(1)
+        assert "$" not in header.group(1)
+
+    def test_every_run_has_a_result_line_and_a_failed_one_is_red(self, history_page: dict) -> None:
+        table = history_page["table"]
+        assert "Fixed 2 findings, sent back for re-review" in table
+        assert re.search(r'truncate text-accent-red">Timed out &lt;after&gt; 1500s<', table)
+        assert re.search(r'truncate text-gray-400">Merged PR #1451<', table)
 
 
 class TestHistoryMarkup:

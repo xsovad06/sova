@@ -186,6 +186,11 @@ async def get_snapshot(
     return snapshot
 
 
+def peek_snapshot(kind: str, project_dir: Path | None) -> Snapshot | None:
+    """The last good result if one exists, never starting a build: for a caller that can do without it."""
+    return _snapshots.get(_key(kind, project_dir))
+
+
 def invalidate_snapshot(kind: str, project_dir: Path | None) -> None:
     """Drop a snapshot a write has made wrong, so the next read waits for a fresh build."""
     key = _key(kind, project_dir)

@@ -25,6 +25,7 @@ from sova.dashboard.services.agent_progress import (
     _resolve_pipelines,
     get_step_progress,
 )
+from sova.dashboard.services.run_outcome import run_outcome
 from sova.dashboard.services.work_state import (
     AUTO_ACTION_KEY,
     COMMAND_PREFIX,
@@ -142,19 +143,7 @@ async def get_work_history(
     failed runs matching every filter except ``status``, for the Failed tab. Returns ``{"tasks": [...], "total": N,
     "total_cost_usd": "...", "failed_total": N}``.
     """
-    shared = [TaskRun.status.in_(_TERMINAL)]
-    if role:
-        shared.append(TaskRun.role == role)
-    if action:
-        shared.append(_action_clause(action))
-    number_clause = _number_clause(number)
-    if number_clause is not None:
-        shared.append(number_clause)
-    if since is not None:
-        shared.append(TaskRun.started_at >= _as_utc(since))
-    if until is not None:
-        shared.append(TaskRun.started_at < _as_utc(until))
-    filters = [*shared, TaskRun.status == status] if status else shared
+    shared, filters = history_filters(status=status, role=role, action=action, number=number, since=since, until=until)
 
     count, cost = (
         await session.execute(
@@ -178,6 +167,31 @@ async def get_work_history(
         "total_cost_usd": format_cost_usd(cost),
         "failed_total": failed_total or 0,
     }
+
+
+def history_filters(
+    *,
+    status: str | None = None,
+    role: str | None = None,
+    action: str | None = None,
+    number: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> tuple[list[ColumnElement[bool]], list[ColumnElement[bool]]]:
+    """The finished-run conditions of a history request: those but ``status``, then all of them."""
+    shared = [TaskRun.status.in_(_TERMINAL)]
+    if role:
+        shared.append(TaskRun.role == role)
+    if action:
+        shared.append(_action_clause(action))
+    number_clause = _number_clause(number)
+    if number_clause is not None:
+        shared.append(number_clause)
+    if since is not None:
+        shared.append(TaskRun.started_at >= _as_utc(since))
+    if until is not None:
+        shared.append(TaskRun.started_at < _as_utc(until))
+    return shared, [*shared, TaskRun.status == status] if status else shared
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -296,6 +310,7 @@ def _build_history_item(r: TaskRun, step_names: set[str]) -> dict:
         "duration_ms": duration_ms,
         "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
         "error_message": r.error_message,
+        "outcome": run_outcome(action, r.status, r.error_message, r.handoff_json, r.pr_number),
         "started_at": iso_utc(r.started_at),
         "ended_at": iso_utc(r.ended_at),
     }

@@ -299,6 +299,40 @@ def stage_color(stage: WorkStage) -> str:
     return _STAGE_DISPLAY[stage][1]
 
 
+class HistoryState(StrEnum):
+    """Where an issue (or PR) stands, judged from all of its finished runs: one row of the grouped run history."""
+
+    MERGED = "merged"
+    FAILED = "failed"
+    NEEDS_APPROVAL = "needs_approval"
+    WAITING_FIXES = "waiting_fixes"
+    WAITING_REVIEW = "waiting_review"
+    STOPPED = "stopped"
+    FINISHED = "finished"
+
+
+# Label and colour token per history state, in the token set the state colors use.
+_HISTORY_STATE_DISPLAY: dict[HistoryState, tuple[str, str]] = {
+    HistoryState.MERGED: ("Merged", "green-strong"),
+    HistoryState.FAILED: ("Failed", "red"),
+    HistoryState.NEEDS_APPROVAL: ("Needs your approval", "peach"),
+    HistoryState.WAITING_FIXES: ("Waiting for fixes", "yellow"),
+    HistoryState.WAITING_REVIEW: ("Waiting for review", "blue"),
+    HistoryState.STOPPED: ("Stopped", "gray-dim"),
+    HistoryState.FINISHED: ("Finished", "gray"),
+}
+
+
+def history_state_label(state: HistoryState) -> str:
+    """The name a grouped run history row shows its state under."""
+    return _HISTORY_STATE_DISPLAY[state][0]
+
+
+def history_state_color(state: HistoryState) -> str:
+    """The colour token of a grouped run history state."""
+    return _HISTORY_STATE_DISPLAY[state][1]
+
+
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 

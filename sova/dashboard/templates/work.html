@@ -194,6 +194,14 @@
   </div>
 
   <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3">
+    {# Neither view is pressed here: history.js reads the remembered one and presses it before the first request. #}
+    <div class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="History view">
+      {% for value, label in [("issue", "By issue"), ("runs", "Every run")] %}
+      <button type="button" id="history-view-{{ value }}" data-action="history-view" data-args='["{{ value }}"]'
+        aria-pressed="false"
+        class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors aria-pressed:bg-gray-700 aria-pressed:text-white">{{ label }}</button>
+      {% endfor %}
+    </div>
     <div class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Date range">
       {% for value, label in [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days"), ("all", "All time"), ("custom", "Custom")] %}
       <button type="button" id="history-range-{{ value }}" data-action="history-range" data-args='["{{ value }}"]'

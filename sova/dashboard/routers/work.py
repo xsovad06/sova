@@ -12,7 +12,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.config.context import get_project_dir
 from sova.config.db_loader import set_issue_hidden
-from sova.dashboard.services import action_registry, rebase_outcome, work_board_service, work_service
+from sova.dashboard.services import (
+    action_registry,
+    rebase_outcome,
+    work_board_service,
+    work_history_service,
+    work_service,
+)
 from sova.dashboard.services.work_item_service import GraphConfigError
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
@@ -54,12 +60,34 @@ async def get_history(
     until: datetime | None = None,
     limit: int = 25,
     offset: int = 0,
+    group: Literal["issue"] | None = None,
 ) -> dict:
     """Finished runs, newest first by start time, with the filtered count, cost and failed count.
+
+    ``group=issue`` pages over issues instead (a PR when a run has no issue): each group carries its matching runs,
+    its state and its title, and the response a ``summary`` over every matching group (see
+    ``work_history_service.get_grouped_history``). Without it the response is the plain list of runs.
 
     ``since`` and ``until`` are ISO 8601 timestamps the browser computes from the user's local dates (``since``
     inclusive, ``until`` exclusive), so the server needs no time zone.
     """
+    if group == "issue":
+        project_dir = get_project_dir()
+        async with await get_session() as session:
+            async with session.begin():
+                payload = await work_history_service.get_grouped_history(
+                    session,
+                    status=status,
+                    role=role,
+                    action=action,
+                    number=number,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                    offset=offset,
+                )
+        # Titles may need a tracker round trip: resolved after the transaction closed, never inside it.
+        return await work_history_service.attach_titles(project_dir, payload)
     async with await get_session() as session:
         async with session.begin():
             return await work_service.get_work_history(

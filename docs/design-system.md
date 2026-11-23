@@ -243,7 +243,7 @@ Control position with `data-tooltip-pos` (default: `top`):
 <span data-tooltip="Started: ...&#10;Ended: ..." data-tooltip-pos="right" data-tooltip-multiline>Nov 12, 16:29</span>
 ```
 
-Never put a tooltip on an element that clips its own overflow (`truncate`): the `::after` is clipped with it.
+Never put a tooltip on an element that clips its own overflow (`truncate`): the `::after` is clipped with it. Put it on a non-clipping wrapper around the truncated element. `data-tooltip-align="start"` opens the bubble from the wrapper's left edge and wraps it, capped by the host's own width (`max-width: min(320px, max(100%, 14rem))`, never by the host's position in the viewport). The bubble is `display: none` until hover or focus, because a transparent bubble still widens the scrollable area. The run history uses it for a truncated title or result line and for the pills. On hover or focus the page sets `data-tooltip-flip` on a host whose bubble would pass the right edge of a narrow screen, which opens it from the host's right edge instead.
 
 ### Sidebar Behavior
 
