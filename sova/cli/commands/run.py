@@ -283,7 +283,11 @@ async def _handle_sigterm_shutdown(
     from sova.core.steps.commit_convention import resolve_default_scope, resolve_default_type
     from sova.git.worktree import preserve_partial_work
 
-    if ctx.worktree_dir is not None:
+    if ctx.partial_work_blocked:
+        # A step that could not put its branch back (an interrupted /rearrange-commits) set this: a commit now
+        # would record the PR on top of that broken base, exactly what the engine's timeout path refuses too.
+        log.error("run.sigterm_partial_work_blocked", reason=ctx.partial_work_blocked)
+    elif ctx.worktree_dir is not None:
         commit = ctx.config.commit
         await preserve_partial_work(
             ctx.worktree_dir,

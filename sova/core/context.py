@@ -220,6 +220,11 @@ class ExecutionContext:
     # MonitorCIStep uses this to check existing CI status instead of polling.
     no_new_commits: bool = False
 
+    # Set by a step cancelled by the engine's hard timeout that could not put the branch back where it found
+    # it (RearrangeCommitsStep): the reason, which _preserve_partial_work_on_timeout() must not commit over.
+    # WorkflowEngine clears it before every attempt.
+    partial_work_blocked: str = ""
+
     # Accumulated during the run
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)

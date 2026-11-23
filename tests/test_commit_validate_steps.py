@@ -5,8 +5,11 @@ Split from tests/test_core.py; see docs/testing-guidelines.md, "Test File Layout
 
 from __future__ import annotations
 
+import shlex
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -1502,7 +1505,10 @@ class TestRearrangeCommitsStep:
         ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
-        with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke,
+            self._known_position(),
+        ):
             mock_invoke.return_value = MagicMock(cost_usd=Decimal("0.02"), text="Commits reorganized")
             result = await step.execute(ctx)
 
@@ -1526,12 +1532,749 @@ class TestRearrangeCommitsStep:
         ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
         step = RearrangeCommitsStep()
 
-        with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke:
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as mock_invoke,
+            self._known_position(),
+        ):
             mock_invoke.side_effect = RuntimeError("command not found")
             result = await step.execute(ctx)
 
         assert not result.success
         assert "failed" in result.summary
+
+    @staticmethod
+    def _feature_repo(repo: Path) -> Callable[..., str]:
+        """A repo on `feature`, one commit ahead of `main`, with an uncommitted edit and a new file."""
+        import subprocess
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+        repo.mkdir()
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        git("config", "commit.gpgsign", "false")
+        (repo / "src.py").write_text("x = 1\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("branch", "-M", "main")
+        git("checkout", "-qb", "feature")
+        (repo / "src.py").write_text("x = 2\n", encoding="utf-8")
+        git("commit", "-qam", "feat(core): real work")
+        (repo / "src.py").write_text("x = 3  # review fix\n", encoding="utf-8")
+        (repo / "new.py").write_text("y = 1\n", encoding="utf-8")
+        return git
+
+    @staticmethod
+    def _known_position() -> Any:
+        """Stand in for a worktree that does not exist on disk: a known position and no operation running."""
+        from contextlib import ExitStack
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch.object(
+                RearrangeCommitsStep, "_position", new_callable=AsyncMock, return_value=("abc123", "refs/heads/f")
+            )
+        )
+        stack.enter_context(
+            patch.object(RearrangeCommitsStep, "_operations_in_progress", new_callable=AsyncMock, return_value=[])
+        )
+        return stack
+
+    @staticmethod
+    def _recovery_ref(git: Callable[..., str], kind: str) -> str:
+        """The one `refs/sova/rearrange/<tag>/<kind>` ref a restore wrote."""
+        refs = git("for-each-ref", "--format=%(refname)", "refs/sova/rearrange/").split()
+        matching = [ref for ref in refs if ref.endswith(f"/{kind}")]
+        assert len(matching) == 1, refs
+        return matching[0]
+
+    @staticmethod
+    def _snapshot_and_reset(git: Callable[..., str]) -> None:
+        """What /rearrange-commits does before recommitting: WIP snapshot, backup branch, reset to the fork point."""
+        git("add", "-A")
+        git("commit", "-qm", "chore: WIP snapshot before rearrange")
+        git("branch", "backup/rearrange-test")
+        git("reset", "--soft", git("merge-base", "HEAD", "main"))
+        git("reset", "-q", "HEAD", ".")
+
+    async def test_failed_agent_after_reset_restores_branch_and_keeps_files(self, tmp_path: Path) -> None:
+        """An agent that dies between the command's WIP snapshot and its recommits must not
+        leave the branch on the base commit: every later address-pr run then sees a branch
+        that diverged from its remote and refuses to push (PR #1539, run 1813)."""
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_reset_then_die(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            raise RuntimeError("API Error: Can't reach the API server (ENOTFOUND)")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_die):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "restored" in result.summary
+        assert git("rev-parse", "HEAD") == start_head
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 3  # review fix\n"
+        assert (repo / "new.py").read_text(encoding="utf-8") == "y = 1\n"
+        assert git("branch", "--list", "backup/rearrange-test")
+
+    async def test_cancelled_step_after_reset_restores_branch_before_reraising(self, tmp_path: Path) -> None:
+        """The engine's hard timeout cancels the step; the branch must be restored before its partial-work commit."""
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_reset_then_cancelled(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            raise asyncio.CancelledError
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_cancelled),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert git("rev-parse", "HEAD") == start_head
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 3  # review fix\n"
+
+    async def test_agent_exiting_cleanly_after_reset_fails_and_restores(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_reset_then_stop(*_args: object, **_kwargs: object) -> MagicMock:
+            self._snapshot_and_reset(git)
+            return MagicMock(cost_usd=Decimal("0.01"))
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_stop):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "incomplete" in result.summary
+        assert "restored" in result.summary
+        assert "No commits ahead of base" in (result.error or "")
+        assert git("rev-parse", "HEAD") == start_head
+
+    async def test_completed_rearrange_keeps_the_new_history(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def rearrange(*_args: object, **_kwargs: object) -> MagicMock:
+            self._snapshot_and_reset(git)
+            git("add", "src.py")
+            git("commit", "-qm", "feat(core): real work with the review fix")
+            git("add", "new.py")
+            git("commit", "-qm", "feat(core): add new module")
+            return MagicMock(cost_usd=Decimal("0.01"))
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=rearrange):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert result.success, result.error
+        assert git("rev-parse", "HEAD") != start_head
+        assert git("rev-list", "--count", "main..HEAD") == "2"
+
+    async def test_failed_agent_without_moving_head_leaves_branch_alone(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=RuntimeError("exit 1")):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert result.summary == "Commit reorganization failed"
+        assert git("rev-parse", "HEAD") == start_head
+        assert git("status", "--porcelain") == "M src.py\n?? new.py"
+
+    async def test_failed_restore_names_the_worktree_branch_and_commit_to_reset_to(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        worktree = tmp_path / "worktree"
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=RuntimeError("exit 1")),
+            # (HEAD, ref) before dispatch, then after the agent moved HEAD.
+            patch.object(
+                RearrangeCommitsStep,
+                "_position",
+                new_callable=AsyncMock,
+                side_effect=[("aaa111", "refs/heads/feature"), ("bbb222", "refs/heads/feature")],
+            ),
+            patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = MagicMock(success=False, stdout="", stderr="index.lock exists")
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        # Re-attaches the branch before resetting, so it cannot move whatever HEAD happens to point at.
+        git = f"git -C {shlex.quote(str(worktree))}"
+        assert (
+            f"{git} update-ref refs/heads/feature aaa111 && {git} symbolic-ref HEAD refs/heads/feature "
+            f"&& {git} reset -q aaa111"
+        ) in result.summary
+
+    async def test_agent_that_dies_on_the_backup_branch_leaves_both_branches_correct(self, tmp_path: Path) -> None:
+        """Dying after checking out the backup branch must not reset the backup branch onto the feature commit."""
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_checkout_backup_then_die(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            git("checkout", "-qf", "backup/rearrange-test")
+            raise RuntimeError("API Error: Can't reach the API server (ENOTFOUND)")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_checkout_backup_then_die):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "restored" in result.summary
+        assert git("symbolic-ref", "HEAD") == "refs/heads/feature"
+        assert git("rev-parse", "feature") == start_head
+        assert git("log", "-1", "--format=%s", "backup/rearrange-test") == "chore: WIP snapshot before rearrange"
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 3  # review fix\n"
+        assert (repo / "new.py").read_text(encoding="utf-8") == "y = 1\n"
+
+    async def test_cancelled_agent_on_the_backup_branch_is_restored_before_reraising(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_checkout_backup_then_cancelled(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            git("checkout", "-qf", "backup/rearrange-test")
+            raise asyncio.CancelledError
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch(
+                "sova.core.steps.rearrange_commits.dispatch_command",
+                side_effect=snapshot_checkout_backup_then_cancelled,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert git("symbolic-ref", "HEAD") == "refs/heads/feature"
+        assert git("rev-parse", "feature") == start_head
+        assert git("log", "-1", "--format=%s", "backup/rearrange-test") == "chore: WIP snapshot before rearrange"
+
+    async def test_agent_that_dies_mid_rebase_has_it_aborted_and_the_branch_restored(self, tmp_path: Path) -> None:
+        import os
+        import subprocess
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_start_rebase_then_die(*_args: object, **_kwargs: object) -> None:
+            git("add", "-A")
+            git("commit", "-qm", "chore: WIP snapshot before rearrange")
+            git("branch", "backup/rearrange-test")
+            # Stop the interactive rebase on its first commit: a detached HEAD with a rebase left running.
+            env = {**os.environ, "GIT_SEQUENCE_EDITOR": "sed -i.bak 's/^pick/edit/'"}
+            subprocess.run(
+                ["git", "rebase", "-i", "main"], cwd=repo, check=True, capture_output=True, text=True, env=env
+            )
+            # An edit made while the rebase is stopped, which `rebase --abort` resets away.
+            (repo / "src.py").write_text("x = 99  # mid-rebase edit\n", encoding="utf-8")
+            raise RuntimeError("API Error: Can't reach the API server (ENOTFOUND)")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_start_rebase_then_die):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "restored" in result.summary
+        assert not (repo / ".git" / "rebase-merge").exists()
+        assert git("symbolic-ref", "HEAD") == "refs/heads/feature"
+        assert git("rev-parse", "HEAD") == start_head
+        assert git("log", "-1", "--format=%s", "backup/rearrange-test") == "chore: WIP snapshot before rearrange"
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 3  # review fix\n"
+        # The mid-rebase edit survives the abort in the edits ref, and the shared stash stack is untouched.
+        edits_ref = self._recovery_ref(git, "edits")
+        assert git("show", f"{edits_ref}:src.py") == "x = 99  # mid-rebase edit"
+        assert git("stash", "list") == ""
+        assert edits_ref in result.summary
+
+    async def test_a_cancel_during_the_output_checks_restores_a_reset_branch(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def snapshot_reset_then_stop(*_args: object, **_kwargs: object) -> MagicMock:
+            self._snapshot_and_reset(git)
+            return MagicMock(cost_usd=Decimal("0.01"))
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_stop),
+            patch.object(RearrangeCommitsStep, "validate_output", side_effect=asyncio.CancelledError),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert git("symbolic-ref", "HEAD") == "refs/heads/feature"
+        assert git("rev-parse", "HEAD") == start_head
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 3  # review fix\n"
+
+    async def test_a_cancel_during_the_output_checks_keeps_a_finished_rearrangement(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def rearrange(*_args: object, **_kwargs: object) -> MagicMock:
+            self._snapshot_and_reset(git)
+            git("add", "src.py")
+            git("commit", "-qm", "feat(core): real work with the review fix")
+            git("add", "new.py")
+            git("commit", "-qm", "feat(core): add new module")
+            return MagicMock(cost_usd=Decimal("0.01"))
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=rearrange),
+            patch.object(RearrangeCommitsStep, "validate_output", side_effect=asyncio.CancelledError),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert git("rev-parse", "HEAD") != start_head
+        assert git("rev-list", "--count", "main..HEAD") == "2"
+
+    async def test_a_failed_abort_puts_the_matching_abort_first_in_the_recovery_command(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        worktree = tmp_path / "worktree"
+        ctx = _make_ctx(tmp_path, worktree_dir=worktree)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=RuntimeError("exit 1")),
+            patch.object(
+                RearrangeCommitsStep, "_position", new_callable=AsyncMock, return_value=("aaa111", "refs/heads/f")
+            ),
+            patch.object(
+                RearrangeCommitsStep,
+                "_abort_in_progress",
+                new_callable=AsyncMock,
+                return_value=(False, ("rebase", "--abort"), False),
+            ),
+            patch.object(RearrangeCommitsStep, "_operations_in_progress", new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        git = f"git -C {shlex.quote(str(worktree))}"
+        assert f"restore it with: {git} rebase --abort && {git} update-ref" in result.summary
+
+    async def test_a_restore_that_hits_an_unusable_worktree_fails_closed(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock, side_effect=OSError("gone")):
+            restore = await RearrangeCommitsStep._restore_head(tmp_path, ("aaa111", "refs/heads/f"), "main")
+
+        assert restore.restored is False
+        assert "reset -q aaa111" in restore.recovery
+
+    async def test_cancellation_with_a_failed_restore_blocks_the_engines_partial_work_commit(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+
+        async def snapshot_reset_then_cancelled(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            raise asyncio.CancelledError
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_cancelled),
+            patch.object(
+                RearrangeCommitsStep,
+                "_restore_head_unguarded",
+                new_callable=AsyncMock,
+                side_effect=OSError("index.lock"),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert "restore it with: git -C" in ctx.partial_work_blocked
+
+    async def test_a_second_cancel_does_not_abandon_the_restore(self, tmp_path: Path) -> None:
+        import asyncio
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep, _Restore
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def blocked_restore(*_args: object) -> _Restore:
+            started.set()
+            await release.wait()
+            finished.set()
+            return _Restore(True)
+
+        with patch.object(RearrangeCommitsStep, "_restore_head", side_effect=blocked_restore):
+            task = asyncio.ensure_future(RearrangeCommitsStep._restore_uninterrupted(tmp_path, ("a", None), "main"))
+            await started.wait()
+            # The restore cannot finish until released, so each cancel is delivered while it is still running:
+            # one yield lets the waiting helper take the cancel and loop back to wait for the restore.
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+                assert not task.done()
+                assert not finished.is_set()
+            release.set()
+            restore = await task
+
+        assert finished.is_set()
+        assert restore.restored is True
+
+    async def test_restore_uninterrupted_reports_a_restore_task_that_raised(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        with patch.object(RearrangeCommitsStep, "_restore_head", new_callable=AsyncMock, side_effect=ValueError("x")):
+            restore = await RearrangeCommitsStep._restore_uninterrupted(tmp_path, ("a" * 40, "refs/heads/f"), "main")
+
+        assert restore.restored is False
+        assert "reset -q" in restore.recovery
+
+    async def test_save_attempt_tolerates_a_failed_ref_write(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        failed = MagicMock(success=False, stderr="cannot lock ref")
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock, return_value=failed) as fake_run:
+            saved = await RearrangeCommitsStep._save_attempt(tmp_path, "abc123", "refs/sova/rearrange/x/attempt")
+
+        assert saved is False
+        fake_run.assert_awaited_once()
+
+    def test_restore_steps_only_resets_when_the_ref_is_unchanged(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        steps = RearrangeCommitsStep._restore_steps(("abc", "refs/heads/f"), "refs/heads/f")
+
+        assert steps == [("reset", "-q", "abc")]
+
+    def test_restore_steps_reattaches_the_recorded_branch(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        steps = RearrangeCommitsStep._restore_steps(("abc", "refs/heads/f"), "refs/heads/backup")
+
+        assert steps == [
+            ("update-ref", "refs/heads/f", "abc"),
+            ("symbolic-ref", "HEAD", "refs/heads/f"),
+            ("reset", "-q", "abc"),
+        ]
+
+    def test_restore_steps_reattaches_a_detached_start(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        steps = RearrangeCommitsStep._restore_steps(("abc", None), "refs/heads/backup")
+
+        assert steps == [("update-ref", "--no-deref", "HEAD", "abc"), ("reset", "-q", "abc")]
+
+    async def test_a_failing_restore_command_is_a_failed_restore(self, tmp_path: Path) -> None:
+        from sova.core.steps import rearrange_commits
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start = (git("rev-parse", "HEAD"), "refs/heads/feature")
+        git("reset", "-q", "--soft", "main")
+
+        failed = MagicMock(success=False, stderr="fatal: cannot reset")
+        real_run = rearrange_commits.run
+
+        async def run_but_fail_reset(*args: object, **kwargs: object) -> object:
+            if args[:2] == ("git", "reset"):
+                return failed
+            return await real_run(*args, **kwargs)
+
+        with patch("sova.core.steps.rearrange_commits.run", side_effect=run_but_fail_reset):
+            restore = await RearrangeCommitsStep._restore_head(repo, start, "main")
+
+        assert restore.restored is False
+        assert "reset -q" in restore.recovery
+
+    async def test_an_agent_that_finished_rearranging_before_failing_keeps_its_history(self, tmp_path: Path) -> None:
+        """A late non-zero exit (budget cap, API error) must not throw away commits that are already right."""
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        start_head = git("rev-parse", "HEAD")
+
+        async def rearrange_then_die(*_args: object, **_kwargs: object) -> None:
+            self._snapshot_and_reset(git)
+            git("add", "-A")
+            git("commit", "-qm", "feat(core): real work with the review fix")
+            raise RuntimeError("budget exceeded")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=rearrange_then_die):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert git("rev-parse", "HEAD") != start_head
+        assert git("rev-list", "--count", "main..HEAD") == "1"
+
+    async def test_a_restore_saves_the_agents_head_to_a_ref_first(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        wip_head = ""
+
+        async def snapshot_reset_then_die(*_args: object, **_kwargs: object) -> None:
+            nonlocal wip_head
+            self._snapshot_and_reset(git)
+            wip_head = git("rev-parse", "HEAD")
+            raise RuntimeError("exit 1")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=snapshot_reset_then_die):
+            await RearrangeCommitsStep().execute(ctx)
+
+        assert git("rev-parse", self._recovery_ref(git, "attempt")) == wip_head
+
+    async def test_a_revert_the_agent_left_running_is_aborted(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        git("add", "-A")
+        git("commit", "-qm", "chore: clean tree")
+        (repo / "src.py").write_text("x = 9\n", encoding="utf-8")
+        git("commit", "-qam", "feat(core): conflicting follow-up")
+        import subprocess
+
+        reverted = subprocess.run(
+            ["git", "revert", "--no-edit", "HEAD~1"], cwd=repo, capture_output=True, text=True, check=False
+        )
+        assert reverted.returncode != 0
+        assert (repo / ".git" / "REVERT_HEAD").exists()
+
+        aborted, failed, edits_unsaved = await RearrangeCommitsStep._abort_in_progress(repo)
+
+        assert (aborted, failed, edits_unsaved) == (True, None, False)
+        assert not (repo / ".git" / "REVERT_HEAD").exists()
+
+    async def test_an_unreadable_start_position_stops_the_step_before_dispatch(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as dispatch,
+            patch.object(RearrangeCommitsStep, "_position", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "nothing was changed" in result.summary
+        dispatch.assert_not_called()
+
+    async def test_a_symbolic_ref_failure_is_not_recorded_as_a_detached_head(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        async def fake_run(*args: object, **_kwargs: object) -> MagicMock:
+            if args[:2] == ("git", "symbolic-ref"):
+                return MagicMock(success=False, returncode=128, stdout="", stderr="timed out")
+            return MagicMock(success=True, returncode=0, stdout="abc123\n", stderr="")
+
+        with patch("sova.core.steps.rearrange_commits.run", side_effect=fake_run):
+            assert await RearrangeCommitsStep._position(tmp_path) is None
+
+    async def test_a_detached_head_is_a_known_position(self, tmp_path: Path) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        git("checkout", "-q", "--detach")
+
+        assert await RearrangeCommitsStep._position(repo) == (git("rev-parse", "HEAD"), None)
+
+    async def test_an_operation_already_running_is_left_alone_and_stops_the_step(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        git("add", "-A")
+        git("commit", "-qm", "chore: clean tree")
+        (repo / "src.py").write_text("x = 9\n", encoding="utf-8")
+        git("commit", "-qam", "feat(core): conflicting follow-up")
+        subprocess.run(["git", "revert", "--no-edit", "HEAD~1"], cwd=repo, capture_output=True, check=False)
+        assert (repo / ".git" / "REVERT_HEAD").exists()
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", new_callable=AsyncMock) as dispatch:
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "already in progress" in result.summary
+        assert "REVERT_HEAD" in result.summary
+        dispatch.assert_not_called()
+        assert (repo / ".git" / "REVERT_HEAD").exists()
+
+    async def test_a_conflicted_rebase_has_its_edits_saved_before_the_abort(self, tmp_path: Path) -> None:
+        """`git stash create` refuses an index with unresolved conflicts; the edits must still be saved."""
+        import os
+        import subprocess
+
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        git("add", "-A")
+        git("commit", "-qm", "chore: clean tree")
+        git("checkout", "-q", "main")
+        (repo / "src.py").write_text("x = 100  # conflicting main change\n", encoding="utf-8")
+        git("commit", "-qam", "feat(core): main moves")
+        git("checkout", "-q", "feature")
+        (repo / "other.py").write_text("z = 1\n", encoding="utf-8")
+        git("add", "other.py")
+        git("commit", "-qm", "feat(core): add other")
+
+        async def start_conflicting_rebase_then_die(*_args: object, **_kwargs: object) -> None:
+            env = {**os.environ, "GIT_SEQUENCE_EDITOR": "true"}
+            stopped = subprocess.run(
+                ["git", "rebase", "-i", "main"], cwd=repo, capture_output=True, text=True, env=env, check=False
+            )
+            assert stopped.returncode != 0
+            assert git("ls-files", "--unmerged")
+            (repo / "src.py").write_text("x = 42  # resolved by hand, never staged\n", encoding="utf-8")
+            raise RuntimeError("API Error: Can't reach the API server (ENOTFOUND)")
+
+        start_head = git("rev-parse", "HEAD")
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=start_conflicting_rebase_then_die):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "restored" in result.summary
+        assert git("rev-parse", "HEAD") == start_head
+        assert not (repo / ".git" / "rebase-merge").exists()
+        edits_ref = self._recovery_ref(git, "edits")
+        assert git("show", f"{edits_ref}:src.py") == "x = 42  # resolved by hand, never staged"
+
+    async def test_an_abort_is_refused_when_the_edits_could_not_be_saved(self, tmp_path: Path) -> None:
+        import os
+        import subprocess
+
+        from sova.core.steps import rearrange_commits
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        repo = tmp_path / "worktree"
+        git = self._feature_repo(repo)
+        git("add", "-A")
+        git("commit", "-qm", "chore: clean tree")
+
+        async def start_rebase_then_die(*_args: object, **_kwargs: object) -> None:
+            env = {**os.environ, "GIT_SEQUENCE_EDITOR": "sed -i.bak 's/^pick/edit/'"}
+            subprocess.run(["git", "rebase", "-i", "main"], cwd=repo, check=True, capture_output=True, env=env)
+            (repo / "src.py").write_text("x = 99  # mid-rebase edit\n", encoding="utf-8")
+            raise RuntimeError("exit 1")
+
+        real_run = rearrange_commits.run
+
+        async def run_but_fail_the_edits_ref(*args: object, **kwargs: object) -> object:
+            if args[:2] == ("git", "update-ref") and "/edits" in str(args[2]):
+                return MagicMock(success=False, stdout="", stderr="cannot lock ref")
+            return await real_run(*args, **kwargs)
+
+        ctx = _make_ctx(tmp_path / "project", worktree_dir=repo)
+        with (
+            patch("sova.core.steps.rearrange_commits.dispatch_command", side_effect=start_rebase_then_die),
+            patch("sova.core.steps.rearrange_commits.run", side_effect=run_but_fail_the_edits_ref),
+        ):
+            result = await RearrangeCommitsStep().execute(ctx)
+
+        assert not result.success
+        assert "first copy your tracked-file edits" in result.summary
+        assert (repo / ".git" / "rebase-merge").exists()
+        assert (repo / "src.py").read_text(encoding="utf-8") == "x = 99  # mid-rebase edit\n"
+
+    def test_the_recovery_command_passes_the_ref_and_path_to_git_literally(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        command = RearrangeCommitsStep._recovery_command(
+            Path("/tmp/work tree"), ("abc123", "refs/heads/fix;id;$HOME"), ("rebase", "--abort")
+        )
+
+        tokens = shlex.split(command)
+        assert "/tmp/work tree" in tokens
+        assert tokens.count("refs/heads/fix;id;$HOME") == 2  # update-ref and symbolic-ref
+        assert tokens[:6] == ["git", "-C", "/tmp/work tree", "rebase", "--abort", "&&"]
+
+    def test_the_recovery_command_for_a_detached_start_does_not_name_a_branch(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        command = RearrangeCommitsStep._recovery_command(Path("/tmp/a b"), ("abc123", None))
+
+        assert shlex.split(command) == [
+            *["git", "-C", "/tmp/a b", "update-ref", "--no-deref", "HEAD", "abc123", "&&"],
+            *["git", "-C", "/tmp/a b", "reset", "-q", "abc123"],
+        ]
+
+    def test_recovery_refs_differ_per_worktree_and_per_attempt(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        first = RearrangeCommitsStep._recovery_refs(Path("/a/one"), "a" * 40)
+        other_worktree = RearrangeCommitsStep._recovery_refs(Path("/a/two"), "a" * 40)
+        again = RearrangeCommitsStep._recovery_refs(Path("/a/one"), "a" * 40)
+
+        assert first[0] != other_worktree[0]
+        assert first[1] != other_worktree[1]
+        assert first != again
+        assert first[0].endswith("/attempt") and first[1].endswith("/edits")
 
     async def test_validate_passes_when_commits_ahead_and_clean(self, tmp_path: Path) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep

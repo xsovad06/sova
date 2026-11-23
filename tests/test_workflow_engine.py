@@ -2572,6 +2572,7 @@ class TestHandleSigtermShutdown:
                 run_id = run.id
 
         ctx = MagicMock()
+        ctx.partial_work_blocked = ""
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.23")
@@ -2589,6 +2590,21 @@ class TestHandleSigtermShutdown:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.total_cost_usd == Decimal("1.23")
 
+    async def test_a_step_that_blocked_partial_work_is_not_committed_over_on_sigterm(self, tmp_path: Path) -> None:
+        from sova.cli.commands.run import _handle_sigterm_shutdown
+
+        ctx = MagicMock()
+        ctx.worktree_dir = tmp_path / "does-not-matter"
+        ctx.project_dir = None
+        ctx.cost_usd = Decimal("1.23")
+        ctx.config = _sova_commit_config()
+        ctx.partial_work_blocked = "Rearrange restore failed; restore it with: git -C x reset -q abc"
+
+        with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock(return_value=True)) as mock_preserve:
+            await _handle_sigterm_shutdown(ctx, None)
+
+        mock_preserve.assert_not_awaited()
+
     async def test_a_resumed_run_stores_only_its_own_spend(self, tmp_path: Path) -> None:
         from sova.cli.commands.run import _handle_sigterm_shutdown
         from sova.db.models import TaskRun
@@ -2602,6 +2618,7 @@ class TestHandleSigtermShutdown:
                 run_id = run.id
 
         ctx = MagicMock()
+        ctx.partial_work_blocked = ""
         ctx.worktree_dir = None
         ctx.project_dir = None
         ctx.cost_usd = Decimal("1.50")  # seeded with the prior run's 1.00 on resume
@@ -2616,6 +2633,7 @@ class TestHandleSigtermShutdown:
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
+        ctx.partial_work_blocked = ""
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.config = _sova_commit_config()
 
@@ -2629,6 +2647,7 @@ class TestHandleSigtermShutdown:
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
+        ctx.partial_work_blocked = ""
         ctx.worktree_dir = None
 
         with patch("sova.git.worktree.preserve_partial_work", new=AsyncMock()) as mock_preserve:
@@ -2641,6 +2660,7 @@ class TestHandleSigtermShutdown:
         from sova.cli.commands.run import _handle_sigterm_shutdown
 
         ctx = MagicMock()
+        ctx.partial_work_blocked = ""
         ctx.worktree_dir = tmp_path / "does-not-matter"
         ctx.project_dir = None
         ctx.cost_usd = Decimal("0")

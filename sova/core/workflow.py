@@ -635,6 +635,7 @@ class WorkflowEngine:
         self._ctx.cost_source = None
         self._ctx.step_model_selection_reason = None
         self._ctx.routed_spend = {}
+        self._ctx.partial_work_blocked = ""
         try:
             async with asyncio.timeout(timeout_seconds):
                 result = await step.execute(self._ctx)
@@ -650,6 +651,7 @@ class WorkflowEngine:
                     f"Runaway guard: wall clock exceeded during step '{step.name}' "
                     f"(step aborted after {timeout_seconds}s of remaining budget)"
                 )
+                message = self._with_partial_work_block(message)
                 result = StepResult(
                     success=False,
                     summary=message,
@@ -660,7 +662,9 @@ class WorkflowEngine:
             else:
                 result = StepResult(
                     success=False,
-                    summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
+                    summary=self._with_partial_work_block(
+                        f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)"
+                    ),
                     error="step_hard_timeout",
                     partial_work=partial_work,
                 )
@@ -684,6 +688,11 @@ class WorkflowEngine:
             result.cost_usd = step_cost
         return result
 
+    def _with_partial_work_block(self, summary: str) -> str:
+        """Append why the partial-work commit was skipped, so the recovery command reaches the stored summary."""
+        blocked = self._ctx.partial_work_blocked
+        return f"{summary}. Partial work was not committed: {blocked}" if blocked else summary
+
     async def _preserve_partial_work_on_timeout(self, step_name: str) -> bool:
         """Stage and commit changes on timeout to preserve partial work.
 
@@ -695,6 +704,11 @@ class WorkflowEngine:
         primary checkout.
         """
         if self._ctx.worktree_dir is None:
+            return False
+        if self._ctx.partial_work_blocked:
+            # The step could not put the branch back (e.g. a reset left behind by an interrupted
+            # /rearrange-commits): a commit now would record the PR on top of that broken base.
+            log.error("workflow.partial_work.blocked", step=step_name, reason=self._ctx.partial_work_blocked)
             return False
 
         from sova.core.steps.commit_convention import resolve_default_scope, resolve_default_type
