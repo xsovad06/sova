@@ -12,7 +12,7 @@
   </button>
 </div>
 
-<!-- Header: what runs, what waits, what it costs (static/js/pages/work/header.js) -->
+<!-- Header: what runs, how often it succeeds, what merged, what it costs (static/js/pages/work/header.js) -->
 <section id="work-header" class="flex flex-wrap items-stretch gap-2 mb-4" aria-label="Work at a glance">
   <div class="sova-work-stat basis-36 grow">
     <span class="sova-stat-label">Agents</span>
@@ -25,17 +25,20 @@
       <span id="hdr-agents-over" class="hidden text-accent-peach">over the limit</span>
     </span>
   </div>
-  <div class="sova-work-stat basis-36 grow">
-    <span class="sova-stat-label">Queued</span>
-    <span id="hdr-queued" class="text-xl font-semibold tabular-nums">--</span>
-    <span id="hdr-queued-detail" class="sova-stat-detail"></span>
+  <div id="hdr-success-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
+    <span class="sova-stat-label">Success (7 days)</span>
+    <span id="hdr-success" class="text-xl font-semibold tabular-nums">--</span>
+    <span id="hdr-success-detail" class="sova-stat-detail"></span>
   </div>
-  <div class="sova-work-stat basis-36 grow">
-    <span class="sova-stat-label">Needs you</span>
-    <span id="hdr-needs" class="text-xl font-semibold tabular-nums">--</span>
-    <span id="hdr-needs-detail" class="sova-stat-detail"></span>
+  <div id="hdr-merged-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
+    <span class="sova-stat-label">Merged (7 days)</span>
+    <span id="hdr-merged" class="text-xl font-semibold tabular-nums">--</span>
+    <span class="sova-stat-detail flex flex-col">
+      <span id="hdr-merged-detail"></span>
+      <span id="hdr-merged-cost"></span>
+    </span>
   </div>
-  <div class="sova-work-stat basis-36 grow">
+  <div id="hdr-spend-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
     <span class="sova-stat-label">Spend today</span>
     <span id="hdr-spend" class="text-xl font-semibold tabular-nums">--</span>
     <span id="hdr-spend-detail" class="sova-stat-detail"></span>
