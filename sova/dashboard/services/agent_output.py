@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,11 +21,16 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.output")
 
 
-async def get_output(since: int = 0, slug: str | None = None, *, run_id: int) -> list[str]:
-    """Get output lines since the given cursor for a specific agent run.
+async def get_output(
+    since: int = 0, slug: str | None = None, *, run_id: int
+) -> tuple[list[str], list[datetime | None]]:
+    """Get output lines since the given cursor for a specific agent run, with each line's write time.
 
-    Falls back to the DB-persisted output when the agent is not in memory,
-    then to a legacy log file for pre-migration runs.
+    For an agent in memory ``since`` counts the run's lifetime lines (``output_seq``), which equals an index into
+    the deque until the deque evicts and stays valid after, so a poller that resumes from the ``seq`` it was given
+    never misses a line or reads one twice on a long run. Out of memory it is a stored ``line_number``.
+    The two lists always have equal length. Falls back to the DB-persisted output when the agent is not
+    in memory, then to a legacy log file for pre-migration runs, whose lines have no time (``None``).
     """
     from sova.core.output import read_lines, read_lines_from_file
     from sova.dashboard.services.agent_pool import _get_project_agents
@@ -33,18 +39,33 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int) ->
 
     agent = pa.agents.get(run_id)
     if agent is not None:
-        lines = list(agent.output_lines)
-        return lines[since:]
-    lines, total = await read_lines(pa.project_dir, run_id, since)
+        lines, times = list(agent.output_lines), list(agent.output_times)
+        start = _memory_offset(agent, len(lines), since)
+        if agent.times_misaligned is True or len(lines) != len(times):
+            # AgentState.buffer() keeps the two index-aligned. A writer that bypassed it would put every time on the
+            # wrong line, and equal lengths at the cap would no longer reveal that, so the flag is sticky: log once,
+            # send no times from then on (the client shows no time column) and keep the text readable.
+            if agent.times_misaligned is not True:
+                agent.times_misaligned = True
+                log.warning("output_times.misaligned", run_id=run_id, lines=len(lines), times=len(times))
+            return lines[start:], [None] * len(lines[start:])
+        return lines[start:], times[start:]
+    lines, times, total = await read_lines(pa.project_dir, run_id, since)
     if lines or total > 0:
-        return lines
+        return lines, times
     file_output_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.stdout"
-    lines, _total = read_lines_from_file(file_output_path, since)
+    lines, times, _total = read_lines_from_file(file_output_path, since)
     if lines:
-        return lines
+        return lines, times
     legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
-    lines, _total = read_lines_from_file(legacy_path, since)
-    return lines
+    lines, times, _total = read_lines_from_file(legacy_path, since)
+    return lines, times
+
+
+def _memory_offset(agent: AgentState, held: int, since: int) -> int:
+    """Index into the deque of lifetime line number ``since``: the deque holds lines ``evicted`` to ``output_seq``."""
+    evicted = max(0, agent.output_seq - held)
+    return max(0, since - evicted)
 
 
 def get_output_seq(slug: str | None = None, *, run_id: int) -> int | None:
@@ -72,12 +93,12 @@ async def _buffer_line(agent: AgentState, text: str) -> None:
     text = strip_ansi(text).rstrip("\n")
     if not text:
         return
-    agent.output_lines.append(text)
-    agent.output_seq += 1
+    stamp = datetime.now(timezone.utc)
+    agent.buffer(text, stamp)
 
     oss = get_output_stream_service()
     if oss.has_subscribers(agent.run_id):
-        oss.publish(agent.run_id, text)
+        oss.publish(agent.run_id, text, stamp)
 
     if agent.output_writer:
         agent.output_writer.write_line(text)

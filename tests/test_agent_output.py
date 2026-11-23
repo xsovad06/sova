@@ -171,7 +171,7 @@ class TestOutputService:
         writer.write_line("Second line")
         await writer.close()
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=1)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=1)
         assert total == 2
         assert lines == ["Hello, world", "Second line"]
 
@@ -186,7 +186,7 @@ class TestOutputService:
         writer.write_line("Line 3")
         await writer.close()
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=2, since=1)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=2, since=1)
         assert total == 3
         assert lines == ["Line 2", "Line 3"]
 
@@ -194,7 +194,7 @@ class TestOutputService:
     async def test_read_lines_empty_run(self, tmp_path: Path) -> None:
         from sova.core.output import read_lines
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=999)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=999)
         assert lines == []
         assert total == 0
 
@@ -207,7 +207,7 @@ class TestOutputService:
         writer.write_line("Line with newline\n")
         await writer.close()
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=3)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=3)
         assert total == 1
         assert lines == ["Line with newline"]
 
@@ -234,7 +234,7 @@ class TestOutputService:
         await writer.close()
         writer.write_line("After close")
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=5)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=5)
         assert total == 1
         assert lines == ["Before close"]
 
@@ -256,11 +256,12 @@ class TestOutputService:
         writer.write_line("later")
         await writer.close()
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=6)
+        lines, times, total = await read_lines(tmp_path / "fake", run_id=6)
         assert (lines, total) == (["red text", "later"], 2)
         rows = (await session.execute(select(OutputLine).where(OutputLine.task_run_id == 6))).scalars().all()
         first, second = sorted(rows, key=lambda r: r.line_number)
         assert (second.created_at - first.created_at).total_seconds() >= 0.04
+        assert times == [first.created_at, second.created_at]
 
     @pytest.mark.asyncio
     async def test_timer_flushes_pending_lines_and_close_stops_it(self, session, tmp_path: Path) -> None:
@@ -271,9 +272,10 @@ class TestOutputService:
         await self._create_run(session, 7)
         writer = OutputWriter(tmp_path / "fake", run_id=7, flush_interval=0.05)
         writer.write_line("pending")
-        assert await read_lines(tmp_path / "fake", run_id=7) == ([], 0)
+        assert await read_lines(tmp_path / "fake", run_id=7) == ([], [], 0)
         await asyncio.sleep(0.3)
-        assert await read_lines(tmp_path / "fake", run_id=7) == (["pending"], 1)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=7)
+        assert (lines, total) == (["pending"], 1)
 
         timer = writer._timer
         assert timer is not None
@@ -294,7 +296,8 @@ class TestOutputService:
         resumed.write_line("three")
         await resumed.close()
 
-        assert await read_lines(tmp_path / "fake", run_id=8, since=2) == (["three"], 3)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=8, since=2)
+        assert (lines, total) == (["three"], 3)
 
     @pytest.mark.asyncio
     async def test_cleanup_old_output(self, session, tmp_path: Path) -> None:
@@ -317,7 +320,7 @@ class TestOutputService:
         deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 1
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=100)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=100)
         assert total == 0
 
     @pytest.mark.asyncio
@@ -341,7 +344,7 @@ class TestOutputService:
         deleted = await cleanup_old_output(tmp_path / "fake", retention_days=30)
         assert deleted == 0
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=101)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=101)
         assert total == 1
 
     @pytest.mark.asyncio
@@ -351,11 +354,12 @@ class TestOutputService:
         log_file = tmp_path / "42.log"
         log_file.write_text("line one\nline two\nline three\n")
 
-        lines, total = read_lines_from_file(log_file)
+        lines, times, total = read_lines_from_file(log_file)
         assert total == 3
         assert lines == ["line one", "line two", "line three"]
+        assert times == [None, None, None]
 
-        lines, total = read_lines_from_file(log_file, since=1)
+        lines, _times, total = read_lines_from_file(log_file, since=1)
         assert total == 3
         assert lines == ["line two", "line three"]
 
@@ -363,7 +367,7 @@ class TestOutputService:
     async def test_legacy_file_read_missing(self, tmp_path) -> None:
         from sova.core.output import read_lines_from_file
 
-        lines, total = read_lines_from_file(tmp_path / "nonexistent.log")
+        lines, _times, total = read_lines_from_file(tmp_path / "nonexistent.log")
         assert lines == []
         assert total == 0
 
@@ -386,7 +390,7 @@ class TestOutputService:
         w2.write_line("Line 4")
         await w2.close()
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=200)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=200)
         assert total == 5
         assert lines == ["Line 0", "Line 1", "Line 2", "Line 3", "Line 4"]
 
@@ -400,7 +404,7 @@ class TestOutputService:
         await writer.close()
         await writer.close()  # second close is a no-op
 
-        lines, total = await read_lines(tmp_path / "fake", run_id=6)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=6)
         assert total == 1
         assert lines == ["data"]
 
@@ -423,7 +427,7 @@ class TestOutputService:
 
         # Second flush succeeds: lines reach DB
         await writer.close()
-        lines, total = await read_lines(tmp_path / "fake", run_id=7)
+        lines, _times, total = await read_lines(tmp_path / "fake", run_id=7)
         assert total == 2
         assert lines == ["line1", "line2"]
 
@@ -444,7 +448,7 @@ class TestOutputService:
         from sova.core.output import read_lines
 
         with patch("sova.core.output.get_session", side_effect=Exception("db error")):
-            lines, total = await read_lines(tmp_path / "fake", run_id=999)
+            lines, _times, total = await read_lines(tmp_path / "fake", run_id=999)
         assert lines == []
         assert total == 0
 
@@ -456,7 +460,7 @@ class TestOutputService:
         log_file = tmp_path / "broken.log"
         log_file.write_text("data")
         with patch("builtins.open", side_effect=OSError("permission denied")):
-            lines, total = read_lines_from_file(log_file)
+            lines, _times, total = read_lines_from_file(log_file)
         assert lines == []
         assert total == 0
 
@@ -475,10 +479,13 @@ class TestBufferLine:
         from unittest.mock import MagicMock, patch
 
         from sova.dashboard.services.agent_output import _buffer_line
+        from sova.dashboard.services.agent_pool import AgentState
 
         agent = MagicMock()
         agent.output_lines = deque()
+        agent.output_times = deque()
         agent.output_seq = 0
+        agent.buffer = lambda text, stamp: AgentState.buffer(agent, text, stamp)
         agent.run_id = 1
         agent.output_writer = MagicMock()
         agent.output_writer.should_flush.return_value = False
@@ -491,7 +498,7 @@ class TestBufferLine:
 
             await _buffer_line(agent, "\x1b[31mred\x1b[0m")
         assert (list(agent.output_lines), agent.output_seq) == (["red"], 1)
-        stream.publish.assert_called_once_with(1, "red")
+        stream.publish.assert_called_once_with(1, "red", agent.output_times[0])
         agent.output_writer.write_line.assert_called_once_with("red")
 
 
@@ -969,13 +976,17 @@ class TestGetOutputBranches:
 
         mock_agent = MagicMock()
         mock_agent.output_lines = deque(["line0", "line1", "line2"])
+        t0, t1, t2 = (datetime(2026, 11, 1, 12, 0, n, tzinfo=timezone.utc) for n in range(3))
+        mock_agent.output_times = deque([t0, t1, t2])
+        mock_agent.output_seq = 3
 
         mock_pa = MagicMock()
         mock_pa.agents = {42: mock_agent}
 
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=1, run_id=42)
+            lines, times = await get_output(since=1, run_id=42)
         assert lines == ["line1", "line2"]
+        assert times == [t1, t2]
 
     async def test_get_output_db_fallback(self, session, tmp_path: Path) -> None:
         """When run_id is not in memory, fall back to DB read."""
@@ -997,8 +1008,183 @@ class TestGetOutputBranches:
         mock_pa.project_dir = tmp_path / "fake"
 
         with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
-            lines = await get_output(since=0, run_id=200)
+            lines, times = await get_output(since=0, run_id=200)
         assert lines == ["db line"]
+        assert len(times) == 1
+        assert times[0] is not None
+
+    async def test_endpoint_times_carry_an_explicit_utc_offset_for_a_finished_run(
+        self, session, tmp_path: Path
+    ) -> None:
+        """SQLite returns naive created_at values; the endpoint must still emit an unambiguous UTC time."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.core.output import OutputWriter
+        from sova.dashboard.routers.agents import get_agent_output
+        from sova.db.models import TaskRun
+
+        async with session.begin():
+            session.add(TaskRun(id=201, role="developer", status="done"))
+
+        writer = OutputWriter(tmp_path / "fake", run_id=201)
+        writer.write_line("one")
+        writer.write_line("two")
+        await writer.close()
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {}
+        mock_pa.project_dir = tmp_path / "fake"
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            body = await get_agent_output(run_id=201, since=0)
+        assert body["lines"] == ["one", "two"]
+        assert len(body["times"]) == 2
+        assert all(t.endswith("+00:00") for t in body["times"])
+
+    async def test_endpoint_times_are_null_for_a_legacy_file_run(self, tmp_path: Path) -> None:
+        """A pre-migration log file has no write times: one null per line, never a 500."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.routers.agents import get_agent_output
+
+        out_dir = tmp_path / ".claude" / "agent-output"
+        out_dir.mkdir(parents=True)
+        (out_dir / "202.log").write_text("first\nsecond\n", encoding="utf-8")
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {}
+        mock_pa.project_dir = tmp_path
+
+        # get_output() imports read_lines when it runs, so patching it on sova.core.output takes effect: the DB read
+        # is empty and the file fallback is the path under test.
+        with (
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa),
+            patch("sova.core.output.read_lines", return_value=([], [], 0)),
+        ):
+            body = await get_agent_output(run_id=202, since=0)
+        assert body["lines"] == ["first", "second"]
+        assert body["times"] == [None, None]
+
+    async def test_endpoint_degrades_to_null_times_when_the_buffers_drifted_apart(self, tmp_path: Path) -> None:
+        """A writer that bypassed AgentState.buffer() must not turn the output read into a 500."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.routers.agents import get_agent_output
+
+        agent = MagicMock()
+        agent.output_lines = deque(["a", "b", "c"], maxlen=5000)
+        agent.output_times = deque([], maxlen=5000)
+        agent.output_seq = 3
+        mock_pa = MagicMock()
+        mock_pa.agents = {203: agent}
+        mock_pa.project_dir = tmp_path
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            body = await get_agent_output(run_id=203, since=1)
+        assert body["lines"] == ["b", "c"]
+        assert body["times"] == [None, None]
+
+    async def test_since_counts_lifetime_lines_after_the_deque_evicted(self) -> None:
+        """A cursor taken from seq keeps working once the 5000-line deque has dropped its oldest lines."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_output import get_output
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState.__new__(AgentState)
+        agent.output_lines = deque(maxlen=3)
+        agent.output_times = deque(maxlen=3)
+        agent.output_seq = 0
+        for n in range(5):
+            agent.buffer(f"l{n}", datetime(2026, 11, 1, 12, 0, n, tzinfo=timezone.utc))
+        mock_pa = MagicMock()
+        mock_pa.agents = {9: agent}
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            everything, _ = await get_output(since=0, run_id=9)
+            tail, tail_times = await get_output(since=4, run_id=9)
+            ahead, _ = await get_output(since=5, run_id=9)
+            behind, _ = await get_output(since=1, run_id=9)
+
+        assert everything == ["l2", "l3", "l4"]
+        assert tail == ["l4"]
+        assert len(tail_times) == 1
+        assert ahead == []
+        assert behind == ["l2", "l3", "l4"]
+
+    async def test_endpoint_total_is_the_lifetime_position_after_the_returned_lines(self) -> None:
+        """A client that cursors on total must not re-read the tail an evicting deque still holds."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.routers.agents import get_agent_output
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState.__new__(AgentState)
+        agent.output_lines = deque(maxlen=3)
+        agent.output_times = deque(maxlen=3)
+        agent.output_seq = 0
+        for n in range(6):
+            agent.buffer(f"l{n}", datetime(2026, 11, 1, 12, 0, n, tzinfo=timezone.utc))
+        mock_pa = MagicMock()
+        mock_pa.agents = {10: agent}
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            first = await get_agent_output(run_id=10, since=0)
+            second = await get_agent_output(run_id=10, since=first["total"])
+            partial = await get_agent_output(run_id=10, since=4)
+        assert first["lines"] == ["l3", "l4", "l5"]
+        assert first["total"] == 6
+        assert second["lines"] == []
+        assert second["total"] == 6, "an empty read keeps the cursor where it was"
+        assert partial["lines"] == ["l4", "l5"]
+        assert partial["total"] == 6
+
+    async def test_endpoint_times_are_null_for_a_line_with_no_recorded_time_among_timed_ones(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.routers.agents import get_agent_output
+
+        stamp = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
+        mock_pa = MagicMock()
+        mock_pa.agents = {}
+        with (
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa),
+            patch("sova.core.output.read_lines", return_value=(["a", "b"], [stamp, None], 2)),
+        ):
+            body = await get_agent_output(run_id=204, since=0)
+        assert body["times"] == [stamp.isoformat(), None]
+        assert len(body["times"]) == len(body["lines"])
+
+    async def test_misalignment_is_sticky_and_logged_once(self) -> None:
+        """Once the buffers drifted, equal lengths do not bring the times back and the log is not repeated."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import agent_output
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState.__new__(AgentState)
+        agent.output_lines = deque(["a", "b"], maxlen=2)
+        agent.output_times = deque([], maxlen=2)
+        agent.output_seq = 2
+        mock_pa = MagicMock()
+        mock_pa.agents = {8: agent}
+
+        with (
+            patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa),
+            patch.object(agent_output, "log") as mock_log,
+        ):
+            _, first = await agent_output.get_output(since=0, run_id=8)
+            agent.output_times.extend([datetime(2026, 11, 1, tzinfo=timezone.utc)] * 2)  # equal lengths again
+            _, second = await agent_output.get_output(since=0, run_id=8)
+
+        assert first == [None, None]
+        assert second == [None, None]
+        assert agent.times_misaligned is True
+        mock_log.warning.assert_called_once()
 
 
 class TestReadStderrFlushTrigger:
@@ -1099,7 +1285,7 @@ class TestEngineRunStderrPersistence:
 
         await _persist_stderr_tail(agent, 201)
 
-        lines, total = await read_lines(project, 201)
+        lines, _times, total = await read_lines(project, 201)
         assert lines == ["=== Workflow started ===", "[stderr] Traceback", "[stderr] ImportError: boom"]
         assert total == 3
 

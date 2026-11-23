@@ -418,8 +418,10 @@ async def test_output_writer_detached_insert_failure_is_observed_and_rebuffered(
     await writer.flush()
     from sova.core.output import read_lines
 
-    lines, total = await read_lines(project, 1)
+    lines, times, total = await read_lines(project, 1)
     assert (lines, total) == (["keep-me-too"], 1)
+    assert len(times) == len(lines)
+    assert all(t is not None for t in times)
     async with await get_session(project_dir=project) as session:
         from sqlalchemy import select
 
@@ -477,9 +479,13 @@ async def test_output_writer_detached_failure_does_not_reuse_committed_line_numb
 
     from sova.core.output import read_lines
 
-    lines, total = await read_lines(project, 1)
+    lines, times, total = await read_lines(project, 1)
     assert total == 2
     assert lines == ["second", "first"]  # "first" retried after "second" already committed line 0
+    # A retried insert keeps the time its line was received, so "first" (written before "second") is not re-stamped.
+    assert len(times) == len(lines)
+    assert all(t is not None for t in times)
+    assert times[1] <= times[0]
 
 
 @pytest.mark.asyncio
