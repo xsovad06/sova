@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Query
 
 from sova.dashboard.services import cost_service
@@ -11,9 +13,11 @@ router = APIRouter()
 
 
 @router.get("/costs/summary", response_model=None, responses={500: {"description": "Internal error"}})
-async def cost_summary() -> dict:
+async def cost_summary(
+    tz: Annotated[str, Query(max_length=200, description="IANA zone for 'today'; an invalid one reads as UTC")] = "UTC",
+) -> dict:
     async with await get_session() as session:
-        return await cost_service.get_summary(session)
+        return await cost_service.get_summary(session, cost_service.resolve_timezone(tz))
 
 
 @router.get("/costs/daily", responses={500: {"description": "Internal error"}})

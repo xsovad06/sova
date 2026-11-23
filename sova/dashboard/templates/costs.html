@@ -107,7 +107,10 @@ function setElementError(elementId, errorText, removeClasses) {
 
 async function loadSummary() {
   try {
-    var summary = await fetchAPI(apiUrl('/costs/summary'));
+    // "Today" starts at midnight in the browser's zone; an unreadable zone falls back to the server's UTC day.
+    var zone = 'UTC';
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { /* keep UTC */ }
+    var summary = await fetchAPI(apiUrl('/costs/summary?tz=' + encodeURIComponent(zone)));
     document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
     document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
     document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);

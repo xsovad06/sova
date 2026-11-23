@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import re
+from datetime import datetime, time, timedelta, timezone, tzinfo
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +16,39 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.costs")
 
+# An IANA name is letters, digits and `_+-/`. Anything else (a path, a dotted escape, a long string) is
+# refused before ZoneInfo sees it, because ZoneInfo reads files named by its argument.
+_TZ_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+\-]*(/[A-Za-z0-9_+\-]+){0,2}")
+_MAX_TZ_NAME_LENGTH = 64
 
-async def get_summary(session: AsyncSession) -> dict:
-    """Aggregate cost summary.
+
+def resolve_timezone(tz_name: str | None) -> tzinfo:
+    """The zone named by ``tz_name``, or UTC for a missing, unknown, malformed or path-like name."""
+    if tz_name and len(tz_name) <= _MAX_TZ_NAME_LENGTH and _TZ_NAME_RE.fullmatch(tz_name):
+        try:
+            return ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            log.debug("costs.timezone_unknown", tz=tz_name)
+    return timezone.utc
+
+
+def timezone_name(zone: tzinfo) -> str:
+    """The IANA name to echo back for ``zone`` ("UTC" for the fallback)."""
+    return getattr(zone, "key", None) or "UTC"
+
+
+def local_midnight(now: datetime, zone: tzinfo) -> datetime:
+    """Midnight of ``now``'s calendar day in ``zone``, as an aware UTC datetime.
+
+    The wall-clock midnight is built on the zone-aware local date and then converted, so on a day with 23 or
+    25 hours "today" still starts at local midnight rather than at a fixed 24-hour offset.
+    """
+    local_date = now.astimezone(zone).date()
+    return datetime.combine(local_date, time.min, tzinfo=zone).astimezone(timezone.utc)
+
+
+async def get_summary(session: AsyncSession, zone: tzinfo = timezone.utc) -> dict:
+    """Aggregate cost summary. "Today" starts at midnight in ``zone`` (UTC unless the caller passes one).
 
     Uses TaskRun.total_cost_usd for totals (always written, even for paused runs)
     and TaskRun count for invocations.  CostRecord is used for per-model/phase breakdowns.
@@ -25,7 +57,7 @@ async def get_summary(session: AsyncSession) -> dict:
     count = await session.scalar(select(func.count(TaskRun.id))) or 0
 
     now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = local_midnight(now, zone)
     today_total = (
         await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= today_start)) or 0
     )
