@@ -68,6 +68,10 @@ def role_for_state(state: TaskState) -> str | None:
     return _STATE_TO_ROLE.get(state)
 
 
+class UnknownRoleError(ValueError):
+    """A role name that is neither a built-in, a nickname nor a stored custom role (not one that failed to load)."""
+
+
 def get_role(name: str, *, config: RolesConfig | None = None) -> AgentRole:
     """Get a role instance by name, resolving nicknames if configured.
 
@@ -78,7 +82,7 @@ def get_role(name: str, *, config: RolesConfig | None = None) -> AgentRole:
     role_cls = _ROLES.get(name)
     if role_cls is None:
         available = ", ".join(sorted(_ROLES.keys()))
-        raise ValueError(f"Unknown role: {name!r}. Available: {available}")
+        raise UnknownRoleError(f"Unknown role: {name!r}. Available: {available}")
 
     return role_cls()
 
@@ -130,7 +134,7 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
         raise
 
     available = ", ".join(sorted(_ROLES.keys()))
-    raise ValueError(f"Unknown role: {name!r}. Available built-in: {available}")
+    raise UnknownRoleError(f"Unknown role: {name!r}. Available built-in: {available}")
 
 
 async def dispatch(

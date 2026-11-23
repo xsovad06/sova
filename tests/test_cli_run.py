@@ -213,6 +213,42 @@ class TestRunResume:
         assert f"Resuming from run #{run_id} (skipping 2 completed steps)" in result.stderr
         assert f"Resuming workflow for #42 from run #{run_id}" in result.stderr
 
+    def test_a_resume_keeps_the_resumed_runs_role_over_the_tracker_state(
+        self, run_project: Path, fake_gh: FakeGh
+    ) -> None:
+        # An in-review issue dispatches to the reviewer by state; the resumed run was a triage run.
+        fake_gh.respond_json("issue", "view", "50", payload=_issue(50, labels=("agent:in-review",)))
+        run_id = asyncio.run(_seed_run(run_project, issue_number="50", status="failed", role="triage"))
+
+        result = _run("50", "--resume", str(run_id), project=run_project)
+
+        assert "(triage)" in result.stderr, result.stderr
+        assert "reviewer" not in result.stderr
+
+    def test_a_resume_whose_recorded_role_no_longer_exists_falls_back_to_the_tracker_state(
+        self, run_project: Path, fake_gh: FakeGh
+    ) -> None:
+        fake_gh.respond_json("issue", "view", "50", payload=_issue(50, labels=("agent:in-review",)))
+        run_id = asyncio.run(_seed_run(run_project, issue_number="50", status="failed", role="removed-custom-role"))
+
+        result = _run("50", "--resume", str(run_id), project=run_project)
+
+        assert "removed-custom-role" in result.stderr
+        assert "no longer exists" in result.stderr
+        assert "Unknown role" not in result.stderr
+        assert "(reviewer)" in result.stderr, result.stderr
+
+    def test_a_recorded_role_that_exists_but_fails_to_load_is_not_reported_as_removed(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.cli.commands.run import _known_checkpoint_role
+
+        with patch(
+            "sova.roles.dispatcher.get_role_async", new_callable=AsyncMock, side_effect=ValueError("bad config")
+        ):
+            with pytest.raises(ValueError, match="bad config"):
+                asyncio.run(_known_checkpoint_role("custom-role", None))
+
 
 class TestParallel:
     def test_reports_one_result_row_per_issue(self, run_project: Path, fake_gh: FakeGh) -> None:

@@ -18,6 +18,7 @@ from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.config.models import RolesConfig
     from sova.core.context import ExecutionContext
 
 console = Console(stderr=True)
@@ -118,7 +119,11 @@ async def _run_workflow(
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
 
-    actual_role = role_name or checkpoint.get("role") or config.roles.default
+    # A resume continues the resumed run's role. Without it dispatch() picks a role from the tracker state, which
+    # for a developer address-review run whose PR is in review is the reviewer: it reviews the pushed code again
+    # instead of finishing the unpushed fixes.
+    dispatch_role = role_name or await _known_checkpoint_role(checkpoint.get("role"), config.roles)
+    actual_role = dispatch_role or config.roles.default
 
     # A dashboard-spawned run (--run-id) was already checked, or deliberately not, by start_agent(), and a
     # resume continues a run that started. Only an issue the user typed on the command line is checked here.
@@ -167,7 +172,7 @@ async def _run_workflow(
     # counts this run when it splits the cores (sova.utils.agent_leases).
     lease = acquire_lease()
     try:
-        role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
+        role, result = await dispatch(ctx, role_name=dispatch_role, config=config.roles)
         # Inside the try: a SIGTERM landing during this write takes the shielded shutdown path below,
         # which records the cost itself, instead of cancelling the write with nothing to replace it.
         # ctx.task_run_id, not task_run_id: dispatch() opens a TaskRun for a role outside WorkflowEngine
@@ -205,6 +210,27 @@ async def _resume_checkpoint(resume_run_id: int | None, issue: str) -> dict:
         f"(skipping {len(checkpoint.get('completed_steps', set()))} completed steps)[/bold]"
     )
     return checkpoint
+
+
+async def _known_checkpoint_role(role: str | None, roles_config: RolesConfig) -> str | None:
+    """The checkpoint's role when it still resolves to a built-in, nickname or custom role, else None.
+
+    A role renamed or deleted since the run was recorded would fail the resume on an unknown role, where a
+    resume that names none falls back to state-based dispatch. A role that exists but fails to load is not
+    an unknown one: that error propagates instead of silently switching to a state-chosen role.
+    """
+    if not role:
+        return None
+    from sova.roles.dispatcher import UnknownRoleError, get_role_async
+
+    try:
+        await get_role_async(role, config=roles_config)
+    except UnknownRoleError:
+        console.print(
+            f"[yellow]Role {role!r} of the resumed run no longer exists; choosing one from the issue state[/yellow]"
+        )
+        return None
+    return role
 
 
 async def _refuse_unsuitable_issue(issue: str, role: str | None, project_dir: Path) -> None:
