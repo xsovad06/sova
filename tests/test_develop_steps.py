@@ -481,6 +481,39 @@ class TestSelfReviewStep:
         assert mock_invoke.call_args[0][1] == "/review"
         assert mock_invoke.call_args.kwargs["task_type"] == "self_review"
 
+    async def test_execute_passes_issue_acceptance_criteria(self, tmp_path: Path) -> None:
+        """The reviewer grades against the issue's criteria, so the self-review must check them first."""
+        from sova.adapters.base import Task
+        from sova.core.steps.self_review import SelfReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = Task(
+            id="42", title="t", body="## Summary\nx\n\n## Acceptance Criteria\n- [ ] Escape closes the panel\n"
+        )
+        with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text="ok", model="m", cost_usd=Decimal("0"))
+            await SelfReviewStep().execute(ctx)
+
+        args = mock_invoke.call_args.kwargs["args"]
+        assert args.startswith("## Issue Acceptance Criteria")
+        assert "Escape closes the panel" in args
+
+    @pytest.mark.parametrize("body", [None, "", "## Summary\nNo criteria here.\n"])
+    async def test_execute_without_criteria_reviews_whole_branch(self, tmp_path: Path, body: str | None) -> None:
+        """No task, an empty body or a body without criteria sends no arguments, which reviews the whole branch."""
+        from sova.adapters.base import Task
+        from sova.core.steps.self_review import SelfReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(tmp_path, worktree_dir=tmp_path / "worktree")
+        ctx.task = None if body is None else Task(id="42", title="t", body=body)
+        with patch("sova.core.steps.self_review.dispatch_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(text="ok", model="m", cost_usd=Decimal("0"))
+            await SelfReviewStep().execute(ctx)
+
+        assert mock_invoke.call_args.kwargs["args"] == ""
+
     async def test_execute_handles_runtime_error(self, tmp_path: Path) -> None:
         from sova.core.steps.self_review import SelfReviewStep
 

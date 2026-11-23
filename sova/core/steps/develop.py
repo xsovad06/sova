@@ -21,6 +21,7 @@ from pathlib import Path
 from sova.core.agent_dispatch import dispatch_command, dispatch_prompt
 from sova.core.check_cache import has_recorded_pass, record_result, snapshot_untracked
 from sova.core.context import BUDGET_STOP_RETRY_THRESHOLD, ExecutionContext
+from sova.core.steps._spec_helpers import issue_criteria_for_prompt
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.steps.research import split_research_section
 from sova.git.artifact_exclusions import RUNTIME_ARTIFACT_PREFIXES
@@ -28,6 +29,7 @@ from sova.llm.client import invoke
 from sova.llm.errors import format_fix_llm_failure
 from sova.llm.payload import TRUNCATION_MARKER, trim_payload
 from sova.utils.env import scrub_check_env
+from sova.utils.issue_criteria import DEVELOP_PURPOSE
 from sova.utils.logging import get_logger
 from sova.utils.prompt_quoting import quote_untrusted
 from sova.utils.shell import run
@@ -539,6 +541,7 @@ async def _build_develop_args(ctx: ExecutionContext) -> tuple[str, str]:
             f"{ctx.issue_number}\n\n"
             "## Spec Context (use as primary task context: do NOT re-fetch the issue body)\n\n"
             f"{spec_context}"
+            f"{issue_criteria_for_prompt(ctx, purpose=DEVELOP_PURPOSE)}"
         )
         return args, spec_note
     issue_context = await _issue_context_for_develop(ctx)

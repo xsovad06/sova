@@ -628,6 +628,24 @@ class TestBuildDevelopArgs:
         assert args.endswith("do NOT re-fetch the issue body)\n\nSPEC BODY")
         assert note == ""
 
+    async def test_build_develop_args_appends_issue_acceptance_criteria(self, tmp_path: Path) -> None:
+        """The spec omits the issue's criteria and develop must not re-fetch the issue, so they ride along."""
+        from unittest.mock import AsyncMock
+
+        from sova.adapters.base import Task
+        from sova.core.steps.develop import _build_develop_args
+
+        ctx = self._ctx(tmp_path)
+        ctx.task = Task(id="42", title="t", body="## Acceptance Criteria\n- [ ] Opens at the newest message\n")
+        with (
+            patch("sova.core.steps.develop._load_spec_for_develop", return_value=("SPEC BODY", "")),
+            patch("sova.core.steps.develop._spec_drift_caveat", new=AsyncMock(return_value="")),
+        ):
+            args, _ = await _build_develop_args(ctx)
+        assert args.index("SPEC BODY") < args.index("## Issue Acceptance Criteria")
+        assert "Opens at the newest message" in args
+        assert "the reviewer checks each one" in args
+
     async def test_build_develop_args_falls_back_to_issue_context(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock
 

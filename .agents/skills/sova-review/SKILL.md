@@ -25,6 +25,7 @@ Determine the review scope:
 - **No arguments**: review all commits on the current branch vs the base branch (`git diff "origin/$BASE"...HEAD`) plus tracked uncommitted changes, staged and unstaged (`git diff HEAD`); list and inspect untracked files separately with `git ls-files --others --exclude-standard`
 - **PR number**: fetch that PR's diff via `gh pr diff <number>`
 - **File paths or module names**: focus review on those files only, but still read full diff for context
+- **An `## Issue Acceptance Criteria` block**: review as with no arguments, and check the diff meets each criterion; an unmet one scores at least 7/10
 
 ## 2. Read Changed Files in Full
 

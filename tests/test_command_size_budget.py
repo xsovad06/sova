@@ -71,7 +71,9 @@ _COMMAND_CAPS: dict[str, int] = {
     # line, the "missing tests" bullet, and the "These lists exist" sentence, and by shortening Step 9.
     # Issue #1455 raised this by 100 for the sentence naming both the full and the fast check, which lets the
     # agent tell from the rendered text whether to run the fast check alone.
-    "review.md": 12_500,
+    # The review-convergence change raised this by 150 for the scope bullet that checks a passed
+    # Issue Acceptance Criteria block, which the self-review step now sends so it grades like the reviewer.
+    "review.md": 12_650,
     # Issue #1361 raised this by 500 for the review-summary clause on the most-repeated-rules pass and the
     # double-dash check that runs before the review is posted.
     # Issue #1418 raised this by 1,200 for the per-criterion acceptance check that replaced the PR body's

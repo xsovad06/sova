@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.core.spec_utils import find_spec_file
+from sova.utils.issue_criteria import extract_issue_criteria_block
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
+
+if TYPE_CHECKING:
+    from sova.core.context import ExecutionContext
 
 log = get_logger(component="step.spec_helpers")
 
@@ -19,6 +24,18 @@ SECTION_DESIGN_DECISIONS = "Design Decisions"
 SECTION_SCOPE_BOUNDARIES = "Scope Boundaries"
 SECTION_IMPLEMENTATION_NOTES = "Implementation Notes"
 SECTION_REVIEW_RATIONALE = "Review Rationale"
+
+
+def issue_criteria_for_prompt(ctx: ExecutionContext, *, purpose: str) -> str:
+    """Return the issue's quoted Acceptance Criteria block for a step prompt, or "" when there is none.
+
+    The reviewer grades every PR against these sections, so a step that writes
+    or checks the change must see them first. ``ctx.task`` is unset (or carries
+    no body) on a PR-only run, which yields "".
+    """
+    body = getattr(ctx.task, "body", None)
+    return extract_issue_criteria_block(body, purpose=purpose) if isinstance(body, str) else ""
+
 
 # Common heading tuples used by pipeline steps
 SPEC_PLAN_SECTIONS = (SECTION_SOLUTION, SECTION_DESIGN_DECISIONS)
