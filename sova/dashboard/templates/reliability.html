@@ -109,14 +109,16 @@ async function loadSuccessByRole(days) {
         <th class="text-left pb-2">Success Rate</th>
         <th class="text-right pb-2">Done</th>
         <th class="text-right pb-2">Failures</th>
-        <th class="text-right pb-2">Incomplete</th>
+        <th class="text-right pb-2">Paused by SOVA</th>
+        <th class="text-right pb-2">Stopped by you</th>
         <th class="text-right pb-2">Total</th>
       </tr></thead>
       <tbody>${rows.map(function(row) {
-        var pct = row.success_rate * 100;
+        // success / (success + failures): halted runs are reported beside the rate, not in it.
+        var pct = (row.success_rate || 0) * 100;
         var barColor = row.insufficient_data ? 'bg-gray-500' : (pct >= 70 ? 'bg-accent-green' : (pct >= 40 ? 'bg-accent-yellow' : 'bg-red-500'));
         var rateLabel = row.insufficient_data
-          ? '<span class="text-gray-500 text-xs">too few runs (' + row.total_runs + ')</span>'
+          ? '<span class="text-gray-500 text-xs">too few runs (' + (row.done + row.failures) + ')</span>'
           : pct.toFixed(1) + '%';
         return `<tr class="border-t border-gray-700/30">
           <td class="py-2 text-accent">${escapeHtml(row.role)}</td>
@@ -130,7 +132,8 @@ async function loadSuccessByRole(days) {
           </td>
           <td class="py-2 text-right text-accent-green">${row.done}</td>
           <td class="py-2 text-right text-red-400">${row.failures}</td>
-          <td class="py-2 text-right text-gray-400">${row.incomplete}</td>
+          <td class="py-2 text-right text-gray-400">${esc(row.paused_by_sova)}</td>
+          <td class="py-2 text-right text-gray-400">${esc(row.stopped_by_user)}</td>
           <td class="py-2 text-right text-gray-400">${row.total_runs}</td>
         </tr>`;
       }).join('')}</tbody>

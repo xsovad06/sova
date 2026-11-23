@@ -12,6 +12,7 @@ import pytest
 from sova.dashboard.services import reliability_service
 from sova.db.models import CostRecord, StepExecution, TaskRun
 from sova.db.session import get_session
+from sova.supervisor.watchdog import AnomalySignal
 
 NOW = datetime.now(timezone.utc)
 
@@ -28,13 +29,22 @@ async def _add(*objs) -> None:
         await session.commit()
 
 
-def _run(role: str, status: str, *, days_ago: int = 1, cost: str = "0", error: str | None = None) -> TaskRun:
+def _run(
+    role: str,
+    status: str,
+    *,
+    days_ago: int = 1,
+    cost: str = "0",
+    error: str | None = None,
+    termination_reason: str | None = None,
+) -> TaskRun:
     return TaskRun(
         role=role,
         status=status,
         started_at=NOW - timedelta(days=days_ago),
         total_cost_usd=Decimal(cost),
         error_message=error,
+        termination_reason=termination_reason,
     )
 
 
@@ -192,19 +202,47 @@ class TestClassifyFailureCause:
 
 
 class TestStatusPartition:
-    def test_failure_and_incomplete_partition_terminal_statuses(self) -> None:
-        """get_success_by_role() promises done + failures + incomplete == total_runs.
+    def test_every_terminal_status_lands_in_exactly_one_bucket(self) -> None:
+        """get_success_by_role() promises done + failures + paused_by_sova + stopped_by_user == total_runs.
 
-        That only holds while _FAILURE_STATUSES and _INCOMPLETE_STATUSES together
-        cover every terminal status except "done". A new TaskRun status added to
-        TASK_RUN_TERMINAL without a bucket here would land in total_runs and in
-        neither column, silently breaking the reconciliation.
+        That only holds while classify_run_outcome() buckets every terminal
+        status. A new TaskRun status added to TASK_RUN_TERMINAL without a bucket
+        raises here instead of landing in total_runs and in no column.
         """
-        from sova.core.state import TASK_RUN_TERMINAL
+        from sova.core.state import FAILURE_STATUSES, TASK_RUN_TERMINAL, RunOutcome, classify_run_outcome
 
-        buckets = reliability_service._FAILURE_STATUSES | reliability_service._INCOMPLETE_STATUSES
-        assert buckets == TASK_RUN_TERMINAL - {"done"}
-        assert not (reliability_service._FAILURE_STATUSES & reliability_service._INCOMPLETE_STATUSES)
+        # The expected partition is spelled out, so a new terminal status forces a deliberate update here, and a
+        # status moved to the wrong bucket (interrupted as paused, paused as a failure) fails by name.
+        expected = {
+            "done": RunOutcome.SUCCESS,
+            "failed": RunOutcome.FAILURE,
+            "rejected": RunOutcome.FAILURE,
+            "interrupted": RunOutcome.FAILURE,
+            "paused": RunOutcome.PAUSED_BY_SOVA,
+            "awaiting_approval": RunOutcome.PAUSED_BY_SOVA,
+            "stopped": RunOutcome.PAUSED_BY_SOVA,
+        }
+        assert set(expected) == TASK_RUN_TERMINAL
+        for status, outcome in expected.items():
+            assert classify_run_outcome(status) is outcome, status
+        assert {s for s, o in expected.items() if o is RunOutcome.FAILURE} == FAILURE_STATUSES
+        # A user's stop is the one case the status alone does not decide.
+        assert classify_run_outcome("stopped", "manual_stop") is RunOutcome.STOPPED_BY_USER
+
+    @pytest.mark.parametrize("reason", [None, "manual_stop", *[m.value for m in AnomalySignal], "some_future_reason"])
+    def test_stopped_is_the_users_only_for_a_manual_stop(self, reason: str | None) -> None:
+        from sova.core.state import RunOutcome, classify_run_outcome
+
+        outcome = classify_run_outcome("stopped", reason)
+        assert isinstance(outcome, RunOutcome)
+        expected = RunOutcome.STOPPED_BY_USER if reason == "manual_stop" else RunOutcome.PAUSED_BY_SOVA
+        assert outcome is expected
+
+    def test_non_terminal_status_raises(self) -> None:
+        from sova.core.state import classify_run_outcome
+
+        with pytest.raises(ValueError):
+            classify_run_outcome("running")
 
 
 class TestGetSuccessByRole:
@@ -240,20 +278,51 @@ class TestGetSuccessByRole:
             rows = await reliability_service.get_success_by_role(session)
         assert rows[0]["total_runs"] == 10
 
-    async def test_paused_and_awaiting_approval_are_incomplete_not_failure(self) -> None:
+    async def test_halted_runs_are_outside_the_rate(self) -> None:
         await _add(
             *[_run("developer", "done") for _ in range(8)],
+            *[_run("developer", "failed") for _ in range(2)],
             _run("developer", "paused"),
             _run("developer", "awaiting_approval"),
+            _run("developer", "stopped", termination_reason="manual_stop"),
+            _run("developer", "stopped", termination_reason=AnomalySignal.MEMORY_PRESSURE.value),
+            _run("developer", "stopped"),
         )
         async with await get_session() as session:
             rows = await reliability_service.get_success_by_role(session)
         row = rows[0]
-        assert row["total_runs"] == 10
-        assert row["done"] == 8
-        assert row["failures"] == 0
-        assert row["incomplete"] == 2
+        assert row["total_runs"] == 15
+        assert (row["done"], row["failures"]) == (8, 2)
+        assert (row["paused_by_sova"], row["stopped_by_user"]) == (4, 1)
         assert row["success_rate"] == 0.8
+        assert row["insufficient_data"] is False
+
+    async def test_halted_runs_do_not_count_toward_the_ten_run_threshold(self) -> None:
+        # 9 finished runs plus 3 halted ones: total_runs is 12, but only the 9 finished runs are rated.
+        await _add(
+            *[_run("developer", "done") for _ in range(8)],
+            _run("developer", "failed"),
+            *[_run("developer", "paused") for _ in range(3)],
+        )
+        async with await get_session() as session:
+            rows = await reliability_service.get_success_by_role(session)
+        row = rows[0]
+        assert row["total_runs"] == 12
+        assert row["insufficient_data"] is True
+        assert row["success_rate"] == round(8 / 9, 4)
+
+    async def test_ten_finished_runs_are_enough_for_a_rate(self) -> None:
+        await _add(*[_run("developer", "done") for _ in range(9)], _run("developer", "failed"))
+        async with await get_session() as session:
+            rows = await reliability_service.get_success_by_role(session)
+        assert rows[0]["insufficient_data"] is False
+
+    async def test_only_halted_runs_have_no_rate(self) -> None:
+        await _add(_run("developer", "paused"))
+        async with await get_session() as session:
+            rows = await reliability_service.get_success_by_role(session)
+        assert rows[0]["success_rate"] is None
+        assert rows[0]["insufficient_data"] is True
 
     async def test_unknown_role_string_still_appears(self) -> None:
         await _add(*[_run("some-removed-custom-role", "done") for _ in range(10)])
@@ -294,7 +363,7 @@ class TestGetSuccessByRole:
         # comparing None to str.
         class FakeResult:
             def all(self):
-                return [SimpleNamespace(role=None, status="done", count=1)]
+                return [SimpleNamespace(role=None, status="done", termination_reason=None, count=1)]
 
         session = AsyncMock()
         session.execute.return_value = FakeResult()
@@ -475,7 +544,7 @@ class TestGetSpendByOutcome:
     async def test_non_completing_statuses_matches_terminal_minus_done(self) -> None:
         """reliability.html derives its "Non-Completing" card label from this list
         instead of hardcoding the status set, so it cannot drift silently (the same
-        class of bug TestStatusPartition guards against for the failure/incomplete
+        class of bug TestStatusPartition guards against for the outcome
         buckets).
         """
         from sova.core.state import TASK_RUN_TERMINAL
