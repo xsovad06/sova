@@ -306,8 +306,13 @@ async def attach_titles(project_dir: Path | None, payload: dict) -> dict:
         (g["issue_number"] for g in groups if g["issue_number"]),
         (g["pr_number"] for g in groups if g["pr_number"] and not g["issue_number"]),
     )
-    for group in groups:
-        group["title"] = (
-            issue_titles.get(group["issue_number"]) if group["issue_number"] else pr_titles.get(group["pr_number"])
-        )
-    return payload
+    titled = [
+        {
+            **group,
+            "title": (
+                issue_titles.get(group["issue_number"]) if group["issue_number"] else pr_titles.get(group["pr_number"])
+            ),
+        }
+        for group in groups
+    ]
+    return {**payload, "groups": titled}
