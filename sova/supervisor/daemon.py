@@ -350,6 +350,7 @@ class SupervisorDaemon:
                     session,
                     cfg.coderabbit_quota,
                     project_slug=cfg.github_repo,
+                    repo=cfg.github_repo,
                 )
 
             await self._log_decision(

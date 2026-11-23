@@ -282,7 +282,11 @@ class TaskProgressionEngine:
 
         global_memory = check_memory_pressure_gate(cfg.memory_guard)
         global_quota = await check_quota_gate(
-            is_developer=True, quota_config=cfg.coderabbit_quota, session_factory=self._session_factory
+            is_developer=True,
+            quota_config=cfg.coderabbit_quota,
+            session_factory=self._session_factory,
+            repo=cfg.github_repo,
+            github_user=cfg.github_user,
         )
         global_ci_budget = await check_ci_budget_gate(
             is_developer=True,
@@ -1206,6 +1210,8 @@ class TaskProgressionEngine:
                 is_developer=is_developer,
                 quota_config=cfg.coderabbit_quota,
                 session_factory=self._session_factory,
+                repo=cfg.github_repo,
+                github_user=cfg.github_user,
             )
         elif is_developer:
             quota_block = precomputed_quota

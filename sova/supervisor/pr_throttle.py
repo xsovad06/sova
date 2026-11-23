@@ -338,7 +338,7 @@ async def process_queue(
         # Check quota
         from sova.supervisor.coderabbit_quota import get_quota_status
 
-        quota = await get_quota_status(session, config, project_slug=project_slug)
+        quota = await get_quota_status(session, config, project_slug=project_slug, repo=project_slug)
         if not quota.can_create_pr:
             log.debug("pr_throttle.quota_exhausted", next_minutes=quota.next_available_minutes)
             return 0

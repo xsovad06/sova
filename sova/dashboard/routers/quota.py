@@ -6,17 +6,40 @@ from fastapi import APIRouter, HTTPException
 
 from sova.config.context import get_project_dir
 from sova.config.loader import load_config
+from sova.dashboard.config_errors import load_config_or_http
 from sova.db.session import get_session
-from sova.supervisor.coderabbit_quota import get_quota_status, sync_from_github
+from sova.supervisor.coderabbit_quota import (
+    get_quota_status,
+    is_sync_stale,
+    start_background_sync,
+    sync_from_github,
+)
 
 router = APIRouter()
 
 
 @router.get("/quota/coderabbit", responses={500: {"description": "Internal error"}})
 async def coderabbit_quota() -> dict:
-    cfg = load_config(get_project_dir())
+    """Answer from the stored count at once; a stale one starts a background sync instead of waiting for it.
+
+    The sync starts only when CodeRabbit is a configured review tool (otherwise the tile is hidden and nobody
+    reads the figures), and ``start_background_sync()`` holds it back after a failed attempt.
+    """
+    project_dir = get_project_dir()
+    cfg = load_config_or_http(lambda: load_config(project_dir), event="quota.coderabbit.config_load_failed")
+    configured = "coderabbit" in cfg.external_reviews.tools
     if not cfg.coderabbit_quota.enabled:
-        return {"enabled": False}
+        return {"enabled": False, "configured": configured}
+
+    refreshing = bool(configured and cfg.github_repo and is_sync_stale(cfg.github_repo))
+    if refreshing:
+        start_background_sync(
+            cfg.github_repo,
+            cfg.coderabbit_quota,
+            project_dir=project_dir,
+            project_slug=cfg.github_repo,
+            github_user=cfg.github_user,
+        )
 
     async with await get_session() as session:
         status = await get_quota_status(
@@ -24,21 +47,30 @@ async def coderabbit_quota() -> dict:
             cfg.coderabbit_quota,
             project_slug=cfg.github_repo,
             repo=cfg.github_repo,
+            fetch_stars=False,
         )
     return {
         "enabled": status.enabled,
+        "configured": configured,
+        "refreshing": refreshing,
         "reviews_in_window": status.reviews_in_window,
         "reviews_per_hour": status.reviews_per_hour,
         "can_create_pr": status.can_create_pr,
         "next_available_minutes": status.next_available_minutes,
         "window_minutes": status.window_minutes,
         "synced_at": status.synced_at,
+        "auto_review_eligible": status.auto_review_eligible,
+        "stars": status.stars,
+        "limit_from_10_stars": status.limit_from_10_stars,
+        "limit_scales_with_stars": status.limit_scales_with_stars,
+        "limit_is_explicit": status.limit_is_explicit,
     }
 
 
 @router.post("/quota/coderabbit/sync", responses={500: {"description": "Internal error"}})
 async def sync_coderabbit_quota() -> dict:
-    cfg = load_config(get_project_dir())
+    project_dir = get_project_dir()
+    cfg = load_config_or_http(lambda: load_config(project_dir), event="quota.coderabbit_sync.config_load_failed")
     if not cfg.coderabbit_quota.enabled:
         return {"enabled": False, "synced": 0}
 
