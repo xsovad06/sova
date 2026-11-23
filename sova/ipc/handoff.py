@@ -169,6 +169,19 @@ def _closing_handoff_path(cdir: Path, issue: str, pr_number: int) -> Path:
     return cdir / (handoff_filename(issue) if issue else f"handoff-pr-{pr_number}.json")
 
 
+def _closing_handoff_data(cdir: Path, path: Path, source: str, issue: str, pr_number: int) -> dict:
+    """The handoff data a closing summary merges into: the keyed file, this run's legacy file, else a fresh one."""
+    data = _read_json_object(path)
+    if data is not None:
+        return data
+    # A handoff written before the keyed file existed: keep its next actions when it is this run's.
+    legacy = _read_json_object(cdir / "handoff.json")
+    if legacy is not None and str(legacy.get("issue") or "") == issue:
+        if issue or legacy.get("pr_number") in (None, pr_number):
+            return legacy
+    return {"source": source, "status": "completed", "issue": issue, "pr_number": pr_number}
+
+
 def record_closing_summary(
     project_dir: Path,
     *,
@@ -197,15 +210,7 @@ def record_closing_summary(
 
     cdir = _control_dir(project_dir)
     path = _closing_handoff_path(cdir, issue, pr_number)
-    data = _read_json_object(path)
-    if data is None:
-        # A handoff written before the keyed file existed: keep its next actions when it is this run's.
-        legacy = _read_json_object(cdir / "handoff.json")
-        if legacy is not None and str(legacy.get("issue") or "") == issue:
-            if issue or legacy.get("pr_number") in (None, pr_number):
-                data = legacy
-    if data is None:
-        data = {"source": source, "status": "completed", "issue": issue, "pr_number": pr_number}
+    data = _closing_handoff_data(cdir, path, source, issue, pr_number)
     if str(data.get("issue") or "") != issue:
         raise ClosingSummaryError("Closing summary not recorded: the handoff file belongs to another issue")
     if data.get("pr_number") not in (None, pr_number) and not issue:
