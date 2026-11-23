@@ -14,6 +14,7 @@ import asyncio
 import time
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from sova.config.loader import load_config
 from sova.dashboard.services.snapshot_service import peek_snapshot
@@ -139,6 +140,28 @@ async def _lookup_all(
         _close_in_background(adapter)
 
 
+def _apply_cached(project: str, kind: str, wanted: Iterable[Any], titles: dict[Any, str]) -> list[Any]:
+    """Copy each cached title (fresh or expired) into ``titles``; return the ones that need a tracker lookup."""
+    missing: list[Any] = []
+    for number in wanted:
+        fresh, title = _cached((project, kind, str(number)))
+        if title:
+            titles[number] = title
+        if not fresh:
+            missing.append(number)
+    return missing
+
+
+def _remember_answers(project: str, kind: str, asked: Iterable[Any], found: dict[Any, str]) -> None:
+    """Cache each answer the tracker gave; a lookup with no answer is remembered as unavailable."""
+    for number in asked:
+        key = (project, kind, str(number))
+        if number in found:
+            _remember(key, found[number])
+        else:
+            _remember_failure(key)
+
+
 async def resolve_titles(
     project_dir: Path | None, issues: Iterable[str], prs: Iterable[int]
 ) -> tuple[dict[str, str], dict[int, str]]:
@@ -146,21 +169,9 @@ async def resolve_titles(
     wanted_issues, wanted_prs = set(issues), set(prs)
     issue_titles, pr_titles = _from_snapshot(project_dir, wanted_issues, wanted_prs)
     project = str(project_dir)
-    missing_issues: list[str] = []
-    missing_prs: list[int] = []
     # An expired title still shows, and is asked for again; it stays if the tracker does not answer.
-    for issue in wanted_issues - issue_titles.keys():
-        fresh, title = _cached((project, "issue", issue))
-        if title:
-            issue_titles[issue] = title
-        if not fresh:
-            missing_issues.append(issue)
-    for pr in wanted_prs - pr_titles.keys():
-        fresh, title = _cached((project, "pr", str(pr)))
-        if title:
-            pr_titles[pr] = title
-        if not fresh:
-            missing_prs.append(pr)
+    missing_issues = _apply_cached(project, "issue", wanted_issues - issue_titles.keys(), issue_titles)
+    missing_prs = _apply_cached(project, "pr", wanted_prs - pr_titles.keys(), pr_titles)
     if not (missing_issues or missing_prs):
         return issue_titles, pr_titles
 
@@ -176,18 +187,8 @@ async def resolve_titles(
     # An answer is remembered as such (an empty title is the tracker's answer: no title). A lookup that failed or ran
     # out of time left no entry in found_*: it is remembered as unavailable for the miss window, so requests inside
     # it skip the tracker, and it neither renews nor drops a stale title, which keeps showing meanwhile.
-    for issue in missing_issues:
-        key = (project, "issue", issue)
-        if issue in found_issues:
-            _remember(key, found_issues[issue])
-        else:
-            _remember_failure(key)
-    for pr in missing_prs:
-        key = (project, "pr", str(pr))
-        if pr in found_prs:
-            _remember(key, found_prs[pr])
-        else:
-            _remember_failure(key)
+    _remember_answers(project, "issue", missing_issues, found_issues)
+    _remember_answers(project, "pr", missing_prs, found_prs)
     issue_titles.update({k: v for k, v in found_issues.items() if v})
     pr_titles.update({k: v for k, v in found_prs.items() if v})
     return issue_titles, pr_titles
