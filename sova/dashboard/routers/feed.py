@@ -1,4 +1,4 @@
-"""Activity feed router: SSE stream, history, and briefing endpoints."""
+"""Activity feed router: SSE stream, history, activity narration, and briefing endpoints."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from sova.config.context import get_project_dir
-from sova.dashboard.services import awareness_service
+from sova.dashboard.services import awareness_service, feed_activity_service
 from sova.dashboard.services.feed_service import FeedService, get_feed_service
 from sova.utils.logging import get_logger
 
@@ -55,9 +55,9 @@ async def feed_stream(request: Request) -> StreamingResponse:
 @router.get("/feed/history")
 async def feed_history(
     feed: Annotated[FeedService, Depends(get_feed_service)],
-    since_id: int = Query(0, ge=0),
-    before_id: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    since_id: Annotated[int, Query(ge=0)] = 0,
+    before_id: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict:
     """Return feed events.
 
@@ -93,6 +93,15 @@ async def feed_history(
             cursor = older[0]["id"]
         result["events"] = all_backfill + result["events"]
     return result
+
+
+@router.get("/feed/activity")
+async def feed_activity(tz: Annotated[str | None, Query()] = None) -> dict[str, Any]:
+    """The feed as narration: today, what needs the user, background counts and past periods.
+
+    ``tz`` is the browser's IANA zone; a missing or unknown one is read as UTC. Scoped to the request's project.
+    """
+    return await feed_activity_service.build_activity(get_project_dir(), tz)
 
 
 @router.get("/feed/briefing")

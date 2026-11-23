@@ -188,13 +188,13 @@ def history_filters(
     if number_clause is not None:
         shared.append(number_clause)
     if since is not None:
-        shared.append(TaskRun.started_at >= _as_utc(since))
+        shared.append(TaskRun.started_at >= as_utc(since))
     if until is not None:
-        shared.append(TaskRun.started_at < _as_utc(until))
+        shared.append(TaskRun.started_at < as_utc(until))
     return shared, [*shared, TaskRun.status == status] if status else shared
 
 
-def _as_utc(dt: datetime) -> datetime:
+def as_utc(dt: datetime) -> datetime:
     """An aware UTC datetime; a naive one is taken as UTC, the way the database stores every timestamp."""
     return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
@@ -277,7 +277,7 @@ def _compute_duration_ms(started_at: datetime | None, ended_at: datetime | None)
     """Compute duration in milliseconds between two timestamps."""
     if not started_at or not ended_at:
         return None
-    return int((_as_utc(ended_at) - _as_utc(started_at)).total_seconds() * 1000)
+    return int((as_utc(ended_at) - as_utc(started_at)).total_seconds() * 1000)
 
 
 def _resolve_variant(step_names: set[str], current_step: str | None, role: str | None, pr_number: int | None) -> str:

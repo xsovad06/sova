@@ -73,6 +73,10 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     Finds the action by ID in next_actions, resolves execution params,
     archives the handoff, and starts the appropriate agent or command.
     Supports both file-backed and synthesized (PR state) handoffs.
+
+    ``issue`` names the handoff's issue, or ``pr:N`` for the handoff that carries PR N. The two never mix: an
+    issue ref matches by issue only, and ``pr:N`` by PR only, so it also finds an issue-backed handoff for that PR
+    (the PR is the same work). A ``pr:`` ref whose number is not a plain integer matches nothing (404).
     """
     # Search across all file-backed handoffs for the action
     all_handoffs = handoff_service.get_all_handoffs()
@@ -83,6 +87,9 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     if norm_issue.startswith("pr:"):
         norm_pr = norm_issue.removeprefix("pr:")
         norm_issue = ""
+        if not (norm_pr.isascii() and norm_pr.isdigit()):
+            # An empty or malformed number would filter nothing and run the first handoff with this action.
+            raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")
     for h in all_handoffs:
         h_issue = str(h.get("issue") or "").lstrip("#").strip()
         h_pr = str(h.get("pr_number") or "")

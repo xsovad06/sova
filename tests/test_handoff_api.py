@@ -442,6 +442,127 @@ class TestHandoffAPI:
         assert call_kwargs.kwargs["pr_number"] == 67
         assert call_kwargs.args[0] == "16"
 
+    async def test_execute_finds_a_pr_only_handoff_by_its_pr_ref(self, client: AsyncClient, tmp_path) -> None:
+        """The activity feed posts ``pr:N`` as the issue for a PR with no issue, and that finds the PR's handoff."""
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        base = {"source": "reviewer", "status": "awaiting_action", "created_at": "2026-05-02T22:00:00Z"}
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    **base,
+                    "id": "pr-only",
+                    "pr_number": 67,
+                    "next_actions": [
+                        {"id": "merge", "label": "Merge", "mode": "agent", "args": {"issue": "", "pr": 67}}
+                    ],
+                }
+            )
+        )
+        with patch.object(
+            cs, "start_agent", new_callable=AsyncMock, return_value={"status": "started", "run_id": 1, "pid": 123}
+        ) as mock_start:
+            wrong = await client.post("/api/handoff/execute", json={"action_id": "merge", "issue": "pr:68"})
+            right = await client.post("/api/handoff/execute", json={"action_id": "merge", "issue": "pr:67"})
+
+        assert wrong.status_code == 404
+        assert right.status_code == 200
+        assert right.json()["status"] == "started"
+        mock_start.assert_awaited_once()
+        call = mock_start.await_args
+        # The agent starts against the PR, not against the raw ``pr:67`` ref passed off as an issue.
+        assert call.kwargs["pr_number"] == 67
+        assert call.args[0] == ""
+
+    @pytest.mark.parametrize("ref", ["pr:", "pr:abc", "pr:67x", "pr:-1", "pr: 67", "PR:67"])
+    async def test_a_malformed_pr_ref_matches_no_handoff_and_starts_nothing(
+        self, client: AsyncClient, tmp_path, ref: str
+    ) -> None:
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    "id": "pr-only",
+                    "source": "reviewer",
+                    "status": "awaiting_action",
+                    "pr_number": 67,
+                    "created_at": "2026-05-02T22:00:00Z",
+                    "next_actions": [
+                        {"id": "merge", "label": "Merge", "mode": "agent", "args": {"issue": "", "pr": 67}}
+                    ],
+                }
+            )
+        )
+        with patch.object(cs, "start_agent", new_callable=AsyncMock) as mock_start:
+            resp = await client.post("/api/handoff/execute", json={"action_id": "merge", "issue": ref})
+
+        assert resp.status_code == 404
+        mock_start.assert_not_awaited()
+
+    async def test_a_pr_ref_runs_the_handoff_that_carries_that_pr_not_another_one_offering_the_same_action(
+        self, client: AsyncClient, tmp_path
+    ) -> None:
+        """Two handoffs: one for issue 16 (with PR 67) and one for PR 68 alone, both offering ``merge``. A ``pr:N``
+        ref picks the handoff carrying that PR, never another one that offers the same action."""
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        base = {"source": "reviewer", "status": "awaiting_action", "created_at": "2026-05-02T22:00:00Z"}
+        (control_dir / "handoff-16.json").write_text(
+            json.dumps(
+                {
+                    **base,
+                    "id": "with-issue",
+                    "issue": "16",
+                    "pr_number": 67,
+                    "next_actions": [
+                        {"id": "merge", "label": "Merge", "mode": "agent", "args": {"issue": "16", "pr": 67}}
+                    ],
+                }
+            )
+        )
+        # A handoff with no issue lives in the legacy file (``handoff_filename`` of no issue).
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    **base,
+                    "id": "pr-only",
+                    "pr_number": 68,
+                    "next_actions": [
+                        {"id": "merge", "label": "Merge", "mode": "agent", "args": {"issue": "", "pr": 68}}
+                    ],
+                }
+            )
+        )
+        with patch.object(
+            cs, "start_agent", new_callable=AsyncMock, return_value={"status": "started", "run_id": 1, "pid": 123}
+        ) as mock_start:
+            # The PR of an issue-backed handoff finds it (the PR is the same work), and clears only that issue's file.
+            by_pr = await client.post("/api/handoff/execute", json={"action_id": "merge", "issue": "pr:67"})
+            assert by_pr.status_code == 200
+            assert mock_start.await_args.kwargs["pr_number"] == 67
+            assert mock_start.await_args.args[0] == "16"
+            pr_only = await client.post("/api/handoff/execute", json={"action_id": "merge", "issue": "pr:68"})
+            assert pr_only.status_code == 200
+            assert mock_start.await_args.kwargs["pr_number"] == 68
+            assert mock_start.await_args.args[0] == ""
+        assert mock_start.await_count == 2
+
     async def test_agents_page_has_interrupted_banner(self, client: AsyncClient) -> None:
         resp = await client.get("/work")
         assert resp.status_code == 200
