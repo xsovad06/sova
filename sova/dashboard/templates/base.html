@@ -196,7 +196,7 @@
         </span>
         <div class="min-w-0">
           <span class="text-sm font-semibold text-gray-200 block leading-tight">SOVA</span>
-          <span class="text-[11px] text-gray-500 leading-tight">Activity timeline</span>
+          <span class="text-[11px] text-gray-500 leading-tight">What I did and what I need</span>
         </div>
       </div>
       <button type="button" onclick="toggleFeedPanel()" class="feed-close-btn" aria-label="Close feed">
@@ -204,12 +204,9 @@
       </button>
     </div>
     <div id="feed-list" class="feed-panel-body feed-chat-body">
-      <p id="feed-empty" class="text-xs text-gray-500 text-center py-8">No activity yet</p>
+      <div id="feed-briefing-slot"></div>
+      <div id="feed-activity" data-load-failed="{{ feed_labels()['load_failed'] }}"><p class="feed-empty">{{ feed_labels()['no_activity'] }}</p></div>
     </div>
-    <button type="button" id="feed-jump-latest" class="feed-jump-latest hidden" onclick="feedScrollToBottom()">
-      {{ icon("chat-bubble", "w-3.5 h-3.5") }}
-      <span>New messages</span>
-    </button>
     <!-- Disabled conversational input (vision teaser) -->
     <div class="feed-input-bar" data-tooltip="Conversational interaction coming soon" data-tooltip-pos="top">
       {{ icon("lock", "w-3.5 h-3.5 text-gray-600 shrink-0") }}
@@ -220,7 +217,8 @@
 
   <!-- Floating owl trigger (bottom-right, replaces sidebar bell) -->
   <button type="button" id="feed-fab" onclick="toggleFeedPanel()" class="feed-fab"
-          aria-label="Activity Feed" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed">
+          aria-label="{{ feed_labels()['badge'] }}" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed"
+          data-label="{{ feed_labels()['badge'] }}" data-label-unread="{{ feed_labels()['badge_unread'] }}">
     <span class="feed-fab-owl">
       <img src="/static/owl-avatar.png" alt="SOVA">
     </span>
@@ -346,6 +344,12 @@
   <script src="/static/reconnect-flow.js"></script>
   <script src="/static/resource-widget.js"></script>
   <script src="/static/provider-status-widget.js"></script>
+  <script type="module">
+    // A dynamic import, so a module that fails to load is caught here too (a static import fails the whole script).
+    import('/static/js/feed/activity.js')
+      .then(function(m) { m.init(); })
+      .catch(function(e) { console.error('feed activity failed to start', e); });
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

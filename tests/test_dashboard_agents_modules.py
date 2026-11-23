@@ -1825,10 +1825,10 @@ class TestPollingUsesVisibilityAwarePoll:
 
     def test_the_only_raw_timeouts_are_the_documented_exceptions(self) -> None:
         """Every poll goes through visibilityAwarePoll except pollLogs()'s backoff chain. The other raw
-        timeouts are one-shot debounces (the Work page's issue search among them), a fetch abort, and the Work
-        board's single retry after a failed load (it arms the next one only by failing again), none of which
-        reschedules itself on success. A new self-rescheduling setTimeout elsewhere fails here instead of passing as
-        an undocumented poller."""
+        timeouts are one-shot debounces (the Work page's issue search among them), the history's one-shot wait for
+        the board before a linked scroll, a fetch abort, and the Work board's single retry after a failed load (it
+        arms the next one only by failing again), none of which reschedules itself on success. A new
+        self-rescheduling setTimeout elsewhere fails here instead of passing as an undocumented poller."""
         found = {
             (name, line.strip())
             for name, source in _all_page_sources().items()
@@ -1845,6 +1845,10 @@ class TestPollingUsesVisibilityAwarePoll:
             (
                 "work/header",
                 "_crRereadTimer = setTimeout(function() { _crRereadTimer = null; _loadCodeRabbit(); }, _CR_REREAD_MS);",
+            ),
+            (
+                "history",
+                "setTimeout(function() { _boardDrawn = true; _scrollToLinked(); }, _LINKED_SCROLL_BOARD_WAIT_MS);",
             ),
             (
                 "history",

@@ -117,6 +117,31 @@ async function loadHistory() {
   _loadedBounds = bounds;
   _newRuns = 0;
   _render(data || {});
+  _historyDrawn = true;
+  _scrollToLinked();
+}
+
+// A link from the feed brings the history into view. The board above it fills in asynchronously and would push the
+// history out of view again (a browser without scroll anchoring does), so the scroll waits for the first history
+// render and the board's first render, once, and gives up waiting for the board after a few seconds.
+var _LINKED_SCROLL_BOARD_WAIT_MS = 4000;
+var _linkedScrollPending = false;
+var _historyDrawn = false;
+var _boardDrawn = false;
+
+function _armLinkedScroll() {
+  _linkedScrollPending = true;
+  var board = document.getElementById('work-board');
+  // No board, or one that has rendered already (board.js marks it): the event has gone by, so do not wait for it.
+  _boardDrawn = !board || (typeof board.hasAttribute === 'function' && board.hasAttribute('data-rendered'));
+  document.addEventListener('sova:board-rendered', function() { _boardDrawn = true; _scrollToLinked(); }, { once: true });
+  setTimeout(function() { _boardDrawn = true; _scrollToLinked(); }, _LINKED_SCROLL_BOARD_WAIT_MS);
+}
+
+function _scrollToLinked() {
+  if (!_linkedScrollPending || !_historyDrawn || !_boardDrawn) return;
+  _linkedScrollPending = false;
+  _el('tab-history').scrollIntoView({ block: 'start' });
 }
 
 // A page of the flat list is sorted by start time, so only its first row (on a later page) and its last row (when more
@@ -644,6 +669,43 @@ export function init() {
   _fillActionOptions();
   var savedView = safeStorageGet(_VIEW_KEY);
   if (_VIEWS.indexOf(savedView) !== -1) _state.view = savedView;
+  // A link from the activity feed names one issue or PR, or a period's dates: open the history already narrowed to
+  // it, and bring it into view (it sits below the board).
+  var params = new URLSearchParams((window.location && window.location.search) || '');
+  var linked = (params.get('number') || '').trim();
+  var linkedFrom = params.get('from') || '';
+  var linkedTo = params.get('to') || '';
+  if (linked) {
+    _state.number = linked;
+    _el('filter-number').value = _state.number;
+  }
+  if (_parseLocalDate(linkedFrom) && _parseLocalDate(linkedTo)) {
+    _state.range = 'custom';
+    _state.from = linkedFrom;
+    _state.to = linkedTo;
+    _el('history-from').value = _state.from;
+    _el('history-to').value = _state.to;
+    _orderRange();
+  }
+  if (linked || _state.range === 'custom') {
+    _armLinkedScroll();
+    // Applied once: a reload or a bookmark must not narrow the history again over the filters set since.
+    ['number', 'from', 'to'].forEach(function(name) { params.delete(name); });
+    var rest = params.toString();
+    try {
+      window.history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+    } catch (_e) { /* a restricted context keeps the parameters */ }
+  }
+  // The board could not open a linked card (it is closed or filtered out): its runs are in this history, so narrow it
+  // to the item and bring it into view.
+  document.addEventListener('sova:linked-card-missing', function(e) {
+    var number = e.detail && e.detail.number;
+    if (!number) return;
+    _state.number = String(number);
+    _el('filter-number').value = _state.number;
+    _armLinkedScroll();
+    _reload();
+  });
   _updateFilterControls();
   _el('history-table').addEventListener('mouseover', _flipTooltip);
   _el('history-table').addEventListener('focusin', _flipTooltip);

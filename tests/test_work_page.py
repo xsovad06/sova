@@ -536,6 +536,57 @@ if (scenario === 'start-no-slot') {
   await board.loadBoard();
   selection.select('pr:1496');
   out.hostilePrDrawer = els['work-drawer'].innerHTML;
+} else if (scenario === 'linked-card') {
+  // The feed's `?card=N` link: the board compares the wanted key with each card's real `data-args`, so this renders
+  // real cards (an issue and a PR with no issue) and loads one board per link (the link is applied once per load).
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  const scrolled = [];
+  document.querySelectorAll = () => [...els['work-board'].innerHTML.matchAll(
+    /data-action="work-select" data-args="([^"]*)"/g)].map((m) => ({
+    getAttribute: (k) => (k === 'data-args' ? m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&') : null),
+    scrollIntoView() { scrolled.push(m[1]); },
+  }));
+  const toasts = [];
+  globalThis.showToast = (message) => { toasts.push(message); };
+  const missing = [];
+  document.dispatchEvent = (event) => {
+    if (event.type === 'sova:linked-card-missing') missing.push(event.detail.number);
+  };
+  const replaced = [];
+  globalThis.history = { replaceState: (...args) => { replaced.push(args[2]); } };
+  routes = { 'GET /api/work/board': [200, {
+    columns: [{ stage: 'review', label: 'In review', color: 'purple', entries: 'review', column: 'review' }],
+    review: [
+      { number: 7, title: 'An issue', state: 'pr_awaiting_review', state_label: 'In review', actions: [],
+        pr: { number: 70, url: 'https://github.com/o/r/pull/70', ci_state: 'passed' } },
+      { number: null, pr_number: 44, title: 'A PR with no issue', state: 'pr_awaiting_review',
+        state_label: 'In review', actions: [],
+        pr: { number: 44, url: 'https://github.com/o/r/pull/44', ci_state: 'passed' } },
+    ],
+    chains: [], hidden: [],
+  }] };
+  const selection = await work('selection');
+  out.cases = {};
+  let version = 0;
+  for (const wanted of ['7', 'pr:44', '99', 'pr:99', 'abc']) {
+    globalThis.location = { pathname: '/work', search: '?card=' + wanted + '&number=3', hash: '' };
+    selection.select(null);
+    toasts.length = 0;
+    replaced.length = 0;
+    scrolled.length = 0;
+    missing.length = 0;
+    const boardUrl = pathToFileURL(path.join(staticDir, 'js', 'pages', 'work', 'board.js')).href;
+    const board = await import(boardUrl + '?v=' + (++version));
+    await board.loadBoard();
+    out.cases[wanted] = {
+      selected: selection.getSelected(), toasts: toasts.length, replaced: replaced.slice(), scrolled: scrolled.length,
+      missing: missing.slice(),
+    };
+  }
 } else if (scenario === 'owner-filter') {
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
@@ -1305,6 +1356,25 @@ class TestPrOnlyCards:
         assert 'data-action="work-run-action"' in out["reviewButtons"], "the work item's own action when it has one"
         assert "run_command:address-pr" in out["reviewCovers"], "so the drawer does not list it twice"
         assert 'data-action="work-address" data-args="[7,70]"' in out["fallbackButtons"]
+
+    @pytest.mark.parametrize(
+        ("wanted", "selected", "found"),
+        [("7", 7, True), ("pr:44", "pr:44", True), ("99", None, False), ("pr:99", None, False), ("abc", None, False)],
+    )
+    def test_a_card_link_selects_the_real_card_with_that_key_and_toasts_only_for_a_missing_one(
+        self, tmp_path: Path, wanted: str, selected: object, found: bool
+    ) -> None:
+        """The key the feed sends (an issue number, or ``pr:N``) must equal the key a rendered card carries in its
+        ``data-args``: a mismatch of type or form would turn every link into the "not on the board" toast."""
+        case = _run_node(tmp_path, "linked-card")["cases"][wanted]
+
+        assert case["selected"] == selected
+        assert case["toasts"] == (0 if found else 1)
+        assert case["scrolled"] == (1 if found else 0)
+        # A card that is not on the board narrows the run history to the item (the link carries no `number`).
+        assert case["missing"] == ([] if found or wanted == "abc" else ["99"])
+        # Applied once and the parameter dropped, but only that one: the rest of the query stays.
+        assert case["replaced"] == ["/work?number=3"]
 
     def test_the_fallback_address_pr_needs_an_unresolved_review_thread(self, tmp_path: Path) -> None:
         """A click spends a full agent run, so a PR with every thread resolved (or none) is not offered one."""

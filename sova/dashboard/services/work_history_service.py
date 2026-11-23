@@ -23,6 +23,7 @@ from sova.dashboard.services.work_service import (
     _batch_step_names,
     _build_history_item,
     _format_duration_ms,
+    as_utc,
     history_filters,
 )
 from sova.dashboard.services.work_state import (
@@ -35,14 +36,14 @@ from sova.db.models import TaskRun
 from sova.utils.formatting import format_cost_usd
 
 # Statuses of a run that did its job. A researcher run that waits for the spec to be approved ends awaiting_approval.
-_SUCCEEDED = "done"
+SUCCEEDED = "done"
 _RESEARCH_DONE = frozenset({"done", "awaiting_approval"})
-_FAILED = "failed"
+FAILED = "failed"
 
 # The group a run belongs to: its issue, else the issue of the newest run carrying the same PR (an Integrate or
 # Address review started from a PR number alone joins its issue; a run with no PR never joins by this rule), else its
 # PR, else itself (so it still shows as its own row). The literals are inline, not bound parameters, so every query
-# renders one expression. A query groups or partitions by the key through ``_keyed()``, which names it as a column,
+# renders one expression. A query groups or partitions by the key through ``keyed()``, which names it as a column,
 # never by the expression itself.
 _NO_ISSUE = literal_column("''")
 _HAS_ISSUE = (TaskRun.issue_number.isnot(None)) & (TaskRun.issue_number != _NO_ISSUE)
@@ -63,9 +64,9 @@ _ranked_links = (
 _PR_ISSUE = (
     select(_ranked_links.c.pr_number, _ranked_links.c.issue_number).where(_ranked_links.c.rn == 1).subquery("pr_issue")
 )
-_WITH_LINK = TaskRun.__table__.outerjoin(_PR_ISSUE, _PR_ISSUE.c.pr_number == TaskRun.pr_number)
+WITH_LINK = TaskRun.__table__.outerjoin(_PR_ISSUE, _PR_ISSUE.c.pr_number == TaskRun.pr_number)
 _ISSUE_PREFIX = "issue:"
-_GROUP_KEY = case(
+GROUP_KEY = case(
     (_HAS_ISSUE, literal_column(f"'{_ISSUE_PREFIX}'") + TaskRun.issue_number),
     (_PR_ISSUE.c.issue_number.isnot(None), literal_column(f"'{_ISSUE_PREFIX}'") + _PR_ISSUE.c.issue_number),
     (TaskRun.pr_number.isnot(None), literal_column("'pr:'") + cast(TaskRun.pr_number, String)),
@@ -73,13 +74,18 @@ _GROUP_KEY = case(
 )
 
 
-def _keyed(*conditions: ColumnElement[bool], research: bool = False) -> Subquery:
+def issue_of_key(key: str) -> str | None:
+    """The issue number a group key names, or None for a PR or lone-run key."""
+    return key.removeprefix(_ISSUE_PREFIX) if key.startswith(_ISSUE_PREFIX) else None
+
+
+def keyed(*conditions: ColumnElement[bool], research: bool = False) -> Subquery:
     """The runs matching ``conditions``: id, status, start time and group key (``gk``), and with ``research`` whether
     the run is a researcher run."""
     columns = [TaskRun.id.label("id"), TaskRun.status.label("status"), TaskRun.started_at.label("started_at")]
     if research:
         columns.append(case((_action_clause("research"), 1), else_=0).label("research"))
-    return select(*columns, _GROUP_KEY.label("gk")).select_from(_WITH_LINK).where(*conditions).subquery()
+    return select(*columns, GROUP_KEY.label("gk")).select_from(WITH_LINK).where(*conditions).subquery()
 
 
 def _newest_first(runs: Subquery) -> Over:
@@ -92,13 +98,13 @@ def history_state(merged: bool, newest: dict, next_action: str) -> HistoryState:
     run succeeded."""
     if merged:
         return HistoryState.MERGED
-    if newest["status"] == _FAILED:
+    if newest["status"] == FAILED:
         return HistoryState.FAILED
     action = newest["action"]
     if action == "research" and newest["status"] in _RESEARCH_DONE:
         return HistoryState.NEEDS_APPROVAL
     # Stopped, interrupted, paused or rejected: the run did not do its job, so it waits for nothing it would have made.
-    if newest["status"] != _SUCCEEDED:
+    if newest["status"] != SUCCEEDED:
         return HistoryState.STOPPED
     if action == "review":
         return HistoryState.WAITING_FIXES if next_action == ADDRESS_REVIEW_NEXT_ACTION else HistoryState.WAITING_REVIEW
@@ -109,7 +115,7 @@ def history_state(merged: bool, newest: dict, next_action: str) -> HistoryState:
 
 async def _page_of_groups(session: AsyncSession, filters: list, limit: int, offset: int) -> tuple[list[str], int]:
     """The group keys of one page, newest matching run first, and the number of matching groups."""
-    runs = _keyed(*filters)
+    runs = keyed(*filters)
     newest = func.max(runs.c.started_at).label("newest")
     groups = select(runs.c.gk, newest).group_by(runs.c.gk)
     total = await session.scalar(select(func.count()).select_from(groups.subquery()))
@@ -121,7 +127,7 @@ async def _page_of_groups(session: AsyncSession, filters: list, limit: int, offs
 
 async def _newest_runs(session: AsyncSession, keys: list[str]) -> dict[str, TaskRun]:
     """Each group's newest finished run, whatever the filters."""
-    runs = _keyed(TaskRun.status.in_(_TERMINAL))
+    runs = keyed(TaskRun.status.in_(_TERMINAL))
     ranked = select(runs.c.id, runs.c.gk, _newest_first(runs).label("rn")).where(runs.c.gk.in_(keys)).subquery()
     rows = await session.execute(
         select(TaskRun, ranked.c.gk).join(ranked, ranked.c.id == TaskRun.id).where(ranked.c.rn == 1)
@@ -133,9 +139,9 @@ async def _group_prs(session: AsyncSession, keys: list[str]) -> dict[str, int]:
     """Each group's PR: the one on its newest run that carries a PR, whatever the filters (a filter that hides the
     Develop run does not hide the PR the group has)."""
     rows = await session.execute(
-        select(_GROUP_KEY, TaskRun.pr_number)
-        .select_from(_WITH_LINK)
-        .where(TaskRun.pr_number.isnot(None), _GROUP_KEY.in_(keys))
+        select(GROUP_KEY, TaskRun.pr_number)
+        .select_from(WITH_LINK)
+        .where(TaskRun.pr_number.isnot(None), GROUP_KEY.in_(keys))
         .order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
     )
     prs: dict[str, int] = {}
@@ -144,7 +150,12 @@ async def _group_prs(session: AsyncSession, keys: list[str]) -> dict[str, int]:
     return prs
 
 
-def _did_merge(handoff: object) -> bool:
+# The SQL form of ``did_merge()``: the closing handoff says ``merged: true``. A query that only needs to know whether a
+# run merged filters on it instead of loading the handoff JSON of every Integrate run.
+MERGED_MARKER = TaskRun.handoff_json["merged"].as_boolean().is_(True)
+
+
+def did_merge(handoff: object) -> bool:
     """Whether a successful Integrate run merged: only when its closing handoff says ``merged: true``. A run that
     stopped at a gate says ``false``, and a run with no marker (from before it existed, or one that ended without
     reaching the closing block) is not claimed as merged: its group reads Finished, never a wrong Merged."""
@@ -154,15 +165,60 @@ def _did_merge(handoff: object) -> bool:
 
 async def _merged_keys(session: AsyncSession, keys: list[str] | Select) -> set[str]:
     """The groups among ``keys`` (a list or a subquery) that merged their PR: a successful Integrate run that merged."""
-    merged = and_(TaskRun.status == _SUCCEEDED, _action_clause("integrate"), _GROUP_KEY.in_(keys))
-    rows = await session.execute(select(_GROUP_KEY, TaskRun.handoff_json).select_from(_WITH_LINK).where(merged))
-    return {gk for gk, handoff in rows if _did_merge(handoff)}
+    merged = and_(TaskRun.status == SUCCEEDED, _action_clause("integrate"), GROUP_KEY.in_(keys))
+    rows = await session.execute(select(GROUP_KEY, TaskRun.handoff_json).select_from(WITH_LINK).where(merged))
+    return {gk for gk, handoff in rows if did_merge(handoff)}
+
+
+async def round_counts(session: AsyncSession, keys: list[str]) -> dict[str, tuple[int, int]]:
+    """Each group's successful Review and Address review runs over its whole history, as ``(review, address)``.
+
+    A review that crashed or was stopped did no round of work, so only a run that finished counts. Not limited to a
+    window: an issue developed last week and merged today still tells how many rounds it took."""
+    if not keys:
+        return {}
+    runs = (
+        select(
+            GROUP_KEY.label("gk"),
+            case((_action_clause("review"), 1), else_=0).label("review"),
+            case((_action_clause("address-review"), 1), else_=0).label("address"),
+        )
+        .select_from(WITH_LINK)
+        .where(TaskRun.status == SUCCEEDED, GROUP_KEY.in_(keys))
+        .subquery()
+    )
+    rows = await session.execute(
+        select(runs.c.gk, func.sum(runs.c.review), func.sum(runs.c.address)).group_by(runs.c.gk)
+    )
+    return {gk: (int(review or 0), int(address or 0)) for gk, review, address in rows}
+
+
+async def merged_runs(session: AsyncSession, since: datetime, until: datetime) -> list[tuple[datetime, str]]:
+    """The Integrate runs that merged and started in ``[since, until)``, as ``(started_at, group key)``."""
+    rows = await session.execute(
+        select(TaskRun.started_at, GROUP_KEY)
+        .select_from(WITH_LINK)
+        .where(
+            TaskRun.status == SUCCEEDED,
+            _action_clause("integrate"),
+            MERGED_MARKER,
+            TaskRun.started_at >= as_utc(since),
+            TaskRun.started_at < as_utc(until),
+        )
+    )
+    return [(started, gk) for started, gk in rows]
+
+
+async def history_items(session: AsyncSession, runs: list[TaskRun]) -> dict[int, dict]:
+    """The history item (action, outcome, times) of each run, by run id, whatever its status."""
+    steps = await _batch_step_names(session, [run.id for run in runs])
+    return {run.id: _build_history_item(run, steps.get(run.id, set())) for run in runs}
 
 
 async def _summarize(session: AsyncSession, filters: list) -> dict:
     """Merged, need-you and failed counts over every matching group, not only the page's."""
-    matching = select(_keyed(*filters).c.gk)
-    runs = _keyed(TaskRun.status.in_(_TERMINAL), research=True)
+    matching = select(keyed(*filters).c.gk)
+    runs = keyed(TaskRun.status.in_(_TERMINAL), research=True)
     ranked = (
         select(runs.c.gk, runs.c.status, runs.c.research, _newest_first(runs).label("rn"))
         .where(runs.c.gk.in_(matching))
@@ -176,7 +232,7 @@ async def _summarize(session: AsyncSession, filters: list) -> dict:
     for gk, status, research in newest:
         if gk in merged:
             summary["merged"] += 1
-        elif status == _FAILED:
+        elif status == FAILED:
             summary["failed"] += 1
         elif research and status in _RESEARCH_DONE:
             summary["need_you"] += 1
@@ -190,7 +246,7 @@ def _group_payload(key: str, runs: list[dict], newest_run: TaskRun, newest: dict
     durations = [r["duration_ms"] for r in runs if r["duration_ms"] is not None]
     duration_ms = sum(durations) if durations else None
     # From the key, not the runs: a group's only matching run may be a PR-only run that joined its issue.
-    issue = key.removeprefix(_ISSUE_PREFIX) if key.startswith(_ISSUE_PREFIX) else None
+    issue = issue_of_key(key)
     return {
         "key": key,
         "issue_number": issue,
@@ -213,9 +269,56 @@ def _group_payload(key: str, runs: list[dict], newest_run: TaskRun, newest: dict
         "total_cost_usd": format_cost_usd(sum((Decimal(r["total_cost_usd"]) for r in runs), Decimal(0))),
         "started_at": runs[-1]["started_at"],
         "last_started_at": latest["started_at"],
-        "result": {"text": latest["outcome"], "color": "red" if latest["status"] == _FAILED else "gray"},
+        "result": {"text": latest["outcome"], "color": "red" if latest["status"] == FAILED else "gray"},
         "runs": runs,
     }
+
+
+async def unsettled_keys(session: AsyncSession, since: datetime, limit: int) -> list[str]:
+    """The groups whose newest finished run since ``since`` failed or is a researcher run that leaves a spec to
+    approve (the only ones that can need the user: a stopped group is not offered, so it must not use up the cap),
+    newest first. One ranked read of the group keys, so a caller that only needs to
+    find what waits on the user loads no run, no JSON column and no outcome text for the groups that are fine."""
+    runs = keyed(TaskRun.status.in_(_TERMINAL), TaskRun.started_at >= as_utc(since), research=True)
+    ranked = select(
+        runs.c.gk, runs.c.status, runs.c.research, runs.c.started_at, _newest_first(runs).label("rn")
+    ).subquery()
+    rows = await session.execute(
+        select(ranked.c.gk)
+        .where(
+            ranked.c.rn == 1,
+            (ranked.c.status == FAILED) | ((ranked.c.research == 1) & ranked.c.status.in_(_RESEARCH_DONE)),
+        )
+        .order_by(ranked.c.started_at.desc(), ranked.c.gk.desc())
+        .limit(max(min(limit, 200), 0))
+    )
+    return [row.gk for row in rows]
+
+
+async def newest_groups(session: AsyncSession, keys: list[str]) -> dict[str, dict]:
+    """The group payload of each key that has a finished run, judged from its newest finished run alone.
+
+    The state, ``state_inputs``, PR and result are the ones ``get_grouped_history()`` gives; ``runs`` holds only that
+    newest run, so a run count, duration or cost from it covers that run only."""
+    if not keys:
+        return {}
+    newest_by_key = await _newest_runs(session, keys)
+    merged = await _merged_keys(session, keys)
+    group_prs = await _group_prs(session, keys)
+    items = await history_items(session, list(newest_by_key.values()))
+    return {
+        gk: _group_payload(gk, [items[run.id]], run, items[run.id], gk in merged, group_prs.get(gk))
+        for gk, run in newest_by_key.items()
+    }
+
+
+async def newest_run_ids(session: AsyncSession, keys: list[str], action: str) -> dict[str, int]:
+    """The id of each group's newest finished run of ``action`` (a group with none is absent)."""
+    if not keys:
+        return {}
+    runs = keyed(TaskRun.status.in_(_TERMINAL), _action_clause(action), GROUP_KEY.in_(keys))
+    rows = await session.execute(select(runs.c.gk, func.max(runs.c.id)).group_by(runs.c.gk))
+    return dict(rows.all())
 
 
 async def get_grouped_history(
@@ -246,7 +349,7 @@ async def get_grouped_history(
             select(func.count(TaskRun.id), func.coalesce(func.sum(TaskRun.total_cost_usd), 0)).where(*filters)
         )
     ).one()
-    failed_total = await session.scalar(select(func.count(TaskRun.id)).where(*shared, TaskRun.status == _FAILED))
+    failed_total = await session.scalar(select(func.count(TaskRun.id)).where(*shared, TaskRun.status == FAILED))
     summary = {"groups": total, **await _summarize(session, filters)}
     payload = {
         "groups": [],
@@ -261,9 +364,9 @@ async def get_grouped_history(
 
     matching = (
         await session.execute(
-            select(TaskRun, _GROUP_KEY.label("gk"))
-            .select_from(_WITH_LINK)
-            .where(*filters, _GROUP_KEY.in_(keys))
+            select(TaskRun, GROUP_KEY.label("gk"))
+            .select_from(WITH_LINK)
+            .where(*filters, GROUP_KEY.in_(keys))
             .order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
         )
     ).all()

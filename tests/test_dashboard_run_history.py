@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -495,7 +496,8 @@ function el(id) {
     const classes = new Set();
     const attrs = {};
     els.set(id, {
-      id, innerHTML: '', textContent: '', value: '', disabled: false, attrs,
+      id, innerHTML: '', textContent: '', value: '', disabled: false, attrs, scrolled: 0,
+      scrollIntoView() { this.scrolled += 1; },
       classList: {
         add: (...c) => c.forEach((x) => classes.add(x)), remove: (...c) => c.forEach((x) => classes.delete(x)),
         toggle: (c, on) => {
@@ -505,6 +507,7 @@ function el(id) {
         contains: (c) => classes.has(c),
       },
       setAttribute: (k, v) => { attrs[k] = String(v); }, getAttribute: (k) => attrs[k] ?? null,
+      hasAttribute: (k) => k in attrs,
       addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
       fire: (type) => (listeners[type] || []).forEach((fn) => fn({ target: els.get(id) })),
       emit: (type, evt) => (listeners[type] || []).forEach((fn) => fn(evt)),
@@ -512,13 +515,25 @@ function el(id) {
   }
   return els.get(id);
 }
+// A board that rendered before the history armed its listener has marked itself (board.js), and its event is gone.
+if (process.env.BOARD_RENDERED) el('work-board').attrs['data-rendered'] = '1';
 const bodyListeners = [];
+const docListeners = {};
+const replaced = [];
+// A long one-shot wait (the linked scroll's fallback) must not hold the harness process open once it has answered.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...rest) => {
+  const timer = realSetTimeout(fn, ms, ...rest);
+  if (ms >= 4000 && timer.unref) timer.unref();
+  return timer;
+};
 globalThis.window = globalThis;
+globalThis.history = { replaceState: (...args) => { replaced.push(args[2]); } };
 globalThis.document = {
   hidden: false,
   getElementById: (id) => el(id),
   querySelector: () => null, querySelectorAll: () => [], createElement: () => el('__created'),
-  addEventListener() {}, removeEventListener() {},
+  addEventListener: (type, fn) => { (docListeners[type] ||= []).push(fn); }, removeEventListener() {},
   body: { addEventListener: (type, fn) => bodyListeners.push(fn) },
 };
 globalThis.addEventListener = () => {};
@@ -1144,6 +1159,88 @@ class TestEveryRunInTheBrowser:
         assert ("group=issue" in result["url"]) is grouped
         expected = ("true", "false") if pressed == "issue" else ("false", "true")
         assert (result["issue"], result["runs"]) == expected
+
+    _LINKED_TAIL = (
+        "\nawait respond({ groups: [], tasks: [], total: 0, runs_total: 0, failed_total: 0, total_cost_usd: '0',"
+        " summary: {} });"
+        "\nconst before = el('tab-history').scrolled;"
+        "\n(docListeners['sova:board-rendered'] || []).forEach((fn) => fn());"
+        "\nprocess.stdout.write(JSON.stringify({ url: urls[0], typed: el('filter-number').value || '',"
+        " from: el('history-from').value, to: el('history-to').value, before, scrolled: el('tab-history').scrolled,"
+        " replaced }));\n"
+    )
+
+    def _open_linked(self, tmp_path: Path, search: str) -> dict:
+        _require_node()
+        script = (
+            f"globalThis.location = {{ pathname: '/work', hash: '', search: {json.dumps(search)} }};\n"
+            + _HISTORY_PRELUDE
+            + self._LINKED_TAIL
+        )
+        env = {"STATIC_DIR": str(_STATIC), "RUN_ACTIONS": json.dumps(run_actions_payload()), "TZ": "Europe/Prague"}
+        result = _run_node(tmp_path, script, env=env)
+        assert isinstance(result, dict)
+        return result
+
+    def test_a_link_does_not_wait_for_a_board_that_rendered_before_the_history_started(self, tmp_path: Path) -> None:
+        """The board's event has already fired, so the scroll happens once the history draws, not after the 4 s wait."""
+        _require_node()
+        script = (
+            "globalThis.location = { pathname: '/work', hash: '', search: '?number=42' };\n"
+            + _HISTORY_PRELUDE
+            + "\nawait respond({ groups: [], tasks: [], total: 0, runs_total: 0, failed_total: 0,"
+            " total_cost_usd: '0', summary: {} });"
+            "\nprocess.stdout.write(JSON.stringify({ scrolled: el('tab-history').scrolled }));\n"
+        )
+        env = {
+            "STATIC_DIR": str(_STATIC),
+            "RUN_ACTIONS": json.dumps(run_actions_payload()),
+            "TZ": "Europe/Prague",
+            "BOARD_RENDERED": "1",
+        }
+        result = _run_node(tmp_path, script, env=env)
+        assert result == {"scrolled": 1}
+
+    @pytest.mark.parametrize(
+        ("search", "number"), [("?number=%2342", "#42"), ("?number=PROJ-7", "PROJ-7"), ("?number=", ""), ("", "")]
+    )
+    def test_a_link_from_the_activity_feed_opens_the_history_narrowed_to_its_number(
+        self, tmp_path: Path, search: str, number: str
+    ) -> None:
+        result = self._open_linked(tmp_path, search)
+        assert result["typed"] == number
+        assert (f"number={quote(number.lstrip('#'))}" in result["url"]) is bool(number)
+        # The scroll waits for the board above to render, then happens once.
+        assert result["before"] == 0
+        assert result["scrolled"] == (1 if number else 0)
+        # Applied once: the parameter leaves the URL, so a reload does not narrow the history again.
+        assert result["replaced"] == (["/work"] if number else [])
+
+    @pytest.mark.parametrize(
+        ("search", "custom"),
+        [
+            ("?from=2026-11-16&to=2026-11-21", ("2026-11-16", "2026-11-21")),
+            ("?from=2026-11-21&to=2026-11-16", ("2026-11-16", "2026-11-21")),
+            ("?from=2026-11-16", None),
+            ("?from=junk&to=2026-11-21", None),
+        ],
+    )
+    def test_a_period_link_from_the_activity_feed_opens_the_history_on_its_dates(
+        self, tmp_path: Path, search: str, custom: tuple[str, str] | None
+    ) -> None:
+        """Both dates are inclusive local days; a link without a readable pair keeps the default range."""
+        result = self._open_linked(tmp_path, search)
+        if custom is None:
+            assert result["scrolled"] == 0
+            assert "until=" not in result["url"]
+            return
+        assert result["from"] == custom[0]
+        assert result["to"] == custom[1]
+        assert (result["before"], result["scrolled"]) == (0, 1)
+        assert result["replaced"] == ["/work"]
+        # Prague midnights in UTC: the 16th starts at 23:00 on the 15th, and the range ends at the start of the 22nd.
+        assert "since=2026-11-15T23%3A00%3A00" in result["url"]
+        assert "until=2026-11-21T23%3A00%3A00" in result["url"]
 
     def test_day_headers_follow_the_viewers_local_date(self, history_page: dict) -> None:
         table = history_page["dayTable"]

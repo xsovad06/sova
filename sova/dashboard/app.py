@@ -83,7 +83,13 @@ from sova.dashboard.security import (
     proxy_hostnames,
     require_same_origin_csrf,
 )
-from sova.dashboard.services import awareness_service, control_service, handoff_service, setup_service
+from sova.dashboard.services import (
+    awareness_service,
+    control_service,
+    feed_narration,
+    handoff_service,
+    setup_service,
+)
 from sova.dashboard.services.control_service import recover_stale_runs
 from sova.dashboard.services.daemon_registry import (
     clear_registries,
@@ -1129,6 +1135,9 @@ def create_app(
     templates.env.globals["setting_groups"] = SETTING_GROUPS
     templates.env.globals["supervisor_switch_groups"] = SUPERVISOR_SWITCH_GROUPS
     templates.env.globals["run_actions_json"] = run_actions_json
+    # The activity feed's fixed wording (the panel's empty and failed texts, the badge's label), so base.html and the
+    # feed module carry none of their own.
+    templates.env.globals["feed_labels"] = feed_narration.labels
 
     if is_multi:
         _setup_multi_project(app, templates)
