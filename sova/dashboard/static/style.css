@@ -1598,6 +1598,8 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   border-radius: 0.5rem;
 }
 .sova-work-stat .sova-stat-detail { margin-top: 0; }
+/* A tile with nothing to show (Merged on a project with no GitHub repo) is removed; the row reflows. */
+.sova-work-stat[hidden] { display: none; }
 
 /* The agent limit stepper, sized to sit in a tile's detail line. */
 .sova-work-stepper .sova-stepper-btn { width: 1.25rem; height: 1.25rem; font-size: 0.75rem; }

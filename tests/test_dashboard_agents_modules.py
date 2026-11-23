@@ -567,6 +567,65 @@ process.stdout.write(JSON.stringify(out));
 """
 
 
+# The Work header's success, merged and spend tiles: figures and week-over-week wording from GET /overview/stats.
+_HEADER_STATS_SCENARIO = r"""
+const els = {};
+const stub = (id) => els[id] ||= {
+  textContent: '', attrs: {}, classes: new Set(), children: [], appendChild(c) { this.children.push(c); },
+  setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
+  classList: { toggle: (c, on) => { on ? els[id].classes.add(c) : els[id].classes.delete(c); } },
+};
+doc.getElementById = (id) => (id.startsWith('hdr-') ? stub(id) : null);
+const setTextStart = appSrc.indexOf('function setText(');
+new Function('document', appSrc.slice(setTextStart, appSrc.indexOf('\n}\n', setTextStart) + 2)
+  + '; globalThis.setText = setText;')(doc);
+const header = await import(pathToFileURL(path.join(staticDir, 'js', 'pages', 'work', 'header.js')).href);
+const win = (o) => Object.assign({ rated: 20, success: 15, failure: 5, paused_by_sova: 1, stopped_by_user: 2,
+  success_rate: 0.75 }, o);
+const stats = (o) => Object.assign({
+  timezone: { name: 'Europe/Prague', abbreviation: 'CET' },
+  spend: { today_usd: 3.5, week_usd: 62, previous_week_usd: 80, month_usd: 1356, month_daily_usd: 45.2,
+    unfinished_usd: 19, unfinished_share: 0.06 },
+  outcomes: { week: win({}), previous_week: win({ success_rate: 0.7 }), month: win({ success_rate: 0.8 }),
+    developer: { week: win({ rated: 63, success: 59, success_rate: 0.9365 }),
+      previous_week: win({ success_rate: 0.83 }) },
+    paused_reasons: { runaway_guard: 1 } },
+  merged: { status: 'ok', count: 6, previous_count: 4, bots_left_out: 2, with_sova_run: 5, cost_per_pr_usd: 10.333,
+    previous_cost_per_pr_usd: 20 },
+}, o);
+const snap = (id) => ({
+  text: els[id].textContent, classes: [...els[id].classes].sort(), tip: els[id].attrs['data-tooltip'] });
+const ids = ['hdr-spend', 'hdr-spend-detail', 'hdr-spend-tile', 'hdr-success', 'hdr-success-detail', 'hdr-success-tile',
+  'hdr-merged', 'hdr-merged-detail', 'hdr-merged-cost', 'hdr-merged-tile'];
+const all = () => Object.fromEntries(ids.map((id) => [id, snap(id)]));
+header.renderStats(stats({}));
+out.normal = all();
+out.mergedHidden = els['hdr-merged-tile'].hidden;
+header.renderStats(stats({
+  outcomes: { week: win({ rated: 4, success: 3, success_rate: null }), previous_week: win({ success_rate: 0 }),
+    month: win({ rated: 4, success: 3, success_rate: null }),
+    developer: { week: win({ rated: 2, success: 1, success_rate: null }), previous_week: win({ success_rate: null }) },
+    paused_reasons: {} },
+  spend: { today_usd: 0, week_usd: 0, previous_week_usd: 0, month_usd: 0, month_daily_usd: 0, unfinished_usd: 0,
+    unfinished_share: null },
+  merged: { status: 'ok', count: 0, previous_count: 0, bots_left_out: 0, with_sova_run: 0, cost_per_pr_usd: null,
+    previous_cost_per_pr_usd: null },
+}));
+out.sparse = all();
+header.renderStats(stats({ merged: { status: 'unavailable' } }));
+out.unavailable = all();
+header.renderStats(stats({ merged: { status: 'unsupported' } }));
+out.unsupportedHidden = els['hdr-merged-tile'].hidden;
+out.unsupportedSpendTip = els['hdr-spend-tile'].attrs['data-tooltip'];
+out.trends = [
+  header.trend(75, 72, true, String), header.trend(60, 72, true, String), header.trend(5, 0, true, String),
+  header.trend(5, 5, true, String), header.trend(62, 80, false, String), header.trend(90, 80, false, String),
+  header.trend(5, null, true, String),
+];
+process.stdout.write(JSON.stringify(out));
+"""
+
+
 # The first open of a running agent's logs backfills like a tab return does: the stream's lines are held until the
 # snapshot of everything written before it connected has been rendered.
 _LOG_FIRST_OPEN_SCENARIO = r"""
@@ -2099,6 +2158,63 @@ class TestLogViewerResumeAfterHiddenTab:
         result = self._run(tmp_path, _AGENT_LIMIT_SCENARIO)
         assert result["runningAfterStalePoll"] == "0", "the running count still updates"
         assert result["setValuesAfterStalePoll"] == [4, 3], "the limit from a response that predates a save is dropped"
+
+    def test_header_stats_tiles(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _HEADER_STATS_SCENARIO)
+        normal = result["normal"]
+        assert normal["hdr-success"]["text"] == "75%"
+        assert normal["hdr-success-detail"]["text"] == "15 of 20 runs, up from 70% the week before"
+        assert normal["hdr-success-detail"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-success-tile"]["tip"] == (
+            "Developer runs: 94% (59 of 63), 83% the week before\n"
+            "Left out of the rate: 2 stopped by you, 1 paused by SOVA: runaway guard (1)\n"
+            "30 days: 80%"
+        )
+        assert normal["hdr-merged"]["text"] == "6"
+        assert normal["hdr-merged-detail"]["text"] == "up from 4 the week before"
+        assert normal["hdr-merged-cost"]["text"] == "$10.33 per PR, down from $20.00 the week before"
+        assert normal["hdr-merged-cost"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-merged-tile"]["tip"] == (
+            "5 of the 6 PRs merged in the last 7 days had a SOVA run\n2 bot PRs left out"
+        )
+        assert result["mergedHidden"] is False
+        assert normal["hdr-spend"]["text"] == "$3.50"
+        assert normal["hdr-spend-detail"]["text"] == "$62 in 7 days, down from $80 the week before"
+        assert normal["hdr-spend-detail"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-spend-tile"]["tip"] == (
+            "Today starts at midnight, your time (CET)\nLast 30 days: $1,356, about $45 a day\n"
+            "Spent on runs that failed, were paused or were stopped: $19 (6%)"
+        )
+
+    def test_header_stats_sparse_and_unknown_figures_are_never_zero(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _HEADER_STATS_SCENARIO)
+        sparse = result["sparse"]
+        assert sparse["hdr-success"]["text"] == "3 of 4", "under ten finished runs show the counts, not a rate"
+        assert sparse["hdr-merged-detail"]["text"] == "same as 0 the week before"
+        assert sparse["hdr-merged-detail"]["classes"] == []
+        assert sparse["hdr-merged-cost"]["text"] == "Cost per PR n/a"
+        assert sparse["hdr-success-tile"]["tip"].startswith("Developer runs: 1 of 2\n")
+        unavailable = result["unavailable"]
+        assert unavailable["hdr-merged"]["text"] == "unknown"
+        assert unavailable["hdr-merged-detail"]["text"] == "GitHub could not be reached"
+        assert unavailable["hdr-merged-cost"]["text"] == "Cost per PR unknown"
+        assert unavailable["hdr-success"]["text"] == "75%", "a GitHub failure leaves the success tile alone"
+        assert unavailable["hdr-spend"]["text"] == "$3.50"
+        assert "Spent on runs that failed" in unavailable["hdr-spend-tile"]["tip"], "database-only, so GitHub-proof"
+        assert "Spent on runs that failed" in result["unsupportedSpendTip"]
+        assert result["unsupportedHidden"] is True
+
+    def test_header_trend_wording_and_colour(self, tmp_path: Path) -> None:
+        trends = self._run(tmp_path, _HEADER_STATS_SCENARIO)["trends"]
+        assert [(t["text"], t["tone"]) for t in trends] == [
+            ("up from 72 the week before", "good"),
+            ("down from 72 the week before", "bad"),
+            ("up from 0 the week before", ""),
+            ("same as 5 the week before", ""),
+            ("down from 80 the week before", "good"),
+            ("up from 80 the week before", "bad"),
+            ("", ""),
+        ]
 
 
 class TestRenderIfChanged:
