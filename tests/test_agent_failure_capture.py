@@ -396,6 +396,40 @@ class TestFinalizeTaskRunTerminationReason:
                 assert refreshed.status == "stopped"
                 assert refreshed.termination_reason == "manual_stop"
 
+    async def test_dashboard_stop_is_classified_as_a_stop_by_the_user(self) -> None:
+        """The stop button's default cause, written through a real stop, reads back as STOPPED_BY_USER."""
+        import inspect
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.core.state import MANUAL_STOP_CAUSE, RunOutcome, classify_run_outcome
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_lifecycle import stop_agent
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.ipc.control import AgentProcess
+
+        # Both writers of the cause (the service default and the process default) must stay on the shared constant.
+        assert inspect.signature(stop_agent).parameters["cause"].default == MANUAL_STOP_CAUSE
+        assert inspect.signature(AgentProcess.stop).parameters["cause"].default == MANUAL_STOP_CAUSE
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 1
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+        process = AgentProcess(mock_proc)
+        await process.stop(cause=inspect.signature(stop_agent).parameters["cause"].default, requester="dashboard")
+
+        run_id = await _seed_task_run()
+        await _finalize_task_run(run_id, exit_code=143, agent=_make_mock_agent(process=process))
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "stopped"
+            assert classify_run_outcome(run.status, run.termination_reason) is RunOutcome.STOPPED_BY_USER
+
     async def test_external_signal_persists_interrupted_and_reason(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from sova.dashboard.services import agent_db
         from sova.dashboard.services.agent_db import _finalize_task_run

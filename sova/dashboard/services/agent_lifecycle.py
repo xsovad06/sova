@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sova.config.loader import load_config
 from sova.config.models import RUNTIME_MODEL_PIN_ROLES
 from sova.core.output import OutputWriter
+from sova.core.state import MANUAL_STOP_CAUSE
 from sova.dashboard.services.agent_adopt import hold_spawn_claim
 from sova.dashboard.services.agent_approval import (  # re-export facade
     _claim_awaiting_approval as _claim_awaiting_approval,
@@ -967,7 +968,7 @@ async def stop_agent(
     slug: str | None = None,
     *,
     run_id: int | None = None,
-    cause: str = "manual_stop",
+    cause: str = MANUAL_STOP_CAUSE,
     requester: str = "dashboard",
 ) -> dict:
     """Stop a running agent process.

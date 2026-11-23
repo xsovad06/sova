@@ -82,3 +82,45 @@ TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "pau
 # Step statuses that count as completed progress (executed successfully or intentionally skipped).
 # Legacy runs used "passed"; current WorkflowEngine uses "done".
 STEP_DONE_STATUSES = frozenset({"done", "passed", "skipped"})
+
+# Terminal statuses that count as a failed run. classify_run_outcome() buckets every TASK_RUN_TERMINAL status
+# (tests/test_reliability_service.py, TestStatusPartition).
+FAILURE_STATUSES = frozenset({"failed", "rejected", "interrupted"})
+
+# TerminationRecord.cause of a stop the user asked for (the dashboard stop button). Any other cause
+# (watchdog signal names, memory pressure, dispatch timeouts) is SOVA stopping its own run.
+# Writers: agent_lifecycle.stop_agent() takes this constant as its default cause; sova.ipc sits below core and
+# cannot import it, so AgentProcess.stop() repeats the literal (tests/test_agent_failure_capture.py pins both).
+MANUAL_STOP_CAUSE = "manual_stop"
+
+
+class RunOutcome(StrEnum):
+    """What a finished TaskRun counts as in a success-rate or spend report.
+
+    Only SUCCESS and FAILURE enter a success rate; the two halted buckets are reported beside it.
+    """
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PAUSED_BY_SOVA = "paused_by_sova"
+    STOPPED_BY_USER = "stopped_by_user"
+
+
+def classify_run_outcome(status: str, termination_reason: str | None = None) -> RunOutcome:
+    """Bucket a terminal TaskRun status.
+
+    ``paused`` and ``awaiting_approval`` are SOVA halting its own run. A ``stopped`` run is the user's stop only
+    when its ``termination_reason`` is the manual-stop cause; any other reason, and a NULL one (a row written
+    before the reason column existed), is SOVA pausing its own run. A status outside ``TASK_RUN_TERMINAL`` raises
+    ``ValueError``: a non-terminal run has no outcome, and returning a bucket for it would let an unfinished run
+    look finished.
+    """
+    if status == "done":
+        return RunOutcome.SUCCESS
+    if status in FAILURE_STATUSES:
+        return RunOutcome.FAILURE
+    if status in ("paused", "awaiting_approval"):
+        return RunOutcome.PAUSED_BY_SOVA
+    if status == "stopped":
+        return RunOutcome.STOPPED_BY_USER if termination_reason == MANUAL_STOP_CAUSE else RunOutcome.PAUSED_BY_SOVA
+    raise ValueError(f"{status!r} is not a terminal TaskRun status")
