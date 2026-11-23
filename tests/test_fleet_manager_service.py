@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -601,12 +601,45 @@ class TestFleetManagerServiceCoverage:
         assert result["cr_reviews"] == 0
 
     def test_read_coderabbit_limit_exception(self) -> None:
-        """_read_coderabbit_limit returns 0 on config load failure."""
+        """_read_coderabbit_limit returns None (unknown, never 0 = unlimited) on config load failure."""
         with patch(
             "sova.dashboard.services.fleet_manager_service.load_config", side_effect=RuntimeError("config broken")
         ):
             result = FleetManagerService._read_coderabbit_limit(Path("/nonexistent"))
-        assert result == 0
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_failed_config_reads_do_not_make_the_fleet_unlimited(self, tmp_path: Path) -> None:
+        """A fleet whose configs all failed to read totals 0, but must not be flagged unlimited."""
+        service = FleetManagerService()
+        entry = MagicMock(path=str(tmp_path), fleet_priority=1)
+        with patch.object(FleetManagerService, "_read_coderabbit_limit", return_value=None):
+            status, _ids = await service._get_project_status("p", entry, None)
+        assert status.coderabbit_limit_known is False
+        assert status.coderabbit_reviews_per_hour == 0
+
+        with (
+            patch(
+                "sova.dashboard.services.fleet_manager_service.get_project_entries",
+                return_value={"p": MagicMock(path=str(tmp_path), fleet_priority=1)},
+            ),
+            patch.object(FleetManagerService, "_read_coderabbit_limit", return_value=None),
+        ):
+            fleet = await service.get_fleet_status()
+        assert fleet.global_coderabbit_unlimited is False
+
+    @pytest.mark.asyncio
+    async def test_a_read_unlimited_limit_flags_the_fleet_unlimited(self, tmp_path: Path) -> None:
+        service = FleetManagerService()
+        with (
+            patch(
+                "sova.dashboard.services.fleet_manager_service.get_project_entries",
+                return_value={"p": MagicMock(path=str(tmp_path), fleet_priority=1)},
+            ),
+            patch.object(FleetManagerService, "_read_coderabbit_limit", return_value=0),
+        ):
+            fleet = await service.get_fleet_status()
+        assert fleet.global_coderabbit_unlimited is True
 
     @pytest.mark.asyncio
     async def test_write_max_concurrent_to_db_writes(self, tmp_path: Path) -> None:

@@ -1428,18 +1428,32 @@ class TestDrawerOverlaysTheBoard:
         spacer = _css_declarations(css, ".sova-work-board-room .sova-work-track::after")
         assert spacer["position"] == "absolute" and spacer["left"] == "100%", "past the track's end, out of its flow"
 
-    def test_only_the_header_and_search_row_pad_for_the_drawer(self) -> None:
+    def test_no_rule_pads_or_resizes_anything_for_the_open_drawer(self) -> None:
+        """Opening the drawer changes no element's size or position outside it: it covers the header and the search
+        row as it covers the board. No rule may reach the open drawer from outside it (a `body:has(...)`, a sibling
+        or a state qualifier on another element) and set a layout property, whatever the value or wrapper."""
         css = (_STATIC / "style.css").read_text(encoding="utf-8")
-        template = (_TEMPLATES / "work.html").read_text(encoding="utf-8")
+        layout = re.compile(
+            r"^(padding|margin|width|min-width|max-width|position|inset|top|left|right|bottom|transform)"
+        )  # noqa: E501 (one property list)
 
-        rules = re.findall(r"(body:has\(\.sova-work-drawer[^{]*)\{\s*padding-right", css)
-        assert rules, "the header and the search row keep clear of the drawer"
-        named = {name for rule in rules for name in re.findall(r"#([\w-]+)", rule)}
-        assert named == {"work-header", "work-toolbar"}, "only the header and the search row pad: never the board"
-        for name in named:
-            assert f'id="{name}"' in template, f"the padding rule names #{name}, which the template must carry"
-        media = re.search(r"@media \(min-width: (\d+)rem\)\s*\{\s*body:has\(\.sova-work-drawer", css)
-        assert media and int(media.group(1)) >= 72, "below 72rem the padded rows would be left too little width"
+        outside_rules = []
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+            selector = match.group(1).strip().rsplit("*/", 1)[-1].strip()
+            outside = [
+                part.strip()
+                for part in re.split(r",(?![^()]*\))", selector)
+                if "sova-work-drawer" in part and not part.strip().startswith(".sova-work-drawer")
+            ]
+            if outside:
+                outside_rules.append((match.start(), outside, match.group(2)))
+
+        for start, parts, body in outside_rules:
+            props = [decl.split(":", 1)[0].strip() for decl in body.split(";") if ":" in decl]
+            assert not [prop for prop in props if layout.match(prop)], f"{parts} sets {props} for the open drawer"
+            depth = css[:start].count("{") - css[:start].count("}")
+            assert depth == 0, f"{parts} sits inside an at-rule (media query), so it resizes the page at some widths"
+        assert not re.search(r"padding-right[^;}]*27rem", css)
 
     def test_the_drawer_body_never_scrolls_sideways_and_its_tooltips_stay_inside_it(self) -> None:
         css = (_STATIC / "style.css").read_text(encoding="utf-8")
@@ -2031,3 +2045,65 @@ class TestPriorityPicker:
         assert "'Escape'" in source, "Escape closes the menu"
         assert "[data-open]" in drawer, "the drawer holds a redraw while the menu is open"
         assert "[data-saving]" in drawer, "the drawer holds a redraw while a save is in flight"
+
+
+class TestStatToneBeatsTheNeutralDetailColour:
+    def test_the_tone_rules_are_scoped_deeper_than_the_detail_rule_and_follow_it(self) -> None:
+        """`.sova-stat-detail` sets a colour and loads after Tailwind, so a Tailwind colour class on the same
+        element lost (a worse week rendered grey). The tone sits on a child span under explicit, more specific
+        rules that come after the detail rule, so neither stylesheet order nor specificity can hide it."""
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+        # Every rule that names the detail line, descendants included (`.sova-stat-detail span`), must come first.
+        detail = max(m.start() for m in re.finditer(r"^[^{}\n]*\.sova-stat-detail[^{}\n]*\{", css, re.MULTILINE))
+        for tone, token in (("good", "--ctp-green"), ("bad", "--ctp-peach")):
+            rule = _css_declarations(css, f".sova-work-stat .sova-tone-{tone}")
+            assert rule["color"] == f"var({token})"
+            assert css.index(f".sova-work-stat .sova-tone-{tone}") > detail
+
+    def test_each_toned_figure_has_a_span_of_its_own_inside_the_detail_line(self) -> None:
+        template = (_TEMPLATES / "work.html").read_text(encoding="utf-8")
+
+        for tile in ("success-detail", "merged-detail", "merged-count", "spend-detail"):
+            assert f'id="hdr-{tile}-trend"' in template, f"{tile}: the comparison phrase needs its own span"
+            assert f'id="hdr-{tile}-text"' in template, f"{tile}: the counts and amounts stay in a neutral span"
+
+    def test_the_tone_spans_sit_inside_a_tile_and_only_they_are_toned(self) -> None:
+        """`.sova-work-stat .sova-tone-*` only applies below a tile, and a count or amount beside the comparison
+        (the `-text` span) must stay neutral, so header.js may tone nothing but a `-trend` span."""
+        from html.parser import HTMLParser
+
+        template = (_TEMPLATES / "work.html").read_text(encoding="utf-8")
+        void = {"br", "img", "input", "hr", "meta", "link"}
+        found: dict[str, bool] = {}
+
+        class _Ancestry(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.stack: list[tuple[str, set[str]]] = []
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                attr = dict(attrs)
+                classes = set((attr.get("class") or "").split())
+                element_id = attr.get("id") or ""
+                if re.fullmatch(r"hdr-[a-z-]+-trend", element_id):
+                    found[element_id] = any("sova-work-stat" in cls for _tag, cls in self.stack)
+                if tag not in void:
+                    self.stack.append((tag, classes))
+
+            def handle_endtag(self, tag: str) -> None:
+                for index in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[index][0] == tag:
+                        del self.stack[index:]
+                        break
+
+        _Ancestry().feed(template)
+        assert set(found) >= {"hdr-success-detail-trend", "hdr-merged-detail-trend", "hdr-spend-detail-trend"}
+        assert all(found.values()), f"a trend span outside a .sova-work-stat tile renders grey: {found}"
+
+        header = (_WORK_JS / "header.js").read_text(encoding="utf-8")
+        calls = [line for line in header.splitlines() if "_setTone(" in line and "function _setTone" not in line]
+        assert calls
+        assert all("-trend" in line for line in calls), calls
+        assert "-text', " not in "".join(line for line in header.splitlines() if "classList" in line)
+        assert header.count("sova-tone-") == 2, "the tone classes are named once, in _TONE_CLASSES"

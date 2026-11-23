@@ -382,66 +382,12 @@ function _renderPrTracker() {
   }
   renderPrSummary(visible);
 }
-// CodeRabbit Quota Widget
-
-async function _loadCrQuota() {
-  try {
-    var resp = await fetch(apiUrl('/quota/coderabbit'));
-    if (!resp.ok) return;
-    var data = await resp.json();
-    var widget = document.getElementById('cr-quota-widget');
-    if (!data.enabled) { widget.classList.add('hidden'); return; }
-    widget.classList.remove('hidden');
-
-    var used = data.reviews_in_window || 0;
-    var limit = data.reviews_per_hour || 0;
-    var pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-
-    document.getElementById('cr-quota-usage').textContent = used + ' / ' + limit + ' reviews';
-
-    var bar = document.getElementById('cr-quota-bar');
-    bar.style.width = pct + '%';
-
-    var dot = document.getElementById('cr-quota-dot');
-    var statusEl = document.getElementById('cr-quota-status');
-    var waitEl = document.getElementById('cr-quota-wait');
-
-    if (data.can_create_pr) {
-      dot.className = 'w-2 h-2 rounded-full bg-accent-green';
-      bar.className = 'h-1.5 rounded-full transition-all duration-300 bg-accent-green';
-      statusEl.textContent = 'Available';
-      statusEl.className = 'text-xs text-accent-green';
-      waitEl.classList.add('hidden');
-    } else {
-      dot.className = 'w-2 h-2 rounded-full bg-accent-peach';
-      bar.className = 'h-1.5 rounded-full transition-all duration-300 bg-accent-peach';
-      statusEl.textContent = 'Rate limited';
-      statusEl.className = 'text-xs text-accent-peach';
-      if (data.next_available_minutes != null) {
-        var mins = Math.ceil(data.next_available_minutes);
-        waitEl.textContent = 'Next slot in ~' + mins + ' min';
-        waitEl.classList.remove('hidden');
-      }
-    }
-  } catch (e) { /* non-fatal */ }
-}
-
-async function _syncCrQuota() {
-  try {
-    var ctrl = new AbortController();
-    var tid = setTimeout(function() { ctrl.abort(); }, 10000);
-    await fetch(apiUrl('/quota/coderabbit/sync'), {method: 'POST', signal: ctrl.signal});
-    clearTimeout(tid);
-  } catch (e) { /* non-fatal: network error or timeout */ }
-  await _loadCrQuota();
-}
 
 export function init() {
   registerActions({
     'toggle-pr-tracker': function() { togglePrTracker(); },
     'set-pr-filter': function(el, e, value) { setPrFilter(value); },
     'toggle-pr-group': function(el, e, groupId) { togglePrGroup(groupId); },
-    'sync-cr-quota': function() { _syncCrQuota(); },
   });
 
   _updateFilterToggleUI();
@@ -451,12 +397,5 @@ export function init() {
     document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
   }
 
-  // The quota widget's switch (settingSwitch in app.js) saves external_reviews.coderabbit.trigger_review.
-  mountSettingControls(document.getElementById('cr-quota-widget'));
-
   visibilityAwarePoll(loadPrTracker, 30000);
-  // The sync POSTs to CodeRabbit, so loading the page must not trigger one: the first run is one interval out.
-  // The widget shows the cached value (a GET) until then.
-  _loadCrQuota();
-  visibilityAwarePoll(_syncCrQuota, 300000, {skipImmediate: true});
 }

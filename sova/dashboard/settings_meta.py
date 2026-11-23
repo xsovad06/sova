@@ -1793,7 +1793,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "coderabbit_quota.plan",
         "CodeRabbit plan",
-        "CodeRabbit plan tier (free, pro, pro_plus): sets default reviews_per_hour",
+        "CodeRabbit plan (free, oss, pro, pro_plus): sets default reviews_per_hour, free and oss by star count",
         "external_reviews",
     ),
     SettingMeta(

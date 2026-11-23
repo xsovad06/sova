@@ -15,6 +15,8 @@ async def check_quota_gate(
     is_developer: bool,
     quota_config: CodeRabbitQuotaConfig,
     session_factory: async_sessionmaker,
+    repo: str = "",
+    github_user: str = "",
 ) -> BlockReason | None:
     """Check CodeRabbit quota headroom for actions that produce PRs."""
     if not is_developer:
@@ -27,7 +29,9 @@ async def check_quota_gate(
             return None
 
         async with session_factory() as session:
-            status = await get_quota_status(session, quota_config)
+            status = await get_quota_status(
+                session, quota_config, project_slug=repo, repo=repo, github_user=github_user
+            )
             if not status.can_create_pr:
                 wait_msg = ""
                 if status.next_available_minutes is not None:

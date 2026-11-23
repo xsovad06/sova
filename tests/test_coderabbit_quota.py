@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.config.models import CodeRabbitQuotaConfig
+from sova.supervisor.coderabbit_quota import _fetch_star_count as _REAL_FETCH_STAR_COUNT
 from sova.utils.shell import ShellResult
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
@@ -21,11 +22,28 @@ pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
 @pytest.fixture(autouse=True)
 def _clear_sync_cache() -> Iterator[None]:
-    from sova.supervisor.coderabbit_quota import _sync_cache
+    """Empty the per-repo caches, and keep a sync from running a real ``gh`` for the star count."""
+    from sova.supervisor import coderabbit_quota as quota
 
-    _sync_cache.clear()
-    yield
-    _sync_cache.clear()
+    def _reset() -> None:
+        for task in list(quota._background_syncs.values()):
+            task.cancel()
+        quota._background_syncs.clear()
+        from sova.supervisor import github_quota
+
+        github_quota._trackers.clear()  # a rate-limit hit recorded by another test must not block a sync
+        for cache in (quota._sync_cache, quota._stars_cache, quota._sync_attempted, quota._stars_attempted):
+            cache.clear()
+
+    _reset()
+    # No real gh: an endpoint test that GETs with the quota enabled would start a background sync that shells out
+    # and outlives the test (and leaves a task in _background_syncs for the next one).
+    with (
+        patch("sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock, return_value=None),
+        patch("sova.dashboard.routers.quota.start_background_sync", return_value=False),
+    ):
+        yield
+    _reset()
 
 
 async def _record_event(
@@ -57,24 +75,35 @@ class TestCodeRabbitQuotaConfig:
         cfg = CodeRabbitQuotaConfig()
         assert cfg.enabled is False
         assert cfg.plan == "free"
-        # reviews_per_hour=0 triggers plan-based default
-        assert cfg.reviews_per_hour == 4
+        assert cfg.reviews_per_hour is None, "an unset limit stays unset: the plan and stars derive it"
+        assert cfg.reviews_per_hour_is_explicit is False
 
-    def test_free_plan_default(self) -> None:
+    @pytest.mark.parametrize(
+        ("plan", "expected"),
+        [("free", 1), ("oss", 1), ("pro", 5), ("pro_plus", 10)],
+    )
+    def test_plan_default_is_the_below_10_stars_value(self, plan: str, expected: int) -> None:
+        """Stars are unknown here, so free and oss get the conservative 1; paid plans their fixed limit."""
+        from sova.supervisor.coderabbit_quota import effective_reviews_per_hour
+
+        cfg = CodeRabbitQuotaConfig(plan=plan)
+        assert effective_reviews_per_hour(cfg, None) == expected
+        assert cfg.reviews_per_hour_is_explicit is False
+
+    @pytest.mark.parametrize("dump", ["python", "json"])
+    def test_a_round_trip_keeps_an_unset_limit_unset(self, dump: str) -> None:
+        """A filled default would round-trip as an explicit 1 and pin a 10+-star repo to one an hour."""
         cfg = CodeRabbitQuotaConfig(plan="free")
-        assert cfg.reviews_per_hour == 4
+        data = cfg.model_dump() if dump == "python" else json.loads(cfg.model_dump_json())
+        assert CodeRabbitQuotaConfig.model_validate(data).reviews_per_hour_is_explicit is False
+        explicit = CodeRabbitQuotaConfig.model_validate(CodeRabbitQuotaConfig(reviews_per_hour=0).model_dump())
+        assert explicit.reviews_per_hour_is_explicit is True and explicit.reviews_per_hour == 0
 
-    def test_pro_plan_default(self) -> None:
-        cfg = CodeRabbitQuotaConfig(plan="pro")
-        assert cfg.reviews_per_hour == 0  # unlimited: adaptive rate limiting
-
-    def test_pro_plus_plan_default(self) -> None:
-        cfg = CodeRabbitQuotaConfig(plan="pro_plus")
-        assert cfg.reviews_per_hour == 0  # unlimited: adaptive rate limiting
-
-    def test_explicit_override(self) -> None:
-        cfg = CodeRabbitQuotaConfig(plan="free", reviews_per_hour=8)
-        assert cfg.reviews_per_hour == 8
+    @pytest.mark.parametrize("value", [8, 0])
+    def test_explicit_override(self, value: int) -> None:
+        cfg = CodeRabbitQuotaConfig(plan="free", reviews_per_hour=value)
+        assert cfg.reviews_per_hour == value
+        assert cfg.reviews_per_hour_is_explicit is True
 
     def test_window_minutes_default(self) -> None:
         cfg = CodeRabbitQuotaConfig()
@@ -114,7 +143,7 @@ class TestGetQuotaStatus:
         from sova.db.session import get_session
         from sova.supervisor.coderabbit_quota import get_quota_status
 
-        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free", reviews_per_hour=4)
         now = datetime.now(timezone.utc)
 
         async with await get_session() as session:
@@ -652,6 +681,7 @@ class TestConfigLoader:
         from pathlib import Path
 
         from sova.config.loader import load_config
+        from sova.supervisor.coderabbit_quota import effective_reviews_per_hour
 
         p = Path(str(tmp_path))
         toml = p / "sova.toml"
@@ -659,7 +689,8 @@ class TestConfigLoader:
         cfg = load_config(p)
         assert cfg.coderabbit_quota.enabled is True
         assert cfg.coderabbit_quota.plan == "pro"
-        assert cfg.coderabbit_quota.reviews_per_hour == 0  # pro = unlimited
+        assert cfg.coderabbit_quota.reviews_per_hour is None  # not stored: the plan derives it
+        assert effective_reviews_per_hour(cfg.coderabbit_quota, None) == 5  # the pro plan's limit
 
 
 # ---------------------------------------------------------------------------
@@ -895,3 +926,401 @@ class TestFetchReviewsForPR:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Star-aware limit
+# ---------------------------------------------------------------------------
+
+
+class TestPlanReviewLimit:
+    @pytest.mark.parametrize(
+        ("plan", "stars", "limit", "eligible"),
+        [
+            ("free", None, 1, False),
+            ("free", 3, 1, False),
+            ("free", 9, 1, False),
+            ("free", 10, 4, True),
+            ("free", 5000, 4, True),
+            ("oss", 5, 1, False),
+            ("oss", 10, 1, True),
+            ("oss", 25, 2, True),
+            ("oss", 99, 9, True),
+            ("oss", 100, 10, True),
+            ("oss", 5000, 10, True),
+            ("oss", None, 1, False),
+            ("pro", None, 5, True),
+            ("pro", 3, 5, True),
+            ("pro_plus", None, 10, True),
+        ],
+    )
+    def test_limit_and_eligibility(self, plan: str, stars: int | None, limit: int, eligible: bool) -> None:
+        from sova.supervisor.coderabbit_quota import auto_review_eligible, plan_review_limit
+
+        assert plan_review_limit(plan, stars) == limit
+        assert auto_review_eligible(plan, stars) is eligible
+
+
+class TestStarAwareStatus:
+    async def _status(self, cfg: CodeRabbitQuotaConfig, repo: str = "owner/repo"):  # noqa: ANN202 (test helper)
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import get_quota_status
+
+        async with await get_session() as session:
+            return await get_quota_status(session, cfg, repo=repo)
+
+    async def test_sync_caches_the_star_count_and_status_uses_it(self) -> None:
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        with (
+            patch("sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock, return_value=12),
+            patch(
+                "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg)
+
+        status = await self._status(cfg)
+        assert (status.stars, status.reviews_per_hour, status.auto_review_eligible) == (12, 4, True)
+        assert status.limit_from_10_stars == 4
+
+    async def test_below_10_stars_is_not_eligible_and_limited_to_one(self) -> None:
+        from sova.supervisor.coderabbit_quota import _stars_cache
+
+        _stars_cache["owner/repo"] = 3
+        status = await self._status(CodeRabbitQuotaConfig(enabled=True, plan="free"))
+        assert (status.stars, status.reviews_per_hour, status.auto_review_eligible) == (3, 1, False)
+
+    async def test_unknown_stars_take_the_below_10_limit(self) -> None:
+        status = await self._status(CodeRabbitQuotaConfig(enabled=True, plan="oss"))
+        assert (status.stars, status.reviews_per_hour, status.auto_review_eligible) == (None, 1, False)
+
+    async def test_failed_fetch_clears_a_known_count_and_never_raises_the_limit(self) -> None:
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import _stars_cache, sync_from_github
+
+        _stars_cache["owner/repo"] = 500
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="oss")
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg, force=True)
+
+        status = await self._status(cfg)
+        assert (status.stars, status.reviews_per_hour) == (None, 1)
+
+    @pytest.mark.parametrize("explicit", [8, 0])
+    async def test_explicit_limit_wins_over_the_star_rule(self, explicit: int) -> None:
+        from sova.supervisor.coderabbit_quota import _stars_cache
+
+        _stars_cache["owner/repo"] = 3
+        status = await self._status(CodeRabbitQuotaConfig(enabled=True, plan="free", reviews_per_hour=explicit))
+        assert status.reviews_per_hour == explicit
+        assert status.auto_review_eligible is False
+        if explicit == 0:
+            assert status.can_create_pr is True
+            assert status.next_available_minutes is None
+
+    async def test_a_process_that_never_synced_reads_the_stars_for_the_gate(self) -> None:
+        """The gate runs in processes that never synced (a spawned run, a server just restarted): an empty cache
+        must not drop a 10+-star free repo to one an hour once the count is fetchable."""
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        with patch("sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock, return_value=40) as f:
+            status = await self._status(cfg)
+            again = await self._status(cfg)
+        assert (status.stars, status.reviews_per_hour, status.auto_review_eligible) == (40, 4, True)
+        assert again.reviews_per_hour == 4
+        assert f.await_count == 1, "the count is cached for the process"
+
+    async def test_a_failed_star_read_is_not_repeated_within_the_backoff(self) -> None:
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock, return_value=None
+        ) as f:
+            first = await self._status(cfg)
+            await self._status(cfg)
+        assert (first.stars, first.reviews_per_hour) == (None, 1), "a failure never yields a larger limit"
+        assert f.await_count == 1
+
+    async def test_concurrent_gate_checks_share_one_star_read(self) -> None:
+        import asyncio
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        release = asyncio.Event()
+
+        async def slow_fetch(*_args: object, **_kwargs: object) -> int:
+            await release.wait()
+            return 12
+
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock, side_effect=slow_fetch
+        ) as f:
+            tasks = [asyncio.create_task(self._status(cfg)) for _ in range(4)]
+            # The first read is now parked on the event; give the other three time to reach the lock behind it.
+            while f.await_count == 0:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            release.set()
+            results = await asyncio.gather(*tasks)
+        assert f.await_count == 1
+        assert [r.stars for r in results] == [12] * 4
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            CodeRabbitQuotaConfig(enabled=True, plan="free", reviews_per_hour=8),
+            CodeRabbitQuotaConfig(enabled=True, plan="pro"),
+            CodeRabbitQuotaConfig(enabled=False, plan="free"),
+        ],
+        ids=["explicit", "paid", "disabled"],
+    )
+    async def test_no_star_read_when_the_stars_cannot_change_the_limit(self, cfg: CodeRabbitQuotaConfig) -> None:
+        with patch("sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock) as f:
+            await self._status(cfg)
+        f.assert_not_awaited()
+
+    async def test_status_says_when_the_limit_is_the_operators_and_when_it_scales(self) -> None:
+        explicit = await self._status(CodeRabbitQuotaConfig(enabled=True, plan="free", reviews_per_hour=8))
+        assert (explicit.limit_is_explicit, explicit.limit_scales_with_stars) == (True, False)
+        oss = await self._status(CodeRabbitQuotaConfig(enabled=True, plan="oss"))
+        assert (oss.limit_is_explicit, oss.limit_scales_with_stars) == (False, True)
+
+    async def test_the_star_read_feeds_the_github_rate_limit_tracker(self) -> None:
+        result = ShellResult(returncode=0, stdout="5\n", stderr="")
+        with (
+            patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, return_value=result),
+            # resolve_gh_env is imported inside _fetch_star_count, so patch its source module.
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.github_quota.track_rate_limit") as track,
+        ):
+            assert await _REAL_FETCH_STAR_COUNT("owner/repo", github_user="bot") == 5
+        track.assert_called_once_with(result, "bot")
+
+    async def test_pro_is_eligible_without_stars(self) -> None:
+        status = await self._status(CodeRabbitQuotaConfig(enabled=False, plan="pro"))
+        assert (status.reviews_per_hour, status.auto_review_eligible) == (5, True)
+
+
+class TestFetchStarCount:
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            (ShellResult(returncode=0, stdout="42\n", stderr=""), 42),
+            (ShellResult(returncode=1, stdout="", stderr="rate limited"), None),
+            (ShellResult(returncode=0, stdout="not a number", stderr=""), None),
+        ],
+    )
+    async def test_parses_gh_output(self, result: ShellResult, expected: int | None) -> None:
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, return_value=result) as run:
+            assert await _REAL_FETCH_STAR_COUNT("owner/repo") == expected
+        assert run.await_args.args[:3] == ("gh", "api", "repos/owner/repo")
+
+    async def test_gh_missing_is_unknown(self) -> None:
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, side_effect=OSError("no gh")):
+            assert await _REAL_FETCH_STAR_COUNT("owner/repo") is None
+
+
+class TestBackgroundSync:
+    async def test_stale_get_starts_one_sync_for_two_quick_requests(self) -> None:
+        import asyncio
+        from pathlib import Path
+
+        from sova.supervisor.coderabbit_quota import _background_syncs, _sync_attempted, start_background_sync
+
+        release = asyncio.Event()
+        calls: list[str] = []
+
+        async def _slow_sync(*args: object, **kwargs: object) -> int:
+            calls.append("sync")
+            await release.wait()
+            return 0
+
+        cfg = CodeRabbitQuotaConfig(enabled=True)
+        with patch("sova.supervisor.coderabbit_quota.sync_from_github", side_effect=_slow_sync):
+            first = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            second = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(*_background_syncs.values())
+            await asyncio.sleep(0)
+            _sync_attempted.clear()  # past the retry backoff
+            third = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            await asyncio.gather(*_background_syncs.values())
+
+        assert (first, second, third) == (True, False, True)
+        assert calls == ["sync", "sync"]
+        assert _background_syncs == {}
+
+    async def test_a_failed_sync_is_not_retried_within_the_backoff(self) -> None:
+        """A failed sync caches nothing, so the count stays stale: without a backoff every GET would start another."""
+        import asyncio
+        from pathlib import Path
+
+        from sova.supervisor.coderabbit_quota import (
+            _background_syncs,
+            _sync_attempted,
+            is_sync_stale,
+            start_background_sync,
+        )
+
+        cfg = CodeRabbitQuotaConfig(enabled=True)
+        with patch("sova.supervisor.coderabbit_quota.sync_from_github", new_callable=AsyncMock, return_value=0) as sync:
+            first = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            await asyncio.gather(*_background_syncs.values())
+            await asyncio.sleep(0)
+            assert is_sync_stale("owner/repo") is True, "the failed sync wrote no cache entry"
+            second = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            _sync_attempted["owner/repo"] -= 61
+            third = start_background_sync("owner/repo", cfg, project_dir=Path("."))
+            await asyncio.gather(*_background_syncs.values())
+
+        assert (first, second, third) == (True, False, True)
+        assert sync.await_count == 2
+
+    async def test_no_sync_starts_while_github_is_rate_limited(self) -> None:
+        from pathlib import Path
+
+        from sova.supervisor.coderabbit_quota import start_background_sync
+
+        tracker = AsyncMock()
+        tracker.should_skip = lambda: True
+        with patch("sova.supervisor.github_quota.get_github_quota_tracker", return_value=tracker):
+            started = start_background_sync(
+                "owner/repo", CodeRabbitQuotaConfig(enabled=True), project_dir=Path("."), github_user="bot"
+            )
+        assert started is False
+
+    def test_is_sync_stale_follows_the_sync_cache(self) -> None:
+        import time
+
+        from sova.supervisor.coderabbit_quota import _SYNC_CACHE_TTL, _sync_cache, is_sync_stale
+
+        assert is_sync_stale("owner/repo") is True
+        _sync_cache["owner/repo"] = time.monotonic()
+        assert is_sync_stale("owner/repo") is False
+        _sync_cache["owner/repo"] = time.monotonic() - _SYNC_CACHE_TTL - 1
+        assert is_sync_stale("owner/repo") is True
+
+
+class TestQuotaEndpointRules:
+    async def _get(self, cfg: object) -> dict:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app()
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.get("/api/quota/coderabbit")
+        assert resp.status_code == 200
+        return resp.json()
+
+    async def test_configured_follows_the_tool_list_even_when_tracking_is_off(self) -> None:
+        from sova.config.models import ExternalReviewsConfig, ProjectConfig
+
+        listed = ProjectConfig(external_reviews=ExternalReviewsConfig(tools=["sonarcloud", "coderabbit"]))
+        assert (await self._get(listed)) == {"enabled": False, "configured": True}
+        assert (await self._get(ProjectConfig()))["configured"] is False
+
+    async def test_status_carries_the_star_fields_and_a_stale_get_syncs_in_the_background(self) -> None:
+        from sova.config.models import ExternalReviewsConfig, ProjectConfig
+        from sova.supervisor.coderabbit_quota import _stars_cache
+
+        _stars_cache["owner/repo"] = 3
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True, plan="free"),
+            external_reviews=ExternalReviewsConfig(tools=["coderabbit"]),
+        )
+        with patch("sova.dashboard.routers.quota.start_background_sync") as start:
+            data = await self._get(cfg)
+
+        assert data["configured"] is True
+        assert (data["stars"], data["auto_review_eligible"], data["reviews_per_hour"]) == (3, False, 1)
+        assert data["limit_from_10_stars"] == 4
+        start.assert_called_once()
+        assert start.call_args.args[0] == "owner/repo"
+
+    async def test_an_unconfigured_project_starts_no_background_sync(self) -> None:
+        """CodeRabbit is not a listed review tool, so the tile is hidden and nobody reads the figures."""
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/repo", coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
+        with patch("sova.dashboard.routers.quota.start_background_sync") as start:
+            data = await self._get(cfg)
+        assert data["configured"] is False
+        start.assert_not_called()
+
+    async def test_the_get_never_reads_stars_from_github(self) -> None:
+        """The status read answers from the cache: the background sync, not the request, fetches the stars."""
+        from sova.config.models import ExternalReviewsConfig, ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+            external_reviews=ExternalReviewsConfig(tools=["coderabbit"]),
+        )
+        with (
+            patch("sova.dashboard.routers.quota.start_background_sync"),
+            patch("sova.supervisor.coderabbit_quota._fetch_star_count", new_callable=AsyncMock) as fetch,
+        ):
+            data = await self._get(cfg)
+        fetch.assert_not_awaited()
+        assert (data["stars"], data["limit_is_explicit"], data["limit_scales_with_stars"]) == (None, False, False)
+
+    async def test_a_fresh_sync_starts_no_background_sync(self) -> None:
+        import time
+
+        from sova.config.models import ExternalReviewsConfig, ProjectConfig
+        from sova.supervisor.coderabbit_quota import _sync_cache
+
+        _sync_cache["owner/repo"] = time.monotonic()
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+            external_reviews=ExternalReviewsConfig(tools=["coderabbit"]),
+        )
+        with patch("sova.dashboard.routers.quota.start_background_sync") as start:
+            data = await self._get(cfg)
+        start.assert_not_called()
+        assert data["refreshing"] is False
+
+    async def test_a_stale_sync_is_reported_as_refreshing(self) -> None:
+        from sova.config.models import ExternalReviewsConfig, ProjectConfig
+        from sova.supervisor.coderabbit_quota import _sync_cache
+
+        _sync_cache.pop("owner/repo", None)
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+            external_reviews=ExternalReviewsConfig(tools=["coderabbit"]),
+        )
+        with patch("sova.dashboard.routers.quota.start_background_sync") as start:
+            data = await self._get(cfg)
+        start.assert_called_once()
+        assert data["refreshing"] is True
+
+    async def test_an_unloadable_config_answers_503_not_500(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app()
+        with patch("sova.dashboard.routers.quota.load_config", side_effect=OSError("disk")):
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+            ) as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.get("/api/quota/coderabbit")
+        assert resp.status_code == 503

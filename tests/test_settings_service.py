@@ -1740,14 +1740,14 @@ class TestGroupedSettingFlags:
         assert _entry(payload, key)["default"] == {}
         assert _entry(payload, key)["env_var"] == env_var
 
-    def test_a_default_a_validator_derives_is_reported(self) -> None:
-        """coderabbit_quota fills reviews_per_hour from its plan; the page must not call 4 a change from None."""
+    def test_an_unset_quota_limit_is_reported_as_unset(self) -> None:
+        """coderabbit_quota.reviews_per_hour stays None until stored (the plan and stars derive the limit), so the
+        page neither calls a filled-in 1 the default nor shows a change from it."""
         from sova.config.models import ProjectConfig
         from sova.dashboard.services.settings_service import default_values
 
-        assert (
-            default_values()["coderabbit_quota.reviews_per_hour"] == ProjectConfig().coderabbit_quota.reviews_per_hour
-        )
+        assert default_values()["coderabbit_quota.reviews_per_hour"] is None
+        assert ProjectConfig().coderabbit_quota.reviews_per_hour is None
 
     def test_every_setting_has_a_default(self) -> None:
         """The defaults are flattened the way get_config() flattens a project's config: the same keys."""

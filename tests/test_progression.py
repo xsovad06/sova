@@ -347,6 +347,32 @@ class TestQuotaGate:
         assert result is not None
         assert result.gate == "quota"
 
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.coderabbit_quota.get_quota_status")
+    async def test_review_count_is_scoped_to_the_repository(self, mock_quota: AsyncMock) -> None:
+        """The sync stores reviews under the repo slug, so the count must query that slug, not ""."""
+        from sova.config.models import CodeRabbitQuotaConfig
+        from sova.supervisor.coderabbit_quota import QuotaStatus
+
+        mock_quota.return_value = QuotaStatus(
+            enabled=True,
+            reviews_in_window=0,
+            reviews_per_hour=4,
+            can_create_pr=True,
+            next_available_minutes=None,
+            window_minutes=60,
+        )
+        await check_quota_gate(
+            is_developer=True,
+            quota_config=CodeRabbitQuotaConfig(enabled=True),
+            session_factory=_mock_db_session(rows=[]),
+            repo="owner/repo",
+            github_user="bot",
+        )
+        kwargs = mock_quota.await_args.kwargs
+        assert kwargs["project_slug"] == "owner/repo"
+        assert kwargs["repo"] == "owner/repo"
+
 
 # ---------------------------------------------------------------------------
 # _check_already_running

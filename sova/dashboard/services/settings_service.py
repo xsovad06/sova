@@ -145,8 +145,8 @@ def _default_instance(model: type[BaseModel]) -> BaseModel:
     deep-merges a dict-valued one (``SOVA_ROLES_NICKNAMES``, ``SOVA_LLM_ROUTING``) into an explicit value, so
     either would report an environment override as the default. ``model_construct()`` reads nothing, but it would
     still build a nested section through its default factory (the constructor), so nested sections are built here
-    first, and the model's "after" validators, which derive a default from other fields (the CodeRabbit quota
-    fills ``reviews_per_hour`` from its plan), are run by hand.
+    first, and the model's "after" validators, which derive a default from other fields, are run by hand.
+    (The CodeRabbit quota's ``reviews_per_hour`` stays ``None`` when unset: the plan and star count derive its limit.)
     """
     nested = {}
     for name, field_info in model.model_fields.items():

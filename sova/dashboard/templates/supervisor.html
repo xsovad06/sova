@@ -454,9 +454,11 @@ async function loadQuota() {
     }
 
     const statusColor = data.can_create_pr ? 'text-accent-green' : 'text-accent-red';
+    const limit = data.reviews_per_hour || 0;
+    const available = limit === 0 ? 'No limit' : `${Math.max(limit - (data.reviews_in_window || 0), 0)} of ${limit} available`;
     panel.innerHTML = `
       <div class="flex justify-between text-xs"><span class="text-gray-400">Status</span><span class="${statusColor} font-medium">${data.can_create_pr ? 'Available' : 'Throttled'}</span></div>
-      <div class="flex justify-between text-xs"><span class="text-gray-400">Reviews in window</span><span class="text-gray-300">${data.reviews_in_window}/${data.reviews_per_hour}</span></div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Reviews</span><span class="text-gray-300">${available}</span></div>
       ${data.next_available_minutes != null ? `<div class="flex justify-between text-xs"><span class="text-gray-400">Next available</span><span class="text-gray-300">${Math.ceil(data.next_available_minutes)}m</span></div>` : ''}
     `;
   } catch (e) {

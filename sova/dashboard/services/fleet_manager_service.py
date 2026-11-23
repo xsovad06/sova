@@ -19,6 +19,7 @@ from sova.config.loader import load_config
 from sova.config.registry import ProjectEntry, get_project_entries, list_projects
 from sova.dashboard.services.agent_pool import list_all_pools, read_max_parallel
 from sova.db.session import get_session
+from sova.supervisor.coderabbit_quota import effective_reviews_per_hour, get_cached_stars
 from sova.utils.logging import get_logger
 
 log = get_logger(component="fleet_manager")
@@ -42,6 +43,8 @@ class ProjectFleetStatus:
     coderabbit_reviews_per_hour: int
     coderabbit_can_create: bool
     error: str | None = None
+    # False when the project's config could not be read: its limit of 0 is then "unknown", not "unlimited".
+    coderabbit_limit_known: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,9 @@ class FleetStatus:
     global_coderabbit_used: int
     global_coderabbit_limit: int
     global_coderabbit_can_create: bool
+    # True only when at least one project's limit was read and none of them caps reviews. A fleet whose configs
+    # all failed to read has a total of 0 too, and must not read as unlimited.
+    global_coderabbit_unlimited: bool = False
 
 
 class FleetManagerService:
@@ -91,7 +97,8 @@ class FleetManagerService:
         total_queued = sum(p.queued_tasks for p in project_statuses)
 
         # Global CodeRabbit: deduplicate by review_id across projects
-        global_cr_limit = max((p.coderabbit_reviews_per_hour for p in project_statuses), default=0)
+        known_cr_limits = [p.coderabbit_reviews_per_hour for p in project_statuses if p.coderabbit_limit_known]
+        global_cr_limit = max(known_cr_limits, default=0)
         global_cr_used = len(all_cr_review_ids)
         global_cr_can_create = global_cr_limit == 0 or global_cr_used < global_cr_limit
 
@@ -103,6 +110,7 @@ class FleetManagerService:
             global_coderabbit_used=global_cr_used,
             global_coderabbit_limit=global_cr_limit,
             global_coderabbit_can_create=global_cr_can_create,
+            global_coderabbit_unlimited=bool(known_cr_limits) and global_cr_limit == 0,
         )
 
     async def set_max_concurrent(self, slug: str, value: int) -> str | None:
@@ -158,7 +166,8 @@ class FleetManagerService:
         queued = 0
         cr_reviews = 0
         cr_review_ids: set[str] = set()
-        cr_limit = self._read_coderabbit_limit(Path(entry.path))
+        read_limit = self._read_coderabbit_limit(Path(entry.path))
+        cr_limit = read_limit if read_limit is not None else 0
         error: str | None = None
 
         db_path = Path(entry.path) / ".claude" / _DB_FILENAME
@@ -193,6 +202,7 @@ class FleetManagerService:
             coderabbit_reviews_per_hour=cr_limit,
             coderabbit_can_create=cr_can_create,
             error=error,
+            coderabbit_limit_known=read_limit is not None,
         )
         return status, cr_review_ids
 
@@ -239,14 +249,14 @@ class FleetManagerService:
         return result
 
     @staticmethod
-    def _read_coderabbit_limit(project_dir: Path) -> int:
-        """Read CodeRabbit reviews_per_hour from project config."""
+    def _read_coderabbit_limit(project_dir: Path) -> int | None:
+        """The project's CodeRabbit reviews an hour (0 = unlimited), or None when its config cannot be read."""
         try:
             cfg = load_config(project_dir)
-            return cfg.coderabbit_quota.reviews_per_hour or 0
+            return effective_reviews_per_hour(cfg.coderabbit_quota, get_cached_stars(cfg.github_repo))
         except Exception:  # noqa: BLE001 (config may fail for many reasons (missing file, bad TOML))
             log.warning("fleet_manager.coderabbit_limit_read_failed", project_dir=str(project_dir), exc_info=True)
-            return 0
+            return None
 
     @staticmethod
     async def _write_max_concurrent_to_db(project_dir: Path, value: int) -> bool:

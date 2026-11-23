@@ -256,7 +256,13 @@ class SupervisorPlanner:
             from sova.supervisor.coderabbit_quota import get_quota_status
 
             async with self._session_factory() as session:
-                quota = await get_quota_status(session, self._config.coderabbit_quota)
+                quota = await get_quota_status(
+                    session,
+                    self._config.coderabbit_quota,
+                    project_slug=self._config.github_repo,
+                    repo=self._config.github_repo,
+                    github_user=self._config.github_user,
+                )
             lines.append(
                 f"- CodeRabbit: {quota.reviews_in_window}/{quota.reviews_per_hour} reviews this hour, "
                 f"can_create_pr={quota.can_create_pr}"

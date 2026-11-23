@@ -1060,7 +1060,12 @@ async def test_watcher_ends_when_the_child_exits_even_if_a_grandchild_holds_the_
     finally:
         # Release the pipe so the subprocess transport closes cleanly instead of leaking into a later test.
         os.kill(grandchild, signal.SIGKILL)
+        # `wait()` returns on exit, before the pipe's EOF lets the transport close; drain to EOF and yield so it closes
+        # here, not in a GC pass during a later test (py3.14 turns that ResourceWarning into a failure).
+        await asyncio.wait_for(process.stdout.read(), timeout=3)
         await asyncio.wait_for(process.wait(), timeout=3)
+        for _ in range(3):
+            await asyncio.sleep(0)
 
 
 class _FakeStream:
