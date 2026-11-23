@@ -128,7 +128,12 @@
         _updateText(slotsEl, data.total_max_slots);
         _updateText(queuedEl, data.total_queued);
         if (crEl) {
-          _updateText(crEl, data.global_coderabbit_used + '/' + data.global_coderabbit_limit);
+          // Remaining capacity, not consumption. "No limit" only when the server says every read limit is
+          // unlimited; a total of 0 can also mean no project's config could be read.
+          var crLimit = data.global_coderabbit_limit;
+          _updateText(crEl, data.global_coderabbit_unlimited ? 'No limit'
+            : crLimit === 0 ? 'No data'
+            : Math.max(crLimit - data.global_coderabbit_used, 0) + ' of ' + crLimit + ' available');
           var wantColor = data.global_coderabbit_can_create ? 'text-accent-green' : 'text-accent-red';
           var dropColor = data.global_coderabbit_can_create ? 'text-accent-red' : 'text-accent-green';
           crEl.classList.remove(dropColor);

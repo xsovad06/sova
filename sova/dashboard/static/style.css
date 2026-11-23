@@ -1649,6 +1649,22 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   border-radius: 0.5rem;
 }
 .sova-work-stat .sova-stat-detail { margin-top: 0; }
+/* The figure tiles carry the longest lines (a count, an amount and a comparison), so at 1280 px they take most of
+   the row and keep each to one line: a larger share than the Agents, CodeRabbit and Supervisor tiles, at the
+   detail size. */
+.sova-work-stat-narrow { flex: 1 1 6.5rem; }
+.sova-work-stat-mid { flex: 1.5 1 7rem; }
+.sova-work-stat-wide { flex: 2.8 1 10rem; padding-inline: 0.5rem; }
+.sova-work-stat-wide .sova-stat-detail,
+.sova-work-stat-wide .text-xs { font-size: 0.75rem; }
+/* A week-over-week comparison's tone sits on a span of its own inside the detail line, so it covers only the
+   comparison phrase. Scoped under the tile, it beats .sova-stat-detail's colour whichever stylesheet loads last. */
+.sova-work-stat .sova-tone-good { color: var(--ctp-green); }
+.sova-work-stat .sova-tone-bad { color: var(--ctp-peach); }
+/* The CodeRabbit tile's remaining-capacity bar: thin, full when reviews are available, empty when used up. */
+.sova-work-bar { height: 0.25rem; border-radius: 9999px; background: rgb(var(--ctp-surface1-rgb) / 0.6); overflow: hidden; }
+.sova-work-bar > span { display: block; height: 100%; border-radius: 9999px; background: var(--ctp-green); transition: width 0.3s; }
+.sova-work-bar.is-used-up > span { background: var(--ctp-peach); }
 /* A tile with nothing to show (Merged on a project with no GitHub repo) is removed; the row reflows. */
 .sova-work-stat[hidden] { display: none; }
 
@@ -1750,8 +1766,9 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-work-node.sova-work-up { border-color: var(--ctp-peach); background: rgb(var(--ctp-peach-rgb) / 0.12); }
 .sova-work-node.sova-work-down { border-color: var(--ctp-teal); background: rgb(var(--ctp-teal-rgb) / 0.12); }
 
-/* The issue drawer: fixed to the right edge, over the board. The board keeps its full width and does not reflow
-   when the drawer opens; the shadow (the feed panel's) separates the drawer from the cards beneath it. */
+/* The issue drawer: fixed to the right edge, over the board, the header and the search row. Nothing behind it
+   changes size or position when it opens (no element pads for it); the shadow (the feed panel's) separates the
+   drawer from what it covers. */
 .sova-work-drawer {
   position: fixed;
   top: 0;
@@ -1766,14 +1783,6 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   box-shadow: -8px 0 32px rgb(0 0 0 / 0.35);
 }
 .sova-work-drawer[hidden] { display: none; }
-/* The page header and the search row stay clear of the drawer while it is open (they cannot scroll out from under
-   it like a card): only they pad, never the board, whose columns keep their widths. The padding is 27rem and the
-   sidebar takes about 16rem, so below 72rem the padded rows would be left too little width to use; there the
-   drawer covers their right end, as it does on a narrow window. */
-@media (min-width: 72rem) {
-  body:has(.sova-work-drawer:not([hidden])) #work-header,
-  body:has(.sova-work-drawer:not([hidden])) #work-toolbar { padding-right: 27rem; }
-}
 /* The drawer's body scrolls up and down only, so a tooltip must fit inside it. Its tooltips wrap at 13rem and grow
    rightward from their element's left edge (a pill at the left of a row); an element at the right of its row
    (data-tooltip-end: the PR flags) grows them leftward from its right edge instead. A centred bubble reached past

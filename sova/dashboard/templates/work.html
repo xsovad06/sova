@@ -14,7 +14,7 @@
 
 <!-- Header: what runs, how often it succeeds, what merged, what it costs (static/js/pages/work/header.js) -->
 <section id="work-header" class="flex flex-wrap items-stretch gap-2 mb-4" aria-label="Work at a glance">
-  <div class="sova-work-stat basis-36 grow">
+  <div class="sova-work-stat sova-work-stat-narrow">
     <span class="sova-stat-label">Agents</span>
     <span class="flex items-baseline gap-1.5">
       <span id="hdr-agents-running" class="text-xl font-semibold tabular-nums">--</span>
@@ -25,33 +25,41 @@
       <span id="hdr-agents-over" class="hidden text-accent-peach">over the limit</span>
     </span>
   </div>
-  <div id="hdr-success-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
+  <div id="hdr-success-tile" class="sova-work-stat sova-work-stat-wide" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
     <span class="sova-stat-label">Success (7 days)</span>
-    <span id="hdr-success" class="text-xl font-semibold tabular-nums">--</span>
-    <span id="hdr-success-detail" class="sova-stat-detail"></span>
-  </div>
-  <div id="hdr-merged-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
-    <span class="sova-stat-label">Merged (7 days)</span>
-    <span id="hdr-merged" class="text-xl font-semibold tabular-nums">--</span>
-    <span class="sova-stat-detail flex flex-col">
-      <span id="hdr-merged-detail"></span>
-      <span id="hdr-merged-cost"></span>
+    <span class="flex items-baseline gap-1.5">
+      <span id="hdr-success" class="text-xl font-semibold tabular-nums">--</span>
+      <span id="hdr-success-count" class="text-xs text-gray-500"></span>
     </span>
+    <span id="hdr-success-detail" class="sova-stat-detail"><span id="hdr-success-detail-text"></span><span id="hdr-success-detail-trend"></span></span>
   </div>
-  <div id="hdr-spend-tile" class="sova-work-stat basis-36 grow" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
+  <div id="hdr-merged-tile" class="sova-work-stat sova-work-stat-wide" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
+    <span class="sova-stat-label">Merged (7 days)</span>
+    <span class="flex items-baseline gap-1.5">
+      <span id="hdr-merged" class="text-xl font-semibold tabular-nums">--</span>
+      <span id="hdr-merged-count" class="text-xs text-gray-500"><span id="hdr-merged-count-text"></span><span id="hdr-merged-count-trend"></span></span>
+    </span>
+    <span id="hdr-merged-detail" class="sova-stat-detail"><span id="hdr-merged-detail-text"></span><span id="hdr-merged-detail-trend"></span></span>
+  </div>
+  <div id="hdr-spend-tile" class="sova-work-stat sova-work-stat-wide" tabindex="0" data-tooltip-pos="bottom" data-tooltip-multiline>
     <span class="sova-stat-label">Spend today</span>
     <span id="hdr-spend" class="text-xl font-semibold tabular-nums">--</span>
-    <span id="hdr-spend-detail" class="sova-stat-detail"></span>
+    <span id="hdr-spend-detail" class="sova-stat-detail"><span id="hdr-spend-detail-text"></span><span id="hdr-spend-detail-trend"></span></span>
   </div>
-  <div class="sova-work-stat basis-36 grow">
+  <!-- Only on a project that lists CodeRabbit in external_reviews.tools: header.js unhides it, and the row reflows -->
+  <div id="hdr-coderabbit-tile" class="sova-work-stat sova-work-stat-mid" tabindex="0" hidden data-tooltip-pos="bottom" data-tooltip-multiline>
     <span class="sova-stat-label">CodeRabbit</span>
     <span class="flex items-baseline gap-1.5">
       <span id="hdr-coderabbit" class="text-xl font-semibold tabular-nums">--</span>
       <span id="hdr-coderabbit-of" class="text-xs text-gray-500"></span>
     </span>
-    <span id="hdr-coderabbit-detail" class="sova-stat-detail">reviews free this hour</span>
+    <span id="hdr-coderabbit-bar" class="sova-work-bar" role="presentation"><span style="width: 0%"></span></span>
+    <span class="sova-stat-detail flex items-center gap-1.5">
+      <span id="hdr-coderabbit-switch" class="flex"></span>
+      <span>Ask on new PRs</span>
+    </span>
   </div>
-  <div class="sova-work-stat basis-36 grow">
+  <div class="sova-work-stat sova-work-stat-narrow">
     <span class="sova-stat-label">Supervisor</span>
     <span class="flex items-center gap-2 h-7">
       <span id="hdr-supervisor-switch" class="flex"></span>
@@ -126,35 +134,6 @@
   <div id="pr-summary-strip" class="hidden"></div>
   <div id="pr-tracker-list" class="divide-y divide-gray-700/30">
     <p class="text-gray-500 text-sm py-4 text-center">Loading PRs...</p>
-  </div>
-</div>
-
-<!-- CodeRabbit Quota Widget -->
-<div id="cr-quota-widget" class="hidden bg-surface-card rounded-lg border border-gray-700/50 mb-6 px-4 py-3">
-  <div class="flex items-center justify-between">
-    <div class="flex items-center gap-2">
-      <span id="cr-quota-dot" class="w-2 h-2 rounded-full bg-accent-green"></span>
-      <span class="text-sm font-medium text-gray-300">CodeRabbit Quota</span>
-      <span id="cr-quota-usage" class="text-xs text-gray-500"></span>
-    </div>
-    <div class="flex items-center gap-2">
-      <span id="cr-quota-status" class="text-xs"></span>
-      <button type="button" data-action="sync-cr-quota" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Force sync from GitHub now (auto-syncs every 2 minutes)">
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-      </button>
-    </div>
-  </div>
-  <div id="cr-quota-bar-container" class="mt-2">
-    <div class="w-full bg-surface rounded-full h-1.5">
-      <div id="cr-quota-bar" class="h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
-    </div>
-  </div>
-  <div id="cr-quota-wait" class="hidden mt-1 text-xs text-accent-peach"></div>
-  <div class="mt-2 flex items-center justify-between gap-3 text-xs text-gray-400">
-    <span>Ask CodeRabbit to review each new PR</span>
-    <span class="flex" data-setting-switch="external_reviews.coderabbit.trigger_review"
-          data-label="Ask CodeRabbit to review each new PR"
-          data-tooltip="Posts the @coderabbitai review comment on each PR SOVA opens. Runs started after a change use the new setting."></span>
   </div>
 </div>
 

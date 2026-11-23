@@ -453,7 +453,11 @@ class CreatePRStep(BaseStep):
                 await get_session(project_dir=ctx.project_dir) as session,
             ):
                 quota = await get_quota_status(
-                    session, ctx.config.coderabbit_quota, project_slug=ctx.config.github_repo
+                    session,
+                    ctx.config.coderabbit_quota,
+                    project_slug=ctx.config.github_repo,
+                    repo=ctx.config.github_repo,
+                    github_user=ctx.config.github_user,
                 )
         except Exception:  # noqa: BLE001 (a hint must not replace the queue timeout error, whatever the lookup raises)
             log.warning("step.create_pr.quota_status_failed", exc_info=True)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -42,6 +43,12 @@ async def client(dashboard_app) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         ac.headers.update(_csrf_request_headers(ac))
         yield ac
+
+
+_STATIC = Path(__file__).parent.parent / "sova" / "dashboard" / "static"
+_WORK_JS_DIR = _STATIC / "js" / "pages" / "work"
+_HEADER_JS = _WORK_JS_DIR / "header.js"
+_TEMPLATES = Path(__file__).parent.parent / "sova" / "dashboard" / "templates"
 
 
 def _switch_keys(html: str) -> list[str]:
@@ -101,12 +108,60 @@ class TestCostsPage:
 
 
 class TestCodeRabbitSwitch:
-    async def test_quota_widget_has_the_review_trigger_switch(self, client: AsyncClient) -> None:
+    async def test_the_header_tile_hosts_the_review_trigger_switch(self, client: AsyncClient) -> None:
         html = (await client.get("/work")).text
 
-        widget = html[html.index('id="cr-quota-widget"') :]
-        widget = widget[: widget.index("<!-- Interrupted Runs Banner")]
-        assert _switch_keys(widget) == ["external_reviews.coderabbit.trigger_review"]
+        assert "cr-quota-widget" not in html
+        opening = re.search(r'<div\b[^>]*id="hdr-coderabbit-tile"[^>]*>', html)
+        assert opening, "the header carries the CodeRabbit tile"
+        assert re.search(r"\shidden(?=[\s=>])", opening.group(0)), "hidden until the project is known to use CodeRabbit"
+        assert 'id="hdr-coderabbit-switch"' in html[opening.end() :]
+        header_js = _HEADER_JS.read_text(encoding="utf-8")
+        assert "settingSwitch('external_reviews.coderabbit.trigger_review'" in header_js
+
+    def test_the_other_tiles_take_the_room_a_hidden_tile_leaves(self) -> None:
+        """No CodeRabbit tile when it is not in external_reviews.tools (header.js hides it, see the tile-state
+        scenario in test_dashboard_agents_modules): the header is a wrapping flex row and every tile grows, so the
+        rest fill the row instead of leaving a fixed gap."""
+        template = (_TEMPLATES / "work.html").read_text(encoding="utf-8")
+        css = (_STATIC / "style.css").read_text(encoding="utf-8")
+
+        assert re.search(r'<section id="work-header" class="[^"]*\bflex\b[^"]*\bflex-wrap\b', template)
+        assert not re.search(r"grid-cols-\d", template[: template.index("</section>")]), "a fixed grid keeps the gap"
+        for tile in ("narrow", "mid", "wide"):
+            match = re.search(r"\.sova-work-stat-" + tile + r"\s*\{\s*flex:\s*([\d.]+)", css)
+            assert match, f"the {tile} tile needs a flex-grow rule"
+            assert float(match.group(1)) > 0, f"the {tile} tile must grow into freed space"
+        assert re.search(r"\.sova-work-stat\[hidden\]\s*\{\s*display:\s*none", css), "a hidden tile takes no room"
+
+    def test_the_old_quota_widget_and_its_script_are_gone(self) -> None:
+        sources = [
+            _TEMPLATES / "work.html",
+            *sorted(_WORK_JS_DIR.glob("*.js")),
+            *sorted((_STATIC / "js" / "pages" / "agents").glob("*.js")),
+        ]
+        for path in sources:
+            text = path.read_text(encoding="utf-8")
+            for gone in ("_loadCrQuota", "_syncCrQuota", "sync-cr-quota", "cr-quota"):
+                assert gone not in text, f"{path.name} still has {gone}"
+        header = _HEADER_JS.read_text(encoding="utf-8")
+        assert "300000" not in header, "the quota no longer polls every 5 minutes"
+        assert "5 * 60 * 1000" not in header, "the quota no longer polls every 5 minutes"
+
+
+class TestCodeRabbitAvailableWording:
+    def test_work_supervisor_and_home_share_the_unlimited_and_available_wording(self) -> None:
+        """One phrase for no limit ("No limit") and one for the figure ("N of M available") on every display."""
+        header = _HEADER_JS.read_text(encoding="utf-8")
+        supervisor = (_TEMPLATES / "supervisor.html").read_text(encoding="utf-8")
+        home = (_TEMPLATES / "home.html").read_text(encoding="utf-8")
+
+        for name, text in (("header.js", header), ("supervisor.html", supervisor), ("home.html", home)):
+            assert "'No limit'" in text, f"{name} words an unlimited quota as No limit"
+            assert "Unlimited" not in text, f"{name}: Unlimited would differ from the other displays"
+        assert "' available'" in home, "home words the figure as available"
+        assert "of ${limit} available" in supervisor, "supervisor words the figure as available"
+        assert "' available" in header, "the Work tile reads 'of M available ...'"
 
 
 class TestOversightPage:

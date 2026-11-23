@@ -274,7 +274,7 @@ class TestAgentsModulesRunUnderNode:
         result = json.loads(proc.stdout)
         assert result["failures"] == []
         assert result["bodyClick"] == 1, "actions.init() must attach exactly one delegated click listener"
-        assert len(result["polls"]) == 6
+        assert len(result["polls"]) == 5
 
 
 # Drives the log viewer through hide, show and reconnect with a fake EventSource, to prove that a line
@@ -574,6 +574,7 @@ const stub = (id) => els[id] ||= {
   textContent: '', attrs: {}, classes: new Set(), children: [], appendChild(c) { this.children.push(c); },
   setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
   classList: { toggle: (c, on) => { on ? els[id].classes.add(c) : els[id].classes.delete(c); } },
+  firstElementChild: { style: {} },
 };
 doc.getElementById = (id) => (id.startsWith('hdr-') ? stub(id) : null);
 const setTextStart = appSrc.indexOf('function setText(');
@@ -595,8 +596,10 @@ const stats = (o) => Object.assign({
 }, o);
 const snap = (id) => ({
   text: els[id].textContent, classes: [...els[id].classes].sort(), tip: els[id].attrs['data-tooltip'] });
-const ids = ['hdr-spend', 'hdr-spend-detail', 'hdr-spend-tile', 'hdr-success', 'hdr-success-detail', 'hdr-success-tile',
-  'hdr-merged', 'hdr-merged-detail', 'hdr-merged-cost', 'hdr-merged-tile'];
+const ids = ['hdr-spend', 'hdr-spend-detail-text', 'hdr-spend-detail-trend', 'hdr-spend-tile', 'hdr-success',
+  'hdr-success-count', 'hdr-success-detail-text', 'hdr-success-detail-trend', 'hdr-success-tile', 'hdr-merged',
+  'hdr-merged-count-text', 'hdr-merged-count-trend', 'hdr-merged-detail-text', 'hdr-merged-detail-trend',
+  'hdr-merged-tile'];
 const all = () => Object.fromEntries(ids.map((id) => [id, snap(id)]));
 header.renderStats(stats({}));
 out.normal = all();
@@ -606,7 +609,7 @@ header.renderStats(stats({
     month: win({ rated: 4, success: 3, success_rate: null }),
     developer: { week: win({ rated: 2, success: 1, success_rate: null }), previous_week: win({ success_rate: null }) },
     paused_reasons: {} },
-  spend: { today_usd: 0, week_usd: 0, previous_week_usd: 0, month_usd: 0, month_daily_usd: 0, unfinished_usd: 0,
+  spend: { today_usd: 0, week_usd: 0, previous_week_usd: null, month_usd: 0, month_daily_usd: 0, unfinished_usd: 0,
     unfinished_share: null },
   merged: { status: 'ok', count: 0, previous_count: 0, bots_left_out: 0, with_sova_run: 0, cost_per_pr_usd: null,
     previous_cost_per_pr_usd: null },
@@ -620,8 +623,75 @@ out.unsupportedSpendTip = els['hdr-spend-tile'].attrs['data-tooltip'];
 out.trends = [
   header.trend(75, 72, true, String), header.trend(60, 72, true, String), header.trend(5, 0, true, String),
   header.trend(5, 5, true, String), header.trend(62, 80, false, String), header.trend(90, 80, false, String),
-  header.trend(5, null, true, String),
+  header.trend(5, null, true, String), header.trend(93, 90, true, (v) => v + '%', ' the week before'),
+  header.trend(26, 36, true, String, ' the week before'),
 ];
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+# The Work header's CodeRabbit tile: shown only when CodeRabbit is configured, remaining capacity with a bar.
+_HEADER_CODERABBIT_SCENARIO = r"""
+const els = {};
+const stub = (id) => els[id] ||= {
+  textContent: '', hidden: false, attrs: {}, classes: new Set(),
+  setAttribute(k, v) { this.attrs[k] = v; }, removeAttribute(k) { delete this.attrs[k]; },
+  classList: { toggle: (c, on) => { on ? els[id].classes.add(c) : els[id].classes.delete(c); } },
+  firstElementChild: { style: {} }, appendChild() {},
+};
+doc.getElementById = (id) => (id.startsWith('hdr-') ? stub(id) : null);
+const setTextStart = appSrc.indexOf('function setText(');
+new Function('document', appSrc.slice(setTextStart, appSrc.indexOf('\n}\n', setTextStart) + 2)
+  + '; globalThis.setText = setText;')(doc);
+let reply = null;
+let socket = null;
+globalThis.subscribeSovaSocket = (opts) => { socket = opts; };
+globalThis.apiUrl = (p) => p;
+globalThis.fetchAPI = async () => { if (reply instanceof Error) throw reply; return reply; };
+const baseSwitch = globalThis.settingSwitch;
+globalThis.settingSwitch = (key, opts) => Object.assign(
+  baseSwitch ? baseSwitch(key, opts) : {}, { key, label: opts.label });
+for (const id of ['hdr-coderabbit-switch', 'hdr-supervisor-switch']) {
+  stub(id).children = [];
+  els[id].appendChild = (c) => { els[id].children.push(c); };
+}
+const header = await import(pathToFileURL(path.join(staticDir, 'js', 'pages', 'work', 'header.js')).href);
+header.init();
+out.switchHost = els['hdr-coderabbit-switch'].children.map((c) => [c.key, c.label]);
+const body = (o) => Object.assign({ enabled: true, configured: true, reviews_in_window: 0, reviews_per_hour: 1,
+  can_create_pr: true, next_available_minutes: null, stars: 3, auto_review_eligible: false,
+  limit_from_10_stars: 4 }, o);
+const show = async (o) => {
+  reply = o;
+  socket.onOpen();
+  await tick();
+  return {
+    hidden: els['hdr-coderabbit-tile'].hidden, number: els['hdr-coderabbit'].textContent,
+    numberHidden: els['hdr-coderabbit'].hidden, of: els['hdr-coderabbit-of'].textContent,
+    peach: els['hdr-coderabbit'].classes.has('text-accent-peach'),
+    width: els['hdr-coderabbit-bar'].firstElementChild.style.width,
+    usedUp: els['hdr-coderabbit-bar'].classes.has('is-used-up'), barHidden: els['hdr-coderabbit-bar'].hidden,
+    tip: els['hdr-coderabbit-tile'].attrs['data-tooltip'],
+  };
+};
+out.below10 = await show(body({}));
+out.below10Used = await show(body({ reviews_in_window: 1, next_available_minutes: 12.2 }));
+out.eligible = await show(body({ stars: 25, auto_review_eligible: true, reviews_per_hour: 4, reviews_in_window: 1 }));
+out.unlimited = await show(body({ reviews_per_hour: 0, reviews_in_window: 7 }));
+out.unknownStars = await show(body({ stars: null }));
+out.paid = await show(body({ stars: null, auto_review_eligible: true, reviews_per_hour: 5 }));
+out.explicit8 = await show(body({ reviews_per_hour: 8, limit_is_explicit: true }));
+out.explicit0 = await show(body({ reviews_per_hour: 0, limit_is_explicit: true, stars: null }));
+out.explicitEligible = await show(body({ reviews_per_hour: 2, limit_is_explicit: true, stars: 40,
+  auto_review_eligible: true }));
+out.ossBelow10 = await show(body({ limit_scales_with_stars: true, limit_from_10_stars: 1 }));
+out.ossEligible = await show(body({ stars: 50, auto_review_eligible: true, reviews_per_hour: 5,
+  limit_from_10_stars: 1 }));
+await show(body({ reviews_in_window: 1 }));
+out.failedAfterShown = await show(new Error('offline'));
+out.notTracked = await show({ enabled: false, configured: true });
+out.notConfigured = await show({ enabled: false, configured: false });
+out.failed = await show(new Error('offline'));
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -1105,7 +1175,6 @@ class TestPollingUsesVisibilityAwarePoll:
         ("module", "fn", "interval_ms"),
         [
             ("pr-tracker", "loadPrTracker", 30000),
-            ("pr-tracker", "_syncCrQuota", 300000),
             ("live-status", "_pollDuringStatusOutage", 2000),
             ("live-status", "checkMemoryPressure", 5000),
             ("live-status", "checkInterrupted", 30000),
@@ -1138,11 +1207,14 @@ class TestPollingUsesVisibilityAwarePoll:
             ("log-viewer", "resume.connectTimer = setTimeout(function() {"),
             ("agent-cards", "_completedCleanupTimer = setTimeout(function() {"),
             ("live-status", "_agentsRefreshTimer = setTimeout(function() {"),
-            ("pr-tracker", "var tid = setTimeout(function() { ctrl.abort(); }, 10000);"),
             ("work/board", "var timer = setTimeout(function() { ctrl.abort(); }, _LOAD_TIMEOUT_MS);"),
             ("work/board", "_retryTimer = setTimeout(function() {"),
             ("work/search", "_timer = setTimeout(function() { _search(query); }, _DEBOUNCE_MS);"),
             ("history", "_refreshTimer = setTimeout(function() {"),
+            (
+                "work/header",
+                "_crRereadTimer = setTimeout(function() { _crRereadTimer = null; _loadCodeRabbit(); }, _CR_REREAD_MS);",
+            ),
             (
                 "history",
                 "_numberTimer = setTimeout(function() { _numberTimer = null; "
@@ -1247,7 +1319,7 @@ class TestPollingUsesVisibilityAwarePoll:
     def test_hidden_tab_handler_leaves_pollers_to_the_helper(self) -> None:
         source = _module_source("live-status")
         handler = source[source.index("document.addEventListener('visibilitychange'") :]
-        for fn in ("loadPrTracker", "loadKanban", "_syncCrQuota", "checkMemoryPressure", "checkInterrupted"):
+        for fn in ("loadPrTracker", "loadKanban", "checkMemoryPressure", "checkInterrupted"):
             assert fn not in handler
 
 
@@ -2163,24 +2235,31 @@ class TestLogViewerResumeAfterHiddenTab:
         result = self._run(tmp_path, _HEADER_STATS_SCENARIO)
         normal = result["normal"]
         assert normal["hdr-success"]["text"] == "75%"
-        assert normal["hdr-success-detail"]["text"] == "15 of 20 runs, up from 70% the week before"
-        assert normal["hdr-success-detail"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-success-count"]["text"] == "15 of 20 runs"
+        assert normal["hdr-success-detail-text"]["text"] == ""
+        assert normal["hdr-success-detail-trend"]["text"] == "70% the week before"
+        assert normal["hdr-success-detail-trend"]["classes"] == ["sova-tone-good"]
         assert normal["hdr-success-tile"]["tip"] == (
             "Developer runs: 94% (59 of 63), 83% the week before\n"
             "Left out of the rate: 2 stopped by you, 1 paused by SOVA: runaway guard (1)\n"
             "30 days: 80%"
         )
         assert normal["hdr-merged"]["text"] == "6"
-        assert normal["hdr-merged-detail"]["text"] == "up from 4 the week before"
-        assert normal["hdr-merged-cost"]["text"] == "$10.33 per PR, down from $20.00 the week before"
-        assert normal["hdr-merged-cost"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-merged-count-text"]["text"] == "PRs, "
+        assert normal["hdr-merged-count-trend"]["text"] == "4 the week before"
+        assert normal["hdr-merged-count-trend"]["classes"] == ["sova-tone-good"]
+        assert normal["hdr-merged-detail-text"]["text"] == "$10.33 per PR, "
+        assert normal["hdr-merged-detail-trend"]["text"] == "down from $20.00"
+        assert normal["hdr-merged-detail-trend"]["classes"] == ["sova-tone-good"]
         assert normal["hdr-merged-tile"]["tip"] == (
             "5 of the 6 PRs merged in the last 7 days had a SOVA run\n2 bot PRs left out"
         )
         assert result["mergedHidden"] is False
         assert normal["hdr-spend"]["text"] == "$3.50"
-        assert normal["hdr-spend-detail"]["text"] == "$62 in 7 days, down from $80 the week before"
-        assert normal["hdr-spend-detail"]["classes"] == ["text-accent-green"]
+        assert normal["hdr-spend-detail-text"]["text"] == "$62 in 7 days, "
+        assert normal["hdr-spend-detail-trend"]["text"] == "down from $80"
+        assert normal["hdr-spend-detail-trend"]["classes"] == ["sova-tone-good"], "only the phrase carries the tone"
+        assert normal["hdr-spend-detail-text"]["classes"] == []
         assert normal["hdr-spend-tile"]["tip"] == (
             "Today starts at midnight, your time (CET)\nLast 30 days: $1,356, about $45 a day\n"
             "Spent on runs that failed, were paused or were stopped: $19 (6%)"
@@ -2189,15 +2268,23 @@ class TestLogViewerResumeAfterHiddenTab:
     def test_header_stats_sparse_and_unknown_figures_are_never_zero(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _HEADER_STATS_SCENARIO)
         sparse = result["sparse"]
-        assert sparse["hdr-success"]["text"] == "3 of 4", "under ten finished runs show the counts, not a rate"
-        assert sparse["hdr-merged-detail"]["text"] == "same as 0 the week before"
-        assert sparse["hdr-merged-detail"]["classes"] == []
-        assert sparse["hdr-merged-cost"]["text"] == "Cost per PR n/a"
+        assert sparse["hdr-success"]["text"] == "--", "under ten finished runs show the counts, not a rate"
+        assert sparse["hdr-success-count"]["text"] == "3 of 4 runs"
+        assert sparse["hdr-success-detail-text"]["text"] == "too few finished runs for a rate"
+        assert sparse["hdr-success-detail-trend"]["text"] == ""
+        assert sparse["hdr-merged-count-text"]["text"] == "PRs, "
+        assert sparse["hdr-merged-count-trend"]["text"] == "0 the week before"
+        assert sparse["hdr-merged-count-trend"]["classes"] == []
+        assert sparse["hdr-merged-detail-text"]["text"] == "Cost per PR n/a"
+        assert sparse["hdr-merged-detail-trend"]["text"] == ""
+        assert sparse["hdr-spend-detail-text"]["text"] == "$0 in 7 days", "no prior week: no comma, no comparison"
+        assert sparse["hdr-spend-detail-trend"]["text"] == ""
+        assert sparse["hdr-spend-detail-trend"]["classes"] == []
         assert sparse["hdr-success-tile"]["tip"].startswith("Developer runs: 1 of 2\n")
         unavailable = result["unavailable"]
         assert unavailable["hdr-merged"]["text"] == "unknown"
-        assert unavailable["hdr-merged-detail"]["text"] == "GitHub could not be reached"
-        assert unavailable["hdr-merged-cost"]["text"] == "Cost per PR unknown"
+        assert unavailable["hdr-merged-detail-text"]["text"] == "GitHub could not be reached"
+        assert unavailable["hdr-merged-detail-trend"]["text"] == ""
         assert unavailable["hdr-success"]["text"] == "75%", "a GitHub failure leaves the success tile alone"
         assert unavailable["hdr-spend"]["text"] == "$3.50"
         assert "Spent on runs that failed" in unavailable["hdr-spend-tile"]["tip"], "database-only, so GitHub-proof"
@@ -2207,14 +2294,86 @@ class TestLogViewerResumeAfterHiddenTab:
     def test_header_trend_wording_and_colour(self, tmp_path: Path) -> None:
         trends = self._run(tmp_path, _HEADER_STATS_SCENARIO)["trends"]
         assert [(t["text"], t["tone"]) for t in trends] == [
-            ("up from 72 the week before", "good"),
-            ("down from 72 the week before", "bad"),
-            ("up from 0 the week before", ""),
-            ("same as 5 the week before", ""),
-            ("down from 80 the week before", "good"),
-            ("up from 80 the week before", "bad"),
+            ("up from 72", "good"),
+            ("down from 72", "bad"),
+            ("up from 0", ""),
+            ("same as 5", ""),
+            ("down from 80", "good"),
+            ("up from 80", "bad"),
             ("", ""),
+            ("90% the week before", "good"),
+            ("36 the week before", "bad"),
         ]
+
+    def test_header_coderabbit_tile_states(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _HEADER_CODERABBIT_SCENARIO)
+        assert result["switchHost"] == [["external_reviews.coderabbit.trigger_review", "Ask on new PRs"]], (
+            "the tile's switch host holds the shared settingSwitch for the review trigger, which saves the setting"
+        )
+        below = result["below10"]
+        assert (below["hidden"], below["number"], below["of"]) == (False, "1", "of 1 available this hour")
+        assert (below["width"], below["usedUp"], below["peach"]) == ("100%", False, False)
+        assert below["tip"].startswith(
+            "The repo has 3 stars. Below 10: no auto-review, one @coderabbitai review an hour. "
+            "From 10 stars: auto-review and 4 an hour"
+        )
+        assert "posts @coderabbitai review on each PR SOVA opens" in below["tip"]
+
+        used = result["below10Used"]
+        assert (used["number"], used["of"], used["width"]) == ("0", "of 1, next in 13 min", "0%")
+        assert (used["peach"], used["usedUp"]) == (True, True)
+
+        eligible = result["eligible"]
+        assert (eligible["number"], eligible["of"], eligible["width"]) == ("3", "of 4 available, auto-review", "75%")
+        assert eligible["tip"].startswith("The repo has 25 stars, so CodeRabbit reviews every PR by itself, 4 an hour")
+        oss = result["ossEligible"]
+        assert oss["tip"].startswith("The repo has 50 stars, so CodeRabbit reviews every PR by itself, 5 an hour"), (
+            "the tooltip names the limit in force, not the plan's 10-star figure"
+        )
+
+        unlimited = result["unlimited"]
+        assert (unlimited["number"], unlimited["of"], unlimited["width"]) == ("No limit", "", "100%")
+        assert unlimited["usedUp"] is False, "a limit of 0 is never used up, so never shows next in N min"
+
+        explicit = result["explicit8"]
+        assert (explicit["number"], explicit["of"]) == ("8", "of 8 available this hour")
+        assert explicit["tip"].startswith(
+            "Limit set in settings: 8 an hour. The repo has 3 stars. Below 10 stars CodeRabbit does not auto-review"
+        ), "an explicit limit is stated as the operator's, never as the star rule's one an hour"
+        assert "one @coderabbitai review an hour" not in explicit["tip"]
+        assert result["explicit0"]["number"] == "No limit"
+        assert result["explicit0"]["tip"].startswith(
+            "Limit set in settings: no limit. The star count is unknown. Below 10 stars"
+        )
+        assert result["explicitEligible"]["tip"].startswith(
+            "Limit set in settings: 2 an hour. CodeRabbit reviews every PR by itself"
+        )
+        assert "From 10 stars: auto-review and one an hour per 10 stars, up to 10" in result["ossBelow10"]["tip"], (
+            "oss grows with the stars, so the tooltip gives a range, not the 10-star floor"
+        )
+        assert "auto-review and 4 an hour" in below["tip"], "a plan with a fixed limit still states it"
+
+        assert "The star count is unknown" in result["unknownStars"]["tip"]
+        assert result["unknownStars"]["of"] == "of 1 available this hour"
+        assert result["paid"]["tip"].startswith("Your CodeRabbit plan reviews every PR by itself, 5 an hour")
+
+    def test_header_coderabbit_tile_hidden_unless_configured_and_keeps_the_switch_when_not_tracked(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, _HEADER_CODERABBIT_SCENARIO)
+        tracked_off = result["notTracked"]
+        assert tracked_off["hidden"] is False, "listed but not tracked: the tile stays"
+        assert tracked_off["of"] == "Not tracked, SOVA does not wait for a free review"
+        assert (tracked_off["numberHidden"], tracked_off["barHidden"]) == (True, True)
+        assert tracked_off["tip"] == "Ask on new PRs posts @coderabbitai review on each PR SOVA opens."
+        assert result["notConfigured"]["hidden"] is True, "not listed in external_reviews.tools: no tile"
+        assert result["failed"]["hidden"] is True, "a failed read leaves the tile as the last answer left it"
+        assert result["failed"]["of"] == "Could not load the quota"
+        after = result["failedAfterShown"]
+        assert (after["hidden"], after["number"], after["of"]) == (False, "--", "Could not load the quota")
+        assert (after["barHidden"], after["peach"], after.get("tip")) == (True, False, None), (
+            "a failed reload must not leave the last figure, bar or rule up as if current"
+        )
 
 
 class TestRenderIfChanged:
@@ -3100,11 +3259,16 @@ class TestRefreshPaths:
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout)
 
-    def test_the_coderabbit_quota_sync_is_not_run_on_page_load(self) -> None:
-        source = _module_source("pr-tracker")
-        assert "visibilityAwarePoll(_syncCrQuota, 300000, {skipImmediate: true});" in source
-        # The widget reads the cached value (a GET) at once instead.
-        assert "  _loadCrQuota();\n" in source
+    def test_the_work_page_has_one_coderabbit_display_and_no_poll_for_it(self) -> None:
+        """The header tile is the only CodeRabbit display: the old widget, its script and its 5-minute sync poll
+        are gone, and the tile adds no poll of its own (a stale GET refreshes the count on the server)."""
+        assert "cr-quota-widget" not in _WORK_TEMPLATE.read_text(encoding="utf-8")
+        tracker = _module_source("pr-tracker")
+        for gone in ("_loadCrQuota", "_syncCrQuota", "sync-cr-quota", "cr-quota", "mountSettingControls"):
+            assert gone not in tracker
+        header = _module_source("work/header")
+        assert "visibilityAwarePoll" not in header
+        assert "setInterval(" not in header
 
     def test_the_sidebar_and_board_do_not_keep_a_residual_poll_for_what_the_socket_carries(self) -> None:
         source = _module_source("work/board")

@@ -86,7 +86,6 @@ BASELINE: dict[str, dict[str, int]] = {
         "templates/home.html": 3,
         "templates/oversight.html": 3,
         "templates/supervisor.html": 5,
-        "templates/work.html": 1,
     },
     "arbitrary_text_size": {
         "templates/base.html": 2,

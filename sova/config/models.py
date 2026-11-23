@@ -1068,22 +1068,20 @@ class CodeRabbitQuotaConfig(BaseSettings):
     """CodeRabbit rate-limit quota tracking configuration."""
 
     enabled: bool = False
-    plan: Literal["free", "pro", "pro_plus"] = "free"
+    plan: Literal["free", "oss", "pro", "pro_plus"] = "free"
     reviews_per_hour: int | None = Field(None, ge=0)
     window_minutes: int = Field(60, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODERABBIT_QUOTA_")
 
-    @model_validator(mode="after")
-    def _apply_plan_defaults(self) -> CodeRabbitQuotaConfig:
-        """Derive reviews_per_hour from plan when not explicitly set (None).
+    @property
+    def reviews_per_hour_is_explicit(self) -> bool:
+        """Whether reviews_per_hour was stored (including 0) instead of left to the plan.
 
-        Explicit 0 means unlimited (no quota enforcement).
+        An unset value stays ``None`` so the distinction survives ``model_dump()``, JSON snapshots and a settings
+        round-trip. ``effective_reviews_per_hour()`` derives the limit from the plan and the star count.
         """
-        if self.reviews_per_hour is None:
-            _plan_defaults = {"free": 4, "pro": 0, "pro_plus": 0}
-            self.reviews_per_hour = _plan_defaults.get(self.plan, 4)
-        return self
+        return self.reviews_per_hour is not None
 
 
 class IntegrationConfig(BaseSettings):
