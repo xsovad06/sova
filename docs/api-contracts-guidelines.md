@@ -28,7 +28,7 @@ API contract patterns, request/response models, and integration conventions used
 | memory | Agent memory entries from the database |
 | models | Read-only LLM/runtime model enumeration |
 | oversight | Status, runs, findings, run-now trigger, and finding actions |
-| overview | Aggregated dashboard data |
+| overview | Aggregated dashboard data; `/overview/stats?tz=` gives the Work header's 7-day success, merged-PR and spend figures; `merged` is `{status: "unavailable" or "unsupported", count: null, ...}` (every figure null) when GitHub could not be asked or the project has no repo |
 | prs | PR tracker |
 | queue | Priority-sorted issue queue |
 | quota | CodeRabbit quota: rate-limit status, sync, and PR queue |
