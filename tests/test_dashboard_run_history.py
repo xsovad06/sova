@@ -1142,7 +1142,8 @@ class TestEveryRunInTheBrowser:
         result = _run_node(tmp_path, script, env=env)
         assert isinstance(result, dict)
         assert ("group=issue" in result["url"]) is grouped
-        assert (result["issue"], result["runs"]) == (("true", "false") if pressed == "issue" else ("false", "true"))
+        expected = ("true", "false") if pressed == "issue" else ("false", "true")
+        assert (result["issue"], result["runs"]) == expected
 
     def test_day_headers_follow_the_viewers_local_date(self, history_page: dict) -> None:
         table = history_page["dayTable"]
