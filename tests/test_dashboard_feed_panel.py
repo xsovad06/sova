@@ -80,8 +80,10 @@ const fs = require('fs');
 const vm = require('vm');
 
 const src = fs.readFileSync(process.argv[2], 'utf8');
-const start = src.indexOf('var _feedEvents');
+const start = src.indexOf('var _feedLastId');
 const end = src.lastIndexOf('/*', src.indexOf('8. PR & ISSUE LINK HELPERS'));
+// A renamed declaration or section banner must fail here, not slice some other code and fail confusingly later.
+if (start < 0 || end <= start) throw new Error('feed code not found in app.js: start=' + start + ' end=' + end);
 const feedCode = src.slice(start, end);
 
 const storage = {};
@@ -91,6 +93,9 @@ const elements = {};
 const docListeners = {};
 const bodyClasses = new Set();
 const state = { dialogs: [], selectors: [] };
+const toasts = [];
+const dispatched = [];
+let notifications = 0;
 
 function dialogStub({ hiddenClass = false, ariaHidden = false, rects = 1 } = {}) {
   return {
@@ -137,14 +142,16 @@ const ctx = {
     querySelectorAll: (sel) => { state.selectors.push(sel); return state.dialogs; },
     activeElement: null,
     addEventListener: (t, fn) => { docListeners[t] = fn; },
+    dispatchEvent: (e) => { dispatched.push(e); },
     body: { classList: { add: (c) => bodyClasses.add(c), remove: (c) => bodyClasses.delete(c) } },
   },
   safeStorageGet: (k) => { if (storageBlocked) return null; return k in storage ? storage[k] : null; },
   safeStorageSet: (k, v) => { storage[k] = v; },
   apiUrl: (p) => p,
   escapeHtml: (s) => String(s),
-  showToast() {},
-  sendBrowserNotification() {},
+  showToast: (message, type) => { toasts.push([message, type]); },
+  sendBrowserNotification: () => { notifications += 1; },
+  CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
   requestAnimationFrame: (fn) => fn(),
   fetch: (url) => new Promise((resolve) => { fetches.push({ url, resolve }); }),
   isFinite, Number, Math,
@@ -186,27 +193,13 @@ drag([1280 - 600], 'lostpointercapture');
 out.lostCaptureStored = storage['sova.feed.width'];
 out.lostCaptureRestored = !bodyClasses.has('feed-resizing');
 
-// Open-time positioning and the auto-load hold.
-const list = elements['feed-list'];
-const olderFetches = () => fetches.filter((f) => f.url.includes('before_id=0&')).length;
-list.scrollHeight = 2000;
-list.clientHeight = 500;
+// Opening and closing tell js/feed/activity.js (it marks lines seen and keeps the badge); the briefing loads once.
 ctx.toggleFeedPanel();
-out.openedAtBottom = list.scrollTop;
-out.heldOnOpen = ctx._feedAutoLoadHeld;
-list.listeners.scroll();
-out.programmaticScrollLoads = olderFetches();
-list.scrollTop = 1000; list.listeners.scroll();
-out.releasedByUserScroll = !ctx._feedAutoLoadHeld;
-list.scrollTop = 10; list.listeners.scroll();
-out.loadsAfterUserScroll = olderFetches();
-
-// Reopening resets the hold and positions at the newest message again.
 ctx.toggleFeedPanel();
-list.scrollTop = 0;
 ctx.toggleFeedPanel();
-out.reopenedAtBottom = list.scrollTop;
-out.heldOnReopen = ctx._feedAutoLoadHeld;
+out.toggleEvents = dispatched.map((e) => [e.type, e.detail.open]);
+out.briefingFetches = fetches.filter((f) => f.url === '/feed/briefing').length;
+out.panelOpenAfterThree = ctx._feedPanelOpen;
 
 // Escape: ignored when closed or already handled, closes and refocuses the button when open.
 const esc = (extra) => docListeners.keydown(Object.assign({ key: 'Escape', defaultPrevented: false }, extra));
@@ -270,84 +263,34 @@ storageBlocked = true;
 out.blockedStorage = vm.runInContext('_feedStoredWidth()', ctx);
 storageBlocked = false;
 
-// Async history paths: fetches are deferreds the scenarios resolve by hand. The stub list is
-// `baseHeight + 100 * events` tall and 500 high; "at the bottom" means scrollTop === scrollHeight.
 const flush = () => new Promise((r) => setImmediate(r));
-const ev = (ids) => ids.map((id) => ({ id, title: 'e' + id, timestamp: 1700000000 + id }));
-async function resolveFetch(i, ids, hasMore) {
-  fetches[i].resolve({ json: () => ({ events: ev(ids), has_more: hasMore }) });
-  await flush();
-}
-function resetFeed(baseHeight) {
-  vm.runInContext(
-    '_feedPanelOpen = false; _feedEvents = []; _feedSeenIds = {}; _feedLastId = 0; _feedOldestId = 0;' +
-    '_feedHasMoreHistory = true; _feedHistoryLoading = false; _feedHistoryLoaded = false;' +
-    '_feedBriefingLoaded = true; _feedAutoLoadHeld = true; _feedLastScrollTop = 0; _feedLastScrollHeight = 0;', ctx);
-  panel.classList.add('hidden');
-  fetches.length = 0;
-  list.scrollTop = 0;
-  list.clientHeight = 500;
-  list.scrollHeight = baseHeight;
-  list.onRender = () => { list.scrollHeight = baseHeight + 100 * ctx._feedEvents.length; };
-}
+const addEvent = (id, severity, title) => ctx._feedAddEvent({ id, severity, title: title || 'e' + id });
 
 (async () => {
-  // History resolving after open, user has not scrolled: positioned at the newest again.
-  resetFeed(1000);
-  ctx.toggleFeedPanel();
-  list.scrollTop = 0;  // render would not follow (not at the bottom), only the held reposition can
-  await resolveFetch(0, [1, 2, 3], true);
-  out.historyAfterOpen = { top: list.scrollTop, height: list.scrollHeight, last: ctx._feedLastScrollTop };
+  // A warning or an error toasts and notifies; an info event does neither; an id seen twice toasts once.
+  addEvent(1, 'info');
+  addEvent(2, 'warning', 'slow');
+  addEvent(2, 'warning', 'slow');
+  addEvent(3, 'error', 'boom');
+  out.toasts = toasts.slice();
+  out.notifications = notifications;
+  out.lastId = ctx._feedLastId;
 
-  // History resolving after the user scrolled up: the position is left alone.
-  resetFeed(1000);
-  ctx.toggleFeedPanel();
-  list.scrollTop = 200; list.listeners.scroll();
-  out.releasedBeforeHistory = !ctx._feedAutoLoadHeld;
-  await resolveFetch(0, [1, 2, 3], true);
-  out.historyAfterScrollUp = { top: list.scrollTop, last: ctx._feedLastScrollTop };
+  // The remembered ids stay bounded, and the newest are still remembered.
+  for (let id = 4; id <= 1500; id++) addEvent(id, 'info');
+  addEvent(1501, 'warning', 'late');
+  addEvent(1501, 'warning', 'late');
+  out.seenBounded = vm.runInContext('_feedSeenCount', ctx) <= 1000;
+  out.lateToasts = toasts.filter((t) => t[0] === 'late').length;
 
-  // Older history resolving restores the seam, keeping the same content in view.
-  resetFeed(1000);
-  ctx.toggleFeedPanel();
-  await resolveFetch(0, [101, 102, 103], true);
-  list.scrollTop = 30; list.listeners.scroll();
-  out.olderRequested = fetches.length === 2 && fetches[1].url.includes('before_id=101');
-  await resolveFetch(1, [98, 99, 100], false);
-  out.seam = { top: list.scrollTop, height: list.scrollHeight, last: ctx._feedLastScrollTop };
-
-  // A load still pending when the panel is closed and reopened must not pull the list off the newest.
-  resetFeed(1000);
-  ctx.toggleFeedPanel();
-  await resolveFetch(0, [101, 102, 103], true);
-  list.scrollTop = 30; list.listeners.scroll();
-  ctx.toggleFeedPanel();
-  ctx.toggleFeedPanel();
-  out.reopenedWhileLoading = { top: list.scrollTop, height: list.scrollHeight, held: ctx._feedAutoLoadHeld };
-  await resolveFetch(1, [98, 99, 100], false);
-  out.afterRaceResolve = { top: list.scrollTop, height: list.scrollHeight, held: ctx._feedAutoLoadHeld };
-  list.listeners.scroll();  // the next synthetic scroll event is not the user scrolling up
-  out.afterRaceScroll = { held: ctx._feedAutoLoadHeld, fetches: fetches.length };
-
-  // The list shrinks while the user has not scrolled (a rewrap): the clamped scrollTop is not a user
-  // scroll, so the hold stays and nothing older is fetched, even inside the 40px zone.
-  resetFeed(1000);
-  ctx.toggleFeedPanel();
-  await resolveFetch(0, [101, 102, 103], true);
-  list.scrollHeight = 520;
-  list.scrollTop = 20;
-  list.listeners.scroll();
-  out.reflow = { held: ctx._feedAutoLoadHeld, fetches: fetches.length };
-  // A real upward scroll afterwards (height unchanged) still releases the hold and loads older history.
-  list.scrollTop = 10;
-  list.listeners.scroll();
-  out.afterReflowUserScroll = { held: ctx._feedAutoLoadHeld, fetches: fetches.length };
-
-  // A freshly opened list too short to scroll stays at 0 and loads no older history.
-  resetFeed(0);
-  ctx.toggleFeedPanel();
-  list.listeners.scroll();
-  out.shortList = { top: list.scrollTop, fetches: fetches.length, held: ctx._feedAutoLoadHeld };
+  // The gap fill asks for what came after the newest id, toasts the gap, and skips ids it already has.
+  fetches.length = 0;
+  ctx._feedGapFill();
+  out.gapUrl = fetches[0].url;
+  fetches[0].resolve({ json: () => ({ gap_detected: true, events: [{ id: 1501, severity: 'warning', title: 'late' },
+    { id: 1502, severity: 'error', title: 'missed' }] }) });
+  await flush();
+  out.gapToasts = toasts.slice(-2);
 
   console.log(JSON.stringify(out));
 })();
@@ -392,39 +335,30 @@ class TestFeedPanelBehavior:
     def test_a_click_on_the_handle_never_writes_a_width(self, feed_run: dict) -> None:
         assert not feed_run["clickWrites"]
 
-    def test_open_positions_at_newest_and_holds_auto_load_until_the_user_scrolls_up(self, feed_run: dict) -> None:
-        assert feed_run["openedAtBottom"] == 2000
-        assert feed_run["heldOnOpen"]
-        assert feed_run["programmaticScrollLoads"] == 0
-        assert feed_run["releasedByUserScroll"]
-        assert feed_run["loadsAfterUserScroll"] == 1
+    def test_opening_and_closing_tell_the_activity_module_and_the_briefing_loads_once(self, feed_run: dict) -> None:
+        assert feed_run["toggleEvents"] == [
+            ["sova:feed-toggle", True],
+            ["sova:feed-toggle", False],
+            ["sova:feed-toggle", True],
+        ]
+        assert feed_run["panelOpenAfterThree"] is True
+        assert feed_run["briefingFetches"] == 1
 
-    def test_reopen_positions_at_newest_and_resets_the_hold(self, feed_run: dict) -> None:
-        assert feed_run["reopenedAtBottom"] == 2000
-        assert feed_run["heldOnReopen"]
+    def test_a_warning_or_error_toasts_once_and_an_info_event_never_does(self, feed_run: dict) -> None:
+        assert feed_run["toasts"] == [["slow", "warning"], ["boom", "error"]]
+        assert feed_run["notifications"] == 2
+        assert feed_run["lastId"] == 3
 
-    def test_history_resolving_after_open_repositions_at_newest_while_held(self, feed_run: dict) -> None:
-        assert feed_run["historyAfterOpen"] == {"top": 1300, "height": 1300, "last": 1300}
+    def test_the_remembered_event_ids_stay_bounded_and_the_newest_are_kept(self, feed_run: dict) -> None:
+        assert feed_run["seenBounded"]
+        assert feed_run["lateToasts"] == 1
 
-    def test_history_resolving_after_the_user_scrolled_up_leaves_the_position(self, feed_run: dict) -> None:
-        assert feed_run["releasedBeforeHistory"]
-        assert feed_run["historyAfterScrollUp"] == {"top": 200, "last": 200}
-
-    def test_older_history_restores_the_seam_and_records_the_position(self, feed_run: dict) -> None:
-        assert feed_run["olderRequested"]
-        assert feed_run["seam"] == {"top": 330, "height": 1600, "last": 330}
-
-    def test_older_history_resolving_after_a_reopen_stays_at_newest_and_keeps_the_hold(self, feed_run: dict) -> None:
-        assert feed_run["reopenedWhileLoading"] == {"top": 1300, "height": 1300, "held": True}
-        assert feed_run["afterRaceResolve"] == {"top": 1600, "height": 1600, "held": True}
-        assert feed_run["afterRaceScroll"] == {"held": True, "fetches": 2}
-
-    def test_a_reflow_that_shrinks_the_list_is_not_a_user_scroll(self, feed_run: dict) -> None:
-        assert feed_run["reflow"] == {"held": True, "fetches": 1}
-        assert feed_run["afterReflowUserScroll"] == {"held": False, "fetches": 2}
-
-    def test_a_freshly_opened_list_too_short_to_scroll_loads_nothing_older(self, feed_run: dict) -> None:
-        assert feed_run["shortList"] == {"top": 0, "fetches": 1, "held": True}
+    def test_the_gap_fill_toasts_the_gap_and_only_events_it_did_not_have(self, feed_run: dict) -> None:
+        assert feed_run["gapUrl"] == "/feed/history?since_id=1501"
+        assert feed_run["gapToasts"] == [
+            ["Activity feed gap detected: some events were missed", "warning"],
+            ["missed", "error"],
+        ]
 
     def test_escape_closes_only_an_open_unhandled_panel_and_refocuses_the_button(self, feed_run: dict) -> None:
         assert feed_run["closedBeforeEscape"]

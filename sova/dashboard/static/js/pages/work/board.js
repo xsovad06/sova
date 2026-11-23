@@ -2,7 +2,7 @@ import { actionAttrs } from '../agents/actions.js';
 import { _updateApiHealthBanner } from '../agents/live-status.js';
 import { diffSizeColor, diffSizeLabel, formatAgeBadge } from '../agents/render-utils.js';
 import { renderHeader } from './header.js';
-import { clearSelection, getSelected, onSelectionChange, relationChip, relationClass, selectionKey, setSelectionBoard } from './selection.js';
+import { clearSelection, getSelected, onSelectionChange, relationChip, relationClass, select, selectionKey, setSelectionBoard } from './selection.js';
 
 // The Work board: GET /api/work/board, drawn in the order of the payload's `columns`, with each column's
 // label and color token and the payload key holding its entries. A stage whose `column` names another stage
@@ -147,6 +147,7 @@ async function _fetchBoard() {
     _updateApiHealthBanner(_board.api_health);
     renderHeader(_board, settingSaveCount() !== savesBefore);
     renderBoard();
+    _openLinkedCard();
     // Only a board that rendered counts as a refresh: a throw above is a failure, not a success then a failure.
     _cancelRetry();
     _markRefresh(true);
@@ -733,6 +734,10 @@ export function renderBoard() {
       console.error('work board render listener failed', e);
     }
   });
+  // Pages below the board (the run history) wait for its first render before scrolling to a linked row. The marker
+  // covers one that armed its listener after this render already fired the event.
+  if (host && typeof host.setAttribute === 'function') host.setAttribute('data-rendered', '1');
+  if (typeof document.dispatchEvent === 'function') document.dispatchEvent(new CustomEvent('sova:board-rendered'));
 }
 
 // The board redraws from scratch on every change (a selection, an action's state, a reload), which removes the
@@ -761,6 +766,50 @@ function _restoreFocus(host, focused) {
   // A control the new board no longer has (its card moved on, or the button left with the state) is not
   // replaced by another one: focus then falls back to the page, as it would for any removed element.
   if (match && typeof match.focus === 'function') match.focus({ preventScroll: true });
+}
+
+// A link from the activity feed (`/work?card=N`, or `card=pr:N` for a PR with no issue) selects that card, which
+// opens its details, and brings it into view. Once per page load: later refreshes leave the user's selection alone.
+var _linkedCardDone = false;
+
+// The card element for a selection key, found by comparing each card's args (a PR key's quotes cannot go in a selector).
+function _findCard(key) {
+  var cards = document.querySelectorAll('#work-board [data-action="work-select"]');
+  return Array.prototype.find.call(cards, function(card) {
+    try {
+      return JSON.parse(card.getAttribute('data-args'))[0] === key;
+    } catch (_e) {
+      return false;
+    }
+  }) || null;
+}
+
+function _openLinkedCard() {
+  if (_linkedCardDone) return;
+  _linkedCardDone = true;
+  var params = new URLSearchParams((window.location && window.location.search) || '');
+  var wanted = params.get('card');
+  if (!wanted) return;
+  // Applied once: a reload or a bookmark must not reselect it over what the user has done since.
+  params.delete('card');
+  var rest = params.toString();
+  try {
+    window.history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+  } catch (_e) { /* a restricted context keeps the parameter */ }
+  var key = /^pr:\d+$/.test(wanted) ? wanted : (/^\d+$/.test(wanted) ? Number(wanted) : null);
+  var card = key === null ? null : _findCard(key);
+  if (!card) {
+    // Closed, filtered out or in a hidden column: say so instead of opening an empty details pane, and narrow the
+    // run history to the item (the link carries no `number`), which is where its runs are.
+    var number = String(wanted).replace(/^pr:/, '');
+    if (/^\d+$/.test(number) && typeof document.dispatchEvent === 'function') {
+      document.dispatchEvent(new CustomEvent('sova:linked-card-missing', { detail: { number: number } }));
+    }
+    showToast('That item is not on the board. Its runs are in the history below.', 'info');
+    return;
+  }
+  select(key);
+  card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 export function setDragging(on) {
