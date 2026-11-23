@@ -171,12 +171,15 @@ class TestPartialWorkPreservation:
         asyncio.run(run("git", "init", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.email", "test@example.com", cwd=tmp_path))
         asyncio.run(run("git", "config", "user.name", "Test User", cwd=tmp_path))
+        # A signing key on the machine running the tests must not decide whether the fixture commits.
+        asyncio.run(run("git", "config", "commit.gpgsign", "false", cwd=tmp_path))
 
         (tmp_path / "sova.toml").write_text("github_repo = 'test/repo'\n")
         # Commit it so it isn't mistaken for untracked partial work by the
         # `git add -A` tests below.
         asyncio.run(run("git", "add", "sova.toml", cwd=tmp_path))
-        asyncio.run(run("git", "commit", "-m", "initial", cwd=tmp_path))
+        initial = asyncio.run(run("git", "commit", "-m", "initial", cwd=tmp_path))
+        assert initial.success, initial.stderr
         cfg = load_config(tmp_path)
         ctx = ExecutionContext(
             project_dir=tmp_path,
@@ -235,6 +238,54 @@ class TestPartialWorkPreservation:
         # Verify no new commit
         log_result = await run("git", "log", "--oneline", cwd=tmp_path)
         assert len(log_result.stdout.strip().splitlines()) == commit_count_before
+
+    async def test_preserve_partial_work_skipped_when_the_step_blocked_it(
+        self, ctx: ExecutionContext, tmp_path: Path
+    ) -> None:
+        """A step that could not restore its branch must not have the engine commit onto the broken base."""
+        from sova.utils.shell import run
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("initial")
+        assert (await run("git", "add", "test.txt", cwd=tmp_path)).success
+        setup_commit = await run("git", "commit", "-m", "initial", cwd=tmp_path)
+        assert setup_commit.success, setup_commit.stderr
+        baseline = await run("git", "log", "--oneline", cwd=tmp_path)
+        assert baseline.success
+        commit_count_before = len(baseline.stdout.strip().splitlines())
+        # The fixture's own commit plus this one: a count of zero would mean the baseline read nothing.
+        assert commit_count_before == 2
+        test_file.write_text("modified")
+        ctx.partial_work_blocked = "Rearrange restore failed; restore it with: git -C x reset -q abc"
+
+        result = await WorkflowEngine(steps=[], ctx=ctx)._preserve_partial_work_on_timeout("rearrange_commits")
+
+        assert result is False
+        log = await run("git", "log", "--oneline", cwd=tmp_path)
+        assert len(log.stdout.strip().splitlines()) == commit_count_before
+
+    async def test_a_blocked_timeout_puts_the_recovery_command_in_the_step_summary(self, ctx: ExecutionContext) -> None:
+        """The operator reads the stored summary, so the command that finishes the restore must be in it."""
+        import asyncio
+
+        from sova.core.steps.base import StepResult
+
+        class _BlockingStep:
+            name = "rearrange_commits"
+
+            async def execute(self, step_ctx: ExecutionContext) -> StepResult:
+                step_ctx.partial_work_blocked = "Rearrange restore failed; restore it with: git -C x reset -q abc"
+                await asyncio.sleep(30)
+                raise AssertionError("unreachable")
+
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        with patch.object(engine, "_effective_step_timeout", return_value=(0.05, False)):
+            result = await engine._run_step_with_timeout(_BlockingStep())  # type: ignore[arg-type]
+
+        assert result.error == "step_hard_timeout"
+        assert "exceeded hard timeout" in result.summary
+        assert "restore it with: git -C x reset -q abc" in result.summary
+        assert result.partial_work is False
 
     async def test_preserve_partial_work_not_a_git_repo(self, tmp_path: Path) -> None:
         """When worktree_dir is not a git repo, returns False."""
