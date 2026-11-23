@@ -1200,7 +1200,8 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   position: fixed;
   top: 0;
   right: 0;
-  width: 400px;
+  width: var(--feed-panel-width, 560px);
+  max-width: 100%;
   height: 100vh;
   background: var(--color-surface-card);
   border-left: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
@@ -1258,9 +1259,8 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 .feed-chat-body {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 1rem 0.875rem;
-  scroll-behavior: smooth;
+  gap: 0.75rem;
+  padding: 1rem;
 }
 
 /* Avatar (owl) shown next to SOVA-authored messages */
@@ -1292,7 +1292,7 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   position: relative;
   border-radius: 0.875rem;
   border-top-left-radius: 0.25rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.75rem 1rem;
   background: rgb(var(--ctp-surface0-rgb));
   border-left: 3px solid var(--color-accent);
   overflow-wrap: anywhere;
@@ -1485,20 +1485,27 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 /* Hide the FAB while the panel is open to avoid overlap */
 body.feed-open .feed-fab { display: none; }
 
-/* Desktop: push main content when feed is open */
-.feed-panel-push {
-  margin-right: 400px;
-  transition: margin-right 220ms ease;
+/* Drag handle on the panel's left edge (desktop only) */
+.feed-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 3;
 }
+.feed-resize-handle:hover,
+body.feed-resizing .feed-resize-handle { background: rgb(var(--ctp-blue-rgb) / 0.5); }
+body.feed-resizing { -webkit-user-select: none; user-select: none; cursor: col-resize; }
 
-/* Mobile: overlay instead of push */
+/* Mobile: full width, so no handle and any saved width is ignored */
 @media (max-width: 768px) {
   .feed-panel {
-    width: 100vw;
+    width: 100%;
   }
-  .feed-panel-push {
-    margin-right: 0;
-  }
+  .feed-resize-handle { display: none; }
   .feed-fab { bottom: 1rem; right: 1rem; }
 }
 

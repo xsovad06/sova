@@ -1895,8 +1895,14 @@ var _feedHistoryLoaded = false;
 var _feedBriefingLoaded = false;
 var _feedBriefingHtml = '';
 var _feedScrollBound = false;
+var _feedAutoLoadHeld = true;  // true from open until the user scrolls up: older history must not auto-load
+var _feedLastScrollTop = 0;
+var _feedLastScrollHeight = 0; // with the top: a drop with a shorter list is a reflow, not the user
 var _FEED_MAX_EVENTS = 500;
 var _FEED_PAGE_SIZE = 50;
+var _FEED_WIDTH_KEY = 'sova.feed.width';
+var _FEED_WIDTH_MIN = 400;
+var _FEED_WIDTH_MAX = 800;
 
 function _feedGapFill() {
   var url = apiUrl('/feed/history?since_id=' + _feedLastId);
@@ -2053,12 +2059,26 @@ function _renderFeedList() {
 
   list.innerHTML = parts.join('');
 
-  if (atBottom) list.scrollTop = list.scrollHeight;
+  if (atBottom) {
+    list.scrollTop = list.scrollHeight;
+    _feedRecordScroll(list);
+  } else {
+    // The render changed the height without a scroll; keep the baseline current so only a later shrink counts.
+    _feedLastScrollHeight = list.scrollHeight;
+  }
+}
+
+function _feedRecordScroll(list) {
+  _feedLastScrollTop = list.scrollTop;
+  _feedLastScrollHeight = list.scrollHeight;
 }
 
 function feedScrollToBottom() {
   var list = document.getElementById('feed-list');
-  if (list) list.scrollTop = list.scrollHeight;
+  if (list) {
+    list.scrollTop = list.scrollHeight;
+    _feedRecordScroll(list);
+  }
   var pill = document.getElementById('feed-jump-latest');
   if (pill) pill.classList.add('hidden');
 }
@@ -2072,8 +2092,11 @@ function loadOlderFeed() {
   var cursor = _feedOldestId || 0;
   var url = apiUrl('/feed/history?before_id=' + cursor + '&limit=' + _FEED_PAGE_SIZE);
   var list = document.getElementById('feed-list');
-  var prevHeight = list ? list.scrollHeight : 0;
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    // Measure at resolve time: the panel may have been closed and reopened, or the user may have
+    // scrolled, while the request was in flight.
+    var prevTop = list ? list.scrollTop : 0;
+    var prevHeight = list ? list.scrollHeight : 0;
     var events = data.events || [];
     _feedHasMoreHistory = !!data.has_more;
     // Prepend oldest-first, skipping dupes.
@@ -2089,10 +2112,13 @@ function loadOlderFeed() {
     _feedEvents = prepend.concat(_feedEvents);
     _feedHistoryLoading = false;
     _renderFeedList();
-    // Preserve scroll position after prepending older content.
-    if (list) {
-      var newHeight = list.scrollHeight;
-      list.scrollTop = newHeight - prevHeight;
+    if (_feedAutoLoadHeld) {
+      // The panel was reopened (or positioned again) while this load was pending: stay at the newest.
+      feedScrollToBottom();
+    } else if (list) {
+      // Keep the same content in view after prepending older content.
+      list.scrollTop = prevTop + (list.scrollHeight - prevHeight);
+      _feedRecordScroll(list);
     }
   }).catch(function() {
     _feedHistoryLoading = false;
@@ -2119,7 +2145,8 @@ function _feedBootstrapHistory() {
     // Keep ascending order in case live events arrived before history.
     _feedEvents.sort(function(a, b) { return a.id - b.id; });
     _renderFeedList();
-    feedScrollToBottom();
+    // Position again once history is in, unless the user has already started reading upward.
+    if (_feedAutoLoadHeld) feedScrollToBottom();
   }).catch(function() { _renderFeedList(); });
 
   _feedLoadBriefing();
@@ -2175,9 +2202,62 @@ function _feedBuildBriefing(b) {
     '</div>' + sections + '</div>';
 }
 
+function _feedClampWidth(px) {
+  return Math.min(_FEED_WIDTH_MAX, Math.max(_FEED_WIDTH_MIN, Math.round(px)));
+}
+
+// A stored width that is missing, unreadable or not a number gives null (the CSS default applies);
+// a number outside the allowed range is clamped.
+function _feedStoredWidth() {
+  var raw = safeStorageGet(_FEED_WIDTH_KEY);
+  // Plain decimal text only: Number() would turn whitespace into 0 and '0x300' into 768.
+  if (raw === null || !/^\s*\d+(\.\d+)?\s*$/.test(raw)) return null;
+  var px = Number(raw);
+  return isFinite(px) ? _feedClampWidth(px) : null;
+}
+
+function _feedSetWidth(panel, px) {
+  panel.style.setProperty('--feed-panel-width', px + 'px');
+}
+
+function _feedBindResize(panel) {
+  var handle = document.getElementById('feed-resize-handle');
+  if (!handle) return;
+  var stored = _feedStoredWidth();
+  if (stored !== null) _feedSetWidth(panel, stored);
+
+  var dragging = false;
+  var dragRight = 0;     // the panel's right edge, which stops short of a classic page scrollbar
+  var dragWidth = null;  // set by the first move, so a click on the handle never rewrites the stored width
+  function end(e) {
+    if (!dragging) return;
+    dragging = false;
+    if (handle.hasPointerCapture && handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+    document.body.classList.remove('feed-resizing');
+    if (dragWidth !== null) safeStorageSet(_FEED_WIDTH_KEY, String(dragWidth));
+    dragWidth = null;
+  }
+  handle.addEventListener('pointerdown', function(e) {
+    if (e.button !== 0) return;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('feed-resizing');
+    dragRight = panel.getBoundingClientRect().right;
+    dragging = true;
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', function(e) {
+    if (!dragging) return;
+    dragWidth = _feedClampWidth(dragRight - e.clientX);
+    _feedSetWidth(panel, dragWidth);
+  });
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+  // Capture can also be lost without pointerup (window blur, the handle hidden mid-drag).
+  handle.addEventListener('lostpointercapture', end);
+}
+
 function toggleFeedPanel() {
   var panel = document.getElementById('feed-panel');
-  var main = document.getElementById('main-content');
   var fab = document.getElementById('feed-fab');
   if (!panel) return;
 
@@ -2186,10 +2266,10 @@ function toggleFeedPanel() {
   if (_feedPanelOpen) {
     panel.classList.remove('hidden');
     document.body.classList.add('feed-open');
-    if (main) main.classList.add('feed-panel-push');
     if (fab) fab.setAttribute('aria-expanded', 'true');
     _feedUnread = 0;
     _updateFeedBadge();
+    _feedAutoLoadHeld = true;
     _feedBootstrapHistory();
     _renderFeedList();
     feedScrollToBottom();
@@ -2197,7 +2277,6 @@ function toggleFeedPanel() {
   } else {
     panel.classList.add('hidden');
     document.body.classList.remove('feed-open');
-    if (main) main.classList.remove('feed-panel-push');
     if (fab) fab.setAttribute('aria-expanded', 'false');
   }
 }
@@ -2208,8 +2287,14 @@ function _feedBindScroll() {
   if (!list) return;
   _feedScrollBound = true;
   list.addEventListener('scroll', function() {
-    // Auto-load older when near the top.
-    if (list.scrollTop < 40 && _feedHasMoreHistory && !_feedHistoryLoading) {
+    // A shrinking list (rewrap after a resize or breakpoint change) makes the browser clamp scrollTop
+    // down without the user scrolling, so a drop only counts when the content did not get shorter.
+    var scrolledUp = list.scrollTop < _feedLastScrollTop && list.scrollHeight >= _feedLastScrollHeight;
+    var reflowed = list.scrollHeight < _feedLastScrollHeight;
+    _feedRecordScroll(list);
+    // The open-time positioning scrolls down; only the user scrolling up releases the auto-load hold.
+    if (_feedAutoLoadHeld && scrolledUp) _feedAutoLoadHeld = false;
+    if (!_feedAutoLoadHeld && !reflowed && list.scrollTop < 40 && _feedHasMoreHistory && !_feedHistoryLoading) {
       loadOlderFeed();
     }
     // Toggle the jump-to-latest pill.
@@ -2218,6 +2303,38 @@ function _feedBindScroll() {
       var farFromBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) > 200;
       pill.classList.toggle('hidden', !farFromBottom);
     }
+  });
+}
+
+// A dialog owns Escape while it is open. The confirm and launch handlers are added to the document
+// after this one and do not call preventDefault, so the panel has to check for open dialogs itself.
+function _feedDialogOpen() {
+  if (_sovaModalOpen) return true;
+  var launch = document.getElementById('launch-modal');
+  if (launch && !launch.classList.contains('hidden')) return true;
+  // A closed dialog can stay in the DOM (aria-hidden, off-screen or display:none), so test what is shown.
+  var panel = document.getElementById('feed-panel');
+  var found = document.querySelectorAll('dialog[open], [role="dialog"], [aria-modal="true"]');
+  return Array.prototype.some.call(found, function(el) {
+    return !(panel && panel.contains(el)) && !el.classList.contains('hidden') &&
+      el.getAttribute('aria-hidden') !== 'true' && el.getClientRects().length > 0;
+  });
+}
+
+function initFeedPanel() {
+  var panel = document.getElementById('feed-panel');
+  if (!panel) return;
+  _feedBindResize(panel);
+  // Escape closes the panel only while it is open and no dialog or earlier handler has claimed the key.
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape' || e.defaultPrevented || !_feedPanelOpen || _feedDialogOpen()) return;
+    // Focus returns to the floating button unless the user was typing in a page field outside the panel.
+    var active = document.activeElement;
+    var editable = !!active && !panel.contains(active) &&
+      (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
+    toggleFeedPanel();
+    var fab = document.getElementById('feed-fab');
+    if (fab && !editable) fab.focus();
   });
 }
 
@@ -2518,6 +2635,7 @@ _initGithubRepo();
 initSidebarCollapse();
 initSidebarTooltips();
 initSidebarMore();
+initFeedPanel();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();
