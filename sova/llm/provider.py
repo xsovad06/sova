@@ -140,8 +140,11 @@ class LLMProvider(ABC):
         subprocess (``ClaudeCodeProvider``) to run this turn tool-free and
         without project hook/MCP discovery, matching ``_probe_model()``'s
         ``--safe-mode``/``--tools ""`` argv: appropriate for an advisory,
-        tool-free call (a model probe, a dashboard suggestion) that has no
+        tool-free call (a model probe, a review chunk) that has no
         business touching the inherited cwd's hooks or executing commands.
+        Without a *system_prompt* of its own, an isolated Claude CLI turn also
+        replaces the CLI's agent system prompt with ``ISOLATED_SYSTEM_PROMPT``
+        (``sova/llm/cli_args.py``), which tells the model it has no tools.
         Providers that never load workspace context (LiteLLM, the Anthropic
         API) accept and ignore it, since there is nothing to isolate from.
         """
