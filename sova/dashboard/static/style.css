@@ -1879,3 +1879,24 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-priority-picker-option:focus { background: var(--color-surface-hover); color: var(--ctp-text); outline: none; }
 .sova-priority-picker-option[aria-selected="true"] { color: var(--ctp-text); background: rgb(var(--ctp-blue-rgb) / 0.12); }
 .sova-priority-picker-check { display: inline-flex; margin-left: auto; color: var(--ctp-blue); }
+
+/* Agent output rows (sovaOutputRenderer in app.js): one row per line, an optional time column, folded tool calls. */
+.out-row { display: flex; gap: 0.75rem; padding: 1px 0; }
+.out-time { display: none; flex: none; width: 4.5rem; color: var(--ctp-overlay0); font-variant-numeric: tabular-nums; }
+.out-has-times .out-time { display: block; }
+.out-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.out-tool .out-text { color: var(--ctp-overlay1); }
+.out-stderr .out-text { color: var(--ctp-subtext0); }
+.out-result .out-text { color: var(--ctp-teal); }
+.out-error .out-text { color: var(--ctp-red); }
+.out-log .out-text { color: var(--ctp-subtext1); }
+.out-trimmed { color: var(--ctp-overlay0); font-style: italic; padding: 2px 0; }
+.out-fold { margin: 0; }
+.out-fold-summary { cursor: pointer; color: var(--ctp-overlay1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.out-fold-summary:hover { color: var(--ctp-subtext1); }
+.out-fold-last { color: var(--ctp-overlay0); }
+.out-fold[open] .out-fold-last { display: none; }
+/* A block is drawn open and only becomes a fold once it passes the threshold (.out-folded). */
+.out-fold:not(.out-folded) > .out-fold-summary { display: none; }
+.out-fold:not(.out-folded) > .out-fold-body { padding-left: 0; border-left: 0; }
+.out-fold-body { padding-left: 0.75rem; border-left: 1px solid var(--ctp-surface1); }
