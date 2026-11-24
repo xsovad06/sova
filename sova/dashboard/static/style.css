@@ -1886,17 +1886,58 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-priority-picker-option[aria-selected="true"] { color: var(--ctp-text); background: rgb(var(--ctp-blue-rgb) / 0.12); }
 .sova-priority-picker-check { display: inline-flex; margin-left: auto; color: var(--ctp-blue); }
 
-/* Agent output rows (sovaOutputRenderer in app.js): one row per line, an optional time column, folded tool calls. */
+/* Agent output rows (sovaOutputRenderer in app.js): one row per line, an optional time column, a coloured rail per
+   kind, tool and log-level chips, markdown prose, quiet-gap dividers, replayed-log labels and folded blocks. */
 .out-row { display: flex; gap: 0.75rem; padding: 1px 0; }
 .out-time { display: none; flex: none; width: 4.5rem; color: var(--ctp-overlay0); font-variant-numeric: tabular-nums; }
 .out-has-times .out-time { display: block; }
 .out-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* span only: a plain text row's own class is out-text too (out-<kind>), and the rail belongs to the text cell. */
+span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
 .out-tool .out-text { color: var(--ctp-overlay1); }
 .out-stderr .out-text { color: var(--ctp-subtext0); }
-.out-result .out-text { color: var(--ctp-teal); }
-.out-error .out-text { color: var(--ctp-red); }
+.out-result .out-text { color: var(--ctp-teal); border-left-color: var(--ctp-teal); }
+.out-error .out-text { color: var(--ctp-red); border-left-color: var(--ctp-red); background: color-mix(in srgb, var(--ctp-red) 7%, transparent); }
 .out-log .out-text { color: var(--ctp-subtext1); }
+.out-warn .out-text { border-left-color: var(--ctp-yellow); }
+.out-prose .out-text { border-left-color: var(--ctp-blue); padding-block: 4px; }
 .out-trimmed { color: var(--ctp-overlay0); font-style: italic; padding: 2px 0; }
+.out-stream { color: var(--ctp-overlay0); }
+.out-chip { display: inline-block; padding: 0 0.4rem; border-radius: 0.25rem; font-size: 0.85em; font-weight: 500; color: var(--chip, var(--ctp-overlay1)); background: color-mix(in srgb, var(--chip, var(--ctp-overlay1)) 16%, transparent); }
+.out-tool-exec { --chip: var(--ctp-peach); }
+.out-tool-read { --chip: var(--ctp-blue); }
+.out-tool-write { --chip: var(--ctp-green); }
+.out-tool-agent { --chip: var(--ctp-mauve); }
+.out-tool-mcp { --chip: var(--ctp-teal); }
+.out-arg { color: var(--ctp-subtext0); }
+.out-lvl { display: inline-block; padding: 0 0.4rem; border-radius: 0.25rem; font-size: 0.85em; font-weight: 700; letter-spacing: 0.04em; color: var(--ctp-overlay1); background: var(--ctp-surface0); }
+.out-lvl-info { color: var(--ctp-green); background: color-mix(in srgb, var(--ctp-green) 14%, transparent); }
+.out-lvl-warning { color: var(--ctp-yellow); background: color-mix(in srgb, var(--ctp-yellow) 16%, transparent); }
+.out-lvl-error, .out-lvl-critical, .out-lvl-exception { color: var(--ctp-red); background: color-mix(in srgb, var(--ctp-red) 18%, transparent); }
+.out-event { color: var(--ctp-text); }
+.out-kv { display: inline-block; margin-left: 0.25rem; padding: 0 0.4rem; border: 1px solid var(--ctp-surface0); border-radius: 0.25rem; background: var(--ctp-mantle); color: var(--ctp-overlay1); font-size: 0.9em; }
+.out-k { margin-right: 0.3rem; color: var(--ctp-overlay0); }
+.out-ctx { color: var(--ctp-overlay1); }
+/* Markdown inside agent prose: the reading font for text, the log font for code, headings no larger than the text. */
+.out-md { white-space: normal; max-width: 80ch; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 13px; line-height: 1.6; color: var(--ctp-text); }
+.out-md p { margin: 0 0 0.4rem; }
+.out-md ul, .out-md ol { margin: 0 0 0.4rem; padding-left: 1.25rem; list-style: revert; }
+.out-md li { margin: 0.1rem 0; }
+.out-md :is(h1, h2, h3, h4, h5, h6) { margin: 0.2rem 0 0.3rem; padding: 0; border: 0; font-size: 13px; font-weight: 600; color: var(--ctp-blue); }
+.out-md code { padding: 0.05em 0.3em; border-radius: 0.25rem; background: var(--ctp-surface0); color: var(--ctp-peach); font-size: 0.9em; }
+.out-md pre { margin: 0.3rem 0; padding: 0.5rem 0.75rem; overflow-x: auto; border-radius: 0.375rem; background: var(--ctp-mantle); }
+.out-md pre code { padding: 0; background: none; color: var(--ctp-subtext1); }
+.out-md a { color: var(--ctp-blue); }
+.out-md > :last-child { margin-bottom: 0; }
+/* A pause between rows, and the label of a group of replayed log lines. Both line up with the text, past the time
+   column, when it is shown. */
+.out-gap, .out-cluster { margin: 0.35rem 0; font-size: 0.9em; }
+.out-has-times .out-gap, .out-has-times .out-cluster { margin-left: 5.25rem; }
+.out-gap { display: flex; align-items: center; gap: 0.6rem; color: var(--ctp-yellow); }
+.out-gap::before, .out-gap::after { content: ""; flex: 1 1 auto; border-top: 1px dashed color-mix(in srgb, var(--ctp-yellow) 45%, transparent); }
+.out-gap::before { flex: 0 0 0.9rem; }
+.out-cluster { display: flex; align-items: center; gap: 0.6rem; color: var(--ctp-overlay1); }
+.out-cluster::after { content: ""; flex: 1 1 auto; border-top: 1px solid var(--ctp-surface0); }
 .out-fold { margin: 0; }
 .out-fold-summary { cursor: pointer; color: var(--ctp-overlay1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .out-fold-summary:hover { color: var(--ctp-subtext1); }

