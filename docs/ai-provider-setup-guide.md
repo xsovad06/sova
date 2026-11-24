@@ -20,7 +20,7 @@ This guide explains how to configure SOVA to use different AI providers (Claude 
 
 | Provider | Auth Method | Cost | Use Case | Config |
 |----------|-------------|------|----------|--------|
-| **Claude Code CLI** | Personal subscription login | Per-message billing | Recommended for individuals | `llm.provider = "claude-code"` |
+| **Claude Code CLI** | Personal subscription login | Flat subscription fee; agent usage counts toward the plan's usage limits | Recommended for individuals | `llm.provider = "claude-code"` |
 | **Anthropic API** | API key (`llm.api_key`, falls back to `ANTHROPIC_API_KEY`) | Usage-based billing | Production deployments | `llm.provider = "anthropic"` |
 | **Google Vertex AI** | GCP ADC + `ANTHROPIC_VERTEX_PROJECT_ID` | GCP billing | Enterprise multi-cloud, Vertex-hosted models (typically Gemini) | `llm.provider = "vertex"` |
 
@@ -250,6 +250,93 @@ No wrapper script or manual `unset` is needed: the scrubbing described above run
 
 Open http://127.0.0.1:8111 and go to **Connections**. The "AI provider for SOVA calls" list shows a row for every supported provider, not just the active one: each row carries its own live readiness probe (all of them run concurrently on page load) plus Validate and Activate actions, and the active one is badged. The `claude-code` row additionally renders a "Start reconnect (claude auth login)" button. That button is not gated on whether `claude-code` is currently authenticated: it appears whenever this dashboard session could actually complete a browser login, and is replaced by terminal instructions when it could not (non-loopback access, a headless server process with no display to open a browser on, or a CLI routed through Vertex/Bedrock, where reconnecting means refreshing Google ADC instead). Its presence is therefore not a signal that you are logged out. On the headless case, the Connections page's fallback text points at plain `claude auth login` on a machine with a browser; it is the separate provider status widget shown on other dashboard pages (`sova/dashboard/static/provider-status-widget.js`), not this page, whose "Recovery command" block offers `claude setup-token` as the headless/remote alternative. The provider status widget, the account row in the sidebar footer of every dashboard page (click it for the status popover; a collapsed sidebar shows only its status dot, and hovering the dot spells out the provider and state, for example `claude-code: authenticated`), calls `GET /api/auth/status`, which reports `authenticated`, the account identity (email, subscription tier) when confirmable, and any inherited routing variables under `routing_warnings`. See [Connections Page (Dashboard)](#connections-page-dashboard) below for the exact contract.
 
+### Claude Code: Headless and Second-Machine Login
+
+Checked against Claude Code 2.1.331 on macOS 26.7.
+
+Where `claude auth login` cannot finish a browser sign-in (an SSH-only host, a Linux server under systemd), authenticate the CLI with a long-lived token instead:
+
+```bash
+claude setup-token
+```
+
+The command requires a Claude subscription (`claude setup-token --help`: "requires Claude subscription"). It runs the same browser authorization as `/login`, so run it wherever you can finish that sign-in, then copy the token it prints; it is not saved anywhere. Anthropic's [authentication docs](https://code.claude.com/docs/en/authentication) give the token a one-year lifetime. The CLI reads it from the `CLAUDE_CODE_OAUTH_TOKEN` environment variable.
+
+**Protect the token like an API key.** Anyone holding it can use your subscription for a year. Keep it out of config files, plists, unit files, shell history and chat. On macOS, store it in the login keychain with a script that reads it with echo off and passes it to `security` on standard input, so it never appears in a process argument list:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+service="${1:-claude-code-oauth-token}"
+
+printf 'Paste the token printed by claude setup-token (input hidden): ' >&2
+IFS= read -rs token
+printf '\n' >&2
+if [[ -z "$token" ]]; then
+  echo "No token entered; nothing stored." >&2
+  exit 1
+fi
+if [[ "$token" == *[\"\\[:space:]]* ]]; then
+  echo "Token contains a quote, backslash or whitespace; refusing to store it." >&2
+  exit 1
+fi
+
+printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' "$USER" "$service" "$token" | security -i
+unset token
+echo "Stored in the login keychain as service '$service'." >&2
+```
+
+**Where to set it for SOVA.** `CLAUDE_CODE_OAUTH_TOKEN` is not in `SCRUBBED_VARS` (`sova/utils/env.py`), so a value in the `sova server` process's environment reaches every agent and auth probe SOVA spawns, on every runtime (Codex and Aider included). Set it in the environment the server starts from:
+
+- **Interactive `sova server start`**: set it for that one command, not in your shell profile. The CLI prefers this token to your `/login` credential, so a profile-wide export would also switch every interactive `claude` session to it, and those sessions could no longer use Remote Control (see below).
+
+  ```bash
+  CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s claude-code-oauth-token -w)" sova server start
+  ```
+
+- **systemd unit** (from `sova server install-service --type systemd`): a headless Linux host usually has no unlocked keychain, so the common choice is a file only you can read, loaded with `systemctl --user edit sova-server`:
+
+  ```ini
+  [Service]
+  EnvironmentFile=%h/.config/sova/claude-token.env
+  ```
+
+  where `claude-token.env` holds one line, `CLAUDE_CODE_OAUTH_TOKEN=<token>`, with mode `0600`. This snippet has not been tested on Linux for this guide.
+
+- **launchd plist** (from `sova server install-service --type launchd`): do not put the token in the plist's `EnvironmentVariables`, which is a plain file under `~/Library/LaunchAgents`. A LaunchAgent runs in your login session and the CLI reads the `claude auth login` credential from your login keychain, so a Mac running the service needs no token at all (see [docs/always-on-mac-setup.md](always-on-mac-setup.md)).
+
+Anthropic's authentication docs rank `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` above `CLAUDE_CODE_OAUTH_TOKEN`. SOVA does not scrub those either, so if the server environment also holds an API key (for `llm.provider = "anthropic"`), spawned agents use the key, billed per token, instead of your subscription.
+
+**What the status checks report.** With only the token set, `claude auth status --json` reports a login with no account identity:
+
+```json
+{
+  "loggedIn": true,
+  "authMethod": "oauth_token",
+  "apiProvider": "firstParty",
+  "loginExpiresAt": null
+}
+```
+
+(trimmed; there is no `email`, `orgName` or `subscriptionType`), and `claude auth status --text` prints `Auth token: CLAUDE_CODE_OAUTH_TOKEN`. `sova doctor` shows:
+
+```text
+│ llm provider           │ OK     │ claude-code: 2.1.331 (Claude Code) (authenticated)                 │
+```
+
+On the Connections page and in `GET /api/auth/status`, `authenticated` is `true`, `detail` ends in `(authenticated)`, and `account` is `{"authMethod": "oauth_token", "apiProvider": "firstParty"}`, so the sidebar account row shows no email or plan.
+
+**None of these checks validates the token.** `claude auth status` only reports that the variable is set: a mistyped, expired or revoked token still shows `loggedIn: true`, and so do `sova doctor` and the Connections page. The first real call fails with `Failed to authenticate. API Error: 401 Invalid bearer token`. To test a token, make one call with it set: `claude -p "reply ok"`.
+
+**A token login cannot start Remote Control.** `claude remote-control` refuses it before connecting:
+
+```text
+Error: Remote Control requires a full-scope login token. Long-lived tokens (from `claude setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for security reasons. Run `claude auth login` to use Remote Control.
+```
+
+Steering sessions from a phone needs the `claude auth login` credential; see [docs/always-on-mac-setup.md](always-on-mac-setup.md).
+
 ---
 
 ## Anthropic API Direct
@@ -416,13 +503,30 @@ sova server start --multi
    claude auth login
    ```
 
-   On a headless machine or a second machine with no browser, use `claude setup-token` instead of `claude auth login` (see the recovery hint rendered by `sova/dashboard/static/provider-status-widget.js`). Issue #873 covers headless/second-machine authentication setup in more depth; this guide only notes the command exists.
+   On a headless machine or a second machine with no browser, use `claude setup-token` instead of `claude auth login`; see [Claude Code: Headless and Second-Machine Login](#claude-code-headless-and-second-machine-login).
 
 5. Verify:
    ```bash
    claude auth status --json | jq .apiProvider
    # Should show: "firstParty"
    ```
+
+### Claude Code Is Logged Out
+
+**Problem:** every agent run fails at its first model call, and `sova doctor` fails the `llm provider` row. With Claude Code 2.1.331 logged out, `sova doctor` shows (other rows omitted):
+
+```text
+│ claude CLI             │ OK     │ 2.1.331 (Claude Code)                                              │
+│ llm provider           │ FAIL   │ claude-code: 2.1.331 (Claude Code) but not authenticated (run:     │
+│                        │        │ claude auth login)                                                 │
+│ agent runtime          │ OK     │ claude-code: 2.1.331 (Claude Code)                                 │
+
+Some required checks failed. Fix the issues above before using SOVA.
+```
+
+and exits 1. The `claude CLI` and `agent runtime` rows only check that the CLI runs; `llm provider` is the row that reads the login, from `claude auth status --json` (`{"loggedIn": false, "authMethod": "none", ...}`, exit code 1). The Connections page reports the same detail with `authenticated: false`.
+
+**Solution:** run `claude auth login` (or, without a browser, see [Claude Code: Headless and Second-Machine Login](#claude-code-headless-and-second-machine-login)), then re-run `sova doctor`. A running server caches its auth status for 60 seconds, so the sidebar account row can lag by up to a minute after a terminal login; a login through the Connections page's reconnect button clears that cache at once.
 
 ### "Model Not Found" Error
 
@@ -511,23 +615,6 @@ curl http://127.0.0.1:8111/api/auth/status
   "checked_at": "2026-10-12T17:30:00Z",
   "cached": false
 }
-### Claude Code Is Logged Out
-
-**Problem:** every agent run fails at its first model call, and `sova doctor` fails the `llm provider` row. With Claude Code 2.1.331 logged out, `sova doctor` shows (other rows omitted):
-
-```text
-│ claude CLI             │ OK     │ 2.1.331 (Claude Code)                                              │
-│ llm provider           │ FAIL   │ claude-code: 2.1.331 (Claude Code) but not authenticated (run:     │
-│                        │        │ claude auth login)                                                 │
-│ agent runtime          │ OK     │ claude-code: 2.1.331 (Claude Code)                                 │
-
-Some required checks failed. Fix the issues above before using SOVA.
-```
-
-and exits 1. The `claude CLI` and `agent runtime` rows only check that the CLI runs; `llm provider` is the row that reads the login, from `claude auth status --json` (`{"loggedIn": false, "authMethod": "none", ...}`, exit code 1). The Connections page reports the same detail with `authenticated: false`.
-
-**Solution:** run `claude auth login`, then re-run `sova doctor`. A running server caches its auth status for 60 seconds, so the sidebar account row can lag by up to a minute after a terminal login; a login through the Connections page's reconnect button clears that cache at once.
-
 ```
 
 `account` is a whitelisted subset of the `claude auth status --json` payload, filtered to `_ACCOUNT_FIELDS` (`sova/dashboard/services/setup_service.py`): `email`, `authMethod`, `apiProvider`, `orgId`, `orgName`, `subscriptionType`. Only the keys the probe actually returned are present, so the example above (a personal subscription) has no `orgId`/`orgName`. `account` is `None` whenever the provider has no `get_auth_details()` method, or that probe can't confirm a logged-in identity (CLI missing, unparseable `claude auth status --json`, `loggedIn` not `true`). `authenticated` is a separate field: for `claude-code`, `get_auth_status()` overrides it to `account is not None` so a fail-open `check_available()` result ("auth state unknown", used so an unconfirmed probe never blocks agent spawning) is never reported as a confirmed login; for every other provider (no `get_auth_details()`), `authenticated` is the raw `check_available()` result and can be `True` while `account` stays `None` forever. Never treat a populated `account` as the sole proof of being logged in, or a null one as proof of being logged out: check `authenticated` for that. `routing_warnings` lists any `PROVIDER_ROUTING_VARS` present in the server process's own environment as a diagnostic only; it does not mean one reached (or will reach) a spawned agent, since those are scrubbed independently at the spawn boundary (see [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) above).
