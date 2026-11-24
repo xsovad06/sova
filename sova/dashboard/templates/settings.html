@@ -2,6 +2,7 @@
 {% block title %}Settings - SOVA{% endblock %}
 {% block content %}
 {% from "_icons.html" import icon %}
+{% from "_components.html" import btn %}
 {#- Status widgets shown under the group they belong to (static/js/pages/settings/widgets.js). -#}
 {% set group_widgets = {
   "project": "detected-stack",
@@ -182,23 +183,21 @@
 </div>
 
 {#- Review changes modal (SOVA Installation, Overview) -#}
-<div id="review-changes-modal" class="sova-modal-backdrop">
-  <div class="sova-modal-dialog flex flex-col" style="max-width: 56rem; max-height: 85vh">
-    <div class="flex items-center gap-3 px-5 py-4 border-b border-gray-700/40 shrink-0">
-      <div class="w-7 h-7 rounded-md bg-accent/10 flex items-center justify-center shrink-0 text-accent">
-        {{ icon("document-text", "w-4 h-4") }}
-      </div>
+<div id="review-changes-modal" class="sova-modal-backdrop" hidden>
+  <div class="sova-modal-dialog sova-modal-dialog-xl">
+    <div class="sova-modal-header">
+      <div class="sova-modal-icon">{{ icon("document-text", "w-4 h-4") }}</div>
       <div class="min-w-0">
-        <h3 class="text-sm font-semibold text-white leading-tight">Review Changes</h3>
-        <p class="text-xs text-gray-500 leading-tight mt-0.5">Select which files to sync</p>
+        <h3 class="sova-modal-title">Review Changes</h3>
+        <p class="sova-modal-subtitle">Select which files to sync</p>
       </div>
     </div>
-    <div id="review-changes-body" class="px-5 py-4 space-y-3 overflow-y-auto grow">
+    <div id="review-changes-body" class="sova-modal-body space-y-3">
       <p class="text-gray-500 text-sm">Loading...</p>
     </div>
-    <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-700/40 shrink-0">
-      <button type="button" data-act="review-close" class="sova-btn text-gray-400 hover:text-gray-200">Cancel</button>
-      <button type="button" data-act="review-apply" class="sova-btn sova-btn-primary">Apply selected</button>
+    <div class="sova-modal-footer">
+      {{ btn("Cancel", variant="ghost", attrs={"data-act": "review-close"}) }}
+      {{ btn("Apply selected", attrs={"data-act": "review-apply"}) }}
     </div>
   </div>
 </div>

@@ -208,22 +208,17 @@ function fileDiffSectionHtml(file) {
   '</div>';
 }
 
-const review = { trigger: null, requestId: 0 };
-
-function focusables(modal) {
-  return Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled]):not([type="hidden"]), [tabindex="0"]'));
-}
+// The shared modal (sovaModalOpen in app.js) owns Escape, the backdrop, the Tab trap and focus return. Every close
+// bumps requestId, so a diff still loading when the modal closes is dropped.
+const review = { requestId: 0 };
 
 async function openReviewChanges() {
   const modal = document.getElementById('review-changes-modal');
   const body = document.getElementById('review-changes-body');
   if (!modal || !body) return;
-  review.trigger = document.activeElement;
   const requestId = ++review.requestId;
   body.innerHTML = '<p class="text-gray-500 text-sm">Loading...</p>';
-  modal.classList.add('sova-modal-visible');
-  const first = focusables(modal)[0];
-  if (first) first.focus();
+  sovaModalOpen(modal, { onClose: () => { review.requestId++; } });
   try {
     const data = await fetchAPI(apiUrl('/settings/installation/diff'));
     if (requestId !== review.requestId) return;
@@ -238,10 +233,7 @@ async function openReviewChanges() {
 
 function closeReviewChanges() {
   const modal = document.getElementById('review-changes-modal');
-  if (modal) modal.classList.remove('sova-modal-visible');
-  review.requestId++;
-  if (review.trigger && document.contains(review.trigger)) review.trigger.focus();
-  review.trigger = null;
+  if (modal) sovaModalClose(modal, 'cancel');
 }
 
 async function applySelectedChanges(btn) {
@@ -277,20 +269,6 @@ async function applySelectedChanges(btn) {
     btn.disabled = false;
     btn.textContent = 'Apply selected';
   }
-}
-
-function trapReviewFocus(e) {
-  const modal = document.getElementById('review-changes-modal');
-  if (!modal || !modal.classList.contains('sova-modal-visible')) return;
-  if (e.key === 'Escape') { closeReviewChanges(); return; }
-  if (e.key !== 'Tab') return;
-  const items = focusables(modal);
-  if (!items.length) { e.preventDefault(); return; }
-  const first = items[0];
-  const last = items[items.length - 1];
-  if (!modal.contains(document.activeElement) || items.indexOf(document.activeElement) === -1) { e.preventDefault(); first.focus(); }
-  else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 }
 
 /* --- Overview: health checks -------------------------------------------------------------------------------- */
@@ -642,14 +620,4 @@ export function handleClick(target) {
   else if (act === 'runtime-test') testConnection(btn, '/settings/agent-runtime/test-connection', 'Available', 'runtime unavailable');
   else return false;
   return true;
-}
-
-let initialised = false;
-
-export function init() {
-  if (initialised) return;  // a second init would register the keydown handler twice
-  initialised = true;
-  const modal = document.getElementById('review-changes-modal');
-  if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeReviewChanges(); });
-  document.addEventListener('keydown', trapReviewFocus);
 }

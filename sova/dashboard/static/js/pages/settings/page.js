@@ -373,7 +373,6 @@ async function start() {
   state.setSections(JSON.parse(sectionsData.textContent));
   rows.onKeyRendered(afterKeyRendered);
   rows.onLeftoverRemoved(() => { updateCounts(); if (state.filtering()) refreshView(); });
-  widgets.init();
   bindEvents();
   route();
   updateNav();
