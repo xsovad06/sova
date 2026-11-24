@@ -903,6 +903,19 @@ function subscribeSovaSocket(options) {
   };
 }
 
+/* Sends one JSON message on the shared socket; false when it is not open (the page sends again from its onOpen). */
+function sendSovaSocket(message) {
+  var ws = _socketHub.ws;
+  if (ws === null || ws.readyState !== 1) return false;
+  try {
+    ws.send(JSON.stringify(message));
+    return true;
+  } catch (e) {
+    console.warn('SovaSocket: send failed:', e);
+    return false;
+  }
+}
+
 function _socketCall(fn, arg) {
   if (!fn) return;
   try {

@@ -1027,38 +1027,91 @@ if (scenario === 'start-no-slot') {
     }],
     'GET /api/work/actions': [200, { actions: [] }],
   };
-  const board = await work('board');
-  board.init();
-  out.subscribers = subs.length;
-  const sub = subs[0];
-  const boardFetches = () => requests.filter(r => r.key === 'GET /api/work/board').length;
-  sub.onOpen(); await tick(); await tick();
-  out.afterOpen = boardFetches();
-  sub.onMessage({ type: 'work_items_changed' }); await tick(); await tick();
-  out.afterChange = boardFetches();
-  sub.onMessage({ type: 'feed', event: {} }); await tick(); await tick();
-  out.afterFeed = boardFetches();
-  sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'develop' }] });
-  sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'develop' }] });
-  await tick(); await tick();
-  out.afterSameRuns = boardFetches();
-  sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'validate' }] });
-  await tick(); await tick();
-  out.afterStepChange = boardFetches();
-  // A running card's activity slot is patched in place from each push, with no board reload.
-  globalThis.advanceRunStatus = (run) => run;
-  globalThis.runActivityHtml = (run) => (run ? 'last output ' + run.last_output_age_seconds : 'none');
-  const slot = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '1' : null) };
-  const gone = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '9' : null) };
-  document.querySelectorAll = (sel) => (sel === '[data-run-activity]' ? [slot, gone] : []);
-  sub.onMessage({ type: 'status_update', runs: [
-    { run_id: 1, status: 'running', current_step: 'validate', last_output_age_seconds: 42 }] });
-  await tick(); await tick();
-  out.activity = slot.innerHTML;
-  out.finishedActivity = gone.innerHTML;
-  out.afterActivity = boardFetches();
-  out.timers = timers;
-  out.fallbackIsTheHubs = typeof sub.onFallbackPoll === 'function';
+  const sent = [];
+  const hadSend = Object.prototype.hasOwnProperty.call(globalThis, 'sendSovaSocket');
+  const previousSend = globalThis.sendSovaSocket;
+  const hadWindowListener = Object.prototype.hasOwnProperty.call(globalThis, 'addEventListener');
+  const previousWindowListener = globalThis.addEventListener;
+  const windowListeners = [];
+  globalThis.sendSovaSocket = (message) => { sent.push(message); return true; };
+  globalThis.addEventListener = (type, fn) => windowListeners.push([type, fn]);
+  try {
+    const board = await work('board');
+    board.init();
+    out.subscribers = subs.length;
+    const sub = subs[0];
+    const boardFetches = () => requests.filter(r => r.key === 'GET /api/work/board').length;
+    sub.onOpen(); await tick(); await tick();
+    out.afterOpen = boardFetches();
+    // Hidden, then shown again: each change is reported on the socket, as is every open; a repeat sends nothing.
+    const fireVisibility = () => docListeners.filter(([type]) => type === 'visibilitychange').forEach(([, fn]) => fn());
+    document.hidden = true;
+    fireVisibility();
+    fireVisibility();
+    document.hidden = false;
+    fireVisibility();
+    await tick(); await tick();
+    out.visibility = sent.slice();
+    // Showing the tab again reloads nothing by itself: a hidden tab's socket closes, and the reopened socket's
+    // onOpen catch-up (below) is what loads the board, so a visibility event alone would only double the load.
+    out.afterShown = boardFetches();
+    // A reconnect reports the visibility again, since the new socket starts with none on the server.
+    sub.onOpen(); await tick(); await tick();
+    out.visibilityAfterReopen = sent.slice(out.visibility.length);
+    out.afterReopen = boardFetches();
+    sub.onMessage({ type: 'work_items_changed' }); await tick(); await tick();
+    out.afterChange = boardFetches();
+    sub.onMessage({ type: 'feed', event: {} }); await tick(); await tick();
+    out.afterFeed = boardFetches();
+    // A run moving step reloads nothing here: the server sends work_items_changed once its rebuilt board differs.
+    sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'develop' }] });
+    sub.onMessage({ type: 'status_update', runs: [{ run_id: 1, status: 'running', current_step: 'validate' }] });
+    await tick(); await tick();
+    out.afterStepChange = boardFetches();
+    // A running card's activity slot is patched in place from each push, with no board reload.
+    globalThis.advanceRunStatus = (run) => run;
+    globalThis.runActivityHtml = (run) => (run ? 'last output ' + run.last_output_age_seconds : 'none');
+    const slot = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '1' : null) };
+    const gone = { innerHTML: '', getAttribute: (a) => (a === 'data-run-activity' ? '9' : null) };
+    document.querySelectorAll = (sel) => (sel === '[data-run-activity]' ? [slot, gone] : []);
+    sub.onMessage({ type: 'status_update', runs: [
+      { run_id: 1, status: 'running', current_step: 'validate', last_output_age_seconds: 42 }] });
+    await tick(); await tick();
+    out.activity = slot.innerHTML;
+    out.finishedActivity = gone.innerHTML;
+    out.afterActivity = boardFetches();
+    // The first handoff after an open only records (the open's catch-up loaded the board), an identical resend
+    // reloads nothing, and a handoff whose content changed reloads the board.
+    sub.onMessage({ type: 'handoff', data: { pending: [1], waiting: [{ age_seconds: 5 }] } });
+    await tick(); await tick();
+    out.afterFirstHandoff = boardFetches();
+    sub.onMessage({ type: 'handoff', data: { pending: [1], waiting: [{ age_seconds: 5 }] } });
+    await tick(); await tick();
+    out.afterSameHandoff = boardFetches();
+    // Only a clock-driven field moved (the server pushes this too, and its own digest ignores it): no reload.
+    sub.onMessage({ type: 'handoff', data: { pending: [1], waiting: [{ age_seconds: 8 }] } });
+    await tick(); await tick();
+    out.afterClockOnlyHandoff = boardFetches();
+    sub.onMessage({ type: 'handoff', data: { pending: [1, 2] } }); await tick(); await tick();
+    out.afterChangedHandoff = boardFetches();
+    out.timers = timers;
+    out.fallbackIsTheHubs = typeof sub.onFallbackPoll === 'function';
+    // Leaving the page reports it hidden before the socket closes.
+    const before = sent.length;
+    windowListeners.filter(([type]) => type === 'pagehide').forEach(([, fn]) => fn());
+    out.visibilityOnPageHide = sent.slice(before);
+    // A reconnect while the tab is hidden reports hidden, so it never turns the GitHub probe back on.
+    document.hidden = true;
+    const beforeHidden = sent.length;
+    sub.onOpen(); await tick(); await tick();
+    out.visibilityOnHiddenReopen = sent.slice(beforeHidden);
+  } finally {
+    if (hadSend) globalThis.sendSovaSocket = previousSend;
+    else delete globalThis.sendSovaSocket;
+    if (hadWindowListener) globalThis.addEventListener = previousWindowListener;
+    else delete globalThis.addEventListener;
+    document.hidden = false;
+  }
 } else if (scenario === 'board-refresh') {
   // The board host and its error line record what loadBoard() leaves on screen.
   const els = {};
@@ -1644,13 +1697,26 @@ class TestBoardRefreshUnderNode:
 
         assert out["subscribers"] == 1
         assert out["afterOpen"] == 1
-        assert out["afterChange"] == 2, "work_items_changed reloads the board"
-        assert out["afterFeed"] == 2, "an unrelated message does not"
-        assert out["afterSameRuns"] == 2, "an unchanged set of runs does not"
-        assert out["afterStepChange"] == 3, "a run moving to a new step does"
+        assert out["afterReopen"] == 2, "a reconnect catches up"
+        assert out["afterChange"] == 3, "work_items_changed reloads the board"
+        assert out["afterFeed"] == 3, "an unrelated message does not"
+        assert out["afterStepChange"] == 3, "a run moving step does not: the server's rebuilt snapshot says so"
         assert out["activity"] == "last output 42", "each push patches the running card's last output"
         assert out["finishedActivity"] == "none", "a run the push no longer lists shows nothing"
         assert out["afterActivity"] == 3, "and does not reload the board"
+        assert out["afterShown"] == out["afterOpen"], "showing the tab leaves the load to the reopened socket"
+        assert out["afterFirstHandoff"] == 3, "the first handoff after an open only records"
+        assert out["afterSameHandoff"] == 3, "an identical handoff reloads nothing"
+        assert out["afterClockOnlyHandoff"] == 3, "a handoff where only age_seconds moved reloads nothing"
+        assert out["afterChangedHandoff"] == 4, "a handoff whose content changed reloads the board"
+        assert out["visibilityOnPageHide"] == [{"type": "work_visible", "visible": False}]
+        assert out["visibilityOnHiddenReopen"] == [{"type": "work_visible", "visible": False}]
+        assert out["visibility"] == [
+            {"type": "work_visible", "visible": True},
+            {"type": "work_visible", "visible": False},
+            {"type": "work_visible", "visible": True},
+        ], "open, hidden, shown again; the repeated hidden event sends nothing"
+        assert out["visibilityAfterReopen"] == [{"type": "work_visible", "visible": True}]
         assert out["timers"] == []
         assert out["fallbackIsTheHubs"] is True
 

@@ -56,6 +56,13 @@ def invalidate_verdict(project_dir: Path | None, pr_number: int | None) -> None:
     _sova_verdict_cache.pop(_cache_key(project_dir, pr_number), None)
 
 
+def invalidate_project_verdicts(project_dir: Path) -> None:
+    """Drop every cached verdict of a project: its open-PR list changed on GitHub, and which PR is not known."""
+    names = {str(project_dir), str(project_dir.resolve()), ""}
+    for key in [k for k in _sova_verdict_cache if k[0] in names]:
+        _sova_verdict_cache.pop(key, None)
+
+
 _NO_REVIEW: dict = {
     "has_sova_review": False,
     "verdict": None,

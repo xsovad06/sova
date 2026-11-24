@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
@@ -33,7 +34,14 @@ from sova.dashboard.services.snapshot_service import (
     refresh_snapshot,
     set_change_listener,
 )
+from sova.dashboard.services.work_board_service import keep_board_keys_alive, refresh_board_snapshots
 from sova.dashboard.services.work_item_service import set_graph_change_listener
+from sova.dashboard.services.work_refresh_service import (
+    RunMark,
+    apply_run_changes,
+    mark_runs,
+    run_github_probe,
+)
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.llm.backends import TIER_NAMES
@@ -58,6 +66,9 @@ _HANDOFF_EVERY_N_TICKS = 3
 # older than its snapshot TTL.
 _WORK_ITEMS_EVERY_N_TICKS = 30
 _FEED_IDLE_TIMEOUT = 15.0  # seconds a feed forwarder waits for an event before re-checking its subscribers
+# Seconds between GitHub probes (If-None-Match on the PR and issue lists) while a visible Work tab is connected: a
+# change made on GitHub reaches the board within about this plus one board build. A 304 costs no rate limit.
+_GITHUB_PROBE_INTERVAL = 15.0
 
 
 def _normalize_project_key(project_dir: Path | None) -> Path | None:
@@ -84,7 +95,11 @@ class _ConnectionManager:
     (one activity-feed event, forwarded from the process-wide FeedService), ``activity`` (the unified running-agents
     payload) and ``handoff`` (the ``/handoff`` payload). The last two are sent only when their serialized payload
     differs from the previous one, so an idle project sends nothing. A client that has just connected asks for the
-    current values over HTTP (its ``onOpen`` catch-up), so the manager keeps no per-connection state.
+    current values over HTTP (its ``onOpen`` catch-up).
+
+    The one per-connection state is whether the socket's tab shows the Work page (``work_visible``, which the page
+    reports on open and on every visibility change): while at least one such socket is connected, one GitHub probe
+    task per project runs (``work_refresh_service.run_github_probe``), and with none, nothing polls GitHub.
     """
 
     def __init__(self) -> None:
@@ -98,6 +113,9 @@ class _ConnectionManager:
         # The URL slug the group's first socket connected under: the producer runs outside any request, so it
         # re-establishes the project context the HTTP routes it reuses expect.
         self._slugs: dict[Path | None, str | None] = {}
+        # Sockets whose tab reported a visible Work page, and the GitHub probe they keep running, per project.
+        self._work_viewers: dict[Path | None, set[WebSocket]] = {}
+        self._probe_tasks: dict[Path | None, asyncio.Task] = {}
 
     @property
     def active_connections(self) -> list[WebSocket]:
@@ -126,11 +144,45 @@ class _ConnectionManager:
         if not group:
             self._groups.pop(project_dir, None)
             self._slugs.pop(project_dir, None)
+        self._work_viewers.get(project_dir, set()).discard(ws)
+        self._sync_probe(project_dir)
+
+    def set_work_visible(self, ws: WebSocket, project_dir: Path | None, visible: bool) -> None:
+        """Record whether *ws*'s tab shows a visible Work page; the first one starts the probe, the last stops it."""
+        project_dir = _normalize_project_key(project_dir)
+        if ws not in self._groups.get(project_dir, []):
+            return
+        viewers = self._work_viewers.setdefault(project_dir, set())
+        if visible:
+            viewers.add(ws)
+        else:
+            viewers.discard(ws)
+        self._sync_probe(project_dir)
+
+    def _sync_probe(self, project_dir: Path | None) -> None:
+        task = self._probe_tasks.get(project_dir)
+        if self._work_viewers.get(project_dir):
+            if task is None or task.done():
+                self._probe_tasks[project_dir] = asyncio.create_task(
+                    _run_probe(project_dir, self._slugs.get(project_dir))
+                )
+            return
+        self._work_viewers.pop(project_dir, None)
+        if task is not None:
+            self._probe_tasks.pop(project_dir, None)
+            task.cancel()
 
     async def cancel_all(self) -> None:
         """Cancel all producer and feed tasks. Called during lifespan shutdown."""
         tasks = [
-            t for t in (*self._producer_tasks.values(), *self._feed_tasks.values(), *self._draining) if not t.done()
+            t
+            for t in (
+                *self._producer_tasks.values(),
+                *self._feed_tasks.values(),
+                *self._probe_tasks.values(),
+                *self._draining,
+            )
+            if not t.done()
         ]
         for t in tasks:
             t.cancel()
@@ -138,6 +190,8 @@ class _ConnectionManager:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._producer_tasks.clear()
         self._feed_tasks.clear()
+        self._probe_tasks.clear()
+        self._work_viewers.clear()
         self._draining.clear()
         self._groups.clear()
         self._slugs.clear()
@@ -190,6 +244,8 @@ class _ConnectionManager:
             set_project_context(project_dir, self._slugs.get(project_dir))
         last_sent: dict[str, str] = {}
         tick = 0
+        # The active runs at the previous successful tick; None until the first one, which only records.
+        run_marks: dict[int, RunMark] | None = None
         # The activity and handoff builds can wait seconds (metrics, DB, GitHub when the synthesis cache lapses),
         # so each runs beside the tick (inheriting this task's project context) rather than holding back every
         # status_update; a build still running at its next tick is left to finish instead of being doubled.
@@ -210,6 +266,7 @@ class _ConnectionManager:
                 try:
                     statuses = await get_all_agent_statuses(project_dir=project_dir)
                     message = format_status_update(statuses)
+                    run_marks = await _invalidate_on_run_transitions(project_dir, run_marks, mark_runs(statuses))
                 except Exception:  # noqa: BLE001 (a status fetch failure must not tear down the WebSocket)
                     log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
                     # A distinct type, not {"type": "status_update", "runs": []}: the
@@ -218,6 +275,8 @@ class _ConnectionManager:
                     # per-run tracking state on every outage.
                     message = {"type": "status_unavailable"}
                 await self._broadcast(message, project_dir)
+                if self._work_viewers.get(project_dir):
+                    _keep_visible_boards_alive(project_dir)
                 _spawn_once("activity", _build_activity_message)
                 if tick % _HANDOFF_EVERY_N_TICKS == 0:
                     _spawn_once("handoff", _build_handoff_message)
@@ -264,6 +323,14 @@ class _ConnectionManager:
         if last_sent.get(kind) == serialized:
             return
         last_sent[kind] = serialized
+        if kind == "handoff" and message.get("type") == "handoff":
+            # Compared by content, not by the message: a resend whose only difference is a clock-driven field, or
+            # the same handoff again after a handoff_unavailable, must not rebuild every board snapshot.
+            digest = _handoff_digest(message.get("data"))
+            previous_digest = last_sent.get(_HANDOFF_DIGEST_KEY)
+            last_sent[_HANDOFF_DIGEST_KEY] = digest
+            if previous_digest is not None and previous_digest != digest:
+                _refresh_snapshots_on_handoff_change(project_dir)
         await self._broadcast(message, project_dir)
 
     async def _feed_loop(self, project_dir: Path | None) -> None:
@@ -284,6 +351,102 @@ class _ConnectionManager:
             feed.unsubscribe(sub_id)
 
 
+def _resolve_group_project(project_dir: Path | None) -> Path:
+    """A socket group's project: its own key, else the default project (the ``None`` group has no other)."""
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    return resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
+
+
+async def _invalidate_on_run_transitions(
+    project_dir: Path | None, previous: dict[int, RunMark] | None, current: dict[int, RunMark]
+) -> dict[int, RunMark] | None:
+    """Invalidate the board's caches when the active runs moved since the last tick; returns the marks to keep.
+
+    Runs before the tick's ``status_update`` goes out, so the rebuild it starts begins before any client reloads
+    on the changed set of runs. When something moved but no snapshot is being rebuilt to report it (none built
+    yet, or every board key lapsed), the sockets are told here, so an open Work tab refetches and re-registers its
+    board instead of keeping a stale Running column.
+
+    A failure is logged and never costs the tick its status update. It keeps *previous*, not *current*, so the
+    next tick sees the same transition and retries the invalidation rather than losing a CLI run's exit for good.
+    """
+    try:
+        target = _resolve_group_project(project_dir)
+        unannounced = apply_run_changes(target, previous, current)
+    except Exception:  # noqa: BLE001 (the next tick re-detects the transition and retries it)
+        log.warning("agents.run_transition_refresh_failed", exc_info=True)
+        return previous
+    if unannounced:
+        await _broadcast_work_items_changed(target)
+    return current
+
+
+def _keep_visible_boards_alive(project_dir: Path | None) -> None:
+    """Keep this project's board keys recent while a visible Work tab is connected (``keep_board_keys_alive``)."""
+    try:
+        keep_board_keys_alive(_resolve_group_project(project_dir))
+    except Exception:  # noqa: BLE001 (a lapsed key is still caught by the unannounced-change broadcast)
+        log.warning("agents.board_keep_alive_failed", exc_info=True)
+
+
+# Where the producer keeps the digest of the last handoff content it sent, beside the serialized messages.
+_HANDOFF_DIGEST_KEY = "handoff:digest"
+# Clock-driven fields a handoff payload may carry: they advance without the handoff changing.
+_VOLATILE_HANDOFF_KEYS = frozenset({"age_seconds", "elapsed_seconds", "elapsed_formatted", "snapshot"})
+
+
+def _handoff_digest(data: object) -> str:
+    """A digest of a handoff payload's content without its clock-driven fields, for change detection only."""
+
+    def strip(value: object) -> object:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k not in _VOLATILE_HANDOFF_KEYS}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    body = json.dumps(strip(data), sort_keys=True)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _refresh_snapshots_on_handoff_change(project_dir: Path | None) -> None:
+    """Rebuild the work snapshots after the handoff changed: the board reads it, and a fresh snapshot would
+    otherwise keep answering from before the change. A changed rebuild sends ``work_items_changed``."""
+    from sova.dashboard.services.work_board_service import refresh_work_snapshots
+
+    try:
+        refresh_work_snapshots(_resolve_group_project(project_dir))
+    except Exception:  # noqa: BLE001 (the work-items cadence rebuilds the board; the handoff still goes out)
+        log.warning("agents.handoff_snapshot_refresh_failed", exc_info=True)
+
+
+async def _run_probe(project_dir: Path | None, slug: str | None = None) -> None:
+    """The GitHub probe for one project's visible Work tabs (the project resolved here, never left ambient).
+
+    Like the producer, it sets its group's project context in its own task: a websocket scope has none, and the
+    snapshot rebuilds a changed answer starts inherit this task's context.
+
+    Anything raised outside the probe loop's own handler (resolving the project, setting the context) is logged
+    here: an exception left on the task would only surface as "Task exception was never retrieved" at garbage
+    collection, and a probe that stopped silently looks just like one that keeps getting 304s.
+    """
+    try:
+        if project_dir is not None:
+            set_project_context(project_dir, slug)
+        await run_github_probe(
+            _resolve_group_project(project_dir),
+            interval=_GITHUB_PROBE_INTERVAL,
+            # A change no snapshot rebuild reports (a lapsed board key) must still reach the visible tabs.
+            on_unreported=_broadcast_work_items_changed,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 (the next visibility report starts a new probe; the board still has its cadence)
+        log.error("agents.github_probe_crashed", project_dir=str(project_dir), exc_info=True)
+
+
 async def _build_activity_message() -> dict:
     return {"type": "activity", "data": await get_active_agents()}
 
@@ -302,6 +465,11 @@ async def _refresh_work_items_snapshot(project_dir: Path | None) -> None:
 
     target = project_dir if project_dir is not None else get_project_dir()
     try:
+        # The board snapshots share the work items' maximum age: a key asked for recently is rebuilt on this cadence.
+        refresh_board_snapshots(target)
+    except Exception:  # noqa: BLE001 (the work-items rebuild below still runs; the next cadence retries the boards)
+        log.warning("agents.board_snapshots_refresh_failed", exc_info=True)
+    try:
         await refresh_snapshot(
             "work_items", target, lambda: build_work_items(target), normalize=normalize_work_items_for_digest
         )
@@ -310,25 +478,47 @@ async def _refresh_work_items_snapshot(project_dir: Path | None) -> None:
 
 
 async def _on_snapshot_changed(kind: str, project_dir: Path | None) -> None:
-    """Tell a project's sockets a snapshot changed: they refetch the payload from its HTTP endpoint."""
-    if kind == "work_items":
-        await _ws_manager.broadcast_event("work_items_changed", project_dir)
+    """Tell a project's sockets a snapshot changed: they refetch the payload from its HTTP endpoint.
+
+    A board snapshot (``board:<owner>:<milestone>``) sends the same ``work_items_changed`` the Work page reloads on.
+    """
+    if kind == "work_items" or kind.startswith("board:"):
+        await _broadcast_work_items_changed(project_dir)
 
 
-async def _on_graph_changed(project_dir: Path) -> None:
-    """A rebuilt dependency graph differs from the one a board answered from: tell its sockets to reload.
+async def _broadcast_work_items_changed(project_dir: Path | None) -> None:
+    """Send ``work_items_changed`` to a project's sockets, and to the ``None`` group when it can only be this one.
 
-    ``project_dir`` is the resolved project. A socket registers under the resolved default project, or under
-    ``None`` when no default is set (``agents_status_websocket()``), so the group that registered under ``None``
-    is told too whenever it can only be this project's.
+    A snapshot or graph is keyed by the resolved project, but a socket connected without a slug registers under
+    the resolved default project, or under ``None`` when no default is set (``agents_status_websocket()``).
     """
     from sova.config.context import resolve_project_dir_or_none
     from sova.dashboard.services.agent_pool import get_default_project_dir
 
     await _ws_manager.broadcast_event("work_items_changed", project_dir)
+    if project_dir is None:
+        return
     default = resolve_project_dir_or_none(default_project_dir=get_default_project_dir())
     if default is None or default.resolve() == project_dir.resolve():
         await _ws_manager.broadcast_event("work_items_changed", None)
+
+
+async def _on_graph_changed(project_dir: Path) -> None:
+    """A rebuilt dependency graph differs from the one a board answered from: rebuild the snapshots built from it.
+
+    ``project_dir`` is the resolved project. A rebuilt snapshot that differs tells the sockets itself, so they
+    reload once, onto the new board, instead of first refetching the snapshot from the old graph. Only when no
+    snapshot is being rebuilt (none built yet, or the refresh failed) are the sockets told here.
+    """
+    from sova.dashboard.services.work_board_service import refresh_work_snapshots
+
+    try:
+        rebuilding = refresh_work_snapshots(project_dir)
+    except Exception:  # noqa: BLE001 (the clients are told below instead; the next trigger rebuilds the snapshots)
+        log.warning("agents.graph_snapshot_refresh_failed", exc_info=True)
+        rebuilding = False
+    if not rebuilding:
+        await _broadcast_work_items_changed(project_dir)
 
 
 _ws_manager = _ConnectionManager()
@@ -836,6 +1026,17 @@ def _ws_slug_project_dir(websocket: WebSocket) -> Path | None:
     return project_path
 
 
+def _handle_client_message(websocket: WebSocket, project_dir: Path | None, text: str) -> None:
+    """Apply a client message: ``{"type": "work_visible", "visible": bool}``; anything else is ignored."""
+    try:
+        message = json.loads(text)
+    except ValueError:
+        log.debug("agents.ws_client_message_unparsed")
+        return
+    if isinstance(message, dict) and message.get("type") == "work_visible":
+        _ws_manager.set_work_visible(websocket, project_dir, message.get("visible") is True)
+
+
 @ws_router.websocket("/ws/agents/status")
 async def ws_agent_status(websocket: WebSocket) -> None:
     """Push real-time agent status updates over WebSocket.
@@ -875,10 +1076,10 @@ async def ws_agent_status(websocket: WebSocket) -> None:
     slug = websocket.path_params.get("slug") if slug_project_dir is not None else None
     _ws_manager.connect(websocket, project_dir, slug)
     try:
-        # Keep connection alive: wait for client messages or disconnect.
-        # The producer task in _ws_manager handles sending updates.
+        # The producer task in _ws_manager handles sending updates. The one message a client sends is the Work
+        # page's visibility report, which decides whether the GitHub probe runs.
         while True:
-            await websocket.receive_text()
+            _handle_client_message(websocket, project_dir, await websocket.receive_text())
     except WebSocketDisconnect:
         pass
     except Exception:  # noqa: BLE001 (WebSocket teardown reports any transport failure and exits)

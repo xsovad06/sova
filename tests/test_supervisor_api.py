@@ -1235,6 +1235,17 @@ class TestTaskQueueRouter:
         assert resp.status_code == 201
         assert resp.json()["queue"] == [42]
 
+    async def test_a_failed_board_wait_after_a_saved_queue_write_is_not_an_error(self, app) -> None:
+        with patch(
+            "sova.dashboard.services.work_board_service.board_rebuilds_settled",
+            AsyncMock(side_effect=RuntimeError("github is down")),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                client.headers.update(_csrf_request_headers(client))
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 43})
+        assert resp.status_code == 201
+        assert resp.json()["queue"] == [43]
+
     async def test_add_duplicate_returns_409(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             client.headers.update(_csrf_request_headers(client))

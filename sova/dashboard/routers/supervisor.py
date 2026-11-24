@@ -299,6 +299,21 @@ async def _persist_queue(project_dir: Path | None, queue: list[int], *, based_on
         raise HTTPException(status_code=503, detail="Failed to persist queue to database") from exc
 
 
+async def _board_shows_the_write(project_dir: Path | None) -> None:
+    """Wait for the board rebuild a queue write requested, once the queue lock is released.
+
+    The Work page reloads its board right after the write returns; every other tab keeps its board until the
+    rebuild lands and then hears ``work_items_changed`` if it differs. The queue is already saved, so a failed
+    wait (a build failing while GitHub is down, an unresolvable project) is logged, never answered as an error.
+    """
+    from sova.dashboard.services.work_board_service import board_rebuilds_settled
+
+    try:
+        await board_rebuilds_settled(project_dir)
+    except Exception:  # noqa: BLE001 (the write succeeded; the board catches up on its rebuild cadence)
+        log.warning("supervisor.queue.board_wait_failed", exc_info=True)
+
+
 @router.get("/queue")
 async def get_queue() -> dict:
     """Return the current task queue."""
@@ -323,7 +338,8 @@ async def set_queue(body: QueueSetRequest) -> dict:
         based_on = supervisor_service.deduplicate(body.based_on) if body.based_on is not None else None
         saved = await _persist_queue(project_dir, queue, based_on=based_on)
         await supervisor_service.notify_daemon_queue_change(project_dir)
-        return {"queue": saved}
+    await _board_shows_the_write(project_dir)
+    return {"queue": saved}
 
 
 @router.post(
@@ -345,7 +361,8 @@ async def add_to_queue(body: QueueAddRequest) -> dict:
 
         queue = await _persist_queue(project_dir, [*queue, body.issue_number], based_on=queue)
         await supervisor_service.notify_daemon_queue_change(project_dir)
-        return {"queue": queue}
+    await _board_shows_the_write(project_dir)
+    return {"queue": queue}
 
 
 @router.delete(
@@ -367,7 +384,8 @@ async def remove_from_queue(issue_number: int) -> dict:
 
         queue = await _persist_queue(project_dir, [i for i in queue if i != issue_number], based_on=queue)
         await supervisor_service.notify_daemon_queue_change(project_dir)
-        return {"queue": queue}
+    await _board_shows_the_write(project_dir)
+    return {"queue": queue}
 
 
 @router.delete(
@@ -383,7 +401,8 @@ async def clear_queue() -> dict:
         project_dir = _resolve_project_dir()
         await _persist_queue(project_dir, [])
         await supervisor_service.notify_daemon_queue_change(project_dir)
-        return {"queue": []}
+    await _board_shows_the_write(project_dir)
+    return {"queue": []}
 
 
 # Supervisor Persona

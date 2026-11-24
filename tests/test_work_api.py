@@ -884,12 +884,13 @@ class TestAgentsPageRefreshWiring:
         assert "_scheduleAgentsRefresh()" in handler
         assert "loadAgents()" not in handler
 
-    def test_status_update_change_schedules_refresh(self) -> None:
+    def test_status_update_patches_in_place_and_leaves_the_reload_to_the_server(self) -> None:
+        """A changed set of runs reaches the board as work_items_changed once its snapshot is rebuilt (#1534):
+        reloading on the status_update itself would fetch the snapshot from before the change."""
         source = self._board()
         start = source.index("msg.type === 'status_update' && Array.isArray(msg.runs)")
-        handler = source[start : source.index("_runSignature = signature;", start)]
-        assert "signature !== _runSignature" in handler
-        assert "loadBoard()" in handler
+        handler = source[start : source.index("_patchRunActivity();", start)]
+        assert "loadBoard()" not in handler
 
 
 class TestWorkItemAwaitingApprovalFallback:

@@ -19,12 +19,23 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task, TaskState
 from sova.config.db_loader import load_hidden_issues, load_task_queue, remove_from_task_queue
 from sova.config.loader import load_config
+from sova.dashboard.services.snapshot_service import (
+    Snapshot,
+    get_snapshot,
+    invalidate_snapshot,
+    is_building,
+    peek_snapshot,
+    request_refresh,
+    wait_for_refresh,
+)
 from sova.dashboard.services.work_item_service import (
     _parse_issue_number,
     board_exclusions,
+    build_work_items,
     get_work_items,
     graph_age_meta,
     load_ranking_graph,
+    normalize_work_items_for_digest,
     rank_graph_entries,
 )
 from sova.dashboard.services.work_state import (
@@ -63,13 +74,216 @@ _MERGED_CACHE_TTL = 60.0
 # for the build time (the cache entry is stamped when a build finishes, but the data reflects its start).
 _GRAPH_LAG_SECONDS = GRAPH_CACHE_TTL + 60.0
 _merged_cache: dict[tuple[str, date], tuple[float, list[dict]]] = {}
+# Invalidations per resolved project: a merged-PR fetch caches its answer only when no invalidation ran while it was
+# in flight, so a fetch that started before a merge cannot store the pre-merge list for another TTL.
+_merged_generations: dict[str, int] = {}
 _done_assignees_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
+
+# Board snapshots (#1534): GET /work/board answers from the last build of its (project, milestone, owner) key. A key
+# asked for within this long is rebuilt when its sources change; an older one waits for its next request.
+_BOARD_RECENT_SECONDS = 600.0
+_board_requests: dict[tuple[str, str, str], float] = {}  # (resolved project, milestone, owner) -> last request
+# Keys kept per project: milestone is a free-form query value, so the least recently requested key (and its
+# snapshot) is dropped past this many rather than letting arbitrary values grow the maps and their rebuilds.
+_BOARD_MAX_KEYS_PER_PROJECT = 8
+# How long a writer (hide, queue, priority) waits for the board rebuild its write requested. The write is already
+# durable, and the writer's tab still hears ``work_items_changed`` when a slower rebuild lands, so a slow or hung
+# tracker never holds the request for a whole build.
+WRITER_WAIT_SECONDS = 5.0
 
 
 def reset_board_cache() -> None:
-    """Forget the cached merged-PR lists. Test-only, like ``reset_graph_load_state()``."""
+    """Forget the cached merged-PR lists and the requested board keys. Test-only, like ``reset_graph_load_state()``."""
     _merged_cache.clear()
+    _merged_generations.clear()
     _done_assignees_cache.clear()
+    _board_requests.clear()
+
+
+def _merged_generation_key(project_dir: Path | None) -> str:
+    return str(project_dir.resolve()) if project_dir is not None else ""
+
+
+def invalidate_merged_cache(project_dir: Path) -> None:
+    """Drop a project's cached merged-PR list, so the next board build sees a merge that just happened.
+
+    Also counts the invalidation, so a fetch already in flight (which may predate the merge) is not cached.
+    """
+    generation_key = _merged_generation_key(project_dir)
+    _merged_generations[generation_key] = _merged_generations.get(generation_key, 0) + 1
+    prefix = f"{project_dir}:"
+    resolved_prefix = f"{project_dir.resolve()}:"
+    for key in [k for k in _merged_cache if k[0].startswith((prefix, resolved_prefix))]:
+        _merged_cache.pop(key, None)
+
+
+def _board_kind(milestone: str, owner: str) -> str:
+    return f"board:{owner}:{milestone}"
+
+
+def _resolve_project(project_dir: Path | None) -> Path:
+    """The project a board is built for: the request's, else the default one (``build_board()``'s own rule)."""
+    from sova.config.context import resolve_project_dir
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    return resolve_project_dir(project_dir, default_project_dir=get_default_project_dir()).resolve()
+
+
+def normalize_board_for_digest(payload: dict) -> dict:
+    """A board payload without its clock-driven fields (ages, elapsed times), for change detection only."""
+    out = normalize_work_items_for_digest(payload)
+
+    def strip(value: object) -> object:
+        if isinstance(value, dict):
+            return {k: strip(v) for k, v in value.items() if k != "elapsed_formatted"}
+        if isinstance(value, list):
+            return [strip(v) for v in value]
+        return value
+
+    return strip(out)  # type: ignore[return-value]  # a dict in, so a dict out
+
+
+async def get_board_snapshot(project_dir: Path | None, milestone: str = "", *, owner: str = "all") -> Snapshot:
+    """The last board built for this key, at once; only the first request for a key waits for the build.
+
+    A snapshot older than the default snapshot TTL starts a background rebuild, and a rebuild that changes the
+    payload sends ``work_items_changed`` through the snapshot change listener.
+    """
+    project_dir = _resolve_project(project_dir)
+    _board_requests[(str(project_dir), milestone, owner)] = time.monotonic()
+    _evict_excess_keys(project_dir)
+    return await get_snapshot(
+        _board_kind(milestone, owner),
+        project_dir,
+        lambda: build_board(project_dir, milestone, owner=owner),
+        normalize=normalize_board_for_digest,
+    )
+
+
+def _evict_excess_keys(project_dir: Path) -> None:
+    """Drop this project's least recently requested board keys (and their snapshots) past the per-project cap."""
+    target = str(project_dir)
+    keys = sorted((k for k in _board_requests if k[0] == target), key=_board_requests.__getitem__)
+    for project, milestone, owner in keys[: max(0, len(keys) - _BOARD_MAX_KEYS_PER_PROJECT)]:
+        _board_requests.pop((project, milestone, owner), None)
+        invalidate_snapshot(_board_kind(milestone, owner), project_dir)
+
+
+def keep_board_keys_alive(project_dir: Path | None) -> None:
+    """Mark this project's requested board keys as just requested, while a visible Work tab shows one of them.
+
+    An open Work tab requests the board only when told it changed, so with nothing changing its key would lapse
+    after ``_BOARD_RECENT_SECONDS`` and the next run transition or probe change would rebuild nothing and tell no
+    socket. The status socket's producer calls this every tick a visible Work tab is connected.
+    """
+    target = str(_resolve_project(project_dir))
+    now = time.monotonic()
+    for key in [k for k in _board_requests if k[0] == target]:
+        _board_requests[key] = now
+
+
+def board_response(snapshot: Snapshot) -> dict:
+    """A board snapshot as served now: its running times advanced by the snapshot's age, plus its ``snapshot`` meta.
+
+    The page's running timers start from ``elapsed_seconds``, which would otherwise lag by the age of the build;
+    ``elapsed_formatted`` is recomputed from the advanced seconds so the two never disagree.
+    """
+    from sova.dashboard.services.work_service import _format_seconds
+
+    age = int(time.monotonic() - snapshot.built_at)
+    payload = dict(snapshot.payload)
+
+    def advanced(entry: object) -> object:
+        if not isinstance(entry, dict) or not isinstance(entry.get("elapsed_seconds"), int):
+            return entry
+        elapsed = entry["elapsed_seconds"] + age
+        out = {**entry, "elapsed_seconds": elapsed}
+        if "elapsed_formatted" in entry:
+            out["elapsed_formatted"] = _format_seconds(elapsed)
+        return out
+
+    for key in ("running", "other_runs"):
+        entries = payload.get(key)
+        if age and isinstance(entries, list):
+            payload[key] = [advanced(entry) for entry in entries]
+    return {**payload, "snapshot": snapshot.meta()}
+
+
+async def board_rebuilds_settled(project_dir: Path | None) -> None:
+    """Wait for this project's board rebuilds in flight, for a write the board must show at once (hide, queue).
+
+    The writer calls ``refresh_board_snapshots()`` (or a service that does) and then this, outside any lock, so its
+    reload right after the request returns is answered from a board that read the write. Every other open Work tab
+    keeps answering from the previous board meanwhile, and hears ``work_items_changed`` once the rebuilt board
+    differs: no tab but the writer's waits on the tracker. The wait is bounded by ``WRITER_WAIT_SECONDS``: past it
+    the writer reloads the previous board, and its ``work_items_changed`` brings the rebuilt one when it lands.
+    """
+    project_dir = _resolve_project(project_dir)
+    target = str(project_dir)
+    kinds = [_board_kind(milestone, owner) for project, milestone, owner in _board_requests if project == target]
+    if not kinds:
+        return
+    try:
+        # wait_for_refresh() never cancels the shared build, so giving up here leaves every rebuild running.
+        await asyncio.wait_for(
+            asyncio.gather(*(wait_for_refresh(kind, project_dir) for kind in kinds)), timeout=WRITER_WAIT_SECONDS
+        )
+    except TimeoutError:
+        log.info("work_board.writer_wait_timed_out", project_dir=target, timeout=WRITER_WAIT_SECONDS)
+
+
+def refresh_work_snapshots(project_dir: Path) -> bool:
+    """Rebuild this project's work-items snapshot and its recent board snapshots in the background.
+
+    Called after the sources they read were invalidated. A snapshot that was never built and is not building is
+    left to its first request; a first build in flight runs once more, since it may have read the old sources. A
+    change reaches the sockets as ``work_items_changed``. Returns whether any rebuild was requested, so a caller
+    whose change no snapshot will report can tell the sockets itself.
+    """
+    requested = False
+    if peek_snapshot("work_items", project_dir) is not None or is_building("work_items", project_dir):
+        request_refresh(
+            "work_items", project_dir, lambda: build_work_items(project_dir), normalize=normalize_work_items_for_digest
+        )
+        requested = True
+    return refresh_board_snapshots(project_dir) or requested
+
+
+def refresh_board_snapshots(project_dir: Path | None) -> bool:
+    """Rebuild, in the background, every board snapshot of this project that was asked for recently.
+
+    The previous snapshots keep answering until each rebuild lands, and a rebuilt board that differs sends
+    ``work_items_changed``. Also the refresh after a write the board must show (hide, queue, priority), whose
+    writer then awaits ``board_rebuilds_settled()``. Returns whether any rebuild was requested.
+    """
+    project_dir = _resolve_project(project_dir)
+    target = str(project_dir)
+    cutoff = time.monotonic() - _BOARD_RECENT_SECONDS
+    requested = False
+    lapsed: list[tuple[str, str, str]] = []
+    for (project, milestone, owner), requested_at in _board_requests.items():
+        if project != target:
+            continue
+        kind = _board_kind(milestone, owner)
+        if requested_at < cutoff:
+            lapsed.append((project, milestone, owner))
+            continue
+        if peek_snapshot(kind, project_dir) is None and not is_building(kind, project_dir):
+            continue  # never built, or dropped: the next request builds it
+        # A first build in flight is refreshed too: it may have read the sources before they changed.
+        request_refresh(
+            kind,
+            project_dir,
+            lambda m=milestone, o=owner: build_board(project_dir, m, owner=o),
+            normalize=normalize_board_for_digest,
+        )
+        requested = True
+    for project, milestone, owner in lapsed:
+        # Dropped with its key: this function finds a snapshot only through a key, so one left behind would answer
+        # the next request from before a hide or queue write that could no longer refresh it.
+        _board_requests.pop((project, milestone, owner), None)
+        invalidate_snapshot(_board_kind(milestone, owner), project_dir)
+    return requested
 
 
 # Issue entries ---------------------------------------------------------------
@@ -370,10 +584,14 @@ async def _done_today(project_dir: Path | None, now: datetime) -> list[dict] | N
         if cached is not None and time.monotonic() - cached[0] < _MERGED_CACHE_TTL:
             merged = cached[1]
         else:
+            generation_key = _merged_generation_key(project_dir)
+            generation = _merged_generations.get(generation_key, 0)
             merged = await list_merged_prs_since(repo=cfg.github_repo, since=since_day, github_user=cfg.github_user)
             for stale in [key for key in _merged_cache if key[1] != since_day]:
                 del _merged_cache[stale]  # an earlier day is never asked for again
-            _merged_cache[cache_key] = (time.monotonic(), merged)
+            if _merged_generations.get(generation_key, 0) == generation:
+                # Not cached when a merge invalidated the list during the fetch: this answer may predate it.
+                _merged_cache[cache_key] = (time.monotonic(), merged)
     except Exception:  # noqa: BLE001 (done today is optional context; reported as unavailable)
         log.warning("work_board.merged_prs_failed", exc_info=True)
         return None

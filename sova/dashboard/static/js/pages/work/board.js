@@ -11,10 +11,20 @@ import { clearSelection, getSelected, onSelectionChange, relationChip, relationC
 // called, its color and where it shows all come from the server (work_state.py, work_board_service.py).
 //
 // Refreshes come from the shared socket only (#1459): work_items_changed, agent_finished and
-// graph_invalidated reload the board, a status_update whose set of runs changed reloads it (and every one patches
-// the running cards' time in step and last output in place), actions_changed reloads the per-card action states,
-// and the hub's own fallback runs while the socket is down. The only timer this module starts is the one-shot
-// retry after a failed load (below).
+// graph_invalidated reload the board, a handoff whose content changed reloads it (the first one after a socket
+// opens only records, since the open's catch-up already loads), every status_update patches the running cards'
+// time in step and last output in place, actions_changed reloads the per-card action states, and the hub's own
+// fallback runs while the socket is down. A run that starts, ends or moves step reloads nothing here: the server
+// rebuilds the board snapshot for it and sends work_items_changed once the rebuilt board differs (#1534), so the
+// page never refetches the board from before the change. The server rebuilds for a changed handoff too, so a
+// reload that still read the previous snapshot is followed by work_items_changed. The only timer this module
+// starts is the one-shot retry after a failed load (below).
+//
+// The page tells the server whether it is visible (work_visible, on every socket open, visibility change and
+// pagehide): only while a visible Work tab is connected does the server probe GitHub for changes made there
+// (#1534). Leaving the Work page is a full page load (the dashboard has no client-side router), which closes this
+// page's socket and clears its flag on the server; pagehide reports it hidden first, and a page restored from the
+// back-forward cache reports again through the reopened socket's onOpen.
 
 var _board = null;
 var _boardOwner = null;
@@ -853,8 +863,23 @@ export function setOwnerFilter(value) {
 
 // Socket ----------------------------------------------------------------------
 
-// The runs a status_update reports, as one string: a run starting, ending or changing status changes it.
-var _runSignature = null;
+// The visibility last reported on the current socket, so a repeated visibilitychange sends nothing new.
+var _reportedVisible = null;
+// The last handoff content seen on the current socket, as one string; null until the first one after an open.
+var _handoffSignature = null;
+// Clock-driven handoff fields: they advance without the handoff changing, so the signature leaves them out. The
+// same set as _VOLATILE_HANDOFF_KEYS in routers/agents.py, where the server's own change digest drops them.
+var _VOLATILE_HANDOFF_KEYS = ['age_seconds', 'elapsed_seconds', 'elapsed_formatted', 'snapshot'];
+
+function _handoffContent(value) {
+  if (Array.isArray(value)) return value.map(_handoffContent);
+  if (value === null || typeof value !== 'object') return value;
+  var out = {};
+  Object.keys(value).forEach(function(key) {
+    if (_VOLATILE_HANDOFF_KEYS.indexOf(key) === -1) out[key] = _handoffContent(value[key]);
+  });
+  return out;
+}
 // The latest status_update run per run id, for the running cards' time in step and last output.
 var _runStatus = {};
 // When each _runStatus entry was received, so a redraw between pushes can advance its durations.
@@ -888,10 +913,14 @@ function _handleMessage(msg) {
     _loadActions();
     return;
   }
+  if (msg.type === 'handoff') {
+    var signature = JSON.stringify(_handoffContent(msg.data === undefined ? null : msg.data));
+    var changed = _handoffSignature !== null && signature !== _handoffSignature;
+    _handoffSignature = signature;
+    if (changed) loadBoard();
+    return;
+  }
   if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
-    var signature = msg.runs.map(function(r) { return r.run_id + ':' + r.status + ':' + (r.current_step || ''); }).sort().join(',');
-    if (_runSignature !== null && signature !== _runSignature) loadBoard();
-    _runSignature = signature;
     _runStatus = {};
     _runStatusAt = {};
     var receivedAt = Date.now();
@@ -903,6 +932,26 @@ function _handleMessage(msg) {
 function _catchUp() {
   loadBoard();
   _loadActions();
+}
+
+function _sendVisibility(visible) {
+  if (visible === _reportedVisible) return;
+  if (sendSovaSocket({ type: 'work_visible', visible: visible })) _reportedVisible = visible;
+}
+
+function _reportVisibility() {
+  _sendVisibility(!document.hidden);
+}
+
+function _onPageHide() {
+  _sendVisibility(false);
+}
+
+function _onSocketOpen() {
+  _reportedVisible = null;  // a new socket has no visibility on the server yet
+  _handoffSignature = null;  // nor has this page seen a handoff on it; the catch-up below loads the board
+  _reportVisibility();
+  _catchUp();
 }
 
 export function init() {
@@ -930,9 +979,11 @@ export function init() {
       }
     });
   }
+  document.addEventListener('visibilitychange', _reportVisibility);
+  if (typeof window.addEventListener === 'function') window.addEventListener('pagehide', _onPageHide);
   subscribeSovaSocket({
     onMessage: _handleMessage,
-    onOpen: _catchUp,
+    onOpen: _onSocketOpen,
     onFallbackPoll: _catchUp,
   });
 }
