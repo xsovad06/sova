@@ -479,6 +479,12 @@ class TestModalStyle:
     def test_a_closed_modal_has_no_layout(self) -> None:
         assert "display: none" in _css_rule(".sova-modal-backdrop[hidden]")
 
+    def test_a_hidden_button_stays_hidden(self) -> None:
+        """.sova-btn sets display after the Tailwind bundle loads, so without this rule a button hidden by the
+        attribute or the class still shows (the settings and Connections sign-in Cancel did, always)."""
+        css = (DASHBOARD_DIR / "static" / "style.css").read_text(encoding="utf-8")
+        assert ".sova-btn[hidden],\n.sova-btn.hidden { display: none; }" in css
+
 
 class TestPageModal:
     def test_open_shows_labels_and_focuses_the_first_rendered_field(self, modal_run: dict) -> None:

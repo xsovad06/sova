@@ -438,8 +438,10 @@ input[type="date"] { color-scheme: dark; }
   color: var(--ctp-text);
 }
 
-/* The hidden attribute hides a button: .sova-btn's display would otherwise override it. */
-.sova-btn[hidden] { display: none; }
+/* The hidden attribute or the hidden class hides a button: .sova-btn's display, later in the cascade than the
+   Tailwind bundle's .hidden, would otherwise override both (the sign-in Start/Cancel swap relies on the class). */
+.sova-btn[hidden],
+.sova-btn.hidden { display: none; }
 
 /* Sizes around the default: xs is the compact one the Work page cards already override to, md a roomier one */
 .sova-btn-xs {
