@@ -2219,12 +2219,10 @@ function toggleFeedPanel() {
   document.dispatchEvent(new CustomEvent('sova:feed-toggle', { detail: { open: _feedPanelOpen } }));
 }
 
-// A dialog owns Escape while it is open. A shared modal (sovaModalOpen) stops the key before it gets here; the
-// launch modal and any other dialog do not, so the panel checks for open dialogs itself.
+// A dialog owns Escape while it is open. A shared modal (sovaModalOpen) stops the key before it gets here; any
+// other dialog does not, so the panel checks for open dialogs itself.
 function _feedDialogOpen() {
   if (sovaModalIsOpen()) return true;
-  var launch = document.getElementById('launch-modal');
-  if (launch && !launch.classList.contains('hidden')) return true;
   // A closed dialog can stay in the DOM (aria-hidden, off-screen or display:none), so test what is shown.
   var panel = document.getElementById('feed-panel');
   var found = document.querySelectorAll('dialog[open], [role="dialog"], [aria-modal="true"]');

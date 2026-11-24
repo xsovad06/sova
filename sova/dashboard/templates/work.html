@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Work - SOVA{% endblock %}
 {% from "_icons.html" import icon %}
+{% from "_components.html" import btn %}
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-2xl font-semibold">Work</h2>
@@ -228,24 +229,17 @@
   <div id="history-table"></div>
 </div>
 
-<!-- Pre-launch modal -->
-<div id="launch-modal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center">
-  <div class="bg-surface-card rounded-xl border border-gray-700/50 w-full max-w-sm">
-    <!-- Header -->
-    <div class="flex items-center gap-3 px-5 py-4 border-b border-gray-700/40">
-      <div class="w-7 h-7 rounded-md bg-accent/10 flex items-center justify-center shrink-0 text-accent">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5M4.5 15.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h9a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 15.75 4.5h-9A2.25 2.25 0 0 0 4.5 6.75v10.5A2.25 2.25 0 0 0 6.75 19.5Zm.75-12h7.5v7.5h-7.5V7.5Z"/>
-        </svg>
-      </div>
+<!-- Pre-launch modal: opened and closed by static/js/pages/agents/launch-modal.js through sovaModalOpen() -->
+<div id="launch-modal" class="sova-modal-backdrop" hidden>
+  <div class="sova-modal-dialog">
+    <div class="sova-modal-header">
+      <div class="sova-modal-icon">{{ icon("agents", "w-4 h-4") }}</div>
       <div>
-        <h3 class="text-sm font-semibold text-white leading-tight">Launch Agent</h3>
-        <p class="text-xs text-gray-500 leading-tight mt-0.5">Confirm model before starting</p>
+        <h3 class="sova-modal-title">Launch Agent</h3>
+        <p class="sova-modal-subtitle">Confirm model before starting</p>
       </div>
     </div>
-
-    <!-- Body -->
-    <div class="px-5 py-4 space-y-4">
+    <div class="sova-modal-body space-y-4">
       <div id="launch-modal-loading" class="flex items-center gap-2.5 py-2">
         <div class="w-3.5 h-3.5 rounded-full border-2 border-accent/30 border-t-accent animate-spin shrink-0"></div>
         <span class="text-xs text-gray-500">Loading complexity data...</span>
@@ -270,11 +264,9 @@
         </div>
       </div>
     </div>
-
-    <!-- Footer -->
-    <div class="flex items-center justify-end gap-2 px-5 py-3 border-t border-gray-700/40">
-      <button type="button" data-action="hide-launch-modal" class="sova-btn text-gray-400 hover:text-gray-200">Cancel</button>
-      <button type="button" data-action="confirm-launch" id="launch-confirm-btn" class="sova-btn sova-btn-primary">Launch</button>
+    <div class="sova-modal-footer">
+      {{ btn("Cancel", variant="ghost", attrs={"data-action": "hide-launch-modal"}) }}
+      {{ btn("Launch", id="launch-confirm-btn", attrs={"data-action": "confirm-launch"}) }}
     </div>
   </div>
 </div>
