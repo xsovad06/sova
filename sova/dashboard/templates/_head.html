@@ -7,15 +7,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous"></script>
 <script>
-// Log level colors for the Agents page run log viewer.
-var LOG_LEVEL_COLORS = {
-  DEBUG: 'text-gray-500',
-  INFO: 'text-accent-green',
-  WARNING: 'text-accent-yellow',
-  ERROR: 'text-accent-red',
-  CRITICAL: 'text-accent-red font-bold',
-};
-
 var _markedConfigured = false;
 function _ensureMarked() {
   if (_markedConfigured) return;
@@ -37,14 +28,53 @@ function _ensureMarked() {
   });
 }
 
+// Markdown an agent (an LLM) wrote is untrusted beyond script execution: prompt-injected text can ask for an image
+// whose URL carries a secret (![x](https://host/?d=...)), which every viewer's browser would fetch the moment the log
+// is drawn. So nothing that loads on render survives it: an image, markdown or raw HTML, becomes a link to its URL
+// labelled with its alt text, and DOMPurify drops every other fetching tag and attribute. Its links open a new tab
+// with no opener and no referrer, so a click never navigates away from a live stream.
+var _UNTRUSTED_MD_PURIFY = {
+  USE_PROFILES: { html: true },
+  FORBID_TAGS: ['img', 'picture', 'source', 'video', 'audio', 'track', 'input', 'iframe', 'frame', 'object',
+    'embed', 'link', 'style', 'meta', 'base'],
+  FORBID_ATTR: ['src', 'srcset', 'poster', 'background', 'style'],
+};
+
+function _untrustedImageAsLink(tag) {
+  function attr(name) {
+    var m = new RegExp('\\s' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))', 'i').exec(tag);
+    if (!m) return '';
+    return m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]);
+  }
+  var src = attr('src');
+  var alt = attr('alt');
+  return src ? '<a href="' + src + '">' + (alt || src) + '</a>' : alt;
+}
+
+function _untrustedLinkTarget(node) {
+  if (node.tagName === 'A' && node.hasAttribute('href')) {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  }
+}
+
 // marked passes raw HTML through, so every call to it goes through these two helpers:
 // its output reaches innerHTML only after DOMPurify, or as escaped text if either
-// library failed to load.
-function renderMarkdown(text) {
+// library failed to load. options.untrusted marks text an agent wrote (see _UNTRUSTED_MD_PURIFY).
+function renderMarkdown(text, options) {
   _ensureMarked();
   if (!window.marked) return escapeHtml(text || '');
   var html = marked.parse(text || '');
-  return window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(text || '');
+  if (!window.DOMPurify) return escapeHtml(text || '');
+  if (!(options && options.untrusted)) return DOMPurify.sanitize(html);
+  html = html.replace(/<img\b[^>]*>/gi, _untrustedImageAsLink);
+  var hooked = typeof DOMPurify.addHook === 'function';
+  if (hooked) DOMPurify.addHook('afterSanitizeAttributes', _untrustedLinkTarget);
+  try {
+    return DOMPurify.sanitize(html, _UNTRUSTED_MD_PURIFY);
+  } finally {
+    if (hooked) DOMPurify.removeHook('afterSanitizeAttributes', _untrustedLinkTarget);
+  }
 }
 
 function renderMarkdownInline(text) {

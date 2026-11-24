@@ -3023,6 +3023,30 @@ var _OUTPUT_RESULT_RE = /^\s*--- Result/;
 var _OUTPUT_PREFIX_RE = /^\[(stderr|stdout)\]\s?(.*)$/;
 var _OUTPUT_STRUCT_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+\[\s*(\w+)\s*\]\s*(.*)$/;
 var _OUTPUT_CTX_RE = /\s([A-Za-z_][\w.]*)=/;
+// "[Name] argument": the tool name and what the call is about (_OUTPUT_TOOL_RE has already vouched for the name).
+var _OUTPUT_TOOL_PARSE_RE = /^\[([^\]]+)\](?: ([\s\S]*))?$/;
+// One key=value pair of structlog's context: a bare word, a quoted string or a bracketed list or dict.
+var _OUTPUT_KV_RE = /([A-Za-z_][\w.]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\[[^\]]*\]|\{[^}]*\}|\S+)/g;
+// A pause between two rows of more than this is drawn as a "quiet for" divider.
+var _OUTPUT_GAP_MS = 60000;
+// A log line written more than this after the time it carries was held back by its process (an inner run's stderr
+// dumped at the end), and one carrying a time more than this ahead of its write time came from a skewed clock: either
+// way its own time and its write time describe different moments, so the group is labelled.
+var _OUTPUT_REPLAY_MS = 60000;
+// A Python traceback's opening line, after the stream prefix is stripped: plain, or an exception group's
+// ("  + Exception Group Traceback ..."), and a sub-exception's inside one ("    | Traceback ...").
+// The exception line that ends it is found by position, not by name: the first line after the header that, once an
+// exception group's "  | " margin is stripped, starts at column 0 with a dotted name followed by a colon or nothing
+// ("Exception: boom", "httpx.ReadTimeout: timed out", "StopIteration", "KeyboardInterrupt"). Frame and source lines
+// are indented, and a chaining sentence ("During handling of the above exception, ...") has a space after its first
+// word, so neither matches. A folded block that holds a traceback summarises with its exception line rather than
+// whatever stderr printed after it.
+var _OUTPUT_TRACEBACK_RE = /^[\s|+]*(?:Exception Group )?Traceback \(most recent call last\):/;
+var _OUTPUT_GROUP_MARGIN_RE = /^\s*[|+] ?/;
+var _OUTPUT_EXCEPTION_RE = /^[A-Za-z_][\w.]*(?::|$)/;
+// Agent prose is rendered as markdown only when it shows a markdown signal: an inline code span, bold, a list item,
+// a heading, a quote or a link target ("]("). Plain text, padded columns and pasted command output stay as written.
+var _OUTPUT_MD_RE = /`|\*\*|^\s{0,3}(?:[-*+]|\d+\.)\s+\S|^\s{0,3}#{1,6}\s+\S|^\s{0,3}>\s|\]\(\S/m;
 
 var _OUTPUT_ERROR_LEVELS = ['error', 'critical', 'exception'];
 
@@ -3041,36 +3065,117 @@ function _outputKind(text) {
   return 'text';
 }
 
-// The clock of a structlog row's own timestamp. One that names its zone (the UTC `...Z` form SOVA logs) goes through
-// the same local-time formatter as the time column, so the two never show different hours side by side; one that
-// does not is shown as written.
-function _outputStructClock(ts) {
-  var ms = /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(ts) ? _outputTimeMs(ts) : null;
-  if (ms !== null) return _outputClock(ms);
-  return ts.length >= 19 ? ts.substring(11, 19) : ts;
+// Whether a line is agent prose to render as markdown: a plain text row (no stream prefix, so not a SOVA log line or
+// stderr) that shows a markdown signal. A tool call, result, error or log row never is.
+function _outputIsProse(kind, raw) {
+  return kind === 'text' && !_OUTPUT_PREFIX_RE.test(raw) && _OUTPUT_MD_RE.test(raw);
 }
 
-// The inner HTML of one line's text. Lines that follow structlog's ConsoleRenderer layout (timestamp, level, event,
-// then key=value context, prefixed [stderr]/[stdout] by agent_output.py) get their parts coloured; every other line
-// is escaped plain text, so a traceback or an agent's padded columns survive untouched.
-function _outputTextHtml(raw) {
+// The structlog match of a line (timestamp, level, body) after its [stderr]/[stdout] prefix, or null for any other line.
+function _outputStruct(text) {
+  var pm = _OUTPUT_PREFIX_RE.exec(text);
+  return _OUTPUT_STRUCT_RE.exec(pm ? pm[2] : text);
+}
+
+// The lowercase level of a structlog line ('' for any other line).
+function _outputLevel(text) {
+  var sm = _outputStruct(text);
+  return sm ? sm[2].toLowerCase() : '';
+}
+
+// When a structlog line says it was logged, as epoch milliseconds; null for a line without a time that names its zone
+// (the UTC `...Z` form SOVA logs), which cannot be compared with a write time.
+function _outputLoggedMs(text) {
+  var sm = _outputStruct(text);
+  return sm && /[zZ]$/.test(sm[1]) ? _outputTimeMs(sm[1]) : null;
+}
+
+// The clock a structlog line says it was logged at, for a row with no write time (a legacy row): a zoned time in the
+// viewer's zone, a time with no zone as written. '' for any other line.
+function _outputLoggedClock(text) {
+  var sm = _outputStruct(text);
+  if (!sm) return '';
+  var ms = _outputLoggedMs(text);
+  if (ms !== null) return _outputClock(ms);
+  var hm = /T(\d{2}:\d{2}:\d{2})/.exec(sm[1]);
+  return hm ? hm[1] : '';
+}
+
+// "45s", "4m 34s", "2h 5m".
+function _outputDuration(ms) {
+  var secs = Math.round(ms / 1000);
+  if (secs < 60) return secs + 's';
+  var mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+// The one-line form of a row for a fold summary: no stream prefix, and a SOVA log line as "LEVEL event" without its time.
+function _outputSummaryText(text) {
+  var sm = _outputStruct(text);
+  if (sm) return sm[2].toUpperCase() + ' ' + sm[3];
+  var pm = _OUTPUT_PREFIX_RE.exec(text);
+  return pm ? pm[2] : text;
+}
+
+// A tool name's chip colour group.
+function _outputToolClass(name) {
+  var n = name.toLowerCase();
+  if (n === 'bash' || n === 'bashoutput' || n === 'killshell') return 'out-tool-exec';
+  if (/^(?:edit|multiedit|write|notebookedit)$/.test(n)) return 'out-tool-write';
+  if (/^(?:agent|task|skill|slashcommand|taskoutput|taskstop)$/.test(n)) return 'out-tool-agent';
+  if (n.indexOf('mcp__') === 0) return 'out-tool-mcp';
+  return 'out-tool-read';
+}
+
+// structlog's key=value context as one chip per pair. A context that is not only pairs stays one muted string, so no
+// text is lost.
+function _outputContextHtml(context) {
+  var chips = [];
+  var left = context.replace(_OUTPUT_KV_RE, function(m, key, value) {
+    chips.push('<span class="out-kv"><span class="out-k">' + escapeHtml(key) + '</span>' + escapeHtml(value) + '</span>');
+    return '';
+  });
+  if (chips.length === 0 || left.trim() !== '') return '<span class="out-ctx">' + escapeHtml(context) + '</span>';
+  return chips.join('');
+}
+
+// The inner HTML of one line's text. kind is the row's kind, or 'prose' for agent prose (_outputIsProse()), which goes
+// through renderMarkdown() as untrusted text (sanitized, with no image or other load on render and links opening a
+// new tab; escaped when the helper is missing); a tool call
+// is a coloured name chip and its argument; a line that follows structlog's ConsoleRenderer layout (timestamp, level,
+// event, then key=value context, prefixed [stderr]/[stdout] by agent_output.py) is a level badge, the event and
+// context chips, its own time always dropped from the text: the time column shows when it was written (or, for a row
+// with no write time, the logged clock itself), and the badge's tooltip keeps the logged time, a zoned one as a
+// clock in the viewer's zone and one that names no zone (which cannot be compared with a write time) as written.
+// Every other line is escaped plain text, so a traceback or an agent's padded columns survive untouched.
+function _outputTextHtml(raw, kind) {
+  if (kind === 'prose' && typeof renderMarkdown === 'function') {
+    return '<div class="out-md">' + renderMarkdown(raw, { untrusted: true }) + '</div>';
+  }
+  var tm = kind === 'tool' ? _OUTPUT_TOOL_PARSE_RE.exec(raw) : null;
+  if (tm) {
+    return '<span class="out-chip ' + _outputToolClass(tm[1]) + '">' + escapeHtml(tm[1]) + '</span>' +
+      (tm[2] ? ' <span class="out-arg">' + escapeHtml(tm[2]) + '</span>' : '');
+  }
   var stream = '';
   var rest = raw;
   var pm = _OUTPUT_PREFIX_RE.exec(raw);
   if (pm) { stream = pm[1]; rest = pm[2]; }
-  var streamTag = stream ? '<span class="text-gray-600">' + stream + '</span> ' : '';
   var sm = _OUTPUT_STRUCT_RE.exec(rest);
-  if (!sm) return streamTag + escapeHtml(rest);
-  var ts = sm[1], level = sm[2].toUpperCase(), body = sm[3];
-  var color = LOG_LEVEL_COLORS[level] || 'text-gray-400';
+  if (!sm) return (stream ? '<span class="out-stream">' + stream + '</span> ' : '') + escapeHtml(rest);
+  var ts = sm[1], level = sm[2].toLowerCase(), body = sm[3];
+  var badge = level === 'warning' ? 'warn' : (level === 'critical' ? 'crit' : level);
   var ctxMatch = _OUTPUT_CTX_RE.exec(body);
   var event = ctxMatch ? body.slice(0, ctxMatch.index).trim() : body.trim();
   var context = ctxMatch ? body.slice(ctxMatch.index).trim() : '';
-  return streamTag +
-    '<span class="text-gray-600">' + escapeHtml(_outputStructClock(ts)) + '</span> ' +
-    '<span class="' + color + '">' + escapeHtml(level.padEnd(8)) + '</span> ' +
-    '<span class="text-gray-200">' + escapeHtml(event) + '</span>' +
-    (context ? '  <span class="text-gray-500">' + escapeHtml(context) + '</span>' : '');
+  var loggedMs = _outputLoggedMs(rest);
+  var logged = loggedMs !== null ? _outputClock(loggedMs) : (/[zZ]$/.test(ts) ? '' : ts + ' (no zone)');
+  var title = logged ? ' data-tooltip="logged ' + escapeHtml(logged) + '"' : '';
+  return '<span class="out-lvl out-lvl-' + escapeHtml(level) + '"' + title + '>' + escapeHtml(badge.toUpperCase()) +
+    '</span> ' +
+    '<span class="out-event">' + escapeHtml(event) + '</span>' +
+    (context ? ' ' + _outputContextHtml(context) : '');
 }
 
 // Epoch milliseconds of an ISO time, or null for a missing or unparseable one (a legacy row has no time).
@@ -3094,6 +3199,13 @@ function _outputClock(ms) {
 //    updated in place as it grows), and the reader's own toggle is kept after that. An error row ends the block and
 //    stays visible outside it;
 //  - the pane follows the tail only while the reader is at the bottom, on a redraw too;
+//  - a pause of more than _OUTPUT_GAP_MS between rows is drawn as a "quiet for" divider outside any block (a pause
+//    inside a same-kind run ends that block and opens a new one, so a folded block never hides a divider). A chain of
+//    slow calls a minute or more apart therefore never folds: each call keeps its own row and the divider after it
+//    says how long it ran. That is deliberate, as the dividers are the information there, and a chain that slow adds
+//    at most two lines a minute, so it cannot flood the pane the way a burst does. A log
+//    line whose own time is far from its write time starts a labelled group, so a row's time column is always the
+//    write time (a legacy row with none shows the time its log line carries, marked as such);
 //  - at most _OUTPUT_MAX_ENTRIES lines are held: older ones are dropped and a marker says how many.
 // The renderer keeps the lines it was given, so setTarget() can draw them into a rebuilt pane.
 function sovaOutputRenderer() {
@@ -3106,7 +3218,10 @@ function sovaOutputRenderer() {
   var view = freshView();
 
   function freshView() {
-    return { prevSec: null, minMs: null, maxMs: null, block: null };
+    // lastMs: the write time of the previous row of any kind (a quiet gap is measured from it); replayAt: the write
+    // time of the last row of an open replayed-log group, or null; replayEarly: whether that group's lines carry a
+    // time ahead of their write time (a skewed clock) rather than behind it.
+    return { prevSec: null, minMs: null, maxMs: null, block: null, lastMs: null, replayAt: null, replayEarly: false };
   }
 
   function atTail() {
@@ -3120,14 +3235,62 @@ function sovaOutputRenderer() {
   function rowHtml(entry, kind, scope) {
     var sec = entry.ms === null ? null : Math.floor(entry.ms / 1000);
     var label = '';
+    var timeAttr = '';
     if (sec !== null) {
       var prev = scope.folded ? scope.prevSec : view.prevSec;
       if (sec !== prev) label = _outputClock(entry.ms);
       scope.prevSec = sec;
       if (!scope.folded) view.prevSec = sec;
+    } else {
+      // A row with no write time (stored before they were recorded) keeps the time its log line carries, so an old
+      // run's SOVA log lines are not left with no clock at all. The column is shown for it, marked as a logged time.
+      label = _outputLoggedClock(entry.text);
+      if (label) {
+        timeAttr = ' data-tooltip="logged time (no write time recorded)"';
+        pane.classList.add('out-has-times');
+      }
     }
-    return '<div class="out-row out-' + kind + '"><span class="out-time">' + label + '</span>' +
-      '<span class="out-text">' + _outputTextHtml(entry.text) + '</span></div>';
+    var prose = _outputIsProse(kind, entry.text);
+    var extra = '';
+    if (prose) extra = ' out-prose';
+    else if (kind === 'log' && _outputLevel(entry.text).indexOf('warn') === 0) extra = ' out-warn';
+    return '<div class="out-row out-' + kind + extra + '"><span class="out-time"' + timeAttr + '>' + label + '</span>' +
+      '<span class="out-text">' + _outputTextHtml(entry.text, prose ? 'prose' : kind) + '</span></div>';
+  }
+
+  // The divider before a row that follows a pause, and the bookkeeping for the next one. It names the length and
+  // nothing more: a long build can print nothing for minutes, so the reader judges whether that is a problem. The
+  // baseline only moves forward, so a row stamped earlier than the one before it cannot fake a pause after it.
+  function gapHtml(entry) {
+    if (entry.ms === null) return '';
+    var html = '';
+    if (view.lastMs !== null && entry.ms - view.lastMs > _OUTPUT_GAP_MS) {
+      html = '<div class="out-gap"><span>quiet for ' + _outputDuration(entry.ms - view.lastMs) + '</span></div>';
+    }
+    view.lastMs = view.lastMs === null ? entry.ms : Math.max(view.lastMs, entry.ms);
+    return html;
+  }
+
+  // The label that opens a group of log lines whose own time is more than _OUTPUT_REPLAY_MS from their write time:
+  // replayed lines logged earlier, or lines from a clock running ahead. The group stays open for the unstructured
+  // lines between its log lines (a traceback has no time) and ends at a log line written on time, one off the other
+  // way, or one written more than a minute after the last of the group.
+  function replayHtml(entry) {
+    var logged = _outputLoggedMs(entry.text);
+    if (logged === null) return '';
+    var off = entry.ms === null ? 0 : entry.ms - logged;
+    if (Math.abs(off) <= _OUTPUT_REPLAY_MS) {
+      view.replayAt = null;
+      return '';
+    }
+    var early = off < 0;
+    var open = view.replayAt !== null && view.replayEarly === early && entry.ms - view.replayAt <= _OUTPUT_REPLAY_MS;
+    view.replayAt = entry.ms;
+    view.replayEarly = early;
+    if (open) return '';
+    var times = 'logged ' + _outputClock(logged) + ', written ' + _outputClock(entry.ms) + ' (' +
+      _outputDuration(Math.abs(off)) + (early ? ' early)' : ' late)');
+    return '<div class="out-cluster">' + (early ? 'Log clock ahead: ' : 'Replayed log: ') + times + '</div>';
   }
 
   function noteTime(ms) {
@@ -3152,29 +3315,56 @@ function sovaOutputRenderer() {
       last: el.querySelector('.out-fold-last'),
       n: 0,
       folded: false,
-      prevSec: null
+      prevSec: null,
+      // inTrace: a traceback has opened and its exception line is not seen yet; exception: the latest such line.
+      inTrace: false,
+      exception: null
     };
     return view.block;
   }
 
-  function summarize(block, text) {
+  // Remembers the exception line of the latest traceback in a block, so its summary names the failure even when
+  // stderr goes on printing after it (a make error, a cleanup message).
+  function noteTraceback(block, line) {
+    if (_OUTPUT_TRACEBACK_RE.test(line)) {
+      block.inTrace = true;
+      return;
+    }
+    if (!block.inTrace) return;
+    var bare = line.replace(_OUTPUT_GROUP_MARGIN_RE, '');
+    if (_OUTPUT_EXCEPTION_RE.test(bare)) {
+      block.exception = bare;
+      block.inTrace = false;
+    }
+  }
+
+  function summarize(block, line) {
     var noun = block.kind === 'tool' ? (block.n === 1 ? ' tool call' : ' tool calls') : ' lines';
     block.count.textContent = block.n + noun;
-    block.last.textContent = ' ' + text;
+    block.last.textContent = ' ' + (block.exception !== null ? block.exception : line);
   }
 
   function draw(entry) {
     var kind = _outputKind(entry.text);
     noteTime(entry.ms);
+    var gap = gapHtml(entry);
+    var label = replayHtml(entry);
     if (kind === 'error') {
       view.block = null;
-      pane.insertAdjacentHTML('beforeend', rowHtml(entry, kind, view));
+      pane.insertAdjacentHTML('beforeend', gap + label + rowHtml(entry, kind, view));
       return;
     }
     var block = view.block;
-    if (block === null || block.kind !== kind) block = openBlock(kind);
+    if (block === null || block.kind !== kind || gap + label !== '') {
+      // A new block, or a quiet divider or replayed-group label, which ends the open one: they sit outside any block,
+      // so a block that folds never hides one.
+      if (gap + label !== '') pane.insertAdjacentHTML('beforeend', gap + label);
+      block = openBlock(kind);
+    }
     block.body.insertAdjacentHTML('beforeend', rowHtml(entry, kind, block));
     block.n += 1;
+    var line = _outputSummaryText(entry.text);
+    noteTraceback(block, line);
     if (!block.folded && block.n > _OUTPUT_FOLD_OVER) {
       // Collapse once. The row after the block is labelled whatever its second, as the block hides its own rows.
       block.folded = true;
@@ -3182,7 +3372,7 @@ function sovaOutputRenderer() {
       block.el.classList.add('out-folded');
       view.prevSec = null;
     }
-    if (block.folded) summarize(block, entry.text);
+    if (block.folded) summarize(block, line);
   }
 
   function drawAll() {

