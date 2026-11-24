@@ -380,11 +380,12 @@ function _setBoardRoom(open) {
 }
 
 // What a click outside the drawer may land on without closing it: a card or chain node (it selects, or toggles
-// the selected one off), the search box and its results, and every overlay the page can open over it: a dialog (a
-// confirm the drawer's button opened), the log viewer View log opens, and a toast with its dismiss button. An overlay
-// added later opts in with data-keeps-drawer.
+// the selected one off), the search box and its results, and every overlay the page can open over it: a modal on
+// the shared component (.sova-modal-backdrop: a confirm the drawer's button opened, the Launch Agent modal), any
+// other dialog, the log viewer View log opens, and a toast with its dismiss button. An overlay added later opts in
+// with data-keeps-drawer.
 var _KEEP_OPEN = '#work-drawer, [data-action="work-select"], #work-search, #log-viewer, .sova-modal-backdrop, ' +
-  '#launch-modal, .sova-toast, [role="dialog"], [aria-modal="true"], [data-keeps-drawer]';
+  '.sova-toast, [role="dialog"], [aria-modal="true"], [data-keeps-drawer]';
 
 // A press that began inside the drawer (selecting its text, then releasing outside) is not a click outside it.
 var _pressInside = false;

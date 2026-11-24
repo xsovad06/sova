@@ -609,7 +609,7 @@ class Resolution:
     action_id: str | None  # e.g. "integrate", "address_review", "review_pr", "rebase"
     reason_chain: tuple[str, ...]  # every rule name evaluated, last entry is the match
     # unmet merge preconditions at resolution time (empty when none, or when there's no PR);
-    # attached to the secondary Integrate action so the confirm() dialog can list them
+    # attached to the secondary Integrate action so the dashboard's confirm dialog can list them
     merge_blockers: tuple[str, ...] = ()
 
 
@@ -676,34 +676,71 @@ def _github_will_merge(facts: PRFacts) -> bool:
     return facts.mergeable == "MERGEABLE"
 
 
+# One sentence per unmet merge condition, keyed by the fact's value; a value missing from a table falls back to a
+# sentence that names it, so a new verdict, CI status or merge state still reads as a sentence, never as a gap.
+_VERDICT_BLOCKERS: dict[str | None, str] = {
+    None: "SOVA has not reviewed this PR yet.",
+    "revise": "SOVA's review asked for changes.",
+    "block": "SOVA's review blocked this PR.",
+    "post_failed": "SOVA's review could not be posted to the PR.",
+}
+_THREAD_BLOCKERS = {
+    "pending": "Some review threads are still unresolved.",
+    "unknown": "The review threads could not be checked.",
+}
+_CI_BLOCKERS = {
+    "": "The CI status could not be checked.",
+    "pending": "CI checks have not finished.",
+    "running": "CI checks have not finished.",
+    "failed": "CI checks are failing.",
+}
+_MERGE_STATE_BLOCKERS = {
+    "BLOCKED": "GitHub blocks merging this PR (a required check or review is missing).",
+    "DIRTY": "This PR has merge conflicts with its base branch.",
+    "DRAFT": "This PR is still a draft.",
+}
+_MERGEABLE_BLOCKERS = {
+    "CONFLICTING": "This PR has merge conflicts with its base branch.",
+    "UNKNOWN": "GitHub has not finished checking whether this PR can be merged.",
+    "": "GitHub has not reported whether this PR can be merged.",
+}
+
+
 def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
-    """Every merge precondition the PR currently fails, phrased for the reason chain.
+    """Every merge precondition the PR currently fails, one sentence each.
 
     Empty means the PR satisfies all of them. Shared by three consumers that must
     never diverge: the ladder's "ready_to_merge" rule, its renderer
     (_fact_ready_to_merge), and Resolution.merge_blockers -> _attach_merge_blockers()
-    -> the dashboard's confirm() dialog ("This PR is not fully ready to merge:").
-    Because of that third consumer, every string here must also read as a
-    standalone, user-facing sentence, not just internal resolver jargon. The
+    -> the dashboard's confirm dialog, which lists them under "This PR is not fully
+    ready to merge." Because of that third consumer, every string here is a
+    standalone, user-facing sentence ending in a period, not resolver jargon. The
     GitHub-merge-state message mirrors _github_will_merge()'s own branching
     exactly (merge_state when it is one of the recognised unmergeable states,
     mergeable otherwise) rather than an `or` chain over both fields, so the
     reported field is always the one that actually decided the outcome.
     """
     unmet: list[str] = []
-    if facts.sova_verdict != "approve":
-        unmet.append(f"verdict is {facts.sova_verdict or 'none'}, not approve")
+    # A missing fact can arrive as None or as "", so each lookup normalizes both to the one key its table holds.
+    verdict = facts.sova_verdict or None
+    if verdict != "approve":
+        unmet.append(_VERDICT_BLOCKERS.get(verdict, f"SOVA's review verdict is {verdict}, not approve."))
     if facts.external_changes_requested:
-        unmet.append("an external reviewer has requested changes")
-    if facts.thread_signal != "clear":
-        unmet.append(f"threads are {facts.thread_signal}")
-    if facts.ci_status not in ("passed", "none"):
-        unmet.append(f"CI status is {facts.ci_status or 'unknown'}")
+        unmet.append("An external reviewer has requested changes.")
+    threads = facts.thread_signal or "unknown"
+    if threads != "clear":
+        unmet.append(_THREAD_BLOCKERS.get(threads, f"The review threads are {threads}."))
+    ci_status = facts.ci_status or ""
+    if ci_status not in ("passed", "none"):
+        unmet.append(_CI_BLOCKERS.get(ci_status, f"CI checks have not passed (status: {ci_status})."))
     if not _github_will_merge(facts):
         if facts.merge_state in _MERGE_STATES_UNMERGEABLE:
-            unmet.append(f"GitHub merge state is {facts.merge_state}")
+            unmet.append(
+                _MERGE_STATE_BLOCKERS.get(facts.merge_state, f"GitHub cannot merge this PR ({facts.merge_state}).")
+            )
         else:
-            unmet.append(f"GitHub merge state is {facts.mergeable or 'unknown'}")
+            mergeable = facts.mergeable or ""
+            unmet.append(_MERGEABLE_BLOCKERS.get(mergeable, f"GitHub cannot merge this PR ({mergeable})."))
     return unmet
 
 
@@ -936,7 +973,9 @@ def _fact_ready_to_merge(facts: PRFacts) -> str:
     unmet = _unmet_merge_conditions(facts)
     if not unmet:
         return "approved, threads clear, CI not blocking, and mergeable: ready to merge"
-    return "not ready to merge (" + "; ".join(unmet) + ")"
+    # The ladder's other lines are lowercase fragments without a closing period, so the blocker sentences are
+    # listed as clauses here rather than run together after a lowercase prefix.
+    return "not ready to merge: " + "; ".join(sentence.rstrip(".") for sentence in unmet)
 
 
 def _fact_awaiting_review(facts: PRFacts) -> str:

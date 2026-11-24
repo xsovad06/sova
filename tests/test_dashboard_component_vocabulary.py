@@ -57,6 +57,7 @@ _PRELUDE_FUNCTIONS = (
     "escapeHtml",
     "_attrsHtml",
     "_extraClass",
+    "_sovaBtnClass",
     "sovaColor",
     "stateBadgeClasses",
     "sovaBtn",

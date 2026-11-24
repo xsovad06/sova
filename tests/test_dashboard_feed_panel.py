@@ -129,14 +129,14 @@ function el(id) {
     getBoundingClientRect: () => ({ right: 1280 }),
   };
 }
-for (const id of ['feed-panel', 'feed-fab', 'feed-list', 'feed-jump-latest', 'feed-resize-handle', 'feed-badge',
-  'launch-modal']) {
+for (const id of ['feed-panel', 'feed-fab', 'feed-list', 'feed-jump-latest', 'feed-resize-handle', 'feed-badge']) {
   elements[id] = el(id);
 }
 
 const ctx = {
   console,
-  _sovaModalOpen: false,
+  sharedModalOpen: false,
+  sovaModalIsOpen: () => ctx.sharedModalOpen,
   document: {
     getElementById: (id) => elements[id] || null,
     querySelectorAll: (sel) => { state.selectors.push(sel); return state.dialogs; },
@@ -212,14 +212,10 @@ esc({ defaultPrevented: true });
 out.escapeHandledElsewhere = ctx._feedPanelOpen;
 docListeners.keydown({ key: 'a', defaultPrevented: false });
 out.otherKey = ctx._feedPanelOpen;
-ctx._sovaModalOpen = true;
+ctx.sharedModalOpen = true;
 esc();
 out.escapeWithConfirmOpen = ctx._feedPanelOpen;
-ctx._sovaModalOpen = false;
-elements['launch-modal'].classList.remove('hidden');
-esc();
-out.escapeWithLaunchModalOpen = ctx._feedPanelOpen;
-elements['launch-modal'].classList.add('hidden');
+ctx.sharedModalOpen = false;
 state.selectors = [];
 state.dialogs = [dialogStub()];
 esc();
@@ -366,7 +362,6 @@ class TestFeedPanelBehavior:
         assert feed_run["escapeHandledElsewhere"] is True
         assert feed_run["otherKey"] is True
         assert feed_run["escapeWithConfirmOpen"] is True
-        assert feed_run["escapeWithLaunchModalOpen"] is True
         assert feed_run["escapeWithGenericDialogOpen"] is True
         for needle in ("dialog[open]", '[role="dialog"]', '[aria-modal="true"]'):
             assert needle in feed_run["dialogSelector"]

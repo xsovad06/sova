@@ -188,8 +188,8 @@ Use the fuel-gauge model: a full bar means all capacity is available, an empty b
 - Ephemeral: `showToast(message, type)` (types: info, warning, error, success)
 - Persistent: `_addNotification(message, type)`
 
-### Confirmation Dialogs
-`sovaConfirm(message, opts)`: returns Promise. Use `confirmClass: 'danger'` for destructive actions.
+### Dialogs
+Never native `confirm()`/`alert()`/`prompt()`. `sovaConfirm(message, opts)` returns a Promise: `confirmClass: 'danger'` for destructive actions, `'warning'` for proceeding past a known problem, `details: [...]` lists items under the message. A page modal is template markup (`.sova-modal-backdrop` with `hidden`, `.sova-modal-dialog` and the `.sova-modal-header|body|footer` layout) opened and closed with `sovaModalOpen(backdrop, opts)` / `sovaModalClose(backdrop, reason)`, which own Escape, backdrop click, the Tab trap, focus return, ARIA and the fade; never a hand-written `fixed inset-0` overlay (docs/design-system.md, "Modal Dialogs").
 
 ## 7. AI-Tell Detection
 

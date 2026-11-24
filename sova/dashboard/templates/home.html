@@ -192,11 +192,9 @@
   loadFleetStatus();
   setInterval(loadFleetStatus, 5000);
 
+  // Built per call on the shared modal component (app.js); resolves the chosen options, or null when cancelled.
   function showUninstallDialog(slug) {
     return new Promise(function(resolve) {
-      var backdrop = document.createElement('div');
-      backdrop.className = 'sova-modal-backdrop';
-
       var checkboxes = [
         { id: 'remove_commands', label: 'Remove managed commands' },
         { id: 'remove_rules', label: 'Remove guidelines/rules' },
@@ -204,67 +202,53 @@
         { id: 'remove_config', label: 'Remove config (sova.toml)' }
       ];
 
-      var checkboxHtml = checkboxes.map(function(cb) {
-        return '<label class="flex items-center gap-2 cursor-pointer py-1">' +
-          '<input type="checkbox" id="uninstall-' + cb.id + '" ' +
-            'class="w-4 h-4 rounded border-gray-600 bg-gray-700 text-accent accent-[var(--accent)]">' +
-          '<span class="text-sm text-gray-300">' + escapeHtml(cb.label) + '</span>' +
-        '</label>';
-      }).join('');
-
+      var backdrop = document.createElement('div');
+      backdrop.className = 'sova-modal-backdrop';
+      backdrop.hidden = true;
       backdrop.innerHTML =
-        '<div class="sova-modal-dialog" style="max-width: 420px">' +
-          '<div class="px-5 pt-5 pb-4">' +
-            '<p class="text-sm font-medium text-gray-200 mb-1">Uninstall SOVA from "' + escapeHtml(slug) + '"</p>' +
+        '<div class="sova-modal-dialog sova-modal-dialog-md">' +
+          '<div class="px-5 pt-5 pb-4 overflow-y-auto">' +
+            '<p class="text-sm font-medium text-gray-200 mb-1" data-modal-title>Uninstall SOVA from "' + escapeHtml(slug) + '"</p>' +
             '<p class="text-xs text-gray-500 mb-3">Database and ephemeral files are always removed.</p>' +
-            '<div class="space-y-1 pl-1">' + checkboxHtml + '</div>' +
+            '<div class="space-y-1 pl-1" data-uninstall-options></div>' +
           '</div>' +
           '<div class="flex justify-end gap-2 px-5 pb-4">' +
-            '<button class="sova-modal-cancel px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 rounded transition-colors">' +
-              'Cancel' +
-            '</button>' +
-            '<button class="sova-modal-confirm px-3 py-1.5 text-sm font-medium rounded transition-colors bg-accent-red/20 text-accent-red hover:bg-accent-red/30">' +
-              'Uninstall' +
-            '</button>' +
+            '<button type="button" class="sova-btn sova-btn-ghost sova-btn-md" data-uninstall-cancel>Cancel</button>' +
+            '<button type="button" class="sova-btn sova-btn-danger sova-btn-md" data-uninstall-confirm>Uninstall</button>' +
           '</div>' +
         '</div>';
 
-      function close(result) {
-        backdrop.classList.remove('sova-modal-visible');
-        setTimeout(function() {
-          if (backdrop.parentElement) backdrop.remove();
-        }, 150);
-        document.removeEventListener('keydown', onKey);
-        resolve(result);
-      }
-
-      function onKey(e) {
-        if (e.key === 'Escape') close(null);
-      }
-
-      backdrop.addEventListener('click', function(e) {
-        if (e.target === backdrop) close(null);
+      var options = backdrop.querySelector('[data-uninstall-options]');
+      checkboxes.forEach(function(cb) {
+        var label = document.createElement('label');
+        label.className = 'flex items-center gap-2 cursor-pointer py-1';
+        var input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = 'uninstall-' + cb.id;
+        input.className = 'w-4 h-4 rounded border-gray-600 bg-gray-700 text-accent accent-[var(--accent)]';
+        var text = document.createElement('span');
+        text.className = 'text-sm text-gray-300';
+        text.textContent = cb.label;
+        label.appendChild(input);
+        label.appendChild(text);
+        options.appendChild(label);
       });
-      backdrop.querySelector('.sova-modal-cancel').addEventListener('click', function() {
-        close(null);
-      });
-      backdrop.querySelector('.sova-modal-confirm').addEventListener('click', function() {
-        var result = {};
+
+      var result = null;
+      var cancel = backdrop.querySelector('[data-uninstall-cancel]');
+      cancel.addEventListener('click', function() { sovaModalClose(backdrop, 'cancel'); });
+      backdrop.querySelector('[data-uninstall-confirm]').addEventListener('click', function() {
+        result = {};
         checkboxes.forEach(function(cb) {
-          result[cb.id] = document.getElementById('uninstall-' + cb.id).checked;
+          result[cb.id] = backdrop.querySelector('#uninstall-' + cb.id).checked;
         });
-        close(result);
+        sovaModalClose(backdrop, 'confirm');
       });
-      document.addEventListener('keydown', onKey);
-
-      document.body.appendChild(backdrop);
-      requestAnimationFrame(function() {
-        requestAnimationFrame(function() {
-          backdrop.classList.add('sova-modal-visible');
-        });
+      sovaModalOpen(backdrop, {
+        initialFocus: cancel,
+        removeOnClose: true,
+        onClose: function() { resolve(result); },
       });
-
-      backdrop.querySelector('.sova-modal-cancel').focus();
     });
   }
 

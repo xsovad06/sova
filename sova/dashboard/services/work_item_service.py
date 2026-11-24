@@ -853,7 +853,7 @@ def _attach_merge_blockers(
         return
     blockers = list(resolution.merge_blockers)
     if facts is None:
-        blockers = ["PR state could not be determined (PR data unavailable)"]
+        blockers = ["The PR's state could not be loaded, so whether it can merge is unknown."]
     actions = list(secondary_actions)
     if primary_action is not None:
         actions.append(primary_action)

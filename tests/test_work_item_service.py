@@ -1077,11 +1077,52 @@ class TestResolveNextAction:
     def test_merge_blockers_populated_on_a_non_ready_resolution(self) -> None:
         """merge_blockers must carry the unmet conditions even when the ladder matched an
         earlier rule, since that is exactly when the secondary Integrate needs to confirm.
-        Without this the dashboard's confirm() would silently never fire (#1111)."""
+        Without this the dashboard's confirm dialog would silently never open (#1111)."""
         resolution = resolve_next_action(_facts(sova_verdict="revise", thread_signal="pending"))
         assert resolution.state == WorkItemState.PR_SOVA_CHANGES
-        assert "verdict is revise, not approve" in resolution.merge_blockers
-        assert "threads are pending" in resolution.merge_blockers
+        assert resolution.merge_blockers == (
+            "SOVA's review asked for changes.",
+            "Some review threads are still unresolved.",
+        )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{"sova_verdict": verdict} for verdict in (None, "revise", "block", "post_failed", "something_new")]
+        + [{"thread_signal": signal} for signal in ("pending", "unknown", "something_new")]
+        + [{"ci_status": status} for status in ("", "pending", "running", "failed", "something_new")]
+        + [{"merge_state": state} for state in ("BLOCKED", "DIRTY", "DRAFT")]
+        + [{"merge_state": "UNKNOWN", "mergeable": m} for m in ("CONFLICTING", "UNKNOWN", "", "something_new")]
+        + [{"external_changes_requested": True}],
+    )
+    def test_every_merge_blocker_is_a_standalone_sentence(self, overrides: dict) -> None:
+        """The dashboard lists these verbatim in the Integrate confirm (#1224), so each one,
+        including the fallback for a value no table knows, is a capitalized sentence."""
+        blockers = resolve_next_action(_facts(**overrides)).merge_blockers
+        assert len(blockers) == 1, blockers
+        sentence = blockers[0]
+        assert sentence[0].isupper(), sentence
+        assert sentence.endswith("."), sentence
+        if "something_new" in overrides.values():
+            assert "something_new" in sentence, "a value no table knows must still be named"
+
+    @pytest.mark.parametrize(
+        ("overrides", "expected"),
+        [
+            ({"sova_verdict": None}, "SOVA has not reviewed this PR yet."),
+            ({"sova_verdict": ""}, "SOVA has not reviewed this PR yet."),
+            ({"thread_signal": None}, "The review threads could not be checked."),
+            ({"thread_signal": ""}, "The review threads could not be checked."),
+            ({"ci_status": None}, "The CI status could not be checked."),
+            ({"ci_status": ""}, "The CI status could not be checked."),
+            ({"merge_state": "UNKNOWN", "mergeable": None}, "GitHub has not reported whether this PR can be merged."),
+            ({"merge_state": "UNKNOWN", "mergeable": ""}, "GitHub has not reported whether this PR can be merged."),
+        ],
+    )
+    def test_missing_fact_reads_the_same_whether_none_or_empty(self, overrides: dict, expected: str) -> None:
+        """A missing fact can arrive as None or as "": both must hit the table's sentence, never
+        the fallback, which would print an empty slot or the word None in the Integrate dialog."""
+        blockers = resolve_next_action(_facts(**overrides)).merge_blockers
+        assert blockers == (expected,)
 
     def test_merge_blockers_empty_on_ready_to_merge(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -1093,7 +1134,7 @@ class TestResolveNextAction:
         external_changes_or_unresolved_threads rule (threads otherwise clear, SOVA
         approved, CI green, GitHub reports CLEAN) must not yield empty merge_blockers:
         PR_EXTERNAL_CHANGES has "integrate" in its secondary actions, so an empty list
-        here would let the dashboard's confirm() skip entirely on a PR an external
+        here would let the dashboard's confirm dialog skip entirely on a PR an external
         reviewer explicitly asked to change (#1111)."""
         resolution = resolve_next_action(
             _facts(
@@ -1106,7 +1147,7 @@ class TestResolveNextAction:
         )
         assert resolution.state == WorkItemState.PR_EXTERNAL_CHANGES
         assert resolution.merge_blockers != ()
-        assert "an external reviewer has requested changes" in resolution.merge_blockers
+        assert "An external reviewer has requested changes." in resolution.merge_blockers
 
 
 class TestDescribeReasonChain:
@@ -1241,9 +1282,7 @@ class TestDescribeReasonChain:
 
     def test_ready_to_merge_non_match_describes_unmet_conditions(self) -> None:
         sentence = describe_reason_chain(("ready_to_merge",), _facts(sova_verdict="revise", ci_status="failed"))[0]
-        assert "not ready to merge" in sentence
-        assert "verdict" in sentence
-        assert "CI status" in sentence
+        assert sentence == "not ready to merge: SOVA's review asked for changes; CI checks are failing"
 
     def test_ready_to_merge_match_describes_ready_state(self) -> None:
         sentence = describe_reason_chain(("ready_to_merge",), _facts())[0]
@@ -2124,11 +2163,11 @@ class TestAttachMergeBlockers:
             WorkItemState.PR_AWAITING_REVIEW,
             "review_pr",
             ("awaiting_review",),
-            ("CI status is failed", "threads are pending"),
+            ("CI checks are failing.", "Some review threads are still unresolved."),
         )
         _attach_merge_blockers(primary, secondary, resolution, _facts())
         integrate = next(a for a in secondary if a["id"] == "integrate")
-        assert integrate["merge_blockers"] == ["CI status is failed", "threads are pending"]
+        assert integrate["merge_blockers"] == ["CI checks are failing.", "Some review threads are still unresolved."]
         assert "merge_blockers" not in secondary[0]
         assert "merge_blockers" not in primary
 
@@ -2138,7 +2177,7 @@ class TestAttachMergeBlockers:
         _attach_merge_blockers(
             primary,
             secondary,
-            Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", (), ("verdict is revise, not approve",)),
+            Resolution(WorkItemState.PR_SOVA_CHANGES, "address_review", (), ("SOVA's review asked for changes.",)),
             _facts(),
         )
         assert all("merge_blockers" not in a for a in secondary)
@@ -2157,7 +2196,7 @@ class TestAttachMergeBlockers:
             WorkItemState.PR_REVIEW_EXHAUSTED,
             "integrate",
             ("review_budget_exhausted",),
-            ("verdict is revise, not approve",),
+            ("SOVA's review asked for changes.",),
         )
         _attach_merge_blockers(primary, secondary, resolution, _facts())
         assert "merge_blockers" not in primary
@@ -2174,10 +2213,10 @@ class TestAttachMergeBlockers:
             WorkItemState.PR_AWAITING_REVIEW,
             "review_pr",
             ("awaiting_review",),
-            ("threads are pending",),
+            ("Some review threads are still unresolved.",),
         )
         _attach_merge_blockers(primary, secondary, resolution, _facts())
-        assert primary["merge_blockers"] == ["threads are pending"]
+        assert primary["merge_blockers"] == ["Some review threads are still unresolved."]
 
     def test_facts_none_attaches_explicit_unknown_blocker(self) -> None:
         """A label-only item whose PR data could not be resolved (e.g. a stale PR
@@ -2187,7 +2226,9 @@ class TestAttachMergeBlockers:
         secondary = [{"id": "integrate"}]
         resolution = Resolution(WorkItemState.IN_PROGRESS, None, ())
         _attach_merge_blockers(primary, secondary, resolution, None)
-        assert secondary[0]["merge_blockers"] == ["PR state could not be determined (PR data unavailable)"]
+        assert secondary[0]["merge_blockers"] == [
+            "The PR's state could not be loaded, so whether it can merge is unknown."
+        ]
 
 
 class TestParseReviewHistory:

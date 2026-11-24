@@ -564,6 +564,12 @@ function _extraClass(opts) {
   return extra ? ' ' + escapeHtml(extra) : '';
 }
 
+// The component classes for opts.variant and opts.size: sovaBtn()'s, and a button built with DOM calls (sovaConfirm).
+function _sovaBtnClass(opts) {
+  var variant = SOVA_BTN_VARIANTS.indexOf(opts.variant) !== -1 ? opts.variant : 'primary';
+  return 'sova-btn sova-btn-' + variant + (SOVA_BTN_SIZES.indexOf(opts.size) !== -1 ? ' sova-btn-' + opts.size : '');
+}
+
 // opts: {variant, size (a SOVA_BTN_SIZES entry), id, type, tooltip, disabled, attrs, iconHtml, className (extra
 // classes such as 'ml-auto' or 'hidden', appended after the component's own)}. An unknown variant
 // renders as primary and an unknown size as the default. The label is always escaped text. iconHtml is trusted
@@ -571,9 +577,7 @@ function _extraClass(opts) {
 // iconHtml, an empty label and an aria-label in attrs.
 function sovaBtn(label, opts) {
   opts = opts || {};
-  var variant = SOVA_BTN_VARIANTS.indexOf(opts.variant) !== -1 ? opts.variant : 'primary';
-  var cls = 'sova-btn sova-btn-' + variant + (SOVA_BTN_SIZES.indexOf(opts.size) !== -1 ? ' sova-btn-' + opts.size : '');
-  return '<button type="' + escapeHtml(opts.type || 'button') + '" class="' + cls + _extraClass(opts) + '"' +
+  return '<button type="' + escapeHtml(opts.type || 'button') + '" class="' + _sovaBtnClass(opts) + _extraClass(opts) + '"' +
     (opts.id ? ' id="' + escapeHtml(opts.id) + '"' : '') +
     (opts.tooltip ? ' data-tooltip="' + escapeHtml(opts.tooltip) + '"' : '') +
     (opts.disabled ? ' disabled' : '') +
@@ -718,88 +722,234 @@ function showToast(message, type, duration, action) {
 }
 
 /* ============================================================
-   5. CONFIRMATION MODAL
+   5. MODAL DIALOGS
    ============================================================ */
 
-var _sovaModalOpen = false;
+/* The one modal component behind every dashboard dialog (#1224). A modal is a `.sova-modal-backdrop` holding one
+   `.sova-modal-dialog`: a page keeps its markup in the template with the `hidden` attribute, and sovaConfirm()
+   builds one per call. sovaModalOpen() shows it (fade in, role="dialog" and aria-modal, focus inside) and, while
+   it is the topmost open modal, gives it the keyboard: Escape closes it, Tab and Shift+Tab cycle inside it. A
+   click on the backdrop closes it. Closing fades it out, hides it again and returns focus to whatever had it when
+   the modal opened. Enter is never intercepted: it presses the focused button, as anywhere else. */
+
+var _sovaModalStack = [];   // open modals, topmost last: only the topmost one handles keys
+var _sovaModalSeq = 0;      // generated ids for aria-labelledby
+var _SOVA_MODAL_FADE_MS = 150;  // the backdrop's opacity transition in style.css
+var _sovaModalHideTimers = new WeakMap();  // backdrop -> its pending hide after a fade-out
+var _sovaModalBound = new WeakSet();        // backdrops whose click handlers are bound
+
+// Focusable elements inside the dialog, limited to what is rendered: a field the modal hides (the Launch
+// modal's model picker for a role that has none) must not take focus.
+function _sovaModalFocusables(dialog) {
+  return Array.prototype.filter.call(dialog.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  ), function(el) {
+    return !el.disabled && el.type !== 'hidden' && el.getClientRects().length > 0;
+  });
+}
+
+function _sovaModalIndex(backdrop) {
+  for (var i = 0; i < _sovaModalStack.length; i++) {
+    if (_sovaModalStack[i].backdrop === backdrop) return i;
+  }
+  return -1;
+}
+
+function sovaModalIsOpen(backdrop) {
+  return backdrop ? _sovaModalIndex(backdrop) !== -1 : _sovaModalStack.length > 0;
+}
+
+// role, aria-modal and a label, set at open so no page has to remember them. The label is the dialog's first
+// heading (or the element marked data-modal-title) unless the markup already names one.
+function _sovaModalAria(dialog) {
+  if (!dialog.getAttribute('role')) dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  if (dialog.getAttribute('aria-labelledby') || dialog.getAttribute('aria-label')) return;
+  var heading = dialog.querySelector('[data-modal-title], h1, h2, h3, h4');
+  if (!heading) return;
+  if (!heading.id) heading.id = 'sova-modal-title-' + (++_sovaModalSeq);
+  dialog.setAttribute('aria-labelledby', heading.id);
+}
+
+// Closes on a click that both started and ended on the backdrop: selecting text in a field and releasing
+// outside the dialog is not a click outside it.
+function _sovaModalBindBackdrop(backdrop) {
+  if (_sovaModalBound.has(backdrop)) return;
+  _sovaModalBound.add(backdrop);
+  var pressedOnBackdrop = false;
+  backdrop.addEventListener('mousedown', function(e) { pressedOnBackdrop = e.target === backdrop; });
+  backdrop.addEventListener('click', function(e) {
+    var fromBackdrop = pressedOnBackdrop && e.target === backdrop;
+    pressedOnBackdrop = false;
+    if (!fromBackdrop) return;
+    var i = _sovaModalIndex(backdrop);
+    if (i !== -1 && _sovaModalStack[i].opts.closeOnBackdrop !== false) sovaModalClose(backdrop, 'backdrop');
+  });
+}
+
+/* Opens `backdrop` (a .sova-modal-backdrop element; appended to the body when it is not in the document).
+   opts:
+     initialFocus  element (or selector inside the dialog) to focus; default the first focusable element
+     onClose       function(reason) called once on close: 'escape', 'backdrop', or the reason the page passed
+                   to sovaModalClose()
+     closeOnBackdrop  false keeps it open on a backdrop click (default true)
+     returnFocus      element to focus on close; default the element focused when the modal opened. A modal that
+                      opens after an async step passes the trigger it captured before it, since focus may have moved
+     removeOnClose    true removes the backdrop from the document once it has faded out (a built-per-call modal)
+   Opening a modal that is already open does nothing. */
+function sovaModalOpen(backdrop, opts) {
+  if (!backdrop || sovaModalIsOpen(backdrop)) return;
+  var dialog = backdrop.querySelector('.sova-modal-dialog') || backdrop;
+  var entry = { backdrop: backdrop, dialog: dialog, opts: opts || {}, trigger: (opts && opts.returnFocus) || document.activeElement };
+  clearTimeout(_sovaModalHideTimers.get(backdrop));
+  _sovaModalHideTimers.delete(backdrop);
+
+  _sovaModalAria(dialog);
+  _sovaModalBindBackdrop(backdrop);
+  if (!backdrop.isConnected) document.body.appendChild(backdrop);
+  backdrop.hidden = false;
+  void backdrop.offsetWidth;  // lay it out at opacity 0 first, so adding the class fades it in
+  backdrop.classList.add('sova-modal-visible');
+  _sovaModalStack.push(entry);
+
+  var target = entry.opts.initialFocus;
+  if (typeof target === 'string') target = dialog.querySelector(target);
+  if (!target) target = _sovaModalFocusables(dialog)[0];
+  if (!target) {
+    dialog.setAttribute('tabindex', '-1');
+    target = dialog;
+  }
+  target.focus();
+}
+
+/* Closes `backdrop` if it is open: fades it out, then hides (or removes) it, returns focus to the element that
+   had it on open, and calls the modal's onClose(reason). */
+function sovaModalClose(backdrop, reason) {
+  var i = _sovaModalIndex(backdrop);
+  if (i === -1) return;
+  var entry = _sovaModalStack.splice(i, 1)[0];
+  backdrop.classList.remove('sova-modal-visible');
+  _sovaModalHideTimers.set(backdrop, setTimeout(function() {
+    _sovaModalHideTimers.delete(backdrop);
+    if (entry.opts.removeOnClose) backdrop.remove();
+    else backdrop.hidden = true;
+  }, _SOVA_MODAL_FADE_MS));
+  var trigger = entry.trigger;
+  if (trigger && trigger.isConnected && typeof trigger.focus === 'function') trigger.focus();
+  if (entry.opts.onClose) entry.opts.onClose(reason);
+}
+
+// Capture phase on the document, so the open modal sees a key before any page handler: Escape closes the modal
+// and nothing else (the Work drawer and the feed panel also close on Escape), and Tab never leaves it.
+function _sovaModalKeydown(e) {
+  var top = _sovaModalStack[_sovaModalStack.length - 1];
+  if (!top) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    sovaModalClose(top.backdrop, 'escape');
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  var items = _sovaModalFocusables(top.dialog);
+  if (!items.length) { e.preventDefault(); return; }
+  var first = items[0];
+  var last = items[items.length - 1];
+  var active = document.activeElement;
+  if (items.indexOf(active) === -1) {  // focus is outside the dialog, or on something in it that is not focusable
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
+document.addEventListener('keydown', _sovaModalKeydown, true);
+
+var _sovaConfirmOpen = false;
+var _SOVA_CONFIRM_VARIANTS = { danger: true, warning: true };
 
 /**
  * sovaConfirm(message, options) -> Promise<boolean>
  *
- * options: { title, confirmText, confirmClass, cancelText }
- * confirmClass: 'danger' for destructive (red), default is accent (teal)
+ * options: { title, confirmText, cancelText, confirmClass, details }
+ * confirmClass: 'danger' for a destructive action (red), 'warning' for one that proceeds past a known problem
+ *   (yellow); anything else is the primary style. Both open with Cancel focused, so an Enter carried over from
+ *   the trigger cancels; the primary style opens with Confirm focused.
+ * details: plain strings listed under the message (the merge blockers), escaped like the message.
+ * One confirm at a time: a call while one is open resolves false at once.
  */
 function sovaConfirm(message, options) {
   var opts = options || {};
-  var title = opts.title || 'Confirm';
-  var confirmText = opts.confirmText || 'Confirm';
-  var cancelText = opts.cancelText || 'Cancel';
-  var isDanger = opts.confirmClass === 'danger';
+  if (_sovaConfirmOpen) return Promise.resolve(false);
+  _sovaConfirmOpen = true;
 
-  if (_sovaModalOpen) {
-    return Promise.resolve(false);
+  var variant = _SOVA_CONFIRM_VARIANTS[opts.confirmClass] ? opts.confirmClass : 'primary';
+  var details = (Array.isArray(opts.details) ? opts.details : []).filter(function(d) {
+    return d !== null && d !== undefined && String(d) !== '';
+  });
+  var id = 'sova-confirm-' + (++_sovaModalSeq);
+
+  // Text goes in with textContent and ids with setAttribute: only the fixed skeleton is markup.
+  function button(label, buttonVariant, cls) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = _sovaBtnClass({ variant: buttonVariant, size: 'md' }) + ' ' + cls;
+    b.textContent = label;
+    return b;
   }
-  _sovaModalOpen = true;
 
   return new Promise(function(resolve) {
     var backdrop = document.createElement('div');
     backdrop.className = 'sova-modal-backdrop';
-
-    var confirmBtnClass = isDanger
-      ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30'
-      : 'bg-accent/20 text-accent hover:bg-accent/30';
-
+    backdrop.hidden = true;
     backdrop.innerHTML =
-      '<div class="sova-modal-dialog">' +
-        '<div class="px-5 pt-5 pb-4">' +
-          '<p class="text-sm font-medium text-gray-200 mb-2">' + escapeHtml(title) + '</p>' +
+      '<div class="sova-modal-dialog" role="alertdialog">' +
+        '<div class="px-5 pt-5 pb-4 overflow-y-auto">' +
+          '<p class="text-sm font-medium text-gray-200 mb-2">' + escapeHtml(opts.title || 'Confirm') + '</p>' +
           '<p class="text-sm text-gray-400">' + escapeHtml(message) + '</p>' +
         '</div>' +
-        '<div class="flex justify-end gap-2 px-5 pb-4">' +
-          '<button class="sova-modal-cancel px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 rounded transition-colors">' +
-            escapeHtml(cancelText) +
-          '</button>' +
-          '<button class="sova-modal-confirm px-3 py-1.5 text-sm font-medium rounded transition-colors ' + confirmBtnClass + '">' +
-            escapeHtml(confirmText) +
-          '</button>' +
-        '</div>' +
+        '<div class="flex justify-end gap-2 px-5 pb-4"></div>' +
       '</div>';
-
-    function close(result) {
-      _sovaModalOpen = false;
-      if (backdrop.parentElement) backdrop.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
-    }
-
-    var confirmBtn = backdrop.querySelector('.sova-modal-confirm');
-
-    function onKey(e) {
-      if (e.key === 'Escape') close(false);
-      if (e.key === 'Enter') { e.preventDefault(); close(true); }
-    }
-
-    backdrop.addEventListener('click', function(e) {
-      if (e.target === backdrop) close(false);
-    });
-    backdrop.querySelector('.sova-modal-cancel').addEventListener('click', function() {
-      close(false);
-    });
-    confirmBtn.addEventListener('click', function() {
-      close(true);
-    });
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(backdrop);
-    requestAnimationFrame(function() {
-      requestAnimationFrame(function() {
-        backdrop.classList.add('sova-modal-visible');
+    var dialog = backdrop.children[0];
+    var text = dialog.children[0];
+    text.children[0].id = id + '-title';
+    text.children[1].id = id + '-message';
+    var describedBy = [id + '-message'];
+    if (details.length) {
+      var list = document.createElement('ul');
+      list.id = id + '-details';
+      list.className = 'sova-modal-details';
+      details.forEach(function(d) {
+        var item = document.createElement('li');
+        item.textContent = String(d);
+        list.appendChild(item);
       });
-    });
+      text.appendChild(list);
+      describedBy.push(list.id);
+    }
+    dialog.setAttribute('aria-labelledby', id + '-title');
+    dialog.setAttribute('aria-describedby', describedBy.join(' '));
 
-    setTimeout(function() {
-      if (backdrop.parentNode) confirmBtn.focus();
-    }, 0);
+    var cancelBtn = button(opts.cancelText || 'Cancel', 'ghost', 'sova-modal-cancel');
+    var confirmBtn = button(opts.confirmText || 'Confirm', variant, 'sova-modal-confirm');
+    dialog.children[1].appendChild(cancelBtn);
+    dialog.children[1].appendChild(confirmBtn);
+    cancelBtn.addEventListener('click', function() { sovaModalClose(backdrop, 'cancel'); });
+    confirmBtn.addEventListener('click', function() { sovaModalClose(backdrop, 'confirm'); });
+
+    sovaModalOpen(backdrop, {
+      initialFocus: variant === 'primary' ? confirmBtn : cancelBtn,
+      removeOnClose: true,
+      onClose: function(reason) {
+        _sovaConfirmOpen = false;
+        resolve(reason === 'confirm');
+      },
+    });
   });
 }
 
@@ -2082,12 +2232,10 @@ function toggleFeedPanel() {
   document.dispatchEvent(new CustomEvent('sova:feed-toggle', { detail: { open: _feedPanelOpen } }));
 }
 
-// A dialog owns Escape while it is open. The confirm and launch handlers are added to the document
-// after this one and do not call preventDefault, so the panel has to check for open dialogs itself.
+// A dialog owns Escape while it is open. A shared modal (sovaModalOpen) stops the key before it gets here; any
+// other dialog does not, so the panel checks for open dialogs itself.
 function _feedDialogOpen() {
-  if (_sovaModalOpen) return true;
-  var launch = document.getElementById('launch-modal');
-  if (launch && !launch.classList.contains('hidden')) return true;
+  if (sovaModalIsOpen()) return true;
   // A closed dialog can stay in the DOM (aria-hidden, off-screen or display:none), so test what is shown.
   var panel = document.getElementById('feed-panel');
   var found = document.querySelectorAll('dialog[open], [role="dialog"], [aria-modal="true"]');

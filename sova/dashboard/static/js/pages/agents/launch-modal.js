@@ -96,7 +96,7 @@ async function startPlanner() {
 // Pre-launch modal
 
 var _launchModalState = null; // {issue, role, force, prNumber}
-var _launchModalTrigger = null;
+var _launchTrigger = null; // the element that opened the launch modal, for focus return
 var _launchRequestId = 0; // monotonic counter to discard stale fetch responses
 
 var _COMPLEXITY_COLORS = {
@@ -250,9 +250,11 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
     issue: issue, role: role, force: force || false, prNumber: prNumber || null,
     dismissRunId: dismissRunId || null,
   };
-  _launchModalTrigger = document.activeElement;
   _setSuitabilityWarning(null);
   _prepareLlmOverrideSelect(role);
+  // The complexity request below can finish after focus has moved, so the trigger is captured now and handed to
+  // the shared modal as its return-focus target.
+  _launchTrigger = document.activeElement;
   // Bumped before the no-issue branch too, so an earlier issue's in-flight
   // complexity fetch can never act on (or overwrite) this launch.
   var requestId = ++_launchRequestId;
@@ -290,7 +292,7 @@ export function showLaunchModal(issue, role, force, prNumber, dismissRunId) {
         return;
       }
 
-      _showModalChrome();
+      _showModalChrome(!!data.suitability);
       _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
       _prepareRuntimeModelSelect(role, data.suggested_model_id || data.suggested_model);
       document.getElementById('launch-reason').textContent = data.reason;
@@ -319,14 +321,19 @@ function _setSuitabilityWarning(suitability) {
   el.classList.remove('hidden');
 }
 
-function _showModalChrome() {
-  var modal = document.getElementById('launch-modal');
+// Opens on the shared modal (sovaModalOpen in app.js), which owns Escape, the backdrop, the Tab trap and focus
+// return. Launch is focused, as a primary confirm's button is; a launch carrying a suitability warning opens on
+// Cancel instead, like a warning confirm, so an Enter carried over from the trigger never starts it.
+function _showModalChrome(cautious) {
   var loading = document.getElementById('launch-modal-loading');
   var body = document.getElementById('launch-modal-body');
   loading.classList.remove('hidden');
   body.classList.add('hidden');
-  modal.classList.remove('hidden');
-  document.addEventListener('keydown', _launchModalKeydown);
+  sovaModalOpen(document.getElementById('launch-modal'), {
+    initialFocus: cautious ? '[data-action="hide-launch-modal"]' : '#launch-confirm-btn',
+    returnFocus: _launchTrigger,
+    onClose: function() { _launchModalState = null; _launchTrigger = null; },
+  });
 }
 
 function _populateLaunchDefaults() {
@@ -338,17 +345,7 @@ function _populateLaunchDefaults() {
 }
 
 function hideLaunchModal() {
-  document.getElementById('launch-modal').classList.add('hidden');
-  document.removeEventListener('keydown', _launchModalKeydown);
-  _launchModalState = null;
-  if (_launchModalTrigger) {
-    _launchModalTrigger.focus();
-    _launchModalTrigger = null;
-  }
-}
-
-function _launchModalKeydown(e) {
-  if (e.key === 'Escape') hideLaunchModal();
+  sovaModalClose(document.getElementById('launch-modal'), 'cancel');
 }
 
 function confirmLaunch() {
@@ -376,9 +373,5 @@ export function init() {
     'start-planner': function() { startPlanner(); },
     'hide-launch-modal': function() { hideLaunchModal(); },
     'confirm-launch': function() { confirmLaunch(); },
-  });
-
-  document.getElementById('launch-modal').addEventListener('click', function(e) {
-    if (e.target === this) hideLaunchModal();
   });
 }

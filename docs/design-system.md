@@ -257,41 +257,66 @@ Tooltips are hidden on `disabled` or `aria-disabled="true"` elements.
 
 Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-text` color, `0.75rem` font, 150ms fade transition. Defined in `style.css` Section 6.
 
-## Confirmation Dialogs
+## Modal Dialogs
 
-Use `sovaConfirm()` instead of the browser's native `confirm()`. Returns a Promise that resolves `true` (Confirm) or `false` (Cancel/Escape/backdrop click).
+Every dashboard dialog runs on one component in `app.js` Section 5 (#1224), styled by the `.sova-modal-*` classes in `style.css` Section 3b. Never use the browser's native `confirm()`, `alert()` or `prompt()`: use `sovaConfirm()` for a question and `showToast()` for a message. `tests/test_dashboard_design_drift_guard.py` fails on a native dialog call (`native_dialog`: bare, on `window`, `globalThis`, `self` or `top`, or by bracket access) or a hand-written `fixed inset-0` overlay (`modal_shell`) anywhere in the templates or static JS, and `tests/test_dashboard_modal.py` runs the component under node (with the Work page's Integrate handler and drawer listeners, so the drawer is shown to stay open behind the dialog) and checks that every page modal is closed with the `hidden` attribute and that its id is passed to both `sovaModalOpen()` and `sovaModalClose()`.
 
-### API
+### Behavior
+
+- **Open** (`sovaModalOpen(backdrop, opts)`): clears the backdrop's `hidden` attribute and fades it in (150 ms), sets `role="dialog"` (unless the markup set one, such as `alertdialog`), `aria-modal="true"` and `aria-labelledby` (the dialog's first heading, or the element marked `data-modal-title`), and focuses `opts.initialFocus` or the first rendered focusable element.
+- **Keyboard**: while a modal is the topmost open one it owns the keyboard through a capture-phase listener. Escape closes it and stops there, so the Work drawer and the feed panel, which also close on Escape, stay open behind it. Tab and Shift+Tab cycle inside it. Enter is never intercepted: it presses the focused button.
+- **Backdrop click** closes it, unless `opts.closeOnBackdrop` is `false`. A press that starts inside the dialog and is released over the backdrop (selecting text in a field) does not count.
+- **Close** (`sovaModalClose(backdrop, reason)`): fades out, sets `hidden` again (or removes the backdrop, with `opts.removeOnClose`), returns focus to the element that had it on open when that element is still in the page, and calls `opts.onClose(reason)` once. Escape and the backdrop pass `'escape'` and `'backdrop'`.
+- Modals stack: a confirm opened over a page modal closes first, and focus goes back into the page modal.
+- `sovaModalIsOpen(backdrop)` reports one modal, `sovaModalIsOpen()` whether any is open.
+
+### Page Modals
+
+A page modal lives in its template, closed with the `hidden` attribute, and its script opens and closes it with the functions above. The header, scrolling body and footer layout is shared:
+
+```html
+<div id="example-modal" class="sova-modal-backdrop" hidden>
+  <div class="sova-modal-dialog sova-modal-dialog-md">
+    <div class="sova-modal-header">
+      <div class="sova-modal-icon">{{ icon("roles", "w-4 h-4") }}</div>
+      <div class="min-w-0">
+        <h3 class="sova-modal-title">Create Custom Role</h3>
+        <p class="sova-modal-subtitle">Optional one-line context</p>
+      </div>
+    </div>
+    <div class="sova-modal-body">...</div>
+    <div class="sova-modal-footer">
+      {{ btn("Cancel", variant="ghost", attrs={"data-act": "close"}) }}
+      {{ btn("Create", attrs={"data-act": "create"}) }}
+    </div>
+  </div>
+</div>
+```
+
+The dialog is 24rem wide by default (a confirm); `.sova-modal-dialog-md` (28rem), `-lg` (42rem) and `-xl` (56rem) suit forms and lists. The dialog caps at 85vh and the body scrolls. A `.sova-btn` hides with the `hidden` attribute or the `hidden` class: `style.css` restores both (`.sova-btn[hidden], .sova-btn.hidden`), since `.sova-btn`'s display would otherwise override them.
+
+### Confirmations
+
+`sovaConfirm(message, opts)` builds a modal per call and returns a Promise that resolves `true` (Confirm) or `false` (Cancel, Escape or a backdrop click).
 
 ```javascript
-var ok = await sovaConfirm('Delete this item?', {
-  title: 'Confirm',          // optional, default 'Confirm'
-  confirmText: 'Delete',     // optional, default 'Confirm'
-  cancelText: 'Cancel',      // optional, default 'Cancel'
-  confirmClass: 'danger',    // optional, 'danger' for red styling
+var ok = await sovaConfirm('This PR is not fully ready to merge. Run Integrate PR anyway?', {
+  title: 'Not ready to merge',         // optional, default 'Confirm'
+  details: blockers,                   // optional, plain strings listed under the message
+  confirmText: 'Integrate PR anyway',  // optional, default 'Confirm'
+  cancelText: 'Cancel',                // optional, default 'Cancel'
+  confirmClass: 'warning',             // optional: 'danger' or 'warning'; anything else is primary
 });
 if (!ok) return;
 ```
 
-### Confirmation Dialog Styling
-
-- Backdrop: `z-200`, `bg-black/50`, 150ms fade
-- Dialog: `--color-surface-card` background, `--ctp-surface1` border, 150ms scale transition
-- Cancel button: ghost text (`text-gray-400 hover:text-gray-200`)
-- Confirm button (default): `bg-accent/20 text-accent`
-- Confirm button (danger): `bg-accent-red/20 text-accent-red`
-
-Defined in `style.css` Section 3b, function in `app.js` Section 5.
-
-### Usage Rules
-
-- Always use `confirmClass: 'danger'` for destructive actions (delete, abandon, mark failed)
-- Default styling for neutral confirmations (skip, advance, approve)
-- The enclosing function must be `async` to use `await`
-
-### Documented Exception: Merge-Blocker Confirm
-
-`runCommandWithMergeBlockers()` in `static/js/pages/agents/launch-modal.js` (the secondary "Integrate PR" action, gated on `Resolution.merge_blockers`, issue #1111) uses the browser's native `confirm()` rather than `sovaConfirm()`. This was an explicit spec decision for that issue ("use the browser's native `confirm()`, no new modal component, consistent with the dashboard's existing lightweight-interaction patterns for destructive/consequential actions"), not an oversight. It is the one call to native `confirm()` in the dashboard (`sovaConfirm()` is used everywhere else, including other actions in the same file) and is also the highest-consequence confirmation in the app (it squash-merges and deletes the branch), so a future audit should not flag it as unintentional drift. Revisit via `sovaConfirm()` only as a deliberate follow-up, not a silent fix-in-passing.
+- `confirmClass: 'danger'` (red) for a destructive action: delete, abandon, mark failed, override a budget.
+- `confirmClass: 'warning'` (yellow) for an action that proceeds past a known problem, such as Integrate with merge blockers.
+- No `confirmClass` for a neutral confirmation: skip, advance, approve.
+- Danger and warning open with Cancel focused, so an Enter carried over from the trigger cancels; the primary style opens with Confirm focused.
+- The message, title, button labels and every `details` entry are text, never markup: the dialog is built with `textContent`.
+- One confirm at a time: a call while one is open resolves `false` at once.
+- The dialog is a `role="alertdialog"` described by the message and the details list. Its buttons carry the `sovaBtn()` classes (`_sovaBtnClass()`): a ghost Cancel and the chosen variant, both `md`.
 
 ## Layout Tokens
 
