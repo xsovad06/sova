@@ -144,14 +144,15 @@ The dashboard stays bound to loopback. To reach it from your own phone or laptop
 
 ```bash
 tailscale serve --bg --https=443 http://127.0.0.1:8111
-sova config set dashboard.proxy_origins https://<machine>.<tailnet>.ts.net
-sova config set dashboard.proxy_allowed_logins you@example.com   # your Tailscale login
-sova server restart                                              # both settings apply at startup
+sova config set dashboard.proxy_origins https://mac.example.ts.net
+sova config set dashboard.proxy_allowed_logins you@example.com
 ```
 
-Both settings apply to the whole server and are read once at startup, from the project the server serves. On the multi-project hub (`sova server start --multi`) that is the directory the server was started in, so run the `sova config set` lines there, or set `SOVA_DASHBOARD_PROXY_ORIGINS` and `SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS` (JSON arrays) in the server environment; a value saved in any other project has no effect.
+Replace `mac.example.ts.net` with this machine's tailnet name (`tailscale status --json` prints it as `Self.DNSName`, without the trailing dot) and `you@example.com` with your Tailscale login (`LoginName` of your entry under `User` in the same output; `tailscale status` truncates it). Keep the lines free of trailing `#` comments when you paste them into zsh: an interactive zsh does not treat `#` as a comment by default, so the text becomes arguments.
 
-Enable HTTPS certificates in the Tailscale admin console first, and consider restricting the access policy to your own devices (`autogroup:self`). A request through the proxy origin without an allowed login, and any Funnel request, gets 403. If the first HTTPS request fails with a TLS error, `tailscale cert <machine>.<tailnet>.ts.net` prints the underlying certificate error. The security model is in `docs/security-guidelines.md`, "Dashboard Security Model".
+Both settings apply to the whole server and are read once at startup, so restart the server afterwards (`sova server restart`, after checking that no agent is running). They are read from the project the server serves. On the multi-project hub (`sova server start --multi`) that is the directory the server was started in, so run the `sova config set` lines there, or set `SOVA_DASHBOARD_PROXY_ORIGINS` and `SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS` (JSON arrays) in the server environment; a value saved in any other project has no effect.
+
+Enable HTTPS certificates in the Tailscale admin console first, and consider restricting the access policy to your own devices (`autogroup:self`). A request through the proxy origin without an allowed login, and any Funnel request, gets 403. If the first HTTPS request fails with a TLS error, `tailscale cert mac.example.ts.net` prints the underlying certificate error. The security model is in `docs/security-guidelines.md`, "Dashboard Security Model".
 
 On a phone, open `/phone` (`/p/<slug>/phone` on the hub) instead of the Work page: one narrow column with what waits on you (handoffs and the supervisor's pending plan), the running agents with Stop, and a field to start an issue. It uses the same endpoints as the Work page, so it needs no extra setup.
 

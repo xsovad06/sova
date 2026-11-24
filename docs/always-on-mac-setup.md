@@ -4,6 +4,8 @@ How to keep SOVA running on a Mac that stays on at a desk, and supervise it from
 
 Tested between 2026-11-21 and 2026-11-24 on a MacBook Pro (Apple silicon, on AC power, FileVault on) with macOS 26.7.3, Tailscale 1.104.6, ntfy 2.38.1 and SOVA 0.1.0. Claude Code was 2.1.318 at the start and updated itself to 2.1.331 during the testing; the Claude Code behavior below was checked again on 2.1.331, and the launchd Remote Control test ran on it. A statement that comes from code or vendor documentation rather than a test on that Mac says so.
 
+A second test on 2026-11-24 and 2026-11-25 used an Apple silicon MacBook on macOS 27.0.1 with the lid closed on an external display, a keep-awake app, Claude Code 2.1.314 and the multi-project hub, with an existing shared ntfy server instead of a local one. Statements from it are marked "second test". Claude Code updated itself to 2.1.331 during that test, and a running `claude remote-control` keeps the binary it started with.
+
 ## Contents
 
 1. [Keep the Mac Awake](#keep-the-mac-awake)
@@ -12,7 +14,8 @@ Tested between 2026-11-21 and 2026-11-24 on a MacBook Pro (Apple silicon, on AC 
 4. [Steer Sessions from the Phone with Remote Control](#steer-sessions-from-the-phone-with-remote-control)
 5. [Reach the Dashboard Privately with Tailscale](#reach-the-dashboard-privately-with-tailscale)
 6. [Push Notifications with ntfy](#push-notifications-with-ntfy)
-7. [Tokens](#tokens)
+7. [Several Projects and a Second Machine](#several-projects-and-a-second-machine)
+8. [Tokens](#tokens)
 
 ## Keep the Mac Awake
 
@@ -26,6 +29,11 @@ pmset -g custom
 The second command should list `sleep 0` under "AC Power". `-c` changes only the power-adapter profile, so the Mac still sleeps on battery, and `displaysleep` can keep its value. The same setting is in System Settings, Battery, Options: "Prevent automatic sleeping on power adapter when the display is off". Tested: turning it on sets `sleep 0` under "AC Power" and leaves the battery profile at `sleep 1`.
 
 **Closing the lid.** `sleep 0` does not keep a closed MacBook awake by itself. Tested on power with no external display: closing the lid put the Mac to sleep within seconds (`pmset -g log` showed "Entering Sleep state due to 'Clamshell Sleep'"), and sleep suspends every process (the server, any agents, Remote Control) until the lid is opened again; the Mac woke briefly on its own for network traffic, but nothing ran continuously. Tested with an external display connected and power plugged in: with the lid closed for about a minute, the external display kept showing the desktop and `pmset -g log` recorded no sleep, and `ioreg` reported `AppleClamshellCausesSleep = No` while the display was attached. So an always-on MacBook needs either the lid open, or the lid closed with an external display and power connected. Whether it stays awake for hours, or after the display is switched off or unplugged, was not tested.
+
+**A keep-awake app instead of `pmset`.** A menu-bar app that holds a power assertion keeps the Mac awake without changing `pmset`: `pmset -g assertions` lists it as `PreventUserIdleSystemSleep` under the app's name. Second test, with one running, the lid closed and an external display attached: `ioreg` reported `AppleClamshellCausesSleep = No` and the Mac stayed up through the whole session. Two cautions:
+
+- If you switch the app off at night so the Mac sleeps, leave `sleep` at its default. `sudo pmset -c sleep 0` would keep the Mac awake all night, which defeats that choice.
+- While the Mac sleeps nothing runs: the server, the agents, Remote Control, and the pushes they send. A session started with a timer, or one that does not start again at login, ends or goes missing silently and leaves the Mac free to sleep.
 
 ## Start the Server at Login
 
@@ -72,20 +80,27 @@ Claude Code Remote Control shows a Claude Code session running on the Mac in the
 
   Detach with Ctrl+A then D, and reattach with `screen -r remote-control`.
 
+  If you have not used `screen` before:
+
+  - `screen -S remote-control` opens a second shell and the terminal looks emptied. That is normal: type the `cd` and the loop there, not in the shell you came from.
+  - After Ctrl+A then D, `screen -ls` must list the session as `(Detached)`. `echo $STY` prints the session name inside a screen and nothing outside one.
+  - To stop Remote Control, reattach and press Ctrl+C. Whether the loop then ends or starts `claude` again after the 10 second `sleep` was not tested: if it comes back, press Ctrl+C again while it waits, or end the whole screen with `screen -S remote-control -X quit`. To move a running Remote Control onto a newer `claude` binary, stop it that way and start the loop again.
+  - Second test: a Remote Control started outside a screen was gone a few minutes later; the cause was not determined. After detaching, confirm that the process hangs under the screen with `ps -o pid,ppid,command -p <pid of claude remote-control>`, following the parent chain up to `SCREEN`.
+
 - **Push notifications** are two switches in `/config`: "Push when Claude decides" and "Push when actions required" (both present under these names, tested). The phone also needs notifications allowed for the Claude app in the iPhone's Settings; with that off, the first test produced no push at all. Tested with "actions required" on: a question put to the session from the phone, with the phone locked, produced a push from the Claude app, but it appeared only after the phone was unlocked, not on the locked screen. The cause was not determined; the first things to check are the app's Lock Screen setting under Settings, Notifications, Claude, and any Focus mode. A permission prompt as the trigger was not tested.
-- **The SOVA operator tools.** Flags given before `remote-control` (such as `--mcp-config`) are not passed to the sessions server mode spawns, and its own `--settings` flag needs Claude Code 2.1.321 or later. Register `sova mcp serve` with `claude mcp add` instead, as the [README describes](../README.md#registering-the-mcp-server-in-claude-code), so every session started in that directory loads it.
+- **The SOVA operator tools.** Flags given before `remote-control` (such as `--mcp-config`) are not passed to the sessions server mode spawns, and its own `--settings` flag needs Claude Code 2.1.321 or later. Register `sova mcp serve` with `claude mcp add` instead, as the [README describes](../README.md#registering-the-mcp-server-in-claude-code), so every session started in that directory loads it. The registration is stored per folder, so each folder you serve with Remote Control needs its own `claude mcp add`, bound to that project with `--project` (see [Several Projects and a Second Machine](#several-projects-and-a-second-machine)). Second test: a phone session in each of two folders called `sova_status` and got live data for its own project.
 
 Tested with a session started by `claude remote-control --name rc-terminal` in a terminal: it appeared in the Claude iPhone app, and a call to the registered `sova_status` and `sova_pending` tools came back with live data after approving the tool on the phone.
 
 **Usage limits.** Not measured. `/usage` read 85% before and after a few short prompts, which is too coarse to show a difference. Claude runs on the Mac under your login, so these calls are ordinary Claude Code usage; Anthropic's Remote Control page does not say so either way.
 
-**Spawn mode.** Starting `claude remote-control` stores `remoteControlSpawnMode` for the folder in `~/.claude.json`; on the test Mac it is `worktree`, so each session started from the phone gets its own git worktree. A second `claude remote-control` for a folder already served is refused ("This folder is already served by a terminal `claude remote-control` on this device").
+**Spawn mode.** Starting `claude remote-control` stores `remoteControlSpawnMode` for the folder in `~/.claude.json`; on the test Mac it is `worktree`, so each session started from the phone gets its own git worktree. The first run in a folder asks for it (second test, Claude Code 2.1.314): "Spawn mode for this project: [1] same-dir (default), [2] worktree", saves the answer for the folder, and `--spawn=same-dir` or `--spawn=worktree` sets it without the question. A second `claude remote-control` for a folder already served is refused ("This folder is already served by a terminal `claude remote-control` on this device").
 
 **Under launchd, with no terminal.** Tested on Claude Code 2.1.331: a LaunchAgent running `claude remote-control --name rc-launchd` in an already-trusted folder, with the same `PATH` the generated SOVA plist uses and no token in its environment, connected ("Connected", then "Ready", capacity 0/32). A new session started from the iPhone app against that environment answered, and the server created an isolated git worktree for it under `.claude/worktrees/bridge-<session id>` on a `worktree-bridge-<session id>` branch. Things to know:
 
 - **The first launch in a folder needs a terminal**, as described above: run `claude remote-control` there once before handing it to launchd. The launchd test used a folder already trusted; an untrusted one was not tested.
 - **A stopped session can be handed back.** After a `claude remote-control` in a terminal was stopped with Ctrl+C, the launchd process kept being handed that same ended session at start, and its pre-created session failed immediately ("Session failed: Process exited with error"), so nothing appeared on the phone. The process stayed up, and a new session started from the phone worked. If the phone shows nothing, start a new session there instead of waiting for the pre-created one.
-- **Remote Control can change the repository's git config.** Creating the session worktree set the repository's `core.hooksPath` to the absolute path of the primary checkout's `.githooks`. SOVA's own repository expects the relative `.githooks`, and `sova doctor` fails its `git hooks` row until `git config core.hooksPath .githooks` is run again. Check it after a Remote Control session in a repository that uses `.githooks`.
+- **Remote Control can change the repository's git config.** Creating the session worktree set the repository's `core.hooksPath` to the absolute path of the primary checkout's `.githooks`. SOVA's own repository expects the relative `.githooks`, and `sova doctor` fails its `git hooks` row until `git config core.hooksPath .githooks` is run again. Check it after a Remote Control session in a repository that uses `.githooks`. It was not reproduced in the second test: a phone session that only called a read-only SOVA tool created no worktree and left `core.hooksPath` unchanged in the two repositories checked.
 - **Remove what a session leaves behind.** The session's worktree is locked while its session runs. After stopping it, `git worktree remove -f -f <path>` and `git branch -D <branch>` clean up an unused one.
 - **Offline behavior is from the docs.** The roughly 10-minute exit when offline was not reproduced here; keep the restart loop (or launchd's `KeepAlive`, which was not tested) in front of `claude remote-control`.
 
@@ -153,9 +168,99 @@ sova config set notification.link_base_url https://mac.example.ts.net/p/<slug>
 
 On a single-project server, leave `/p/<slug>` off the link. These are read when a notification is sent, so no restart is needed.
 
-**The phone.** With Tailscale connected, install the ntfy app, add the user `phone` for `https://mac.example.ts.net:8443` under Settings, Users, then subscribe to the topic `sova` with "Use another server" set to that address. Tested: pushes arrived as iPhone notifications, and tapping one opened the Work page. Delivery with the app closed and the phone locked for a while was not tested separately.
+**The phone.** With Tailscale connected, install the ntfy app, add the user `phone` for `https://mac.example.ts.net:8443` under Settings, Users, then subscribe to the topic `sova` with "Use another server" set to that address. Tested: pushes arrived as iPhone notifications, and tapping one opened the Work page. Delivery with the app closed and the phone locked for a while was not tested separately. Second test: with an iOS Sleep Focus active, a push did not surface until the ntfy app was opened, and the message was waiting there. A Focus mode holds notifications back, so rule it out before suspecting delivery. A push to a locked phone with the app closed and no Focus active was not tested.
 
-**What a push looks like.** The title names the event and the body holds the project and the detail, for example "Developer failed #1557" over "sova | Step 'validate' failed: 2 tests failed". A symbol before the title marks the kind: a bell for "needs you", a warning sign for a failure, a check mark for a finish. On iOS every push shows the ntfy app's icon; ntfy's per-message `icon` URL did not change it (tested).
+**What a push looks like.** The title names the event and the body holds the project and the detail, for example "Developer failed #1557" over "sova | Step 'validate' failed: 2 tests failed". A symbol before the title marks the kind: a bell for "needs you", a warning sign for a failure, a check mark for a finish. On iOS every push shows the ntfy app's icon; ntfy's per-message `icon` URL did not change it (tested). Second test: a `needs_human` push showed the bell.
+
+**Send a test push.** `send_ntfy_notification` never raises. A failed publish prints a `notify.ntfy_failed` warning with the HTTP status (second test: 403 for a missing token) and a traceback, and returns normally; a successful one prints nothing at the default log level, and neither does a project whose `ntfy_url` or `ntfy_topic` is empty. A quiet run is therefore not proof of delivery: the phone is. Run it in a project's primary checkout, with the three notification settings and a stored token for that path:
+
+```bash
+cd /path/to/project
+"$(sed -n '1s/^#!//p' "$(command -v sova)")" - <<'PY'
+import asyncio
+from pathlib import Path
+
+from sova.config import load_config
+from sova.ipc.notifications import NotificationKind, send_ntfy_notification
+
+project = Path.cwd()
+n = load_config(project).notification
+asyncio.run(
+    send_ntfy_notification(
+        n,
+        "SOVA test push",
+        "Test message. Tap to open the Work page.",
+        kind=NotificationKind.NEEDS_HUMAN,
+        click_url=f"{n.link_base_url.rstrip('/')}/work",
+        project_dir=project,
+    )
+)
+PY
+```
+
+The push should appear within seconds under the topic with a bell, and tapping it should open that project's Work page. In a project with an empty `ntfy_url` or `ntfy_topic` the call returns without sending anything.
+
+## Several Projects and a Second Machine
+
+The multi-project hub (`sova server start --multi`) serves every project in `~/.config/sova/projects.json`, each with its own `.claude/sova.db`, at `/p/<slug>/`. Several settings still belong to one project or one folder:
+
+| What | Scope | Where to set it |
+|------|-------|-----------------|
+| SOVA operator tools for Claude Code (`claude mcp add sova -- sova mcp serve --project /path/to/project`) | One registration per folder | Run it in each folder |
+| Remote Control | One `claude remote-control` per folder, so one screen per folder | Serve only the folders you steer from the phone |
+| `notification.ntfy_url`, `ntfy_topic`, `link_base_url` | The project's database | `sova config set` inside that project's checkout; `link_base_url` ends in that project's `/p/<slug>` |
+| The ntfy token | A keychain entry named by the project path | The [Tokens](#tokens) script, once per project |
+| `dashboard.proxy_origins`, `dashboard.proxy_allowed_logins` | The whole hub, read from the directory it was started in | Once, in that project |
+| `server.scheduler_enabled` | One project, but only a single-project server runs the watch loop (from code: `scheduler_enabled and not multi_project`) | The hub never runs it; `sova_status` shows `scheduler_running: false` |
+
+`sova config` reads the project from the current directory, so run it in the project you mean. A linked git worktree reads the primary checkout's settings (from `sova/config/root.py`), but the token entry is named by the path the code runs in: second test, a test push sent from a worktree reached the server and was rejected with 403, because no token is stored under the worktree's path. Run the token script and the test push from the primary checkout. Second test: pushes from two projects reached the same topic with the project name leading the body, and tapping one opened the Work page of the project whose `link_base_url` it carried (checked for one of the two).
+
+### Use an Existing ntfy Server from Another Machine
+
+One ntfy server can serve several machines, so a second machine needs no Docker and no second server. On the server, give each machine its own write-only account and its own topic, and let the phone's read-only account read that topic:
+
+```bash
+docker exec -it ntfy ntfy user add second-mac
+docker exec ntfy ntfy access second-mac second-mac write-only
+docker exec ntfy ntfy access phone second-mac read-only
+docker exec ntfy ntfy token add --label second-mac second-mac
+```
+
+Store the token on the second machine with the [Tokens](#tokens) script, then point each project at the server's address and the new topic, and subscribe the phone's ntfy app to that topic:
+
+```bash
+sova config set notification.ntfy_url https://server-mac.example.ts.net:8443
+sova config set notification.ntfy_topic second-mac
+sova config set notification.link_base_url https://mac.example.ts.net/p/<slug>
+```
+
+Replace `<slug>` with the project's slug before you run the last line.
+
+Check the server from the second machine before you configure anything. The first command should print `{"healthy":true,...}`; the second reads nothing and publishes nothing, and prints `403` when the server is private (`auth-default-access: "deny-all"`):
+
+```bash
+curl -s https://server-mac.example.ts.net:8443/v1/health
+curl -s -o /dev/null -w '%{http_code}\n' "https://server-mac.example.ts.net:8443/second-mac/json?poll=1"
+```
+
+Every push from every machine goes through the server's machine, so a push arrives only while that machine is awake and reachable on the tailnet, whatever the state of the machine that sent it.
+
+### Run the Hub by Hand
+
+Without launchd, the hub is whatever terminal started it. Closing that terminal, pressing Ctrl+C in it, or a reboot stops the dashboard, and it does not come back on its own; the table in [What Happens to Running Agents](#what-happens-to-running-agents) says what happens to agents. To restart it:
+
+```bash
+sova server status
+curl -s http://127.0.0.1:8111/api/agents/active
+```
+
+Check that no agent is running, then run `sova server restart` **in the directory the hub was started in**. A restart stops the server and starts the new one in the terminal that runs the command, and it reads its configuration from that terminal's current directory (from `sova/cli/commands/server.py`). Leave `--project` off for the hub: it selects single-project mode, which starts the scheduler. Restarted from another project's folder, the hub should come back without the proxy settings above, so the tailnet address would answer 403 (from the code and the README's description of where the settings are read; not tested). To find the directory of a hub you did not start yourself, take the PID from `sova server status`:
+
+```bash
+lsof -a -p 12345 -d cwd -Fn
+```
+
+The line that starts with `n` is the directory.
 
 ## Tokens
 
@@ -188,4 +293,4 @@ unset token
 echo "Stored the ntfy token for $project." >&2
 ```
 
-Run it as `store-ntfy-token.sh /path/to/project`. The `SOVA_NOTIFICATION_NTFY_TOKEN` environment variable, if set, overrides the stored token.
+Run it as `store-ntfy-token.sh /path/to/project`, once for every project that sends pushes: the keychain entry is named by the project path. The `SOVA_NOTIFICATION_NTFY_TOKEN` environment variable, if set, overrides the stored token.
