@@ -2297,6 +2297,43 @@ class TestServerCLICommands:
         content = (home_dir / "Library" / "LaunchAgents" / "com.sova.server.plist").read_text()
         assert f"<string>{project_dir}</string>" in content
 
+    def test_install_service_launchd_sets_path_to_resolved_tool_dirs(self, tmp_path: Path) -> None:
+        """launchd's default PATH misses where claude and sova live, so the plist names their directories."""
+        import plistlib
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        resolved = {
+            "sova": "/Users/you/Library/Python/3.14/bin/sova",
+            "claude": "/Users/you/.local/bin/claude",
+            "node": "/Users/you/.nvm/bin/node",
+            "gh": "/opt/homebrew/bin/gh",
+            "git": "/opt/homebrew/bin/git",
+        }
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("shutil.which", side_effect=resolved.get),
+        ):
+            result = CliRunner().invoke(app, ["install-service", "--type", "launchd", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        plist_file = tmp_path / "Library" / "LaunchAgents" / "com.sova.server.plist"
+        env = plistlib.loads(plist_file.read_bytes())["EnvironmentVariables"]
+        # Resolved tool directories first, then sova's, each directory once, unresolved tools skipped,
+        # launchd's own default last.
+        assert env["PATH"].split(":") == [
+            "/Users/you/.local/bin",
+            "/Users/you/.nvm/bin",
+            "/opt/homebrew/bin",
+            "/Users/you/Library/Python/3.14/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+
     def test_install_service_launchd_generates_newsyslog_conf(self, tmp_path: Path) -> None:
         """launchd install also generates a real newsyslog.d config and prints a copy command."""
         (tmp_path / ".claude").mkdir()

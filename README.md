@@ -384,6 +384,8 @@ the watchdog every 15s on a fixed schedule while the event loop answers (stdlib 
 systemd), so a wedged server is restarted by systemd (`WatchdogSignal=SIGTERM`, no core dump). The ping is
 deliberately not gated on `/api/health` staying 200 or on the database probe: a tracker outage, an expired
 token or an unreachable database turns that `degraded` (HTTP 503), and a restart cannot fix any of them.
+The generated plist sets `PATH` to the directories of `sova`, `claude`, `gh`, `git`, `codex`, `terminal-notifier` and `uvx` as found at install time, then launchd's default (`/usr/bin:/bin:/usr/sbin:/sbin`, which has none of the first three); re-run `install-service --force` after moving one.
+
 
 **Restarts keep agents running.** Agents run in their own session with output
 redirected to `.claude/agent-output/<run_id>.stdout`, and the unit sets
