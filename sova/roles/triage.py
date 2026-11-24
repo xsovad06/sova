@@ -23,9 +23,9 @@ from sova.core.context import ExecutionContext
 from sova.core.schema_validation import ValidationError, validate_step_output
 from sova.core.schemas import get_triage_schema
 from sova.llm.client import runs_as_role
-from sova.roles._review_format import SCOPE_BOUNDARY_HEADINGS
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.supervisor.dependency_graph import is_human_only, is_interactive_recommended
+from sova.utils.issue_criteria import SCOPE_BOUNDARY_HEADINGS
 from sova.utils.logging import get_logger
 from sova.utils.markdown import strip_code_fences
 

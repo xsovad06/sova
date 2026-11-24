@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from sova.core.agent_dispatch import dispatch_command
 from sova.core.context import BUDGET_SKIP_OPTIONAL_THRESHOLD, ExecutionContext
+from sova.core.steps._spec_helpers import issue_criteria_for_prompt
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.utils.issue_criteria import REVIEW_PURPOSE
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.self_review")
@@ -19,9 +21,12 @@ class SelfReviewStep(BaseStep):
         log.info("step.self_review", cwd=str(ctx.working_dir))
 
         try:
+            # The reviewer grades the PR against the issue's Acceptance Criteria, so the self-review
+            # checks them too; with none, /review runs with no arguments and reviews the whole branch.
             result = await dispatch_command(
                 self,
                 "/review",
+                args=issue_criteria_for_prompt(ctx, purpose=REVIEW_PURPOSE).strip(),
                 model=ctx.resolved_model or ctx.config.agent.model,
                 fallback_model=ctx.get_cli_fallback_model(),
                 task_type=ctx.routing_task_type(self.TASK_TYPE),

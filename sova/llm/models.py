@@ -172,6 +172,36 @@ class LLMResult:
         return self.stop_reason == "error"
 
 
+def _usage_number(entry: object, key: str) -> float:
+    """Read one numeric ``modelUsage`` field, treating anything malformed as zero."""
+    if not isinstance(entry, dict):
+        return 0.0
+    value = entry.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
+def _primary_model(model_usage: dict) -> str:
+    """Return the model that did most of a Claude CLI session's work.
+
+    ``modelUsage`` lists every model the session called, and the CLI makes
+    small calls of its own on Haiku that it lists first. Taking the first key
+    therefore recorded a session that ran on Sonnet or Opus as Haiku. The
+    model with the highest cost wins, then the most output tokens, then the
+    listing order.
+    """
+    keys = list(model_usage)
+    return max(
+        keys,
+        key=lambda name: (
+            _usage_number(model_usage[name], "costUSD"),
+            _usage_number(model_usage[name], "outputTokens"),
+            -keys.index(name),
+        ),
+    )
+
+
 def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
     """Build an ``LLMResult`` from a Claude CLI ``"result"`` event payload.
 
@@ -189,7 +219,7 @@ def build_claude_cli_result(data: dict, *, stop_reason: str = "") -> LLMResult:
     usage = raw_usage if isinstance(raw_usage, dict) else {}
     raw_model_usage = data.get("modelUsage")
     model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
-    model = next(iter(model_usage), "") if model_usage else str(data.get("model", ""))
+    model = _primary_model(model_usage) if model_usage else str(data.get("model", ""))
 
     try:
         cost_usd = Decimal(str(data.get("total_cost_usd", 0)))

@@ -21,20 +21,6 @@ _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
 _SEVERITY_MEDIUM = 3
 
-# Spellings recognized for an issue's own "scope boundaries" section. Lives
-# here (not in triage.py, a role implementation) so that both triage.py's
-# QualityScore.has_scope_boundaries check and _review_comments.py's issue-
-# criteria extractor can import it without either depending on the other: a
-# dependency-free, mechanically-neutral home both already sit above. A new
-# spelling added once is then visible to both, rather than risking the two
-# silently drifting apart.
-SCOPE_BOUNDARY_HEADINGS: tuple[str, ...] = (
-    "Out of Scope / Constraints",
-    "Out of Scope",
-    "Constraints",
-    "Scope Boundaries",
-)
-
 
 def clamp_severity(severity: int) -> int:
     """Clamp severity to the 1-10 range."""
@@ -154,6 +140,7 @@ def format_review_body(
     revise_at: int = _SEVERITY_MEDIUM,
     block_at: int = _SEVERITY_CRITICAL,
     inline_comment_keys: set[tuple[str, int]] | None = None,
+    rerun_pending: bool = False,
 ) -> str:
     """Format a complete review body in markdown.
 
@@ -175,6 +162,9 @@ def format_review_body(
         inline_comment_keys: ``(file, line)`` pairs that already got their own
             inline PR review comment. Their body entry collapses to a
             one-line reference instead of repeating the full text.
+        rerun_pending: The reviewer re-runs this partly reviewed diff itself, so
+            the ``sova-review-incomplete`` marker is added whatever else
+            blocks: no fix cycle may start from half a review.
     """
     verdict = verdict_from_findings(findings, revise_at=revise_at, block_at=block_at)
     blocking = [f for f in findings if clamp_severity(f.get("severity", 5)) >= revise_at]
@@ -182,7 +172,7 @@ def format_review_body(
 
     sha_suffix = f" sha={sha}" if sha else ""
     lines = [f"<!-- sova-review: {verdict.lower()}{sha_suffix} -->"]
-    if blocking and all(f.get("category") == INCOMPLETE_REVIEW_CATEGORY for f in blocking):
+    if rerun_pending or (blocking and all(f.get("category") == INCOMPLETE_REVIEW_CATEGORY for f in blocking)):
         lines.append(SOVA_INCOMPLETE_REVIEW_MARKER)
     lines.extend(["", f"## Review: {verdict}", ""])
 

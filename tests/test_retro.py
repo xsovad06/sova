@@ -212,6 +212,8 @@ async def _seed_runs(pr: int = 7) -> None:
                 run("developer", 0, legacy_rabbit),
                 run("reviewer", 10, review1),
                 run("reviewer", 15, None),
+                # A review that reviewed nothing is not a round (its cost still counts).
+                run("reviewer", 17, {"phase": "review", "summary": "LLM review unavailable (timed out): x"}, "0"),
                 run("developer", 20, address),
                 run("command:address-pr", 25, None),
                 run("reviewer", 30, review2),

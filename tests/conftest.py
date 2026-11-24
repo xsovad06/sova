@@ -217,6 +217,22 @@ def _no_review_post_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sova.roles.reviewer._POST_RETRY_DELAY_SECONDS", 0)
 
 
+@pytest.fixture(autouse=True)
+def _no_rereview_history_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every reviewer run from asking GitHub whether a fix cycle already ran on its PR.
+
+    ``ReviewerRole._is_rereview()`` reads the PR's review history through ``gh`` on every review, which a
+    test that exercises a whole review would otherwise run for real. The stand-in answers from the fix
+    step's addressed findings alone, the method's own fallback; tests/test_review_convergence.py tests the
+    real method.
+    """
+
+    async def _from_addressed(self: object, ctx: object, addressed: list[dict]) -> bool:
+        return bool(addressed)
+
+    monkeypatch.setattr("sova.roles.reviewer.ReviewerRole._is_rereview", _from_addressed)
+
+
 async def drain_feed_persist() -> None:
     """Await any in-flight feed-persistence tasks.
 
