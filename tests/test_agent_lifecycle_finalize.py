@@ -1145,7 +1145,7 @@ class TestWaitAndFinalizeGraphBroadcast:
         assert seen_running == [False, False]
 
     async def test_invalidates_queue_and_pr_caches(self, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock, call, patch
 
         from sova.dashboard.services import agent_finalize, agent_lifecycle
         from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
@@ -1181,9 +1181,11 @@ class TestWaitAndFinalizeGraphBroadcast:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        invalidate_queue.assert_called_once_with(tmp_path)
-        invalidate_prs.assert_called_once_with("owner/repo")
-        invalidate_verdict.assert_called_once_with(tmp_path, 99)
+        # The queue and the verdict twice: before the terminal status is written, and again in the announcement,
+        # after the rollback. The PR list once: the rollback changes labels, not PRs (one gh pr list per exit).
+        assert invalidate_queue.call_args_list == [call(tmp_path)] * 2
+        assert invalidate_prs.call_args_list == [call("owner/repo")]
+        assert invalidate_verdict.call_args_list == [call(tmp_path, 99)] * 2
 
     def test_verdict_cache_invalidated_even_when_queue_and_pr_caches_fail(self, tmp_path: Path) -> None:
         """A reviewer exit must still drop the superseded SOVA verdict even if the

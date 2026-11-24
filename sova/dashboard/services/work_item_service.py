@@ -264,6 +264,26 @@ def forget_graph(project_dir: Path | None) -> None:
         _graph_notice_owed.add(key)
 
 
+def request_graph_rebuild(project_dir: Path | None) -> None:
+    """Start a fresh shared build behind the project's previous graph, which keeps answering until it lands.
+
+    For a change seen on the tracker (the GitHub probe found the issue list changed, #1534): unlike
+    ``forget_graph()`` no caller waits, but the ranking must not keep the old graph until its own refresh. A build
+    already in flight may have read the issues before the change, so it is retired (its result is not kept) and a
+    new one starts. A rebuilt graph that differs tells the status socket (``_on_graph_build_done()``), which rebuilds
+    the board snapshots. A project with no graph yet is left to its first ranking, and within the failure backoff
+    nothing starts. The caller drops the tracker-level cache first (``invalidate_graph_cache()``), or the new
+    build would answer from it.
+    """
+    key = _graph_key(project_dir)
+    if key not in _last_graphs or _recent_graph_failure(key) is not None:
+        return
+    retired = _graph_builds.pop(key, None)
+    if retired is not None and not retired.done():
+        _retired_graph_builds.add(retired)
+    _shared_graph_build(key)
+
+
 async def cancel_graph_builds() -> None:
     """Cancel every graph build and change notification in flight, retired builds included, at lifespan shutdown."""
     builds = [*_graph_builds.values(), *_retired_graph_builds, *_graph_notify_tasks]

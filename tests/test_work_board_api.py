@@ -55,7 +55,9 @@ class TestBoardRoute:
             resp = await client.get("/api/work/board", params={"milestone": "M1"})
 
         assert resp.status_code == 200
-        assert resp.json() == payload
+        body = resp.json()
+        assert body.pop("snapshot")["refresh_failed"] is False
+        assert body == payload
         assert build.await_args.args[1] == "M1"
 
     async def test_board_passes_mine_filter_to_the_service(self, client: AsyncClient) -> None:
@@ -251,6 +253,30 @@ class TestPriorityRoute:
 
         assert resp.status_code == 200
         assert resp.json() == {"issue": 1, "priority": "blocker"}
+        assert tracker.priorities[1] is Priority.BLOCKER
+
+    async def test_a_failed_board_wait_after_the_write_is_not_an_error(
+        self, client: AsyncClient, tracker: _FakeTracker
+    ) -> None:
+        with patch(
+            "sova.dashboard.services.work_board_service.board_rebuilds_settled",
+            AsyncMock(side_effect=RuntimeError("github is down")),
+        ):
+            resp = await client.put("/api/issues/1/priority", json={"priority": "blocker"})
+
+        assert resp.status_code == 200
+        assert tracker.priorities[1] is Priority.BLOCKER
+
+    async def test_a_failed_board_refresh_after_the_write_is_not_an_error(
+        self, client: AsyncClient, tracker: _FakeTracker
+    ) -> None:
+        with patch(
+            "sova.dashboard.services.work_board_service.refresh_board_snapshots",
+            side_effect=RuntimeError("no default project"),
+        ):
+            resp = await client.put("/api/issues/1/priority", json={"priority": "blocker"})
+
+        assert resp.status_code == 200
         assert tracker.priorities[1] is Priority.BLOCKER
 
     async def test_a_level_the_tracker_lacks_is_a_400_with_the_message(

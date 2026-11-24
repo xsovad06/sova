@@ -132,9 +132,14 @@ async def get_board(milestone: str = "", owner: Literal["all", "mine"] = "all") 
 
     Declared before ``/work/{run_id}`` so ``board`` is not parsed as a run id. ``milestone`` limits the
     ranking behind ``up_next`` only. A failure is an error status, never an empty board.
+
+    Answered from the last board built for this project, milestone and owner (``snapshot`` gives its age and
+    whether its latest rebuild failed); only the first request for a key waits for a build. A rebuild runs in the
+    background and a changed board reaches the sockets as ``work_items_changed``.
     """
     try:
-        return await work_board_service.build_board(get_project_dir(), milestone, owner=owner)
+        snapshot = await work_board_service.get_board_snapshot(get_project_dir(), milestone, owner=owner)
+        return work_board_service.board_response(snapshot)
     except GraphConfigError:
         log.error("work.board_config_unavailable", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
@@ -172,11 +177,20 @@ async def unhide_issue(number: _IssueNumber) -> dict:
 
 
 async def _set_hidden(number: int, *, hidden: bool) -> dict:
+    project_dir = get_project_dir()
     try:
-        return {"hidden": await set_issue_hidden(get_project_dir(), number, hidden=hidden)}
+        saved = await set_issue_hidden(project_dir, number, hidden=hidden)
     except (OSError, SQLAlchemyError) as exc:
         log.error("work.hidden_issues_save_failed", issue=number, hidden=hidden, exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to save hidden issues") from exc
+    # The other tabs keep their board until the rebuild lands; this one reloads next, so it waits (bounded by
+    # WRITER_WAIT_SECONDS) for it. The write is saved, so a failed refresh is logged, never answered as an error.
+    try:
+        work_board_service.refresh_board_snapshots(project_dir)
+        await work_board_service.board_rebuilds_settled(project_dir)
+    except Exception:  # noqa: BLE001 (the write succeeded; the board catches up on its rebuild cadence)
+        log.warning("work.hidden_board_refresh_failed", issue=number, exc_info=True)
+    return {"hidden": saved}
 
 
 @router.get("/work/actions")

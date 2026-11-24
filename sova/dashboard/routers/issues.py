@@ -27,18 +27,27 @@ class PriorityRequest(BaseModel):
     priority: Priority
 
 
-def _invalidate_ranking_caches(project_dir: pathlib.Path | None, adapter: TaskAdapter) -> None:
-    """Drop every cache the next board request would rank from, so it sees the new priority."""
+def _invalidate_ranking_caches(project_dir: pathlib.Path | None, adapter: TaskAdapter) -> pathlib.Path:
+    """Drop every cache the next board request would rank from, so it sees the new priority.
+
+    Returns the resolved project: the board snapshots are keyed by it (``get_board``), so the refresh here and the
+    writer's wait in ``set_priority`` must name the same project.
+    """
     from sova.config.context import resolve_project_dir
     from sova.dashboard.services.agent_pool import get_default_project_dir
     from sova.dashboard.services.queue_service import invalidate_queue_cache
+    from sova.dashboard.services.work_board_service import refresh_board_snapshots
     from sova.dashboard.services.work_item_service import forget_graph
     from sova.supervisor.dependency_graph import invalidate_graph_cache
 
+    resolved = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
     invalidate_graph_cache(getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or "")
-    invalidate_queue_cache(resolve_project_dir(project_dir, default_project_dir=get_default_project_dir()))
+    invalidate_queue_cache(resolved)
     # forget_graph() resolves the project itself, so the board and every other caller share the one entry it drops.
     forget_graph(project_dir)
+    # The boards keep answering from before the change until their rebuild (on a fresh graph) lands.
+    refresh_board_snapshots(resolved)
+    return resolved
 
 
 @router.put(
@@ -76,5 +85,13 @@ async def set_priority(number: Annotated[int, Path(gt=0)], body: PriorityRequest
     finally:
         await close_adapter(adapter)
 
-    _invalidate_ranking_caches(project_dir, adapter)
+    # The tracker has the new priority, so a failed refresh or wait is logged, never answered as an error.
+    try:
+        resolved = _invalidate_ranking_caches(project_dir, adapter)
+        from sova.dashboard.services.work_board_service import board_rebuilds_settled
+
+        # This client reloads its board next: it waits (bounded) for the rebuild, every other tab keeps its board.
+        await board_rebuilds_settled(resolved)
+    except Exception:  # noqa: BLE001 (the write succeeded; the board catches up on its rebuild cadence)
+        log.warning("issues.priority_board_refresh_failed", issue=number, exc_info=True)
     return {"issue": number, "priority": body.priority.value}

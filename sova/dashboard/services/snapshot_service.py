@@ -8,6 +8,11 @@ build raises: an empty or default payload is never returned in place of a failur
 A failed rebuild keeps the previous result and records the failed attempt, so the response can say its data is
 older than the refresh interval (``Snapshot.meta()``). A rebuild whose payload differs from the previous one
 notifies the registered change listener, which is how the status socket learns to send ``work_items_changed``.
+
+``request_refresh()`` is for a caller that learned the sources changed (a local transition, a GitHub probe): it
+rebuilds in the background, and one that arrives while a build is in flight runs another build after it, so a build
+that may have read the pre-change sources never stands as the latest result. The previous snapshot keeps answering
+meanwhile; a client whose own write requested the refresh awaits it with ``wait_for_refresh()``.
 """
 
 from __future__ import annotations
@@ -30,6 +35,9 @@ log = get_logger(component="dashboard.snapshot")
 DEFAULT_SNAPSHOT_TTL_SECONDS = 5.0
 # Cap on one build, so a hung tracker call cannot hold the single in-flight slot for ever.
 SNAPSHOT_BUILD_TIMEOUT_SECONDS = 120.0
+# How many builds a first read awaits before giving up: a write that invalidates the snapshot while a build is in
+# flight discards that build, so the read awaits the build after it rather than failing.
+_FIRST_READ_BUILD_ATTEMPTS = 3
 
 Build = Callable[[], Awaitable[dict]]
 ChangeListener = Callable[[str, Path | None], Awaitable[None]]
@@ -58,6 +66,8 @@ _Key = tuple[str, str]
 _snapshots: dict[_Key, Snapshot] = {}
 _builds: dict[_Key, asyncio.Task[bool]] = {}
 _generations: dict[_Key, int] = {}
+# A refresh requested while a build was in flight: the builder to run once more when that build finishes.
+_reruns: dict[_Key, tuple[Build, Callable[[dict], dict] | None]] = {}
 _listener: ChangeListener | None = None
 
 
@@ -141,9 +151,15 @@ def _start_build(
     def _done(finished: asyncio.Task[bool]) -> None:
         if _builds.get(key) is finished:
             _builds.pop(key, None)
-        if not finished.cancelled() and finished.exception() is not None:
+        if finished.cancelled():
+            _reruns.pop(key, None)
+            return
+        if finished.exception() is not None:
             # Waiters get the exception from the shared task; this retrieves it for a build nobody awaits.
             log.debug("snapshot.build_failed", kind=kind, error=str(finished.exception()))
+        rerun = _reruns.pop(key, None)
+        if rerun is not None:
+            _start_build(kind, project_dir, *rerun)
 
     task.add_done_callback(_done)
     return task
@@ -171,19 +187,69 @@ async def get_snapshot(
 ) -> Snapshot:
     """The last good result at once, rebuilding in the background when older than *ttl*.
 
-    The first call for a kind and project waits for the build and raises when it fails.
+    The first call for a kind and project waits for the build and raises when it fails. A build that
+    ``invalidate_snapshot()`` made obsolete while this call waited on it stores nothing, so the call then awaits
+    a build of the current generation (shared with every other caller) instead of failing.
     """
     key = _key(kind, project_dir)
     snapshot = _snapshots.get(key)
     if snapshot is None:
-        await refresh_snapshot(kind, project_dir, build, normalize=normalize)
-        snapshot = _snapshots.get(key)
-        if snapshot is None:
-            raise RuntimeError(f"snapshot for {kind} was invalidated while it was building")
-        return snapshot
+        for _attempt in range(_FIRST_READ_BUILD_ATTEMPTS):
+            await refresh_snapshot(kind, project_dir, build, normalize=normalize)
+            snapshot = _snapshots.get(key)
+            if snapshot is not None:
+                return snapshot
+        raise RuntimeError(f"snapshot for {kind} was invalidated while it was building")
     if time.monotonic() - snapshot.built_at > ttl:
         _start_build(kind, project_dir, build, normalize)
     return snapshot
+
+
+def request_refresh(
+    kind: str,
+    project_dir: Path | None,
+    build: Build,
+    *,
+    normalize: Callable[[dict], dict] | None = None,
+) -> None:
+    """Rebuild in the background because the sources changed; never waits and never drops the current snapshot.
+
+    A build already in flight may have read the sources before the change, so this one runs again after it.
+    Requests that arrive during one build collapse into a single rerun.
+    """
+    key = _key(kind, project_dir)
+    running = _builds.get(key)
+    if running is not None and not running.done():
+        _reruns[key] = (build, normalize)
+        return
+    _start_build(kind, project_dir, build, normalize)
+
+
+def is_building(kind: str, project_dir: Path | None) -> bool:
+    """Whether a build of this kind and project is in flight (a first build included, which has no snapshot yet)."""
+    running = _builds.get(_key(kind, project_dir))
+    return running is not None and not running.done()
+
+
+async def wait_for_refresh(kind: str, project_dir: Path | None) -> None:
+    """Wait for the build in flight and the rerun queued behind it, if any: the refreshes requested so far.
+
+    For the client whose write requested the refresh (a hide, a queue edit): it reloads right after its request
+    returns, and must be answered from a build that read the write. Every other client keeps answering from the
+    previous snapshot meanwhile. A failed build ends the wait too (the previous snapshot then still answers, marked
+    as failed), and the wait follows at most ``_FIRST_READ_BUILD_ATTEMPTS`` builds, so refreshes that keep arriving
+    cannot hold the caller for ever.
+    """
+    key = _key(kind, project_dir)
+    for _attempt in range(_FIRST_READ_BUILD_ATTEMPTS):
+        running = _builds.get(key)
+        if running is None or running.done():
+            if key not in _reruns:
+                return
+            await asyncio.sleep(0)  # the finished build's callback starts the rerun
+            continue
+        # asyncio.wait never raises the build's error and never cancels the shared build when this caller leaves.
+        await asyncio.wait([running])
 
 
 def peek_snapshot(kind: str, project_dir: Path | None) -> Snapshot | None:
@@ -203,6 +269,7 @@ async def cancel_snapshot_builds() -> None:
     tasks = [t for t in _builds.values() if not t.done()]
     for t in tasks:
         t.cancel()
+    _reruns.clear()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     _builds.clear()
@@ -213,3 +280,4 @@ def reset_snapshots() -> None:
     _snapshots.clear()
     _builds.clear()
     _generations.clear()
+    _reruns.clear()

@@ -86,6 +86,8 @@ _pr_cache_generation: dict[tuple[str, str], int] = {}
 # `gh pr list` per window instead of one per poll per open tab. Value: monotonic time the pause ends.
 _PR_FETCH_FAILURE_PAUSE = 30  # seconds
 _pr_fetch_failed_until: dict[tuple[str, str], float] = {}
+# The fetch in flight per key and the cache generation it started under: concurrent callers share it (#1534).
+_pr_inflight: dict[tuple[str, str], tuple[int, asyncio.Task[list[dict]]]] = {}
 
 # Multi-reference resolutions already logged, keyed by (PR number, head SHA, issues). The resolver runs on
 # every cache refresh, so without this a PR that stays open would repeat the same line every TTL.
@@ -111,9 +113,16 @@ def invalidate_pr_cache(repo: str) -> None:
 
     Called when an agent finishes, since developer, reviewer, and command runs
     open, push to, review, or merge PRs. Matches on repo alone: the github_user
-    half of the key only selects which token fetched the list.
+    half of the key only selects which token fetched the list. Also lifts the
+    pause after a failed fetch, so the next call asks GitHub at once.
     """
-    keys = {k for k in _pr_cache if k[0] == repo} | {k for k in _pr_cache_generation if k[0] == repo}
+    # The failure pause goes too: a change reported during it (a GitHub probe, a finished run) must reach the
+    # next fetch, and the probe does not report the same change twice once it has committed the new ETag.
+    keys = (
+        {k for k in _pr_cache if k[0] == repo}
+        | {k for k in _pr_cache_generation if k[0] == repo}
+        | {k for k in _pr_fetch_failed_until if k[0] == repo}
+    )
     for key in keys:
         _pr_cache.pop(key, None)
         _pr_fetch_failed_until.pop(key, None)
@@ -660,8 +669,7 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
     """
     from sova.config.context import resolve_project_dir
     from sova.dashboard.services.agent_pool import get_default_project_dir
-    from sova.git.pr import PRLookupError, get_pr_review_data, list_open_prs
-    from sova.ipc.handoff import read_all_handoff_files
+    from sova.git.pr import PRLookupError
 
     project_dir = resolve_project_dir(project_dir, default_project_dir=get_default_project_dir())
 
@@ -678,26 +686,59 @@ async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_
 
     repo = cfg.github_repo
     cache_key = (repo, cfg.github_user)
-    now = time.monotonic()
     cached = _pr_cache.get(cache_key)
-    if cached and (now - cached[0]) < _PR_CACHE_TTL:
+    if cached and (time.monotonic() - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
-    if _pr_fetch_failed_until.get(cache_key, 0.0) > now:
+    try:
+        return await asyncio.shield(_shared_pr_fetch(cache_key, project_dir, cfg))
+    except PRLookupError:
         if raise_on_error:
-            raise PRLookupError(f"Open PR listing for {repo!r} failed recently; not retrying yet")
+            raise
         return []
-    # setdefault, not get: the key must exist in the dict *before* the await
-    # below so a concurrent invalidate_pr_cache() can see and bump it.
+
+
+def _shared_pr_fetch(cache_key: tuple[str, str], project_dir: Path, cfg: ProjectConfig) -> asyncio.Task[list[dict]]:
+    """The one open-PR fetch in flight for *cache_key*, started when there is none or an invalidation outdated it.
+
+    A board build with cold caches reaches this from the work items, the queue and the board's exclusions at once:
+    every caller joins the same ``gh pr list``, and its failure reaches each of them without being cached.
+    """
     generation = _pr_cache_generation.setdefault(cache_key, 0)
+    inflight = _pr_inflight.get(cache_key)
+    if inflight is not None and inflight[0] == generation and not inflight[1].done():
+        return inflight[1]
+    task = asyncio.ensure_future(_fetch_open_prs_with_state(cache_key, project_dir, cfg, generation))
+    _pr_inflight[cache_key] = (generation, task)
+
+    def _done(finished: asyncio.Task[list[dict]]) -> None:
+        current = _pr_inflight.get(cache_key)
+        if current is not None and current[1] is finished:
+            _pr_inflight.pop(cache_key, None)
+        if not finished.cancelled():
+            finished.exception()  # retrieved here, so a fetch every waiter abandoned logs no "never retrieved"
+
+    task.add_done_callback(_done)
+    return task
+
+
+async def _fetch_open_prs_with_state(
+    cache_key: tuple[str, str], project_dir: Path, cfg: ProjectConfig, generation: int
+) -> list[dict]:
+    """One uncached fetch of the open PRs with their computed state; raises ``PRLookupError`` on failure."""
+    from sova.git.pr import PRLookupError, get_pr_review_data, list_open_prs
+    from sova.ipc.handoff import read_all_handoff_files
+
+    repo = cache_key[0]
+    now = time.monotonic()
+    if _pr_fetch_failed_until.get(cache_key, 0.0) > now:
+        raise PRLookupError(f"Open PR listing for {repo!r} failed recently; not retrying yet")
     # Always raise here so a failed fetch is never cached: a cached [] would read as "no open PRs"
     # to a raise_on_error caller for the rest of the TTL.
     try:
         raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user, raise_on_error=True)
     except PRLookupError:
         _pr_fetch_failed_until[cache_key] = time.monotonic() + _PR_FETCH_FAILURE_PAUSE
-        if raise_on_error:
-            raise
-        return []
+        raise
     _pr_fetch_failed_until.pop(cache_key, None)
 
     pr_numbers = [p["number"] for p in raw_prs]

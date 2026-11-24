@@ -301,15 +301,24 @@ async def persist_queue(project_dir: Path | None, queue: list[int], *, based_on:
     from sqlalchemy.exc import SQLAlchemyError
 
     from sova.config.db_loader import TaskQueueConflictError, save_task_queue
+    from sova.dashboard.services.work_board_service import refresh_board_snapshots
 
     try:
-        return await save_task_queue(project_dir, queue, based_on=based_on)
+        saved = await save_task_queue(project_dir, queue, based_on=based_on)
     except TaskQueueConflictError as exc:
         log.info("supervisor.queue.persist_conflict")
         raise QueueConflictError("The queue changed; reload and retry") from exc
     except SQLAlchemyError as exc:
         log.error("supervisor.queue.persist_failed", exc_info=True)
         raise QueuePersistError("Failed to persist queue to database") from exc
+    # The boards keep answering until their rebuild lands; a writer that reloads next awaits
+    # work_board_service.board_rebuilds_settled() once it holds no lock. The queue is already saved, so a failed
+    # refresh must not turn the write into an error the client would retry: the board catches up on its cadence.
+    try:
+        refresh_board_snapshots(project_dir)
+    except Exception:  # noqa: BLE001 (the write succeeded; the board snapshot rebuild is best-effort)
+        log.warning("supervisor.queue.board_refresh_failed", exc_info=True)
+    return saved
 
 
 async def read_queue(project_dir: Path | None) -> list[int]:

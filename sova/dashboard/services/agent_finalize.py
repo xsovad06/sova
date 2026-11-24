@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -58,6 +59,25 @@ _STDERR_DRAIN_TIMEOUT_S = 5.0
 # the only runtime that sets stream_reader_drain_timeout() and a config
 # default drifting from this fallback would be confusing to debug.
 _READER_DRAIN_TIMEOUT = CodexConfig.model_fields["reader_drain_timeout"].default
+
+# Runs whose exit this module already invalidated the Work caches for, with when (#1534). The status producer sees
+# the same run leave the active set a tick later and skips its own invalidation for it (``finalized_run_ids()``),
+# so one exit refetches the PR list once, not twice. Remembered long enough to outlast that tick.
+_FINALIZED_RUN_MEMORY_SECONDS = 60.0
+_finalized_runs: dict[int, float] = {}
+
+
+def _remember_finalized(run_id: int) -> None:
+    now = time.monotonic()
+    for stale in [rid for rid, at in _finalized_runs.items() if now - at > _FINALIZED_RUN_MEMORY_SECONDS]:
+        del _finalized_runs[stale]
+    _finalized_runs[run_id] = now
+
+
+def finalized_run_ids() -> frozenset[int]:
+    """The runs whose exit the dashboard's finalize invalidated the Work caches for within the last minute."""
+    now = time.monotonic()
+    return frozenset(rid for rid, at in _finalized_runs.items() if now - at <= _FINALIZED_RUN_MEMORY_SECONDS)
 
 
 async def _crash_recovery_cleanup(agent: AgentState) -> None:
@@ -431,13 +451,21 @@ async def _persist_stderr_tail(agent: AgentState, run_id: int) -> None:
         log.warning("finalize.stderr_tail_persist_failed", run_id=run_id, exc_info=True)
 
 
-def invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None) -> None:
-    """Drop the cached task, PR, and verdict state an exiting agent or a finished dashboard action made stale.
+def invalidate_work_item_caches(
+    project_dir: Path, *pr_numbers: int | None, prs: bool = True, every_verdict: bool = False
+) -> bool:
+    """Drop the cached task, PR, verdict and merged-PR state a change made stale, then rebuild the snapshots.
 
-    Without this the Tasks list keeps serving pre-run labels, PR state, and the
-    superseded SOVA verdict/next-action until the caches expire on their own TTLs
-    (#1149, #1152). Best-effort: a failure only means the next refresh waits out
-    the TTL as before.
+    The one helper for every local or GitHub-side change (#1534): an exiting agent, a finished dashboard action,
+    a run transition the status producer saw, and a changed GitHub probe answer. Without it the Work board and
+    the Tasks list keep serving pre-run labels, PR state and the superseded SOVA verdict until the caches expire
+    on their own TTLs (#1149, #1152). ``prs=False`` keeps the PR list and the merged-PR list (a change to the issues
+    alone, or a second pass after one that already dropped them); the verdicts of the given ``pr_numbers`` go
+    either way. ``every_verdict`` drops each cached verdict of the project when the changed PR is not known.
+    Best-effort: a failure only means the next refresh waits out the TTL as before.
+
+    Returns whether a snapshot rebuild was requested (``refresh_work_snapshots()``), False when none was or the
+    request failed: a caller whose change no rebuild will report then tells the sockets itself.
     """
     try:
         from sova.dashboard.services.queue_service import invalidate_queue_cache
@@ -445,24 +473,48 @@ def invalidate_work_item_caches(project_dir: Path, pr_number: int | None = None)
         invalidate_queue_cache(project_dir)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
         log.warning("finalize.queue_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
-    try:
-        from sova.dashboard.services.pr_service import invalidate_pr_cache
+    if prs:
+        try:
+            from sova.dashboard.services.pr_service import invalidate_pr_cache
 
-        repo = load_config(project_dir).github_repo
-        if repo:
-            invalidate_pr_cache(repo)
-    except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
-        log.warning("finalize.pr_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
-    try:
-        from sova.dashboard.services.work_verdict import invalidate_verdict
+            repo = load_config(project_dir).github_repo
+            if repo:
+                invalidate_pr_cache(repo)
+        except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
+            log.warning("finalize.pr_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+        try:
+            from sova.dashboard.services.work_board_service import invalidate_merged_cache
 
-        invalidate_verdict(project_dir, pr_number)
+            invalidate_merged_cache(project_dir)
+        except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
+            log.warning("finalize.merged_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+    try:
+        from sova.dashboard.services.work_verdict import invalidate_project_verdicts, invalidate_verdict
+
+        for pr_number in pr_numbers:
+            invalidate_verdict(project_dir, pr_number)
+        if every_verdict:
+            invalidate_project_verdicts(project_dir)
     except Exception:  # noqa: BLE001 (cache invalidation is best-effort; finalization must complete regardless)
         log.warning("finalize.verdict_cache_invalidation_failed", project_dir=str(project_dir), exc_info=True)
+    try:
+        from sova.dashboard.services.work_board_service import refresh_work_snapshots
+
+        return refresh_work_snapshots(project_dir)
+    except Exception:  # noqa: BLE001 (a snapshot rebuild is best-effort; the next request or tick retries it)
+        log.warning("finalize.snapshot_refresh_failed", project_dir=str(project_dir), exc_info=True)
+        return False
 
 
 async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, status: str) -> None:
-    """Invalidate stale caches and tell connected dashboards that an agent exited.
+    """Invalidate the source caches again, rebuild the work snapshots and tell connected dashboards an agent exited.
+
+    The source caches were already invalidated before the terminal status was written (``_wait_and_finalize``),
+    but a rebuild started in between could still read the run as active, or cache the task labels from before the
+    rollback ``_finalize_task_run()`` applies to a failed, interrupted or stopped run. So the queue and this run's
+    verdict are dropped again here, and ``invalidate_work_item_caches()`` rebuilds the snapshots from what is now
+    stored. The PR list is not: the rollback changes task labels, not PRs, and refetching it again would cost a
+    second ``gh pr list`` and per-PR review reads for the same exit.
 
     ``agent_finished`` is sent on every exit, including when the run had already
     reached a terminal status on its own (a researcher writing awaiting_approval,
@@ -478,7 +530,7 @@ async def _announce_agent_finished(agent: AgentState, *, status_changed: bool, s
     non-terminal ``TaskRun`` rows, so a finished run never appears there with
     its terminal status for the client to observe.
     """
-    invalidate_work_item_caches(agent.project_dir, agent.pr_number)
+    invalidate_work_item_caches(agent.project_dir, agent.pr_number, prs=False)
     try:
         from sova.dashboard.routers.agents import _ws_manager
 
@@ -636,6 +688,12 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     await _persist_stderr_tail(agent, run_id)
 
     await _finalize_resource_monitoring(agent)
+
+    # Before the terminal status is written: the status producer reloads the board as soon as it sees the run
+    # leave the active set, and that reload must not be answered from caches this run made stale (#1534). Remembered,
+    # so the producer seeing the same exit does not refetch the PR list a second time.
+    _remember_finalized(run_id)
+    invalidate_work_item_caches(agent.project_dir, agent.pr_number)
 
     # Finalize the DB record BEFORE removing from pa.agents so the
     # liveness sweep (which skips managed run_ids) cannot race us and
