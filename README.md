@@ -209,9 +209,20 @@ For the full configuration reference, see [`sova/config/models.py`](sova/config/
 
 ## Claude Code Setup
 
-SOVA uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as its default LLM provider. For production deployments with cost tracking and quota management, configure Claude Code to use Google Vertex AI:
+SOVA uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as its default LLM provider (`llm.provider = "claude-code"`) and agent runtime. Sign it in with your Claude subscription:
 
-### 1. Install Vertex AI Dependencies
+```bash
+claude auth login
+sova doctor
+```
+
+The login opens a browser, and the "llm provider" row of `sova doctor` confirms it. On a machine with no browser, use `claude setup-token` instead. The [AI Provider Setup Guide](docs/ai-provider-setup-guide.md) covers both logins, the API-key and Vertex alternatives, the provider variables SOVA scrubs from spawned agents, and troubleshooting.
+
+### Routing Claude Code Through Vertex AI (Optional)
+
+For deployments that bill through Google Cloud instead of a subscription, configure Claude Code to use Google Vertex AI. SOVA strips the Vertex routing variables from the agents it spawns unless they are listed in `agent.env_passthrough`; see the guide's "Environment Variable Scrubbing" step.
+
+#### 1. Install Vertex AI Dependencies
 
 ```bash
 pip install --user -e ".[vertex]"
@@ -219,7 +230,7 @@ pip install --user -e ".[vertex]"
 
 This installs `google-auth` and related packages needed for Google Cloud authentication.
 
-### 2. Authenticate with Google Cloud
+#### 2. Authenticate with Google Cloud
 
 ```bash
 gcloud auth application-default login
@@ -227,7 +238,7 @@ gcloud auth application-default login
 
 This sets up Application Default Credentials (ADC) that Claude Code and SOVA will use to authenticate with Vertex AI.
 
-### 3. Configure Claude Code for Vertex AI
+#### 3. Configure Claude Code for Vertex AI
 
 Run the Claude Code login wizard:
 
@@ -243,7 +254,7 @@ Then run `/login` and select:
 - **Region**: `global` (recommended for latest models)
 - **Models**: Pin the working models (Sonnet, Opus, Haiku)
 
-### 4. Set Environment Variables
+#### 4. Set Environment Variables
 
 Add to your shell configuration (`~/.zshrc` or `~/.bashrc`):
 
@@ -258,7 +269,7 @@ After updating, reload your shell:
 source ~/.zshrc  # or source ~/.bashrc
 ```
 
-### 5. Verify Configuration
+#### 5. Verify Configuration
 
 Test that Claude Code can access Vertex AI:
 
@@ -268,7 +279,7 @@ claude -p "Say hello" --model sonnet
 
 If configured correctly, you should see a response from Claude via Vertex AI.
 
-### Notes
+#### Notes
 
 - The `global` region provides access to the latest Claude models and uses the base Vertex AI endpoint (`aiplatform.googleapis.com`).
 - Regional endpoints (e.g., `us-east5`) use region-prefixed domains (`{region}-aiplatform.googleapis.com`).
@@ -326,7 +337,8 @@ Every notification has a kind (`needs_human`, `failed`, `finished` or `info`). O
 and an unknown or malformed entry is ignored with a warning rather than failing config load. A run that is
 waiting on you sends one `needs_human` push; the exit-time summary for it (and for a step failure the engine
 already reported, or a finish the engine already reported) is `info`, so the default filter yields exactly one push
-and opting into `finished` does not double it.
+and opting into `finished` does not double it. An ntfy push is titled with the event ("Developer failed #12") so a
+lock screen reads at a glance; its body holds the project and the detail.
 
 Point ntfy at a self-hosted server. Topics on the hosted ntfy.sh are public (anyone who guesses the topic name
 can read it) and are not end-to-end encrypted, so issue titles, step errors and dashboard links would leave
@@ -371,6 +383,8 @@ launchctl load ~/Library/LaunchAgents/com.sova.server.plist
 launchctl start com.sova.server
 launchctl list | grep sova
 ```
+
+The generated plist sets `PATH` to the directories of `sova`, `claude`, `gh`, `git`, `codex`, `terminal-notifier` and `uvx` as found at install time, then launchd's default (`/usr/bin:/bin:/usr/sbin:/sbin`, which has none of the first three); re-run `install-service --force` after moving one. For a Mac left on to run SOVA unattended (sleep settings, login and FileVault, what happens to agents across restarts and reboots, phone access), see [Always-On Mac Setup](docs/always-on-mac-setup.md).
 
 The systemd unit is a user unit (`systemctl --user`) and lists the resolved project
 directory in `ReadWritePaths`, since agents write `{project}/.git` as well as

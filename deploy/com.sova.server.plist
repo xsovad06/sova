@@ -27,6 +27,11 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- launchd's own PATH is /usr/bin:/bin:/usr/sbin:/sbin, which misses where sova, claude and gh
+             usually live. install-service writes the directory of each one it resolves (also git, codex,
+             terminal-notifier and uvx when installed), then that default. -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/Users/you/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>SOVA_PROJECT_DIR</key>
         <string>/path/to/your/project</string>
         <!-- The same two paths as StandardOutPath/StandardErrorPath below, written out

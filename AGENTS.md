@@ -13,7 +13,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `README.md` | Project overview, installation, usage |
 | `docs/VISION.md` | Product vision and roadmap |
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
-| `docs/architecture-deep-dive.md` | On-demand: full component, module and decision entries (with the decision index); architecture.md keeps a rule line or index entry each |
+| `docs/architecture-deep-dive.md` | On-demand: full component, module and decision entries (with the decision index); architecture.md keeps one line each |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
 | `docs/model-selection-architecture.md` | LLM model routing, provider abstraction, model discovery/enumeration, design details |
@@ -25,17 +25,18 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/api-contracts-guidelines.md` | Dashboard API, adapter ABC, LLM output formats |
 | `docs/database-guidelines.md` | ORM models, session management, migrations |
 | `docs/testing-guidelines.md` | pytest patterns, fixtures, mocking, test isolation |
-| `docs/deferred-consolidation.md` | Work an audit-driven consolidation pass deferred (`sova/workflow/`, god-module splits, the layering baseline), and the behaviour changes of the slices that landed |
+| `docs/deferred-consolidation.md` | Consolidation work an audit deferred (`sova/workflow/`, god-module splits, layering baseline), and landed slices' behaviour changes |
 | `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
 | `docs/jira-configuration-guide.md` | Jira Cloud setup, JQL filters, status mapping, troubleshooting |
 | `docs/ai-provider-setup-guide.md` | LLM provider setup (`llm.provider`): credentials, model ids, Connections page |
 | `docs/commit-convention-setup.md` | Per-project commit types/scopes (`commit.types`, `commit.scopes`) used for generated commit subjects and PR titles |
 | `docs/codex-runtime-setup.md` | Codex agent runtime setup (`agent.runtime = "codex"`): auth, sandbox, rollback |
-| `docs/openai-only-runbook.md` | Run one pipeline OpenAI-only by env overrides: model fields, isolation, what runs where, rollback, pilot log |
+| `docs/openai-only-runbook.md` | Run one pipeline OpenAI-only by env overrides: model fields, isolation, rollback, pilot log |
 | `docs/invariants.md` | Per-invariant detail for the pre-push and CI checks in `invariants/` |
 | `docs/workflow-history.md` | Full text and incident history behind `.claude/rules/workflow.md`'s rules |
 | `docs/token-compression.md` | Optional RTK and Headroom token compression setup |
-| `docs/commands/health-audit.md` | Maintainer rationale for the health-audit command; not distributed, so the command stays under its size cap (`tests/test_command_size_budget.py`) |
+| `docs/always-on-mac-setup.md` | Unattended Mac: sleep, launchd, restarts, phone access |
+| `docs/commands/health-audit.md` | Maintainer rationale for the health-audit command, kept out of it for its size cap (`tests/test_command_size_budget.py`) |
 
 ## Project Structure
 

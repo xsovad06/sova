@@ -300,6 +300,11 @@ async def _probe_auth() -> dict | None:
     doesn't parse to a JSON object. Callers derive their own meaning (fails
     open vs. explicitly logged out) from the returned ``loggedIn`` field, so
     this function does not interpret it.
+
+    A logged-out CLI exits 1 while still printing ``{"loggedIn": false, ...}``
+    (measured on Claude Code 2.1.318 and 2.1.331), so a non-zero exit keeps its payload
+    when, and only when, that payload says ``loggedIn`` is ``false``: a failed
+    probe can report a logout but never a login.
     """
     try:
         result = await run(
@@ -316,13 +321,13 @@ async def _probe_auth() -> dict | None:
         # FileNotFoundError before a ShellResult exists to report failure.
         log.debug("llm.auth_probe.failed", exc_info=True)
         return None
-    if not result.success:
-        return None
     try:
         data = json.loads(result.stdout)
     except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
+        return None
+    if not result.success and data.get("loggedIn") is not False:
         return None
     return data
 

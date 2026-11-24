@@ -5797,6 +5797,17 @@ class TestClaudeCodeAuthAwareness:
         ("version_out", "auth_out", "auth_rc", "expected_available", "expected_detail"),
         [
             pytest.param("2.1.259\n", '{"loggedIn": false}', 0, False, "claude auth login", id="logged-out"),
+            # Claude Code 2.1.318 exits 1 when logged out but still prints the payload.
+            pytest.param(
+                "2.1.318\n",
+                '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}',
+                1,
+                False,
+                "claude auth login",
+                id="logged-out-nonzero-exit",
+            ),
+            # A failed probe never counts as a login, whatever it printed.
+            pytest.param("2.1.318\n", '{"loggedIn": true}', 1, True, "auth state unknown", id="logged-in-nonzero-exit"),
             # Older CLI builds have no `auth` subcommand; do not block them.
             pytest.param("1.0.0\n", "", 1, True, "auth state unknown", id="missing-auth-subcommand"),
             pytest.param("1.0.0\n", "not json at all", 0, True, "auth state unknown", id="unparseable-output"),

@@ -162,12 +162,36 @@ class TestNtfyDispatch:
             await _drain()
         assert mock_ntfy.await_count == 2
 
+    @pytest.mark.parametrize(
+        ("subtitle", "expected_title"),
+        [("Developer failed #12", "Developer failed #12"), ("", "SOVA")],
+    )
+    async def test_ntfy_title_is_the_subtitle_when_there_is_one(self, subtitle: str, expected_title: str) -> None:
+        """The subtitle names the event, so it leads; without one the title stays, and the body is never merged."""
+        config = _ntfy_config()
+        with patch("sova.ipc.notifications.send_ntfy_notification", new_callable=AsyncMock) as mock_ntfy:
+            notify(config, "SOVA", "proj | boom", kind=NotificationKind.FAILED, subtitle=subtitle)
+            await _drain()
+        assert mock_ntfy.call_args.args[1] == expected_title
+        assert mock_ntfy.call_args.args[2] == "proj | boom"
+
     async def test_click_url_passed_to_ntfy(self) -> None:
         config = _ntfy_config(link_base_url="https://sova.example.com/")
         with patch("sova.ipc.notifications.send_ntfy_notification", new_callable=AsyncMock) as mock_ntfy:
             notify(config, "SOVA", "Body", kind=NotificationKind.FAILED, run_id=12)
             await _drain()
         assert mock_ntfy.call_args.kwargs["click_url"] == "https://sova.example.com/work/12"
+
+
+class TestNtfyTagNames:
+    def test_every_tag_is_a_name_ntfy_renders_as_an_emoji(self) -> None:
+        """A name outside ntfy's emoji list shows no symbol (``raised_hand`` shipped that way), so pin the names."""
+        from sova.ipc.notifications import _NTFY_TAGS
+
+        # Names checked against https://docs.ntfy.sh/emojis/ on 2026-11-24.
+        known = {"bell", "warning", "white_check_mark", "information_source"}
+        assert {tag for tags in _NTFY_TAGS.values() for tag in tags} <= known
+        assert set(_NTFY_TAGS) == set(NotificationKind)
 
 
 class TestSendNtfy:
@@ -185,7 +209,7 @@ class TestSendNtfy:
             "title": "SOVA",
             "message": "Body",
             "priority": 4,
-            "tags": ["raised_hand"],
+            "tags": ["bell"],
             "click": "https://sova.example.com/agents",
         }
         assert call.kwargs["headers"] == {"Authorization": f"Bearer {TOKEN}"}
@@ -1087,8 +1111,8 @@ class TestNeedsHumanHandoffEndToEnd:
         assert call.args[0] == "https://ntfy.example.com/"
         payload = call.kwargs["json"]
         assert payload["topic"] == "sova"
-        assert payload["title"] == "SOVA"
-        assert payload["message"] == f"Developer needs you: {tmp_path.name} | needs your review"
+        assert payload["title"] == "Developer needs you"
+        assert payload["message"] == f"{tmp_path.name} | needs your review"
         assert payload["priority"] == 4
         assert payload["click"] == "https://sova.example.com/work/3"
         assert call.kwargs["headers"] == {"Authorization": f"Bearer {TOKEN}"}

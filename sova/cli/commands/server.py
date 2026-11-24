@@ -29,6 +29,30 @@ console = Console(stderr=True)
 # module never writes through, so nothing here is subject to that risk.
 _PRIVATE_TMP_ROOTS = (Path("/tmp").resolve(), Path("/var/tmp").resolve())  # NOSONAR
 
+# launchd starts a LaunchAgent with PATH=/usr/bin:/bin:/usr/sbin:/sbin (measured on macOS 26.7), which misses
+# ~/.local/bin and /opt/homebrew/bin, where sova, claude and gh usually live. The server finds these by name
+# (shutil.which, and a bare `sova run` for pipeline agents), so the generated plist sets PATH to the directory
+# of each one found at install time, ahead of that default. Each tool's directory comes before the sova binary's
+# so a same-named copy beside sova never shadows the one the installer chose. `node` is listed because an
+# npm-installed claude has a `#!/usr/bin/env node` shebang. Directories are not symlink-resolved: a Homebrew
+# binary resolves into a versioned Cellar directory that the next upgrade removes.
+_LAUNCHD_DEFAULT_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_LAUNCHD_PATH_TOOLS = ("claude", "node", "gh", "git", "codex", "terminal-notifier", "uvx")
+
+
+def _launchd_path(sova_bin: str) -> str:
+    """PATH for the launchd plist: each resolved tool's directory, the sova binary's, then launchd's default."""
+    import shutil
+
+    dirs = []
+    for tool in _LAUNCHD_PATH_TOOLS:
+        found = shutil.which(tool)
+        if found:
+            dirs.append(str(Path(found).parent))
+    dirs.append(str(Path(sova_bin).parent))
+    dirs.extend(_LAUNCHD_DEFAULT_PATH)
+    return ":".join(dict.fromkeys(dirs))
+
 
 def _start_server(project: Path | None, host: str, port: int, no_scheduler: bool, multi: bool | None) -> None:
     """Common server startup logic."""
@@ -411,6 +435,7 @@ WantedBy=default.target
         sova_bin_escaped = html.escape(str(sova_bin))
         resolved_dir_escaped = html.escape(str(resolved_dir))
         log_dir_escaped = html.escape(str(log_dir))
+        path_escaped = html.escape(_launchd_path(sova_bin))
 
         template = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -434,6 +459,8 @@ WantedBy=default.target
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>{path_escaped}</string>
         <key>SOVA_PROJECT_DIR</key>
         <string>{resolved_dir_escaped}</string>
         <key>SOVA_SERVER_LOG</key>
