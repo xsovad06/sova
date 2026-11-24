@@ -259,7 +259,7 @@ Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-t
 
 ## Modal Dialogs
 
-Every dashboard dialog runs on one component in `app.js` Section 5 (#1224), styled by the `.sova-modal-*` classes in `style.css` Section 3b. Never use the browser's native `confirm()`, `alert()` or `prompt()`: use `sovaConfirm()` for a question and `showToast()` for a message.
+Every dashboard dialog runs on one component in `app.js` Section 5 (#1224), styled by the `.sova-modal-*` classes in `style.css` Section 3b. Never use the browser's native `confirm()`, `alert()` or `prompt()`: use `sovaConfirm()` for a question and `showToast()` for a message. `tests/test_dashboard_design_drift_guard.py` fails on a native dialog call (`native_dialog`: bare, on `window`, `globalThis`, `self` or `top`, or by bracket access) or a hand-written `fixed inset-0` overlay (`modal_shell`) anywhere in the templates or static JS, and `tests/test_dashboard_modal.py` runs the component under node (with the Work page's Integrate handler and drawer listeners, so the drawer is shown to stay open behind the dialog) and checks that every page modal is closed with the `hidden` attribute and that its id is passed to both `sovaModalOpen()` and `sovaModalClose()`.
 
 ### Behavior
 
@@ -293,7 +293,7 @@ A page modal lives in its template, closed with the `hidden` attribute, and its 
 </div>
 ```
 
-The dialog is 24rem wide by default (a confirm); `.sova-modal-dialog-md` (28rem), `-lg` (42rem) and `-xl` (56rem) suit forms and lists. The dialog caps at 85vh and the body scrolls. A button in a modal hides with the `hidden` attribute (`.sova-btn[hidden]`), since `.sova-btn`'s display overrides the `hidden` class. Do not write a `fixed inset-0` overlay of your own: `tests/test_dashboard_design_drift_guard.py` counts them.
+The dialog is 24rem wide by default (a confirm); `.sova-modal-dialog-md` (28rem), `-lg` (42rem) and `-xl` (56rem) suit forms and lists. The dialog caps at 85vh and the body scrolls. A button in a modal hides with the `hidden` attribute (`.sova-btn[hidden]`), since `.sova-btn`'s display overrides the `hidden` class.
 
 ### Confirmations
 

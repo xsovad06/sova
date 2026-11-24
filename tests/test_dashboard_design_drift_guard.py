@@ -1,9 +1,11 @@
-"""Ratchet guard for five dashboard design-drift patterns (#1053).
+"""Ratchet guard for six dashboard design-drift patterns (#1053).
 
 Each pattern below is a hand-rolled copy of something the shared components now provide: a native `title=`
 tooltip (use `data-tooltip`), an arbitrary tiny font size, a raw stat card, a hex color literal (use a
-Catppuccin token or `sovaColor()`), and a hand-written `fixed inset-0` modal shell. The migration issues
-(#1055, #1056, #1224) move templates onto the components; this guard makes sure the counts only shrink.
+Catppuccin token or `sovaColor()`), a hand-written `fixed inset-0` modal shell (use the shared modal,
+`sovaModalOpen()`), and a browser-native `confirm()`, `alert()` or `prompt()` (use `sovaConfirm()` or
+`showToast()`). The migration issues (#1055, #1056, #1224) move templates onto the components; this guard makes
+sure the counts only shrink. #1224 brought the last two to zero, so their baselines are empty: any match fails.
 
 How the ratchet works:
 - `BASELINE` holds a count per pattern and file. A file over its baseline fails with the file, the pattern
@@ -55,6 +57,15 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     "hex_color": re.compile(r"(?<![\w&])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b"),
     # The hand-written modal overlay shell. #1224 owns the modal component; this only counts the shells.
     "modal_shell": re.compile(r"\b(?:fixed inset-0|inset-0 fixed)\b"),
+    # A browser-native dialog call: bare, on a global object (`window.`, `globalThis.`, `self.`, `top.`,
+    # `parent.`, `opener.`, each also with `?.`), or by bracket access (`window['confirm'](`), with optional
+    # whitespace before the `(`. The lookbehind skips a method of the same name on another object
+    # (`flow.confirm(`) and longer names (`sovaConfirm(`). Because whitespace is allowed before the `(`, prose
+    # such as "prompt (optional)" in a template trips it: reword the prose.
+    "native_dialog": re.compile(
+        r"(?<![\w.$])(?:(?:window|globalThis|self|top|parent|opener)\s*(?:(?:\?\.|\.)\s*(?:confirm|alert|prompt)"
+        r"|\[\s*[\"'`](?:confirm|alert|prompt)[\"'`]\s*\])|(?:confirm|alert|prompt))\s*\("
+    ),
 }
 
 # (pattern, path relative to DASHBOARD_DIR) -> why the file is exempt.
@@ -112,6 +123,7 @@ BASELINE: dict[str, dict[str, int]] = {
         "templates/spec.html": 8,
     },
     "modal_shell": {},
+    "native_dialog": {},
 }
 
 _JINJA = re.compile(r"\{%.*?%\}|\{\{.*?\}\}|\{#.*?#\}", re.DOTALL)
@@ -331,6 +343,34 @@ class TestScanner:
     )
     def test_modal_shell(self, text: str, expected: int) -> None:
         assert len(scan_text(text, jinja=False)["modal_shell"]) == expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("if (!confirm('Integrate anyway?')) return;", 1),
+            ("window.alert('Failed');", 1),
+            ("var name = prompt('Name?');", 1),
+            ("onclick=\"return confirm('Sure?')\"", 1),
+            ("var ok = await sovaConfirm('Sure?');", 0),
+            ("claudeFlow.confirm(code);", 0),
+            ("if (confirm && !(await sovaConfirm(label))) return;", 0),
+            ("Please confirm the alert prompt.", 0),
+            ("globalThis.confirm('Sure?');", 1),
+            ("self.alert('Failed');", 1),
+            ("top.prompt('Name?');", 1),
+            ("window['confirm']('Sure?');", 1),
+            ('window["alert"]("Failed");', 1),
+            ("if (!confirm ('Sure?')) return;", 1),
+            ("window.confirm\t('Sure?');", 1),
+            ("window?.confirm('x');", 1),
+            ("parent.confirm('x');", 1),
+            ("opener.alert('x');", 1),
+            ("this.self.confirm(x);", 0),
+            ("flow['confirm'](x);", 0),
+        ],
+    )
+    def test_native_dialog(self, text: str, expected: int) -> None:
+        assert len(scan_text(text, jinja=False)["native_dialog"]) == expected
 
     @pytest.mark.parametrize(
         ("text", "pattern"),

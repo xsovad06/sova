@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -577,3 +578,75 @@ class TestUninstallDialog:
         assert uninstall["focusReturned"]
         assert uninstall["escaped"] is None
         assert uninstall["removed"]
+
+
+# The page modals kept in templates (sovaConfirm and the uninstall dialog are built per call in JS).
+_PAGE_MODALS = {
+    "create-modal": "roles.html",
+    "launch-modal": "work.html",
+    "propose-modal": "fleet.html",
+    "review-changes-modal": "settings.html",
+}
+
+
+def _dashboard_sources() -> dict[str, str]:
+    static = DASHBOARD_DIR / "static"
+    paths = [
+        *sorted(_TEMPLATES.glob("*.html")),
+        *sorted(p for p in static.rglob("*.js") if not p.name.endswith(".min.js")),
+    ]
+    return {p.relative_to(DASHBOARD_DIR).as_posix(): p.read_text(encoding="utf-8") for p in paths}
+
+
+_GET_BY_ID = r"document\.getElementById\(\s*'([\w-]+)'\s*\)"
+
+
+def _component_modal_ids(text: str, func: str) -> set[str]:
+    """The ids `text` passes to `func`: `func(document.getElementById('id'), ...)`, or `func(name, ...)` where the
+    same file assigns `name = document.getElementById('id')`. A modal toggled any other way is not counted."""
+    ids: set[str] = set()
+    for arg in re.findall(rf"\b{func}\(\s*((?:[^,()]|\([^()]*\))+)", text):
+        direct = re.fullmatch(_GET_BY_ID, arg.strip())
+        if direct:
+            ids.add(direct.group(1))
+        elif re.fullmatch(r"[A-Za-z_$][\w$]*", arg.strip()):
+            ids.update(re.findall(rf"\b{re.escape(arg.strip())}\s*=\s*{_GET_BY_ID}", text))
+    return ids
+
+
+class TestTemplateModals:
+    def test_every_page_modal_is_a_closed_shared_modal(self) -> None:
+        """A page modal is a .sova-modal-backdrop closed with the hidden attribute, so it has no layout and takes
+        no focus until sovaModalOpen() shows it."""
+        found: dict[str, str] = {}
+        for rel, text in _dashboard_sources().items():
+            if not rel.startswith("templates/"):
+                continue
+            for tag in re.findall(r"<div\b[^>]*\bsova-modal-backdrop\b[^>]*>", text):
+                modal_id = re.search(r'\bid="([\w-]+)"', tag)
+                assert modal_id, f"{rel}: a modal backdrop with no id: {tag}"
+                # Quoted values out first: a `hidden` class word is not the attribute.
+                bare = re.sub(r'"[^"]*"|\'[^\']*\'', '""', tag)
+                assert re.search(r"\shidden(?=[\s>/])", bare), f"{rel}: #{modal_id.group(1)} is not closed with hidden"
+                found[modal_id.group(1)] = rel.removeprefix("templates/")
+        assert found == _PAGE_MODALS
+
+    @pytest.mark.parametrize("modal_id", sorted(_PAGE_MODALS))
+    def test_every_page_modal_opens_and_closes_through_the_component(self, modal_id: str) -> None:
+        opened: set[str] = set()
+        closed: set[str] = set()
+        for text in _dashboard_sources().values():
+            opened |= _component_modal_ids(text, "sovaModalOpen")
+            closed |= _component_modal_ids(text, "sovaModalClose")
+        assert modal_id in opened, f"no script passes #{modal_id} to sovaModalOpen()"
+        assert modal_id in closed, f"no script passes #{modal_id} to sovaModalClose()"
+
+    def test_the_id_resolver_ignores_a_modal_the_component_never_receives(self) -> None:
+        text = (
+            "const modal = document.getElementById('a');\n"
+            "sovaModalOpen(modal, {});\n"
+            "sovaModalClose(document.getElementById('b'), 'x');\n"
+            "document.getElementById('c').classList.remove('hidden'); sovaModalOpen(other);\n"
+        )
+        assert _component_modal_ids(text, "sovaModalOpen") == {"a"}
+        assert _component_modal_ids(text, "sovaModalClose") == {"b"}
