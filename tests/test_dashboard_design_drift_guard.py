@@ -111,9 +111,7 @@ BASELINE: dict[str, dict[str, int]] = {
         "templates/run_detail.html": 4,
         "templates/spec.html": 8,
     },
-    "modal_shell": {
-        "templates/fleet.html": 1,
-    },
+    "modal_shell": {},
 }
 
 _JINJA = re.compile(r"\{%.*?%\}|\{\{.*?\}\}|\{#.*?#\}", re.DOTALL)

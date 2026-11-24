@@ -293,7 +293,7 @@ A page modal lives in its template, closed with the `hidden` attribute, and its 
 </div>
 ```
 
-The dialog is 24rem wide by default (a confirm); `.sova-modal-dialog-md` (28rem), `-lg` (42rem) and `-xl` (56rem) suit forms and lists. The dialog caps at 85vh and the body scrolls. Do not write a `fixed inset-0` overlay of your own: `tests/test_dashboard_design_drift_guard.py` counts them.
+The dialog is 24rem wide by default (a confirm); `.sova-modal-dialog-md` (28rem), `-lg` (42rem) and `-xl` (56rem) suit forms and lists. The dialog caps at 85vh and the body scrolls. A button in a modal hides with the `hidden` attribute (`.sova-btn[hidden]`), since `.sova-btn`'s display overrides the `hidden` class. Do not write a `fixed inset-0` overlay of your own: `tests/test_dashboard_design_drift_guard.py` counts them.
 
 ### Confirmations
 
