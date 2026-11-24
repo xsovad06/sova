@@ -20,12 +20,14 @@ from tests.conftest import DASHBOARD_DIR
 
 _APP_JS = DASHBOARD_DIR / "static" / "app.js"
 _FAKE_DOM = Path(__file__).parent / "fixtures" / "fake_dom.cjs"
+_TEMPLATES = DASHBOARD_DIR / "templates"
 
 _HARNESS = r"""
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const { Document, key, clickOn } = require(process.argv[3]);
+const templates = process.argv[4];
 const statics = path.dirname(process.argv[2]);  // app.js lives in static/
 
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -268,6 +270,35 @@ const focusedText = () => doc.activeElement.textContent.trim();
   const bareDialog = bare.querySelector('.sova-modal-dialog');
   out.bare = { focusedDialog: doc.activeElement === bareDialog, tabPrevented: key(doc, 'Tab').defaultPrevented };
   ctx.sovaModalClose(bare, 'x');
+  await sleep(FADE);
+  doc.getElementById('page').innerHTML = '';
+
+  // The uninstall dialog (home.html) runs on the component: a labelled dialog opened on Cancel, its four
+  // options as checkboxes, Uninstall resolving the chosen options and Escape resolving null.
+  const home = fs.readFileSync(templates + '/home.html', 'utf8');
+  vm.runInContext(home.slice(home.indexOf('function showUninstallDialog('),
+    home.indexOf('async function uninstallProject(')), ctx);
+  trigger.focus();
+  p = ctx.showUninstallDialog('demo "<proj>"');
+  dialog = backdrops()[0].querySelector('.sova-modal-dialog');
+  const boxes = dialog.querySelectorAll('input');
+  out.uninstall = {
+    role: dialog.getAttribute('role'),
+    label: doc.getElementById(dialog.getAttribute('aria-labelledby')).textContent,
+    focused: focusedText(),
+    options: boxes.map((b) => b.parentNode.textContent),
+  };
+  boxes[0].checked = true;
+  boxes[3].checked = true;
+  dialog.querySelector('[data-uninstall-confirm]').click();
+  out.uninstall.chosen = await p;
+  out.uninstall.focusReturned = doc.activeElement === trigger;
+  await sleep(FADE);
+  p = ctx.showUninstallDialog('demo');
+  key(doc, 'Escape');
+  out.uninstall.escaped = await p;
+  await sleep(FADE);
+  out.uninstall.removed = backdrops().length === 0;
 
   // Integrate from a Work drawer: the real actions.js handler opens the warning confirm listing the merge
   // blockers, and the real drawer.js outside-click and selection.js Escape listeners run alongside it, so the
@@ -354,7 +385,11 @@ def modal_run(tmp_path_factory: pytest.TempPathFactory) -> dict:
     script: Path = tmp_path_factory.mktemp("modal") / "harness.cjs"
     script.write_text(_HARNESS, encoding="utf-8")
     proc = subprocess.run(
-        ["node", str(script), str(_APP_JS), str(_FAKE_DOM)], capture_output=True, text=True, timeout=60, check=False
+        ["node", str(script), str(_APP_JS), str(_FAKE_DOM), str(_TEMPLATES)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
@@ -516,3 +551,29 @@ class TestIntegrateFromWorkDrawer:
             "drawerOpen": True,
             "commands": [{"issue": "42", "command": "integrate-pr", "args": {"pr": 7}}],
         }
+
+
+class TestUninstallDialog:
+    def test_is_a_labelled_dialog_opened_on_cancel(self, modal_run: dict) -> None:
+        uninstall = modal_run["uninstall"]
+        assert uninstall["role"] == "dialog"
+        assert uninstall["label"] == 'Uninstall SOVA from "demo "<proj>""'
+        assert uninstall["focused"] == "Cancel"
+        assert uninstall["options"] == [
+            "Remove managed commands",
+            "Remove guidelines/rules",
+            "Remove agent memory",
+            "Remove config (sova.toml)",
+        ]
+
+    def test_uninstall_resolves_the_chosen_options_and_escape_resolves_null(self, modal_run: dict) -> None:
+        uninstall = modal_run["uninstall"]
+        assert uninstall["chosen"] == {
+            "remove_commands": True,
+            "remove_rules": False,
+            "remove_memory": False,
+            "remove_config": True,
+        }
+        assert uninstall["focusReturned"]
+        assert uninstall["escaped"] is None
+        assert uninstall["removed"]
