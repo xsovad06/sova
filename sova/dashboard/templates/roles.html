@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Roles - SOVA{% endblock %}
 {% block content %}
+{% from "_icons.html" import icon %}
+{% from "_components.html" import btn %}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Roles</h2>
   <button onclick="showCreateModal()" class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">New Role</button>
@@ -10,11 +12,14 @@
   <p class="text-gray-500 text-sm col-span-full">Loading roles...</p>
 </div>
 
-<!-- Create Role Modal -->
-<div id="create-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-6 w-full max-w-md">
-    <h3 class="text-lg font-semibold mb-4">Create Custom Role</h3>
-    <div class="space-y-3">
+<!-- Create Role Modal: opened and closed through sovaModalOpen() (app.js) -->
+<div id="create-modal" class="sova-modal-backdrop" hidden>
+  <div class="sova-modal-dialog sova-modal-dialog-md">
+    <div class="sova-modal-header">
+      <div class="sova-modal-icon">{{ icon("roles", "w-4 h-4") }}</div>
+      <h3 class="sova-modal-title">Create Custom Role</h3>
+    </div>
+    <div class="sova-modal-body space-y-3">
       <div>
         <label for="new-role-name" class="text-xs text-gray-400 block mb-1">Name</label>
         <input type="text" id="new-role-name" class="w-full bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-2" placeholder="my-custom-role">
@@ -24,9 +29,9 @@
         <input type="text" id="new-role-desc" class="w-full bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-2" placeholder="What this role does">
       </div>
     </div>
-    <div class="flex justify-end gap-2 mt-6">
-      <button onclick="hideCreateModal()" class="text-sm px-4 py-2 rounded text-gray-400 hover:text-gray-200 transition-colors">Cancel</button>
-      <button onclick="createRole()" class="text-sm px-4 py-2 rounded bg-accent text-white hover:bg-accent/80 transition-colors">Create</button>
+    <div class="sova-modal-footer">
+      {{ btn("Cancel", variant="ghost", attrs={"onclick": "hideCreateModal()"}) }}
+      {{ btn("Create", attrs={"onclick": "createRole()"}) }}
     </div>
   </div>
 </div>
@@ -97,66 +102,13 @@ function renderRoles(roles) {
   }).join('');
 }
 
-let createModalTrigger = null;
-
-function getFocusableElements(container) {
-  return Array.from(container.querySelectorAll(
-    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-  )).filter(el => !el.disabled);
-}
-
-function trapCreateModalFocus(event) {
-  if (event.key !== 'Tab') return;
-
-  const modal = document.getElementById('create-modal');
-  const focusableElements = getFocusableElements(modal);
-  if (!focusableElements.length) return;
-
-  const first = focusableElements[0];
-  const last = focusableElements[focusableElements.length - 1];
-
-  if (!modal.contains(document.activeElement)) {
-    event.preventDefault();
-    first.focus();
-    return;
-  }
-
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
-
-function handleCreateModalKeydown(event) {
-  if (event.key === 'Escape') {
-    hideCreateModal();
-    return;
-  }
-
-  trapCreateModalFocus(event);
-}
-
+// The shared modal (app.js) owns Escape, the backdrop, the Tab trap and focus return.
 function showCreateModal() {
-  createModalTrigger = document.activeElement;
-  const modal = document.getElementById('create-modal');
-  modal.classList.remove('hidden');
-  modal.setAttribute('tabindex', '-1');
-  document.addEventListener('keydown', handleCreateModalKeydown);
-  setTimeout(() => { document.getElementById('new-role-name').focus(); }, 0);
+  sovaModalOpen(document.getElementById('create-modal'), { initialFocus: '#new-role-name' });
 }
 
 function hideCreateModal() {
-  const modal = document.getElementById('create-modal');
-  modal.classList.add('hidden');
-  document.removeEventListener('keydown', handleCreateModalKeydown);
-
-  if (createModalTrigger) {
-    createModalTrigger.focus();
-    createModalTrigger = null;
-  }
+  sovaModalClose(document.getElementById('create-modal'), 'cancel');
 }
 
 async function createRole() {

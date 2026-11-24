@@ -113,7 +113,6 @@ BASELINE: dict[str, dict[str, int]] = {
     },
     "modal_shell": {
         "templates/fleet.html": 1,
-        "templates/roles.html": 1,
     },
 }
 
