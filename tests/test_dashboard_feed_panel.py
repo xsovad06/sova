@@ -136,7 +136,8 @@ for (const id of ['feed-panel', 'feed-fab', 'feed-list', 'feed-jump-latest', 'fe
 
 const ctx = {
   console,
-  _sovaModalOpen: false,
+  sharedModalOpen: false,
+  sovaModalIsOpen: () => ctx.sharedModalOpen,
   document: {
     getElementById: (id) => elements[id] || null,
     querySelectorAll: (sel) => { state.selectors.push(sel); return state.dialogs; },
@@ -212,10 +213,10 @@ esc({ defaultPrevented: true });
 out.escapeHandledElsewhere = ctx._feedPanelOpen;
 docListeners.keydown({ key: 'a', defaultPrevented: false });
 out.otherKey = ctx._feedPanelOpen;
-ctx._sovaModalOpen = true;
+ctx.sharedModalOpen = true;
 esc();
 out.escapeWithConfirmOpen = ctx._feedPanelOpen;
-ctx._sovaModalOpen = false;
+ctx.sharedModalOpen = false;
 elements['launch-modal'].classList.remove('hidden');
 esc();
 out.escapeWithLaunchModalOpen = ctx._feedPanelOpen;

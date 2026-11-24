@@ -135,13 +135,15 @@ function _prCommand(issue, prNumber, command) {
 
 // One of the work item's own actions (the board entry's `actions`, from work_state on the server): its
 // handler and arguments say what to run, so the page needs no table of which state offers what. An action
-// carrying merge_blockers (an Integrate on a PR not fully ready) asks first, as the old task list did.
+// carrying merge_blockers (an Integrate on a PR not fully ready) asks first, listing each unmet condition, in
+// the warning style (which opens with Cancel focused).
 async function _runServerAction(issue, action) {
   var a = (action && action.handler_args) || {};
   var blockers = (action && action.merge_blockers) || [];
   if (blockers.length) {
-    var ok = await sovaConfirm('This PR is not fully ready to merge: ' + blockers.join('; ') + '. Run ' + action.label + ' anyway?',
-      { title: 'Not ready to merge', confirmText: action.label });
+    var ok = await sovaConfirm('This PR is not fully ready to merge. Run ' + action.label + ' anyway?', {
+      title: 'Not ready to merge', details: blockers, confirmText: action.label + ' anyway', confirmClass: 'warning',
+    });
     if (!ok) return;
   }
   if (action.handler === 'start_agent') return _startRole(a.issue || issue, a.role, a.pr, 'Starting ' + action.label);
