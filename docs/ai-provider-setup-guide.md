@@ -511,6 +511,23 @@ curl http://127.0.0.1:8111/api/auth/status
   "checked_at": "2026-10-12T17:30:00Z",
   "cached": false
 }
+### Claude Code Is Logged Out
+
+**Problem:** every agent run fails at its first model call, and `sova doctor` fails the `llm provider` row. With Claude Code 2.1.331 logged out, `sova doctor` shows (other rows omitted):
+
+```text
+│ claude CLI             │ OK     │ 2.1.331 (Claude Code)                                              │
+│ llm provider           │ FAIL   │ claude-code: 2.1.331 (Claude Code) but not authenticated (run:     │
+│                        │        │ claude auth login)                                                 │
+│ agent runtime          │ OK     │ claude-code: 2.1.331 (Claude Code)                                 │
+
+Some required checks failed. Fix the issues above before using SOVA.
+```
+
+and exits 1. The `claude CLI` and `agent runtime` rows only check that the CLI runs; `llm provider` is the row that reads the login, from `claude auth status --json` (`{"loggedIn": false, "authMethod": "none", ...}`, exit code 1). The Connections page reports the same detail with `authenticated: false`.
+
+**Solution:** run `claude auth login`, then re-run `sova doctor`. A running server caches its auth status for 60 seconds, so the sidebar account row can lag by up to a minute after a terminal login; a login through the Connections page's reconnect button clears that cache at once.
+
 ```
 
 `account` is a whitelisted subset of the `claude auth status --json` payload, filtered to `_ACCOUNT_FIELDS` (`sova/dashboard/services/setup_service.py`): `email`, `authMethod`, `apiProvider`, `orgId`, `orgName`, `subscriptionType`. Only the keys the probe actually returned are present, so the example above (a personal subscription) has no `orgId`/`orgName`. `account` is `None` whenever the provider has no `get_auth_details()` method, or that probe can't confirm a logged-in identity (CLI missing, unparseable `claude auth status --json`, `loggedIn` not `true`). `authenticated` is a separate field: for `claude-code`, `get_auth_status()` overrides it to `account is not None` so a fail-open `check_available()` result ("auth state unknown", used so an unconfirmed probe never blocks agent spawning) is never reported as a confirmed login; for every other provider (no `get_auth_details()`), `authenticated` is the raw `check_available()` result and can be `True` while `account` stays `None` forever. Never treat a populated `account` as the sole proof of being logged in, or a null one as proof of being logged out: check `authenticated` for that. `routing_warnings` lists any `PROVIDER_ROUTING_VARS` present in the server process's own environment as a diagnostic only; it does not mean one reached (or will reach) a spawned agent, since those are scrubbed independently at the spawn boundary (see [4. Environment Variable Scrubbing](#4-environment-variable-scrubbing) above).
