@@ -58,7 +58,7 @@ _NTFY_MAX_MESSAGE_BYTES = 4096
 
 # ntfy short-code tags (plain text, rendered by ntfy clients).
 _NTFY_TAGS: dict[NotificationKind, list[str]] = {
-    NotificationKind.NEEDS_HUMAN: ["raised_hand"],
+    NotificationKind.NEEDS_HUMAN: ["bell"],
     NotificationKind.FAILED: ["warning"],
     NotificationKind.FINISHED: ["white_check_mark"],
     NotificationKind.INFO: ["information_source"],
@@ -179,9 +179,11 @@ def notify(
         _fire_and_forget(_safe_notify("notify.webhook_failed", coro, title))
 
     if _ntfy_wants(config, notification_kind):
-        ntfy_text = f"{subtitle}: {message}" if subtitle else message
+        # The title is the bold line on a lock screen, so it carries the event ("Developer failed #12") and the
+        # body the detail; a constant "SOVA" title would make every push look alike until opened.
+        ntfy_title = subtitle if subtitle else title
         coro = send_ntfy_notification(
-            config, title, ntfy_text, kind=notification_kind, click_url=url, project_dir=project_dir
+            config, ntfy_title, message, kind=notification_kind, click_url=url, project_dir=project_dir
         )
         _fire_and_forget(_safe_notify("notify.ntfy_failed", coro, title))
 

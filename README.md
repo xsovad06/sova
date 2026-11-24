@@ -326,7 +326,8 @@ Every notification has a kind (`needs_human`, `failed`, `finished` or `info`). O
 and an unknown or malformed entry is ignored with a warning rather than failing config load. A run that is
 waiting on you sends one `needs_human` push; the exit-time summary for it (and for a step failure the engine
 already reported, or a finish the engine already reported) is `info`, so the default filter yields exactly one push
-and opting into `finished` does not double it.
+and opting into `finished` does not double it. An ntfy push is titled with the event ("Developer failed #12") so a
+lock screen reads at a glance; its body holds the project and the detail.
 
 Point ntfy at a self-hosted server. Topics on the hosted ntfy.sh are public (anyone who guesses the topic name
 can read it) and are not end-to-end encrypted, so issue titles, step errors and dashboard links would leave
