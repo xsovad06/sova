@@ -836,4 +836,4 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         log.debug("telemetry.schedule_failed", run_id=run_id, exc_info=True)
 
     if exit_code == 0:
-        await _process_auto_handoff(agent)
+        await _process_auto_handoff(agent, pa)

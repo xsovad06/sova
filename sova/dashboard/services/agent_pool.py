@@ -184,22 +184,43 @@ _projects_lock = threading.Lock()
 _default_project_dir: Path | None = None
 
 
+def _new_pool_project_dir(slug: str, *, explicit: bool) -> Path:
+    """The directory a new pool for *slug* is created with.
+
+    The ambient project directory belongs to the ambient slug only: an explicit *slug* naming another project (an
+    auto-handoff follow-up for a different project than the request being served) takes its registered path, so
+    the pool never runs one project's agents in another's directory, configuration and slot limit. With no
+    registered path, the ambient directory is still never used when the ambient slug names a different project:
+    the pool would be cached under this slug for good, so the default directory is used and a warning logged. An
+    unnamed ambient context (no slug, as in single-project mode) keeps its directory, as before.
+    """
+    ambient = get_project_dir()
+    ambient_slug = get_project_slug()
+    foreign = explicit and ambient_slug != slug
+    if slug == _DEFAULT_SLUG or (ambient is not None and not foreign):
+        return ambient or _default_project_dir or Path.cwd()
+
+    from sova.config.registry import get_project_path
+
+    registered = get_project_path(slug)
+    if registered is not None:
+        return registered
+    if foreign and ambient_slug is not None:
+        log.warning("pool.unregistered_slug", slug=slug, ambient_slug=ambient_slug)
+        return _default_project_dir or Path.cwd()
+    return ambient or _default_project_dir or Path.cwd()
+
+
 def _get_project_agents(slug: str | None = None) -> ProjectAgents:
     """Get or create agent collection for a project slug."""
+    explicit = slug is not None
     if slug is None:
         slug = get_project_slug() or _DEFAULT_SLUG
 
     with _projects_lock:
         pa = _projects.get(slug)
         if pa is None:
-            project_dir = get_project_dir()
-            if project_dir is None and slug != _DEFAULT_SLUG:
-                from sova.config.registry import get_project_path
-
-                project_dir = get_project_path(slug)
-            if project_dir is None:
-                project_dir = _default_project_dir or Path.cwd()
-            resolved = project_dir.resolve()
+            resolved = _new_pool_project_dir(slug, explicit=explicit).resolve()
             max_conc = read_max_parallel(resolved)
             pa = _projects.setdefault(
                 slug,

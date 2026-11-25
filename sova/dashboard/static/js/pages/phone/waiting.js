@@ -7,7 +7,7 @@
 // newer load has already overtaken. Handoff files the server could not read, or that the pipeline
 // ignores, are reported above the list so "nothing waiting" is never shown while one may be hiding.
 //
-// Writes always name their item: /handoff/execute and /handoff/clear carry the issue (an empty one would clear
+// Writes always name their item: /handoff/execute and /handoff/clear carry the issue (a missing one would clear
 // every handoff) and /supervisor/plan/approve carries issue_numbers (an empty list approves the whole plan).
 
 import { registerActions } from '../agents/actions.js';

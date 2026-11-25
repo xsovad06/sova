@@ -26,6 +26,10 @@ if TYPE_CHECKING:
 
 log = get_logger(component="dashboard.control.validation")
 
+# Codes of a start refused by current state: an agent already active on the issue, or too little free memory.
+ISSUE_CONFLICT = "issue_conflict"
+MEMORY_PRESSURE = "memory_pressure"
+
 
 async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = False) -> dict | None:
     """Check if an agent is already running for this issue (in-memory + DB).
@@ -42,6 +46,7 @@ async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = 
                 continue
             return {
                 "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
+                "code": ISSUE_CONFLICT,
                 "existing_run_id": existing.run_id,
             }
 
@@ -71,7 +76,7 @@ async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = 
                             log.info("issue_conflict.force_skipped_external", issue=issue, run_id=run.id, pid=run.pid)
                             continue
                         msg = f"Issue #{issue} already has an active agent (external run {run.id}, PID {run.pid})"
-                        return {"error": msg, "existing_run_id": run.id}
+                        return {"error": msg, "code": ISSUE_CONFLICT, "existing_run_id": run.id}
                     run.status = "interrupted"
                     run.error_message = "Stale run: process no longer alive"
                     run.ended_at = datetime.now(timezone.utc)
@@ -469,6 +474,7 @@ def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:
 
         if available_gb < guard.block_threshold_gb:
             return {
+                "code": MEMORY_PRESSURE,
                 "error": (
                     f"Insufficient memory: {available_gb:.1f} GB available, "
                     f"{guard.block_threshold_gb:.1f} GB required. "

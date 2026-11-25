@@ -15,8 +15,8 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from sova.dashboard.services.agent_pool import AgentState
-    from sova.ipc.handoff import DashboardHandoff
+    from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+    from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
 log = get_logger(component="dashboard.control.handoff")
 
@@ -153,19 +153,100 @@ async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHand
         log.warning("auto_handoff.handoff_json_persist_failed", run_id=run_id, exc_info=True)
 
 
-async def _process_auto_handoff(agent: AgentState) -> None:
+def _slug_for_project(project_dir: Path | None, pool: ProjectAgents | None = None) -> str | None:
+    """The slug of the agent pool the finished agent ran in, so its follow-up lands in that same pool.
+
+    Resolved from the finished agent rather than the ambient contextvar: a finalize running for an adopted run has
+    no request context, and two projects can share an issue number. The owning *pool* (``_wait_and_finalize()``
+    holds it) wins, since two pools can share a directory (``__default__`` and the primary project's registered
+    slug on a hub) and the follow-up must keep the finished run's slot limit and UI scope. Without it, a live pool
+    for the directory, then ``find_slug_for_path()``. ``None`` (no ``project_dir``, or an unregistered directory
+    with no pool) keeps ``start_agent()``'s default resolution.
+    """
+    from sova.config.registry import find_slug_for_path
+    from sova.dashboard.services.agent_pool import list_all_pools
+
+    pools = list_all_pools()
+    if pool is not None:
+        owner = next((slug for slug, pa in pools.items() if pa is pool), None)
+        if owner is not None:
+            return owner
+    if project_dir is None:
+        return None
+    resolved = project_dir.resolve()
+    for slug, pa in pools.items():
+        if pa.project_dir.resolve() == resolved:
+            return slug
+    return find_slug_for_path(resolved)
+
+
+def _clear_read_handoff(agent: AgentState, handoff: DashboardHandoff, data: dict) -> None:
+    """Clear the handoff the auto-handoff read: its issue's file, or the issue-less file of a PR-only handoff.
+
+    Never an empty key: a PR-only run has no issue, and clearing by it must not wipe other issues' handoffs.
+    *data* is the file content that was read, so a replacement written since then stays pending.
+    """
+    from sova.dashboard.services import handoff_service
+
+    issue = str(handoff.issue or agent.issue or "").lstrip("#").strip()
+    if issue:
+        handoff_service.clear_handoff(agent.project_dir, issue=issue, expected=data)
+    else:
+        handoff_service.clear_issueless_handoff(agent.project_dir, expected=data)
+
+
+async def _start_follow_up(
+    action: HandoffAction, target_issue: str, target_role: str | None, pr_num: int | None, slug: str | None
+) -> object:
+    """Start the follow-up of an auto-execute *action*; the caller has already cleared the handoff.
+
+    Returns the start's result, or ``None`` when the action names nothing that can be started.
+    """
+    from sova.dashboard.services import agent_lifecycle
+
+    if action.mode == "agent":
+        result = await agent_lifecycle.start_agent(
+            target_issue, role=target_role, pr_number=pr_num, slug=slug, _skip_handoff_clear=True
+        )
+        log.info("auto_handoff.agent_started", result=result, slug=slug)
+        return result
+    if action.mode == "claude-command":
+        cmd = action.command.lstrip("/").split()[0] if action.command else ""
+        if cmd:
+            result = await agent_lifecycle.start_command(cmd, action.args, slug=slug, _skip_handoff_clear=True)
+            log.info("auto_handoff.command_started", result=result)
+            return result
+        return None
+    log.warning("auto_handoff.unsupported_mode", mode=action.mode)
+    return None
+
+
+async def _process_auto_handoff(agent: AgentState, pool: ProjectAgents | None = None) -> None:
     """Check for auto-executable handoff actions after an agent completes.
 
     Reads the handoff file and auto-triggers the first action marked
     with auto_execute=True. This enables role chaining (e.g., Developer
-    hands off to Reviewer automatically after CI passes).
+    hands off to Reviewer automatically after CI passes). The handoff is
+    cleared before the follow-up starts: the trigger file must be gone
+    before the follow-up run reads state, and a pending auto action must
+    not show as a button a user can click into a second start. A refused
+    start therefore leaves no pending handoff (the accepted trade-off of
+    this path, which nobody retries by hand).
+
+    An issue-less (PR-only) agent reads only the handoff that names no issue
+    and carries its own PR, never the newest other issue's file or another
+    PR's handoff (``read_owned_handoff()``). *pool* is the pool the agent ran
+    in; the follow-up starts in it (``_slug_for_project()``).
     """
     try:
-        from sova.dashboard.services import agent_lifecycle, handoff_service
-        from sova.ipc.handoff import read_handoff_file
+        from sova.dashboard.services.handoff_service import start_succeeded
+        from sova.ipc.handoff import read_owned_handoff
 
-        handoff = read_handoff_file(agent.project_dir, issue=agent.issue)
-        if handoff is None or handoff.status != "awaiting_action":
+        owned = read_owned_handoff(agent.project_dir, agent.issue, pr_number=agent.pr_number)
+        if owned is None:
+            return
+        handoff, data = owned
+        if handoff.status != "awaiting_action":
             return
 
         h_issue = str(handoff.issue).lstrip("#").strip() if handoff.issue else ""
@@ -192,6 +273,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 continue
 
             # Extract args once for agent-mode actions
+            target_issue, target_role, pr_num = "", None, None
             if action.mode == "agent":
                 args = action.args or {}
                 raw_pr = args.get("pr") or handoff.pr_number
@@ -222,7 +304,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                             issue=target_issue,
                             pr_number=pr_num,
                         )
-                        handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
+                        _clear_read_handoff(agent, handoff, data)
                         return
 
                 # Check circuit breaker for address-review spawns
@@ -251,7 +333,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                         metadata={"issue": target_issue, "pr_number": pr_num, "run_id": agent.run_id},
                     )
                     _notify_budget_exhausted(agent, target_issue, reason, headline=headline)
-                    handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
+                    _clear_read_handoff(agent, handoff, data)
                     return
 
             # Memory pressure gate (all action modes)
@@ -283,7 +365,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                         ),
                     ],
                 )
-                handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
+                _clear_read_handoff(agent, handoff, data)
                 write_handoff_file(agent.project_dir, blocked_handoff)
                 return
 
@@ -302,24 +384,11 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 metadata={"action_id": action.id, "issue": handoff.issue, "run_id": agent.run_id},
             )
 
-            handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
-
-            if action.mode == "agent":
-                result = await agent_lifecycle.start_agent(
-                    target_issue,
-                    role=target_role,
-                    pr_number=pr_num,
-                    slug=None,
-                )
-                log.info("auto_handoff.agent_started", result=result)
-            elif action.mode == "claude-command":
-                cmd = action.command.lstrip("/").split()[0] if action.command else ""
-                if cmd:
-                    result = await agent_lifecycle.start_command(cmd, action.args, slug=None)
-                    log.info("auto_handoff.command_started", result=result)
-            else:
-                log.warning("auto_handoff.unsupported_mode", mode=action.mode)
-
+            _clear_read_handoff(agent, handoff, data)
+            slug = _slug_for_project(agent.project_dir, pool)
+            result = await _start_follow_up(action, target_issue, target_role, pr_num, slug)
+            if result is not None and not start_succeeded(result):
+                log.warning("auto_handoff.start_refused", run_id=agent.run_id, action_id=action.id, result=result)
             return  # only execute the first auto action
 
     except Exception:  # noqa: BLE001 (auto-handoff is best-effort; a failure must not break finalization)
