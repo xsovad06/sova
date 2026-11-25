@@ -541,7 +541,8 @@ class TestOwlAvatar:
     def test_an_unknown_size_is_md_and_the_image_is_decorative(self) -> None:
         html = _macro("owl_avatar", "huge")
         assert 'class="sova-owl sova-owl-md"' in html
-        assert 'aria-hidden="true"' in html and 'alt=""' in html
+        assert 'aria-hidden="true"' in html
+        assert 'alt=""' in html
 
     def test_every_size_has_a_rule_and_nothing_clips_the_image(self) -> None:
         for size in ("sm", "md", "lg"):

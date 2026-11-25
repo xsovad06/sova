@@ -138,7 +138,8 @@ class TestPage:
         assert actions, "the Work header's action group"
         group = actions.group(1)
         button = re.search(r'<button[^>]*id="triage-all-btn"[^>]*>', group).group(0)
-        assert "sova-btn-warning" in button and " disabled" in button
+        assert "sova-btn-warning" in button
+        assert " disabled" in button
         assert '<span id="triage-all-count" class="sova-inline-count tabular-nums">--</span>' in group
         assert re.search(r'id="triage-all-btn".*?</button>\s*<button[^>]*id="run-planner-btn"', group, re.DOTALL), (
             "Triage all sits directly before Run Planner in the same action group"
@@ -232,7 +233,8 @@ class TestPage:
         assert out["unknownKeeps"] == ["10", False], "an unreadable tracker is not an empty backlog"
         confirm = out["confirm"]
         assert confirm["message"].startswith("Triage 10 backlog issues.")
-        assert confirm["opts"]["title"] == "Triage all" and confirm["opts"]["confirmText"] == "Triage 10"
+        assert confirm["opts"]["title"] == "Triage all"
+        assert confirm["opts"]["confirmText"] == "Triage 10"
         assert confirm["opts"]["details"][0] == "#100 Issue 0"
         assert confirm["opts"]["details"][-1] == "and 2 more", "eight listed, the rest counted"
         assert out["cancelledRequests"] == []
@@ -253,7 +255,8 @@ class TestPage:
         ]
         toasts, disabled, started = out["refused"]
         assert toasts == [["A batch is already running", "error"]]
-        assert disabled is False and started == 0
+        assert disabled is False
+        assert started == 0
 
     def test_the_supervisor_page_links_to_work_instead_of_its_queue_panel(self) -> None:
         html = (_TEMPLATES / "supervisor.html").read_text(encoding="utf-8")
