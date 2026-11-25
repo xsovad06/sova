@@ -515,7 +515,9 @@ class GitHubAdapter(TaskAdapter):
         labels: list[str] | None = None,
         issue_type: str = "",
         parent_key: str = "",
+        priority: Priority = Priority.UNDEFINED,
     ) -> Task:
+        # priority is unused: GitHub has no native priority field, so callers put it in labels.
         labels = labels or []
         applied = list(labels)
         dropped: list[str] = []

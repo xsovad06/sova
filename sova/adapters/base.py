@@ -280,6 +280,7 @@ class TaskAdapter(ABC):
         labels: list[str] | None = None,
         issue_type: str = "",
         parent_key: str = "",
+        priority: Priority = Priority.UNDEFINED,
     ) -> Task:
         """Create a new issue/task on the tracker (egress-filtered).
 
@@ -289,6 +290,9 @@ class TaskAdapter(ABC):
             labels: Labels to apply to the new issue.
             issue_type: Issue type name (e.g. "Task", "Bug", "Sub-task"). Adapter-specific.
             parent_key: Parent issue key for sub-task creation (Jira only).
+            priority: Priority for the tracker's native priority field (Jira only; GitHub carries
+                priority as a label, so the caller passes it in ``labels``). UNDEFINED leaves the
+                tracker's default.
 
         Returns:
             The created Task with populated fields.
@@ -300,7 +304,9 @@ class TaskAdapter(ABC):
         filtered_body = filter_egress(body, mode=mode, destination="create_issue.body") if body else body
         if filtered_body is None:
             raise RuntimeError("Egress filter blocked issue body")
-        return await self._do_create_issue(filtered_title, filtered_body, labels, issue_type, parent_key)
+        return await self._do_create_issue(
+            filtered_title, filtered_body, labels, issue_type, parent_key, priority=priority
+        )
 
     @abstractmethod
     async def _do_create_issue(
@@ -310,6 +316,7 @@ class TaskAdapter(ABC):
         labels: list[str] | None = None,
         issue_type: str = "",
         parent_key: str = "",
+        priority: Priority = Priority.UNDEFINED,
     ) -> Task:
         """Create a new issue/task on the tracker (implementation)."""
 

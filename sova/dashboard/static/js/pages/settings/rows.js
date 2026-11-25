@@ -67,6 +67,7 @@ function inputText(s) {
     return s.value.some((v) => String(v).indexOf(',') !== -1) ? JSON.stringify(s.value) : s.value.join(', ');
   }
   if (s.value === null || s.value === undefined) return '';
+  if (typeof s.value === 'object') return JSON.stringify(s.value);
   return String(s.value);
 }
 
@@ -121,6 +122,7 @@ function metaHtml(s) {
       '<button type="button" class="sova-setting-link" data-act="reset">Reset to default</button>');
   }
   if (s.key === 'llm.routing') parts.push('<a class="sova-setting-link" href="#models">Set each step in Which model runs where</a>');
+  else if (s.value_type === 'object' && s.json_editable) parts.push('<span>A JSON object, e.g. {"name": "value"}. Saving replaces every entry.</span>');
   else if (s.value_type === 'object') parts.push('<span>Read-only here.</span>');
   return parts.join('');
 }
@@ -180,7 +182,9 @@ export function controlHtml(s) {
       '</select>';
   }
   if (s.value_type === 'secret') return secretControl(s);
-  if (s.value_type === 'object') return objectControl(s);
+  // Only a flat mapping that opts in (json_editable) is edited as JSON text; any other object, llm.routing
+  // included (edited per step in the Models view), stays a read-only table.
+  if (s.value_type === 'object' && !s.json_editable) return objectControl(s);
   return textControl(s);
 }
 

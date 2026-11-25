@@ -18,6 +18,9 @@ class SettingMeta:
     # Entry type of a ``list`` setting: ``string``, or ``int`` for one whose entries are positive whole numbers
     # (issue numbers). The editor still sends comma-separated text; the server casts each entry.
     item_type: str = "string"
+    # An ``object`` setting the settings page edits as JSON text, where a save replaces the whole mapping. Only a
+    # flat name-to-value mapping opts in; every other object stays a read-only table that keeps its stored rows.
+    json_editable: bool = False
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -594,6 +597,14 @@ _REGISTRY: list[SettingMeta] = [
         'Map JIRA board status names to SOVA states (e.g. ON_QA = "done", Selected for Development = "triaged")',
         "task_source",
         "object",
+    ),
+    SettingMeta(
+        "task_source.jira_priority_mapping",
+        "JIRA priority mapping",
+        'Map JIRA priority names to SOVA priorities, checked before the built-in names (e.g. "Urgent" = "critical")',
+        "task_source",
+        "object",
+        json_editable=True,
     ),
     SettingMeta(
         "task_source.jira_state_transitions",
@@ -2487,11 +2498,11 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
     ("keyring"/"database"/"unset", from ``secret_locations``) and
     ``keyring_capable`` (whether this key is actually resolved through the
     keyring; see ``keyring_store.RESOLVED_SECRET_KEYS``), which the settings
-    page uses to decide whether to offer a "Move to keychain" action.
+    page uses to decide whether to offer a "Move to keychain" action. A registered
+    ``value_type="object"`` entry carries ``json_editable``: the page edits only those
+    as JSON text and shows every other object as a read-only table.
     Settings without a registered group go into "other".
     """
-    from sova.llm import keyring_store
-
     secret_locations = secret_locations or {}
     groups: dict[str, list[dict]] = {}
 
@@ -2499,34 +2510,7 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
         if key == "_error":
             continue
 
-        value = flat_config[key]
-        meta = get_meta(key)
-
-        if meta:
-            group_id = meta.group
-            entry = {
-                "key": key,
-                "label": meta.label,
-                "description": meta.description,
-                "value": value,
-                "value_type": meta.value_type,
-                "requires_restart": meta.requires_restart,
-                "options": list(meta.options),
-                "options_source": meta.options_source,
-            }
-            if meta.value_type == "secret":
-                entry["secret_location"] = secret_locations.get(key, "unset")
-                entry["keyring_capable"] = key in keyring_store.RESOLVED_SECRET_KEYS
-        else:
-            group_id = _infer_group(key)
-            entry = {
-                "key": key,
-                "label": _humanize_key(key),
-                "description": "",
-                "value": value,
-                "value_type": _infer_type(value),
-            }
-
+        group_id, entry = _setting_entry(key, flat_config[key], secret_locations)
         groups.setdefault(group_id, []).append(entry)
 
     result = []
@@ -2550,6 +2534,42 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
         )
 
     return result
+
+
+def _setting_entry(key: str, value: object, secret_locations: dict[str, str]) -> tuple[str, dict]:
+    """Build one setting's display entry and the group it belongs to.
+
+    A registered key takes its label, type and options from its ``SettingMeta``;
+    an unregistered one gets a label and type inferred from the key and value.
+    """
+    meta = get_meta(key)
+    if meta is None:
+        return _infer_group(key), {
+            "key": key,
+            "label": _humanize_key(key),
+            "description": "",
+            "value": value,
+            "value_type": _infer_type(value),
+        }
+
+    entry = {
+        "key": key,
+        "label": meta.label,
+        "description": meta.description,
+        "value": value,
+        "value_type": meta.value_type,
+        "requires_restart": meta.requires_restart,
+        "options": list(meta.options),
+        "options_source": meta.options_source,
+    }
+    if meta.value_type == "object":
+        entry["json_editable"] = meta.json_editable
+    if meta.value_type == "secret":
+        from sova.llm import keyring_store
+
+        entry["secret_location"] = secret_locations.get(key, "unset")
+        entry["keyring_capable"] = key in keyring_store.RESOLVED_SECRET_KEYS
+    return meta.group, entry
 
 
 def _infer_group(key: str) -> str:

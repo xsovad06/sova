@@ -6,12 +6,13 @@ import asyncio
 import json
 from unittest.mock import patch
 
+import httpx
 import pytest
 import respx
 from httpx import Response
 from structlog.testing import capture_logs
 
-from sova.adapters.base import PriorityUnavailableError, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, PriorityUnavailableError, TaskFilters, TaskState
 from sova.adapters.jira import (
     _DEFAULT_TRANSITIONS,
     _JIRA_STATUS_TO_STATE,
@@ -28,6 +29,7 @@ def _adapter(
     project_key: str = "TEST",
     state_transitions: dict[str, str] | None = None,
     status_mapping: dict[str, str] | None = None,
+    priority_mapping: dict[str, str] | None = None,
 ) -> JiraAdapter:
     return JiraAdapter(
         base_url=base_url,
@@ -36,6 +38,7 @@ def _adapter(
         project_key=project_key,
         state_transitions=state_transitions,
         status_mapping=status_mapping,
+        priority_mapping=priority_mapping,
     )
 
 
@@ -2132,3 +2135,303 @@ class TestTransitionWithAutoDerivedNames:
         body = route.calls[0].request.content
         # First match (id "1") is selected consistently
         assert b'"1"' in body
+
+
+class TestPriorityResolution:
+    def test_operator_override_wins_over_the_built_in_name(self) -> None:
+        task = _adapter(priority_mapping={"major": "blocker"})._parse_issue(_issue_json(priority="Major"))
+        assert task.priority is Priority.BLOCKER
+
+    def test_unmapped_name_resolves_undefined_and_logs_once(self) -> None:
+        adapter = _adapter()
+        with capture_logs() as logs:
+            first = adapter._parse_issue(_issue_json(priority="Showstopper"))
+            adapter._parse_issue(_issue_json(key="TEST-43", priority="Showstopper"))
+        assert first.priority is Priority.UNDEFINED
+        assert first.metadata["jira_priority"] == "Showstopper"
+        assert [e["priority"] for e in logs if e["event"] == "priority.unmapped"] == ["Showstopper"]
+
+    @pytest.mark.parametrize("fields_priority", [None, {"name": "Unprioritized"}])
+    def test_no_priority_set_is_undefined_without_an_unmapped_log(self, fields_priority: dict | None) -> None:
+        data = _issue_json()
+        data["fields"]["priority"] = fields_priority
+        with capture_logs() as logs:
+            task = _adapter()._parse_issue(data)
+        assert task.priority is Priority.UNDEFINED
+        assert not [e for e in logs if e["event"] == "priority.unmapped"]
+
+
+class TestGetTasksByKeys:
+    _URL = "https://test.atlassian.net/rest/api/3/issue/bulkfetch"
+
+    @respx.mock
+    async def test_one_request_with_normalized_deduplicated_valid_keys(self) -> None:
+        route = respx.post(self._URL).mock(
+            return_value=Response(
+                200,
+                json={
+                    "issues": [_issue_json(key="TEST-1", priority="P1 - Critical")],
+                    "issueErrors": [{"errorMessages": ["Issue TEST-2 does not exist"]}],
+                },
+            )
+        )
+
+        tasks = await _adapter().get_tasks_by_keys([" test-1 ", "TEST-1", "TEST-2", 'X-1") OR (1=1', "nodash"])
+
+        assert route.call_count == 1
+        assert json.loads(route.calls[0].request.content)["issueIdsOrKeys"] == ["TEST-1", "TEST-2"]
+        assert [(t.metadata["key"], t.priority) for t in tasks] == [("TEST-1", Priority.CRITICAL)]
+
+    @respx.mock
+    async def test_no_valid_key_makes_no_request(self) -> None:
+        route = respx.post(self._URL).mock(return_value=Response(200, json={"issues": []}))
+        assert await _adapter().get_tasks_by_keys(["", "bad key"]) == []
+        assert not route.called
+
+    @pytest.mark.parametrize(
+        "response",
+        [Response(503, text="unavailable"), Response(200, text="<html>proxy login</html>")],
+        ids=["http-error", "unreadable-body"],
+    )
+    @respx.mock
+    async def test_a_failed_request_raises_rather_than_reporting_no_issues(self, response: Response) -> None:
+        respx.post(self._URL).mock(return_value=response)
+        adapter = _adapter()
+        with pytest.raises(AdapterError):
+            await adapter.get_tasks_by_keys(["TEST-1"])
+
+    @respx.mock
+    async def test_tasks_carry_the_status_and_priority_names_the_work_page_reads(self) -> None:
+        respx.post(self._URL).mock(
+            return_value=Response(
+                200, json={"issues": [_issue_json(key="TEST-1", status_name="In Progress", priority="P1 - Critical")]}
+            )
+        )
+
+        [task] = await _adapter().get_tasks_by_keys(["TEST-1"])
+
+        assert task.metadata["key"] == "TEST-1"
+        assert task.metadata["status"] == "In Progress"
+        assert task.metadata["jira_priority"] == "P1 - Critical"
+
+    @respx.mock
+    async def test_a_malformed_issue_is_skipped_not_the_batch(self) -> None:
+        broken = {"key": "TEST-2", "fields": {"fixVersions": "not-a-list", "labels": []}}
+        respx.post(self._URL).mock(return_value=Response(200, json={"issues": [broken, _issue_json(key="TEST-1")]}))
+
+        with capture_logs() as logs:
+            tasks = await _adapter().get_tasks_by_keys(["TEST-1", "TEST-2"])
+
+        assert [t.metadata["key"] for t in tasks] == ["TEST-1"]
+        assert any(e["event"] == "bulk_fetch.unparseable_issue" for e in logs)
+
+
+class TestCreateIssuePriority:
+    _URL = "https://test.atlassian.net/rest/api/3"
+    _TYPES = f"{_URL}/issue/createmeta/TEST/issuetypes"
+
+    def _mock_create(self) -> respx.Route:
+        respx.get(f"{self._URL}/issue/TEST-50").mock(return_value=Response(200, json=_issue_json(key="TEST-50")))
+        return respx.post(f"{self._URL}/issue").mock(return_value=Response(201, json={"key": "TEST-50"}))
+
+    @respx.mock
+    async def test_sends_the_schemes_name_for_the_planner_priority(self) -> None:
+        respx.get(self._TYPES).mock(
+            return_value=Response(200, json={"issueTypes": [{"id": "3", "name": "Bug"}, {"id": "10", "name": "Task"}]})
+        )
+        respx.get(f"{self._TYPES}/10").mock(
+            return_value=Response(
+                200,
+                json={
+                    "fields": [
+                        {"fieldId": "summary"},
+                        {"fieldId": "priority", "allowedValues": [{"name": "Major"}, {"name": "P1 - Critical"}]},
+                    ]
+                },
+            )
+        )
+        route = self._mock_create()
+
+        await _adapter().create_issue("Title", priority=Priority.CRITICAL)
+
+        assert json.loads(route.calls[0].request.content)["fields"]["priority"] == {"name": "P1 - Critical"}
+
+    @respx.mock
+    async def test_a_create_screen_without_priority_omits_the_field_and_still_creates(self) -> None:
+        respx.get(self._TYPES).mock(return_value=Response(200, json={"values": [{"id": "10", "name": "Task"}]}))
+        respx.get(f"{self._TYPES}/10").mock(return_value=Response(200, json={"values": [{"fieldId": "summary"}]}))
+        route = self._mock_create()
+
+        with capture_logs() as logs:
+            task = await _adapter().create_issue("Title", priority=Priority.HIGH)
+
+        assert task.id == "50"
+        assert "priority" not in json.loads(route.calls[0].request.content)["fields"]
+        assert any(e["event"] == "create_issue.priority_omitted" for e in logs)
+
+    _PRIORITY_FIELDS = {"fields": [{"fieldId": "priority", "allowedValues": [{"name": "High"}]}]}
+
+    @respx.mock
+    async def test_a_failed_metadata_lookup_is_retried_on_the_next_create(self) -> None:
+        types = respx.get(self._TYPES).mock(
+            side_effect=[
+                Response(503, text="unavailable"),
+                Response(200, json={"issueTypes": [{"id": "10", "name": "Task"}]}),
+            ]
+        )
+        respx.get(f"{self._TYPES}/10").mock(return_value=Response(200, json=self._PRIORITY_FIELDS))
+        route = self._mock_create()
+        adapter = _adapter()
+
+        with capture_logs() as logs:
+            await adapter.create_issue("First", priority=Priority.HIGH)
+        await adapter.create_issue("Second", priority=Priority.HIGH)
+
+        assert types.call_count == 2
+        assert any(e["event"] == "createmeta.fetch_failed" for e in logs)
+        assert "priority" not in json.loads(route.calls[0].request.content)["fields"]
+        assert json.loads(route.calls[1].request.content)["fields"]["priority"] == {"name": "High"}
+
+    @respx.mock
+    async def test_a_screen_without_priority_is_looked_up_once(self) -> None:
+        types = respx.get(self._TYPES).mock(
+            return_value=Response(200, json={"issueTypes": [{"id": "10", "name": "Task"}]})
+        )
+        respx.get(f"{self._TYPES}/10").mock(return_value=Response(200, json={"fields": [{"fieldId": "summary"}]}))
+        self._mock_create()
+        adapter = _adapter()
+
+        await adapter.create_issue("First", priority=Priority.HIGH)
+        await adapter.create_issue("Second", priority=Priority.HIGH)
+
+        assert types.call_count == 1
+
+    @respx.mock
+    async def test_reads_later_metadata_pages_to_find_the_type_and_the_priority_field(self) -> None:
+        from sova.adapters.jira import _CREATEMETA_PAGE_SIZE
+
+        filler_types = [{"id": str(n), "name": f"Type {n}"} for n in range(_CREATEMETA_PAGE_SIZE)]
+        filler_fields = [{"fieldId": f"customfield_{n}"} for n in range(_CREATEMETA_PAGE_SIZE)]
+
+        def _page(first: list[dict], second: list[dict], key: str):
+            def respond(request):
+                start = int(request.url.params.get("startAt", "0"))
+                entries = first if start == 0 else second
+                return Response(200, json={key: entries, "startAt": start, "total": len(first) + len(second)})
+
+            return respond
+
+        types = respx.get(self._TYPES).mock(
+            side_effect=_page(filler_types, [{"id": "10", "name": "Task"}], "issueTypes")
+        )
+        fields = respx.get(f"{self._TYPES}/10").mock(
+            side_effect=_page(filler_fields, self._PRIORITY_FIELDS["fields"], "fields")
+        )
+        route = self._mock_create()
+
+        await _adapter().create_issue("Title", priority=Priority.HIGH)
+
+        assert types.call_count == 2
+        assert fields.call_count == 2
+        assert fields.calls[1].request.url.params["startAt"] == str(_CREATEMETA_PAGE_SIZE)
+        assert json.loads(route.calls[0].request.content)["fields"]["priority"] == {"name": "High"}
+
+    @respx.mock
+    async def test_a_server_clamped_page_is_not_mistaken_for_the_last(self) -> None:
+        """Jira may answer 50 entries when 200 were asked for; ``isLast: false`` still means more pages follow."""
+        clamped = [{"id": str(n), "name": f"Type {n}"} for n in range(50)]
+
+        def respond(request):
+            start = int(request.url.params.get("startAt", "0"))
+            if start == 0:
+                return Response(200, json={"issueTypes": clamped, "isLast": False, "total": 51})
+            return Response(200, json={"issueTypes": [{"id": "10", "name": "Task"}], "isLast": True})
+
+        types = respx.get(self._TYPES).mock(side_effect=respond)
+        respx.get(f"{self._TYPES}/10").mock(return_value=Response(200, json=self._PRIORITY_FIELDS))
+        route = self._mock_create()
+
+        await _adapter().create_issue("Title", priority=Priority.HIGH)
+
+        assert types.call_count == 2
+        assert types.calls[1].request.url.params["startAt"] == "50"
+        assert json.loads(route.calls[0].request.content)["fields"]["priority"] == {"name": "High"}
+
+    @pytest.mark.parametrize(
+        "response",
+        [Response(200, text="<html>proxy login</html>"), Response(200, json=["not", "a", "page"])],
+        ids=["unreadable-body", "wrong-shape"],
+    )
+    @respx.mock
+    async def test_an_unreadable_metadata_page_omits_the_field_and_still_creates(self, response: Response) -> None:
+        respx.get(self._TYPES).mock(return_value=response)
+        route = self._mock_create()
+        adapter = _adapter()
+
+        await adapter.create_issue("Title", priority=Priority.HIGH)
+
+        assert "priority" not in json.loads(route.calls[0].request.content)["fields"]
+        assert adapter._create_priority_names == {}
+
+    @respx.mock
+    async def test_a_transport_error_omits_the_field_and_still_creates(self) -> None:
+        respx.get(self._TYPES).mock(side_effect=httpx.ConnectError("down"))
+        route = self._mock_create()
+
+        await _adapter().create_issue("Title", priority=Priority.HIGH)
+
+        assert "priority" not in json.loads(route.calls[0].request.content)["fields"]
+
+    @respx.mock
+    async def test_a_server_that_never_ends_its_pages_is_bounded(self) -> None:
+        from sova.adapters.jira import _CREATEMETA_MAX_PAGES, _CREATEMETA_PAGE_SIZE
+
+        filler = {"issueTypes": [{"id": str(n), "name": f"Type {n}"} for n in range(_CREATEMETA_PAGE_SIZE)]}
+        types = respx.get(self._TYPES).mock(return_value=Response(200, json=filler))
+        self._mock_create()
+
+        with capture_logs() as logs:
+            await _adapter().create_issue("Title", priority=Priority.HIGH)
+
+        assert types.call_count == _CREATEMETA_MAX_PAGES
+        assert any(e["event"] == "createmeta.page_limit" for e in logs)
+
+    @respx.mock
+    async def test_undefined_priority_reads_no_metadata_and_sends_no_field(self) -> None:
+        meta = respx.get(self._TYPES).mock(return_value=Response(200, json={"issueTypes": []}))
+        route = self._mock_create()
+
+        await _adapter().create_issue("Title")
+
+        assert not meta.called
+        assert "priority" not in json.loads(route.calls[0].request.content)["fields"]
+
+
+class TestIsLastCreatemetaPage:
+    @pytest.mark.parametrize(
+        ("data", "page_len", "next_start", "expected"),
+        [
+            ({"isLast": False, "total": 10}, 50, 50, False),
+            ({"isLast": True}, 200, 200, True),
+            ({"isLast": False}, 0, 0, True),
+            ({"total": 120}, 50, 50, False),
+            ({"total": 120}, 50, 120, True),
+            ({}, 50, 50, True),
+            ({}, 200, 200, False),
+        ],
+        ids=[
+            "islast-false-wins",
+            "islast-true",
+            "empty-page",
+            "total-ahead",
+            "total-reached",
+            "short-no-signal",
+            "full-no-signal",
+        ],
+    )
+    def test_server_signals_decide_before_page_length(
+        self, data: dict, page_len: int, next_start: int, expected: bool
+    ) -> None:
+        from sova.adapters.jira import _is_last_createmeta_page
+
+        assert _is_last_createmeta_page(data, page_len, next_start) is expected

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sova.adapters.base import Task, TaskState
+from sova.adapters.priority import Priority
 from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.dashboard.services.work_item_service import (
     GraphConfigError,
@@ -1809,6 +1810,92 @@ class TestGetWorkItems:
 
         assert [(item["issue_number"], item["pr_number"]) for item in result["items"]] == [("42", 301)]
         assert result["items"][0]["title"] == "ARVAC issue"
+
+    @pytest.mark.parametrize(
+        ("found", "expected"),
+        [
+            pytest.param(True, ("critical", "P1 - Critical", "In Progress", "Ticket title"), id="ticket-resolves"),
+            pytest.param(False, ("low", "", "", "PR title"), id="falls-back-to-labels"),
+        ],
+    )
+    async def test_jira_pr_outside_the_queue_takes_the_tickets_priority_and_status(
+        self, _mock_sources: tuple[AsyncMock, MagicMock, AsyncMock], found: bool, expected: tuple[str, ...]
+    ) -> None:
+        mock_fetch, *_ = _mock_sources
+        queue = [{"issue": "42", "title": "Queued", "state": "in_review", "labels": [], "priority": 1}]
+        prs = [
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "ARVAC-42", "state": "OPEN"},
+            {
+                "number": 301,
+                "linked_issue": 7,
+                "linked_jira_key": "arvac-7",
+                "title": "PR title",
+                "labels": ["priority: low"],
+                "computed_state": "ci_failed",
+                "state": "OPEN",
+            },
+        ]
+        mock_fetch.return_value = (queue, prs, [], {"agents": [], "completed": []})
+        ticket = Task(
+            id="7",
+            title="Ticket title",
+            url="https://jira.example.test/browse/ARVAC-7",
+            state=TaskState.IN_PROGRESS,
+            priority=Priority.CRITICAL,
+            metadata={"key": "ARVAC-7", "status": "In Progress", "jira_priority": "P1 - Critical"},
+        )
+        lookup = AsyncMock(return_value={"ARVAC-7": ticket} if found else {})
+        cfg = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            )
+        )
+        with (
+            patch("sova.dashboard.services.work_item_service.load_config", return_value=cfg),
+            patch("sova.dashboard.services.jira_ticket_service.lookup_jira_tickets", lookup),
+        ):
+            result = await get_work_items()
+
+        assert lookup.await_args.args[1] == {"arvac-7"}
+        item = next(i for i in result["items"] if i["pr_number"] == 301)
+        actual = (item["issue_priority"], item["jira_priority"], item["jira_status"], item["title"])
+        assert actual == expected
+        assert item["jira_key"].upper() == "ARVAC-7"
+
+    async def test_github_project_never_looks_up_jira_tickets(self) -> None:
+        from sova.dashboard.services.work_item_service import _lookup_outside_queue_tickets
+
+        lookup = AsyncMock(return_value={})
+        prs = [{"number": 1, "linked_issue": 7, "linked_jira_key": "ARVAC-7"}]
+        with patch("sova.dashboard.services.jira_ticket_service.lookup_jira_tickets", lookup):
+            assert await _lookup_outside_queue_tickets(ProjectConfig(github_repo="o/r"), prs, [], None) == {}
+        lookup.assert_not_awaited()
+
+    async def test_lookup_skips_prs_the_queue_or_graph_covers(self) -> None:
+        """Only a PR whose issue neither the queue nor the graph carries is looked up; a non-numeric linked issue
+        is never a graph task and never raises."""
+        from sova.dashboard.services.work_item_service import _lookup_outside_queue_tickets
+
+        graph = MagicMock()
+        graph.get_task.side_effect = lambda n: object() if n == 5 else None
+        cfg = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira", jira_project_key="ARVAC", jira_base_url="https://jira.example.test"
+            )
+        )
+        prs = [
+            {"number": 1, "linked_issue": 5, "linked_jira_key": "ARVAC-5"},
+            {"number": 2, "linked_issue": "6", "linked_jira_key": "ARVAC-6"},
+            {"number": 3, "linked_issue": 7, "linked_jira_key": "ARVAC-7"},
+            {"number": 4, "linked_issue": "ARVAC-8", "linked_jira_key": "ARVAC-8"},
+            {"number": 5, "linked_issue": 9, "linked_jira_key": None},
+        ]
+        lookup = AsyncMock(return_value={})
+        with patch("sova.dashboard.services.jira_ticket_service.lookup_jira_tickets", lookup):
+            await _lookup_outside_queue_tickets(cfg, prs, [{"issue": 6}], graph)
+
+        assert lookup.await_args.args[1] == {"ARVAC-7", "ARVAC-8"}
+        assert all(isinstance(call.args[0], int) for call in graph.get_task.call_args_list)
 
     async def test_unrelated_jira_pr_does_not_exclude_an_up_next_issue(self) -> None:
         cfg = ProjectConfig(

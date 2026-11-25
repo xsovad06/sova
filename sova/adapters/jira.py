@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
+import math
 import re
+from collections.abc import Callable, Iterable
 from urllib.parse import quote
 
 import httpx
@@ -21,11 +23,15 @@ from sova.adapters.base import (
     TaskState,
 )
 from sova.adapters.priority import Priority
+from sova.utils.log_dedup import log_once
 from sova.utils.logging import get_logger
 
 log = get_logger(component="adapter.jira")
 
 _MAX_USER_SEARCH_RESULTS = 10
+
+# Jira's bulk fetch endpoint returns at most 100 issues per request.
+MAX_BULK_FETCH_KEYS = 100
 
 # ADF node types that end a line when flattened to text. Inline nodes
 # (text, emoji, mention, hardBreak) are excluded so they stay on their line.
@@ -66,6 +72,31 @@ _ADF_TRUNCATION_NOTICE = "[content truncated: ADF nesting depth exceeded]"
 # Anything else is a malformed payload rather than a real heading level.
 _ADF_MIN_HEADING_LEVEL = 1
 _ADF_MAX_HEADING_LEVEL = 6
+
+# Page size and page ceiling for the paginated create-metadata endpoints. The ceiling only bounds a
+# misbehaving server that never reports a last page; real schemes fit in one or two pages.
+_CREATEMETA_PAGE_SIZE = 200
+_CREATEMETA_MAX_PAGES = 50
+
+
+class _CreateMetaUnavailableError(Exception):
+    """Create metadata could not be read (request failed or unreadable), as opposed to read and lacking an entry."""
+
+
+def _is_last_createmeta_page(data: dict, page_len: int, next_start: int) -> bool:
+    """Report whether a create-metadata page is the last one, trusting the server's own signals first.
+
+    Jira clamps ``maxResults`` (the create-metadata endpoints commonly to 50), so a page shorter than the size
+    asked for is not proof of the end: ``isLast`` decides when present, else ``total``, and only a response
+    carrying neither falls back to a short or empty page.
+    """
+    is_last = data.get("isLast")
+    if isinstance(is_last, bool):
+        return is_last or page_len == 0
+    total = data.get("total")
+    if isinstance(total, int) and not isinstance(total, bool):
+        return next_start >= total or page_len == 0
+    return page_len < _CREATEMETA_PAGE_SIZE
 
 
 def _starts_with_marker(parts: list[str], start: int) -> bool:
@@ -182,6 +213,7 @@ class JiraAdapter(TaskAdapter):
         jql_filter: str = "",
         state_transitions: dict[str, str] | None = None,
         status_mapping: dict[str, str] | None = None,
+        priority_mapping: dict[str, str] | None = None,
     ) -> None:
         # jql_filter is appended verbatim to queries: callers own validation.
         # component is sanitized; jql_filter is not because it may contain
@@ -199,6 +231,7 @@ class JiraAdapter(TaskAdapter):
             for jira_status, state_str in status_mapping.items():
                 effective[jira_status] = TaskState(state_str)
         self._status_mapping = effective
+        self._priority_mapping = priority_mapping or {}
 
         credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
         self._headers = {
@@ -208,6 +241,8 @@ class JiraAdapter(TaskAdapter):
         }
         self._client: httpx.AsyncClient | None = None
         self._version_cache: dict[str, str] | None = None
+        self._create_priority_names: dict[str, list[str] | None] = {}
+        self._create_priority_lock = asyncio.Lock()
         self._label_locks: dict[str, asyncio.Lock] = {}
 
     def _label_lock(self, issue_key: str) -> asyncio.Lock:
@@ -667,12 +702,113 @@ class JiraAdapter(TaskAdapter):
             raise PriorityUnavailableError(f"Issue {issue_key} has no editable priority field")
         allowed = field.get("allowedValues")
         names = [v["name"] for v in allowed or [] if isinstance(v, dict) and v.get("name")]
-        candidates = [] if level is Priority.UNDEFINED else [n for n in names if Priority.from_jira(n) is level]
-        if not candidates:
+        name = self._pick_priority_name(names, level)
+        if name is None:
             raise PriorityUnavailableError(
                 f"Issue {issue_key} allows no priority for '{level.value}' (available: {', '.join(names) or 'none'})"
             )
+        return name
+
+    def _pick_priority_name(self, names: list[str], level: Priority) -> str | None:
+        """The allowed name for ``level``: the one spelled like the level, else the first that maps to it."""
+        if level is Priority.UNDEFINED:
+            return None
+        candidates = [n for n in names if Priority.from_jira(n, self._priority_mapping) is level]
+        if not candidates:
+            return None
         return next((n for n in candidates if n.strip().lower() == level.value), candidates[0])
+
+    async def _create_priority_name(self, issue_type: str, level: Priority) -> str | None:
+        """The priority name to send when creating an ``issue_type`` issue at ``level``, or None to omit the field.
+
+        The allowed names come from the project's create metadata for that issue type, so the name is one its
+        priority scheme accepts; an invented one would make Jira reject the whole create with a 400. A create
+        screen without a priority field, a scheme with no name for the level, or unreadable metadata all omit
+        the field (logged), leaving Jira's default priority: ticket creation must still succeed.
+        """
+        if level is Priority.UNDEFINED:
+            return None
+        type_key = issue_type.strip().lower()
+        # The planner creates several issues concurrently: one fetch per issue type, not one per issue.
+        async with self._create_priority_lock:
+            if type_key in self._create_priority_names:
+                names = self._create_priority_names[type_key]
+            else:
+                try:
+                    names = await self._fetch_create_priority_names(issue_type)
+                except _CreateMetaUnavailableError:
+                    # Not cached: a lookup that failed is not a scheme without a priority field, so the
+                    # next create retries it once Jira recovers.
+                    log.warning("createmeta.fetch_failed", project=self.project_key, exc_info=True)
+                    names = None
+                else:
+                    self._create_priority_names[type_key] = names
+        name = self._pick_priority_name(names, level) if names is not None else None
+        if name is None:
+            log.warning(
+                "create_issue.priority_omitted",
+                project=self.project_key,
+                issue_type=issue_type,
+                priority=level.value,
+                available=names,
+            )
+        return name
+
+    async def _fetch_create_priority_names(self, issue_type: str) -> list[str] | None:
+        """Priority names the create screen allows for ``issue_type``; None when it has no priority field.
+
+        Raises ``_CreateMetaUnavailableError`` when the metadata could not be read, so the caller can tell a
+        failed lookup (retry later) from a scheme that genuinely has no priority field (cacheable).
+        """
+        base = f"/issue/createmeta/{quote(self.project_key, safe='')}/issuetypes"
+        type_name = issue_type.strip().lower()
+        issue_type_entry = await self._find_createmeta_entry(
+            base, "issueTypes", lambda t: str(t.get("name", "")).strip().lower() == type_name
+        )
+        type_id = issue_type_entry.get("id") if issue_type_entry else None
+        if not type_id:
+            return None
+        field = await self._find_createmeta_entry(
+            f"{base}/{quote(str(type_id), safe='')}", "fields", lambda f: f.get("fieldId") == "priority"
+        )
+        if field is None:
+            return None
+        return [v["name"] for v in field.get("allowedValues") or [] if isinstance(v, dict) and v.get("name")]
+
+    async def _find_createmeta_entry(self, path: str, list_key: str, match: Callable[[dict], bool]) -> dict | None:
+        """Page through a create-metadata listing until an entry matches; None once every page is read.
+
+        Both create-metadata endpoints are paginated, so an entry missing from the first page may still be on
+        a later one. Raises ``_CreateMetaUnavailableError`` on a failed or unreadable page.
+        """
+        start = 0
+        for _ in range(_CREATEMETA_MAX_PAGES):
+            data = await self._fetch_createmeta_page(path, start)
+            entries = [e for e in data.get(list_key) or data.get("values") or [] if isinstance(e, dict)]
+            hit = next((e for e in entries if match(e)), None)
+            if hit is not None:
+                return hit
+            start += len(entries)
+            if _is_last_createmeta_page(data, len(entries), start):
+                return None
+        log.warning("createmeta.page_limit", project=self.project_key, path=path, pages=_CREATEMETA_MAX_PAGES)
+        return None
+
+    async def _fetch_createmeta_page(self, path: str, start: int) -> dict:
+        """One page of a create-metadata listing; raises ``_CreateMetaUnavailableError`` when unreadable."""
+        try:
+            resp = await self._http.get(path, params={"startAt": start, "maxResults": _CREATEMETA_PAGE_SIZE})
+        except httpx.HTTPError as e:
+            raise _CreateMetaUnavailableError(f"{path}: {e}") from e
+        if resp.status_code != 200:
+            raise _CreateMetaUnavailableError(f"{path}: HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise _CreateMetaUnavailableError(f"{path}: unreadable response") from e
+        if not isinstance(data, dict):
+            raise _CreateMetaUnavailableError(f"{path}: unexpected response shape")
+        return data
 
     _ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
 
@@ -744,8 +880,65 @@ class JiraAdapter(TaskAdapter):
             sprint=sprint_name,
             components=component_names,
             fix_versions=fix_version_names,
-            priority=Priority.from_jira(priority_name),
+            priority=self._resolve_priority(priority_name),
         )
+
+    def _resolve_priority(self, priority_name: str) -> Priority:
+        """Map an issue's priority name to a level, logging an unrecognized name once per process."""
+        found = Priority.lookup_jira(priority_name, self._priority_mapping)
+        if found is None:
+            log_once(
+                log,
+                "priority.unmapped",
+                priority_name.strip().lower(),
+                ttl_seconds=math.inf,
+                priority=priority_name,
+                hint="Add task_source.jira_priority_mapping via the dashboard settings page or sova config set",
+            )
+            return Priority.UNDEFINED
+        return found
+
+    async def get_tasks_by_keys(self, keys: Iterable[str]) -> list[Task]:
+        """Fetch the issues with these keys in one bulk request, regardless of the queue's JQL filter.
+
+        Keys are trimmed, upper-cased and deduplicated, and a malformed one is dropped before the request.
+        At most ``MAX_BULK_FETCH_KEYS`` keys are fetched: the caller bounds the batch. A key Jira cannot find,
+        or one the user cannot see, is simply absent from the result. A failed request raises
+        ``AdapterError``, so a failure is never mistaken for "no such issue".
+        """
+        wanted = list(dict.fromkeys(k.strip().upper() for k in keys))
+        valid = [k for k in wanted if self._ISSUE_KEY_RE.match(k)][:MAX_BULK_FETCH_KEYS]
+        if not valid:
+            return []
+        # Bulk fetch rather than a ``key in (...)`` search: Jira rejects a whole JQL query naming a key that does
+        # not exist or the user cannot see, while bulk fetch just leaves that key out. Like ``/search/jql`` (the
+        # queue's endpoint) it is part of the Cloud REST v3 API this adapter speaks.
+        try:
+            response = await self._http.post(
+                "/issue/bulkfetch",
+                json={"issueIdsOrKeys": valid, "fields": self._SEARCH_FIELDS},
+            )
+        except httpx.HTTPError as e:
+            raise AdapterError(f"Failed to fetch issues from Jira: {e}") from e
+        if response.status_code != 200:
+            log.warning("bulk_fetch.failed", status=response.status_code, body=response.text[:200])
+            raise AdapterError(f"Failed to fetch issues from Jira: HTTP {response.status_code}")
+        try:
+            issues = response.json().get("issues", [])
+        except (ValueError, AttributeError) as e:
+            raise AdapterError(f"Failed to fetch issues from Jira: unreadable response ({e})") from e
+        if not isinstance(issues, list):
+            raise AdapterError("Failed to fetch issues from Jira: unreadable response (issues is not a list)")
+        tasks: list[Task] = []
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            # One malformed issue is skipped (its row keeps its label-derived values), not the whole batch.
+            try:
+                tasks.append(self._parse_issue(issue))
+            except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+                log.warning("bulk_fetch.unparseable_issue", key=str(issue.get("key", "?")), exc_info=True)
+        return tasks
 
     @staticmethod
     def _extract_text(description: dict | None, issue_key: str = "") -> str:
@@ -878,6 +1071,7 @@ class JiraAdapter(TaskAdapter):
         labels: list[str] | None = None,
         issue_type: str = "",
         parent_key: str = "",
+        priority: Priority = Priority.UNDEFINED,
     ) -> Task:
         effective_type = issue_type or "Task"
         fields: dict = {
@@ -892,6 +1086,9 @@ class JiraAdapter(TaskAdapter):
             if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,255}-\d+", parent_key):
                 raise ValueError(f"Invalid parent key format: {parent_key!r}")
             fields["parent"] = {"key": parent_key}
+        priority_name = await self._create_priority_name(effective_type, priority)
+        if priority_name:
+            fields["priority"] = {"name": priority_name}
 
         response = await self._http.post("/issue", json={"fields": fields})
         if response.status_code not in (200, 201):

@@ -393,6 +393,23 @@ class TestSettingMetaRegistryParity:
         extra = sorted(registry_keys - model_keys)
         assert not extra, f"SettingMeta entries with no matching ProjectConfig field: {extra}"
 
+    def test_json_editable_objects_are_flat_string_mappings(self) -> None:
+        """Only a flat name-to-text mapping may opt into the JSON editor, whose save replaces the whole value."""
+        from pydantic.fields import FieldInfo
+
+        from sova.config.models import ProjectConfig
+
+        editable = [m for m in _REGISTRY if m.json_editable]
+        assert [m.key for m in editable] == ["task_source.jira_priority_mapping"]
+        for meta in editable:
+            assert meta.value_type == "object"
+            model: type = ProjectConfig
+            *parents, leaf = meta.key.split(".")
+            for part in parents:
+                model = model.model_fields[part].annotation
+            field: FieldInfo = model.model_fields[leaf]
+            assert field.annotation == dict[str, str], meta.key
+
 
 class TestSettingsSections:
     """The Settings page lists sections, each holding whole groups (#1463)."""

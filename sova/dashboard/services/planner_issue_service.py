@@ -41,12 +41,25 @@ def planner_task_labels(task: PlannedTask, *, is_github: bool) -> list[str] | No
             labels.append(f"area: {component}")
         else:
             log.warning("planner.unknown_component", component=task.component)
-    if task.priority:
-        try:
-            labels.append(Priority(task.priority.strip().lower()).github_label)
-        except ValueError:
-            log.warning("planner.unknown_priority", priority=task.priority)
+    priority = planner_task_priority(task)
+    if priority is not Priority.UNDEFINED:
+        labels.append(priority.github_label)
     return labels or None
+
+
+def planner_task_priority(task: PlannedTask) -> Priority:
+    """The planner's priority for a task; UNDEFINED (with a warning for an unknown value) when it has none.
+
+    GitHub carries it as a label (``planner_task_labels``) and Jira in its native priority field. UNDEFINED
+    leaves Jira's default, since no name in a Jira scheme means "undefined".
+    """
+    if not task.priority or not task.priority.strip():
+        return Priority.UNDEFINED
+    try:
+        return Priority(task.priority.strip().lower())
+    except ValueError:
+        log.warning("planner.unknown_priority", priority=task.priority)
+        return Priority.UNDEFINED
 
 
 async def create_planner_issues(tasks: Sequence[PlannedTask]) -> list[dict]:
@@ -76,6 +89,7 @@ async def create_planner_issues(tasks: Sequence[PlannedTask]) -> list[dict]:
                     title=task.title,
                     body=task.description,
                     labels=planner_task_labels(task, is_github=is_github),
+                    priority=Priority.UNDEFINED if is_github else planner_task_priority(task),
                 )
             return {
                 "ok": True,

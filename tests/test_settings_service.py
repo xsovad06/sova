@@ -255,6 +255,101 @@ class TestListSettingRoundTrip:
         assert db_value == ["gmail", "gcal"]
 
 
+class TestObjectSettingRoundTrip:
+    """An object-typed setting is written from JSON text (the settings page's text box and `sova config set`)."""
+
+    async def test_json_object_replaces_every_stored_entry(self, tmp_path) -> None:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.settings_service import update_config
+
+        await _store_rows(tmp_path, {"task_source.jira_priority_mapping.Old": "low"})
+        key = "task_source.jira_priority_mapping"
+        result = await update_config(tmp_path, key=key, value='{"P1 - Urgent": "critical"}')
+
+        assert result.get("status") == "ok"
+        assert await _stored_keys(tmp_path) >= {"task_source.jira_priority_mapping"}
+        assert "task_source.jira_priority_mapping.Old" not in await _stored_keys(tmp_path)
+        assert load_config(tmp_path).task_source.jira_priority_mapping == {"P1 - Urgent": "critical"}
+
+    async def test_a_failed_toml_mirror_that_still_sets_the_key_warns(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        (tmp_path / "sova.toml").write_text('[task_source.jira_priority_mapping]\nOld = "low"\n', encoding="utf-8")
+        key = "task_source.jira_priority_mapping"
+        with patch("sova.dashboard.services.settings_service._save_setting_to_toml", return_value=False):
+            result = await update_config(tmp_path, key=key, value='{"P1 - Urgent": "critical"}')
+
+        assert result.get("status") == "ok"
+        assert "sova.toml" in result["warning"]
+
+    async def test_a_failed_toml_mirror_without_the_key_saves_plainly(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        with patch("sova.dashboard.services.settings_service._save_setting_to_toml", return_value=False):
+            result = await update_config(
+                tmp_path, key="task_source.jira_priority_mapping", value='{"P1 - Urgent": "critical"}'
+            )
+
+        assert result.get("status") == "ok"
+        assert "warning" not in result
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (None, False),
+            ('[task_source.jira_priority_mapping]\nOld = "low"\n', True),
+            ('[task_source]\ntype = "jira"\n', False),
+            ('task_source = "flat"\n', False),
+            ("[task_source\n", True),
+        ],
+        ids=["no-file", "sets-key", "other-key", "not-a-table", "unparseable"],
+    )
+    def test_toml_sets_key(self, tmp_path, content: str | None, expected: bool) -> None:
+        from sova.dashboard.services.settings_service import _toml_sets_key
+
+        if content is not None:
+            (tmp_path / "sova.toml").write_text(content, encoding="utf-8")
+
+        assert _toml_sets_key(tmp_path, "task_source.jira_priority_mapping") is expected
+
+    async def test_replace_object_setting_reports_a_database_failure(self, tmp_path) -> None:
+        from sova.dashboard.services.settings_service import _replace_object_setting_in_db
+
+        with patch("sova.dashboard.services.settings_service.get_session", side_effect=OSError("disk")):
+            ok = await _replace_object_setting_in_db(tmp_path, "task_source.jira_priority_mapping", {})
+
+        assert ok is False
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [('["critical"]', "JSON object"), ("not json", "JSON object"), ('{"P1": "asap"}', "Invalid SOVA priority")],
+    )
+    async def test_rejected_value_is_not_stored(self, tmp_path, value: str, message: str) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        result = await update_config(tmp_path, key="task_source.jira_priority_mapping", value=value)
+
+        assert message in result["error"]
+        assert "task_source.jira_priority_mapping" not in await _stored_keys(tmp_path)
+
+    async def test_an_object_without_the_json_editor_keeps_its_stored_entries(self, tmp_path) -> None:
+        """Replace semantics are for opted-in mappings only: any other object keeps its per-entry rows."""
+        from sova.dashboard.services.settings_service import update_config
+
+        await _store_rows(tmp_path, {"task_source.jira_status_mapping.Old": "done"})
+        result = await update_config(tmp_path, key="task_source.jira_status_mapping", value='{"New": "triaged"}')
+
+        assert result.get("status") == "ok"
+        assert "task_source.jira_status_mapping.Old" in await _stored_keys(tmp_path)
+
+    def test_grouped_settings_flag_only_opted_in_objects_editable(self) -> None:
+        from sova.dashboard.settings_meta import get_grouped_config
+
+        flat: dict = {"task_source.jira_priority_mapping": {}, "task_source.jira_status_mapping": {}}
+        flags = {s["key"]: s.get("json_editable") for g in get_grouped_config(flat) for s in g["settings"]}
+        assert flags == {"task_source.jira_priority_mapping": True, "task_source.jira_status_mapping": False}
+
+
 class TestIntListSetting:
     """``dashboard.hidden_issues`` is a list[int]: its entries are cast, and anything else is refused up front."""
 
