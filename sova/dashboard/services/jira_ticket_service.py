@@ -86,7 +86,7 @@ async def lookup_jira_tickets(cfg: ProjectConfig, keys: Collection[str]) -> dict
 
     try:
         adapter = create_adapter(cfg)
-    except Exception:  # noqa: BLE001 (a misconfigured adapter must fall back to labels, not fail the page)
+    except Exception:  # noqa: BLE001 (a misconfigured adapter falls back to labels and never fails the page)
         log_once(log, "jira_tickets.adapter_unavailable", project, ttl_seconds=_FAILURE_LOG_TTL_SECONDS, exc_info=True)
         return {}
     try:
@@ -96,7 +96,7 @@ async def lookup_jira_tickets(cfg: ProjectConfig, keys: Collection[str]) -> dict
     except AdapterError as e:
         log_once(log, "jira_tickets.lookup_failed", project, ttl_seconds=_FAILURE_LOG_TTL_SECONDS, error=str(e))
         return {}
-    except Exception:  # noqa: BLE001 (display-only lookup, any failure must fall back to labels, not fail the page)
+    except Exception:  # noqa: BLE001 (any lookup failure falls back to labels and never fails the page)
         log_once(log, "jira_tickets.lookup_error", project, ttl_seconds=_FAILURE_LOG_TTL_SECONDS, exc_info=True)
         return {}
     finally:
