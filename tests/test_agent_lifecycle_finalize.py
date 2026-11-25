@@ -360,6 +360,52 @@ class TestMergeAwareFinalization:
         mock_create.assert_awaited_once()
         assert mock_create.call_args.kwargs.get("pr_number") == 88
 
+    async def test_start_command_with_an_unresolved_issue_leaves_every_handoff_in_place(self, tmp_path: Path) -> None:
+        """``gh pr view`` failing resolves the issue to "", which must not clear other issues' handoffs (#1569)."""
+        import json
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import ProjectAgents
+        from sova.utils.shell import ShellResult
+
+        control = tmp_path / ".claude" / "agent-control"
+        control.mkdir(parents=True)
+        files = [control / "handoff-1.json", control / "handoff-2.json", control / "handoff.json"]
+        for f in files:
+            f.write_text(json.dumps({"source": "developer", "status": "awaiting_action"}), encoding="utf-8")
+        failed_view = ShellResult(returncode=1, stdout="", stderr="gh: not found")
+        mock_process = MagicMock(pid=12345)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=ProjectAgents(project_dir=tmp_path)),
+            patch("sova.dashboard.services.agent_context.run_shell", new=AsyncMock(return_value=failed_view)),
+            patch.object(
+                agent_lifecycle, "get_runtime", return_value=MagicMock(spawn=AsyncMock(return_value=mock_process))
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_db._capture_pr_head_sha", new_callable=AsyncMock, return_value=None),
+            patch(
+                "sova.dashboard.services.agent_db._capture_worktree_head_sha", new_callable=AsyncMock, return_value=None
+            ),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_network_connectivity", return_value=(None, None)),
+            patch.object(agent_lifecycle, "check_stale_command", return_value=None),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=tmp_path / "wt-88"
+            ),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await agent_lifecycle.start_command("integrate-pr", args={"pr": 88})
+
+        assert "error" not in result
+        assert all(f.exists() for f in files)
+        assert not (control / "handoff-archive").exists()
+
     async def test_start_command_sets_stream_parser_from_runtime(self, tmp_path: Path) -> None:
         """start_command stores the runtime's per-process parser on AgentState, like start_agent."""
         from unittest.mock import AsyncMock, MagicMock, patch

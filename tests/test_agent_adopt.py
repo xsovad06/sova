@@ -734,3 +734,68 @@ class TestShutdownLeavesFileBackedAgentsRunning:
                 await _wait_and_finalize(MagicMock(), agent)
 
         proc.terminate.assert_called_once()
+
+
+class TestAdoptedRunFollowUpPool:
+    """An adopted run's auto-handoff starts its follow-up in the pool of the run's own project (issue #1569)."""
+
+    async def test_the_follow_up_lands_in_the_finished_runs_project_pool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from sova.config.context import clear_project_context, set_project_context
+        from sova.dashboard.services import agent_finalize, agent_lifecycle, agent_pool
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
+
+        alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+        for d in (alpha, beta):
+            d.mkdir()
+        pa_alpha, pa_beta = ProjectAgents(project_dir=alpha), ProjectAgents(project_dir=beta)
+        monkeypatch.setattr(agent_pool, "_projects", {"alpha": pa_alpha, "beta": pa_beta})
+        monkeypatch.setattr("sova.config.registry._load", lambda: {"alpha": str(alpha), "beta": str(beta)})
+        # Both projects track an issue 77; each has its own pending handoff for it.
+        for d in (alpha, beta):
+            write_handoff_file(
+                d,
+                DashboardHandoff(
+                    source="developer",
+                    status="awaiting_action",
+                    issue="77",
+                    summary=d.name,
+                    next_actions=[
+                        HandoffAction(
+                            id="go", label="Go", mode="agent", args={"issue": "77", "role": "x"}, auto_execute=True
+                        )
+                    ],
+                ),
+            )
+
+        process = MagicMock()
+        agent = AgentState(run_id=5, issue="77", role="developer", process=process, project_dir=beta)
+        pa_beta.agents[5] = agent
+        start_agent = AsyncMock(return_value={"status": "started", "run_id": 6})
+
+        # The ambient context names the other project, as it may in a background finalize.
+        set_project_context(alpha, "alpha")
+        try:
+            with (
+                patch.object(agent_finalize, "_wait_with_terminal_check", new=AsyncMock(return_value=0)),
+                patch.object(agent_finalize, "_finalize_task_run", new=AsyncMock(return_value=True)),
+                patch("sova.dashboard.services.agent_resource._finalize_resource_monitoring", new=AsyncMock()),
+                patch.object(agent_finalize, "_get_task_run_status", new=AsyncMock(return_value="done")),
+                patch.object(agent_finalize, "_announce_agent_finished", new=AsyncMock()),
+                patch("sova.dashboard.services.agent_approval._finalize_lifecycle_phase", new=AsyncMock()),
+                patch("sova.ipc.notifications.notify"),
+                patch("sova.dashboard.services.agent_handoff.check_memory_pressure", return_value=(None, None)),
+                patch.object(agent_lifecycle, "start_agent", new=start_agent),
+            ):
+                await asyncio.wait_for(agent_finalize._wait_and_finalize(pa_beta, agent), timeout=10)
+        finally:
+            clear_project_context()
+
+        start_agent.assert_awaited_once()
+        assert _get_project_agents(start_agent.await_args.kwargs["slug"]) is pa_beta
+        assert not (beta / ".claude" / "agent-control" / "handoff-77.json").exists()
+        assert (alpha / ".claude" / "agent-control" / "handoff-77.json").exists()

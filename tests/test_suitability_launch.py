@@ -377,6 +377,7 @@ class TestStartAgentSuitability:
                     _skip_handoff_clear=True,
                 )
         assert "Failed to spawn" in result["error"]
+        assert result["code"] == "spawn_failed"
         cmd_parts = spawn.call_args.args[0]
         assert ("--override-suitability" in cmd_parts) is override
         # The override is never consulted when set, and gates the check when not.
@@ -1314,7 +1315,7 @@ class TestNonEnforcingCallers:
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
 
-        agent = type("AgentState", (), {"run_id": 1, "issue": "7", "project_dir": tmp_path})()
+        agent = type("AgentState", (), {"run_id": 1, "issue": "7", "project_dir": tmp_path, "pr_number": None})()
         write_handoff_file(
             tmp_path,
             DashboardHandoff(

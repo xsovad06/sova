@@ -901,7 +901,7 @@ class TestHandoffRouterErrors:
                 cs,
                 "start_agent",
                 new_callable=AsyncMock,
-                return_value={"error": "conflict", "detail": "Slot full"},
+                return_value={"error": "conflict", "code": "no_free_slot", "detail": "Slot full"},
             ),
         ):
             resp = await client.post("/api/handoff/execute", json={"action_id": "run-dev"})
@@ -935,7 +935,7 @@ class TestHandoffRouterErrors:
                 cs,
                 "start_agent",
                 new_callable=AsyncMock,
-                return_value={"status": "error", "detail": "Issue already running"},
+                return_value={"status": "error", "code": "issue_conflict", "detail": "Issue already running"},
             ),
         ):
             resp = await client.post("/api/handoff/execute", json={"action_id": "run-dev"})
@@ -975,7 +975,7 @@ class TestHandoffRouterErrors:
                 cs,
                 "start_command",
                 new_callable=AsyncMock,
-                return_value={"status": "error", "detail": "No agent slots available"},
+                return_value={"status": "error", "code": "no_free_slot", "detail": "No agent slots available"},
             ),
         ):
             resp = await client.post("/api/handoff/execute", json={"action_id": "integrate"})

@@ -225,6 +225,10 @@ log = get_logger(component="dashboard.control")
 
 # The error code of a start refused because every agent slot is taken: the Work page queues the issue instead.
 NO_FREE_SLOT = "no_free_slot"
+# Codes of a start that failed rather than being refused: the request was valid, but the run record or the spawn
+# broke. handoff_service.execute_action() reports them as FAILED (HTTP 500), not as a 409 refusal.
+RUN_RECORD_FAILED = "run_record_failed"
+SPAWN_FAILED = "spawn_failed"
 
 # Roles spawned as a plain trusted subprocess (spawn_direct) rather than
 # through a coding-agent runtime wrapper. Reviewer joins the pipeline roles
@@ -778,7 +782,7 @@ async def start_agent(
             assessment=assessment or None,
         )
         if run_id is None:
-            return {"error": "Failed to create task run record"}
+            return {"error": "Failed to create task run record", "code": RUN_RECORD_FAILED}
 
         if _budget_override_pending:
             await _record_budget_override(issue, run_id, _budget_override_pending, project_dir)
@@ -893,7 +897,7 @@ async def start_agent(
         except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("agent.spawn_failed", run_id=run_id, error=str(exc), exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
-            return {"error": f"Failed to spawn agent process: {exc}"}
+            return {"error": f"Failed to spawn agent process: {exc}", "code": SPAWN_FAILED}
 
         stream_reader_drain_timeout = None
         if effective_role not in _DIRECT_SPAWN_ROLES:
@@ -1017,8 +1021,13 @@ async def start_command(
     command: str,
     args: dict | None = None,
     slug: str | None = None,
+    _skip_handoff_clear: bool = False,
 ) -> dict:
-    """Start a Claude Code command (e.g. /agent-resume, /integrate-pr)."""
+    """Start a Claude Code command (e.g. /agent-resume, /integrate-pr).
+
+    *_skip_handoff_clear* leaves the issue's handoff in place for a caller that clears it itself once the start
+    succeeded, like ``start_agent()``'s flag of the same name.
+    """
     from sova.dashboard.services.agent_db import _capture_pr_head_sha, _capture_worktree_head_sha
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
 
@@ -1035,7 +1044,9 @@ async def start_command(
         if load_config(pa.project_dir).agent.runtime == "codex":
             if pr_number is None:
                 return {"error": "Address PR requires a PR number"}
-            return await start_agent(issue, role="developer", pr_number=pr_number, slug=slug)
+            return await start_agent(
+                issue, role="developer", pr_number=pr_number, slug=slug, _skip_handoff_clear=_skip_handoff_clear
+            )
 
     mem_block, mem_warn = check_memory_pressure(pa.project_dir)
     if mem_block:
@@ -1096,12 +1107,13 @@ async def start_command(
 
         prompt = _resolve_command_prompt(command, args, project_dir)
 
-        try:
-            from sova.dashboard.services import handoff_service
+        if not _skip_handoff_clear:
+            try:
+                from sova.dashboard.services import handoff_service
 
-            handoff_service.clear_handoff(project_dir, issue=issue)
-        except Exception:  # noqa: BLE001 (non-fatal: handoff cleanup must not block command spawn)
-            log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
+                handoff_service.clear_handoff(project_dir, issue=issue)
+            except Exception:  # noqa: BLE001 (handoff cleanup is non-fatal and must not block command spawn)
+                log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         model = _resolve_config_model(project_dir)
         fallback_model = _resolve_config_fallback_model(project_dir)
@@ -1111,7 +1123,7 @@ async def start_command(
         role = f"command:{command}"
         pre_run_id = await _create_task_run(issue, role, project_dir, pr_number=pr_number)
         if pre_run_id is None:
-            return {"error": "Failed to create task run record"}
+            return {"error": "Failed to create task run record", "code": RUN_RECORD_FAILED}
 
         from sova.dashboard.services.agent_context import merge_mcp_env
 
@@ -1135,7 +1147,7 @@ async def start_command(
         except Exception as exc:  # noqa: BLE001 (any spawn failure must finalize the run rather than leave it orphaned)
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
             await _finalize_orphaned_run(pre_run_id, project_dir)
-            return {"error": f"Failed to spawn runtime: {exc}"}
+            return {"error": f"Failed to spawn runtime: {exc}", "code": SPAWN_FAILED}
 
         stream_reader_drain_timeout = None
         try:

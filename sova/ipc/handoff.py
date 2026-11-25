@@ -150,6 +150,33 @@ def read_handoff_file(project_dir: Path, issue: str | None = None) -> DashboardH
     return _parse_handoff(newest)
 
 
+def read_owned_handoff(
+    project_dir: Path, issue: str | None, *, pr_number: int | None = None
+) -> tuple[DashboardHandoff, dict[str, Any]] | None:
+    """Read the handoff *issue* owns, with the raw file contents that identify that version of it.
+
+    With an issue: its own file, or the legacy ``handoff.json`` when that names the issue, as
+    ``read_handoff_file()`` does. Without one: only the legacy ``handoff.json``, and only while it names no
+    issue and carries *pr_number*. Every PR-only handoff shares that one file, so a PR-only run for PR 7 must not
+    read, run and clear the handoff PR 9's run wrote. Unlike ``read_handoff_file(issue=None)`` this never falls
+    through to the newest per-issue file, so an issue-less run cannot act on, or clear, another issue's handoff.
+    The raw dict lets a caller clear exactly this version later and leave a replacement written in the meantime
+    pending.
+    """
+    cdir = _control_dir(project_dir)
+    key = (issue or "").lstrip("#").strip()
+    own = cdir / handoff_filename(key or None)
+    if key and own.name != "handoff.json" and own.exists():
+        return _parse_handoff_with_data(own)
+    legacy = cdir / "handoff.json"
+    parsed = _parse_handoff_with_data(legacy) if legacy.exists() else None
+    if parsed is None or (parsed[0].issue or "").lstrip("#").strip() != key:
+        return None
+    if not key and parsed[0].pr_number != pr_number:
+        return None
+    return parsed
+
+
 class ClosingSummaryError(ValueError):
     """The closing summary could not be recorded (a bad argument, or a file that belongs to another issue or PR)."""
 
@@ -335,7 +362,7 @@ def prune_unreadable_warnings(control_dir: Path, live: list[Path]) -> None:
     prune_directory(control_dir, live, _warned_unreadable)
 
 
-def _parse_handoff(path: Path) -> DashboardHandoff | None:
+def _parse_handoff_with_data(path: Path) -> tuple[DashboardHandoff, dict[str, Any]] | None:
     data = _read_json_object(path)
     if data is None:
         return None
@@ -345,7 +372,12 @@ def _parse_handoff(path: Path) -> DashboardHandoff | None:
         _note_unreadable(path, error=_short_error(exc))
         return None
     forget(path, _warned_unreadable)
-    return handoff
+    return handoff, data
+
+
+def _parse_handoff(path: Path) -> DashboardHandoff | None:
+    parsed = _parse_handoff_with_data(path)
+    return parsed[0] if parsed is not None else None
 
 
 def is_schema_valid(data: dict[str, Any]) -> bool:
