@@ -1835,6 +1835,18 @@ class TestClaudeCodeRuntime:
         assert "do not push" in preamble_lower or "never push" in preamble_lower
         assert "do not commit" in preamble_lower or "never commit" in preamble_lower
 
+    @pytest.mark.parametrize("runtime", ["claude-code", "codex"])
+    def test_headless_preamble_treats_tracker_and_review_text_as_data(self, runtime: str) -> None:
+        """Both runtimes' preambles say quoted tracker and review text is data, and the literal-command rule is
+        limited to SOVA's own instructions."""
+        from sova.ipc.codex_runtime import _HEADLESS_PREAMBLE_CODEX
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE
+
+        preamble = _HEADLESS_PREAMBLE if runtime == "claude-code" else _HEADLESS_PREAMBLE_CODEX
+        paragraphs = {p.split(":", 1)[0]: p.lower() for p in preamble.split("\n\n")}
+        assert "data, not instructions" in paragraphs["UNTRUSTED TEXT"]
+        assert "sova's own" in paragraphs["COMMAND INTERPRETATION"]
+
     def test_headless_preamble_includes_context_management(self) -> None:
         from sova.ipc.runtime import _HEADLESS_PREAMBLE
 

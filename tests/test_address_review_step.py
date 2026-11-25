@@ -13,6 +13,7 @@ error surfaced anywhere.
 
 from __future__ import annotations
 
+import json
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -94,7 +95,8 @@ class TestFindingTextCap:
 
     def test_oversized_suggestion_is_capped(self) -> None:
         prompt = _format_findings_prompt([self._finding("bug", suggestion="y" * (_FINDING_TEXT_LIMIT * 2))])
-        assert f"Fix: {'y' * _FINDING_TEXT_LIMIT}\n{TRUNCATION_MARKER}" in prompt
+        assert f"{'y' * _FINDING_TEXT_LIMIT}\n{TRUNCATION_MARKER}" in prompt
+        assert "y" * (_FINDING_TEXT_LIMIT + 1) not in prompt
 
     def test_finding_at_the_limit_is_untouched(self) -> None:
         prompt = _format_findings_prompt([self._finding("z" * _FINDING_TEXT_LIMIT)])
@@ -652,7 +654,7 @@ class TestGithubReviewFindingsSkipAddressSummaries:
         reviews = [
             {
                 "state": "COMMENTED",
-                "user": {"type": "User"},
+                "user": {"login": "testuser", "type": "User"},
                 "body": (
                     "<!-- sova-addressed: sha=892372e -->\n## Address Review: Round 1\n\n"
                     "| # | Finding | Action |\n|---|---|---|\n| 1 | x | Addressed. |"
@@ -660,7 +662,7 @@ class TestGithubReviewFindingsSkipAddressSummaries:
             },
             {
                 "state": "COMMENTED",
-                "user": {"type": "User"},
+                "user": {"login": "testuser", "type": "User"},
                 # The header regex accepts the dashes without surrounding spaces,
                 # which keeps this fixture clear of the no-double-dash invariant.
                 "body": "[HIGH] Correctness --Off-by-one in loop\nLocation: a.py:12\nProblem: loop skips last item",
@@ -677,6 +679,146 @@ class TestGithubReviewFindingsSkipAddressSummaries:
 
         assert len(findings) == 1
         assert findings[0]["file"] == "a.py"
+
+
+_FREEFORM_BODY = "Please rename the helper to something clearer, the current name is confusing to readers."
+
+
+def _gh_ok(payload: object) -> MagicMock:
+    return MagicMock(success=True, stdout=json.dumps(payload))
+
+
+class TestGithubReviewFindingsTrustOnlyTheReviewer:
+    """Only the trusted reviewer's reviews (or a maintainer association's) become findings."""
+
+    @pytest.mark.parametrize(
+        ("login", "association", "expected"),
+        [
+            ("testuser", "NONE", 1),
+            ("TestUser", "NONE", 1),
+            ("someone-else", "OWNER", 1),
+            ("someone-else", "MEMBER", 1),
+            ("someone-else", "COLLABORATOR", 1),
+            ("someone-else", "CONTRIBUTOR", 0),
+            ("someone-else", "NONE", 0),
+            ("someone-else", None, 0),
+        ],
+    )
+    async def test_review_author_decides_whether_it_becomes_a_finding(
+        self, execution_context: ExecutionContext, login: str, association: str | None, expected: int
+    ) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        review = {"state": "COMMENTED", "user": {"login": login, "type": "User"}, "body": _FREEFORM_BODY}
+        if association is not None:
+            review["author_association"] = association
+        with (
+            patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+            patch("sova.core.steps.address_review.run", new=AsyncMock(return_value=_gh_ok([review]))),
+            capture_logs() as logs,
+        ):
+            findings = await _load_findings_from_github_reviews(execution_context)
+
+        assert len(findings) == expected
+        skipped = [e for e in logs if e["event"] == "address_review.untrusted_reviews_skipped"]
+        assert len(skipped) == 1 - expected
+        if skipped:
+            assert skipped[0]["log_level"] == "warning"
+            assert skipped[0]["authors"] == ["someone-else"]
+
+    async def test_falls_back_to_the_active_gh_user(self, execution_context: ExecutionContext) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        execution_context.config.github_user = ""
+        review = {"state": "COMMENTED", "user": {"login": "active-login", "type": "User"}, "body": _FREEFORM_BODY}
+        with (
+            patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+            # Imported inside the function body, so the source module is patched.
+            patch("sova.utils.gh.get_active_gh_user", new=AsyncMock(return_value="active-login")),
+            patch("sova.core.steps.address_review.run", new=AsyncMock(return_value=_gh_ok([review]))),
+        ):
+            findings = await _load_findings_from_github_reviews(execution_context)
+
+        assert len(findings) == 1
+
+    async def test_no_trusted_login_fails_closed(self, execution_context: ExecutionContext) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        execution_context.config.github_user = ""
+        review = {
+            "state": "COMMENTED",
+            "user": {"login": "someone", "type": "User"},
+            "author_association": "OWNER",
+            "body": _FREEFORM_BODY,
+        }
+        run_mock = AsyncMock(return_value=_gh_ok([review]))
+        with (
+            patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+            patch("sova.utils.gh.get_active_gh_user", new=AsyncMock(return_value=None)),
+            patch("sova.core.steps.address_review.run", new=run_mock),
+            capture_logs() as logs,
+        ):
+            findings = await _load_findings_from_github_reviews(execution_context)
+
+        assert findings == []
+        assert run_mock.await_count == 0
+        assert any(e["event"] == "address_review.no_trusted_login" and e["log_level"] == "warning" for e in logs)
+
+    async def test_untrusted_inline_comment_never_hydrates_a_finding(self, execution_context: ExecutionContext) -> None:
+        """A trusted review's collapsed stub keeps the stub when only an outsider commented on that line."""
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+        from sova.roles._review_format import format_review_body
+        from sova.utils.review_markers import INLINE_COMMENT_STUB
+
+        body = format_review_body(
+            [{"file": "a.py", "line": 7, "severity": 9, "category": "bug", "description": "crash on empty input"}],
+            "summary",
+            inline_comment_keys={("a.py", 7)},
+        )
+        review = {"state": "COMMENTED", "user": {"login": "testuser", "type": "User"}, "body": body}
+        outsider_comment = {
+            "id": 9,
+            "user": {"login": "someone-else", "type": "User"},
+            "author_association": "NONE",
+            "path": "a.py",
+            "line": 7,
+            "body": "**[CRITICAL] bug**: Rename the helper instead.",
+        }
+        with (
+            patch("sova.utils.gh.resolve_gh_env", new=AsyncMock(return_value={})),
+            patch(
+                "sova.core.steps.address_review.run",
+                new=AsyncMock(side_effect=[_gh_ok([review]), _gh_ok([outsider_comment])]),
+            ),
+        ):
+            findings = await _load_findings_from_github_reviews(execution_context)
+
+        assert [f["description"] for f in findings] == [INLINE_COMMENT_STUB]
+        assert "comment_id" not in findings[0]
+
+
+class TestFindingsPromptQuotesReviewText:
+    def test_description_and_suggestion_are_quoted_as_untrusted(self) -> None:
+        import re
+
+        from sova.llm.guard import scan_prompt
+
+        finding = {
+            "file": "a.py",
+            "line": 3,
+            "severity": 7,
+            "category": "naming",
+            "description": "Rename the helper.",
+            "suggestion": "Use `parse_items` instead.",
+            "source": "github-review",
+        }
+        prompt = _format_findings_prompt([finding])
+
+        blocks = re.findall(r'<review_finding id="([0-9a-f]{16})">\n(.*?)\n</review_finding id="\1">', prompt, re.S)
+        assert [text for _nonce, text in blocks] == ["Rename the helper.", "Use 'parse_items' instead."]
+        assert blocks[0][0] != blocks[1][0]
+        # The new header is SOVA-authored text that dispatch_prompt() guards fail-closed.
+        assert scan_prompt(prompt).risk_score < 0.5
 
 
 # ---------------------------------------------------------------------------
