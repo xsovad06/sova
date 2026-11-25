@@ -954,11 +954,12 @@ def dashboard_app(_module_dashboard_app: tuple[Any, dict[str, Any]]) -> Iterator
     ``create_app()`` mounts every router and builds a Jinja environment whose compiled
     templates it keeps, so building it per test repeated that work for each of several
     hundred tests. Between tests this clears ``dependency_overrides``, restores
-    ``app.state``, empties the rate limiter's counters, and points the control and handoff
+    ``app.state``, empties both rate limiters' counters, and points the control and handoff
     services at this test's working directory, which ``create_app()`` would have done.
     A test that needs an app built differently (an env var or config read at build time,
     an explicit ``project_dir``, multi-project mode) calls ``create_app()`` itself.
     """
+    from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE
     from sova.dashboard.services import control_service, handoff_service
 
     app, initial_state = _module_dashboard_app
@@ -969,6 +970,8 @@ def dashboard_app(_module_dashboard_app: tuple[Any, dict[str, Any]]) -> Iterator
         app.state._state.update(initial_state)
         if (limiter := initial_state.get("limiter")) is not None:
             limiter.reset()
+        if (api_limiter := initial_state.get(API_RATE_LIMITER_STATE)) is not None:
+            api_limiter.reset()
 
     reset()
     control_service.set_project_dir(Path.cwd().resolve())
