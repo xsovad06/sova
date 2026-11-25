@@ -82,7 +82,7 @@
     <button type="button" data-owner-filter="all" aria-pressed="true"
             class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">All</button>
   </div>
-  <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, or anywhere outside the details, to close them.</p>
+  <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, anywhere outside the details, or press Escape to close them.</p>
 </div>
 
 <!-- Board: columns, labels and colors come from GET /api/work/board (static/js/pages/work/board.js) -->
@@ -100,8 +100,8 @@
   <div id="work-chains-body" class="p-4 flex flex-col gap-2"></div>
 </section>
 
-<!-- Issue drawer (static/js/pages/work/drawer.js) -->
-<aside id="work-drawer" class="sova-work-drawer" hidden aria-label="Issue details"></aside>
+<!-- Issue drawer: the ticket detail, a shared side panel (static/js/pages/work/drawer.js) -->
+<aside id="work-drawer" class="sova-side-panel sova-work-drawer" aria-label="Issue details" aria-hidden="true" inert></aside>
 
 <!-- Icons the board's modules render, from the shared icon macro -->
 <template id="work-icons">

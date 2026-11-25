@@ -141,6 +141,12 @@ class Element {
     this.listeners = this.listeners.filter((l) => !(l.type === type && l.fn === fn && l.capture === capture));
   }
   click() { return dispatch(this, 'click', {}); }
+  // An event a module builds itself (a CustomEvent): it takes the same capture and bubble path as every other event,
+  // with its detail carried over. Returns false when a listener called preventDefault(), as in the DOM.
+  dispatchEvent(event) {
+    if (!event || typeof event.type !== 'string') throw new Error('fake_dom: dispatchEvent needs an event with a type');
+    return !dispatch(this, event.type, { detail: event.detail }).defaultPrevented;
+  }
 }
 
 class Document extends Element {

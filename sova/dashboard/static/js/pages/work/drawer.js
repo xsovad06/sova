@@ -1,3 +1,4 @@
+import { createSidePanel } from '../../components/side-panel.js';
 import { actionAttrs } from '../agents/actions.js';
 import {
   actionSignature, cardParts, ciHtml, entryKey, getBoard, holdBoardScroll, iconHtml, lastRunHtml, loadBoard, onBoard, onBoardRendered, prFlags, prPill,
@@ -6,11 +7,12 @@ import {
 import { createPriorityPicker } from './priority-picker.js';
 import { clearSelection, downstreamOf, getSelected, onSelectionChange, selectionKey } from './selection.js';
 
-// The issue drawer: why an issue is where it is, what it waits for, what it unblocks, its PR and last run,
-// its buttons (the same as on its card, then the work item's other actions from the server) and the priority
-// picker. It opens when a card or chain node is
-// selected and closes with Escape, its close button, a click outside it, or a second click on the selected card,
-// each of which also clears the highlight.
+// The issue drawer (the ticket detail): why an issue is where it is, what it waits for, what it unblocks, its PR and
+// last run, its buttons (the same as on its card, then the work item's other actions from the server) and the
+// priority picker. It is a shared side panel (components/side-panel.js), open while a card or chain node is
+// selected. It closes with Escape, its close button, a click outside it (a card, the search and the log viewer are
+// not outside it), a second click on the selected card, or the activity feed opening, and each of these also clears
+// the highlight.
 
 // Every issue the board knows, with the stage it is in: column entries first, then hidden ones, then chain
 // members (which carry less detail and are used only when the issue is nowhere else). A column entry for a PR
@@ -203,8 +205,8 @@ function _render() {
   var number = getSelected();
   _setBoardRoom(number !== null && !!board);
   if (number === null || !board) {
-    el.hidden = true;
-    el.innerHTML = '';
+    // The content stays while the panel slides out; the next selection replaces it.
+    if (_panel) _panel.close('deselected');
     return;
   }
   var index = _index(board);
@@ -243,7 +245,7 @@ function _render() {
         '<span class="text-sm font-bold text-accent tabular-nums">' + escapeHtml(ref) + '</span>' + _pill(board, stage) + statePill(entry) +
         '<span class="ml-auto flex items-center gap-1">' +
           (link ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open ' + escapeHtml(ref) + '">' + iconHtml('external-link') + '</a>' : '') +
-          '<button type="button" id="work-drawer-close" class="sova-btn sova-btn-ghost sova-btn-icon sova-work-btn-quiet" aria-label="Close the details">' + iconHtml('close') + '</button>' +
+          '<button type="button" id="work-drawer-close" data-panel-close class="sova-btn sova-btn-ghost sova-btn-icon sova-work-btn-quiet" aria-label="Close the details">' + iconHtml('close') + '</button>' +
         '</span>' +
       '</div>' +
       '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || (prOnly ? ref : 'Issue #' + number)) + '</h3>' +
@@ -251,7 +253,7 @@ function _render() {
       (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
       _moreActions(entry, parts, busy) +
     '</div>' +
-    '<div class="sova-work-drawer-body flex flex-col gap-4 px-4 py-3">' +
+    '<div class="sova-side-panel-body sova-work-drawer-body flex flex-col gap-4 px-4 py-3">' +
       _section('Why it is here', '<p class="flex items-start gap-2 text-sm text-gray-300">' +
         '<span class="w-2 h-2 mt-1.5 rounded-full shrink-0" style="background:' + stateHex(col ? col.color : 'gray') + '"></span>' +
         '<span>' + escapeHtml(_why(entry, stage)) + '</span></p>') +
@@ -273,7 +275,8 @@ function _render() {
       (context ? _section('Context', context) : '') +
     '</div>';
   el.innerHTML = html;
-  el.hidden = false;
+  _focusKey = number;
+  if (_panel) _panel.open();
   var host = document.getElementById('work-drawer-priority');
   if (host) {
     host.appendChild(createPriorityPicker({
@@ -298,9 +301,11 @@ var _redrawPending = false;
 // The last failed priority save, drawn into the next picker: a redraw after the failure must not hide it.
 var _priorityError = null;
 
+function _isOpen() { return !!(_panel && _panel.isOpen()); }
+
 function _renderUnlessBusy() {
   var el = document.getElementById('work-drawer');
-  if (el && !el.hidden && el.querySelector('.sova-priority-picker[data-open], .sova-priority-picker[data-saving]')) {
+  if (el && _isOpen() && el.querySelector('.sova-priority-picker[data-open], .sova-priority-picker[data-saving]')) {
     _redrawPending = true;
     return;
   }
@@ -333,7 +338,7 @@ function _revealSelectedCard() {
   var key = getSelected();
   var drawer = document.getElementById('work-drawer');
   var host = document.getElementById('work-board');
-  if (key === null || !drawer || drawer.hidden || !host) return _REVEAL_NOT_READY;
+  if (key === null || !drawer || !_isOpen() || !host) return _REVEAL_NOT_READY;
   var args = JSON.stringify([key]);
   // Only the column card: a chain node or a collapsed group's card selects the same issue, and a hidden one
   // measures as an empty box.
@@ -343,7 +348,8 @@ function _revealSelectedCard() {
   if (!card) return _REVEAL_NO_CARD;
   var cardBox = card.getBoundingClientRect();
   var hostBox = host.getBoundingClientRect();
-  var limit = Math.min(hostBox.right, drawer.getBoundingClientRect().left) - 16;
+  // Where the drawer's left edge settles: it may still be sliding in, and its box would measure mid-slide.
+  var limit = Math.min(hostBox.right, document.documentElement.clientWidth - drawer.offsetWidth) - 16;
   // A drawer covering most of the window (a narrow screen) leaves no room to show the card beside it.
   if (cardBox.right <= limit || limit - hostBox.left < cardBox.width) return _REVEAL_DONE;
   // Never ask for more than the board can still scroll, so no animation starts that goes nowhere.
@@ -379,26 +385,34 @@ function _setBoardRoom(open) {
   if (host && host.classList) host.classList.toggle('sova-work-board-room', open);
 }
 
-// What a click outside the drawer may land on without closing it: a card or chain node (it selects, or toggles
-// the selected one off), the search box and its results, and every overlay the page can open over it: a modal on
-// the shared component (.sova-modal-backdrop: a confirm the drawer's button opened, the Launch Agent modal), any
-// other dialog, the log viewer View log opens, and a toast with its dismiss button. An overlay added later opts in
-// with data-keeps-drawer.
-var _KEEP_OPEN = '#work-drawer, [data-action="work-select"], #work-search, #log-viewer, .sova-modal-backdrop, ' +
-  '.sova-toast, [role="dialog"], [aria-modal="true"], [data-keeps-drawer]';
+// The card focus returns to when Escape or the close button closes the drawer: the one the last drawn issue selects.
+// It is looked up after the close, once the board has redrawn its cards without the highlight.
+var _focusKey = null;
 
-// A press that began inside the drawer (selecting its text, then releasing outside) is not a click outside it.
-var _pressInside = false;
-
-function _closesDrawer(e) {
-  if (getSelected() === null || _pressInside) return false;
-  var target = e.target;
-  // A target a redraw already removed (the priority menu's option) was inside the drawer when it was clicked.
-  if (!target || !target.isConnected || !target.closest) return false;
-  return !target.closest(_KEEP_OPEN);
+function _selectedCard() {
+  var host = document.getElementById('work-board');
+  if (_focusKey === null || !host) return null;
+  var args = JSON.stringify([_focusKey]);
+  return Array.prototype.find.call(host.querySelectorAll('[data-work-card]'), function(card) {
+    return card.getAttribute('data-args') === args;
+  }) || null;
 }
 
+var _panel = null;
+
 export function init() {
+  var el = document.getElementById('work-drawer');
+  if (el) {
+    _panel = createSidePanel(el, {
+      name: 'ticket',
+      floats: 'shift',
+      // A card or chain node switches the ticket (or, the selected one, closes it through the selection); the search
+      // opens one; the log viewer is what the drawer's View log opened.
+      keepOpen: '[data-action="work-select"], #work-search, #log-viewer',
+      returnFocus: _selectedCard,
+      onClose: function(reason) { if (reason !== 'deselected') clearSelection(); },
+    });
+  }
   onSelectionChange(_render);
   onSelectionChange(_revealIfNew);
   onBoardRendered(function() {
@@ -410,12 +424,4 @@ export function init() {
     _renderUnlessBusy();
   });
   onActionStateChange(_renderUnlessBusy);
-  document.addEventListener('pointerdown', function(e) {
-    var drawer = document.getElementById('work-drawer');
-    _pressInside = !!(drawer && !drawer.hidden && e.target && drawer.contains(e.target));
-  }, true);
-  document.addEventListener('click', function(e) {
-    if (e.target.closest && e.target.closest('#work-drawer-close')) clearSelection();
-    else if (_closesDrawer(e)) clearSelection();
-  });
 }

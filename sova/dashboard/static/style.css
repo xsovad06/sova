@@ -94,6 +94,25 @@
 
   /* --- Layout tokens --- */
   --sidebar-width: 256px;
+
+  /* --- Layer order of fixed and floating elements, lowest first (docs/design-system.md, "Layer Order") ---
+     A floating control sits under the side panel, so a panel wider than the room beside it covers the control
+     instead of the control covering the panel; the sidebar and the batch bar stay above both. */
+  --z-sticky:   20;   /* a sticky page header (Settings) */
+  --z-dropdown: 30;   /* a menu or result list inside the page (Work search) */
+  --z-float:    40;   /* the owl button and the agents widget */
+  --z-scrim:    44;   /* the page dimmed behind the activity feed */
+  --z-panel:    45;   /* a side panel: the activity feed, the Work ticket detail */
+  --z-nav:      50;   /* the sidebar and the global batch bar (Tailwind z-50 in base.html) */
+  --z-tooltip:  60;
+  --z-toast:    100;
+  --z-modal:    200;
+
+  /* --- Motion: a panel enters on an ease-out curve and leaves on an ease-in one, both under 300 ms --- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in:  cubic-bezier(0.4, 0, 1, 1);
+  --motion-panel-in:  260ms;
+  --motion-panel-out: 200ms;
 }
 
 /* ============================================================
@@ -194,7 +213,7 @@ input[type="date"] { color-scheme: dark; }
   position: fixed;
   top: 1rem;
   right: 1rem;
-  z-index: 100;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -240,7 +259,7 @@ input[type="date"] { color-scheme: dark; }
 .sova-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--z-modal);
   background: rgb(0 0 0 / 0.5);
   display: flex;
   align-items: center;
@@ -698,7 +717,7 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   pointer-events: none;
   opacity: 0;
   transition: opacity 150ms ease;
-  z-index: 60;
+  z-index: var(--z-tooltip);
   box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
 }
 
@@ -921,7 +940,7 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 .sova-settings-header {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: var(--z-sticky);
   background: var(--color-surface);
   padding: 0 0 1rem;
   margin-bottom: 1.5rem;
@@ -1257,34 +1276,72 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 }
 
 /* ============================================================
-   8. ACTIVITY FEED: CHAT-STYLE COCKPIT
+   7c. SIDE PANEL (static/js/components/side-panel.js)
    ============================================================ */
 
-.feed-panel {
+/* A panel fixed to the right edge over the page: the activity feed and the Work ticket detail. Closed, it waits off
+   the right edge, hidden (so it takes no focus and leaves the accessibility tree) once it has slid out; open
+   (`data-open`), it slides in. Each state's transition is the one used on the way into it: in on the ease-out curve,
+   out on the ease-in one. A panel sets its own width (min(26rem, 100%) unless it says otherwise). */
+.sova-side-panel {
   position: fixed;
   top: 0;
   right: 0;
-  width: var(--feed-panel-width, 560px);
-  max-width: 100%;
-  height: 100vh;
-  background: var(--color-surface-card);
-  border-left: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
-  z-index: 46;
+  bottom: 0;
+  z-index: var(--z-panel);
+  width: min(26rem, 100%);
   display: flex;
   flex-direction: column;
+  background: var(--color-surface-card);
+  border-left: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
   box-shadow: -8px 0 32px rgb(0 0 0 / 0.35);
+  /* A wheel or a trackpad swipe that reaches the panel's edge never scrolls the page behind it (side-panel.js stops
+     the wheel over a part with nothing to scroll). */
+  overscroll-behavior: contain;
+  transform: translateX(105%);
+  visibility: hidden;
+  transition: transform var(--motion-panel-out) var(--ease-in), visibility 0s var(--motion-panel-out);
+}
+.sova-side-panel[data-open] {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--motion-panel-in) var(--ease-out), visibility 0s;
+}
+/* The part of a panel that scrolls: it takes the room under the header and keeps its scroll to itself. */
+.sova-side-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sova-side-panel, .sova-side-panel[data-open], .feed-scrim, body[data-side-panel="feed"] .feed-scrim { transition: none; }
 }
 
-.feed-panel.hidden { display: none; }
+/* ============================================================
+   8. ACTIVITY FEED: CHAT-STYLE COCKPIT
+   ============================================================ */
 
-/* Slide-in animation when the panel opens */
-.feed-panel-chat:not(.hidden) {
-  animation: feed-slide-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+/* The feed is a .sova-side-panel (section 7c); only its width, which the drag handle sets, is its own. */
+.feed-panel {
+  width: var(--feed-panel-width, 560px);
+  max-width: 100%;
 }
 
-@keyframes feed-slide-in {
-  from { transform: translateX(24px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
+/* The page dimmed behind the open feed. A click on it is a click outside the panel, which closes it. */
+.feed-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-scrim);
+  background: rgb(var(--ctp-crust-rgb) / 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--motion-panel-out) var(--ease-in), visibility 0s var(--motion-panel-out);
+}
+body[data-side-panel="feed"] .feed-scrim {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--motion-panel-in) var(--ease-out), visibility 0s;
 }
 
 .feed-panel-header {
@@ -1313,12 +1370,6 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   color: rgb(var(--ctp-text-rgb));
 }
 
-.feed-panel-body {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-}
-
 /* Chat message list */
 .feed-chat-body {
   display: flex;
@@ -1327,19 +1378,22 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   padding: 1rem;
 }
 
-/* Avatar (owl) shown next to SOVA-authored messages */
-.feed-avatar {
+/* The SOVA owl (owl_avatar() macro, owlAvatarHtml() in app.js). The circle is only a backdrop: the image is about
+   90% of it with object-fit: contain, and nothing clips it (no overflow, no radius on the image), so the ears stick
+   out past the circle. Never crop the owl into a circle. */
+.sova-owl {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9999px;
-  overflow: hidden;
-  background: rgb(var(--ctp-surface0-rgb));
   flex-shrink: 0;
+  border-radius: 9999px;
+  background: rgb(var(--ctp-surface0-rgb));
 }
-.feed-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.feed-avatar-sm { width: 30px; height: 30px; }
-.feed-avatar-owl { box-shadow: 0 0 0 1px rgb(var(--ctp-surface1-rgb) / 0.6); }
+.sova-owl img { width: 90%; height: 90%; object-fit: contain; }
+.sova-owl-sm { width: 30px; height: 30px; }
+.sova-owl-md { width: 36px; height: 36px; }
+.sova-owl-lg { width: 52px; height: 52px; }
 
 /* Activity narration (js/feed/activity.js): section labels, one line per issue, the folded background count */
 #feed-activity { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1447,20 +1501,14 @@ a.feed-period:hover { color: rgb(var(--ctp-text-rgb)); text-decoration: underlin
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 45;
-  transition: transform 150ms ease, box-shadow 150ms ease;
+  z-index: var(--z-float);
+  transition: transform 150ms ease, box-shadow 150ms ease, translate var(--motion-panel-out) var(--ease-in),
+    opacity 150ms ease, visibility 0s;
 }
 .feed-fab:hover { transform: translateY(-2px) scale(1.04); box-shadow: 0 10px 26px rgb(0 0 0 / 0.5); }
 .feed-fab:active { transform: translateY(0) scale(0.98); }
-.feed-fab-owl {
-  width: 40px;
-  height: 40px;
-  border-radius: 9999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.feed-fab-owl img { width: 100%; height: 100%; object-fit: cover; }
+/* The button is the owl's backdrop circle: the avatar inside fills it and its ears overflow the button's edge. */
+.feed-fab .sova-owl { background: transparent; }
 .feed-fab-badge {
   position: absolute;
   top: -2px;
@@ -1481,8 +1529,33 @@ a.feed-period:hover { color: rgb(var(--ctp-text-rgb)); text-decoration: underlin
   border: 2px solid var(--color-surface-card);
 }
 .feed-fab-badge.hidden { display: none; }
-/* Hide the FAB while the panel is open to avoid overlap */
-body.feed-open .feed-fab { display: none; }
+/* The floating controls (.sova-float: the owl button, the agents widget) never overlap an open side panel: they move
+   left of a panel that leaves the page usable (the ticket detail, floats "shift") and hide behind one that takes it
+   over (the feed, floats "hide"). `translate` composes with the owl button's own hover transform. Each state's
+   transition is the one used on the way into it: ease-out with the panel opening, ease-in with it closing. */
+body[data-side-panel-floats="shift"] .sova-float {
+  translate: calc(-1 * var(--side-panel-width, 0px)) 0;
+  transition: transform 150ms ease, box-shadow 150ms ease, translate var(--motion-panel-in) var(--ease-out);
+}
+/* The translate is animated too: a float shifted by the ticket detail slides back while it fades as the feed takes
+   over, instead of snapping to the right edge. */
+body[data-side-panel-floats="hide"] .sova-float {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 150ms ease, visibility 0s 150ms, translate var(--motion-panel-out) var(--ease-in);
+}
+/* The global batch bar ends at an open panel's left edge instead of covering its bottom, and its edge moves with
+   the panel: out with it on the ease-in curve as it closes, so the bar never covers the panel still sliding out. */
+#global-batch-bar { transition: right var(--motion-panel-out) var(--ease-in); }
+body[data-side-panel] #global-batch-bar {
+  right: var(--side-panel-width, 0px);
+  transition: right var(--motion-panel-in) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sova-float, body[data-side-panel-floats] .sova-float,
+  #global-batch-bar, body[data-side-panel] #global-batch-bar { transition: none; }
+}
 
 /* Drag handle on the panel's left edge (desktop only) */
 .feed-resize-handle {
@@ -1518,7 +1591,8 @@ body.feed-resizing { -webkit-user-select: none; user-select: none; cursor: col-r
   /* Offset well left of the feed FAB (right: 1.5rem + 52px wide) so the two
      bottom-right floating elements have clear separation. */
   right: 6rem;
-  z-index: 45;
+  z-index: var(--z-float);
+  transition: translate var(--motion-panel-out) var(--ease-in), opacity 150ms ease, visibility 0s;
 }
 
 .resource-widget-toggle {
@@ -1767,23 +1841,9 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-work-node.sova-work-up { border-color: var(--ctp-peach); background: rgb(var(--ctp-peach-rgb) / 0.12); }
 .sova-work-node.sova-work-down { border-color: var(--ctp-teal); background: rgb(var(--ctp-teal-rgb) / 0.12); }
 
-/* The issue drawer: fixed to the right edge, over the board, the header and the search row. Nothing behind it
-   changes size or position when it opens (no element pads for it); the shadow (the feed panel's) separates the
-   drawer from what it covers. */
-.sova-work-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 40;
-  width: min(26rem, 100%);
-  display: flex;
-  flex-direction: column;
-  background: var(--color-surface-card);
-  border-left: 1px solid var(--color-border);
-  box-shadow: -8px 0 32px rgb(0 0 0 / 0.35);
-}
-.sova-work-drawer[hidden] { display: none; }
+/* The issue drawer is a .sova-side-panel (section 7c) over the board, the header and the search row. Nothing behind it
+   changes size or position when it opens (no element pads for it); its shadow separates it from what it covers. */
+.sova-work-drawer { width: min(26rem, 100%); }
 /* The drawer's body scrolls up and down only, so a tooltip must fit inside it. Its tooltips wrap at 13rem and grow
    rightward from their element's left edge (a pill at the left of a row); an element at the right of its row
    (data-tooltip-end: the PR flags) grows them leftward from its right edge instead. A centred bubble reached past
@@ -1812,7 +1872,7 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   top: calc(100% + 0.25rem);
   left: 0;
   right: 0;
-  z-index: 30;
+  z-index: var(--z-dropdown);
   max-height: 22rem;
   overflow-y: auto;
   padding: 0.25rem;

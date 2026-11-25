@@ -53,7 +53,7 @@ elements['feed-badge'] = el('feed-badge');
 elements['feed-fab'] = el('feed-fab', { 'data-label': 'FAB-WORDS', 'data-label-unread': 'FAB-WORDS, {count} unread' });
 const docListeners = {};
 const winListeners = {};
-const bodyClasses = new Set();
+const bodyAttrs = {};
 
 const g = globalThis;
 g.window = { SOVA_PROJECT_SLUG: '', addEventListener: (t, fn) => { winListeners[t] = fn; } };
@@ -62,7 +62,7 @@ g.document = {
   activeElement: null,
   getElementById: (id) => elements[id] || null,
   addEventListener: (t, fn) => { docListeners[t] = fn; },
-  body: { classList: { contains: (c) => bodyClasses.has(c) } },
+  body: { getAttribute: (k) => (k in bodyAttrs ? bodyAttrs[k] : null) },
 };
 g.apiUrl = (p) => '/api' + p;
 g.escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -328,12 +328,12 @@ out.otherKeyIgnored = badge();
 tabC.storage({ key: 'sova.feed.seen:tabs' });
 out.tabCAfter = badge();
 
-// A panel already open when the module starts (app.js restored it) counts as an open event.
-bodyClasses.add('feed-open');
+// A panel already open when the module starts (the shared side panel names it on the body) counts as an open event.
+bodyAttrs['data-side-panel'] = 'feed';
 const early = await fresh('early', 'e');
 await answer(early.first, payloadOf(['q']));
 out.alreadyOpen = [badge()[1], Object.keys(JSON.parse(storage['sova.feed.seen:early'] || '{}'))];
-bodyClasses.delete('feed-open');
+delete bodyAttrs['data-side-panel'];
 
 // A running line asks again once a minute while the panel is open; a payload without one does not. Midnight always does.
 const live = await fresh('live', 'l');

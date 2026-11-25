@@ -302,32 +302,28 @@ const focusedText = () => doc.activeElement.textContent.trim();
   out.uninstall.removed = backdrops().length === 0;
 
   // Integrate from a Work drawer: the real actions.js handler opens the warning confirm listing the merge
-  // blockers, and the real drawer.js outside-click and selection.js Escape listeners run alongside it, so the
-  // drawer must stay open whether the dialog is cancelled with Escape, a backdrop click or confirmed.
+  // blockers, and the drawer is the real shared side panel (its Escape and outside-click listeners), opened the way
+  // drawer.js opens it, so it must stay open whether the dialog is cancelled with Escape, a backdrop click or
+  // confirmed.
   const work = (rel) => fs.readFileSync(path.join(statics, 'js', 'pages', 'work', rel), 'utf8');
+  const sidePanelSrc = fs.readFileSync(path.join(statics, 'js', 'components', 'side-panel.js'), 'utf8')
+    .replace(/^export /gm, '');
   const drawerSrc = work('drawer.js');
-  const listenersFrom = (text, marker) => {
-    const start = text.indexOf(marker);
-    if (start < 0) throw new Error('listener not found: ' + marker);
-    return text.slice(start, text.indexOf('\n}', start));
-  };
-  const drawerSlice = (text) => {
-    const from = text.indexOf('var _KEEP_OPEN');
-    const to = text.indexOf('export function init()');
-    if (from < 0 || to < 0) throw new Error('drawer helpers not found');
-    return text.slice(from, to);
-  };
+  const keepOpen = /keepOpen: '([^']+)'/.exec(drawerSrc);
+  if (!keepOpen) throw new Error('drawer keepOpen not found');
+  doc.getElementById('page').innerHTML =
+    '<aside id="work-drawer"><button id="integrate">Integrate PR</button></aside><p id="outside">Board</p>';
   vm.runInContext(
     'var _selected = 42; var drawerCloses = 0; var commands = [];\n' +
     'function getSelected() { return _selected; }\n' +
     'function clearSelection() { _selected = null; drawerCloses++; }\n' +
     'function _runCommand(issue, command, args) { commands.push({ issue: issue, command: command, args: args }); }\n' +
-    drawerSlice(drawerSrc) +
-    listenersFrom(drawerSrc, "document.addEventListener('pointerdown'") + '\n' +
-    listenersFrom(work('selection.js'), "document.addEventListener('keydown'") + '\n' +
+    sidePanelSrc + '\n' +
+    'var drawerPanel = createSidePanel(document.getElementById("work-drawer"), { name: "ticket", keepOpen: ' +
+    JSON.stringify(keepOpen[1]) +
+    ', onClose: function(reason) { if (reason !== "deselected") clearSelection(); } });\n' +
+    'drawerPanel.open();\n' +
     declaration(work('actions.js'), '_runServerAction'), ctx);
-  doc.getElementById('page').innerHTML =
-    '<aside id="work-drawer"><button id="integrate">Integrate PR</button></aside><p id="outside">Board</p>';
   const integrate = doc.getElementById('integrate');
   // A capture-phase Escape listener below the document stands in for any other page handler.
   let bodyCaptureEscapes = 0;

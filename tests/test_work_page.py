@@ -374,8 +374,26 @@ globalThis.document = {
   getElementById: () => proxy(),
   querySelector: () => null, querySelectorAll: () => [], createElement: () => proxy(),
   addEventListener: (type, fn) => docListeners.push([type, fn]), removeEventListener() {},
-  body: { addEventListener() {}, classList: { toggle() {}, add() {}, remove() {} } },
+  body: {
+    addEventListener() {}, classList: { toggle() {}, add() {}, remove() {} }, attrs: {},
+    setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    style: { setProperty() {}, removeProperty() {} },
+  },
+  documentElement: { clientWidth: 1506 },
 };
+// A side panel element (components/side-panel.js): attributes, listeners and the box the drawer measures. `open` is
+// whether the shared panel shows it (data-open).
+function panelStub(extra) {
+  const el = Object.assign({
+    innerHTML: '', attrs: {}, offsetWidth: 416, querySelector: () => null, contains: () => false,
+    setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; },
+    hasAttribute(k) { return k in this.attrs; }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    addEventListener() {},
+  }, extra || {});
+  Object.defineProperty(el, 'open', { get() { return 'data-open' in el.attrs; } });
+  return el;
+}
 globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
 globalThis.sessionStorage = globalThis.localStorage;
 globalThis.addEventListener = () => {};
@@ -489,7 +507,7 @@ if (scenario === 'start-no-slot') {
 } else if (scenario === 'pr-card') {
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
-    'work-drawer': { innerHTML: '', hidden: true, querySelector: () => null },
+    'work-drawer': panelStub(),
     'work-board-error': { textContent: '', classList: { toggle() {} } },
   };
   document.getElementById = (id) => els[id] || null;
@@ -517,7 +535,7 @@ if (scenario === 'start-no-slot') {
   out.key = selection.selectionKey(prEntry);
   selection.select(out.key);
   out.selected = selection.getSelected();
-  out.drawerHidden = els['work-drawer'].hidden;
+  out.drawerOpen = els['work-drawer'].open;
   out.drawerHtml = els['work-drawer'].innerHTML;
   out.selectedAgain = selection.isSelected('pr:1495');
   const parts = board.cardParts(prEntry, 'review');
@@ -655,12 +673,8 @@ if (scenario === 'start-no-slot') {
   let busy = false;
   let writes = 0;
   let html = '';
-  const drawerEl = {
-    hidden: true,
-    querySelector: () => (busy ? {} : null),
-    get innerHTML() { return html; },
-    set innerHTML(v) { html = v; writes += 1; },
-  };
+  const drawerEl = panelStub({ querySelector: () => (busy ? {} : null) });
+  Object.defineProperty(drawerEl, 'innerHTML', { get: () => html, set(v) { html = v; writes += 1; } });
   const els = {
     'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
     'work-drawer': drawerEl,
@@ -693,13 +707,23 @@ if (scenario === 'start-no-slot') {
   await board.loadBoard();
   out.idleRedrawn = html.includes('Third title');
 } else if (scenario === 'drawer-close') {
-  // With no board loaded the drawer's render would hide it; on the page it is shown while an issue is selected.
-  const drawerEl = { innerHTML: '', contains: (t) => !!(t && t.inDrawer), querySelector: () => null };
-  Object.defineProperty(drawerEl, 'hidden', { get: () => false, set() {} });
-  document.getElementById = (id) => (id === 'work-drawer' ? drawerEl : null);
+  // The drawer is a shared side panel: its outside-click rules are the panel's, with the drawer's keepOpen list.
+  const drawerEl = panelStub({ contains: (t) => !!(t && t.inDrawer) });
+  const els = {
+    'work-board': { innerHTML: '', scrollLeft: 0, contains: () => false, querySelectorAll: () => [] },
+    'work-drawer': drawerEl,
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  routes = { 'GET /api/work/board': [200, {
+    columns: [{ stage: 'next', label: 'Next', color: 'gray', entries: 'up_next', column: 'next' }],
+    up_next: [{ number: 5, title: 'Five', state: 'triaged', actions: [] }], chains: [], hidden: [],
+  }] };
   const selection = await work('selection');
+  const board = await work('board');
   const drawer = await work('drawer');
   drawer.init();
+  await board.loadBoard();
   // A fake event target: `matches` lists the selectors closest() finds it inside.
   const target = (matches, opts = {}) => ({
     isConnected: opts.detached ? false : true,
@@ -716,11 +740,12 @@ if (scenario === 'start-no-slot') {
   out.logViewer = after(target(['#log-viewer']));
   out.toast = after(target(['.sova-toast']));
   out.ariaDialog = after(target(['[role="dialog"]']));
-  out.optIn = after(target(['[data-keeps-drawer]']));
+  out.optIn = after(target(['[data-keeps-panel]']));
   out.inside = after(target(['#work-drawer'], { inDrawer: true }));
   out.detached = after(target([], { detached: true }));
   out.pressBeganInside = after(target([]), target(['#work-drawer'], { inDrawer: true }));
-  out.closeButton = after(target(['#work-drawer-close', '#work-drawer'], { inDrawer: true }));
+  out.closeButton = after(target(['[data-panel-close]', '#work-drawer'], { inDrawer: true }));
+  out.closeButtonClosed = !drawerEl.open;
   selection.select(null);
   click(target([]));
   out.nothingSelected = selection.getSelected();
@@ -734,11 +759,11 @@ if (scenario === 'start-no-slot') {
   globalThis.visibilityAwarePoll = () => ({ id: null });
   const realSetInterval = globalThis.setInterval;
   globalThis.setInterval = () => realSetInterval(() => {}, 1e9);
+  // The drawer's settled left edge: the window's width (documentElement.clientWidth, 1506) less its own (416).
   let drawerLeft = 1090;
-  let drawerShown = false;
   const room = new Set();
-  const drawerEl = { innerHTML: '', querySelector: () => null, getBoundingClientRect: () => ({ left: drawerLeft }) };
-  Object.defineProperty(drawerEl, 'hidden', { get: () => !drawerShown, set(v) { drawerShown = !v; } });
+  const drawerEl = panelStub();
+  Object.defineProperty(drawerEl, 'offsetWidth', { get: () => 1506 - drawerLeft });
   let generation = 0;
   const empty = { left: 0, right: 0, width: 0 };
   const rect = (gen, left, right) => (gen === generation ? { left, right, width: right - left } : empty);
@@ -1393,7 +1418,7 @@ class TestPrOnlyCards:
         assert 'role="button"' in out["boardHtml"]
         assert out["selected"] == "pr:1495"
         assert out["selectedAgain"] is True, "a second click on the card toggles it off through isSelected()"
-        assert out["drawerHidden"] is False
+        assert out["drawerOpen"] is True
         drawer = out["drawerHtml"]
         assert "PR #1495" in drawer
         assert "A PR with no issue" in drawer
@@ -1476,13 +1501,14 @@ class TestDrawerClosesOnAClickOutside:
 
         assert out["outside"] is None, "a click on the page outside the drawer closes it"
         assert out["closeButton"] is None
+        assert out["closeButtonClosed"] is True
         assert out["card"] == 5, "a card click selects instead (the card's own handler toggles)"
         assert out["search"] == 5
         assert out["dialog"] == 5, "a confirm the drawer opened must not close it"
         assert out["logViewer"] == 5, "the log viewer View log opens is part of the drawer's work"
         assert out["toast"] == 5, "a toast's dismiss button must not close the drawer behind it"
         assert out["ariaDialog"] == 5
-        assert out["optIn"] == 5, "an overlay marked data-keeps-drawer keeps it open"
+        assert out["optIn"] == 5, "an overlay marked data-keeps-panel keeps it open"
         assert out["inside"] == 5
         assert out["detached"] == 5, "a target a redraw removed was inside the drawer"
         assert out["pressBeganInside"] == 5, "a text selection released outside is not a click outside"

@@ -18,6 +18,7 @@
     }
   </script>
   {% from "_icons.html" import icon %}
+  {% from "_components.html" import owl_avatar %}
   <!-- Sidebar -->
   {% set prefix = prefix|default("") %}
   <nav class="sidebar bg-sidebar flex flex-col fixed h-full border-r border-gray-700/50 z-50">
@@ -186,24 +187,24 @@
     </div>
   </nav>
 
-  <!-- Activity feed panel: chat-style cockpit (outside sidebar to avoid overflow clipping) -->
-  <aside id="feed-panel" class="feed-panel feed-panel-chat hidden" role="region" aria-live="polite" aria-label="SOVA activity feed">
+  <!-- Activity feed: a side panel (static/js/components/side-panel.js) opened by the owl button through
+       static/js/feed/panel.js. The scrim dims the page while it is open; a click on it closes the panel. -->
+  <div id="feed-scrim" class="feed-scrim" aria-hidden="true"></div>
+  <aside id="feed-panel" class="sova-side-panel feed-panel" role="region" aria-live="polite" aria-label="SOVA activity feed" aria-hidden="true" inert>
     <div id="feed-resize-handle" class="feed-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize activity feed"></div>
     <div class="feed-panel-header">
       <div class="flex items-center gap-2 min-w-0">
-        <span class="feed-avatar feed-avatar-owl feed-avatar-sm shrink-0">
-          <img src="/static/owl-avatar.png" alt="SOVA">
-        </span>
+        {{ owl_avatar("md") }}
         <div class="min-w-0">
           <span class="text-sm font-semibold text-gray-200 block leading-tight">SOVA</span>
           <span class="text-xs text-gray-500 leading-tight">What I did and what I need</span>
         </div>
       </div>
-      <button type="button" onclick="toggleFeedPanel()" class="feed-close-btn" aria-label="Close feed">
+      <button type="button" data-panel-close class="feed-close-btn" aria-label="Close feed">
         {{ icon("close", "w-4 h-4") }}
       </button>
     </div>
-    <div id="feed-list" class="feed-panel-body feed-chat-body">
+    <div id="feed-list" class="sova-side-panel-body feed-chat-body">
       <div id="feed-briefing-slot"></div>
       <div id="feed-activity" data-load-failed="{{ feed_labels()['load_failed'] }}"><p class="feed-empty">{{ feed_labels()['no_activity'] }}</p></div>
     </div>
@@ -216,12 +217,10 @@
   </aside>
 
   <!-- Floating owl trigger (bottom-right, replaces sidebar bell) -->
-  <button type="button" id="feed-fab" onclick="toggleFeedPanel()" class="feed-fab"
+  <button type="button" id="feed-fab" class="feed-fab sova-float"
           aria-label="{{ feed_labels()['badge'] }}" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed"
           data-label="{{ feed_labels()['badge'] }}" data-label-unread="{{ feed_labels()['badge_unread'] }}">
-    <span class="feed-fab-owl">
-      <img src="/static/owl-avatar.png" alt="SOVA">
-    </span>
+    {{ owl_avatar("lg") }}
     <span id="feed-badge" class="hidden feed-fab-badge">0</span>
   </button>
 
@@ -279,7 +278,7 @@
     window.SOVA_RUN_ACTIONS = {{ run_actions_json() }};
   </script>
   <!-- Resource monitoring widget -->
-  <div id="resource-widget" class="resource-widget" style="display:none">
+  <div id="resource-widget" class="resource-widget sova-float" style="display:none">
     <button id="resource-widget-toggle" class="resource-widget-toggle" aria-label="System resources">
       <span class="resource-widget-dot resource-dot-green" id="resource-widget-dot"></span>
       <span class="text-xs text-gray-400" id="resource-widget-label">0 agents</span>
@@ -345,8 +344,12 @@
   <script src="/static/resource-widget.js"></script>
   <script src="/static/provider-status-widget.js"></script>
   <script type="module">
-    // A dynamic import, so a module that fails to load is caught here too (a static import fails the whole script).
-    import('/static/js/feed/activity.js')
+    // Dynamic imports, so a module that fails to load is caught here too (a static import fails the whole script).
+    // The panel first: activity.js reads whether it is already open.
+    import('/static/js/feed/panel.js')
+      .then(function(m) { m.init(); })
+      .catch(function(e) { console.error('feed panel failed to start', e); })
+      .then(function() { return import('/static/js/feed/activity.js'); })
       .then(function(m) { m.init(); })
       .catch(function(e) { console.error('feed activity failed to start', e); });
   </script>
