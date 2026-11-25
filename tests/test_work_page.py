@@ -11,6 +11,7 @@ there is no browser in the test suite, so the look of the page was checked by ha
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -66,6 +67,31 @@ def _fresh_state() -> Iterator[None]:
 # Page, redirect, sidebar ----------------------------------------------------
 
 
+def _task_read(tasks: list[Task], *, failed: bool = False) -> object:
+    from sova.dashboard.services.queue_service import _TaskRead
+
+    return _TaskRead(tasks, failed=failed)
+
+
+def _tracker(queue_service: object, case: str, *, tasks: list[Task] | None = None) -> contextlib.ExitStack:
+    """Patch the queue service's tracker read: `config`, `no_repo`, `adapter` and `rate_limited` fail, `read` works."""
+    cfg = MagicMock()
+    cfg.task_source.type = "github"
+    cfg.github_repo = "" if case == "no_repo" else "o/r"
+    adapter = MagicMock()
+    adapter.list_tasks = AsyncMock(
+        side_effect=RuntimeError("gh down") if case == "adapter" else None, return_value=list(tasks or [])
+    )
+    quota = MagicMock()
+    quota.should_skip.return_value = case == "rate_limited"
+    load = MagicMock(side_effect=OSError("db") if case == "config" else None, return_value=cfg)
+    stack = contextlib.ExitStack()
+    stack.enter_context(patch.object(queue_service, "load_config", load))
+    stack.enter_context(patch("sova.adapters.create_adapter", return_value=adapter))
+    stack.enter_context(patch("sova.supervisor.github_quota.get_github_quota_tracker", return_value=quota))
+    return stack
+
+
 class TestPage:
     async def test_work_serves_the_page_with_header_board_chains_and_drawer(self, client: AsyncClient) -> None:
         resp = await client.get("/work")
@@ -98,6 +124,136 @@ class TestPage:
             assert "work-items.js" not in text, path.name
             assert "kanban.js" not in text, path.name
             assert "switch-agent-view" not in text, path.name
+
+    async def test_the_header_offers_triage_all_beside_run_planner_disabled_until_it_has_a_count(
+        self, client: AsyncClient
+    ) -> None:
+        html = (await client.get("/work")).text
+
+        actions = re.search(
+            r'<h2 class="text-2xl font-semibold">Work</h2>\s*<div class="flex items-center gap-2">(.*?)</div>\s*</div>',
+            html,
+            re.DOTALL,
+        )
+        assert actions, "the Work header's action group"
+        group = actions.group(1)
+        button = re.search(r'<button[^>]*id="triage-all-btn"[^>]*>', group).group(0)
+        assert "sova-btn-warning" in button and " disabled" in button
+        assert '<span id="triage-all-count" class="sova-inline-count tabular-nums">--</span>' in group
+        assert re.search(r'id="triage-all-btn".*?</button>\s*<button[^>]*id="run-planner-btn"', group, re.DOTALL), (
+            "Triage all sits directly before Run Planner in the same action group"
+        )
+
+    async def test_the_untriaged_endpoint_lists_the_backlog_issues_for_triage_all(self, client: AsyncClient) -> None:
+        tasks = [
+            Task(id="7", title="Seven", state=TaskState.TRIAGED),
+            Task(id="9", title="Nine", state=TaskState.BACKLOG),
+            Task(id="3", title="Three", state=TaskState.BACKLOG),
+        ]
+        read = _task_read(tasks)
+        with patch("sova.dashboard.services.queue_service._read_actionable_tasks", AsyncMock(return_value=read)):
+            body = (await client.get("/api/queue/untriaged")).json()
+
+        assert body == {"untriaged": [{"issue": "9", "title": "Nine"}, {"issue": "3", "title": "Three"}]}, (
+            "the backlog issues, in queue order"
+        )
+
+    async def test_a_failed_tracker_read_reports_untriaged_as_unknown(self, client: AsyncClient) -> None:
+        """An empty read the tracker could not answer is no count, not a count of 0."""
+        read = _task_read([], failed=True)
+        with patch("sova.dashboard.services.queue_service._read_actionable_tasks", AsyncMock(return_value=read)):
+            body = (await client.get("/api/queue/untriaged")).json()
+
+        assert body == {"untriaged": None}
+
+    async def test_a_github_source_without_a_repo_reports_untriaged_as_unknown(
+        self, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services import queue_service
+
+        monkeypatch.setattr(queue_service, "_queue_cache", {})
+        cfg = MagicMock()
+        cfg.task_source.type = "github"
+        cfg.github_repo = ""
+        with patch.object(queue_service, "load_config", return_value=cfg):
+            body = (await client.get("/api/queue/untriaged")).json()
+
+        assert body == {"untriaged": None}
+
+    @pytest.mark.parametrize(
+        ("case", "failed"),
+        [("config", True), ("no_repo", True), ("adapter", True), ("rate_limited", True), ("read", False)],
+    )
+    async def test_the_queue_service_returns_whether_its_tracker_read_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, failed: bool
+    ) -> None:
+        from sova.dashboard.services import queue_service
+
+        monkeypatch.setattr(queue_service, "_queue_cache", {})
+        with _tracker(queue_service, case):
+            read = await queue_service._read_actionable_tasks(tmp_path)
+
+        assert read.tasks == []
+        assert read.failed is failed
+
+    async def test_a_good_read_after_a_failed_one_is_not_a_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure travels with each read: a failed one never sticks to the project's later reads."""
+        from sova.dashboard.services import queue_service
+
+        monkeypatch.setattr(queue_service, "_queue_cache", {})
+        with _tracker(queue_service, "adapter"):
+            assert await queue_service.untriaged_issues(tmp_path) is None
+        with _tracker(queue_service, "read", tasks=[Task(id="5", title="Five", state=TaskState.BACKLOG)]):
+            assert await queue_service.untriaged_issues(tmp_path) == [{"issue": "5", "title": "Five"}]
+        assert (await queue_service._read_actionable_tasks(tmp_path)).failed is False, "a cache hit is a good read"
+
+    async def test_a_failed_read_with_an_expired_cache_entry_is_unknown(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale cached list is dropped, not served, when the refetch fails: the backlog is then unknown."""
+        from sova.dashboard.services import queue_service
+
+        stale = [Task(id="5", title="Five", state=TaskState.BACKLOG)]
+        expired = queue_service.time.monotonic() - queue_service._QUEUE_CACHE_TTL - 1
+        monkeypatch.setattr(queue_service, "_queue_cache", {str(tmp_path): (expired, stale)})
+        with _tracker(queue_service, "adapter"):
+            assert await queue_service.untriaged_issues(tmp_path) is None
+        assert str(tmp_path) not in queue_service._queue_cache
+
+    def test_triage_all_counts_confirms_and_starts_one_triage_batch(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "triage-all")
+
+        assert out["beforeRead"] == ["--", True], "no count yet is not a count of zero"
+        assert out["failedRead"] == ["--", True], "a failed read is not an empty backlog"
+        assert out["goodRead"] == ["10", False]
+        assert out["laterFailureKeeps"] == ["10", False]
+        assert out["unknownKeeps"] == ["10", False], "an unreadable tracker is not an empty backlog"
+        confirm = out["confirm"]
+        assert confirm["message"].startswith("Triage 10 backlog issues.")
+        assert confirm["opts"]["title"] == "Triage all" and confirm["opts"]["confirmText"] == "Triage 10"
+        assert confirm["opts"]["details"][0] == "#100 Issue 0"
+        assert confirm["opts"]["details"][-1] == "and 2 more", "eight listed, the rest counted"
+        assert out["cancelledRequests"] == []
+        assert out["batchRequest"] == [{"issues": [str(100 + i) for i in range(10)], "action": "triage", "options": {}}]
+        assert out["started"] == [["b1", "triage", 10]]
+        assert out["whileRunning"] is True
+        assert out["afterBatch"] == ["0", True, ["GET /api/queue/untriaged"]], "a finished batch re-reads the count"
+        assert out["disabledDuringConfirm"] is True
+        assert out["disabledDuringPost"] == [True, "function"], "disabled while the batch request is in flight"
+        assert out["doubleClick"] == {"confirms": 1, "posts": 1, "started": 1}, "repeated clicks start one batch"
+        assert out["batchStartedDuringConfirm"] == [0, [["A batch is already running: nothing was sent", "info"]]], (
+            "a batch that started during the confirm is not collided with, and the user is told"
+        )
+        assert out["shrunkRequest"] == [["101", "102"]], "only confirmed issues still in the backlog are sent"
+        assert out["backlogGoneDuringConfirm"] == [
+            0,
+            [["These issues are no longer in the backlog: nothing was sent", "info"]],
+        ]
+        toasts, disabled, started = out["refused"]
+        assert toasts == [["A batch is already running", "error"]]
+        assert disabled is False and started == 0
 
     def test_the_supervisor_page_links_to_work_instead_of_its_queue_panel(self) -> None:
         html = (_TEMPLATES / "supervisor.html").read_text(encoding="utf-8")
@@ -667,6 +823,151 @@ if (scenario === 'start-no-slot') {
   await board.loadBoard();
   out.afterFailure = els['work-board'].innerHTML;
   out.error = els['work-board-error'].textContent;
+} else if (scenario === 'triage-all') {
+  // Triage all: the count from GET /queue/untriaged, disabled before a good read, at zero and while a batch runs;
+  // a confirm, then one triage batch whose progress the global batch bar shows.
+  const btn = { disabled: false, listeners: {}, addEventListener(t, fn) { this.listeners[t] = fn; } };
+  const count = { textContent: '' };
+  document.getElementById = (id) => (id === 'triage-all-btn' ? btn : id === 'triage-all-count' ? count : proxy());
+  globalThis.setText = (id, text) => { if (id === 'triage-all-count') count.textContent = text; };
+  let running = false;
+  globalThis.globalBatchRunning = () => running;
+  const started = [];
+  globalThis.startGlobalBatch = (...args) => started.push(args);
+  let answer = false;
+  const confirms = [];
+  let confirmGate = null;  // when set, the confirm resolves only once the scenario calls it
+  globalThis.sovaConfirm = (message, opts) => {
+    confirms.push({ message, opts });
+    if (!confirmGate) return Promise.resolve(answer);
+    return new Promise((resolve) => { const gate = confirmGate; confirmGate = null; gate.resolve = resolve; });
+  };
+  globalThis.fetchAPI = async (url) => {
+    const res = await globalThis.fetch(url);
+    if (!res.ok) throw new Error('API error: ' + res.status);
+    return res.json();
+  };
+  const toasts = [];
+  globalThis.showToast = (message, type) => toasts.push([message, type]);
+  let socket = null;
+  globalThis.subscribeSovaSocket = (handlers) => { socket = handlers; return { unsubscribe() {} }; };
+  const batchChange = () => docListeners.filter(([t]) => t === 'sova:batch-change').map(([, fn]) => fn);
+  const header = await work('header');
+  header.init();
+  out.beforeRead = [count.textContent, btn.disabled];
+  routes = { 'GET /api/queue/untriaged': [500, {}] };
+  socket.onOpen();
+  await tick(); await tick();
+  out.failedRead = [count.textContent, btn.disabled];
+  const issues = Array.from({ length: 10 }, (_, i) => ({ issue: String(100 + i), title: 'Issue ' + i }));
+  // Entries with no issue number are not counted, listed or sent.
+  const malformed = [null, { title: 'No number' }, { issue: null, title: 'Null' }, { issue: '', title: 'Empty' }];
+  routes = { 'GET /api/queue/untriaged': [200, { untriaged: issues.concat(malformed) }] };
+  socket.onMessage({ type: 'agent_finished' });
+  await tick(); await tick();
+  out.goodRead = [count.textContent, btn.disabled];
+  routes = { 'GET /api/queue/untriaged': [500, {}] };
+  socket.onFallbackPoll();
+  await tick(); await tick();
+  out.laterFailureKeeps = [count.textContent, btn.disabled];
+  // The server answered but could not read the tracker (`untriaged` null): no count, so the last good one stays.
+  routes = { 'GET /api/queue/untriaged': [200, { untriaged: null }] };
+  socket.onFallbackPoll();
+  await tick(); await tick();
+  out.unknownKeeps = [count.textContent, btn.disabled];
+  // Cancelled confirm: no request.
+  routes['POST /api/queue/batch'] = [200, { batch_id: 'b1', status: 'started', count: 10 }];
+  requests.length = 0;
+  await btn.listeners.click();
+  out.confirm = confirms[0];
+  out.cancelledRequests = requests.map((r) => r.key);
+  // Confirmed: one triage batch of every untriaged issue, followed in the global bar.
+  answer = true;
+  await btn.listeners.click();
+  out.batchRequest = requests.filter((r) => r.key === 'POST /api/queue/batch').map((r) => r.body);
+  out.started = started.slice();
+  // A running batch disables it; its end re-reads the count.
+  running = true;
+  batchChange().forEach((fn) => fn({ detail: { running: true } }));
+  out.whileRunning = btn.disabled;
+  running = false;
+  routes['GET /api/queue/untriaged'] = [200, { untriaged: [] }];
+  requests.length = 0;
+  batchChange().forEach((fn) => fn({ detail: { running: false } }));
+  await tick(); await tick();
+  out.afterBatch = [count.textContent, btn.disabled, requests.map((r) => r.key)];
+  // A second click while the confirm is open, or while the batch request is in flight, starts nothing more.
+  routes['GET /api/queue/untriaged'] = [200, { untriaged: issues.slice(0, 3) }];
+  socket.onOpen();
+  await tick(); await tick();
+  const gate = {};
+  confirmGate = gate;
+  confirms.length = 0;
+  requests.length = 0;
+  started.length = 0;
+  const realFetch = globalThis.fetch;
+  let releasePost = null;
+  globalThis.fetch = (url, opts) => {
+    const reply = realFetch(url, opts);
+    if (!(opts && opts.method === 'POST')) return reply;
+    return new Promise((resolve) => { releasePost = () => resolve(reply); });
+  };
+  const firstClick = btn.listeners.click();
+  const secondClick = btn.listeners.click();
+  out.disabledDuringConfirm = btn.disabled;
+  gate.resolve(true);
+  await tick();
+  out.disabledDuringPost = [btn.disabled, typeof releasePost];
+  const thirdClick = btn.listeners.click();
+  releasePost();
+  globalThis.fetch = realFetch;
+  await Promise.all([firstClick, secondClick, thirdClick]);
+  out.doubleClick = {
+    confirms: confirms.length,
+    posts: requests.filter((r) => r.key === 'POST /api/queue/batch').length,
+    started: started.length,
+  };
+  // A batch that started, or a backlog that changed, while the confirm was open: re-checked after it.
+  const staleGate = {};
+  confirmGate = staleGate;
+  requests.length = 0;
+  started.length = 0;
+  const staleClick = btn.listeners.click();
+  running = true;
+  staleGate.resolve(true);
+  await staleClick;
+  out.batchStartedDuringConfirm = [requests.filter((r) => r.key === 'POST /api/queue/batch').length,
+    toasts.splice(0)];
+  running = false;
+  const shrinkGate = {};
+  confirmGate = shrinkGate;
+  const shrinkClick = btn.listeners.click();
+  routes['GET /api/queue/untriaged'] = [200, { untriaged: [issues[1], issues[2], issues[5]] }];
+  socket.onFallbackPoll();
+  await tick(); await tick();
+  shrinkGate.resolve(true);
+  await shrinkClick;
+  out.shrunkRequest = requests.filter((r) => r.key === 'POST /api/queue/batch').map((r) => r.body.issues);
+  // Every confirmed issue left the backlog while the confirm was open: nothing is sent, and the user is told.
+  const goneGate = {};
+  confirmGate = goneGate;
+  requests.length = 0;
+  const goneClick = btn.listeners.click();
+  routes['GET /api/queue/untriaged'] = [200, { untriaged: [issues[7]] }];
+  socket.onFallbackPoll();
+  await tick(); await tick();
+  goneGate.resolve(true);
+  await goneClick;
+  out.backlogGoneDuringConfirm = [requests.filter((r) => r.key === 'POST /api/queue/batch').length, toasts.splice(0)];
+  // A refused start shows the server's reason and leaves the button usable.
+  routes['GET /api/queue/untriaged'] = [200, { untriaged: [issues[0]] }];
+  socket.onOpen();
+  await tick(); await tick();
+  started.length = 0;
+  routes['POST /api/queue/batch'] = [409, { detail: 'A batch is already running' }];
+  toasts.length = 0;
+  await btn.listeners.click();
+  out.refused = [toasts, btn.disabled, started.length];
 } else if (scenario === 'drawer-redraw') {
   // The drawer's priority picker is "busy" while its menu is open or its save runs: a board refresh must not
   // replace it then, and the redraw lands once the picker is idle again.

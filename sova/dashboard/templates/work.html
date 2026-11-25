@@ -5,8 +5,15 @@
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-2xl font-semibold">Work</h2>
-  {{ btn("Run Planner", variant="purple", size="md", id="run-planner-btn", tooltip="Analyze project and propose new tasks",
-         attrs={"data-action": "start-planner", "aria-label": "Analyze project and propose new tasks", "data-tooltip-pos": "left"}) }}
+  <div class="flex items-center gap-2">
+    {#- Triage all: batch triage of every backlog issue the queue lists (static/js/pages/work/header.js). Disabled
+        until the count arrives, at zero and while a batch runs. -#}
+    {% set triage_label %}Triage all <span id="triage-all-count" class="sova-inline-count tabular-nums">--</span>{% endset %}
+    {{ btn(triage_label, variant="warning", size="md", id="triage-all-btn", disabled=True,
+           tooltip="Triage every issue in the backlog", attrs={"data-tooltip-pos": "bottom"}) }}
+    {{ btn("Run Planner", variant="purple", size="md", id="run-planner-btn", tooltip="Analyze project and propose new tasks",
+           attrs={"data-action": "start-planner", "aria-label": "Analyze project and propose new tasks", "data-tooltip-pos": "left"}) }}
+  </div>
 </div>
 
 <!-- Header: what runs, how often it succeeds, what merged, what it costs (static/js/pages/work/header.js) -->

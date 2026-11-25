@@ -5,7 +5,8 @@
 // - It closes on Escape (unless a dialog owns the key), on any element inside it marked data-panel-close, and on a
 //   click outside it. A click on an overlay over it (a modal, a confirm, a toast, any [role="dialog"]) or on an
 //   element marked data-keeps-panel is not outside it, nor is one on the panel's own `keepOpen` selector, nor a
-//   press that began inside it (a text selection released outside).
+//   pointer press that began inside it (a text selection released outside). A click on the panel's own `trigger`
+//   is left to the trigger, whose toggle() closes it (reason 'toggle'; focus stays on the trigger the click put it on).
 // - Escape and the close button return focus: to `returnFocus()` when the panel names a target, else to what had
 //   focus outside the panel when it last opened or switched content (an open() on the open panel). Focus left in a
 //   page field outside the panel stays there.
@@ -24,7 +25,7 @@
 var _ALWAYS_KEEPS = '.sova-modal-backdrop, .sova-toast, [role="dialog"], [aria-modal="true"], [data-keeps-panel]';
 
 var _open = null;          // the open panel's record, null for none
-var _pressInside = false;  // the current press began inside the open panel
+var _pressInside = false;  // the current pointer press began inside the open panel
 var _bound = false;
 var _resizeObserver = null;
 
@@ -106,10 +107,14 @@ function _onClick(e) {
     rec.api.close('button');
     return;
   }
-  if (_pressInside) return;
+  // Only a pointer click follows its press: a keyboard click (detail 0) had none, so an earlier press inside is stale.
+  var pressedInside = _pressInside && e.detail !== 0;
+  _pressInside = false;
+  if (pressedInside) return;
   // A target a redraw already removed was inside the panel when it was clicked.
   if (!target || target.isConnected === false || !target.closest) return;
   if (rec.el.contains(target)) return;
+  if (rec.trigger && rec.trigger.contains && rec.trigger.contains(target)) return;
   if (target.closest(_ALWAYS_KEEPS)) return;
   if (rec.keepOpen && target.closest(rec.keepOpen)) return;
   rec.api.close('outside');
@@ -127,8 +132,10 @@ function _bindDocument() {
 
 function _overflows(value) { return value === 'auto' || value === 'scroll' || value === 'overlay'; }
 
-// Whether `el` itself would move for this wheel delta: it scrolls on that axis and is not already at that end.
+// Whether `el` itself would move for this wheel delta: it scrolls on that axis and is not already at that end. A node
+// with nothing to overflow is ruled out before the style read, which can force a style recalculation per wheel event.
 export function scrollsFor(el, dx, dy) {
+  if (!(el.scrollHeight > el.clientHeight) && !(el.scrollWidth > el.clientWidth)) return false;
   var style = typeof getComputedStyle === 'function' ? getComputedStyle(el) : null;
   if (!style) return false;
   if (dy && _overflows(style.overflowY) && el.scrollHeight > el.clientHeight) {

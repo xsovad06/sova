@@ -66,12 +66,12 @@
     <div class="sidebar-nav-scroll flex-1 py-2">
       {% set nav_items = [
         ("work", prefix + "/work", "Work", "work"),
-        ("queue", prefix + "/queue", "Queue", "queue"),
         ("supervisor", prefix + "/supervisor", "Supervisor", "supervisor"),
         ("oversight", prefix + "/oversight", "Oversight", "oversight"),
         ("costs", prefix + "/costs", "Costs", "costs"),
       ] %}
       {% set more_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
+        ("queue", prefix + "/queue", "Queue", "queue"),
         ("specs", prefix + "/specs", "Specs", "document-text"),
         ("pr-metrics", prefix + "/pr-metrics", "PR Metrics", "chart-bar"),
         ("reliability", prefix + "/reliability", "Reliability", "chart-bar"),

@@ -56,6 +56,7 @@ const ctx = {
   requestAnimationFrame() {},
   localStorage: absorb(), sessionStorage: absorb(), navigator: absorb(), location: absorb(),
   EventSource: function () { return absorb(); },
+  CustomEvent,
   getComputedStyle: () => ({ getPropertyValue: () => '' }),
   fetch: (input, init) => {
     const headers = new Headers((init && init.headers) || {});

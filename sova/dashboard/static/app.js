@@ -2212,6 +2212,14 @@ var _globalBatchPollInterval = null;
 // polls 12 times a minute, so several tabs on one device stay under the default budget.
 var _GLOBAL_BATCH_POLL_MS = 5000;
 
+// Whether this tab is following a batch (started here, resumed after a reload, or found running on the server). A
+// control that starts a batch is disabled while it is: the `sova:batch-change` event says when that changes.
+function globalBatchRunning() { return _globalBatchId !== null; }
+
+function _announceGlobalBatch() {
+  document.dispatchEvent(new CustomEvent('sova:batch-change', { detail: { running: _globalBatchId !== null } }));
+}
+
 function _batchStorageKey() {
   var slug = window.SOVA_PROJECT_SLUG || '';
   return slug ? 'sova-batch-id-' + slug : 'sova-batch-id';
@@ -2240,6 +2248,7 @@ function startGlobalBatch(batchId, action, total) {
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar(action, total);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
+  _announceGlobalBatch();
 }
 
 function _resumeGlobalBatchPolling(batchId) {
@@ -2247,6 +2256,7 @@ function _resumeGlobalBatchPolling(batchId) {
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar('batch', 0);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
+  _announceGlobalBatch();
   _pollGlobalBatch();
 }
 
@@ -2354,6 +2364,7 @@ function _clearGlobalBatch() {
   }
 
   if (typeof _onGlobalBatchCleared === 'function') _onGlobalBatchCleared();
+  _announceGlobalBatch();
 }
 
 /* ============================================================

@@ -253,6 +253,37 @@ class TestBatchTriage:
         assert mock_role.apply_suitability_label.await_count == 2
         assert adapter.transition_state.call_count == 2
 
+    @pytest.mark.parametrize("runner", ["_run_batch_triage", "_run_batch_harden"])
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    async def test_an_ended_batch_drops_the_cached_tracker_list_before_it_reads_as_done(
+        self, mock_init_db, runner: str, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The Work page re-reads GET /queue/untriaged when it sees the batch end: a list cached from before the
+        batch would offer the issues it just triaged for a second triage. The setup fails here (no model call, no
+        tracker write), which still ends the batch: the drop must not depend on the items succeeding."""
+        from sova.dashboard.services import batch_service, queue_service
+        from sova.dashboard.services.batch_service import BatchItemResult
+
+        mock_init_db.side_effect = RuntimeError("setup failed")
+        monkeypatch.setattr(queue_service, "_queue_cache", {str(tmp_path): (queue_service.time.monotonic(), [])})
+        monkeypatch.setattr(queue_service, "_queue_cache_generation", {})
+        job = BatchJob(batch_id="c1", action="triage", results=[BatchItemResult(issue_id="1")])
+        status_at_invalidation = []
+        real = batch_service.invalidate_queue_cache
+
+        def record(project_dir: Path) -> None:
+            status_at_invalidation.append(job.status)
+            real(project_dir)
+
+        kwargs = {"skip_triage": True} if runner == "_run_batch_harden" else {}
+        with patch.object(batch_service, "invalidate_queue_cache", side_effect=record):
+            await getattr(batch_service, runner)(job, tmp_path, **kwargs)
+
+        assert job.status == "done"
+        assert job.results[0].status == "failed"
+        assert status_at_invalidation == ["running"], "the cache is dropped before the batch reads as ended"
+        assert str(tmp_path) not in queue_service._queue_cache
+
     @pytest.mark.parametrize(
         ("suitability", "expected"),
         [("ready", TaskState.TRIAGED), ("needs_spec", TaskState.NEEDS_SPEC), ("human_only", TaskState.HUMAN_ONLY)],

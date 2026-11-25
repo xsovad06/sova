@@ -113,7 +113,8 @@ class TestFeedPanelMarkupAndStyle:
         shift = _css_rule('body[data-side-panel-floats="shift"] .sova-float')
         assert "translate: calc(-1 * var(--side-panel-width, 0px)) 0" in shift
         hide = _css_rule('body[data-side-panel-floats="hide"] .sova-float')
-        assert "visibility: hidden" in hide and "pointer-events: none" in hide
+        assert "visibility: hidden" in hide
+        assert "pointer-events: none" in hide
 
     def test_the_panel_slides_in_ease_out_and_out_ease_in_under_300ms(self) -> None:
         tokens = dict(
@@ -126,22 +127,72 @@ class TestFeedPanelMarkupAndStyle:
         opened = _css_rule(".sova-side-panel[data-open]")
         assert "transform var(--motion-panel-out) var(--ease-in)" in closed
         assert "transform var(--motion-panel-in) var(--ease-out)" in opened
-        assert "visibility: hidden" in closed and "visibility: visible" in opened
-        reduced = _STYLE_CSS[_STYLE_CSS.index("@media (prefers-reduced-motion: reduce) {\n  .sova-side-panel") :]
-        assert "transition: none" in reduced[: reduced.index("\n}\n")]
+        assert "visibility: hidden" in closed
+        assert "visibility: visible" in opened
+        # Hidden only once the slide-out has run: without the delay the panel vanishes the moment it closes.
+        assert "visibility 0s var(--motion-panel-out)" in closed
+        assert re.search(r"visibility 0s\s*[;,]", opened), "visible at once on the way in"
+
+    def test_reduced_motion_overrides_every_panel_scrim_and_float_transition(self) -> None:
+        """At equal specificity the later rule wins, so the override must follow every rule it overrides.
+
+        The floats are `.sova-float` elements whose own class rules (`.feed-fab`, `.resource-widget`) set a
+        transition too, with the same specificity.
+        """
+        media = _STYLE_CSS.index("@media (prefers-reduced-motion: reduce) {\n  .sova-side-panel")
+        block = _STYLE_CSS[media : _STYLE_CSS.index("\n}\n", media)]
+        overridden = {
+            ".sova-side-panel",
+            ".sova-side-panel[data-open]",
+            ".feed-scrim",
+            'body[data-side-panel="feed"] .feed-scrim',
+            ".sova-float",
+            "body[data-side-panel-floats] .sova-float",
+        }
+        selectors = {sel.strip() for sel in block.split("{", 1)[1].split("{", 1)[0].split(",")}
+        assert overridden <= selectors
+        assert "transition: none" in block
+        same_specificity = overridden | {
+            ".feed-fab",
+            ".resource-widget",
+            'body[data-side-panel-floats="shift"] .sova-float',
+            'body[data-side-panel-floats="hide"] .sova-float',
+        }
+        motion = re.compile(r"\b(transition|animation)[\w-]*\s*:\s*(?!\s|none\b)")
+        for rule in re.finditer(r"([^{}]+)\{([^{}]*)\}", _STYLE_CSS):
+            names = {sel.strip() for sel in rule.group(1).split(",")}
+            if names & same_specificity and motion.search(rule.group(2)) and rule.start() != media:
+                assert rule.start() < media, f"{sorted(names & same_specificity)} sets motion after the override"
+
+    def test_the_ticket_detail_is_a_side_panel_with_a_scrolling_body(self) -> None:
+        """The wheel containment needs the drawer to be a side panel whose scroll body is a `.sova-side-panel-body`
+        (an overflow-y: auto scroller), and to start closed before its module runs."""
+        work_html = (DASHBOARD_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+        drawer = re.search(r'<aside id="work-drawer"[^>]*>', work_html).group(0)
+        assert "sova-side-panel" in drawer
+        assert 'aria-hidden="true"' in drawer
+        assert re.search(r"\sinert(\s|>)", drawer)
+        drawer_js = (_STATIC / "js" / "pages" / "work" / "drawer.js").read_text(encoding="utf-8")
+        assert "'<div class=\"sova-side-panel-body " in drawer_js
 
     def test_panels_contain_their_own_scroll(self) -> None:
         assert "overscroll-behavior: contain" in _css_rule(".sova-side-panel")
         body = _css_rule(".sova-side-panel-body")
-        assert "overscroll-behavior: contain" in body and "overflow-y: auto" in body and "min-height: 0" in body
+        assert "overscroll-behavior: contain" in body
+        assert "overflow-y: auto" in body
+        assert "min-height: 0" in body
 
     def test_the_owl_is_never_clipped(self) -> None:
         owl = _css_rule(".sova-owl")
         assert "overflow" not in owl
         img = _css_rule(".sova-owl img")
-        assert "object-fit: contain" in img and "border-radius" not in img and "90%" in img
-        assert "feed-avatar" not in _STYLE_CSS and "feed-fab-owl" not in _STYLE_CSS
-        assert _BASE_HTML.count('owl_avatar("') == 2, "the feed header and the owl button use the shared macro"
+        assert "object-fit: contain" in img
+        assert "border-radius" not in img
+        assert "overflow" not in img and "clip-path" not in img
+        assert "feed-avatar" not in _STYLE_CSS
+        assert "feed-fab-owl" not in _STYLE_CSS
+        feed_markup = _BASE_HTML[_BASE_HTML.index("<!-- Activity feed") : _BASE_HTML.index("<!-- Main content")]
+        assert "<img" not in feed_markup, "every owl in the feed and the owl button comes from the shared macro"
         assert "owlAvatarHtml('sm')" in _FEED_PANEL_JS.read_text(encoding="utf-8"), "the briefing card does too"
         for source in (_BASE_HTML, _APP_JS.read_text(encoding="utf-8"), _FEED_PANEL_JS.read_text(encoding="utf-8")):
             assert "object-fit: cover" not in source
@@ -244,7 +295,7 @@ import vm from 'node:vm';
 
 const [, , sidePanelPath, feedPanelPath, appJsPath, fakeDomPath] = process.argv;
 const require = createRequire(import.meta.url);
-const { Document, key, clickOn } = require(fakeDomPath);
+const { Document, key, clickOn, dispatch } = require(fakeDomPath);
 
 const doc = new Document();
 globalThis.document = doc;
@@ -252,7 +303,6 @@ globalThis.window = globalThis;
 if (typeof globalThis.CustomEvent !== 'function') {
   globalThis.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } };
 }
-doc.dispatchEvent = (e) => { (doc.listeners || []).filter((l) => l.type === e.type).forEach((l) => l.fn(e)); };
 doc.body.style.setProperty = function(k, v) { this[k] = v; };
 doc.body.style.removeProperty = function(k) { delete this[k]; };
 const appSrc = fs.readFileSync(appJsPath, 'utf8');
@@ -292,7 +342,9 @@ doc.body.innerHTML =
   '<button id="card" data-action="work-select">Card</button>' +
   '<div id="dialog" role="dialog"></div>' +
   '<div class="sova-toast"><button id="toast-btn">x</button></div>' +
-  '<div data-keeps-panel><button id="kept">Kept</button></div>';
+  '<div data-keeps-panel><button id="kept">Kept</button></div>' +
+  '<aside id="third" class="sova-side-panel"><button id="third-in">In</button></aside>' +
+  '<button type="button" id="third-trigger">Third</button>';
 const $ = (id) => doc.getElementById(id);
 const panelEl = $('feed-panel');
 const handle = $('feed-resize-handle');
@@ -327,7 +379,7 @@ storage['sova.feed.width'] = '640';
 feedPanel.init();
 out.restoredWidth = panelEl.style['--feed-panel-width'];
 delete storage['sova.feed.width'];
-out.closedAtStart = [isOpen(), panelEl.getAttribute('aria-hidden')];
+out.closedAtStart = [isOpen(), panelEl.getAttribute('aria-hidden'), panelEl.hasAttribute('inert')];
 
 // Resize drag.
 const fire = (type, ev) => handle.listeners.filter((l) => l.type === type)
@@ -362,7 +414,8 @@ out.opened = {
   open: isOpen(), panel: doc.body.getAttribute('data-side-panel'),
   floats: doc.body.getAttribute('data-side-panel-floats'),
   width: doc.body.style['--side-panel-width'], expanded: $('feed-fab').getAttribute('aria-expanded'),
-  dataOpen: panelEl.hasAttribute('data-open'), ariaHidden: panelEl.getAttribute('aria-hidden') };
+  dataOpen: panelEl.hasAttribute('data-open'), ariaHidden: panelEl.getAttribute('aria-hidden'),
+  inert: panelEl.hasAttribute('inert') };
 out.briefingHtml = feedPanel.briefingHtml(briefing);
 out.briefingDrawn = $('feed-briefing-slot').querySelectorAll('.sova-owl').length;
 // Inside the panel: a click and a press that began inside it keep it open.
@@ -377,7 +430,7 @@ $('feed-line').focus();
 clickOn($('feed-close'));
 out.closeButton = { open: isOpen(), focus: doc.activeElement.id, panel: doc.body.getAttribute('data-side-panel'),
   width: doc.body.style['--side-panel-width'] ?? null, expanded: $('feed-fab').getAttribute('aria-expanded'),
-  ariaHidden: panelEl.getAttribute('aria-hidden') };
+  ariaHidden: panelEl.getAttribute('aria-hidden'), inert: panelEl.hasAttribute('inert') };
 // A click outside (the scrim, the page) closes it, and focus stays where the click put it.
 clickOn($('feed-fab'));
 clickOn($('feed-scrim'));
@@ -441,14 +494,56 @@ key(doc, 'Escape');
 out.ticketEscape = { open: ticket.isOpen(), focus: doc.activeElement.id, reasons: ticketCloses.slice(),
   panel: doc.body.getAttribute('data-side-panel') };
 ticket.open();
+$('page-button').focus();
 ticket.close('deselected');
 out.apiClose = { reasons: ticketCloses.slice(), focus: doc.activeElement.id };
+
+// The trigger's own click is left to the trigger: a second owl click closes the feed, never closes and reopens it.
+const fabToggles = toggles.length;
+clickOn($('feed-fab'));
+const fabOpened = isOpen();
+clickOn($('feed-fab'));
+out.fabClosesFeed = { opened: fabOpened, open: isOpen(), toggles: toggles.slice(fabToggles),
+  expanded: $('feed-fab').getAttribute('aria-expanded') };
+const thirdReasons = [];
+const third = sidePanel.createSidePanel($('third'), {
+  name: 'third', trigger: $('third-trigger'), onClose: (reason) => thirdReasons.push(reason),
+});
+$('third-trigger').addEventListener('click', () => third.toggle());
+clickOn($('third-trigger'));
+const thirdOpened = third.isOpen();
+clickOn($('third-trigger'));
+out.triggerToggles = { opened: thirdOpened, open: third.isOpen(), reasons: thirdReasons.slice(),
+  expanded: $('third-trigger').getAttribute('aria-expanded') };
+
+// Focus returns to what opened the content shown: an open() on the open panel (another ticket from a card or the
+// search) takes the focus outside it as the new opener; one made while focus is inside it (a redraw) keeps it.
+const fourth = sidePanel.createSidePanel($('third'), { name: 'fourth' });
+$('page-button').focus();
+fourth.open();
+$('card').focus();
+fourth.open();
+$('third-in').focus();
+fourth.open();
+key(doc, 'Escape');
+out.switchOpener = { open: fourth.isOpen(), focus: doc.activeElement.id };
+
+// A keyboard click (detail 0: Enter or Space on a button) has no press of its own, so an earlier press inside the
+// panel does not keep it open.
+openFeed();
+clickOn($('feed-line'));
+dispatch($('page-button'), 'click', { detail: 0 });
+out.keyboardClickAfterInsideClick = isOpen();
+openFeed();
+dispatch($('feed-line'), 'pointerdown', {});
+dispatch($('page-button'), 'click', { detail: 0 });
+out.keyboardClickAfterInsidePress = isOpen();
 
 // Wheel: stopped over the header and at either end of the list, let through while the list can still scroll.
 const list = $('feed-list');
 Object.assign(list, { scrollHeight: 1000, clientHeight: 400, scrollTop: 0 });
 const wheelListener = panelEl.listeners.find((l) => l.type === 'wheel');
-out.wheelPassive = wheelListener ? wheelListener.passive === undefined : false;
+out.wheelPassive = wheelListener ? wheelListener.passive : null;
 const wheel = (target, deltaY, extra) => {
   const ev = Object.assign({ target, deltaX: 0, deltaY, ctrlKey: false, defaultPrevented: false,
     preventDefault() { this.defaultPrevented = true; } }, extra);
@@ -468,6 +563,11 @@ out.wheel.listEndUp = wheel($('feed-line'), -100);
 out.wheel.pinch = wheel($('feed-head'), 100, { ctrlKey: true });
 list.scrollTop = 0;
 out.scrollsFor = sidePanel.scrollsFor(list, 0, -10);
+const ticketWheel = $('ticket').listeners.find((l) => l.type === 'wheel');
+const ticketEv = { target: $('ticket-btn'), deltaX: 0, deltaY: 100, ctrlKey: false, defaultPrevented: false,
+  preventDefault() { this.defaultPrevented = true; } };
+ticketWheel.fn(ticketEv);
+out.wheel.ticketNothingToScroll = ticketEv.defaultPrevented;
 
 console.log(JSON.stringify(out));
 """
@@ -512,7 +612,7 @@ class TestFeedPanelWidth:
 
 class TestFeedPanelOpenClose:
     def test_it_starts_closed_and_hidden_from_assistive_tech(self, panel_run: dict) -> None:
-        assert panel_run["closedAtStart"] == [False, "true"]
+        assert panel_run["closedAtStart"] == [False, "true", True]
 
     def test_the_owl_button_opens_it_and_the_body_names_it(self, panel_run: dict) -> None:
         assert panel_run["opened"] == {
@@ -523,6 +623,7 @@ class TestFeedPanelOpenClose:
             "expanded": "true",
             "dataOpen": True,
             "ariaHidden": None,
+            "inert": False,
         }
 
     def test_the_briefing_loads_once_with_an_uncropped_owl_and_escaped_items(self, panel_run: dict) -> None:
@@ -533,7 +634,8 @@ class TestFeedPanelOpenClose:
             '<span class="sova-owl sova-owl-sm" aria-hidden="true"><img src="/static/owl-avatar.png" alt=""></span>'
             in html
         )
-        assert "<b>" not in html and "javascript:" not in html
+        assert "<b>" not in html
+        assert "javascript:" not in html
 
     def test_clicks_inside_and_on_overlays_keep_it_open(self, panel_run: dict) -> None:
         assert panel_run["insideKeeps"]
@@ -549,6 +651,7 @@ class TestFeedPanelOpenClose:
             "width": None,
             "expanded": "false",
             "ariaHidden": "true",
+            "inert": True,
         }
 
     def test_a_click_outside_or_on_the_scrim_closes_it(self, panel_run: dict) -> None:
@@ -559,6 +662,29 @@ class TestFeedPanelOpenClose:
         toggles = panel_run["toggles"]
         assert toggles[:2] == [True, False]
         assert all(a != b for a, b in zip(toggles, toggles[1:])), "open and close alternate"
+
+
+class TestSidePanelTrigger:
+    def test_a_second_owl_click_closes_the_feed(self, panel_run: dict) -> None:
+        """The owl button is outside the feed: the outside check leaves its click to its own toggle()."""
+        assert panel_run["fabClosesFeed"] == {
+            "opened": True,
+            "open": False,
+            "toggles": [True, False],
+            "expanded": "false",
+        }
+
+    def test_a_panel_closed_from_its_trigger_reports_toggle(self, panel_run: dict) -> None:
+        assert panel_run["triggerToggles"] == {
+            "opened": True,
+            "open": False,
+            "reasons": ["toggle"],
+            "expanded": "false",
+        }
+
+    def test_a_keyboard_click_outside_closes_it_after_a_press_inside(self, panel_run: dict) -> None:
+        assert panel_run["keyboardClickAfterInsideClick"] is False
+        assert panel_run["keyboardClickAfterInsidePress"] is False
 
 
 class TestSidePanelEscape:
@@ -608,16 +734,26 @@ class TestOnePanelAtATime:
         }
 
     def test_a_close_from_code_reports_its_reason_and_moves_no_focus(self, panel_run: dict) -> None:
-        assert panel_run["apiClose"] == {"reasons": ["outside", "escape", "deselected"], "focus": "card"}
+        assert panel_run["apiClose"] == {"reasons": ["outside", "escape", "deselected"], "focus": "page-button"}
+
+    def test_focus_returns_to_what_opened_the_content_shown(self, panel_run: dict) -> None:
+        """A ticket switched from a card while the panel stays open returns focus to that card, not to whatever
+        opened the first ticket; a redraw made with focus inside the panel keeps the opener."""
+        assert panel_run["switchOpener"] == {"open": False, "focus": "card"}
 
 
 class TestSidePanelWheel:
+    def test_the_wheel_listener_can_cancel_the_scroll(self, panel_run: dict) -> None:
+        """A passive listener's preventDefault() is ignored, and the page behind would scroll."""
+        assert panel_run["wheelPassive"] is False
+
     def test_a_wheel_the_panel_cannot_take_is_stopped(self, panel_run: dict) -> None:
         wheel = panel_run["wheel"]
         assert wheel["header"] is True, "nothing scrolls under the header: the page must not"
         assert wheel["listTopUp"] is True, "up at the top of the list"
         assert wheel["listEndDown"] is True, "down at the end of the list"
         assert wheel["pinch"] is False, "a pinch is the browser's zoom"
+        assert wheel["ticketNothingToScroll"] is True, "the ticket detail stops a wheel too"
 
     def test_a_wheel_the_list_can_take_is_left_to_the_browser(self, panel_run: dict) -> None:
         wheel = panel_run["wheel"]

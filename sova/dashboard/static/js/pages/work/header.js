@@ -1,6 +1,6 @@
 // Work page header: agents running of the limit (with the shared minus/plus stepper), run success and merged
 // PRs over 7 days, spend today, CodeRabbit reviews available this hour (only on a project that uses CodeRabbit)
-// and the supervisor switch.
+// and the supervisor switch. Beside Run Planner, Triage all starts the batch triage of every backlog issue.
 //
 // The running count comes from the board payload (renderHeader, called by board.js after each load). The
 // success, merged and spend figures come from GET /overview/stats and the CodeRabbit quota from its own
@@ -296,9 +296,110 @@ async function _loadCodeRabbit() {
   }
 }
 
+// Triage all: the issues GET /queue/untriaged lists (the queue's backlog, from the cached tracker list only),
+// triaged as one batch (POST /queue/batch, action `triage`) that reports its progress in the global batch bar (app.js
+// startGlobalBatch). The count is read with the side figures and again when a batch ends. Until a read succeeds the
+// count is '--' and the button stays disabled: a failed read is not an empty backlog, whether the request failed or
+// the server could not read the tracker (`untriaged` is null). A later failed read keeps the last good list.
+var _backlog = null;     // [{issue, title}] from the last good read, null before one
+var _backlogSeq = 0;
+var _triageStarting = false;  // from the click until the batch request settles: one confirm, one batch
+
+// The untriaged issues of a GET /queue/untriaged payload, in its order; null when the payload has no list (the
+// server could not read the tracker). An entry with no issue number is skipped: it would be counted, listed as
+// '#undefined' and posted to the batch.
+function _backlogIssues(data) {
+  if (!data || !Array.isArray(data.untriaged)) return null;
+  return data.untriaged.filter(function(item) {
+    return item && item.issue != null && String(item.issue) !== '';
+  }).map(function(item) {
+    return { issue: String(item.issue), title: item.title || '' };
+  });
+}
+
+function _renderTriage() {
+  var btn = document.getElementById('triage-all-btn');
+  if (!btn) return;
+  var count = _backlog === null ? null : _backlog.length;
+  setText('triage-all-count', count === null ? '--' : String(count));
+  btn.disabled = !count || globalBatchRunning() || _triageStarting;
+}
+
+async function _loadBacklog() {
+  if (!document.getElementById('triage-all-btn')) return;
+  var seq = ++_backlogSeq;
+  try {
+    var data = await fetchAPI(apiUrl('/queue/untriaged'));
+    if (seq !== _backlogSeq) return;
+    var issues = _backlogIssues(data);
+    if (issues === null) console.error('Triage all: the server could not read the tracker');
+    else _backlog = issues;
+  } catch (e) {
+    console.error('Triage all: the queue could not be read', e);
+  }
+  if (seq === _backlogSeq) _renderTriage();
+}
+
+// The confirm lists the first issues and how many more: the dialog stays readable on a long backlog.
+var _TRIAGE_LISTED = 8;
+
+function _triageDetails(issues) {
+  var listed = issues.slice(0, _TRIAGE_LISTED).map(function(i) { return '#' + i.issue + (i.title ? ' ' + i.title : ''); });
+  if (issues.length > listed.length) listed.push('and ' + (issues.length - listed.length) + ' more');
+  return listed;
+}
+
+async function _triageAll() {
+  var issues = (_backlog || []).slice();
+  if (!issues.length || _triageStarting || globalBatchRunning()) return;
+  // Disabled while the confirm is open too, so a second click cannot open a second one.
+  _triageStarting = true;
+  _renderTriage();
+  try {
+    var confirmed = await sovaConfirm('Triage ' + _plural(issues.length, 'backlog issue') +
+      '. Progress shows in the bar at the bottom of the page.', {
+      title: 'Triage all',
+      confirmText: 'Triage ' + issues.length,
+      details: _triageDetails(issues),
+    });
+    // A batch may have started (another tab, a reload) or the backlog changed while the dialog was open: send only
+    // the confirmed issues still in the backlog, and nothing while a batch runs. Either stop says why, since the
+    // user did confirm.
+    if (!confirmed) return;
+    if (globalBatchRunning()) {
+      showToast('A batch is already running: nothing was sent', 'info');
+      return;
+    }
+    var current = {};
+    (_backlog || []).forEach(function(i) { current[i.issue] = true; });
+    issues = issues.filter(function(i) { return current[i.issue]; });
+    if (!issues.length) {
+      showToast('These issues are no longer in the backlog: nothing was sent', 'info');
+      return;
+    }
+    var res = await fetch(apiUrl('/queue/batch'), {
+      method: 'POST',
+      headers: jsonCsrfHeaders(),
+      body: JSON.stringify({ issues: issues.map(function(i) { return i.issue; }), action: 'triage', options: {} }),
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Could not start the triage'), 'error');
+      return;
+    }
+    var data = await res.json();
+    startGlobalBatch(data.batch_id, 'triage', issues.length);
+  } catch (e) {
+    showToast('Could not start the triage: ' + e.message, 'error');
+  } finally {
+    _triageStarting = false;
+    _renderTriage();
+  }
+}
+
 function _refreshSideFigures() {
   _loadStats();
   _loadCodeRabbit();
+  _loadBacklog();
 }
 
 export function init() {
@@ -332,6 +433,17 @@ export function init() {
       tooltip: 'Posts @coderabbitai review on each PR SOVA opens. Runs started after a change use the new setting.',
       tooltipPos: 'bottom',
     }));
+  }
+  var triage = document.getElementById('triage-all-btn');
+  if (triage) {
+    triage.addEventListener('click', _triageAll);
+    // A batch starting or ending (here, in a reload, or found running on the server) toggles the button; an ended
+    // one has changed the backlog, so it is read again.
+    document.addEventListener('sova:batch-change', function(e) {
+      _renderTriage();
+      if (!(e.detail && e.detail.running)) _loadBacklog();
+    });
+    _renderTriage();
   }
   renderHeader(null);
   subscribeSovaSocket({

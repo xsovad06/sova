@@ -302,28 +302,54 @@ const focusedText = () => doc.activeElement.textContent.trim();
   out.uninstall.removed = backdrops().length === 0;
 
   // Integrate from a Work drawer: the real actions.js handler opens the warning confirm listing the merge
-  // blockers, and the drawer is the real shared side panel (its Escape and outside-click listeners), opened the way
-  // drawer.js opens it, so it must stay open whether the dialog is cancelled with Escape, a backdrop click or
-  // confirmed.
+  // blockers, and the drawer is the one drawer.js's real init() builds on the real shared side panel, with
+  // selection.js's real module (and its init()) behind it, so it must stay open whether the dialog is cancelled with
+  // Escape, a backdrop click or confirmed. Each module body runs in the page context with its imports passed in.
+  // An import is resolved from `deps`; one from a module listed in `stubbed` (the board's, which the drawer only
+  // calls to draw a ticket: the test opens the panel itself) becomes a no-op; any other import throws, so a renamed
+  // or removed export fails here instead of turning into a silent stub. `expose` names module-scope bindings the
+  // test reads (the drawer's panel), each of which must be declared.
   const work = (rel) => fs.readFileSync(path.join(statics, 'js', 'pages', 'work', rel), 'utf8');
-  const sidePanelSrc = fs.readFileSync(path.join(statics, 'js', 'components', 'side-panel.js'), 'utf8')
-    .replace(/^export /gm, '');
-  const drawerSrc = work('drawer.js');
-  const keepOpen = /keepOpen: '([^']+)'/.exec(drawerSrc);
-  if (!keepOpen) throw new Error('drawer keepOpen not found');
+  const loadModule = (text, deps, { stubbed = [], expose = [] } = {}) => {
+    const head = [];
+    const body = text.replace(/^import\s*\{([^}]*)\}\s*from\s*'([^']+)';\n/gm, (m, names, from) => {
+      names.split(',').map((n) => n.trim()).filter(Boolean).forEach((n) => {
+        if (n in deps) head.push('var ' + n + ' = __deps.' + n + ';');
+        else if (stubbed.includes(from)) head.push('var ' + n + ' = function() {};');
+        else throw new Error('loadModule: no dependency for ' + n + ' from ' + from);
+      });
+      return '';
+    }).replace(/^export /gm, '');
+    if (/^import /m.test(body)) throw new Error('unparsed import');
+    const exported = [...text.matchAll(/^export (?:async function|function|const|let|var) (\w+)/gm)].map((m) => m[1]);
+    expose.forEach((n) => {
+      if (!new RegExp('^(?:var|let|const) ' + n + '\\b', 'm').test(body)) throw new Error('loadModule: no ' + n);
+    });
+    const tail = 'return { ' + exported.map((n) => n + ': ' + n)
+      .concat(expose.map((n) => n + ': function() { return ' + n + '; }')).join(', ') + ' };';
+    return vm.runInContext('(function(__deps) {\n' + head.join('\n') + '\n' + body + '\n' + tail + '\n})', ctx)(deps);
+  };
   doc.getElementById('page').innerHTML =
     '<aside id="work-drawer"><button id="integrate">Integrate PR</button></aside><p id="outside">Board</p>';
   vm.runInContext(
-    'var _selected = 42; var drawerCloses = 0; var commands = [];\n' +
-    'function getSelected() { return _selected; }\n' +
-    'function clearSelection() { _selected = null; drawerCloses++; }\n' +
+    'var commands = [];\n' +
+    'function onActionStateChange() {}\n' +
     'function _runCommand(issue, command, args) { commands.push({ issue: issue, command: command, args: args }); }\n' +
-    sidePanelSrc + '\n' +
-    'var drawerPanel = createSidePanel(document.getElementById("work-drawer"), { name: "ticket", keepOpen: ' +
-    JSON.stringify(keepOpen[1]) +
-    ', onClose: function(reason) { if (reason !== "deselected") clearSelection(); } });\n' +
-    'drawerPanel.open();\n' +
     declaration(work('actions.js'), '_runServerAction'), ctx);
+  const sidePanelMod = loadModule(
+    fs.readFileSync(path.join(statics, 'js', 'components', 'side-panel.js'), 'utf8'), {});
+  const selection = loadModule(work('selection.js'), {});
+  const drawer = loadModule(work('drawer.js'), Object.assign({ getBoard: () => null }, sidePanelMod, selection), {
+    stubbed: ['./board.js', '../agents/actions.js', './priority-picker.js'],
+    expose: ['_panel'],
+  });
+  selection.init();
+  drawer.init();
+  let drawerCloses = 0;
+  selection.onSelectionChange(() => { if (selection.getSelected() === null) drawerCloses++; });
+  ctx.getSelected = selection.getSelected;
+  selection.select(42);
+  drawer._panel().open();
   const integrate = doc.getElementById('integrate');
   // A capture-phase Escape listener below the document stands in for any other page handler.
   let bodyCaptureEscapes = 0;
@@ -350,23 +376,26 @@ const focusedText = () => doc.activeElement.textContent.trim();
   key(doc, 'Escape');
   await run;
   out.integrate.escape = {
-    drawerOpen: ctx.getSelected() === 42, bodyCaptureEscapes, commands: ctx.commands.length,
+    drawerOpen: ctx.getSelected() === 42 && drawer._panel().isOpen(), bodyCaptureEscapes, commands: ctx.commands.length,
     focusReturned: doc.activeElement === integrate,
   };
   await sleep(FADE);
   run = openIntegrate();
   clickOn(backdrops()[0]);
   await run;
-  out.integrate.backdrop = { drawerOpen: ctx.getSelected() === 42, commands: ctx.commands.length };
+  const drawerOpen = () => ctx.getSelected() === 42 && drawer._panel().isOpen();
+  out.integrate.backdrop = { drawerOpen: drawerOpen(), commands: ctx.commands.length };
   await sleep(FADE);
   run = openIntegrate();
   clickOn(backdrops()[0].querySelector('.sova-modal-confirm'));
   await run;
-  out.integrate.confirm = { drawerOpen: ctx.getSelected() === 42, commands: JSON.parse(JSON.stringify(ctx.commands)) };
+  out.integrate.confirm = { drawerOpen: drawerOpen(), commands: JSON.parse(JSON.stringify(ctx.commands)) };
   await sleep(FADE);
   // The stand-in is live: with no dialog open, a click outside the drawer does close it.
   clickOn(doc.getElementById('outside'));
-  out.integrate.outsideClickCloses = ctx.getSelected() === null && ctx.drawerCloses === 1;
+  out.integrate.outsideClickCloses = {
+    selected: ctx.getSelected(), drawerCloses, open: drawer._panel().isOpen(),
+  };
 
   console.log(JSON.stringify(out));
 })().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
@@ -534,9 +563,9 @@ class TestIntegrateFromWorkDrawer:
         assert integrate["focused"] == "Cancel"
         assert "sova-btn sova-btn-warning" in integrate["confirmClass"]
 
-    def test_the_drawer_stand_in_does_close_on_a_click_outside(self, modal_run: dict) -> None:
+    def test_the_real_drawer_does_close_on_a_click_outside(self, modal_run: dict) -> None:
         """Without this the drawer-stays-open checks below could pass against listeners that never run."""
-        assert modal_run["integrate"]["outsideClickCloses"]
+        assert modal_run["integrate"]["outsideClickCloses"] == {"selected": None, "drawerCloses": 1, "open": False}
 
     def test_escape_cancels_and_leaves_the_drawer_open(self, modal_run: dict) -> None:
         assert modal_run["integrate"]["escape"] == {

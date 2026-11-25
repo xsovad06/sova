@@ -125,6 +125,7 @@ const ctx = {
   location: { protocol: 'http:', host: 'localhost:8111' },
   WebSocket: FakeWebSocket,
   EventSource: function () { return absorb(); },
+  CustomEvent,
   getComputedStyle: () => ({ getPropertyValue: () => '' }),
   fetch: () => new Promise(() => {}),
 };

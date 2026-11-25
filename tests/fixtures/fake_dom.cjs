@@ -134,7 +134,8 @@ class Element {
   // Events.
   addEventListener(type, fn, options) {
     const capture = options === true || !!(options && options.capture);
-    this.listeners.push({ type, fn, capture });
+    const passive = options && typeof options === 'object' ? options.passive : undefined;
+    this.listeners.push({ type, fn, capture, passive });
   }
   removeEventListener(type, fn, options) {
     const capture = options === true || !!(options && options.capture);
@@ -265,4 +266,4 @@ function clickOn(target, pressOn) {
   return dispatch(target, 'click', {});
 }
 
-module.exports = { Document, key, clickOn };
+module.exports = { Document, key, clickOn, dispatch };
