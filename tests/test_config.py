@@ -1135,6 +1135,22 @@ class TestConfidenceConfig:
         assert config.confidence.auto_merge_threshold == 90
 
 
+class TestJiraPriorityMappingConfig:
+    def test_valid_mapping_accepted(self) -> None:
+        cfg = TaskSourceConfig(type="jira", jira_priority_mapping={"P1 - Urgent": "critical", "Nice": " Low "})
+        assert cfg.jira_priority_mapping == {"P1 - Urgent": "critical", "Nice": " Low "}
+
+    def test_invalid_level_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Invalid SOVA priority"):
+            TaskSourceConfig(type="jira", jira_priority_mapping={"P1 - Urgent": "asap"})
+
+    def test_valid_levels_match_the_priority_registry(self) -> None:
+        from sova.adapters.priority import Priority
+        from sova.config.models import _VALID_PRIORITY_LEVELS
+
+        assert {p.value for p in Priority} == _VALID_PRIORITY_LEVELS
+
+
 class TestJiraStatusMappingConfig:
     def test_valid_mapping_accepted(self) -> None:
         cfg = TaskSourceConfig(

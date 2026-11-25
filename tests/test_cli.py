@@ -236,6 +236,20 @@ class TestConfigCommand:
         assert result.exit_code == 0
         assert load_config(tmp_path).awareness.providers == ["gmail", "gcal"]
 
+    def test_set_writes_the_jira_priority_mapping_and_rejects_a_bad_level(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+
+        from sova.cli.app import app
+        from sova.config.loader import invalidate_config_cache, load_config
+
+        key = "task_source.jira_priority_mapping"
+        ok = runner.invoke(app, ["config", "set", key, '{"P1 - Urgent": "critical"}', "--project", str(tmp_path)])
+        bad = runner.invoke(app, ["config", "set", key, '{"P1 - Urgent": "asap"}', "--project", str(tmp_path)])
+
+        invalidate_config_cache()
+        assert (ok.exit_code, bad.exit_code) == (0, 1)
+        assert load_config(tmp_path).task_source.jira_priority_mapping == {"P1 - Urgent": "critical"}
+
     def test_set_runs_with_an_unloadable_config(self, tmp_path: Path) -> None:
         """`sova config set` is the repair tool, so a broken config must not abort it."""
         from sova.cli.app import app

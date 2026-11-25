@@ -26,6 +26,10 @@ _VALID_TASK_STATES = frozenset(
     }
 )
 
+# Mirrors sova.adapters.priority.Priority's values; config sits below adapters in the import layering, so it
+# cannot import the enum itself (tests/test_config.py pins the two to the same set).
+_VALID_PRIORITY_LEVELS = frozenset({"blocker", "critical", "high", "medium", "low", "undefined"})
+
 # Illustrative llm.model shape per vendor-specific provider type. Used only to
 # make the "you must set llm.model" validation error actionable; SOVA never
 # picks one of these automatically (see LLMConfig._default_model_for_litellm).
@@ -58,6 +62,7 @@ class TaskSourceConfig(BaseSettings):
     jira_jql_filter: str = ""
     jira_state_transitions: dict[str, str] = Field(default_factory=dict)
     jira_status_mapping: dict[str, str] = Field(default_factory=dict)
+    jira_priority_mapping: dict[str, str] = Field(default_factory=dict)
     jira_track_agent_work: bool = False
     jira_display_name: str = ""
 
@@ -81,6 +86,17 @@ class TaskSourceConfig(BaseSettings):
                 raise ValueError(
                     f"Invalid SOVA state {sova_state!r} for JIRA status {jira_status!r}. "
                     f"Valid states: {', '.join(sorted(_VALID_TASK_STATES))}"
+                )
+        return v
+
+    @field_validator("jira_priority_mapping")
+    @classmethod
+    def _validate_priority_mapping(cls, v: dict[str, str]) -> dict[str, str]:
+        for jira_priority, level in v.items():
+            if level.strip().lower() not in _VALID_PRIORITY_LEVELS:
+                raise ValueError(
+                    f"Invalid SOVA priority {level!r} for JIRA priority {jira_priority!r}. "
+                    f"Valid priorities: {', '.join(sorted(_VALID_PRIORITY_LEVELS))}"
                 )
         return v
 
