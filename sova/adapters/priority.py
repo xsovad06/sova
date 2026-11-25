@@ -7,9 +7,16 @@ can import it without creating a cycle.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from enum import StrEnum
 
 _LABEL_PREFIX = "priority:"
+
+# Name variants real Jira instances wrap around a plain level name: a 'P2 - ' rank prefix and a
+# ' (migrated)' suffix left by a priority-scheme migration. Both are stripped before the alias lookup.
+_JIRA_RANK_PREFIX_RE = re.compile(r"^p\d+\s*[-:]\s*")
+_JIRA_MIGRATED_SUFFIX = "(migrated)"
 
 
 class Priority(StrEnum):
@@ -71,17 +78,39 @@ class Priority(StrEnum):
         return min(matches, key=lambda p: p.rank)
 
     @classmethod
-    def from_jira(cls, jira_priority_name: str | None) -> Priority:
+    def from_jira(cls, jira_priority_name: str | None, overrides: Mapping[str, str] | None = None) -> Priority:
         """Map a Jira native priority field name to a Priority level.
 
-        Jira's priority scheme is configurable per instance, so this covers
-        the common defaults (Highest/Blocker through Lowest/Trivial). A
-        None, empty, or unrecognized name resolves to UNDEFINED rather than
-        raising.
+        A None, empty, or unrecognized name resolves to UNDEFINED rather than
+        raising; ``lookup_jira`` tells an unrecognized name apart.
         """
-        if not jira_priority_name:
+        found = cls.lookup_jira(jira_priority_name, overrides)
+        return cls.UNDEFINED if found is None else found
+
+    @classmethod
+    def lookup_jira(cls, jira_priority_name: str | None, overrides: Mapping[str, str] | None = None) -> Priority | None:
+        """Map a Jira priority name to a level, or None when the name is unrecognized.
+
+        Jira's priority scheme is configurable per instance, so the built-in
+        table covers the common defaults plus the redhat.atlassian.net names
+        ('P1 - Critical', 'Critical (migrated)', MoSCoW). ``overrides`` (the
+        operator's ``task_source.jira_priority_mapping``, Jira name to level
+        value) is checked first and wins over the built-in table. Matching is
+        case-insensitive and trimmed, and a 'P<n> - ' prefix and ' (migrated)'
+        suffix are stripped. A None or empty name is "no priority set", not
+        unrecognized, so it resolves to UNDEFINED.
+        """
+        raw = (jira_priority_name or "").strip().lower()
+        if not raw:
             return cls.UNDEFINED
-        return _JIRA_ALIASES.get(jira_priority_name.strip().lower(), cls.UNDEFINED)
+        normalized = _JIRA_RANK_PREFIX_RE.sub("", raw.removesuffix(_JIRA_MIGRATED_SUFFIX).rstrip()).strip()
+        for name, level in (overrides or {}).items():
+            if name.strip().lower() in (raw, normalized):
+                try:
+                    return cls(level.strip().lower())
+                except ValueError:
+                    continue
+        return _JIRA_ALIASES.get(raw, _JIRA_ALIASES.get(normalized))
 
     @classmethod
     def has_label(cls, labels: list[str]) -> bool:
@@ -112,4 +141,12 @@ _JIRA_ALIASES: dict[str, Priority] = {
     "low": Priority.LOW,
     "trivial": Priority.LOW,
     "lowest": Priority.LOW,
+    "urgent": Priority.CRITICAL,
+    "must have": Priority.HIGH,
+    "should have": Priority.MEDIUM,
+    "could have": Priority.LOW,
+    "won't have": Priority.LOW,
+    "won\u2019t have": Priority.LOW,
+    "optional": Priority.LOW,
+    "unprioritized": Priority.UNDEFINED,
 }

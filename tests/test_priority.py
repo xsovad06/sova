@@ -134,16 +134,46 @@ class TestFromJira:
             ("Low", Priority.LOW),
             ("Trivial", Priority.LOW),
             ("Lowest", Priority.LOW),
+            ("P1 - Critical", Priority.CRITICAL),
+            ("Critical (migrated)", Priority.CRITICAL),
+            ("Urgent", Priority.CRITICAL),
+            ("P2 - High (migrated)", Priority.HIGH),
+            ("Must Have", Priority.HIGH),
+            ("Should Have", Priority.MEDIUM),
+            ("Could Have", Priority.LOW),
+            ("Won't Have", Priority.LOW),
+            ("Optional", Priority.LOW),
+            ("Unprioritized", Priority.UNDEFINED),
         ],
     )
     def test_known_jira_names(self, name: str, expected: Priority) -> None:
         assert Priority.from_jira(name) == expected
+        assert Priority.lookup_jira(name) == expected
 
     def test_case_and_whitespace_insensitive(self) -> None:
         assert Priority.from_jira("  CRITICAL  ") == Priority.CRITICAL
 
     def test_unrecognized_name_resolves_undefined(self) -> None:
         assert Priority.from_jira("Showstopper") == Priority.UNDEFINED
+        assert Priority.lookup_jira("Showstopper") is None
+
+    @pytest.mark.parametrize("name", [None, "", "   "])
+    def test_no_name_is_not_unrecognized(self, name: str | None) -> None:
+        assert Priority.lookup_jira(name) is Priority.UNDEFINED
+
+    @pytest.mark.parametrize(
+        ("overrides", "name", "expected"),
+        [
+            ({" MAJOR ": "Blocker"}, "Major", Priority.BLOCKER),
+            ({"showstopper": "critical"}, "Showstopper", Priority.CRITICAL),
+            ({"p9 - showstopper": "low"}, "P9 - Showstopper", Priority.LOW),
+            ({"major": "not-a-level"}, "Major", Priority.HIGH),
+        ],
+    )
+    def test_override_is_checked_before_the_built_in_names(
+        self, overrides: dict[str, str], name: str, expected: Priority
+    ) -> None:
+        assert Priority.from_jira(name, overrides) is expected
 
 
 class TestHasLabel:
