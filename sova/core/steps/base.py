@@ -163,3 +163,21 @@ def fix_attempt_routed_reason(result: LLMResult, task_type: str, attempt_task_ty
     if attempt_task_type is None or result.routed_task_type_model is None:
         return None
     return f"task_type:{task_type} fix attempt 1 routed to {result.routed_task_type_model}"
+
+
+async def trigger_coderabbit_review(ctx: ExecutionContext, pr_number: int | None, *, step: str) -> None:
+    """Post ``@coderabbitai review`` on the PR when ``external_reviews.coderabbit.trigger_review`` is on.
+
+    Fail-open and never retried: CodeRabbit allows one manual review an hour, so a failed post is only logged.
+    A context with no PR number is a clean skip, not a failed post.
+    """
+    if not ctx.config.external_reviews.coderabbit.trigger_review:
+        return
+    if pr_number is None:
+        log.info("step.trigger_coderabbit_skipped", step=step, reason="no_pr_number")
+        return
+    log.info("step.trigger_coderabbit", step=step, pr=pr_number)
+    try:
+        await ctx.adapter.post_pr_comment(pr_number, "@coderabbitai review")
+    except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
+        log.warning("step.trigger_coderabbit_failed", step=step, pr=pr_number, exc_info=True)

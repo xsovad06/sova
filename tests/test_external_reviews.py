@@ -29,6 +29,7 @@ from sova.adapters.external_reviews import (
 from sova.config.models import (
     DEFAULT_COMMIT_SCOPES,
     DEFAULT_COMMIT_TYPES,
+    CodeRabbitConfig,
     CommitConfig,
     ExternalReviewsConfig,
     ProjectConfig,
@@ -1547,6 +1548,134 @@ class TestAddressExternalFindingsStep:
         assert "No commits" in (result.reason or "")
 
 
+class TestAddressExternalFindingsCodeRabbitTrigger:
+    """After a pushed fix resolves CodeRabbit threads, the step asks CodeRabbit to re-review once (#1358).
+
+    Resolving threads does not dismiss CodeRabbit's CHANGES_REQUESTED review, so without the trigger the PR
+    waits on a bot re-review nobody requested.
+    """
+
+    _CR_THREADS = _ThreadsResult(
+        findings=[ExternalFinding("coderabbit", "sova/cli.py", 20, "MAJOR", "Bug", "PRRT_abc")],
+        thread_ids=["PRRT_abc"],
+    )
+    _SONAR_ONLY = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+
+    async def _execute(
+        self,
+        *,
+        trigger_review: bool = True,
+        threads: _ThreadsResult | None = None,
+        sonar: list[ExternalFinding] | None = None,
+        push_error: Exception | None = None,
+        resolve_error: Exception | None = None,
+        resolved_count: int = 1,
+        comment_error: Exception | None = None,
+        git_stdout: str = "1 file changed",
+    ) -> tuple[Any, ExecutionContext]:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ext = _ext_config(coderabbit=CodeRabbitConfig(trigger_review=trigger_review))
+        ctx = _make_ctx(config=ProjectConfig(external_reviews=ext), pr_number=94, branch_name="feat/test")
+        if comment_error is not None:
+            ctx.adapter.post_pr_comment.side_effect = comment_error
+        mock_llm = AsyncMock()
+        mock_llm.cost_usd = Decimal("0.05")
+        with (
+            _patch_external_fetches(sonar=sonar, threads=threads),
+            patch("sova.core.agent_dispatch.dispatch_prompt", new_callable=AsyncMock, return_value=mock_llm),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(stdout=git_stdout),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch("sova.git.operations.push", new_callable=AsyncMock, side_effect=push_error),
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=resolved_count,
+                side_effect=resolve_error,
+            ),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+        return result, ctx
+
+    async def test_posts_one_trigger_after_resolving_threads_on_a_pushed_fix(self) -> None:
+        result, ctx = await self._execute(threads=self._CR_THREADS)
+        assert result.success
+        ctx.adapter.post_pr_comment.assert_awaited_once_with(94, "@coderabbitai review")
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"trigger_review": False, "threads": _CR_THREADS}, id="trigger-review-disabled"),
+            pytest.param({"threads": _CR_THREADS, "push_error": RuntimeError("rejected")}, id="push-failed"),
+            pytest.param({"threads": _CR_THREADS, "git_stdout": ""}, id="no-changes-to-push"),
+            pytest.param({"sonar": _SONAR_ONLY}, id="no-coderabbit-thread"),
+            pytest.param({"threads": _CR_THREADS, "resolve_error": RuntimeError("gh failed")}, id="resolve-failed"),
+            pytest.param({"threads": _CR_THREADS, "resolved_count": 0}, id="no-thread-resolved"),
+        ],
+    )
+    async def test_posts_no_trigger(self, kwargs: dict[str, Any]) -> None:
+        result, ctx = await self._execute(**kwargs)
+        assert result.success
+        ctx.adapter.post_pr_comment.assert_not_awaited()
+
+    async def test_trigger_failure_does_not_fail_the_step(self) -> None:
+        result, ctx = await self._execute(threads=self._CR_THREADS, comment_error=ValueError("comment rejected"))
+        assert result.success
+        assert "external finding" in result.summary
+        ctx.adapter.post_pr_comment.assert_awaited_once()
+
+
+class TestTriggerCodeRabbitReview:
+    """The shared ``trigger_coderabbit_review`` helper both CreatePRStep and AddressExternalFindingsStep call."""
+
+    @staticmethod
+    def _ctx(*, trigger_review: bool) -> ExecutionContext:
+        ext = _ext_config(coderabbit=CodeRabbitConfig(trigger_review=trigger_review))
+        return _make_ctx(config=ProjectConfig(external_reviews=ext))
+
+    async def test_trigger_coderabbit_review_posts_the_review_comment(self) -> None:
+        from sova.core.steps.base import trigger_coderabbit_review
+
+        ctx = self._ctx(trigger_review=True)
+        await trigger_coderabbit_review(ctx, 7, step="create_pr")
+        ctx.adapter.post_pr_comment.assert_awaited_once_with(7, "@coderabbitai review")
+
+    async def test_trigger_coderabbit_review_disabled_posts_nothing(self) -> None:
+        from sova.core.steps.base import trigger_coderabbit_review
+
+        ctx = self._ctx(trigger_review=False)
+        await trigger_coderabbit_review(ctx, 7, step="create_pr")
+        ctx.adapter.post_pr_comment.assert_not_awaited()
+
+    async def test_trigger_coderabbit_review_post_failure_is_logged_not_raised(self) -> None:
+        from sova.core.steps.base import trigger_coderabbit_review
+
+        ctx = self._ctx(trigger_review=True)
+        ctx.adapter.post_pr_comment.side_effect = RuntimeError("gh rejected the comment")
+        with patch("sova.core.steps.base.log") as mock_log:
+            await trigger_coderabbit_review(ctx, 7, step="address_external_findings")
+        ctx.adapter.post_pr_comment.assert_awaited_once()
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "step.trigger_coderabbit_failed"
+        assert mock_log.warning.call_args.kwargs["step"] == "address_external_findings"
+
+    async def test_trigger_coderabbit_review_without_pr_number_skips_cleanly(self) -> None:
+        from sova.core.steps.base import trigger_coderabbit_review
+
+        ctx = self._ctx(trigger_review=True)
+        with patch("sova.core.steps.base.log") as mock_log:
+            await trigger_coderabbit_review(ctx, None, step="address_external_findings")
+        ctx.adapter.post_pr_comment.assert_not_awaited()
+        mock_log.warning.assert_not_called()
+        mock_log.info.assert_called_once_with(
+            "step.trigger_coderabbit_skipped", step="address_external_findings", reason="no_pr_number"
+        )
+
+
 class TestFetchSonarCloudCoverageIssues:
     async def test_returns_none_when_no_project_key(self) -> None:
         result = await fetch_sonarcloud_coverage_issues("", 1)
@@ -1771,3 +1900,25 @@ class TestResolveCodeRabbitThreads:
             mock_run.return_value = _shell_result(stdout='{"data":{}}')
             await resolve_coderabbit_threads(["PRRT_a", "PRRT_b"])
         assert mock_run.call_count == 2
+
+    @pytest.mark.parametrize(
+        ("returncodes", "expected"),
+        [
+            pytest.param([0, 0, 0], 3, id="all-resolved"),
+            pytest.param([0, 1, 0], 2, id="partial-failure"),
+            pytest.param([1, 1], 0, id="all-failed"),
+            pytest.param([], 0, id="no-threads"),
+        ],
+    )
+    async def test_returns_count_of_successful_resolutions(self, returncodes: list[int], expected: int) -> None:
+        """The step gates its re-review trigger on this count, so a failed mutation must not be counted."""
+        from sova.adapters.external_reviews import resolve_coderabbit_threads
+
+        results = [_shell_result(returncode=rc, stderr="boom" if rc else "") for rc in returncodes]
+        with (
+            patch("sova.adapters.external_reviews.run", new_callable=AsyncMock, side_effect=results) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_result()),
+        ):
+            resolved = await resolve_coderabbit_threads([f"PRRT_{i}" for i in range(len(returncodes))])
+        assert resolved == expected
+        assert mock_run.call_count == len(returncodes)

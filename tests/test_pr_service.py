@@ -23,7 +23,7 @@ from sova.dashboard.services.pr_service import (
     _extract_review_logins,
     _is_bot_review,
     _logged_closing_ties,
-    _should_unblock_bot_reviews,
+    _stale_bot_review_state,
     _summarize_ci,
     compute_pr_state,
     extract_jira_key,
@@ -279,7 +279,7 @@ class TestComputePrState:
                     "mergeable": "MERGEABLE",
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="bot-changes-requested-threads-resolved-ci-green",
             ),
             pytest.param(
@@ -290,7 +290,7 @@ class TestComputePrState:
                     "ci_status": "none",
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="bot-changes-requested-threads-resolved-ci-not-green",
             ),
             # New commits do not auto-dismiss a bot review: without one, stays blocked.
@@ -349,7 +349,7 @@ class TestComputePrState:
                     "mergeable": "MERGEABLE",
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="multiple-bots-changes-requested-threads-resolved",
             ),
             pytest.param(
@@ -371,7 +371,7 @@ class TestComputePrState:
                     "mergeable": "MERGEABLE",
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="bot-changes-requested-in-latest-reviews-threads-resolved",
             ),
             pytest.param(
@@ -383,7 +383,7 @@ class TestComputePrState:
                     "mergeable": "MERGEABLE",
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="bot-changes-requested-human-approved-threads-resolved",
             ),
             pytest.param(
@@ -787,9 +787,9 @@ class TestEnrichPr:
         result = _enrich_pr(raw, time.time())
         assert result["computed_state"] == ComputedPRState.REVIEW_ADDRESSED
 
-    def test_zero_threads_bot_cr_review_unblocks_when_superseded(self) -> None:
-        """A body-only bot review (zero threads) is vacuously resolved, and unblocks
-        once a new commit supersedes it."""
+    def test_zero_threads_bot_cr_review_awaits_rereview_when_superseded(self) -> None:
+        """A body-only bot review (zero threads) is vacuously resolved, and once a new
+        commit supersedes it the PR waits for the bot's re-review, never an approved state."""
         raw = self._raw_pr(
             reviewDecision="CHANGES_REQUESTED",
             latestReviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}],
@@ -798,7 +798,7 @@ class TestEnrichPr:
             _superseded_by_new_commit=True,
         )
         result = _enrich_pr(raw, time.time())
-        assert result["computed_state"] == ComputedPRState.APPROVED_CI_GREEN
+        assert result["computed_state"] == ComputedPRState.AWAITING_BOT_REREVIEW
 
     def test_zero_threads_bot_cr_review_stays_blocked_without_new_commit(self) -> None:
         """Regression guard: zero threads alone must not unblock a bot review that
@@ -1733,8 +1733,8 @@ class TestPrimaryClosingReference:
 _PLAIN_BOT_CR = {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}
 
 
-class TestShouldUnblockBotReviews:
-    """Test _should_unblock_bot_reviews early return paths."""
+class TestStaleBotReviewState:
+    """Test _stale_bot_review_state early return paths."""
 
     @pytest.mark.parametrize(
         ("kwargs", "expected"),
@@ -1768,7 +1768,7 @@ class TestShouldUnblockBotReviews:
             # All bot reviews, threads resolved, CI passed, and the review superseded by a new commit.
             pytest.param(
                 {"cr_reviews": [_PLAIN_BOT_CR], "all_threads_resolved": True, "superseded_by_new_commit": True},
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="all-conditions-met",
             ),
             # CodeRabbit's classic login ('coderabbitai', no [bot] suffix) must still be recognized as a bot,
@@ -1779,13 +1779,13 @@ class TestShouldUnblockBotReviews:
                     "all_threads_resolved": True,
                     "superseded_by_new_commit": True,
                 },
-                ComputedPRState.APPROVED_CI_GREEN,
+                ComputedPRState.AWAITING_BOT_REREVIEW,
                 id="classic-coderabbit-login-without-bot-suffix",
             ),
         ],
     )
-    def test_should_unblock_bot_reviews(self, kwargs: dict[str, object], expected: ComputedPRState | None) -> None:
-        result = _should_unblock_bot_reviews(ci_status="passed", mergeable="MERGEABLE", **kwargs)  # type: ignore[arg-type]
+    def test_stale_bot_review_state(self, kwargs: dict[str, object], expected: ComputedPRState | None) -> None:
+        result = _stale_bot_review_state(**kwargs)  # type: ignore[arg-type]
         assert result == expected
 
 

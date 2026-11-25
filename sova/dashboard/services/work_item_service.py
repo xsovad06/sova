@@ -670,6 +670,7 @@ def _build_task_item(
     if state is WorkItemState.PR_MERGED_ISSUE_OPEN:
         reason_chain = [f"PR #{closed_pr_number} is no longer open, but the issue is still labeled in review"]
     matched_reason = reason_chain[-1] if reason_chain else ""
+    primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)
 
     return _build_item(
@@ -730,6 +731,7 @@ def _build_pr_item(
     reason_chain = _reason_chain_payload(resolution, facts)
     matched_reason = reason_chain[-1] if reason_chain else ""
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
+    primary, secondary = _drop_integrate_while_bot_rereview(primary, secondary, facts)
     _attach_merge_blockers(primary, secondary, resolution, facts)
 
     return _build_item(
@@ -836,6 +838,24 @@ def _append_standalone_pr_items(
 
 
 # Merge blockers -------------------------------------------------------------
+
+
+def _drop_integrate_while_bot_rereview(
+    primary_action: dict | None,
+    secondary_actions: list[dict],
+    facts: PRFacts | None,
+) -> tuple[dict | None, list[dict]]:
+    """Remove every Integrate action while a bot's stale change request stands (#1358).
+
+    /integrate-pr refuses to merge over it, so an Integrate button could only fail. The resolver keeps
+    Integrate out of the primary slot; this covers the states that list it as a secondary action
+    (PR_REVIEW_ADDRESSED right after an address cycle, before a fresh SOVA review lands, among them).
+    """
+    if facts is None or not facts.bot_rereview_pending:
+        return primary_action, secondary_actions
+    if primary_action is not None and primary_action.get("id") == "integrate":
+        primary_action = None
+    return primary_action, [a for a in secondary_actions if a.get("id") != "integrate"]
 
 
 def _attach_merge_blockers(

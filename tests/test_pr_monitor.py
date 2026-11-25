@@ -418,7 +418,17 @@ class TestStateTransitionNotifications:
         mock_notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_notification_for_non_notifiable_transition(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "new_state",
+        [
+            ComputedPRState.CI_RUNNING,
+            # A stale bot CHANGES_REQUESTED still blocks /integrate-pr: never a ready-to-merge notification (#1358).
+            ComputedPRState.AWAITING_BOT_REREVIEW,
+        ],
+    )
+    async def test_no_notification_for_non_notifiable_transition(
+        self, tmp_path: Path, new_state: ComputedPRState
+    ) -> None:
         """Transitions to states not in _NOTIFY_STATES should not notify."""
         monitor = _make_monitor(tmp_path)
         monitor._initialized = True
@@ -426,7 +436,7 @@ class TestStateTransitionNotifications:
             1: PRSnapshot(number=1, computed_state=ComputedPRState.AWAITING_REVIEW, title="Test"),
         }
 
-        prs = [_make_pr(1, ComputedPRState.CI_RUNNING)]
+        prs = [_make_pr(1, new_state)]
         with (
             patch(
                 "sova.dashboard.services.pr_service.list_open_prs_with_state",

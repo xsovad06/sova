@@ -41,6 +41,8 @@ class WorkItemState(StrEnum):
     # external reviewer (CodeRabbit/human) requested changes; /address-pr command handles thread management
     PR_EXTERNAL_CHANGES = "pr_external_changes"
     PR_REVIEW_ADDRESSED = "pr_review_addressed"
+    # only a bot's change request on an older commit stands (threads resolved); waits for the bot to re-review
+    PR_AWAITING_BOT_REREVIEW = "pr_awaiting_bot_rereview"
     PR_READY_TO_MERGE = "pr_ready_to_merge"
     PR_SOVA_PENDING = "pr_sova_pending"
     # address-review cycle budget exhausted; routed to Integrate for a human decision
@@ -72,6 +74,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_SOVA_CHANGES: "SOVA Changes Requested",
     WorkItemState.PR_EXTERNAL_CHANGES: "Changes Requested",
     WorkItemState.PR_REVIEW_ADDRESSED: "Review Addressed",
+    WorkItemState.PR_AWAITING_BOT_REREVIEW: "Awaiting Bot Re-review",
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
     WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
     WorkItemState.PR_REVIEW_EXHAUSTED: "Review Budget Exhausted",
@@ -100,6 +103,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_SOVA_CHANGES: "peach",
     WorkItemState.PR_EXTERNAL_CHANGES: "peach",
     WorkItemState.PR_REVIEW_ADDRESSED: "lavender",
+    WorkItemState.PR_AWAITING_BOT_REREVIEW: "blue",
     WorkItemState.PR_READY_TO_MERGE: "green-strong",
     WorkItemState.PR_SOVA_PENDING: "peach",
     WorkItemState.PR_REVIEW_EXHAUSTED: "peach",
@@ -126,6 +130,7 @@ _PR_STATE_WORK_ITEM: dict[str, WorkItemState] = {
     "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
     "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
     "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
+    "awaiting_bot_rereview": WorkItemState.PR_AWAITING_BOT_REREVIEW,
 }
 _PR_STATE_META: dict[str, tuple[str, str]] = {
     **{pr_state: (_STATE_LABELS[item], _STATE_COLORS[item]) for pr_state, item in _PR_STATE_WORK_ITEM.items()},
@@ -208,6 +213,7 @@ _REVIEW_STAGE_STATES = frozenset(
         WorkItemState.PR_SOVA_CHANGES,
         WorkItemState.PR_EXTERNAL_CHANGES,
         WorkItemState.PR_REVIEW_ADDRESSED,
+        WorkItemState.PR_AWAITING_BOT_REREVIEW,
         WorkItemState.PR_SOVA_PENDING,
         TaskState.IN_REVIEW,
     }
@@ -528,6 +534,9 @@ def _get_actions(
         S.PR_SOVA_CHANGES: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
         S.PR_EXTERNAL_CHANGES: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
+        # No Integrate: /integrate-pr refuses while the bot's change request stands, and only its re-review
+        # (or a human dismissal) clears it. Review and Address stay available as manual actions.
+        S.PR_AWAITING_BOT_REREVIEW: (None, [review, address]),
         S.PR_READY_TO_MERGE: (
             cmd("integrate", "Integrate", "success", "integrate-pr"),
             [review, address],
@@ -601,6 +610,9 @@ class PRFacts:
     # True when the verdict's only blocking finding is the incomplete-review cap (part of the diff was never
     # reviewed): an address cycle cannot fix that, so a standing verdict routes to a manual re-review instead.
     sova_review_incomplete: bool = False
+    # True when the only standing change request is a bot's on an older commit, its threads resolved
+    # (computed_state awaiting_bot_rereview): GitHub still counts it, so the PR must not route to Integrate.
+    bot_rereview_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -727,6 +739,8 @@ def _unmet_merge_conditions(facts: PRFacts) -> list[str]:
         unmet.append(_VERDICT_BLOCKERS.get(verdict, f"SOVA's review verdict is {verdict}, not approve."))
     if facts.external_changes_requested:
         unmet.append("An external reviewer has requested changes.")
+    if facts.bot_rereview_pending:
+        unmet.append("A bot's change request on an older commit still stands until the bot re-reviews.")
     threads = facts.thread_signal or "unknown"
     if threads != "clear":
         unmet.append(_THREAD_BLOCKERS.get(threads, f"The review threads are {threads}."))
@@ -786,6 +800,8 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     # the PR cycling through address_review/address_pr. This outranks every
     # verdict- and thread-based rule below, including a standing revise/block
     # verdict, so the loop actually stops rather than spawning one more cycle.
+    # A pending bot re-review is the one exception: it holds the PR in
+    # PR_AWAITING_BOT_REREVIEW instead of routing it to Integrate.
     # An unreadable review history makes the cycle count unknown, not exhausted: hold the PR for the user
     # (action_id None parks the supervisor at CHECKPOINT_NEEDED, and the dashboard offers a manual re-review)
     # rather than route to Integrate, which would auto-merge on a verdict nobody could read.
@@ -799,6 +815,11 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.max_address_cycles > 0 and (
         facts.review_history_truncated or facts.address_cycles >= facts.max_address_cycles
     ):
+        # #1358 outranks the budget's Integrate: /integrate-pr refuses while a bot's change request stands, so
+        # an exhausted PR waits for the bot's re-review first and offers Integrate once it lands.
+        if facts.bot_rereview_pending:
+            chain.append("bot_rereview_pending")
+            return resolved(WorkItemState.PR_AWAITING_BOT_REREVIEW, None)
         return resolved(WorkItemState.PR_REVIEW_EXHAUSTED, "integrate")
 
     # A stale verdict falls through to "no current review" (rule 10).
@@ -834,6 +855,14 @@ def resolve_next_action(facts: PRFacts) -> Resolution:
     if facts.sova_verdict is None or verdict_stale:
         state = WorkItemState.PR_SOVA_PENDING if facts.external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
         return resolved(state, "review_pr")
+
+    # GitHub keeps a bot's CHANGES_REQUESTED standing after a new commit, and /integrate-pr refuses to merge over
+    # it, so routing to Integrate would spawn a merge that always fails. action_id is None: a SOVA review posts
+    # COMMENT and cannot clear it, so only the bot's re-review (AddressExternalFindingsStep posts the trigger) or
+    # a human dismissal moves the PR on. Ahead of merge_blocked_by_github so the reason chain names the bot review.
+    chain.append("bot_rereview_pending")
+    if facts.bot_rereview_pending:
+        return resolved(WorkItemState.PR_AWAITING_BOT_REREVIEW, None)
 
     chain.append("merge_blocked_by_github")
     if facts.merge_state in _MERGE_STATES_BLOCKED_BY_GITHUB:
@@ -963,6 +992,15 @@ def _fact_external_changes_or_unresolved_threads(facts: PRFacts) -> str:
     return "no external changes requested and review threads are clear"
 
 
+def _fact_bot_rereview_pending(facts: PRFacts) -> str:
+    if facts.bot_rereview_pending:
+        return (
+            "a bot's CHANGES_REQUESTED review on an older commit still stands (threads resolved): "
+            "waiting for the bot to re-review, or for a human to dismiss it"
+        )
+    return "no stale bot change request is waiting for a re-review"
+
+
 def _fact_merge_blocked_by_github(facts: PRFacts) -> str:
     if facts.merge_state in _MERGE_STATES_BLOCKED_BY_GITHUB:
         return f"GitHub blocks merging (mergeStateStatus: {facts.merge_state})"
@@ -996,6 +1034,7 @@ _RULE_RENDERERS: dict[str, Callable[[PRFacts], str]] = {
     "sova_verdict_addressed": _fact_sova_verdict_addressed,
     "no_sova_review": _fact_no_sova_review,
     "external_changes_or_unresolved_threads": _fact_external_changes_or_unresolved_threads,
+    "bot_rereview_pending": _fact_bot_rereview_pending,
     "merge_blocked_by_github": _fact_merge_blocked_by_github,
     "ready_to_merge": _fact_ready_to_merge,
     "awaiting_review": _fact_awaiting_review,
@@ -1060,6 +1099,7 @@ def _build_pr_facts(
         sova_verdict_sha=verdict.get("review_head_sha") if has_review else None,
         sova_verdict_addressed=sova_verdict_addressed,
         external_changes_requested=pr_data.get("computed_state") == "changes_requested",
+        bot_rereview_pending=pr_data.get("computed_state") == "awaiting_bot_rereview",
         thread_signal=_thread_signal(pr_data),
         external_reviews_enabled=external_reviews_enabled,
         # verdict.get() rather than indexing: a pre-existing cache entry written

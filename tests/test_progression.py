@@ -3442,10 +3442,18 @@ class TestRefineInReviewAction:
         assert pr.number == 55
 
     @pytest.mark.asyncio
-    async def test_verdict_approve_with_auto_integrate_spawns_integrate(self) -> None:
+    @pytest.mark.parametrize(
+        ("computed_state", "expected"),
+        [
+            pytest.param("approved_ci_green", ProgressionAction.SPAWN_INTEGRATE, id="ready-to-merge"),
+            # A stale bot CHANGES_REQUESTED makes /integrate-pr refuse: hold for the bot or a human (#1358).
+            pytest.param("awaiting_bot_rereview", ProgressionAction.CHECKPOINT_NEEDED, id="awaiting-bot-rereview"),
+        ],
+    )
+    async def test_verdict_approve_with_auto_integrate(self, computed_state: str, expected: ProgressionAction) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
-        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr())
+        engine._fetch_enriched_pr = AsyncMock(return_value=_green_enriched_pr(computed_state=computed_state))
         with patch(
             "sova.supervisor.progression.resolve_sova_verdict",
             new_callable=AsyncMock,
@@ -3458,7 +3466,7 @@ class TestRefineInReviewAction:
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == expected
         assert pr is not None
         assert pr.number == 55
 

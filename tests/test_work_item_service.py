@@ -50,6 +50,7 @@ from sova.dashboard.services.work_item_service import (
     ranked_task_payload,
     resolve_next_action,
 )
+from sova.dashboard.services.work_state import WorkStage, work_stage
 from sova.supervisor.dependency_graph import DependencyGraph
 from sova.supervisor.suitability import rank_next_tasks
 
@@ -1007,6 +1008,30 @@ class TestResolveNextAction:
                 "rebase",
             ),
             (
+                "stale_bot_changes_request_awaits_bot_rereview_not_integrate",
+                _facts(bot_rereview_pending=True),
+                WorkItemState.PR_AWAITING_BOT_REREVIEW,
+                None,
+            ),
+            (
+                "stale_bot_changes_request_beats_merge_blocked_by_github",
+                _facts(bot_rereview_pending=True, merge_state="BLOCKED"),
+                WorkItemState.PR_AWAITING_BOT_REREVIEW,
+                None,
+            ),
+            (
+                "stale_bot_changes_request_beats_review_budget_exhausted",
+                _facts(bot_rereview_pending=True, address_cycles=3, max_address_cycles=3),
+                WorkItemState.PR_AWAITING_BOT_REREVIEW,
+                None,
+            ),
+            (
+                "stale_bot_changes_request_beats_truncated_review_history",
+                _facts(bot_rereview_pending=True, review_history_truncated=True, max_address_cycles=3),
+                WorkItemState.PR_AWAITING_BOT_REREVIEW,
+                None,
+            ),
+            (
                 "merge_state_blocked_routes_to_awaiting_review_with_no_action",
                 _facts(merge_state="BLOCKED"),
                 WorkItemState.PR_AWAITING_REVIEW,
@@ -1068,7 +1093,7 @@ class TestResolveNextAction:
         resolution = resolve_next_action(_facts())
         assert resolution.state == WorkItemState.PR_READY_TO_MERGE
         assert resolution.reason_chain[-1] == "ready_to_merge"
-        assert len(resolution.reason_chain) == 15
+        assert len(resolution.reason_chain) == 16
 
     def test_resolution_is_frozen(self) -> None:
         resolution = resolve_next_action(_facts())
@@ -1170,6 +1195,7 @@ class TestDescribeReasonChain:
             "sova_verdict_addressed",
             "no_sova_review",
             "external_changes_or_unresolved_threads",
+            "bot_rereview_pending",
             "merge_blocked_by_github",
             "ready_to_merge",
             "awaiting_review",
@@ -3115,6 +3141,155 @@ class TestBuildPrFactsMergeState:
             external_reviews_enabled=False,
         )
         assert facts.review_history_unresolved is False
+
+
+class TestAwaitingBotRereview:
+    """A superseded bot CHANGES_REQUESTED with resolved threads waits for the bot, never offering Integrate (#1358)."""
+
+    _PR = {
+        "number": 100,
+        "title": "Some PR",
+        "url": "https://github.com/example/repo/pull/100",
+        "state": "OPEN",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "merge_state": "CLEAN",
+        "ci_status": "passed",
+        "head_sha": "sha-head",
+        "thread_total": 2,
+        "thread_resolved": 2,
+    }
+    _VERDICT = {"has_sova_review": True, "verdict": "approve", "review_head_sha": "sha-head", "address_cycles": 1}
+
+    def _item(self, computed_state: str) -> dict:
+        pr = {**self._PR, "computed_state": computed_state}
+        return _build_pr_item(
+            pr, running=None, handoff=None, issue_num="42", sova_verdict=self._VERDICT, max_address_cycles=3
+        )
+
+    def test_card_offers_no_integrate_and_explains_the_wait(self) -> None:
+        item = self._item("awaiting_bot_rereview")
+        assert item["state"] == "pr_awaiting_bot_rereview"
+        assert item["primary_action"] is None
+        assert [a["id"] for a in item["secondary_actions"]] == ["review_pr", "address_pr"]
+        assert work_stage(item["state"]) == WorkStage.REVIEW
+
+    def test_reason_chain_names_the_stale_bot_review(self) -> None:
+        from sova.dashboard.services.work_state import _build_pr_facts
+
+        pr = {**self._PR, "computed_state": "awaiting_bot_rereview"}
+        facts = _build_pr_facts(pr, self._VERDICT, external_reviews_enabled=True, max_address_cycles=3)
+        resolution = resolve_next_action(facts)
+        assert resolution.reason_chain[-1] == "bot_rereview_pending"
+        assert "re-review" in describe_reason_chain(resolution.reason_chain, facts)[-1]
+        assert resolution.merge_blockers
+
+    def test_state_label_and_color_for_awaiting_bot_rereview(self) -> None:
+        from sova.dashboard.services.work_state import state_color, state_label
+
+        assert state_label("pr_awaiting_bot_rereview") == "Awaiting Bot Re-review"
+        assert state_color("pr_awaiting_bot_rereview") == "blue"
+        assert state_label("awaiting_bot_rereview") == "Awaiting Bot Re-review"
+
+    def test_get_actions_awaiting_bot_rereview_has_no_integrate(self) -> None:
+        primary, secondary = _get_actions(WorkItemState.PR_AWAITING_BOT_REREVIEW, issue_number="42", pr_number=100)
+        assert primary is None
+        assert "integrate" not in [a["id"] for a in secondary]
+
+    def test_unmet_merge_conditions_names_the_stale_bot_review(self) -> None:
+        blockers = resolve_next_action(_facts(bot_rereview_pending=True)).merge_blockers
+        assert blockers == ("A bot's change request on an older commit still stands until the bot re-reviews.",)
+
+    @pytest.mark.parametrize(
+        ("pending", "fragment"),
+        [
+            pytest.param(True, "waiting for the bot to re-review", id="pending"),
+            pytest.param(False, "no stale bot change request", id="not-pending"),
+        ],
+    )
+    def test_fact_bot_rereview_pending_sentence(self, pending: bool, fragment: str) -> None:
+        sentences = describe_reason_chain(("bot_rereview_pending",), _facts(bot_rereview_pending=pending))
+        assert len(sentences) == 1
+        assert fragment in sentences[0]
+
+    def test_dependency_graph_maps_awaiting_bot_rereview_to_awaiting_review(self) -> None:
+        from sova.dashboard.routers.dependencies import _PR_STATE_ACTIONS, _PR_STATE_MAP
+        from sova.dashboard.services.pr_service import ComputedPRState
+
+        pr_state = _PR_STATE_MAP[ComputedPRState.AWAITING_BOT_REREVIEW]
+        assert pr_state == "awaiting_review"
+        assert all(a.get("id") != "integrate-pr" for a in _PR_STATE_ACTIONS.get(pr_state, []))
+
+    def test_pass_through_consumers_label_awaiting_bot_rereview(self) -> None:
+        """The fan-out consumers carry the raw token and label it via state_label(), never an approved fallback."""
+        from sova.dashboard.services.work_board_service import _pr_summary
+        from sova.dashboard.services.work_item_service import _format_pr_details
+        from sova.supervisor.pr_monitor import _NEEDS_USER_STATES, _NOTIFY_STATES
+
+        details = _format_pr_details({"number": 100, "computed_state": "awaiting_bot_rereview"})
+        assert (details["state_label"], details["state_color"]) == ("Awaiting Bot Re-review", "blue")
+        summary = _pr_summary({"pr_number": 100, "pr_details": details})
+        assert summary is not None
+        assert (summary["state"], summary["state_label"]) == ("awaiting_bot_rereview", "Awaiting Bot Re-review")
+        assert "awaiting_bot_rereview" not in _NOTIFY_STATES
+        assert "awaiting_bot_rereview" not in _NEEDS_USER_STATES
+
+    def test_exhausted_budget_card_offers_no_integrate(self) -> None:
+        """An over-budget PR would route to Integrate, which /integrate-pr refuses while the bot review stands."""
+        verdict = {**self._VERDICT, "address_cycles": 3}
+        pr = {**self._PR, "computed_state": "awaiting_bot_rereview"}
+        item = _build_pr_item(
+            pr, running=None, handoff=None, issue_num="42", sova_verdict=verdict, max_address_cycles=3
+        )
+        assert item["state"] == "pr_awaiting_bot_rereview"
+        assert item["primary_action"] is None
+        assert "integrate" not in [a["id"] for a in item["secondary_actions"]]
+
+    def test_review_addressed_card_drops_secondary_integrate(self) -> None:
+        """Right after an address cycle the PR resolves to PR_REVIEW_ADDRESSED, whose secondaries include
+        Integrate: it is dropped while the stale bot review stands, and kept once the bot re-reviews."""
+        verdict = {"has_sova_review": True, "verdict": "addressed", "review_head_sha": "sha-old", "address_cycles": 1}
+        pending = {**self._PR, "computed_state": "awaiting_bot_rereview"}
+        item = _build_pr_item(
+            pending, running=None, handoff=None, issue_num="42", sova_verdict=verdict, max_address_cycles=3
+        )
+        assert item["state"] == "pr_review_addressed"
+        assert item["primary_action"]["id"] == "review_pr"
+        assert "integrate" not in [a["id"] for a in item["secondary_actions"]]
+
+        cleared = {**self._PR, "computed_state": "awaiting_review"}
+        item = _build_pr_item(
+            cleared, running=None, handoff=None, issue_num="42", sova_verdict=verdict, max_address_cycles=3
+        )
+        assert "integrate" in [a["id"] for a in item["secondary_actions"]]
+
+    def test_awaiting_bot_rereview_sorts_with_awaiting_review(self) -> None:
+        """A waiting state: it stays in _sort_items()' default bucket alongside PR_AWAITING_REVIEW."""
+        from sova.dashboard.services.work_state import _STATE_SORT_ORDER
+
+        assert WorkItemState.PR_AWAITING_BOT_REREVIEW not in _STATE_SORT_ORDER
+        items = [
+            {"state": WorkItemState.PR_AWAITING_BOT_REREVIEW.value, "priority": 1},
+            {"state": WorkItemState.PR_READY_TO_MERGE.value, "priority": 1},
+            {"state": WorkItemState.PR_AWAITING_REVIEW.value, "priority": 0},
+        ]
+        _sort_items(items)
+        assert [i["state"] for i in items] == ["pr_ready_to_merge", "pr_awaiting_review", "pr_awaiting_bot_rereview"]
+
+    def test_planner_passes_awaiting_bot_rereview_through_as_text(self) -> None:
+        """The planner only prints computed_state into its prompt table; it keys no bucket on it."""
+        import inspect
+
+        from sova.supervisor import planner
+
+        source = inspect.getsource(planner)
+        assert "ComputedPRState" not in source
+        assert "approved_ci_green" not in source
+
+    def test_bot_rereview_to_approved_reaches_ready_to_merge(self) -> None:
+        item = self._item("approved_ci_green")
+        assert item["state"] == "pr_ready_to_merge"
+        assert item["primary_action"]["id"] == "integrate"
 
 
 class TestReviewBudgetExhaustedIntegrate:

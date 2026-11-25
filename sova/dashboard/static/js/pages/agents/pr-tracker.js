@@ -50,7 +50,7 @@ function renderPrSummary(prs) {
       var pr = prs[i];
       var age = pr.age_seconds || 0;
       var st = pr.computed_state;
-      if (st === 'awaiting_review') awaitingReview++;
+      if (st === 'awaiting_review' || st === 'awaiting_bot_rereview') awaitingReview++;
       else if (st === 'changes_requested' || st === 'sova_changes') changesRequested++;
       else if (st === 'approved_ci_green') approved++;
       if (pr.ci_status === 'failed') ciFailing++;
@@ -118,6 +118,7 @@ var _PR_GROUPS = [
     matchFn: function(pr) {
       return pr.computed_state === 'awaiting_review' ||
         pr.computed_state === 'review_addressed' ||
+        pr.computed_state === 'awaiting_bot_rereview' ||
         pr.computed_state === 'approved';
     }
   },
