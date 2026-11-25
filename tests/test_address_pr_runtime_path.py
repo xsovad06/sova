@@ -33,7 +33,7 @@ class TestCodexAddressPrDispatch:
             result = await agent_lifecycle.start_command("address-pr", {"pr": 1496})
 
         assert result == {"status": "started"}
-        start.assert_awaited_once_with("1418", role="developer", pr_number=1496, slug=None)
+        start.assert_awaited_once_with("1418", role="developer", pr_number=1496, slug=None, _skip_handoff_clear=False)
 
     async def test_pr_command_requires_pr_number(self, tmp_path: Path) -> None:
         from sova.dashboard.services import agent_lifecycle

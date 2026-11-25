@@ -12,9 +12,10 @@ memory reading, feed and desktop notifications) are replaced.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from structlog.testing import capture_logs
@@ -116,7 +117,7 @@ class TestAutoHandoffIssueMismatch:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 1, "issue": "114", "project_dir": tmp_path},
+            {"run_id": 1, "issue": "114", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -176,7 +177,7 @@ class TestAutoHandoffIssueMismatch:
         )
         _seed_misfiled(tmp_path, handoff, filed_under_issue="200")
 
-        agent = type("AgentState", (), {"run_id": run_id, "issue": "200", "project_dir": tmp_path})()
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "200", "project_dir": tmp_path, "pr_number": None})()
 
         original = real_get_session
 
@@ -209,7 +210,7 @@ class TestAutoHandoffIssueMismatch:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 1, "issue": "113", "project_dir": tmp_path},
+            {"run_id": 1, "issue": "113", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -235,7 +236,7 @@ class TestAutoHandoffIssueMismatch:
         with patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("113", role="reviewer", pr_number=130, slug=None)
+        mock_start.assert_awaited_once_with("113", role="reviewer", pr_number=130, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
         assert _read_handoff_json(tmp_path, "999") == bystander.model_dump(), "the clear must be scoped to issue 113"
 
@@ -276,7 +277,7 @@ class TestAutoHandoffIssueMismatch:
         )
         write_handoff_file(tmp_path, handoff)
 
-        agent = type("AgentState", (), {"run_id": run_id, "issue": "120", "project_dir": tmp_path})()
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "120", "project_dir": tmp_path, "pr_number": None})()
 
         original = real_get_session
 
@@ -346,7 +347,7 @@ class TestAutoHandoffIssueMismatch:
         )
         write_handoff_file(tmp_path, handoff)
 
-        agent = type("AgentState", (), {"run_id": run_id, "issue": "121", "project_dir": tmp_path})()
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "121", "project_dir": tmp_path, "pr_number": None})()
 
         original = real_get_session
 
@@ -384,7 +385,7 @@ class TestAutoHandoffCircuitBreaker:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 10, "issue": "115", "project_dir": tmp_path},
+            {"run_id": 10, "issue": "115", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -452,7 +453,7 @@ class TestAutoHandoffCircuitBreaker:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 11, "issue": "116", "project_dir": tmp_path},
+            {"run_id": 11, "issue": "116", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -487,7 +488,7 @@ class TestAutoHandoffCircuitBreaker:
         ):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("116", role="developer", pr_number=131, slug=None)
+        mock_start.assert_awaited_once_with("116", role="developer", pr_number=131, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
     async def test_blocks_when_cycle_count_is_unverifiable(self, tmp_path: Path) -> None:
@@ -546,7 +547,7 @@ class TestAutoHandoffCircuitBreaker:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 13, "issue": "117", "project_dir": tmp_path},
+            {"run_id": 13, "issue": "117", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -571,7 +572,9 @@ class TestAutoHandoffCircuitBreaker:
             await _process_auto_handoff(agent)
 
         # Should proceed without checking circuit breaker
-        mock_start.assert_awaited_once_with("117", role="developer", pr_number=None, slug=None)
+        mock_start.assert_awaited_once_with(
+            "117", role="developer", pr_number=None, slug=None, _skip_handoff_clear=True
+        )
         _assert_cleared(tmp_path, handoff)
 
     async def test_skips_for_non_developer_role(self, tmp_path: Path) -> None:
@@ -584,7 +587,7 @@ class TestAutoHandoffCircuitBreaker:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 15, "issue": "118", "project_dir": tmp_path},
+            {"run_id": 15, "issue": "118", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -609,7 +612,7 @@ class TestAutoHandoffCircuitBreaker:
         with patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("118", role="reviewer", pr_number=132, slug=None)
+        mock_start.assert_awaited_once_with("118", role="reviewer", pr_number=132, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
     async def test_zero_limit_disables_breaker(self, tmp_path: Path) -> None:
@@ -622,7 +625,7 @@ class TestAutoHandoffCircuitBreaker:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 17, "issue": "119", "project_dir": tmp_path},
+            {"run_id": 17, "issue": "119", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -652,7 +655,7 @@ class TestAutoHandoffCircuitBreaker:
         ):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("119", role="developer", pr_number=133, slug=None)
+        mock_start.assert_awaited_once_with("119", role="developer", pr_number=133, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
 
@@ -697,7 +700,7 @@ class TestAutoHandoff:
         ) as mock_start:
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("42", role="reviewer", pr_number=10, slug=None)
+        mock_start.assert_awaited_once_with("42", role="reviewer", pr_number=10, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
     async def test_auto_handoff_skips_non_auto_actions(self, tmp_path: Path) -> None:
@@ -784,7 +787,9 @@ class TestAutoHandoff:
         ) as mock_cmd:
             await _process_auto_handoff(agent)
 
-        mock_cmd.assert_awaited_once_with("integrate-pr", {"issue": "42", "pr": 10}, slug=None)
+        mock_cmd.assert_awaited_once_with(
+            "integrate-pr", {"issue": "42", "pr": 10}, slug=None, _skip_handoff_clear=True
+        )
         _assert_cleared(tmp_path, handoff)
 
     async def test_auto_handoff_invalid_pr_number_falls_back_to_none(self, tmp_path: Path) -> None:
@@ -827,7 +832,7 @@ class TestAutoHandoff:
         ):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("55", role="developer", pr_number=None, slug=None)
+        mock_start.assert_awaited_once_with("55", role="developer", pr_number=None, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
     async def test_auto_handoff_no_handoff_file(self, tmp_path: Path) -> None:
@@ -950,7 +955,7 @@ class TestAutoHandoff:
         ):
             await _process_auto_handoff(agent)
 
-        mock_start.assert_awaited_once_with("90", role="reviewer", pr_number=15, slug=None)
+        mock_start.assert_awaited_once_with("90", role="reviewer", pr_number=15, slug=None, _skip_handoff_clear=True)
         _assert_cleared(tmp_path, handoff)
 
 
@@ -964,7 +969,7 @@ class TestAutoHandoffMemoryGate:
         agent = type(
             "AgentState",
             (),
-            {"run_id": 1, "issue": "42", "project_dir": tmp_path},
+            {"run_id": 1, "issue": "42", "project_dir": tmp_path, "pr_number": None},
         )()
 
         handoff = DashboardHandoff(
@@ -1119,3 +1124,332 @@ class TestPersistCompletingAgentHandoff:
             await _persist_completing_agent_handoff(1, handoff, tmp_path)
 
         assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["auto_handoff.handoff_json_persist_failed"]
+
+
+class TestFollowUpSlug:
+    """``_slug_for_project()`` picks the follow-up's pool from the finished agent's project (issue #1569)."""
+
+    @pytest.mark.parametrize(
+        ("pools", "registered", "expected"),
+        [
+            # A single-project server's default pool wins even when its directory is also registered.
+            ({"__default__": "proj"}, {"sova": "proj"}, "__default__"),
+            # No live pool: the registry names the project.
+            ({}, {"other": "elsewhere", "sova": "proj"}, "sova"),
+            # Neither: start_agent() keeps its default resolution.
+            ({}, {}, None),
+        ],
+    )
+    def test_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pools: dict, registered: dict, expected: str | None
+    ) -> None:
+        from sova.dashboard.services import agent_pool
+        from sova.dashboard.services.agent_handoff import _slug_for_project
+        from sova.dashboard.services.agent_pool import ProjectAgents
+
+        (tmp_path / "proj").mkdir()
+        monkeypatch.setattr(
+            agent_pool, "_projects", {s: ProjectAgents(project_dir=tmp_path / d) for s, d in pools.items()}
+        )
+        monkeypatch.setattr("sova.config.registry._load", lambda: {s: str(tmp_path / d) for s, d in registered.items()})
+
+        assert _slug_for_project(tmp_path / "proj") == expected
+
+    def test_the_owning_pool_wins_over_a_pool_sharing_its_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On a hub, ``__default__`` and the primary project's slug share a directory: the run's own pool is used."""
+        from sova.dashboard.services import agent_pool
+        from sova.dashboard.services.agent_handoff import _slug_for_project
+        from sova.dashboard.services.agent_pool import ProjectAgents
+
+        first, owner = ProjectAgents(project_dir=tmp_path), ProjectAgents(project_dir=tmp_path)
+        monkeypatch.setattr(agent_pool, "_projects", {"__default__": first, "sova": owner})
+
+        assert _slug_for_project(tmp_path, owner) == "sova"
+        assert _slug_for_project(tmp_path, first) == "__default__"
+
+    def test_a_pool_no_longer_listed_falls_back_to_the_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.services import agent_pool
+        from sova.dashboard.services.agent_handoff import _slug_for_project
+        from sova.dashboard.services.agent_pool import ProjectAgents
+
+        monkeypatch.setattr(agent_pool, "_projects", {"sova": ProjectAgents(project_dir=tmp_path)})
+
+        assert _slug_for_project(tmp_path, ProjectAgents(project_dir=tmp_path)) == "sova"
+
+    async def test_single_project_follow_up_lands_in_the_pool_http_starts_use(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single-project mode (no slug in context): the follow-up joins the default pool even when the directory
+        is also registered, so ``max_parallel`` is counted in one pool."""
+        from unittest.mock import AsyncMock
+
+        from sova.config.context import clear_project_context
+        from sova.dashboard.services import agent_pool
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+
+        monkeypatch.setattr(agent_pool, "_projects", {})
+        monkeypatch.setattr(agent_pool, "_default_project_dir", tmp_path)
+        monkeypatch.setattr("sova.config.registry._load", lambda: {"sova": str(tmp_path)})
+        monkeypatch.setattr(agent_pool, "read_max_parallel", lambda _d: 2)
+        clear_project_context()
+        default_pool = _get_project_agents()  # what start_agent() resolves for an HTTP request in this mode
+        write_handoff_file(tmp_path, _auto_review_handoff())
+        agent = AgentState(run_id=5, issue="42", role="developer", process=MagicMock(), project_dir=tmp_path)
+
+        start = AsyncMock(return_value={"status": "started"})
+        with (
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", start),
+            patch("sova.dashboard.services.agent_handoff.check_memory_pressure", return_value=(None, None)),
+            patch(
+                "sova.dashboard.services.agent_handoff._check_address_review_circuit_breaker",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "sova.dashboard.services.work_verdict.resolve_verdict_for_pr",
+                AsyncMock(return_value={"has_sova_review": False}),
+            ),
+        ):
+            await _process_auto_handoff(agent, default_pool)
+
+        start.assert_awaited_once()
+        assert _get_project_agents(start.await_args.kwargs["slug"]) is default_pool
+
+    def test_no_project_dir_is_none(self) -> None:
+        from sova.dashboard.services.agent_handoff import _slug_for_project
+
+        assert _slug_for_project(None) is None
+
+
+class TestIssueLessAutoHandoff:
+    async def test_a_pr_only_run_clears_only_its_own_handoff(self, tmp_path: Path) -> None:
+        """A PR-only run has no issue; its clear must not take the other issues' pending handoffs with it."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import handoff_service
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        agent = type("AgentState", (), {"run_id": None, "issue": "", "pr_number": 7, "project_dir": tmp_path})()
+        pr_only = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            pr_number=7,
+            summary="pr only",
+            next_actions=[HandoffAction(id="go", label="Go", mode="agent", args={"pr": 7}, auto_execute=True)],
+        )
+        write_handoff_file(tmp_path, pr_only)
+        others = [_seed_bystander(tmp_path)]
+        others.append(DashboardHandoff(source="developer", status="awaiting_action", issue="998", summary="b"))
+        write_handoff_file(tmp_path, others[1])
+        # The issue-less file must be the newest, the one an issue-less read picks.
+        legacy = tmp_path / ".claude" / "agent-control" / "handoff.json"
+        os.utime(legacy, (legacy.stat().st_atime, legacy.stat().st_mtime + 10))
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(return_value={})) as start:
+            await _process_auto_handoff(agent)
+
+        start.assert_awaited_once()
+        assert not legacy.exists()
+        assert sorted(h["issue"] for h in handoff_service.get_all_handoffs(tmp_path)) == ["998", "999"]
+
+    async def test_a_pr_only_run_ignores_a_newer_issue_handoff(self, tmp_path: Path) -> None:
+        """A newer issue-scoped handoff is neither run nor cleared by a PR-only run; its own older one still runs."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        agent = type("AgentState", (), {"run_id": None, "issue": "", "pr_number": 7, "project_dir": tmp_path})()
+        pr_only = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            pr_number=7,
+            summary="pr only",
+            next_actions=[HandoffAction(id="go", label="Go", mode="agent", args={"pr": 7}, auto_execute=True)],
+        )
+        write_handoff_file(tmp_path, pr_only)
+        other = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="999",
+            summary="other issue",
+            next_actions=[
+                HandoffAction(id="other", label="Other", mode="agent", args={"issue": "999"}, auto_execute=True)
+            ],
+        )
+        other_path = write_handoff_file(tmp_path, other)
+        os.utime(other_path, (other_path.stat().st_atime, other_path.stat().st_mtime + 10))
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(return_value={})) as start:
+            await _process_auto_handoff(agent)
+
+        start.assert_awaited_once()
+        assert start.await_args.kwargs["pr_number"] == 7
+        assert not (tmp_path / ".claude" / "agent-control" / "handoff.json").exists()
+        assert _read_handoff_json(tmp_path, "999") == other.model_dump()
+
+    async def test_a_pr_only_run_ignores_another_prs_handoff(self, tmp_path: Path) -> None:
+        """Every PR-only handoff shares handoff.json: PR 7's run must not run or clear the one PR 9's run wrote."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        agent = type("AgentState", (), {"run_id": None, "issue": "", "pr_number": 7, "project_dir": tmp_path})()
+        other_pr = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            pr_number=9,
+            summary="another PR",
+            next_actions=[HandoffAction(id="go", label="Go", mode="agent", args={"pr": 9}, auto_execute=True)],
+        )
+        write_handoff_file(tmp_path, other_pr)
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(return_value={})) as start:
+            await _process_auto_handoff(agent)
+
+        start.assert_not_awaited()
+        assert (tmp_path / ".claude" / "agent-control" / "handoff.json").exists()
+
+    async def test_a_pr_only_run_with_only_an_issue_handoff_does_nothing(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        agent = type("AgentState", (), {"run_id": None, "issue": "", "pr_number": 7, "project_dir": tmp_path})()
+        other = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="999",
+            summary="other issue",
+            next_actions=[
+                HandoffAction(id="other", label="Other", mode="agent", args={"issue": "999"}, auto_execute=True)
+            ],
+        )
+        write_handoff_file(tmp_path, other)
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(return_value={})) as start:
+            await _process_auto_handoff(agent)
+
+        start.assert_not_awaited()
+        _assert_untouched(tmp_path, other)
+
+
+def _auto_review_handoff(issue: str = "42") -> DashboardHandoff:
+    from sova.ipc.handoff import HandoffAction
+
+    return DashboardHandoff(
+        source="developer",
+        status="awaiting_action",
+        issue=issue,
+        pr_number=10,
+        summary="ready for review",
+        next_actions=[
+            HandoffAction(
+                id="handoff",
+                label="Review",
+                mode="agent",
+                args={"issue": issue, "pr": 10, "role": "reviewer"},
+                auto_execute=True,
+            )
+        ],
+    )
+
+
+class TestAutoHandoffClearsBeforeStart:
+    """The auto path clears its trigger before the follow-up starts (spec decision 4, issue #1569)."""
+
+    async def test_the_trigger_is_gone_when_the_follow_up_starts(self, tmp_path: Path) -> None:
+        """The follow-up must not read the trigger, and the dashboard must not offer it as a button meanwhile."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+
+        write_handoff_file(tmp_path, _auto_review_handoff())
+        agent = type("AgentState", (), {"run_id": None, "issue": "42", "pr_number": None, "project_dir": tmp_path})()
+        seen: list[bool] = []
+
+        async def _start(*_args: object, **_kwargs: object) -> dict:
+            seen.append((tmp_path / ".claude" / "agent-control" / "handoff-42.json").exists())
+            return {"status": "started"}
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(side_effect=_start)):
+            await _process_auto_handoff(agent)
+
+        assert seen == [False]
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"error": "Maximum concurrent agents reached (2)", "code": "no_free_slot"},
+            {"error": "Failed to spawn agent process: boom", "code": "spawn_failed"},
+            {"status": "error", "detail": "refused"},
+        ],
+    )
+    async def test_an_unsuccessful_start_is_logged(self, tmp_path: Path, result: dict) -> None:
+        """A refused auto start leaves no pending handoff (the accepted trade-off), so it is logged as a warning."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+
+        write_handoff_file(tmp_path, _auto_review_handoff())
+        agent = type("AgentState", (), {"run_id": None, "issue": "42", "pr_number": None, "project_dir": tmp_path})()
+
+        with (
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(return_value=result)) as start,
+            capture_logs() as logs,
+        ):
+            await _process_auto_handoff(agent)
+
+        start.assert_awaited_once()
+        assert not (tmp_path / ".claude" / "agent-control" / "handoff-42.json").exists()
+        assert any(e["event"] == "auto_handoff.start_refused" for e in logs)
+
+    async def test_a_replacement_written_during_the_start_stays_pending(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+
+        handoff = _auto_review_handoff()
+        write_handoff_file(tmp_path, handoff)
+        replacement = DashboardHandoff(source="reviewer", status="awaiting_action", issue="42", summary="newer")
+        agent = type("AgentState", (), {"run_id": None, "issue": "42", "pr_number": None, "project_dir": tmp_path})()
+
+        async def _start(*_args: object, **_kwargs: object) -> dict:
+            write_handoff_file(tmp_path, replacement)
+            return {"status": "started"}
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_agent", AsyncMock(side_effect=_start)):
+            await _process_auto_handoff(agent)
+
+        # The read version was archived before the start; the replacement is left as written.
+        assert _read_handoff_json(tmp_path, "42") == replacement.model_dump()
+
+    async def test_an_empty_command_still_clears_the_handoff(self, tmp_path: Path) -> None:
+        """A claude-command action naming no command starts nothing, and its handoff is cleared as before."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="42",
+            summary="nothing to run",
+            next_actions=[HandoffAction(id="noop", label="Noop", mode="claude-command", command="", auto_execute=True)],
+        )
+        write_handoff_file(tmp_path, handoff)
+        agent = type("AgentState", (), {"run_id": None, "issue": "42", "project_dir": tmp_path, "pr_number": None})()
+
+        with patch("sova.dashboard.services.agent_lifecycle.start_command", AsyncMock()) as start:
+            await _process_auto_handoff(agent)
+
+        start.assert_not_awaited()
+        _assert_cleared(tmp_path, handoff)

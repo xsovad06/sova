@@ -79,7 +79,7 @@ class TestGetProjectAgents:
         assert pa.project_dir == fallback.resolve()
 
     def test_http_context_takes_precedence(self, tmp_path: Path) -> None:
-        """When get_project_dir() returns a value (HTTP context), registry is skipped."""
+        """When the HTTP context is the requested project's, its directory wins and the registry is skipped."""
         http_dir = tmp_path / "http"
         http_dir.mkdir()
         registry_dir = tmp_path / "registry"
@@ -87,7 +87,7 @@ class TestGetProjectAgents:
 
         with (
             patch.object(pool_mod, "get_project_dir", return_value=http_dir),
-            patch.object(pool_mod, "get_project_slug", return_value=None),
+            patch.object(pool_mod, "get_project_slug", return_value="gwym"),
             patch("sova.config.registry.get_project_path") as mock_reg,
             patch.object(pool_mod, "read_max_parallel", return_value=2),
         ):
@@ -95,6 +95,62 @@ class TestGetProjectAgents:
 
         mock_reg.assert_not_called()
         assert pa.project_dir == http_dir.resolve()
+
+    @pytest.mark.parametrize("ambient_slug", [None, "other"])
+    def test_explicit_slug_of_another_project_uses_its_registered_path(
+        self, tmp_path: Path, ambient_slug: str | None
+    ) -> None:
+        """An explicit slug never takes its directory from another project's ambient context."""
+        ambient_dir = tmp_path / "ambient"
+        ambient_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        registry_dir.mkdir()
+
+        with (
+            patch.object(pool_mod, "get_project_dir", return_value=ambient_dir),
+            patch.object(pool_mod, "get_project_slug", return_value=ambient_slug),
+            patch("sova.config.registry.get_project_path", return_value=registry_dir) as mock_reg,
+            patch.object(pool_mod, "read_max_parallel", return_value=2),
+        ):
+            pa = _get_project_agents("gwym")
+
+        mock_reg.assert_called_once_with("gwym")
+        assert pa.project_dir == registry_dir.resolve()
+
+    def test_explicit_unregistered_slug_never_takes_another_projects_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ambient directory is the named ambient project's: an unregistered foreign slug gets the default."""
+        ambient_dir = tmp_path / "ambient"
+        ambient_dir.mkdir()
+        default_dir = tmp_path / "default"
+        default_dir.mkdir()
+        monkeypatch.setattr(pool_mod, "_default_project_dir", default_dir)
+
+        with (
+            patch.object(pool_mod, "get_project_dir", return_value=ambient_dir),
+            patch.object(pool_mod, "get_project_slug", return_value="other"),
+            patch("sova.config.registry.get_project_path", return_value=None),
+            patch.object(pool_mod, "read_max_parallel", return_value=2),
+        ):
+            pa = _get_project_agents("gwym")
+
+        assert pa.project_dir == default_dir.resolve()
+
+    def test_explicit_unregistered_slug_in_an_unnamed_context_keeps_its_directory(self, tmp_path: Path) -> None:
+        """No ambient slug (single-project mode) names no other project, so its directory still wins over cwd."""
+        ambient_dir = tmp_path / "ambient"
+        ambient_dir.mkdir()
+
+        with (
+            patch.object(pool_mod, "get_project_dir", return_value=ambient_dir),
+            patch.object(pool_mod, "get_project_slug", return_value=None),
+            patch("sova.config.registry.get_project_path", return_value=None),
+            patch.object(pool_mod, "read_max_parallel", return_value=2),
+        ):
+            pa = _get_project_agents("gwym")
+
+        assert pa.project_dir == ambient_dir.resolve()
 
     def test_cached_pool_returned_on_second_call(self, tmp_path: Path) -> None:
         """Second call with same slug returns the cached ProjectAgents."""

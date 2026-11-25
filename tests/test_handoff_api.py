@@ -160,7 +160,7 @@ class TestPerIssueHandoffService:
         write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
         write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
 
-        cleared = handoff_service.clear_handoff()
+        cleared = handoff_service.clear_all_handoffs()
         assert cleared is True
 
         cdir = tmp_path / ".claude" / "agent-control"
@@ -363,6 +363,23 @@ class TestHandoffAPI:
         assert not (control_dir / "handoff.json").exists()
         # Archive should exist
         assert (control_dir / "handoff-archive").exists()
+
+    @pytest.mark.parametrize(
+        ("body", "cleared"), [({"issue": ""}, False), ({"issue": "#"}, False), ({"issue": None}, False), ({}, True)]
+    )
+    async def test_only_a_missing_issue_clears_every_handoff(
+        self, client: AsyncClient, tmp_path, body: dict, cleared: bool
+    ) -> None:
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        files = [control_dir / "handoff-1.json", control_dir / "handoff.json"]
+        for f in files:
+            f.write_text('{"source": "test", "status": "awaiting_action"}', encoding="utf-8")
+
+        resp = await client.post("/api/handoff/clear", json=body)
+
+        assert resp.json()["cleared"] is cleared
+        assert [f.exists() for f in files] == [not cleared, not cleared]
 
     async def test_execute_no_handoff(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -863,7 +880,7 @@ class TestExecuteHandoffAction:
             ],
         }
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
         monkeypatch.setattr(
@@ -872,7 +889,7 @@ class TestExecuteHandoffAction:
         )
         mock_invalidate = MagicMock()
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.invalidate_synthesis_cache",
+            "sova.dashboard.services.handoff_service.invalidate_synthesis_cache",
             mock_invalidate,
         )
 
@@ -886,7 +903,7 @@ class TestExecuteHandoffAction:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(
                 return_value={
                     "source": "pr-review-state",
@@ -902,7 +919,7 @@ class TestExecuteHandoffAction:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
 
@@ -929,11 +946,11 @@ class TestExecuteSpecActions:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            "sova.dashboard.services.handoff_service.find_awaiting_approval_run",
             AsyncMock(return_value=42),
         )
         monkeypatch.setattr(
@@ -951,11 +968,11 @@ class TestExecuteSpecActions:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            "sova.dashboard.services.handoff_service.find_awaiting_approval_run",
             AsyncMock(return_value=42),
         )
         monkeypatch.setattr(
@@ -973,11 +990,11 @@ class TestExecuteSpecActions:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            "sova.dashboard.services.handoff_service.find_awaiting_approval_run",
             AsyncMock(return_value=None),
         )
 
@@ -988,11 +1005,11 @@ class TestExecuteSpecActions:
         from unittest.mock import AsyncMock
 
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=None),
         )
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            "sova.dashboard.services.handoff_service.find_awaiting_approval_run",
             AsyncMock(return_value=42),
         )
         monkeypatch.setattr(
@@ -1059,7 +1076,7 @@ class TestFindAwaitingApprovalRun:
     """DB-level tests for the handoff router helper."""
 
     async def test_finds_most_recent(self) -> None:
-        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+        from sova.dashboard.services.handoff_service import find_awaiting_approval_run
 
         async with await get_session() as session, session.begin():
             older = TaskRun(issue_number="90", role="researcher", status="awaiting_approval")
@@ -1067,24 +1084,24 @@ class TestFindAwaitingApprovalRun:
             session.add_all([older, newer])
         await session.commit()
 
-        result = await _find_awaiting_approval_run("90")
+        result = await find_awaiting_approval_run("90")
         assert result == newer.id
 
     async def test_returns_none_when_no_match(self) -> None:
-        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+        from sova.dashboard.services.handoff_service import find_awaiting_approval_run
 
-        result = await _find_awaiting_approval_run("nonexistent")
+        result = await find_awaiting_approval_run("nonexistent")
         assert result is None
 
     async def test_ignores_non_awaiting_runs(self) -> None:
-        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+        from sova.dashboard.services.handoff_service import find_awaiting_approval_run
 
         async with await get_session() as session, session.begin():
             run = TaskRun(issue_number="91", role="researcher", status="done")
             session.add(run)
         await session.commit()
 
-        result = await _find_awaiting_approval_run("91")
+        result = await find_awaiting_approval_run("91")
         assert result is None
 
 
@@ -1119,7 +1136,7 @@ class TestExecuteHandoffActionBranches:
             ],
         }
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
         monkeypatch.setattr(
@@ -1127,7 +1144,7 @@ class TestExecuteHandoffActionBranches:
             AsyncMock(return_value={"status": "started", "run_id": 2}),
         )
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.invalidate_synthesis_cache",
+            "sova.dashboard.services.handoff_service.invalidate_synthesis_cache",
             lambda *a: None,
         )
 
@@ -1146,7 +1163,7 @@ class TestExecuteHandoffActionBranches:
             ],
         }
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
 
@@ -1164,7 +1181,7 @@ class TestExecuteHandoffActionBranches:
             ],
         }
         monkeypatch.setattr(
-            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
 
