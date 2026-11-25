@@ -39,6 +39,8 @@ _PR_STATE_MAP: dict[str, str] = {
     ComputedPRState.CI_RUNNING: "ci_running",
     ComputedPRState.CI_FAILED: "ci_failed",
     ComputedPRState.AWAITING_REVIEW: "awaiting_review",
+    # Not approved: /integrate-pr refuses while the bot's change request stands, so no Integrate action.
+    ComputedPRState.AWAITING_BOT_REREVIEW: "awaiting_review",
     ComputedPRState.DRAFT: "draft",
 }
 

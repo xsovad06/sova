@@ -141,6 +141,9 @@ class ComputedPRState(StrEnum):
     APPROVED = "approved"
     REVIEW_ADDRESSED = "review_addressed"
     AWAITING_REVIEW = "awaiting_review"
+    # Only a bot's CHANGES_REQUESTED on an older commit stands, its threads resolved: the bot must re-review
+    # (or a human dismiss it) before /integrate-pr will merge, so this is never an approved state
+    AWAITING_BOT_REREVIEW = "awaiting_bot_rereview"
 
 
 def parse_linked_issue(body: str | None, branch: str = "") -> int | None:
@@ -348,21 +351,18 @@ def _extract_cr_reviews(latest_reviews: list[dict]) -> list[dict]:
     return [r for r in latest_reviews if r.get("state") == "CHANGES_REQUESTED"]
 
 
-def _should_unblock_bot_reviews(
+def _stale_bot_review_state(
     cr_reviews: list[dict],
     all_threads_resolved: bool | None,
-    ci_status: str,
-    mergeable: str,
     superseded_by_new_commit: bool = False,
 ) -> str | None:
-    """Check if bot CHANGES_REQUESTED reviews with resolved threads should unblock the PR.
+    """Check whether bot CHANGES_REQUESTED reviews are stale and only await the bot's re-review.
 
-    Returns APPROVED_CI_GREEN if all conditions are met and CI is green + mergeable,
-    APPROVED if conditions are met but CI is not green or not mergeable,
-    None if any condition fails: no CR reviews, threads unresolved or unknown, human
-    CR present, or the bot review has not been superseded by a newer commit (new
-    commits do not auto-dismiss a bot review on GitHub, so this is required in
-    addition to, not instead of, resolved/vacuous-zero threads).
+    Returns AWAITING_BOT_REREVIEW when every change request is a bot's, all threads are resolved and
+    a newer commit supersedes the review. GitHub keeps such a review standing (a new commit does not
+    dismiss it) and /integrate-pr refuses to merge over it, so the PR is not approved: it waits for the
+    bot to re-review. Returns None if any condition fails (no CR reviews, threads unresolved or unknown,
+    a human CR present, or the review is on the current head), leaving the PR in changes_requested.
     """
     if not cr_reviews:
         return None
@@ -372,9 +372,7 @@ def _should_unblock_bot_reviews(
         return None
     if not superseded_by_new_commit:
         return None
-    if ci_status == "passed" and mergeable == "MERGEABLE":
-        return ComputedPRState.APPROVED_CI_GREEN
-    return ComputedPRState.APPROVED
+    return ComputedPRState.AWAITING_BOT_REREVIEW
 
 
 # Mirrors work_state.py's _MERGE_STATES_BLOCKED_BY_GITHUB/_MERGE_STATES_UNMERGEABLE: a
@@ -481,11 +479,9 @@ def compute_pr_state(
     if review_decision == "CHANGES_REQUESTED":
         if latest_reviews:
             cr_reviews = _extract_cr_reviews(latest_reviews)
-            unblock_state = _should_unblock_bot_reviews(
-                cr_reviews, all_threads_resolved, ci_status, mergeable, superseded_by_new_commit
-            )
-            if unblock_state:
-                return unblock_state
+            bot_state = _stale_bot_review_state(cr_reviews, all_threads_resolved, superseded_by_new_commit)
+            if bot_state:
+                return bot_state
         return ComputedPRState.CHANGES_REQUESTED
     if (
         review_decision == "APPROVED"
@@ -499,11 +495,9 @@ def compute_pr_state(
     if latest_reviews:
         cr_reviews = _extract_cr_reviews(latest_reviews)
         if cr_reviews:
-            unblock_state = _should_unblock_bot_reviews(
-                cr_reviews, all_threads_resolved, ci_status, mergeable, superseded_by_new_commit
-            )
-            if unblock_state:
-                return unblock_state
+            bot_state = _stale_bot_review_state(cr_reviews, all_threads_resolved, superseded_by_new_commit)
+            if bot_state:
+                return bot_state
             return ComputedPRState.CHANGES_REQUESTED
         if all_threads_resolved and ci_status == "passed" and mergeable == "MERGEABLE" and not github_blocked:
             return ComputedPRState.APPROVED_CI_GREEN
