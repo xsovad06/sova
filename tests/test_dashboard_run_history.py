@@ -547,8 +547,9 @@ const grab = (name) => {
   const s = appSrc.indexOf('function ' + name + '(');
   return appSrc.slice(s, appSrc.indexOf('\n}\n', s) + 2);
 };
-new Function(grab('escapeHtml') + grab('renderIfChanged')
-  + '; globalThis.escapeHtml = escapeHtml; globalThis.renderIfChanged = renderIfChanged;')();
+new Function(grab('escapeHtml') + grab('renderIfChanged') + grab('emptyStateHtml')
+  + '; globalThis.escapeHtml = escapeHtml; globalThis.renderIfChanged = renderIfChanged;'
+  + ' globalThis.emptyStateHtml = emptyStateHtml;')();
 const bar = '/* ============================================================\n   13. ';
 const start = appSrc.indexOf(bar + 'RUN ACTIONS');
 const end = appSrc.indexOf(bar + 'STEP PIPELINE BAR', start);

@@ -91,7 +91,7 @@ class TestFleetPage:
             pytest.param("Step Failure Leaderboard", id="section-step-failure-leaderboard"),
             pytest.param("Error Clusters", id="section-error-clusters"),
             pytest.param("Cost by Project", id="section-cost-by-project"),
-            pytest.param("Retry Effectiveness", id="section-retry-effectiveness"),
+            pytest.param("Retry Success Rate", id="stat-retry-success-rate"),
             pytest.param("Project Scan Status", id="section-project-scan-status"),
             pytest.param("bg-sidebar-active", id="sidebar-active"),
         ],

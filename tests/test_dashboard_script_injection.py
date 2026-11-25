@@ -223,7 +223,13 @@ class TestSpecIssueNumberLiteral:
 # ---------------------------------------------------------------------------
 
 _INNERHTML_ASSIGN_RE = re.compile(r"\.innerHTML\s*\+?=")
-_ESCAPE_CALL_RE = re.compile(r"^(?:esc|escapeHtml|escapeJsStr)\(")
+# The component builders (app.js) escape every text argument themselves, so a call to one is as safe as esc().
+# sovaBtn() is handled apart: it escapes its label but inserts `opts.iconHtml` as markup (_sova_btn_icon_values).
+_ESCAPE_CALL_RE = re.compile(r"^(?:esc|escapeHtml|escapeJsStr|emptyStateHtml|badgeHtml|statCardHtml)\(")
+_SOVA_BTN_CALL = "sovaBtn("
+_ICON_HTML_KEY_RE = re.compile(r"""(?<![\w$])["']?iconHtml["']?\s*:""")
+# The shorthand `{iconHtml}` / `{iconHtml, size}`: the option's value is the variable of that name.
+_ICON_HTML_SHORTHAND_RE = re.compile(r"(?<![\w$.'\"])iconHtml\s*(?=[,}])")
 _INERT_RE = re.compile(
     r"""^(?:
         \d+(?:\.\d+)?                                   # number literal
@@ -235,7 +241,7 @@ _INERT_RE = re.compile(
 # Unescaped interpolations across all templates and static scripts, as measured by this
 # section's own helpers when the ratchet was added. Lower it when a site is fixed; never
 # raise it: wrap the value in esc().
-_INNERHTML_BASELINE = 192
+_INNERHTML_BASELINE = 189
 
 
 def _skip_string(text: str, pos: int) -> int:
@@ -406,6 +412,85 @@ def _is_literal_ternary(expr: str) -> bool:
     return False
 
 
+def _object_value_end(text: str, pos: int) -> int:
+    """Index of the `,`, `}` or `)` that ends the object-literal value starting at `pos`."""
+    closers = {"(": ")", "[": "]", "{": "}"}
+    while pos < len(text) and text[pos] not in ",})":
+        ch = text[pos]
+        if ch in "'\"`":
+            pos = _skip_string(text, pos)
+        elif ch in closers:
+            pos = _matching_end(text, pos + 1, ch, closers[ch])
+        else:
+            pos += 1
+    return pos
+
+
+def _call_arguments(args: str) -> list[str]:
+    """The top-level, comma-separated arguments of a call's argument text."""
+    parts, pos = [], 0
+    while pos < len(args):
+        end = _object_value_end(args, pos)
+        parts.append(args[pos:end].strip())
+        pos = end + 1
+    return parts
+
+
+def _sova_btn_icon_values(args: str) -> list[str]:
+    """The `iconHtml` values of a `sovaBtn(...)` call's argument text: sovaBtn() inserts them without escaping.
+
+    Options passed as anything but an object literal (`sovaBtn('Run', opts)`) cannot be checked, so the whole
+    options expression counts as one value.
+    """
+    parts = _call_arguments(args)
+    if len(parts) < 2 or not parts[1]:
+        return []
+    opts = parts[1]
+    if not opts.startswith("{"):
+        return [opts]
+    values = [opts[m.end() : _object_value_end(opts, m.end())].strip() for m in _ICON_HTML_KEY_RE.finditer(opts)]
+    # A spread (`{...opts, size: 'xs'}`) can carry an iconHtml of its own, so its source counts as one value.
+    spreads = [entry[3:].strip() for entry in _call_arguments(opts[1:-1]) if entry.startswith("...")]
+    return values + ["iconHtml" for _ in _ICON_HTML_SHORTHAND_RE.finditer(opts)] + spreads
+
+
+def _trusted_call_rest(expr: str) -> tuple[list[str], str] | None:
+    """For an expression that starts with an escape call or a component builder: the values that call leaves
+    unescaped, and the text after its closing paren (`esc(a) + raw` leaves `+ raw`). None for any other expression.
+    """
+    if _ESCAPE_CALL_RE.match(expr):
+        open_paren = expr.index("(") + 1
+        end = _matching_end(expr, open_paren, "(", ")")
+        return [], expr[end:]
+    if expr.startswith(_SOVA_BTN_CALL):
+        open_paren = len(_SOVA_BTN_CALL)
+        end = _matching_end(expr, open_paren, "(", ")")
+        values = _sova_btn_icon_values(expr[open_paren : end - 1])
+        icons = [e for value in values for e in _unescaped_in_expression(value)]
+        return icons, expr[end:]
+    return None
+
+
+def _method_chain_rest(rest: str) -> tuple[list[str], str]:
+    """For the text after a trusted call that starts a method chain (`.replace(/x/g, raw).trim()`): the unescaped
+    values among the chained calls' arguments, and the text after the chain. A string or regex literal argument is
+    inert; any other argument (`esc(a).replace('x', raw)` inserts `raw` as markup) is judged on its own.
+    """
+    found: list[str] = []
+    pos = 0
+    while pos < len(rest) and rest[pos] == ".":
+        pos += 1
+        while pos < len(rest) and (rest[pos].isalnum() or rest[pos] in "_$"):
+            pos += 1
+        if rest.startswith("(", pos):
+            end = _matching_end(rest, pos + 1, "(", ")")
+            for arg in _call_arguments(rest[pos + 1 : end - 1]):
+                if arg and not arg.startswith("/"):
+                    found += _unescaped_in_expression(arg)
+            pos = end
+    return found, rest[pos:].strip()
+
+
 def _unescaped_in_expression(expr: str) -> list[str]:
     """Unescaped values in one interpolated expression.
 
@@ -414,8 +499,22 @@ def _unescaped_in_expression(expr: str) -> list[str]:
     escape call or inert. A call that builds markup with `+` inside a function body is not analyzed
     and counts as one raw value.
     """
-    if _ESCAPE_CALL_RE.match(expr) or _INERT_RE.match(expr) or _is_literal_ternary(expr):
+    if _INERT_RE.match(expr) or _is_literal_ternary(expr):
         return []
+    trusted = _trusted_call_rest(expr)
+    if trusted is not None:
+        found, rest = trusted
+        rest = rest.strip()
+        # A method chained on the escaped result (`esc(a).replace(...)`) stays escaped except for its own
+        # arguments; anything joined to it (`badgeHtml(a) + raw`) is judged on its own.
+        if rest.startswith("."):
+            chained, rest = _method_chain_rest(rest)
+            found += chained
+        if rest.startswith("+"):
+            found += _unescaped_in_expression(rest[1:].strip())
+        elif rest and not rest.startswith("."):
+            found.append(rest)
+        return found
     nested = _find_templates(expr)
     if nested:
         return [
@@ -470,6 +569,47 @@ class TestInnerHtmlRatchet:
         assert _unescaped_interpolations("'<b>' + esc(a) + '</b>' + b;") == ["b"]
         assert _unescaped_interpolations("`<b>${esc(a)}</b>${n.length}${x ? 'a' : 'b'}`;") == []
         assert _unescaped_interpolations("`${rows.map(r => `<i>${esc(r)}</i><u>${r.id}</u>`).join('')}`;") == ["r.id"]
+
+    @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("sovaBtn(label, {variant: 'primary', attrs: {'data-id': id}});", []),
+            ("sovaBtn('Run', {iconHtml: '<svg></svg>'});", []),
+            ("sovaBtn('Run', {iconHtml: payload});", ["payload"]),
+            ("'<div>' + sovaBtn('Run', {variant: 'primary', iconHtml: icon(x)}) + '</div>';", ["icon(x)"]),
+            ("`${sovaBtn('Run', {'iconHtml': `<i>${raw}</i>`, size: 'xs'})}`;", ["raw"]),
+            ("sovaBtn('Run', {iconHtml: esc(payload)});", []),
+            ("sovaBtn('Run', {iconHtml, size: 'xs'});", ["iconHtml"]),
+            ("sovaBtn('Run', {size: 'xs', iconHtml});", ["iconHtml"]),
+            ("sovaBtn('Run', opts);", ["opts"]),
+            ("sovaBtn('Run', {...opts});", ["opts"]),
+            ("sovaBtn('Run', {size: 'xs', ...base, variant: 'ghost'});", ["base"]),
+            ("sovaBtn('Run');", []),
+            ("`${sovaBtn('Run') + payload}`;", ["payload"]),
+            ("`${sovaBtn('Run', {iconHtml: icon}) + payload}`;", ["icon", "payload"]),
+        ],
+    )
+    def test_sova_btn_counts_its_unescaped_icon_html(self, statement: str, expected: list[str]) -> None:
+        """sovaBtn() escapes its label but not opts.iconHtml, so a raw icon value still counts."""
+        assert _unescaped_interpolations(statement) == expected
+
+    @pytest.mark.parametrize(
+        ("statement", "expected"),
+        [
+            ("`${badgeHtml(a, {color: 'red'})}`;", []),
+            ("`${badgeHtml(a) + raw}`;", ["raw"]),
+            ("`${emptyStateHtml(a) + '<b>' + raw}`;", ["'<b>' + raw"]),
+            ("`${statCardHtml(a, 'id')}${raw}`;", ["raw"]),
+            ("`${esc(a) + raw}`;", ["raw"]),
+            ("`${esc(a).replace(/\\n/g, '<br>')}`;", []),
+            ("`${badgeHtml(a).replace('x', raw)}`;", ["raw"]),
+            ("`${esc(a).replace('x', esc(b)).trim()}`;", []),
+            ("`${esc(a).trim() + raw}`;", ["raw"]),
+        ],
+    )
+    def test_a_builder_call_is_trusted_only_for_its_own_span(self, statement: str, expected: list[str]) -> None:
+        """An escape call or component builder covers its own result, never a value joined to it."""
+        assert _unescaped_interpolations(statement) == expected
 
     def test_setup_template_has_no_inline_handlers_built_from_data(self) -> None:
         """Paths and names ride in data attributes with delegated handlers, never in inline JS."""

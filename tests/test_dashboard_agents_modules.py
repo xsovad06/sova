@@ -2717,7 +2717,13 @@ class TestSupervisorGraphLegend:
         badges_start = src.index("const DRAWER_MODE_BADGES")
         badges = src[badges_start : src.index("};\n", badges_start) + 3]
         esc = "const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n"
-        script = esc + const + badges + "\n".join(parts) + f"\nconsole.log(JSON.stringify({expression}));"
+        # The drawer badges go through app.js's badge component, so the real one is evaluated with them.
+        badge_start = _APP_JS.index("var STATE_BADGE_CLASSES = {")
+        badge_src = _APP_JS[badge_start : _APP_JS.index("\n};\n", badge_start) + 4]
+        for fn in ("stateBadgeClasses", "escapeHtml", "_attrsHtml", "_extraClass", "badgeHtml"):
+            fn_start = _APP_JS.index(f"function {fn}(")
+            badge_src += _APP_JS[fn_start : _APP_JS.index("\n}\n", fn_start) + 2] + "\n"
+        script = esc + badge_src + const + badges + "\n".join(parts) + f"\nconsole.log(JSON.stringify({expression}));"
         proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout)
@@ -2768,7 +2774,7 @@ class TestSupervisorGraphLegend:
             self._DRAWER_FUNCTIONS, f"[drawerModeBadges({json.dumps(held)}), drawerQueueHtml({json.dumps(held)})]"
         )
         assert ">Blocked</span>" in badges
-        assert re.search(r'class="dep-reason-chip[^"]*">agent:on-hold</span>', badges)
+        assert re.search(r'class="sova-badge [^"]*dep-reason-chip">agent:on-hold</span>', badges)
         assert queue == ""
 
     def test_held_ticket_waiting_on_a_dependency_shows_both_reason_chips(self) -> None:
@@ -2778,8 +2784,8 @@ class TestSupervisorGraphLegend:
         )
         node = {n["id"]: n for n in DependencyGraph([blocker, held]).to_dict()["nodes"]}[2]
         badges = self._run_template_functions(self._DRAWER_FUNCTIONS, f"drawerModeBadges({json.dumps(node)})")
-        assert re.search(r'class="dep-reason-chip[^"]*">agent:on-hold</span>', badges)
-        assert re.search(r'class="dep-reason-chip[^"]*">Waiting on #1</span>', badges)
+        assert re.search(r'class="sova-badge [^"]*dep-reason-chip">agent:on-hold</span>', badges)
+        assert re.search(r'class="sova-badge [^"]*dep-reason-chip">Waiting on #1</span>', badges)
 
     def test_next_up_live_region_is_the_stale_status_only(self) -> None:
         """loadNextUp() rebuilds the chips on every refresh, so the container must not announce them."""
@@ -4153,6 +4159,7 @@ const roleColor = () => ({ bg: '', text: '' });
 const formatRole = (r) => r;
 const escapeHtml = (s) => String(s);
 const statusColor = () => '';
+const setColorClasses = () => {};
 const prLink = (n) => '#' + n;
 const liveElapsed = (s) => 'live:' + s;
 const formatDuration = () => '';
@@ -4637,3 +4644,53 @@ class TestRefreshPaths:
         assert "onFallbackPoll: _catchUpSidebar" in sidebar.group(1)
         start_fn = _APP_JS.split("function startSidebarPolling")[1].split("function _initSidebarSocket")[0]
         assert "/agents/active" not in start_fn
+
+
+class TestLaunchModalBadgeAndTooltip:
+    """The launch modal recolours its complexity badge in place and puts the disabled-model reason on a wrapper."""
+
+    def test_the_llm_model_tooltip_wrapper_is_in_the_template(self) -> None:
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
+        assert re.search(r'<div id="launch-llm-model-tip"[^>]*>\s*<select id="launch-llm-model"', html)
+
+    def test_the_complexity_badge_span_carries_the_badge_component(self) -> None:
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
+        assert re.search(r'<span id="launch-complexity" class="sova-badge\b', html)
+
+    def test_the_badge_starts_in_the_same_neutral_pair_the_script_falls_back_to(self) -> None:
+        """No tier looks the same before and after the script runs."""
+        html = _WORK_TEMPLATE.read_text(encoding="utf-8")
+        start = re.search(r'<span id="launch-complexity" class="sova-badge ([^"]*)"', html)
+        fallback = re.search(r"var _COMPLEXITY_DEFAULT = '([^']*)';", _module_source("launch-modal"))
+        assert start is not None
+        assert fallback is not None
+        assert start.group(1) == fallback.group(1)
+
+    def _badge_classes(self, tier: str) -> list[str]:
+        _require_node("node is required to run the launch modal helpers")
+        src = _module_source("launch-modal")
+        table = src[src.index("var _COMPLEXITY_COLORS = {") : src.index("var _CONFIRM_TIERS")]
+        re_start = _APP_JS.index("var _COLOR_CLASS_RE = ")
+        color_re = _APP_JS[re_start : _APP_JS.index(";\n", re_start) + 2]
+        set_colors = _js_function(_APP_JS, "function setColorClasses(")
+        script = (
+            color_re + set_colors + table + "var names = ['sova-badge', 'bg-gray-600/30', 'text-gray-300'];"
+            "var el = {textContent: '', classList: {"
+            "  add: function(x) { if (names.indexOf(x) === -1) names.push(x); },"
+            "  remove: function(x) { names = names.filter(function(y) { return y !== x; }); }}};"
+            "Object.defineProperty(el.classList, 'length', {get: function() { return names.length; }});"
+            "for (var i = 0; i < 8; i++) (function(i) {"
+            "  Object.defineProperty(el.classList, i, {get: function() { return names[i]; }}); })(i);"
+            f"_setComplexityBadge(el, {json.dumps(tier)});"
+            "console.log(JSON.stringify(names));"
+        )
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=False)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout)
+
+    def test_a_known_tier_swaps_only_the_colour_pair(self) -> None:
+        assert self._badge_classes("simple") == ["sova-badge", "bg-accent-teal/20", "text-accent-teal"]
+
+    @pytest.mark.parametrize("tier", ["", "huge"])
+    def test_an_unknown_tier_renders_gray(self, tier: str) -> None:
+        assert self._badge_classes(tier) == ["sova-badge", "bg-gray-600/30", "text-gray-300"]

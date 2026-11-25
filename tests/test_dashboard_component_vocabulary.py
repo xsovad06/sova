@@ -65,6 +65,7 @@ _PRELUDE_FUNCTIONS = (
     "emptyStateHtml",
     "statCardHtml",
     "statusBadge",
+    "setColorClasses",
 )
 _PRELUDE_VARIABLES = (
     "_SOVA_COLOR_FALLBACK",
@@ -73,6 +74,7 @@ _PRELUDE_VARIABLES = (
     "SOVA_BTN_VARIANTS",
     "SOVA_BTN_SIZES",
     "SOVA_STAT_SIZES",
+    "_COLOR_CLASS_RE",
 )
 
 
@@ -203,6 +205,12 @@ class TestBadgeVocabulary:
         for html in (macro, js):
             assert "<script>" not in html
 
+    def test_a_tooltip_attr_cannot_break_out_of_its_attribute(self) -> None:
+        hostile = '"><img src=x onerror=1>'
+        html = _node("badgeHtml('x', {attrs: {'data-tooltip': h}})", extra=f"var h = {json.dumps(hostile)};")
+        assert "<img" not in html
+        assert 'data-tooltip="&quot;&gt;&lt;img src=x onerror=1&gt;"' in html
+
     def test_extra_classes_are_appended_by_both_and_a_class_attr_is_merged_not_duplicated(self) -> None:
         macro = _macro("badge", "x", color="green", cls="shrink-0", attrs={"class": "ml-2", "data-x": "1"})
         js = _node("badgeHtml('x', {color: 'green', className: 'shrink-0', attrs: {'class': 'ml-2', 'data-x': '1'}})")
@@ -274,6 +282,105 @@ class TestStatCardVocabulary:
         hostile = "<b>x</b>"
         assert "<b>" not in _macro("stat_card", hostile, "id")
         assert "<b>" not in _node("statCardHtml(h, 'id')", extra=f"var h = {json.dumps(hostile)};")
+
+    def test_fixed_detail_text_renders_the_detail_line_in_both(self) -> None:
+        macro = _macro("stat_card", "Cycle Time", "ct", detail="median hours")
+        js = _node("statCardHtml('Cycle Time', 'ct', {detail: 'median hours'})")
+        for html in (macro, js):
+            assert '<p class="sova-stat-detail">median hours</p>' in html
+
+    def test_detail_text_and_id_share_one_line(self) -> None:
+        macro = _macro("stat_card", "x", "x-id", detail_id="x-detail", detail="runs")
+        js = _node("statCardHtml('x', 'x-id', {detailId: 'x-detail', detail: 'runs'})")
+        for html in (macro, js):
+            assert '<p class="sova-stat-detail" id="x-detail">runs</p>' in html
+
+    def test_detail_text_is_escaped_by_both(self) -> None:
+        hostile = "<img src=x onerror=1>"
+        assert "<img" not in _macro("stat_card", "x", "id", detail=hostile)
+        assert "<img" not in _node("statCardHtml('x', 'id', {detail: h})", extra=f"var h = {json.dumps(hostile)};")
+
+
+class TestSetColorClasses:
+    """A live update swaps a component's colour only, so the classes the component set survive it."""
+
+    def _swap(self, start: str, color: str) -> list[str]:
+        """The class list after setColorClasses(), on a stand-in element whose classList is an array-like."""
+        extra = (
+            f"var names = {json.dumps(start)}.split(' ');"
+            "var list = {length: 0,"
+            "  add: function(x) { if (names.indexOf(x) === -1) names.push(x); },"
+            "  remove: function(x) { names = names.filter(function(y) { return y !== x; }); }};"
+            "Object.defineProperty(list, 'length', {get: function() { return names.length; }});"
+            "names.forEach(function(x, i) { Object.defineProperty(list, i, {get: function() { return names[i]; }}); });"
+            f"setColorClasses({{classList: list}}, {json.dumps(color)});"
+        )
+        return _node("names", extra=extra)
+
+    def test_a_stat_value_keeps_its_component_and_size_classes(self) -> None:
+        assert self._swap("sova-stat-value sova-stat-value-sm text-accent-green", "text-accent-red") == [
+            "sova-stat-value",
+            "sova-stat-value-sm",
+            "text-accent-red",
+        ]
+
+    def test_a_badge_takes_a_token_pair_in_place_of_its_old_one(self) -> None:
+        badge = "sova-badge bg-accent-green/20 text-accent-green ml-2"
+        assert self._swap(badge, "bg-accent-red/20 text-accent-red") == [
+            "sova-badge",
+            "ml-2",
+            "bg-accent-red/20",
+            "text-accent-red",
+        ]
+
+    def test_every_badge_token_is_fully_swappable(self) -> None:
+        """A badge recoloured twice (spec status draft, then approved) keeps one pair: no token class is missed."""
+        missed = _node(
+            "Object.keys(STATE_BADGE_CLASSES).reduce(function(acc, k) {"
+            "  return acc.concat(STATE_BADGE_CLASSES[k].split(' ').filter(function(c) {"
+            "    return !_COLOR_CLASS_RE.test(c); }).map(function(c) { return k + ': ' + c; })); }, [])"
+        )
+        assert missed == []
+
+    def test_a_badge_recoloured_twice_carries_only_the_last_pair(self) -> None:
+        first = self._swap("sova-badge ml-auto bg-gray-600/30 text-gray-400", "bg-accent-yellow/20 text-accent-yellow")
+        second = self._swap(" ".join(first), "bg-accent-green/20 text-accent-green")
+        assert second == ["sova-badge", "ml-auto", "bg-accent-green/20", "text-accent-green"]
+
+    def test_no_colour_only_clears_the_old_one(self) -> None:
+        assert self._swap("sova-stat-value text-accent-green", "") == ["sova-stat-value"]
+
+    def test_size_and_alignment_utilities_survive_a_recolour(self) -> None:
+        start = "sova-stat-value text-2xl text-xs text-right text-center bg-surface-card text-accent-green"
+        assert self._swap(start, "text-accent-red") == [
+            "sova-stat-value",
+            "text-2xl",
+            "text-xs",
+            "text-right",
+            "text-center",
+            "bg-surface-card",
+            "text-accent-red",
+        ]
+
+    @pytest.mark.parametrize(
+        "neutral",
+        ["bg-gray-600/30 text-gray-400", "text-white", "text-gray-300", "text-red-400", "border-accent-red/30"],
+    )
+    def test_a_neutral_or_plain_palette_colour_is_replaced(self, neutral: str) -> None:
+        assert self._swap(f"sova-badge ml-2 {neutral}", "bg-accent-green/20 text-accent-green") == [
+            "sova-badge",
+            "ml-2",
+            "bg-accent-green/20",
+            "text-accent-green",
+        ]
+
+    def test_a_neutral_card_border_is_not_a_colour_swap(self) -> None:
+        assert self._swap("sova-badge border border-gray-700/50 text-gray-400", "text-accent-red") == [
+            "sova-badge",
+            "border",
+            "border-gray-700/50",
+            "text-accent-red",
+        ]
 
 
 class TestEmptyState:
@@ -387,3 +494,36 @@ class TestStylesheetCoverage:
             elif f".{re.sub(r'([^a-zA-Z0-9_-])', r'\\\1', token)}" not in self._TAILWIND:
                 missing.append(f"{token} (tailwind.min.css: run `make css`)")
         assert missing == []
+
+
+# The options each builder the innerHTML ratchet trusts outright (tests/test_dashboard_script_injection.py,
+# _ESCAPE_CALL_RE) reads. A builder that gains an option fails here, so whoever adds it checks the option is
+# escaped (or a table lookup) before it rides the trust; a raw-markup option is handled as sovaBtn()'s iconHtml is.
+_TRUSTED_BUILDER_OPTIONS = {
+    "badgeHtml": {"color", "attrs", "className"},
+    "emptyStateHtml": set(),
+    "statCardHtml": {"size", "valueClass", "detailId", "detail"},
+}
+
+
+_HOSTILE = '"><img src=x onerror=1>'
+
+
+class TestTrustedBuildersEscapeEveryOption:
+    @pytest.mark.parametrize("name", sorted(_TRUSTED_BUILDER_OPTIONS))
+    def test_option_list_is_pinned(self, name: str) -> None:
+        # badgeHtml() hands opts to _extraClass(), which reads className and attrs.class.
+        source = _function(name) + (_function("_extraClass") if "_extraClass(opts)" in _function(name) else "")
+        assert set(re.findall(r"\bopts\.(\w+)", source)) == _TRUSTED_BUILDER_OPTIONS[name]
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "badgeHtml(h, {color: h, className: h, attrs: {title: h, 'data-x': h, class: h}})",
+            "emptyStateHtml(h, h)",
+            "statCardHtml(h, h, {size: h, valueClass: h, detailId: h, detail: h})",
+        ],
+    )
+    def test_hostile_values_in_every_argument_come_out_escaped(self, call: str) -> None:
+        html = _node(call, extra=f"var h = {json.dumps(_HOSTILE)};")
+        assert "<img" not in html
