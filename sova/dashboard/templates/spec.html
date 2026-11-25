@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import stat_card, btn %}
 {% block title %}Spec #{{ issue_number }} - SOVA{% endblock %}
 {% block content %}
 {% from "_icons.html" import icon %}
@@ -6,27 +7,15 @@
 <div class="flex items-center gap-3 mb-6">
   <a href="{{ prefix|default('') }}/work" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Work</a>
   <h2 class="text-2xl font-semibold">Spec Review: Issue <span id="spec-issue-link">#{{ issue_number }}</span></h2>
-  <span id="spec-status-badge" class="ml-auto px-3 py-1 text-xs rounded-full"></span>
+  <span id="spec-status-badge" class="sova-badge ml-auto"></span>
 </div>
 
 <!-- Spec Metadata -->
 <div id="spec-meta" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
-    <p class="text-xs text-gray-500 uppercase tracking-wide">Status</p>
-    <p class="text-xl font-bold" id="meta-status">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
-    <p class="text-xs text-gray-500 uppercase tracking-wide">Complexity</p>
-    <p class="text-xl font-bold" id="meta-complexity">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
-    <p class="text-xs text-gray-500 uppercase tracking-wide">Open Questions</p>
-    <p class="text-xl font-bold" id="meta-questions">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
-    <p class="text-xs text-gray-500 uppercase tracking-wide">Created</p>
-    <p class="text-xl font-bold" id="meta-created">--</p>
-  </div>
+  {{ stat_card("Status", "meta-status", size="sm") }}
+  {{ stat_card("Complexity", "meta-complexity", size="sm") }}
+  {{ stat_card("Open Questions", "meta-questions", size="sm") }}
+  {{ stat_card("Created", "meta-created", size="sm") }}
 </div>
 
 <!-- Code drift warning (shown only when files the spec names changed on the base branch after it was written) -->
@@ -37,9 +26,7 @@
       <p class="text-sm text-gray-300 mb-2">These files named in the spec changed on the base branch after research:</p>
       <ul id="drift-files" class="text-sm text-gray-300 font-mono space-y-1"></ul>
     </div>
-    <button type="button" onclick="reviseSpec()" class="px-5 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded-lg hover:bg-accent/30 transition-colors font-medium">
-      Re-research
-    </button>
+    {{ btn("Re-research", "primary", "md", attrs={"onclick": "reviseSpec()"}) }}
   </div>
 </div>
 
@@ -59,18 +46,10 @@
 
 <!-- Action Buttons -->
 <div id="spec-actions" class="flex items-center gap-3 mb-6 hidden">
-  <button type="button" onclick="approveSpec()" class="px-5 py-2 text-sm bg-accent-green/20 text-accent-green border border-accent-green/40 rounded-lg hover:bg-accent-green/30 transition-colors font-medium">
-    Approve
-  </button>
-  <button type="button" onclick="reviseSpec()" class="px-5 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded-lg hover:bg-accent/30 transition-colors font-medium">
-    Revise
-  </button>
-  <button type="button" onclick="skipSpec()" class="px-5 py-2 text-sm bg-gray-700 text-gray-300 border border-gray-600 rounded-lg hover:bg-gray-600 transition-colors">
-    Skip Spec
-  </button>
-  <button type="button" onclick="rejectSpec()" class="px-5 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded-lg hover:bg-accent-red/30 transition-colors ml-auto">
-    Reject
-  </button>
+  {{ btn("Approve", "success", "md", attrs={"onclick": "approveSpec()"}) }}
+  {{ btn("Revise", "primary", "md", attrs={"onclick": "reviseSpec()"}) }}
+  {{ btn("Skip Spec", "secondary", "md", attrs={"onclick": "skipSpec()"}) }}
+  {{ btn("Reject", "danger", "md", attrs={"onclick": "rejectSpec()"}, cls="ml-auto") }}
 </div>
 
 {% endblock %}
@@ -114,19 +93,8 @@ function complexityColor(c) {
 
 function applySpecStatusBadge(status) {
   var el = document.getElementById('spec-status-badge');
-  switch (status) {
-    case 'draft':
-      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-yellow/20 text-accent-yellow border border-accent-yellow/40';
-      break;
-    case 'approved':
-      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-green/20 text-accent-green border border-accent-green/40';
-      break;
-    case 'rejected':
-      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-red/20 text-accent-red border border-accent-red/40';
-      break;
-    default:
-      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-400';
-  }
+  var token = {draft: 'yellow', approved: 'green', rejected: 'red'}[status] || 'gray';
+  setColorClasses(el, stateBadgeClasses(token));
   el.textContent = status;
 }
 
@@ -191,16 +159,16 @@ function renderSpec(data) {
 
   // Metadata
   document.getElementById('meta-status').textContent = data.status || 'draft';
-  document.getElementById('meta-status').className = 'text-xl font-bold';
+  setColorClasses(document.getElementById('meta-status'), '');
 
   var complexEl = document.getElementById('meta-complexity');
   complexEl.textContent = data.complexity || 'unknown';
-  complexEl.className = 'text-xl font-bold ' + complexityColor(data.complexity);
+  setColorClasses(complexEl, complexityColor(data.complexity));
 
   var qCount = (data.open_questions || []).length;
   var qEl = document.getElementById('meta-questions');
   qEl.textContent = qCount > 0 ? qCount : 'None';
-  qEl.className = 'text-xl font-bold ' + (qCount > 0 ? 'text-accent-yellow' : 'text-accent-green');
+  setColorClasses(qEl, qCount > 0 ? 'text-accent-yellow' : 'text-accent-green');
 
   document.getElementById('meta-created').textContent = data.created || '--';
 

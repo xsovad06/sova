@@ -26,7 +26,7 @@
             class="w-64 bg-surface border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 font-mono"
             onkeydown="if(event.key==='Enter'){event.preventDefault();browseTo(this.value)}">
           <button onclick="browseTo(document.getElementById('path-input').value)"
-            class="px-2 py-1 text-xs bg-surface-hover text-gray-300 rounded hover:bg-gray-600 transition-colors">Go</button>
+            class="sova-btn sova-btn-secondary sova-btn-xs">Go</button>
         </div>
       </div>
 
@@ -41,7 +41,7 @@
           <span class="text-sm text-gray-200">Selected: <span id="selected-name" class="font-mono text-accent-green"></span></span>
         </div>
         <button onclick="scanProject()" id="scan-btn"
-          class="px-4 py-1.5 bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors text-xs font-medium">
+          class="sova-btn sova-btn-primary">
           Scan &amp; Continue
         </button>
       </div>
@@ -52,7 +52,7 @@
       <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-semibold text-gray-300">2. Scan Results</h3>
-          <span id="install-status" class="text-xs px-2 py-1 rounded-full"></span>
+          <span id="install-status" class="sova-badge"></span>
         </div>
         <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <div class="flex justify-between"><span class="text-gray-400">Project</span><span id="scan-name" class="text-gray-200 font-mono"></span></div>
@@ -66,11 +66,11 @@
         <div class="mt-4 pt-3 border-t border-gray-700/30">
           <div class="flex items-center gap-3">
             <button onclick="installProject(false)" id="install-btn"
-              class="px-4 py-2 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
+              class="sova-btn sova-btn-success sova-btn-md">
               Install SOVA
             </button>
             <button onclick="installProject(true)" id="update-btn"
-              class="px-4 py-2 bg-accent/10 text-accent rounded-lg hover:bg-accent/20 transition-colors text-sm font-medium">
+              class="sova-btn sova-btn-primary sova-btn-md">
               Update Only
             </button>
             <span id="install-output" class="text-xs text-gray-400"></span>
@@ -127,7 +127,7 @@
               <div class="flex gap-2">
                 <input name="jira_api_token" type="password" placeholder="Jira API token (not stored in config)" class="flex-1 bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
                 <button type="button" onclick="testJiraConnection()" id="jira-test-btn"
-                  class="px-4 py-2 bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors text-xs font-medium whitespace-nowrap">
+                  class="sova-btn sova-btn-primary whitespace-nowrap">
                   Test Connection
                 </button>
               </div>
@@ -259,7 +259,7 @@
         </div>
 
         <div class="flex gap-3">
-          <button type="submit" class="px-6 py-2.5 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
+          <button type="submit" class="sova-btn sova-btn-success sova-btn-md">
             Save Configuration
           </button>
           <span id="save-status" class="self-center text-xs text-gray-400"></span>
@@ -307,15 +307,15 @@ function renderBrowser(data) {
 
   const listing = document.getElementById('dir-listing');
   if (data.entries.length === 0) {
-    listing.innerHTML = '<p class="text-gray-500 text-xs p-4">Empty directory</p>';
+    listing.innerHTML = emptyStateHtml('Empty directory');
     return;
   }
 
   listing.innerHTML = data.entries.map(e => {
     const isParent = e.name === '..';
     const badges = [];
-    if (e.is_project) badges.push('<span class="text-xs bg-accent/15 text-accent px-1.5 py-0.5 rounded">project</span>');
-    if (e.has_sova) badges.push('<span class="text-xs bg-accent-green/15 text-accent-green px-1.5 py-0.5 rounded">SOVA</span>');
+    if (e.is_project) badges.push(badgeHtml('project', { color: 'blue' }));
+    if (e.has_sova) badges.push(badgeHtml('SOVA', { color: 'green' }));
 
     return `
       <div class="flex items-center px-4 py-2 hover:bg-surface-hover cursor-pointer border-b border-gray-700/20 group"
@@ -388,10 +388,10 @@ async function scanProject() {
     const badge = document.getElementById('install-status');
     if (scanData.already_installed) {
       badge.textContent = 'Installed';
-      badge.className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
+      badge.className = 'sova-badge ' + stateBadgeClasses('green');
     } else {
       badge.textContent = 'Not installed';
-      badge.className = 'text-xs px-2 py-1 rounded-full bg-accent-yellow/20 text-accent-yellow';
+      badge.className = 'sova-badge ' + stateBadgeClasses('yellow');
     }
 
     document.getElementById('config-section').classList.remove('hidden');
@@ -445,7 +445,7 @@ async function installProject(updateOnly) {
     if (result.status === 'ok') {
       installedSlug = result.slug;
       document.getElementById('install-status').textContent = 'Installed';
-      document.getElementById('install-status').className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
+      document.getElementById('install-status').className = 'sova-badge ' + stateBadgeClasses('green');
       showSuccessBanner(output.parentElement, result.slug, updateOnly ? 'Updated' : 'Installed');
     }
   } finally {

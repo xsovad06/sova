@@ -72,7 +72,7 @@ function renderCompletedCard(agent) {
   // A command or planner run has no issue, and a relaunch needs one: without it the button would send the
   // modal the string "null". The history table makes the same choice (issue_number ? button : '').
   var rerunBtn = agent.issue
-    ? '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-action="rerun" aria-label="Re-run this task" data-tooltip="Re-run this task" ' +
+    ? '<button class="rerun-btn sova-btn sova-btn-warning" data-action="rerun" aria-label="Re-run this task" data-tooltip="Re-run this task" ' +
       'data-issue="' + escapeHtml(String(agent.issue)) + '" data-role="' + escapeHtml(agent.role || '') + '" data-pr="' + escapeHtml(String(parseInt(agent.pr_number, 10) || '')) + '" ' +
       'data-run-id="' + escapeHtml(String(agent.run_id)) + '">Re-run</button>'
     : '';
@@ -141,6 +141,7 @@ async function enhancePlannerCards(completed) {
         if (agent.run_id !== latestPlanner.run_id) return;
 
         if (tasks.length === 0) {
+          // Not emptyStateHtml(): a one-line note under a run card, where page-level padding would dwarf the card.
           card.innerHTML = '<p class="text-xs text-gray-500 mt-2">No tasks proposed</p>';
           return;
         }
@@ -154,9 +155,6 @@ async function enhancePlannerCards(completed) {
         }).join('');
 
         var createBtnDisabled = _plannerHandoffCache.status !== 'awaiting_action' ? ' disabled' : '';
-        var createBtnClass = _plannerHandoffCache.status === 'awaiting_action'
-          ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border-accent-green/30'
-          : 'bg-gray-600/20 text-gray-500 border-gray-600/30 cursor-not-allowed';
 
         card.innerHTML =
           '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
@@ -165,7 +163,7 @@ async function enhancePlannerCards(completed) {
               taskListHtml +
             '</div>' +
             '<button' + actionAttrs('submit-planner-issues', [agent.run_id, handoffIssue != null ? String(handoffIssue) : '']) + createBtnDisabled +
-              ' class="px-3 py-1.5 rounded text-xs border transition-colors ' + createBtnClass + '"' +
+              ' class="sova-btn sova-btn-success"' +
               ' aria-label="Create selected issues on the tracker"' +
               ' data-tooltip="Create selected issues on the tracker">' +
               'Create Issues' +

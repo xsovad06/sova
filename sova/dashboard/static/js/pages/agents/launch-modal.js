@@ -99,6 +99,8 @@ var _launchModalState = null; // {issue, role, force, prNumber}
 var _launchTrigger = null; // the element that opened the launch modal, for focus return
 var _launchRequestId = 0; // monotonic counter to discard stale fetch responses
 
+// A complexity tier's own colour pair. Not badgeHtml() state tokens: `simple` is teal, which has no token, so the
+// helper keeps its table (only the colour pair changes on the template's `sova-badge` span). Unknown is gray.
 var _COMPLEXITY_COLORS = {
   trivial: 'bg-accent-green/20 text-accent-green',
   simple: 'bg-accent-teal/20 text-accent-teal',
@@ -106,12 +108,12 @@ var _COMPLEXITY_COLORS = {
   complex: 'bg-accent-peach/20 text-accent-peach',
   epic: 'bg-accent-red/20 text-accent-red',
 };
-var _BADGE_BASE = 'px-2 py-0.5 rounded-full text-xs ';
-var _BADGE_DEFAULT = 'bg-gray-600/30 text-gray-300';
+var _COMPLEXITY_DEFAULT = 'bg-gray-600/30 text-gray-300';
 
 function _setComplexityBadge(el, tier) {
   el.textContent = tier;
-  el.className = _BADGE_BASE + (_COMPLEXITY_COLORS[tier] || _BADGE_DEFAULT);
+  var known = Object.prototype.hasOwnProperty.call(_COMPLEXITY_COLORS, tier);
+  setColorClasses(el, known ? _COMPLEXITY_COLORS[tier] : _COMPLEXITY_DEFAULT);
 }
 
 var _CONFIRM_TIERS = { complex: true, epic: true };
@@ -195,11 +197,12 @@ var _LLM_OVERRIDE_ROLES = { researcher: true, developer: true, planner: true, re
 var _llmOverrideRequestId = 0;
 var _llmOverrideDefaultHelp = null;
 
-// Some browsers never show a title tooltip on a disabled <select>, so the
-// reason is also written into the visible help line under it.
+// A tooltip bubble does not render on a <select> and is hidden on a disabled host, so the reason rides on the
+// wrapper around the select and is also written into the visible help line under it.
 function _setLlmOverrideDisabled(sel, reason) {
   sel.disabled = true;
-  sel.title = reason;
+  var tip = document.getElementById('launch-llm-model-tip');
+  if (tip) tip.setAttribute('data-tooltip', reason);
   sel.classList.add('opacity-50', 'cursor-not-allowed');
   document.getElementById('launch-llm-model-help').textContent = reason + '.';
 }
@@ -216,7 +219,8 @@ function _prepareLlmOverrideSelect(role) {
   sel.appendChild(none);
   sel.value = '';
   sel.disabled = false;
-  sel.title = '';
+  var tip = document.getElementById('launch-llm-model-tip');
+  if (tip) tip.removeAttribute('data-tooltip');
   sel.classList.remove('opacity-50', 'cursor-not-allowed');
   var help = document.getElementById('launch-llm-model-help');
   if (_llmOverrideDefaultHelp === null) _llmOverrideDefaultHelp = help.textContent;

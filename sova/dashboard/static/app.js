@@ -597,14 +597,35 @@ function emptyStateHtml(title, hint) {
     (hint ? '<p class="sova-empty-hint">' + escapeHtml(hint) + '</p>' : '') + '</div>';
 }
 
-// opts: {size ('md' | 'sm'; anything else is the default size), valueClass, detailId}. The value shows '--' until filled.
+// opts: {size ('md' | 'sm'; anything else is the default size), valueClass, detailId, detail (fixed text for the line
+// under the value, escaped)}. The value shows '--' until filled; detailId or detail renders the detail line.
 function statCardHtml(label, valueId, opts) {
   opts = opts || {};
   var sizeClass = Object.prototype.hasOwnProperty.call(SOVA_STAT_SIZES, opts.size) ? ' ' + SOVA_STAT_SIZES[opts.size] : '';
+  var detailLine = opts.detailId || opts.detail
+    ? '<p class="sova-stat-detail"' + (opts.detailId ? ' id="' + escapeHtml(opts.detailId) + '"' : '') + '>' +
+      escapeHtml(opts.detail || '') + '</p>'
+    : '';
   return '<div class="sova-stat"><p class="sova-stat-label">' + escapeHtml(label) + '</p>' +
     '<p class="sova-stat-value' + sizeClass + (opts.valueClass ? ' ' + escapeHtml(opts.valueClass) : '') +
-    '" id="' + escapeHtml(valueId) + '">--</p>' +
-    (opts.detailId ? '<p class="sova-stat-detail" id="' + escapeHtml(opts.detailId) + '"></p>' : '') + '</div>';
+    '" id="' + escapeHtml(valueId) + '">--</p>' + detailLine + '</div>';
+}
+
+// A palette colour utility: a text or background colour (`text-accent-red`, `bg-gray-600/30`, `text-white`,
+// `text-red-400`) or an accent border colour. Size, alignment and surface classes (`text-xs`, `text-right`,
+// `bg-surface-card`) and neutral borders (`border-gray-700/50`, part of a card's shape) are not colours here.
+var _COLOR_CLASS_RE = /^(?:(?:text|bg)-(?:accent(?:-[a-z]+)?|white|black|(?:gray|red|green|yellow|blue|orange|sky|purple|teal|pink)-\d{2,3})|border-accent(?:-[a-z]+)?)(?:\/\d{1,3})?$/;
+
+// Swap the colour of an element built by a component (a stat value, a badge): every palette colour class
+// (_COLOR_CLASS_RE) is removed and colorClasses ('text-accent-red', or a stateBadgeClasses() pair; '' for none) added,
+// so the component's own classes (sova-stat-value and its size, sova-badge, text-xs, ml-2) survive the update a
+// wholesale className write would drop.
+function setColorClasses(el, colorClasses) {
+  if (!el) return;
+  Array.prototype.slice.call(el.classList).forEach(function(c) {
+    if (_COLOR_CLASS_RE.test(c)) el.classList.remove(c);
+  });
+  (colorClasses || '').split(/\s+/).filter(Boolean).forEach(function(c) { el.classList.add(c); });
 }
 
 /* ============================================================
@@ -2033,7 +2054,8 @@ function _applyHandoff(data) {
       if (unreadable.length) parts.push('Handoff file unreadable: ' + unreadable.map(baseName).join(', '));
       if (schemaInvalid.length) parts.push('Handoff file ignored by the pipeline (invalid schema): ' + schemaInvalid.map(baseName).join(', '));
       unreadableLabel.textContent = parts.join('; ');
-      unreadableLabel.title = unreadable.concat(schemaInvalid).join('\n');
+      // On the link, not the truncating label: the label's overflow would clip the bubble.
+      unreadableLabel.closest('a').setAttribute('data-tooltip', unreadable.concat(schemaInvalid).join('\n'));
     }
   }
 

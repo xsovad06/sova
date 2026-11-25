@@ -10,12 +10,13 @@ export function formatAge(seconds) {
   return Math.floor(seconds / 86400) + 'd';
 }
 
-function ageBadgeClasses(days) {
-  if (days > 14) return 'bg-accent-red/20 text-accent-red';
-  if (days > 7) return 'bg-accent-peach/20 text-accent-peach';
-  if (days > 3) return 'bg-accent-yellow/20 text-accent-yellow';
-  if (days >= 1) return 'bg-gray-600/20 text-gray-400';
-  return 'bg-accent-green/20 text-accent-green';
+// The state colour token (badgeHtml()'s `color`) for a PR or issue of this age in days.
+function ageBadgeColor(days) {
+  if (days > 14) return 'red';
+  if (days > 7) return 'peach';
+  if (days > 3) return 'yellow';
+  if (days >= 1) return 'gray';
+  return 'green';
 }
 
 var _ageDateFmt = { year: 'numeric', month: 'short', day: 'numeric' };
@@ -23,7 +24,7 @@ var _ageDateFmt = { year: 'numeric', month: 'short', day: 'numeric' };
 export function formatAgeBadge(seconds, createdAt) {
   if (!seconds || seconds <= 0) return '';
   var days = seconds / 86400;
-  var cls = ageBadgeClasses(days);
+  var color = ageBadgeColor(days);
   var tooltip = '';
   if (createdAt) {
     var d = new Date(createdAt);
@@ -37,8 +38,7 @@ export function formatAgeBadge(seconds, createdAt) {
     var approx = new Date(Date.now() - seconds * 1000);
     tooltip = 'Created ' + approx.toLocaleDateString(undefined, _ageDateFmt);
   }
-  var tooltipAttr = tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' : '';
-  return '<span class="text-xs px-1.5 py-0.5 rounded-full shrink-0 ' + cls + '"' + tooltipAttr + '>' + formatAge(seconds) + '</span>';
+  return badgeHtml(formatAge(seconds), { color: color, className: 'shrink-0', attrs: tooltip ? { 'data-tooltip': tooltip } : {} });
 }
 
 export function diffSizeLabel(additions, deletions) {

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import stat_card, btn, empty_state %}
 {% block title %}Dependency Health - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
@@ -9,34 +10,30 @@
             data-tooltip="Scan this project's dependencies. Turning it on starts a scan."></span>
       <span class="text-xs text-gray-400">Scanning</span>
     </span>
-    <button type="button" onclick="refreshSnapshot()" id="refresh-btn"
-            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-      Rescan
-    </button>
+    {{ btn("Rescan", "secondary", id="refresh-btn", attrs={"onclick": "refreshSnapshot()"}) }}
   </div>
 </div>
 
 <!-- Disabled state -->
 <div id="disabled-state" class="hidden mb-6">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
-    <p class="text-gray-400 mb-1">Dependency health scanning is off.</p>
-    <p class="text-xs text-gray-500">Turn on Scanning above to scan this project.</p>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    {{ empty_state("Dependency health scanning is off.", "Turn on Scanning above to scan this project.") }}
   </div>
 </div>
 
 <!-- Scanning state -->
 <div id="loading-state" class="hidden mb-6">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
-    <p class="text-gray-400 mb-1">Scanning dependencies...</p>
-    <p class="text-xs text-gray-500">The results appear here when the scan finishes.</p>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    {{ empty_state("Scanning dependencies...", "The results appear here when the scan finishes.") }}
   </div>
 </div>
 
 <!-- Empty state -->
 <div id="empty-state" class="hidden mb-6">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
-    <p class="text-gray-400 mb-1">No package manifests detected.</p>
-    <p class="text-xs text-gray-600">Supported: <code>package.json</code> / <code>package-lock.json</code> (npm), <code>requirements.txt</code> / <code>pyproject.toml</code> (Python).</p>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    {#- A block set is Markup under autoescape, so the hint keeps its <code> file names through empty_state(). -#}
+    {% set manifest_hint %}Supported: <code>package.json</code> / <code>package-lock.json</code> (npm), <code>requirements.txt</code> / <code>pyproject.toml</code> (Python).{% endset %}
+    {{ empty_state("No package manifests detected.", manifest_hint) }}
   </div>
 </div>
 
@@ -46,12 +43,12 @@
 
   <!-- Summary cards -->
   <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-    <div class="sova-stat"><p class="sova-stat-label">Total Deps</p><p class="sova-stat-value" id="stat-total">--</p></div>
-    <div class="sova-stat"><p class="sova-stat-label">Up To Date</p><p class="sova-stat-value text-accent-green" id="stat-up-to-date">--</p></div>
-    <div class="sova-stat"><p class="sova-stat-label">Major Behind</p><p class="sova-stat-value text-accent-yellow" id="stat-major-behind">--</p></div>
-    <div class="sova-stat"><p class="sova-stat-label">Deprecated</p><p class="sova-stat-value text-accent-red" id="stat-deprecated">--</p></div>
-    <div class="sova-stat"><p class="sova-stat-label">Vulnerable</p><p class="sova-stat-value text-accent-red" id="stat-vulnerable">--</p></div>
-    <div class="sova-stat"><p class="sova-stat-label">Stale (1yr+)</p><p class="sova-stat-value text-accent-yellow" id="stat-stale">--</p></div>
+    {{ stat_card("Total Deps", "stat-total") }}
+    {{ stat_card("Up To Date", "stat-up-to-date", value_class="text-accent-green") }}
+    {{ stat_card("Major Behind", "stat-major-behind", value_class="text-accent-yellow") }}
+    {{ stat_card("Deprecated", "stat-deprecated", value_class="text-accent-red") }}
+    {{ stat_card("Vulnerable", "stat-vulnerable", value_class="text-accent-red") }}
+    {{ stat_card("Stale (1yr+)", "stat-stale", value_class="text-accent-yellow") }}
   </div>
 
   <!-- Health bar -->
@@ -136,7 +133,7 @@ function setSortColumn(col) {
 function renderPackageTable() {
   var container = document.getElementById('package-table');
   if (_packages.length === 0) {
-    container.innerHTML = '<p class="text-gray-500 text-sm">No dependencies declared</p>';
+    container.innerHTML = emptyStateHtml('No dependencies declared');
     return;
   }
   sortPackages();

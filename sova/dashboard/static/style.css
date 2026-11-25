@@ -1181,7 +1181,7 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 /* Step label (visible on md+ screens) */
 .sova-step-label {
   display: none;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   color: #fff;
   text-shadow: 0 0 2px rgba(0,0,0,0.5);
   white-space: nowrap;
@@ -1347,7 +1347,7 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 .feed-section-label {
   margin: 0.25rem 0.25rem 0;
   color: rgb(var(--ctp-subtext0-rgb) / 0.7);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1391,7 +1391,7 @@ a.feed-period:hover { color: rgb(var(--ctp-text-rgb)); text-decoration: underlin
 .feed-briefing-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
 .feed-briefing-title { font-size: 0.75rem; font-weight: 600; color: rgb(var(--ctp-text-rgb)); }
 .feed-briefing-section-label {
-  font-size: 0.5625rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: rgb(var(--ctp-subtext0-rgb) / 0.8);
@@ -1471,7 +1471,9 @@ a.feed-period:hover { color: rgb(var(--ctp-text-rgb)); text-decoration: underlin
   border-radius: 9999px;
   background: var(--color-accent-red);
   color: #fff;
-  font-size: 0.625rem;
+  font-size: 0.75rem;
+  /* The 12px count ('1' to '9+') centred in the 16px box inside the border; an inherited line height overflows it. */
+  line-height: 1;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -1619,6 +1621,8 @@ body.feed-resizing { -webkit-user-select: none; user-select: none; cursor: col-r
   display: none;
 }
 
+/* The unreadable-handoff banner's full file paths show in the expanded sidebar too: its label truncates there. */
+.sidebar #handoff-unreadable-banner [data-tooltip]::after,
 body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   display: block;
   position: fixed;

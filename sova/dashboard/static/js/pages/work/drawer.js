@@ -243,7 +243,7 @@ function _render() {
         '<span class="text-sm font-bold text-accent tabular-nums">' + escapeHtml(ref) + '</span>' + _pill(board, stage) + statePill(entry) +
         '<span class="ml-auto flex items-center gap-1">' +
           (link ? '<a href="' + escapeHtml(link) + '" target="_blank" rel="noopener" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Open ' + escapeHtml(ref) + '">' + iconHtml('external-link') + '</a>' : '') +
-          '<button type="button" id="work-drawer-close" class="p-1 rounded text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors" aria-label="Close the details">' + iconHtml('close') + '</button>' +
+          '<button type="button" id="work-drawer-close" class="sova-btn sova-btn-ghost sova-btn-icon sova-work-btn-quiet" aria-label="Close the details">' + iconHtml('close') + '</button>' +
         '</span>' +
       '</div>' +
       '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || (prOnly ? ref : 'Issue #' + number)) + '</h3>' +

@@ -76,17 +76,17 @@
     const cmds = filteredCommands();
     const container = document.getElementById('cmd-list');
     if (!cmds.length) {
-      container.innerHTML = '<p class="text-sm text-gray-500 py-8 text-center">No commands match the filter.</p>';
+      container.innerHTML = emptyStateHtml('No commands match the filter.');
       return;
     }
 
     container.innerHTML = cmds.map(c => {
       const isActive = activeCommand && activeCommand.name === c.name;
       const driftBadge = c.has_local_drift
-        ? '<span class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-accent-yellow/20 text-accent-yellow shrink-0">drift</span>'
+        ? badgeHtml('drift', {color: 'yellow', className: 'ml-auto shrink-0'})
         : '';
       const installedDot = c.installed_path
-        ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-green shrink-0" title="Installed"></span>'
+        ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-green shrink-0" data-tooltip="Installed"></span>'
         : '';
       return `<button data-cmd="${esc(c.name)}"
         class="cmd-item w-full text-left px-3 py-2 rounded text-sm transition-colors flex items-center gap-2
@@ -117,28 +117,28 @@
     const container = document.getElementById('cmd-detail');
     const statusBadges = [];
     if (cmd.installed_path) {
-      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-green/20 text-accent-green">Installed</span>`);
+      statusBadges.push(badgeHtml('Installed', {color: 'green'}));
     } else {
-      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-gray-700/50 text-gray-400">Not installed</span>`);
+      statusBadges.push(badgeHtml('Not installed', {color: 'gray'}));
     }
     if (cmd.has_local_drift) {
-      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-yellow/20 text-accent-yellow">Local drift</span>`);
+      statusBadges.push(badgeHtml('Local drift', {color: 'yellow'}));
     }
     if (cmd.user_invocable) {
-      statusBadges.push(`<span class="text-[10px] px-2 py-0.5 rounded-full bg-accent-purple/20 text-accent-purple">User-invocable</span>`);
+      statusBadges.push(badgeHtml('User-invocable', {color: 'purple'}));
     }
 
     const contractHtml = [];
     if (cmd.inputs && cmd.inputs.length) {
       contractHtml.push(`<div>
-        <span class="text-[10px] text-gray-500 uppercase tracking-wide">Inputs</span>
-        <div class="flex flex-wrap gap-1 mt-1">${cmd.inputs.map(i => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${esc(i)}</span>`).join('')}</div>
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Inputs</span>
+        <div class="flex flex-wrap gap-1 mt-1">${cmd.inputs.map(i => badgeHtml(i, {color: 'purple'})).join('')}</div>
       </div>`);
     }
     if (cmd.outputs && cmd.outputs.length) {
       contractHtml.push(`<div>
-        <span class="text-[10px] text-gray-500 uppercase tracking-wide">Outputs</span>
-        <div class="flex flex-wrap gap-1 mt-1">${cmd.outputs.map(o => `<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green">${esc(o)}</span>`).join('')}</div>
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Outputs</span>
+        <div class="flex flex-wrap gap-1 mt-1">${cmd.outputs.map(o => badgeHtml(o, {color: 'green'})).join('')}</div>
       </div>`);
     }
 
@@ -152,15 +152,15 @@
         <div class="p-6 border-b border-gray-700/30">
           <div class="flex items-center gap-3 mb-2">
             <h3 class="text-lg font-semibold text-gray-100">${esc(cmd.name)}</h3>
-            <span class="text-[10px] px-2 py-0.5 rounded-full bg-accent/20 text-accent">${esc(cmd.category)}</span>
+            ${badgeHtml(cmd.category, {color: 'blue'})}
             ${statusBadges.join('')}
           </div>
           <p class="text-sm text-gray-400">${esc(cmd.description)}</p>
-          ${cmd.installed_path ? `<p class="text-[11px] text-gray-500 mt-2">Path: ${esc(cmd.installed_path)}</p>` : ''}
+          ${cmd.installed_path ? `<p class="text-xs text-gray-500 mt-2">Path: ${esc(cmd.installed_path)}</p>` : ''}
           ${contractHtml.length ? `<div class="flex gap-4 mt-3">${contractHtml.join('')}</div>` : ''}
         </div>
         <div class="p-6 prose prose-invert max-w-none text-sm">
-          ${contentHtml || '<p class="text-gray-500">No content available.</p>'}
+          ${contentHtml || emptyStateHtml('No content available.')}
         </div>
       </div>`;
   }

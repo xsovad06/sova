@@ -158,6 +158,7 @@
     var tbody = document.getElementById('rw-agent-tbody');
     if (tbody) {
       if (data.agents.length === 0) {
+        // Not emptyStateHtml(): its page-level padding would make this compact widget row several times taller.
         tbody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-500 py-2 text-xs">No agents running</td></tr>';
       } else {
         tbody.innerHTML = data.agents.map(function (a) {

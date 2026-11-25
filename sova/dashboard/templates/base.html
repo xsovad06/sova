@@ -57,7 +57,7 @@
     </div>
     <!-- Handoff unreadable banner (shown when a handoff file failed to parse) -->
     <div id="handoff-unreadable-banner" class="hidden px-4 py-2.5 bg-accent-red/10 border-b border-accent-red/30">
-      <a href="{{ prefix }}/work" class="flex items-center gap-2 text-xs text-accent-red hover:text-red-400 transition-colors">
+      <a href="{{ prefix }}/work" class="flex items-center gap-2 text-xs text-accent-red hover:text-red-400 transition-colors" data-tooltip-multiline>
         <span class="w-2 h-2 rounded-full bg-accent-red shrink-0"></span>
         <span id="handoff-unreadable-label" class="sidebar-label min-w-0 truncate">Handoff file unreadable</span>
       </a>
@@ -137,7 +137,7 @@
             <span id="auth-widget-label" class="shrink-0">provider</span>
             {% if footer_github_user %}<span id="auth-widget-user" class="min-w-0 truncate text-gray-500">&middot; {{ footer_github_user }}</span>{% endif %}
           </span>
-          <span class="sidebar-hide block text-[11px] text-gray-600">SOVA v0.1.0</span>
+          <span class="sidebar-hide block text-xs text-gray-600">SOVA v0.1.0</span>
         </span>
       </button>
       <div id="auth-widget-panel" class="auth-widget-panel hidden">
@@ -196,7 +196,7 @@
         </span>
         <div class="min-w-0">
           <span class="text-sm font-semibold text-gray-200 block leading-tight">SOVA</span>
-          <span class="text-[11px] text-gray-500 leading-tight">What I did and what I need</span>
+          <span class="text-xs text-gray-500 leading-tight">What I did and what I need</span>
         </div>
       </div>
       <button type="button" onclick="toggleFeedPanel()" class="feed-close-btn" aria-label="Close feed">
@@ -245,8 +245,8 @@
         <span>Enable notifications to get alerts when agents finish work</span>
       </div>
       <div class="flex items-center gap-2">
-        <button onclick="requestNotificationPermission()" class="px-3 py-1 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Enable</button>
-        <button onclick="dismissPermissionBanner()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>
+        <button type="button" onclick="requestNotificationPermission()" class="sova-btn sova-btn-primary sova-btn-xs">Enable</button>
+        <button type="button" onclick="dismissPermissionBanner()" class="sova-btn sova-btn-ghost sova-btn-xs">Dismiss</button>
       </div>
     </div>
     {% block content %}{% endblock %}
@@ -265,7 +265,7 @@
           </div>
           <span id="global-batch-progress-text" class="text-xs text-gray-400 whitespace-nowrap"></span>
         </div>
-        <button id="global-batch-cancel-btn" onclick="cancelGlobalBatch()" class="px-2 py-1 rounded text-xs text-accent-red hover:bg-accent-red/10 transition-colors">
+        <button type="button" id="global-batch-cancel-btn" onclick="cancelGlobalBatch()" class="sova-btn sova-btn-danger sova-btn-xs">
           Cancel
         </button>
       </div>

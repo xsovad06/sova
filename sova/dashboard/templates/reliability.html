@@ -78,18 +78,9 @@
 
 {% block scripts %}
 <script>
-function renderMessage(containerId, message, className) {
-  var el = document.getElementById(containerId);
-  if (!el) return;
-  el.innerHTML = '';
-  var p = document.createElement('p');
-  p.className = className;
-  p.textContent = message;
-  el.appendChild(p);
-}
-
 function renderEmpty(containerId, message) {
-  renderMessage(containerId, message, 'text-gray-500 text-sm');
+  var el = document.getElementById(containerId);
+  if (el) el.innerHTML = emptyStateHtml(message);
 }
 
 function getSelectedDays() {
@@ -144,16 +135,24 @@ async function loadSuccessByRole(days) {
   }
 }
 
+var _spendCardSeq = 0;
+
+// Built detached so the markup returned already holds the figures (statCardHtml emits '--' placeholders).
 function renderSpendCard(title, bucket) {
   var cost = parseFloat(bucket.cost_usd || 0);
   var tokensIn = parseInt(bucket.tokens_in || 0, 10);
   var tokensOut = parseInt(bucket.tokens_out || 0, 10);
-  return `<div class="rounded-lg border border-gray-700/50 p-4">
-    <p class="text-xs text-gray-500 uppercase mb-1">${title}</p>
-    <p class="text-2xl font-bold text-accent-green">$${cost.toFixed(2)}</p>
-    <p class="text-xs text-gray-500 mt-1">${bucket.run_count} run${bucket.run_count === 1 ? '' : 's'}</p>
-    <p class="text-xs text-gray-600 mt-1">${formatTokenCount(tokensIn)} in / ${formatTokenCount(tokensOut)} out tok</p>
-  </div>`;
+  var valueId = 'spend-card-' + (++_spendCardSeq);
+  var holder = document.createElement('div');
+  holder.innerHTML = statCardHtml(title, valueId, {size: 'md', valueClass: 'text-accent-green', detailId: valueId + '-detail'});
+  holder.querySelector('#' + valueId).textContent = '$' + cost.toFixed(2);
+  var detail = holder.querySelector('#' + valueId + '-detail');
+  detail.textContent = bucket.run_count + ' run' + (bucket.run_count === 1 ? '' : 's');
+  var tokens = detail.cloneNode(false);
+  tokens.removeAttribute('id');
+  tokens.textContent = formatTokenCount(tokensIn) + ' in / ' + formatTokenCount(tokensOut) + ' out tok';
+  detail.after(tokens);
+  return holder.innerHTML;
 }
 
 async function loadSpendByOutcome(days) {
@@ -163,7 +162,7 @@ async function loadSpendByOutcome(days) {
       renderEmpty('spend-by-outcome', 'No terminal runs in the last ' + days + ' days');
       return;
     }
-    var nonCompletingLabel = 'Non-Completing (' + escapeHtml((data.non_completing_statuses || []).join('/')) + ')';
+    var nonCompletingLabel = 'Non-Completing (' + (data.non_completing_statuses || []).join('/') + ')';
     document.getElementById('spend-by-outcome').innerHTML =
       renderSpendCard('Completing (done)', data.completing) +
       renderSpendCard(nonCompletingLabel, data.non_completing);

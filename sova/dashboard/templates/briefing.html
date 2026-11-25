@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import empty_state %}
 {% block title %}Briefing - SOVA{% endblock %}
 {% block content %}
 
@@ -13,9 +14,9 @@
   </div>
 </div>
 
-<div id="briefing-empty-state" class="hidden bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center mb-6">
-  <p class="text-gray-400 mb-2">No awareness providers are configured yet.</p>
-  <a href="{{ prefix|default('') }}/settings" class="text-accent hover:text-blue-300 text-sm transition-colors">Configure providers in Settings</a>
+<div id="briefing-empty-state" class="hidden bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  {{ empty_state("No awareness providers are configured yet.") }}
+  <p class="text-center pb-4"><a href="{{ prefix|default('') }}/settings" class="text-accent hover:text-blue-300 text-sm transition-colors">Configure providers in Settings</a></p>
 </div>
 
 <div id="briefing-all-failed-banner" class="hidden bg-accent-red/10 border border-accent-red/30 rounded-lg p-4 mb-6">
@@ -111,7 +112,7 @@ function _briefingRenderGreeting() {
 function _briefingItemCard(item, borderClass) {
   var lines = '<div class="flex items-start justify-between gap-2">' +
     '<p class="font-medium text-sm">' + _briefingUrgencyBadge(item.urgency) + ' ' + escapeHtml(item.title) + '</p>' +
-    '<button onclick="dismissBriefingItem(\'' + escapeHtml(escapeJsStr(item.id)) + '\')" class="text-xs text-gray-600 hover:text-gray-400 transition-colors shrink-0" aria-label="Dismiss">&times;</button>' +
+    '<button type="button" onclick="dismissBriefingItem(\'' + escapeHtml(escapeJsStr(item.id)) + '\')" class="sova-btn sova-btn-ghost sova-btn-icon shrink-0" aria-label="Dismiss">&times;</button>' +
     '</div>';
   if (item.body) {
     lines += '<p class="text-xs text-gray-500 mt-1">' + escapeHtml(item.body.slice(0, 200)) + '</p>';
@@ -134,7 +135,7 @@ function _briefingRemoveItem(itemId) {
   document.getElementById('briefing-attention-count').textContent =
     remaining ? (remaining + (remaining === 1 ? ' item' : ' items')) : '';
   if (remaining === 0) {
-    attention.innerHTML = '<p class="text-gray-500 text-sm">Nothing needs your attention right now.</p>';
+    attention.innerHTML = emptyStateHtml('Nothing needs your attention right now.');
   }
   if (document.getElementById('briefing-email').querySelectorAll('[data-item-id]').length === 0) {
     document.getElementById('briefing-email-section').classList.add('hidden');
@@ -159,7 +160,7 @@ function _briefingRenderAttention(items) {
   var countEl = document.getElementById('briefing-attention-count');
   countEl.textContent = items.length ? (items.length + (items.length === 1 ? ' item' : ' items')) : '';
   container.innerHTML = items.length === 0
-    ? '<p class="text-gray-500 text-sm">Nothing needs your attention right now.</p>'
+    ? emptyStateHtml('Nothing needs your attention right now.')
     : items.map(function(i) { return _briefingItemCard(i, 'border-accent-yellow/30'); }).join('');
 }
 
@@ -177,7 +178,7 @@ function _briefingRenderEmail(items) {
 function _briefingRenderSchedule(items) {
   var container = document.getElementById('briefing-schedule');
   if (items.length === 0) {
-    container.innerHTML = '<p class="text-gray-500 text-sm">Nothing scheduled.</p>';
+    container.innerHTML = emptyStateHtml('Nothing scheduled.');
     return;
   }
   container.innerHTML = '<div class="flex flex-col gap-2">' + items.map(function(i) {
@@ -192,7 +193,7 @@ function _briefingRenderSchedule(items) {
 function _briefingRenderPulses(pulses) {
   var container = document.getElementById('briefing-pulses');
   if (pulses.length === 0) {
-    container.innerHTML = '<p class="text-gray-500 text-sm">No registered projects.</p>';
+    container.innerHTML = emptyStateHtml('No registered projects.');
     return;
   }
   container.innerHTML = pulses.map(function(p) {
@@ -209,7 +210,7 @@ function _briefingRenderInformational(items) {
   var countEl = document.getElementById('briefing-informational-count');
   countEl.textContent = items.length ? String(items.length) : '';
   container.innerHTML = items.length === 0
-    ? '<p class="text-gray-500 text-sm">No recent activity.</p>'
+    ? emptyStateHtml('No recent activity.')
     : items.map(function(i) {
         return '<p class="text-sm text-gray-400">• ' + escapeHtml(i.title) +
           (i.timestamp ? ' <span class="text-xs text-gray-600">(' + _briefingTimeAgo(i.timestamp) + ')</span>' : '') + '</p>';
@@ -220,12 +221,11 @@ function _briefingIsNotConfigured(status) {
   return (status.message || '').toLowerCase().indexOf('not configured') !== -1;
 }
 
+// A state color token for badgeHtml(): green when the provider loaded, yellow when it is not configured, else red.
 function _briefingBadgeColor(status) {
-  if (status.ok) return { dot: 'bg-accent-green', text: 'text-accent-green' };
-  if (_briefingIsNotConfigured(status)) {
-    return { dot: 'bg-accent-yellow', text: 'text-accent-yellow' };
-  }
-  return { dot: 'bg-accent-red', text: 'text-accent-red' };
+  if (status.ok) return 'green';
+  if (_briefingIsNotConfigured(status)) return 'yellow';
+  return 'red';
 }
 
 function _briefingRenderProviderBadges(statuses) {
@@ -233,8 +233,8 @@ function _briefingRenderProviderBadges(statuses) {
   container.innerHTML = statuses.map(function(s) {
     var color = _briefingBadgeColor(s);
     var label = (s.display_name !== undefined && s.display_name !== null && s.display_name !== '') ? s.display_name : s.name;
-    return '<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-surface-card border border-gray-700/50 text-xs ' + color.text + '" title="' + escapeHtml(s.message) + '">' +
-      '<span class="w-1.5 h-1.5 rounded-full ' + color.dot + '"></span>' + escapeHtml(label) + '</span>';
+    var attrs = s.message ? { 'data-tooltip': s.message, 'data-tooltip-wide': '' } : {};
+    return badgeHtml(label, { color: color, attrs: attrs });
   }).join('');
 }
 

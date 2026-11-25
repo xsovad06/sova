@@ -58,10 +58,8 @@ function renderSpecs(specs) {
   var container = document.getElementById('specs-content');
 
   if (specs.length === 0) {
-    container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
-      '<p class="text-gray-500">No specs found</p>' +
-      '<p class="text-xs text-gray-600 mt-1">Specs are created when the researcher agent runs on issues</p>' +
-    '</div>';
+    container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50">' +
+      emptyStateHtml('No specs found', 'Specs are created when the researcher agent runs on issues') + '</div>';
     return;
   }
 
