@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from sova.config.loader import load_config
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
-from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION
+from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION, invalidate_queue_cache
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -196,6 +196,17 @@ async def start_batch_run(
     return {"started": None, "remaining": [], "agent_result": None, "failed": failed}
 
 
+def _finish(job: BatchJob, project_dir: Path) -> None:
+    """Mark a batch ended, after dropping the cached tracker list its items relabelled.
+
+    The cache goes first: the Work page re-reads GET /queue/untriaged as soon as it sees the batch end, and a cached
+    list from before the batch would offer the issues it just triaged for a second, paid, triage.
+    """
+    invalidate_queue_cache(project_dir)
+    job.status = "cancelled" if job.cancelled else "done"
+    job.completed_at = datetime.now(timezone.utc)
+
+
 async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
     try:
         from sova.adapters import create_adapter
@@ -272,8 +283,7 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                 item.status = "failed"
                 item.detail = f"Batch setup failed: {exc}"
     finally:
-        job.status = "cancelled" if job.cancelled else "done"
-        job.completed_at = datetime.now(timezone.utc)
+        _finish(job, project_dir)
         _prune_completed()
         log.info("batch.completed", batch_id=job.batch_id, status=job.status)
 
@@ -399,8 +409,7 @@ async def _run_batch_harden(
                 item.status = "failed"
                 item.detail = f"Batch setup failed: {exc}"
     finally:
-        job.status = "cancelled" if job.cancelled else "done"
-        job.completed_at = datetime.now(timezone.utc)
+        _finish(job, project_dir)
         _prune_completed()
         log.info("batch.completed", batch_id=job.batch_id, status=job.status)
 

@@ -597,6 +597,14 @@ function emptyStateHtml(title, hint) {
     (hint ? '<p class="sova-empty-hint">' + escapeHtml(hint) + '</p>' : '') + '</div>';
 }
 
+// The SOVA owl, whole (the owl_avatar macro's twin): the circle is a backdrop and the image is never clipped, so the
+// ears stick out past it. size: 'sm' | 'md' | 'lg'; anything else is 'md'.
+var SOVA_OWL_SIZES = ['sm', 'md', 'lg'];
+function owlAvatarHtml(size) {
+  var s = SOVA_OWL_SIZES.indexOf(size) !== -1 ? size : 'md';
+  return '<span class="sova-owl sova-owl-' + s + '" aria-hidden="true"><img src="/static/owl-avatar.png" alt=""></span>';
+}
+
 // opts: {size ('md' | 'sm'; anything else is the default size), valueClass, detailId, detail (fixed text for the line
 // under the value, escaped)}. The value shows '--' until filled; detailId or detail renders the detail line.
 function statCardHtml(label, valueId, opts) {
@@ -2074,18 +2082,13 @@ function _applyHandoff(data) {
    7b. ACTIVITY FEED (shared socket)
    ============================================================ */
 
-// The panel body is drawn by js/feed/activity.js from GET /feed/activity (it also owns the unread badge). This
-// section keeps what is not narration: a toast for each live warning or error, the gap fill after a reconnect, the
-// morning briefing card, and the panel's open state, width and Escape key.
+// The panel is js/feed/panel.js (open state, width, briefing card) on the shared side panel, and its body is drawn by
+// js/feed/activity.js (it also owns the unread badge). This section keeps what is neither: a toast for each live
+// warning or error and the gap fill after a reconnect.
 var _feedLastId = 0;           // highest id seen (newest)
 var _feedSeenIds = {};
 var _feedSeenCount = 0;
-var _feedPanelOpen = false;
-var _feedBriefingLoaded = false;
 var _FEED_SEEN_MAX = 1000;
-var _FEED_WIDTH_KEY = 'sova.feed.width';
-var _FEED_WIDTH_MIN = 400;
-var _FEED_WIDTH_MAX = 800;
 
 function _feedGapFill() {
   var url = apiUrl('/feed/history?since_id=' + _feedLastId);
@@ -2127,161 +2130,6 @@ function _feedAddEvent(event) {
                        event.severity === 'warning' ? 'SOVA: Warning' : 'SOVA';
     sendBrowserNotification(browserTitle, event.title);
   }
-}
-
-function _feedLoadBriefing() {
-  if (_feedBriefingLoaded) return;
-  _feedBriefingLoaded = true;
-  fetch(apiUrl('/feed/briefing')).then(function(r) { return r.json(); }).then(function(b) {
-    var slot = document.getElementById('feed-briefing-slot');
-    if (slot) slot.innerHTML = _feedBuildBriefing(b);
-  }).catch(function() { /* ignore */ });
-}
-
-function _feedBuildBriefing(b) {
-  if (!b) return '';
-  var attention = b.attention_items || [];
-  var info = b.informational_items || [];
-  var schedule = b.schedule || [];
-  if (attention.length === 0 && info.length === 0 && schedule.length === 0) return '';
-
-  function itemRow(it, dotColor) {
-    var safeLink = escapeHtml(it.title);
-    if (it.source_url) {
-      try {
-        var proto = new URL(it.source_url).protocol;
-        if (proto === 'http:' || proto === 'https:') {
-          safeLink = '<a href="' + escapeHtml(it.source_url) + '" target="_blank" rel="noopener">' + escapeHtml(it.title) + '</a>';
-        }
-      } catch(e) { /* invalid URL, render as plain text */ }
-    }
-    return '<div class="feed-briefing-item"><span class="feed-briefing-dot" style="background:' + dotColor + '"></span><span>' + safeLink + '</span></div>';
-  }
-
-  var sections = '';
-  if (attention.length) {
-    sections += '<div class="feed-briefing-section-label">Needs attention</div>' +
-      attention.map(function(it) { return itemRow(it, 'var(--color-accent-red)'); }).join('');
-  }
-  if (info.length) {
-    sections += '<div class="feed-briefing-section-label">Updates</div>' +
-      info.map(function(it) { return itemRow(it, 'var(--color-accent)'); }).join('');
-  }
-  if (schedule.length) {
-    sections += '<div class="feed-briefing-section-label">Schedule</div>' +
-      schedule.map(function(it) { return itemRow(it, 'var(--color-accent-yellow)'); }).join('');
-  }
-
-  return '<div id="feed-briefing-card" class="feed-briefing">' +
-    '<div class="feed-briefing-head">' +
-      '<span class="feed-avatar feed-avatar-owl feed-avatar-sm"><img src="/static/owl-avatar.png" alt="SOVA"></span>' +
-      '<span class="feed-briefing-title">Morning briefing</span>' +
-    '</div>' + sections + '</div>';
-}
-
-function _feedClampWidth(px) {
-  return Math.min(_FEED_WIDTH_MAX, Math.max(_FEED_WIDTH_MIN, Math.round(px)));
-}
-
-// A stored width that is missing, unreadable or not a number gives null (the CSS default applies);
-// a number outside the allowed range is clamped.
-function _feedStoredWidth() {
-  var raw = safeStorageGet(_FEED_WIDTH_KEY);
-  // Plain decimal text only: Number() would turn whitespace into 0 and '0x300' into 768.
-  if (raw === null || !/^\s*\d+(\.\d+)?\s*$/.test(raw)) return null;
-  var px = Number(raw);
-  return isFinite(px) ? _feedClampWidth(px) : null;
-}
-
-function _feedSetWidth(panel, px) {
-  panel.style.setProperty('--feed-panel-width', px + 'px');
-}
-
-function _feedBindResize(panel) {
-  var handle = document.getElementById('feed-resize-handle');
-  if (!handle) return;
-  var stored = _feedStoredWidth();
-  if (stored !== null) _feedSetWidth(panel, stored);
-
-  var dragging = false;
-  var dragRight = 0;     // the panel's right edge, which stops short of a classic page scrollbar
-  var dragWidth = null;  // set by the first move, so a click on the handle never rewrites the stored width
-  function end(e) {
-    if (!dragging) return;
-    dragging = false;
-    if (handle.hasPointerCapture && handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
-    document.body.classList.remove('feed-resizing');
-    if (dragWidth !== null) safeStorageSet(_FEED_WIDTH_KEY, String(dragWidth));
-    dragWidth = null;
-  }
-  handle.addEventListener('pointerdown', function(e) {
-    if (e.button !== 0) return;
-    handle.setPointerCapture(e.pointerId);
-    document.body.classList.add('feed-resizing');
-    dragRight = panel.getBoundingClientRect().right;
-    dragging = true;
-    e.preventDefault();
-  });
-  handle.addEventListener('pointermove', function(e) {
-    if (!dragging) return;
-    dragWidth = _feedClampWidth(dragRight - e.clientX);
-    _feedSetWidth(panel, dragWidth);
-  });
-  handle.addEventListener('pointerup', end);
-  handle.addEventListener('pointercancel', end);
-  // Capture can also be lost without pointerup (window blur, the handle hidden mid-drag).
-  handle.addEventListener('lostpointercapture', end);
-}
-
-function toggleFeedPanel() {
-  var panel = document.getElementById('feed-panel');
-  var fab = document.getElementById('feed-fab');
-  if (!panel) return;
-
-  _feedPanelOpen = !_feedPanelOpen;
-
-  if (_feedPanelOpen) {
-    panel.classList.remove('hidden');
-    document.body.classList.add('feed-open');
-    if (fab) fab.setAttribute('aria-expanded', 'true');
-    _feedLoadBriefing();
-  } else {
-    panel.classList.add('hidden');
-    document.body.classList.remove('feed-open');
-    if (fab) fab.setAttribute('aria-expanded', 'false');
-  }
-  // js/feed/activity.js marks the attention lines seen on open and keeps the badge.
-  document.dispatchEvent(new CustomEvent('sova:feed-toggle', { detail: { open: _feedPanelOpen } }));
-}
-
-// A dialog owns Escape while it is open. A shared modal (sovaModalOpen) stops the key before it gets here; any
-// other dialog does not, so the panel checks for open dialogs itself.
-function _feedDialogOpen() {
-  if (sovaModalIsOpen()) return true;
-  // A closed dialog can stay in the DOM (aria-hidden, off-screen or display:none), so test what is shown.
-  var panel = document.getElementById('feed-panel');
-  var found = document.querySelectorAll('dialog[open], [role="dialog"], [aria-modal="true"]');
-  return Array.prototype.some.call(found, function(el) {
-    return !(panel && panel.contains(el)) && !el.classList.contains('hidden') &&
-      el.getAttribute('aria-hidden') !== 'true' && el.getClientRects().length > 0;
-  });
-}
-
-function initFeedPanel() {
-  var panel = document.getElementById('feed-panel');
-  if (!panel) return;
-  _feedBindResize(panel);
-  // Escape closes the panel only while it is open and no dialog or earlier handler has claimed the key.
-  document.addEventListener('keydown', function(e) {
-    if (e.key !== 'Escape' || e.defaultPrevented || !_feedPanelOpen || _feedDialogOpen()) return;
-    // Focus returns to the floating button unless the user was typing in a page field outside the panel.
-    var active = document.activeElement;
-    var editable = !!active && !panel.contains(active) &&
-      (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
-    toggleFeedPanel();
-    var fab = document.getElementById('feed-fab');
-    if (fab && !editable) fab.focus();
-  });
 }
 
 /* ============================================================
@@ -2364,6 +2212,14 @@ var _globalBatchPollInterval = null;
 // polls 12 times a minute, so several tabs on one device stay under the default budget.
 var _GLOBAL_BATCH_POLL_MS = 5000;
 
+// Whether this tab is following a batch (started here, resumed after a reload, or found running on the server). A
+// control that starts a batch is disabled while it is: the `sova:batch-change` event says when that changes.
+function globalBatchRunning() { return _globalBatchId !== null; }
+
+function _announceGlobalBatch() {
+  document.dispatchEvent(new CustomEvent('sova:batch-change', { detail: { running: _globalBatchId !== null } }));
+}
+
 function _batchStorageKey() {
   var slug = window.SOVA_PROJECT_SLUG || '';
   return slug ? 'sova-batch-id-' + slug : 'sova-batch-id';
@@ -2392,6 +2248,7 @@ function startGlobalBatch(batchId, action, total) {
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar(action, total);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
+  _announceGlobalBatch();
 }
 
 function _resumeGlobalBatchPolling(batchId) {
@@ -2399,6 +2256,7 @@ function _resumeGlobalBatchPolling(batchId) {
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar('batch', 0);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
+  _announceGlobalBatch();
   _pollGlobalBatch();
 }
 
@@ -2506,6 +2364,7 @@ function _clearGlobalBatch() {
   }
 
   if (typeof _onGlobalBatchCleared === 'function') _onGlobalBatchCleared();
+  _announceGlobalBatch();
 }
 
 /* ============================================================
@@ -2588,7 +2447,6 @@ _initGithubRepo();
 initSidebarCollapse();
 initSidebarTooltips();
 initSidebarMore();
-initFeedPanel();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();

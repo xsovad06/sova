@@ -11,7 +11,7 @@ from sova.config.context import get_project_dir
 from sova.dashboard.services import batch_service
 from sova.dashboard.services.agent_validation import suitability_blocked_detail
 from sova.dashboard.services.control_service import start_agent
-from sova.dashboard.services.queue_service import get_priority_queue
+from sova.dashboard.services.queue_service import get_priority_queue, untriaged_issues
 
 router = APIRouter(tags=["queue"])
 
@@ -56,6 +56,17 @@ async def queue() -> dict:
     project_dir = get_project_dir()
     items = await get_priority_queue(project_dir)
     return {"queue": items}
+
+
+@router.get("/queue/untriaged")
+async def queue_untriaged() -> dict:
+    """The queue's issues that still need triage, for the Work page's Triage all.
+
+    `untriaged` lists the backlog issues (`{issue, title}`) in queue order, so the page never names a tracker state
+    itself. It is null when the tracker could not be read, since an empty read then says nothing about the backlog.
+    Reads only the cached tracker list, not the run history the full queue adds, so the page can refresh it often.
+    """
+    return {"untriaged": await untriaged_issues(get_project_dir())}
 
 
 @router.post(

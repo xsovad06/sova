@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from itertools import takewhile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -82,6 +83,19 @@ _queue_cache: dict[str, tuple[float, list[Task]]] = {}
 # compares its captured generation before caching so it can't resurrect the
 # pre-invalidation result and undo the invalidation for the rest of the TTL.
 _queue_cache_generation: dict[str, int] = {}
+
+
+def _queue_cache_key(project_dir: Path | None) -> str:
+    """The key of a project's entries in the queue caches: the path as the caller passed it, "" for none."""
+    return str(project_dir) if project_dir is not None else ""
+
+
+@dataclass(frozen=True)
+class _TaskRead:
+    """The adapter's actionable tasks, and whether the tracker read failed (the list is then empty, not known empty)."""
+
+    tasks: list[Task]
+    failed: bool = False
 
 
 def invalidate_queue_cache(project_dir: Path) -> None:
@@ -170,12 +184,29 @@ async def get_priority_queue(
 
 
 async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
-    """Return the priority-sorted actionable tasks from the adapter, cached per project."""
-    cache_key = str(project_dir or "")
+    """Return the priority-sorted actionable tasks from the adapter, cached per project (empty when unreadable)."""
+    return (await _read_actionable_tasks(project_dir)).tasks
+
+
+async def untriaged_issues(project_dir: Path | None) -> list[dict] | None:
+    """The queue's backlog issues in queue order, as ``{issue, title}``, or None when the tracker could not be read.
+
+    Reads only the cached adapter list (no run history, PR or spec lookups), so the Work page's Triage all count
+    stays cheap to refresh. None is not an empty backlog: nothing could be read.
+    """
+    read = await _read_actionable_tasks(project_dir)
+    if read.failed:
+        return None
+    return [{"issue": t.id, "title": t.title} for t in read.tasks if t.state == TaskState.BACKLOG]
+
+
+async def _read_actionable_tasks(project_dir: Path | None) -> _TaskRead:
+    """Read the actionable tasks (cached per project), returning the failure with them rather than in module state."""
+    cache_key = _queue_cache_key(project_dir)
     now = time.monotonic()
     cached = _queue_cache.get(cache_key)
     if cached and (now - cached[0]) < _QUEUE_CACHE_TTL:
-        return cached[1]
+        return _TaskRead(cached[1])
     # setdefault, not get: the key must exist in the dict *before* the await
     # below so a concurrent invalidate_queue_cache() can see and bump it.
     generation = _queue_cache_generation.setdefault(cache_key, 0)
@@ -186,10 +217,11 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
         cfg = load_config(project_dir)
     except Exception:  # noqa: BLE001 (queue is empty rather than broken when config cannot be loaded)
         log.debug("queue.config_load_failed", exc_info=True)
-        return []
+        return _TaskRead([], failed=True)
 
     if cfg.task_source.type == "github" and not cfg.github_repo:
-        return []
+        # No repository to read: the empty queue says nothing about the tracker.
+        return _TaskRead([], failed=True)
 
     from sova.adapters.base import TaskFilters
 
@@ -199,14 +231,14 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
     except Exception as e:  # noqa: BLE001 (adapter construction and task listing each fail differently)
         log.warning("queue.fetch_tasks_failed", error=str(e), exc_info=True)
         _queue_cache.pop(cache_key, None)
-        return []
+        return _TaskRead([], failed=True)
 
     from sova.supervisor.github_quota import get_github_quota_tracker
 
     if not tasks and get_github_quota_tracker(cfg.github_user).should_skip():
         log.warning("queue.empty_due_to_rate_limit")
         _queue_cache.pop(cache_key, None)
-        return []
+        return _TaskRead([], failed=True)
 
     actionable = [t for t in tasks if t.state in _ACTIONABLE_STATES]
     actionable.sort(
@@ -223,7 +255,7 @@ async def _get_actionable_tasks(project_dir: Path | None) -> list[Task]:
     # would resurrect stale data for the rest of the TTL.
     if _queue_cache_generation.get(cache_key, 0) == generation:
         _queue_cache[cache_key] = (time.monotonic(), actionable)
-    return actionable
+    return _TaskRead(actionable)
 
 
 async def _enrich_spec_status(queue: list[dict], project_dir: Path | None) -> None:

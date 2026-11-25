@@ -63,6 +63,7 @@ _PRELUDE_FUNCTIONS = (
     "sovaBtn",
     "badgeHtml",
     "emptyStateHtml",
+    "owlAvatarHtml",
     "statCardHtml",
     "statusBadge",
     "setColorClasses",
@@ -74,6 +75,7 @@ _PRELUDE_VARIABLES = (
     "SOVA_BTN_VARIANTS",
     "SOVA_BTN_SIZES",
     "SOVA_STAT_SIZES",
+    "SOVA_OWL_SIZES",
     "_COLOR_CLASS_RE",
 )
 
@@ -527,3 +529,45 @@ class TestTrustedBuildersEscapeEveryOption:
     def test_hostile_values_in_every_argument_come_out_escaped(self, call: str) -> None:
         html = _node(call, extra=f"var h = {json.dumps(_HOSTILE)};")
         assert "<img" not in html
+
+
+class TestOwlAvatar:
+    """The SOVA owl renders whole through one helper: the owl_avatar macro and its owlAvatarHtml twin."""
+
+    @pytest.mark.parametrize("size", ["sm", "md", "lg", "huge", ""])
+    def test_macro_and_helper_emit_the_same_markup(self, size: str) -> None:
+        assert _squash(_macro("owl_avatar", size)) == _node(f"owlAvatarHtml({json.dumps(size)})")
+
+    def test_an_unknown_size_is_md_and_the_image_is_decorative(self) -> None:
+        html = _macro("owl_avatar", "huge")
+        assert 'class="sova-owl sova-owl-md"' in html
+        assert 'aria-hidden="true"' in html
+        assert 'alt=""' in html
+
+    def test_every_size_has_a_rule_and_nothing_clips_the_image(self) -> None:
+        for size in ("sm", "md", "lg"):
+            assert re.search(rf"\.sova-owl-{size} \{{", _CSS), size
+        owl = _CSS[_CSS.index(".sova-owl {") :]
+        assert "overflow" not in owl[: owl.index("}")]
+
+    @pytest.mark.parametrize("container", [".feed-fab", ".feed-panel-header", ".feed-briefing", ".feed-briefing-head"])
+    def test_no_container_of_the_owl_clips_its_ears(self, container: str) -> None:
+        """The ears overflow the owl's circle, so the boxes it sits in (the owl button, the feed header, the briefing
+        card and its head) must not clip either: a border-radius clips only with an overflow set."""
+        rules = re.findall(rf"(?m)^{re.escape(container)}\s*\{{([^}}]*)\}}", _CSS)
+        assert rules, f"no rule for {container}"
+        for body in rules:
+            assert not re.search(r"\boverflow(-[xy])?\s*:\s*(hidden|clip)", body), container
+            assert "clip-path" not in body, container
+
+    def test_every_owl_is_drawn_by_the_helper_inside_an_unclipped_element(self) -> None:
+        base = (DASHBOARD_DIR / "templates" / "base.html").read_text(encoding="utf-8")
+        header = base[base.index('<div class="feed-panel-header">') :]
+        assert "owl_avatar(" in header[: header.index("data-panel-close")], "the feed header"
+        fab = base[base.index('<button type="button" id="feed-fab"') :]
+        assert "owl_avatar(" in fab[: fab.index("</button>")], "the owl button"
+        panel_js = (_STATIC / "js" / "feed" / "panel.js").read_text(encoding="utf-8")
+        assert "'<div class=\"feed-briefing-head\">' + owlAvatarHtml('sm')" in panel_js, "the briefing card"
+        for match in re.finditer(r"\{\{ owl_avatar\(", base):
+            opening = base[: match.start()].rsplit("<", 1)[1]
+            assert "overflow-hidden" not in opening and "clip" not in opening, opening

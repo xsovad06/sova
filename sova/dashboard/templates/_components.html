@@ -43,6 +43,11 @@
 <div class="sova-empty"><p>{{ title }}</p>{% if hint %}<p class="sova-empty-hint">{{ hint }}</p>{% endif %}</div>
 {%- endmacro -%}
 
+{#- The SOVA owl, whole: the circle is only a backdrop and the image (about 90% of it, object-fit: contain) is never clipped, so the ears stick out past the circle. size is "sm" (30px), "md" (36px) or "lg" (52px); anything else is "md". -#}
+{%- macro owl_avatar(size="md") -%}
+<span class="sova-owl sova-owl-{{ size if size in ("sm", "md", "lg") else "md" }}" aria-hidden="true"><img src="/static/owl-avatar.png" alt=""></span>
+{%- endmacro -%}
+
 {%- macro card_header(title, action_text="", action_href="#", title_id="") -%}
 <div class="sova-card-header">
   <h3 class="text-sm font-medium text-gray-400"{% if title_id %} id="{{ title_id }}"{% endif %}>{{ title }}</h3>

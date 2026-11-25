@@ -388,8 +388,8 @@ function _onListClick(e) {
   if (button) _runAction(button);
 }
 
-// The panel opened or closed (app.js's toggleFeedPanel dispatches this): opening marks every line seen and
-// fetches the current payload.
+// The panel opened or closed (js/feed/panel.js dispatches this from the shared side panel): opening marks every line
+// seen and fetches the current payload.
 function _onToggle(e) {
   _open = !!(e.detail && e.detail.open);
   if (_open) {
@@ -408,11 +408,12 @@ function _onStorage(e) {
   _updateBadge();
 }
 
-// The panel may already be open when this module starts (app.js restores it, or this deferred script loads after
-// the toggle fired): read the state instead of waiting for an event that has gone by.
+// The panel may already be open when this module starts (it loads after js/feed/panel.js, and the owl button can be
+// pressed before it does): read the state instead of waiting for an event that has gone by. The shared side panel
+// names the open panel on the body.
 function _panelOpenNow() {
   var body = document.body;
-  return !!(body && body.classList && body.classList.contains('feed-open'));
+  return !!(body && body.getAttribute && body.getAttribute('data-side-panel') === 'feed');
 }
 
 export function init() {

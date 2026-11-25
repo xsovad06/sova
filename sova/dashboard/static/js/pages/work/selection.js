@@ -2,8 +2,8 @@
 //
 // Selecting an issue marks its open blockers (everything it waits for, through any number of steps) and its
 // dependents (everything waiting for it), and dims the rest. The relations come from the board payload: every
-// entry's depends_on and dependents, and each chain issue's depends_on. Escape, the drawer's close button, a click
-// outside the drawer and a second click on the selected card clear the selection.
+// entry's depends_on and dependents, and each chain issue's depends_on. A second click on the selected card clears the
+// selection, and so does every way the drawer closes (drawer.js, on the shared side panel, which owns Escape).
 
 var _selected = null;
 var _up = new Set();
@@ -132,8 +132,5 @@ export function relationChip(number) {
 export function upstreamOf() { return new Set(_up); }
 export function downstreamOf() { return new Set(_down); }
 
-export function init() {
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && _selected !== null) clearSelection();
-  });
-}
+// Nothing to bind: Escape belongs to the drawer's side panel. Kept so the page starts every module the same way.
+export function init() {}

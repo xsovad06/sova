@@ -262,7 +262,7 @@ Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-t
 
 ## Modal Dialogs
 
-Every dashboard dialog runs on one component in `app.js` Section 5 (#1224), styled by the `.sova-modal-*` classes in `style.css` Section 3b. Never use the browser's native `confirm()`, `alert()` or `prompt()`: use `sovaConfirm()` for a question and `showToast()` for a message. `tests/test_dashboard_design_drift_guard.py` fails on a native dialog call (`native_dialog`: bare, on `window`, `globalThis`, `self` or `top`, or by bracket access) or a hand-written `fixed inset-0` overlay (`modal_shell`) anywhere in the templates or static JS, and `tests/test_dashboard_modal.py` runs the component under node (with the Work page's Integrate handler and drawer listeners, so the drawer is shown to stay open behind the dialog) and checks that every page modal is closed with the `hidden` attribute and that its id is passed to both `sovaModalOpen()` and `sovaModalClose()`.
+Every dashboard dialog runs on one component in `app.js` Section 5 (#1224), styled by the `.sova-modal-*` classes in `style.css` Section 3b. Never use the browser's native `confirm()`, `alert()` or `prompt()`: use `sovaConfirm()` for a question and `showToast()` for a message. `tests/test_dashboard_design_drift_guard.py` fails on a native dialog call (`native_dialog`: bare, on `window`, `globalThis`, `self` or `top`, or by bracket access) or a hand-written `fixed inset-0` overlay (`modal_shell`) anywhere in the templates or static JS, and `tests/test_dashboard_modal.py` runs the component under node (with the Work page's Integrate handler and the drawer on the real side panel, so the drawer is shown to stay open behind the dialog) and checks that every page modal is closed with the `hidden` attribute and that its id is passed to both `sovaModalOpen()` and `sovaModalClose()`.
 
 ### Behavior
 
@@ -321,6 +321,62 @@ if (!ok) return;
 - One confirm at a time: a call while one is open resolves `false` at once.
 - The dialog is a `role="alertdialog"` described by the message and the details list. Its buttons carry the `sovaBtn()` classes (`_sovaBtnClass()`): a ghost Cancel and the chosen variant, both `md`.
 
+## Side Panels
+
+The activity feed and the Work ticket detail are side panels: one component, `static/js/components/side-panel.js` (#1563), styled by `.sova-side-panel` in `style.css` Section 7c. A new panel over the right edge of the page uses it rather than a hand-written fixed panel.
+
+```html
+<aside id="example-panel" class="sova-side-panel" aria-label="Example details">
+  <div class="...header...">... <button type="button" data-panel-close aria-label="Close">...</button></div>
+  <div class="sova-side-panel-body">...the part that scrolls...</div>
+</aside>
+```
+
+```javascript
+import { createSidePanel } from '/static/js/components/side-panel.js';
+var panel = createSidePanel(document.getElementById('example-panel'), {
+  name: 'example',          // the body's data-side-panel value while it is open
+  floats: 'shift',          // 'shift': the owl button and agents widget move left of it; 'hide': they hide behind it
+  keepOpen: '#example-search',       // optional: targets outside it whose click must not close it
+  trigger: button,                   // optional: its aria-expanded follows the panel
+  returnFocus: function() { return button; },   // optional: where Escape and the close button send focus
+  onOpen: function() {}, onClose: function(reason) {},
+});
+panel.open(); panel.close('deselected'); panel.toggle(); panel.isOpen();
+```
+
+- **One at a time**: opening a panel closes the open one first (its `onClose` gets `'replaced'`). Opening the feed closes the ticket detail, and selecting a card closes the feed.
+- **Closing**: Escape (unless a dialog has the key: a shared modal stops it first, and any other rendered `[role="dialog"]` blocks it), any element inside marked `data-panel-close`, and a click outside. Outside is decided in the capture phase, before the clicked element's own handler runs. Not outside: the panel itself, a pointer press that began inside it (a text selection; a keyboard click, `detail` 0, had no press, so it never counts as one), the panel's own `trigger` (its own handler calls `toggle()`, so a second click closes the panel with `'toggle'` rather than closing and reopening it), a modal or confirm, a toast, any `[role="dialog"]` or `[aria-modal="true"]`, an element marked `data-keeps-panel`, and the panel's own `keepOpen` (for the ticket detail: the cards, so another card switches the ticket and the selected card closes it, the search, and the log viewer). `onClose(reason)` reports `'escape'`, `'button'`, `'outside'`, `'replaced'`, `'toggle'` or the caller's reason.
+- **Focus**: Escape and the close button return focus to `returnFocus()` (called after `onClose`, so a page that redraws on close can hand over the new element), else to what had focus outside the panel when it last opened or switched content (an `open()` on the open panel, such as another ticket chosen from a card or the search; one made while focus is inside the panel, a redraw, keeps the earlier element). Focus in a page field outside the panel stays there. A `'toggle'` close moves no focus: it stays on the trigger the click put it on.
+- **Scroll containment**: a wheel over the panel never scrolls the page. The module (a non-passive wheel listener) stops a wheel that nothing between its target and the panel can take (the header, or a list already at that end) and leaves the rest to the browser; `overscroll-behavior: contain` on the panel and on `.sova-side-panel-body` covers the momentum of a trackpad at either end. A pinch (ctrlKey) is left to the browser.
+- **Motion**: it slides in with `--ease-out` over `--motion-panel-in` (260 ms) and out with `--ease-in` over `--motion-panel-out` (200 ms). A closed panel waits off the right edge with `visibility: hidden`, so it takes no focus and leaves the accessibility tree once it has slid out (`aria-hidden="true"` too). It is also `inert` from the moment it closes, so its content stays visible while it slides out but no Tab or click reaches it; the templates render both panels with `aria-hidden="true"` and `inert`, so they are closed before the module runs. Under `prefers-reduced-motion: reduce` nothing animates: the panel, the feed scrim, the floats and the batch bar lose their transitions in one `@media` block at the end of `style.css`, after every rule it overrides (at equal specificity the later rule wins).
+- **The body**: while a panel is open the body carries `data-side-panel="<name>"`, `data-side-panel-floats` and `--side-panel-width` (the panel's laid-out width, kept current by a ResizeObserver). The floats read them to move or hide (a float shifted by one panel slides back while it fades behind the other), and the global batch bar ends at the panel's left edge, its edge moving with the panel's own curves. The feed also dims the page behind it with a scrim (`.feed-scrim`), a click on which is a click outside.
+- **Width**: `min(26rem, 100%)` unless the panel sets its own. The feed keeps its drag-resizable width (`--feed-panel-width`, 400 to 800 px, remembered as `sova.feed.width`).
+
+`tests/test_dashboard_feed_panel.py` runs the module under node over `tests/fixtures/fake_dom.cjs`, and `tests/test_work_page.py` runs the ticket detail on it.
+
+## Layer Order
+
+Fixed and floating elements stack by the `--z-*` tokens on `:root` in `style.css`, lowest first. Use a token, never a new number, for anything fixed to the window.
+
+| Token | Value | Layer |
+|-------|-------|-------|
+| `--z-sticky` | 20 | A sticky page header (Settings) |
+| `--z-dropdown` | 30 | A menu or result list inside the page (the Work search) |
+| `--z-float` | 40 | The floating owl button and agents widget (`.sova-float`) |
+| `--z-scrim` | 44 | The page dimmed behind the activity feed |
+| `--z-panel` | 45 | A side panel: the activity feed, the Work ticket detail |
+| `--z-nav` | 50 | The sidebar and the global batch bar (Tailwind `z-50` in `base.html`) |
+| `--z-tooltip` | 60 | Tooltips |
+| `--z-toast` | 100 | Toasts |
+| `--z-modal` | 200 | Modals and confirms |
+
+The floats sit under the panels on purpose: they never overlap an open panel, because they move left of one that leaves the page usable (`floats: 'shift'`, the ticket detail) and hide behind one that takes it over (`floats: 'hide'`, the feed), and where a narrow window leaves no room the panel covers them rather than the other way round.
+
+## Owl Avatar
+
+The SOVA owl (`static/owl-avatar.png`, transparent, ears at the top corners) is never clipped into a circle. Render it with the `owl_avatar(size)` macro or its twin `owlAvatarHtml(size)` in `app.js` (`sm` 30 px, `md` 36 px, `lg` 52 px): a `.sova-owl` circle that is only a backdrop, with the image at 90% of it, `object-fit: contain`, no `overflow` on the circle and no radius on the image, so the ears stick out past the circle. The feed's owl button, the feed header and the morning briefing card all use it; the owl button is itself the circle, so its avatar has no backdrop of its own. Never `object-fit: cover` with a round clip. `tests/test_dashboard_component_vocabulary.py` checks the macro and the twin emit the same markup.
+
 ## Layout Tokens
 
 | Token | Value | Usage |
@@ -338,6 +394,7 @@ if (!ok) return;
 | `sova/dashboard/templates/_head.html` | Shared Tailwind config + favicon links |
 | `sova/dashboard/templates/_icons.html` | SVG icon macro (Heroicons v2) |
 | `sova/dashboard/templates/_components.html` | Jinja2 component macros |
-| `sova/dashboard/templates/base.html` | Main layout, sidebar, notification panel |
+| `sova/dashboard/templates/base.html` | Main layout, sidebar, activity feed panel and owl button |
+| `sova/dashboard/static/js/components/side-panel.js` | The shared side panel (feed, Work ticket detail) |
 | `sova/dashboard/static/app.js` | Color system, toasts, confirmation modal, browser notifications, utilities |
 | `sova/dashboard/templates/style_guide.html` | Living style guide at `/style-guide` |

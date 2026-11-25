@@ -227,6 +227,7 @@ class TestDashboardHealth:
             pytest.param("/supervisor", False, "/supervisor", id="supervisor-stays-visible"),
             pytest.param("/specs", True, "/specs", id="child-page-opens-more"),
             pytest.param("/connections", True, "/connections", id="connections-lives-in-more"),
+            pytest.param("/queue", True, "/queue", id="queue-lives-in-more"),
             pytest.param("/settings", False, "/settings", id="settings-stays-visible"),
         ],
     )
@@ -239,9 +240,18 @@ class TestDashboardHealth:
         group_tag, group_body = group.split(">", 1)
         assert ("hidden" in group_tag) is (not more_open)
         more, after = group_body.split('<div class="sidebar-divider', 1)
-        visible_pages = ["/work", "/queue", "/supervisor", "/oversight", "/costs"]
+        visible_pages = ["/work", "/supervisor", "/oversight", "/costs"]
         assert all(f'href="{href}"' in visible for href in visible_pages)
-        more_pages = ["/specs", "/pr-metrics", "/reliability", "/roles", "/commands", "/dependency-health", "/fleet"]
+        more_pages = [
+            "/queue",
+            "/specs",
+            "/pr-metrics",
+            "/reliability",
+            "/roles",
+            "/commands",
+            "/dependency-health",
+            "/fleet",
+        ]
         assert all(f'href="{href}"' in more for href in [*more_pages, "/connections", "/setup"])
         assert not any(f'href="{href}"' in visible for href in more_pages)
         assert 'href="/settings"' in after.split("</nav>", 1)[0]

@@ -5,6 +5,10 @@ module.exports = {
     './sova/dashboard/templates/**/*.html',
     './sova/dashboard/static/**/*.js',
   ],
+  // Words in comments and JS strings ('resize', "ease-in"/"ease-out" for the motion tokens) are picked up as class
+  // names. None is used as a class, and Tailwind's ease-out curve is not the design token --ease-out, so a future
+  // class="ease-out" must not quietly get the wrong curve: use the tokens in style.css instead.
+  blocklist: ['resize', 'ease-in', 'ease-out'],
   theme: {
     extend: {
       colors: {
