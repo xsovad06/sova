@@ -435,6 +435,15 @@ class TestExecuteNodeDetails:
         assert nr.success
         assert nr.cost_usd == Decimal("0")
 
+    async def test_unknown_command_node_fails_without_starting(self, project_agents, fake_runtime):
+        """A workflow node naming a command outside the catalog fails through the real start_command()."""
+        exe = self._make_executor()
+        nr = await exe._execute_node({"id": "a", "command": "not-a-real-command"})
+
+        assert not nr.success
+        assert "not-a-real-command" in (nr.error or "")
+        assert fake_runtime.spawn_calls == []
+
     async def test_node_with_non_dict_result(self):
         """When the command returns a non-dict, success=True and cost=0."""
         exe = self._make_executor()

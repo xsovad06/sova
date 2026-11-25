@@ -792,6 +792,82 @@ class TestAutoHandoff:
         )
         _assert_cleared(tmp_path, handoff)
 
+    async def test_auto_handoff_claude_command_without_command_is_skipped(self, tmp_path: Path) -> None:
+        """An auto-execute claude-command action with no command starts nothing and raises nothing."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle, handoff_service
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        assert handoff_service.command_name(None) == ""
+        agent = AgentState(run_id=1, issue="42", role="reviewer", process=MagicMock(), project_dir=tmp_path)
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            summary="Clean review",
+            next_actions=[
+                HandoffAction(
+                    id="next",
+                    label="Next step",
+                    mode="claude-command",
+                    command="",
+                    args={"issue": "42", "pr": 10},
+                    auto_execute=True,
+                ),
+            ],
+        )
+        write_handoff_file(tmp_path, handoff)
+
+        with (
+            patch.object(agent_lifecycle, "start_command", new_callable=AsyncMock) as mock_cmd,
+            capture_logs() as logs,
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_cmd.assert_not_awaited()
+        assert not any(e["log_level"] == "error" for e in logs)
+
+    async def test_auto_handoff_unknown_command_is_refused(self, project_agents, fake_runtime) -> None:
+        """The real start_command() refuses a command outside the catalog, and the refusal is logged as one."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import HandoffAction
+
+        project_dir = project_agents.project_dir
+        agent = AgentState(run_id=1, issue="42", role="reviewer", process=MagicMock(), project_dir=project_dir)
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            summary="Clean review",
+            next_actions=[
+                HandoffAction(
+                    id="next",
+                    label="Next step",
+                    mode="claude-command",
+                    command="/not-a-real-command 10",
+                    args={"issue": "42", "pr": 10},
+                    auto_execute=True,
+                ),
+            ],
+        )
+        write_handoff_file(project_dir, handoff)
+
+        with capture_logs() as logs:
+            await _process_auto_handoff(agent)
+
+        assert fake_runtime.spawn_calls == []
+        refused = [e for e in logs if e["event"] == "auto_handoff.start_refused"]
+        assert [(e["log_level"], e["action_id"], e["result"]["code"]) for e in refused] == [
+            ("warning", "next", "unknown_command")
+        ]
+        assert not any(e["event"] == "auto_handoff.command_started" for e in logs)
+
     async def test_auto_handoff_invalid_pr_number_falls_back_to_none(self, tmp_path: Path) -> None:
         """When args['pr'] is non-numeric, int() raises ValueError.
         _process_auto_handoff must catch it, log a warning, and continue with pr_num=None."""

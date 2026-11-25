@@ -553,23 +553,32 @@ class TestAgentsAPI:
         assert data["status"] == "started"
         assert data["run_id"] == 1
 
-    async def test_run_command_rejects_unknown_command(self, client: AsyncClient) -> None:
-        """An unrecognized command name must never reach start_command.
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"command": "../../etc/passwd"},
+            {"command": "standup", "args": {"model": "other"}},
+            {"command": "standup", "args": {"issue": ["42"]}},
+        ],
+    )
+    async def test_run_command_rejects_invalid_input(self, client: AsyncClient, fake_runtime, body: dict) -> None:
+        """An unknown command name or a non-allowlisted argument is a 400, and nothing starts.
 
         _resolve_command_prompt falls back to sending a bare "/{command}" to the
         headless agent for anything it cannot resolve to a real file, and the
         same unvalidated string is also used to build a filesystem path, so an
         unknown value is both a prompt-injection and a path-traversal vector.
+        start_command() validates both, so the route answers from its refusal.
         """
-        from unittest.mock import AsyncMock, patch
+        from sova.dashboard.services import action_registry
 
-        from sova.dashboard.services import control_service as cs
-
-        with patch.object(cs, "start_command", new_callable=AsyncMock) as mock_start:
-            resp = await client.post("/api/agents/command", json={"command": "../../etc/passwd"})
+        action_registry.reset_actions()
+        resp = await client.post("/api/agents/command", json=body)
 
         assert resp.status_code == 400
-        mock_start.assert_not_called()
+        assert fake_runtime.spawn_calls == []
+        # Rejected before tracked_action(), so bad input is not a failed action in the history.
+        assert action_registry.list_actions(None) == []
 
 
 # ---------------------------------------------------------------------------

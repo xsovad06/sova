@@ -1827,6 +1827,90 @@ class TestStartCommandWorktreeResolution:
 
 
 # ---------------------------------------------------------------------------
+# start_command input validation (every caller, not only the HTTP route)
+# ---------------------------------------------------------------------------
+
+
+class TestStartCommandValidatesItsInput:
+    @pytest.mark.parametrize(
+        ("command", "args", "code"),
+        [
+            ("not-a-real-command", {}, "unknown_command"),
+            ("../../etc/passwd", {}, "unknown_command"),
+            ("/standup", {}, "unknown_command"),
+            ("standup", {"model": "other"}, "invalid_command_args"),
+            ("standup", {"issue": {"nested": "42"}}, "invalid_command_args"),
+        ],
+    )
+    async def test_rejected_before_anything_starts(
+        self, project_agents: ProjectAgents, fake_runtime: FakeAgentRuntime, command: str, args: dict, code: str
+    ) -> None:
+        with capture_logs() as logs:
+            result = await start_command(command, args)
+
+        assert result["code"] == code
+        assert result["error"]
+        assert fake_runtime.spawn_calls == []
+        rejected = [e for e in logs if e["event"] == "start_command.rejected"]
+        assert [(e["log_level"], e["code"]) for e in rejected] == [("warning", code)]
+
+    @pytest.mark.parametrize(
+        ("args", "accepted"),
+        [
+            (None, True),
+            ({}, True),
+            ({"issue": "42", "pr": 10}, True),
+            ({"issue": "RHCLOUD-123"}, True),
+            ({"issue": "", "pr": None}, True),
+            ({"pr": "10"}, True),
+            ({"role": "developer"}, False),
+            ({"issue": ["42"]}, False),
+            ({"issue": 4.2}, False),
+            ({"pr": True}, False),
+            ({"issue": "42 extra"}, False),
+            ({"issue": "42\nmore"}, False),
+            ({"issue": "-42"}, False),
+            ({"issue": "#42"}, True),
+            ({"issue": "owner/repo#42"}, True),
+            ({"issue": "owner/repo#42 more"}, False),
+            ({"issue": "../x"}, False),
+        ],
+    )
+    def test_args_are_allowlisted_scalars(self, args: dict | None, accepted: bool) -> None:
+        from sova.dashboard.services.agent_context import command_args_error
+
+        assert (command_args_error(args) is None) is accepted
+
+    @pytest.mark.parametrize("command", [None, 42, ""])
+    async def test_missing_or_non_string_command_is_unknown(
+        self, project_agents: ProjectAgents, fake_runtime: FakeAgentRuntime, command: object
+    ) -> None:
+        """A DAG node without a ``command`` key passes None: refused as unknown, never a TypeError."""
+        result = await start_command(command, {})  # type: ignore[arg-type]
+
+        assert result["code"] == "unknown_command"
+        assert fake_runtime.spawn_calls == []
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            # SupervisorEngine._execute_command_decision(): str(issue_number) and the resolved PR.
+            {"issue": "42", "pr": 10},
+            {"issue": "42", "pr": None},
+            # claude-command handoff actions (handoff_to_user, handoff_to_reviewer, reviewer role).
+            {"issue": "RHCLOUD-123", "pr": 10},
+            # A workflow (DAG) node's params from the role editor, or a node without params.
+            {},
+            None,
+        ],
+    )
+    def test_every_callers_real_args_are_accepted(self, args: dict | None) -> None:
+        from sova.dashboard.services.agent_context import command_args_error
+
+        assert command_args_error(args) is None
+
+
+# ---------------------------------------------------------------------------
 # build_action_command
 # ---------------------------------------------------------------------------
 
@@ -1879,6 +1963,17 @@ class TestBuildActionCommand:
         )
         assert result["issue"] == ""
         assert result["pr_number"] == 60
+
+    @pytest.mark.parametrize(
+        ("raw", "name"),
+        [("/integrate-pr 99", "integrate-pr"), ("integrate-pr", "integrate-pr"), (None, ""), ("", ""), ("  /  ", "")],
+    )
+    def test_claude_command_is_reduced_to_its_name(self, raw: str | None, name: str) -> None:
+        """A handoff action stores the slash form; start_command() takes only a catalog name."""
+        from sova.dashboard.services.handoff_service import build_action_command
+
+        result = build_action_command({"mode": "claude-command", "command": raw, "args": {"pr": 99}})
+        assert result == {"type": "claude-command", "command": name, "args": {"pr": 99}}
 
 
 # ---------------------------------------------------------------------------

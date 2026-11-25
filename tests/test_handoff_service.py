@@ -653,6 +653,11 @@ class TestExecuteAction:
             ({"error": "Maximum concurrent agents reached (2)", "code": "no_free_slot"}, ActionOutcome.REFUSED),
             ({"error": "Issue #1 already has an active agent", "code": "issue_conflict"}, ActionOutcome.REFUSED),
             ({"error": "Insufficient memory", "code": "memory_pressure"}, ActionOutcome.REFUSED),
+            ({"error": "Unknown command: nope", "code": "unknown_command"}, ActionOutcome.INVALID_INPUT),
+            (
+                {"error": "Unsupported command argument: 'x'", "code": "invalid_command_args"},
+                ActionOutcome.INVALID_INPUT,
+            ),
         ],
     )
     async def test_only_a_known_conflict_is_refused_and_anything_else_failed(
