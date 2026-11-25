@@ -221,6 +221,204 @@ async def _start_follow_up(
     return None
 
 
+def _read_actionable_handoff(agent: AgentState) -> tuple[DashboardHandoff, dict] | None:
+    """Return the handoff *agent* owns when it awaits action and names the agent's issue, else ``None``."""
+    from sova.ipc.handoff import read_owned_handoff
+
+    owned = read_owned_handoff(agent.project_dir, agent.issue, pr_number=agent.pr_number)
+    if owned is None:
+        return None
+    handoff, data = owned
+    if handoff.status != "awaiting_action":
+        return None
+
+    h_issue = str(handoff.issue).lstrip("#").strip() if handoff.issue else ""
+    a_issue = str(agent.issue).lstrip("#").strip() if agent.issue else ""
+    if h_issue and a_issue and h_issue != a_issue:
+        log.info(
+            "auto_handoff.issue_mismatch",
+            run_id=agent.run_id,
+            agent_issue=agent.issue,
+            handoff_issue=handoff.issue,
+        )
+        return None
+    return handoff, data
+
+
+def _agent_action_target(
+    action: HandoffAction, handoff: DashboardHandoff, agent: AgentState
+) -> tuple[str, str | None, int | None]:
+    """Return the ``(issue, role, pr_number)`` an agent-mode *action* targets, falling back to *handoff*."""
+    args = action.args or {}
+    raw_pr = args.get("pr") or handoff.pr_number
+    target_role = args.get("role")
+    target_issue = str(args.get("issue", handoff.issue)).lstrip("#").strip()
+    try:
+        pr_num = int(raw_pr) if raw_pr is not None else None
+    except (ValueError, TypeError):
+        log.warning("auto_handoff.invalid_pr_number", raw_pr=raw_pr, run_id=agent.run_id)
+        pr_num = None
+    return target_issue, target_role, pr_num
+
+
+async def _review_already_done(action: HandoffAction, agent: AgentState, target_issue: str, pr_num: int | None) -> bool:
+    """Return True when a review *action* is stale because a reviewer already ran for this PR.
+
+    The developer may have written a "please review" handoff after the reviewer
+    already completed (timing race). An "addressed" verdict is the one exception:
+    it means an address cycle completed after that review, so the handoff is a
+    re-review request for the new head, not a stale duplicate.
+    """
+    if action.id not in {"review", "review_pr"} or pr_num is None:
+        return False
+
+    from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
+
+    verdict = await resolve_verdict_for_pr(target_issue, pr_number=pr_num, project_dir=agent.project_dir)
+    if verdict.get("has_sova_review") and verdict.get("verdict") != "addressed":
+        log.info(
+            "auto_handoff.review_already_done",
+            run_id=agent.run_id,
+            issue=target_issue,
+            pr_number=pr_num,
+        )
+        return True
+    return False
+
+
+async def _address_review_budget_blocked(
+    agent: AgentState, target_issue: str, target_role: str | None, pr_num: int | None
+) -> bool:
+    """Return True (after alerting) when the address-review circuit breaker blocks this spawn.
+
+    No manual-only handoff is needed: resolve_next_action() already resolves an
+    over-budget PR to PR_REVIEW_EXHAUSTED with Integrate, and an unreadable
+    history to a user hold, so clearing the stale handoff is enough for the
+    dashboard to pick up the right next action on its next poll.
+    """
+    reason = await _check_address_review_circuit_breaker(target_issue, pr_num, target_role, agent.project_dir)
+    if not reason:
+        return False
+    log.warning(
+        "auto_handoff.circuit_breaker",
+        run_id=agent.run_id,
+        issue=target_issue,
+        pr_number=pr_num,
+        reason=reason,
+    )
+    unverifiable = reason.startswith(_BUDGET_UNVERIFIABLE_PREFIX)
+    headline = f"address-review budget {'unverifiable' if unverifiable else 'exhausted'}"
+    emit_safe(
+        f"{_issue_label(target_issue)}: {headline}",
+        severity=FeedEventSeverity.warning,
+        detail=reason,
+        category="handoff",
+        metadata={"issue": target_issue, "pr_number": pr_num, "run_id": agent.run_id},
+    )
+    _notify_budget_exhausted(agent, target_issue, reason, headline=headline)
+    return True
+
+
+def _write_memory_blocked_handoff(
+    agent: AgentState, action: HandoffAction, handoff: DashboardHandoff, summary: str
+) -> None:
+    """Write a manual-only copy of *action* so the user can retry it once memory frees up."""
+    from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
+
+    blocked_handoff = DashboardHandoff(
+        source="memory_guard",
+        status="awaiting_action",
+        issue=handoff.issue,
+        pr_number=handoff.pr_number,
+        branch=handoff.branch,
+        summary=summary,
+        next_actions=[
+            HandoffAction(
+                id=action.id,
+                label=f"{action.label} (manual)",
+                mode=action.mode,
+                command=action.command,
+                args=action.args,
+                auto_execute=False,
+            ),
+        ],
+    )
+    write_handoff_file(agent.project_dir, blocked_handoff)
+
+
+def _memory_pressure_blocked(agent: AgentState, action: HandoffAction, handoff: DashboardHandoff, data: dict) -> bool:
+    """Return True when memory pressure blocks *action* (all modes), swapping the handoff for a manual-only one."""
+    mem_block, _mem_warn = check_memory_pressure(agent.project_dir)
+    if not mem_block:
+        return False
+    log.warning(
+        "auto_handoff.memory_blocked",
+        run_id=agent.run_id,
+        issue=handoff.issue,
+        error=mem_block.get("error", ""),
+    )
+    _clear_read_handoff(agent, handoff, data)
+    summary = mem_block.get("error", "Memory pressure blocked auto-handoff")
+    _write_memory_blocked_handoff(agent, action, handoff, summary)
+    return True
+
+
+async def _run_auto_handoff(agent: AgentState, pool: ProjectAgents | None) -> None:
+    """Body of ``_process_auto_handoff()``, which wraps it so no failure escapes into finalization."""
+    from sova.dashboard.services.handoff_service import start_succeeded
+
+    actionable = _read_actionable_handoff(agent)
+    if actionable is None:
+        return
+    handoff, data = actionable
+
+    # Persist handoff details to the completing agent's TaskRun before clearing
+    # the file. Done after the mismatch guard to avoid writing a mismatched
+    # issue's verdict into the completing run's handoff_json. This backstops
+    # write_handoff() in the subprocess, which may write to the wrong DB when
+    # the subprocess CWD is a linked worktree rather than the project root.
+    if agent.run_id is not None and handoff.details:
+        await _persist_completing_agent_handoff(agent.run_id, handoff, agent.project_dir)
+
+    # Only the first auto action executes.
+    action = next((a for a in handoff.next_actions if a.auto_execute), None)
+    if action is None:
+        return
+
+    target_issue, target_role, pr_num = "", None, None
+    if action.mode == "agent":
+        target_issue, target_role, pr_num = _agent_action_target(action, handoff, agent)
+        if await _review_already_done(action, agent, target_issue, pr_num) or (
+            await _address_review_budget_blocked(agent, target_issue, target_role, pr_num)
+        ):
+            _clear_read_handoff(agent, handoff, data)
+            return
+
+    if _memory_pressure_blocked(agent, action, handoff, data):
+        return
+
+    log.info(
+        "auto_handoff.executing",
+        run_id=agent.run_id,
+        action_id=action.id,
+        mode=action.mode,
+        issue=handoff.issue,
+    )
+
+    issue_label = f"#{handoff.issue}" if handoff.issue else "Agent"
+    emit_safe(
+        f"{issue_label}: auto-handoff to {action.id}",
+        category="handoff",
+        metadata={"action_id": action.id, "issue": handoff.issue, "run_id": agent.run_id},
+    )
+
+    _clear_read_handoff(agent, handoff, data)
+    slug = _slug_for_project(agent.project_dir, pool)
+    result = await _start_follow_up(action, target_issue, target_role, pr_num, slug)
+    if result is not None and not start_succeeded(result):
+        log.warning("auto_handoff.start_refused", run_id=agent.run_id, action_id=action.id, result=result)
+
+
 async def _process_auto_handoff(agent: AgentState, pool: ProjectAgents | None = None) -> None:
     """Check for auto-executable handoff actions after an agent completes.
 
@@ -239,157 +437,6 @@ async def _process_auto_handoff(agent: AgentState, pool: ProjectAgents | None = 
     in; the follow-up starts in it (``_slug_for_project()``).
     """
     try:
-        from sova.dashboard.services.handoff_service import start_succeeded
-        from sova.ipc.handoff import read_owned_handoff
-
-        owned = read_owned_handoff(agent.project_dir, agent.issue, pr_number=agent.pr_number)
-        if owned is None:
-            return
-        handoff, data = owned
-        if handoff.status != "awaiting_action":
-            return
-
-        h_issue = str(handoff.issue).lstrip("#").strip() if handoff.issue else ""
-        a_issue = str(agent.issue).lstrip("#").strip() if agent.issue else ""
-        if h_issue and a_issue and h_issue != a_issue:
-            log.info(
-                "auto_handoff.issue_mismatch",
-                run_id=agent.run_id,
-                agent_issue=agent.issue,
-                handoff_issue=handoff.issue,
-            )
-            return
-
-        # Persist handoff details to the completing agent's TaskRun before clearing
-        # the file. Done after the mismatch guard to avoid writing a mismatched
-        # issue's verdict into the completing run's handoff_json. This backstops
-        # write_handoff() in the subprocess, which may write to the wrong DB when
-        # the subprocess CWD is a linked worktree rather than the project root.
-        if agent.run_id is not None and handoff.details:
-            await _persist_completing_agent_handoff(agent.run_id, handoff, agent.project_dir)
-
-        for action in handoff.next_actions:
-            if not action.auto_execute:
-                continue
-
-            # Extract args once for agent-mode actions
-            target_issue, target_role, pr_num = "", None, None
-            if action.mode == "agent":
-                args = action.args or {}
-                raw_pr = args.get("pr") or handoff.pr_number
-                target_role = args.get("role")
-                target_issue = str(args.get("issue", handoff.issue)).lstrip("#").strip()
-                try:
-                    pr_num = int(raw_pr) if raw_pr is not None else None
-                except (ValueError, TypeError):
-                    log.warning("auto_handoff.invalid_pr_number", raw_pr=raw_pr, run_id=agent.run_id)
-                    pr_num = None
-
-                # Skip spawning if a reviewer already ran for this PR: the
-                # developer may have written a "please review" handoff after the
-                # reviewer already completed (timing race), making the handoff stale.
-                # An "addressed" verdict is the one exception: it means an address
-                # cycle completed after that review, so the handoff is a re-review
-                # request for the new head, not a stale duplicate.
-                if action.id in {"review", "review_pr"} and pr_num is not None:
-                    from sova.dashboard.services.work_verdict import resolve_verdict_for_pr
-
-                    verdict = await resolve_verdict_for_pr(
-                        target_issue, pr_number=pr_num, project_dir=agent.project_dir
-                    )
-                    if verdict.get("has_sova_review") and verdict.get("verdict") != "addressed":
-                        log.info(
-                            "auto_handoff.review_already_done",
-                            run_id=agent.run_id,
-                            issue=target_issue,
-                            pr_number=pr_num,
-                        )
-                        _clear_read_handoff(agent, handoff, data)
-                        return
-
-                # Check circuit breaker for address-review spawns
-                reason = await _check_address_review_circuit_breaker(
-                    target_issue, pr_num, target_role, agent.project_dir
-                )
-                if reason:
-                    log.warning(
-                        "auto_handoff.circuit_breaker",
-                        run_id=agent.run_id,
-                        issue=target_issue,
-                        pr_number=pr_num,
-                        reason=reason,
-                    )
-                    # No manual-only handoff needed: resolve_next_action() already resolves
-                    # an over-budget PR to PR_REVIEW_EXHAUSTED with Integrate, and an
-                    # unreadable history to a user hold, so clearing the stale handoff is
-                    # enough for the dashboard to pick up the right next action on its next poll.
-                    unverifiable = reason.startswith(_BUDGET_UNVERIFIABLE_PREFIX)
-                    headline = f"address-review budget {'unverifiable' if unverifiable else 'exhausted'}"
-                    emit_safe(
-                        f"{_issue_label(target_issue)}: {headline}",
-                        severity=FeedEventSeverity.warning,
-                        detail=reason,
-                        category="handoff",
-                        metadata={"issue": target_issue, "pr_number": pr_num, "run_id": agent.run_id},
-                    )
-                    _notify_budget_exhausted(agent, target_issue, reason, headline=headline)
-                    _clear_read_handoff(agent, handoff, data)
-                    return
-
-            # Memory pressure gate (all action modes)
-            mem_block, _mem_warn = check_memory_pressure(agent.project_dir)
-            if mem_block:
-                log.warning(
-                    "auto_handoff.memory_blocked",
-                    run_id=agent.run_id,
-                    issue=handoff.issue,
-                    error=mem_block.get("error", ""),
-                )
-                from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
-
-                blocked_handoff = DashboardHandoff(
-                    source="memory_guard",
-                    status="awaiting_action",
-                    issue=handoff.issue,
-                    pr_number=handoff.pr_number,
-                    branch=handoff.branch,
-                    summary=mem_block.get("error", "Memory pressure blocked auto-handoff"),
-                    next_actions=[
-                        HandoffAction(
-                            id=action.id,
-                            label=f"{action.label} (manual)",
-                            mode=action.mode,
-                            command=action.command,
-                            args=action.args,
-                            auto_execute=False,
-                        ),
-                    ],
-                )
-                _clear_read_handoff(agent, handoff, data)
-                write_handoff_file(agent.project_dir, blocked_handoff)
-                return
-
-            log.info(
-                "auto_handoff.executing",
-                run_id=agent.run_id,
-                action_id=action.id,
-                mode=action.mode,
-                issue=handoff.issue,
-            )
-
-            issue_label = f"#{handoff.issue}" if handoff.issue else "Agent"
-            emit_safe(
-                f"{issue_label}: auto-handoff to {action.id}",
-                category="handoff",
-                metadata={"action_id": action.id, "issue": handoff.issue, "run_id": agent.run_id},
-            )
-
-            _clear_read_handoff(agent, handoff, data)
-            slug = _slug_for_project(agent.project_dir, pool)
-            result = await _start_follow_up(action, target_issue, target_role, pr_num, slug)
-            if result is not None and not start_succeeded(result):
-                log.warning("auto_handoff.start_refused", run_id=agent.run_id, action_id=action.id, result=result)
-            return  # only execute the first auto action
-
+        await _run_auto_handoff(agent, pool)
     except Exception:  # noqa: BLE001 (auto-handoff is best-effort; a failure must not break finalization)
         log.warning("auto_handoff.failed", run_id=agent.run_id, exc_info=True)
