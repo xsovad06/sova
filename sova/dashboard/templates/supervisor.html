@@ -11,9 +11,10 @@
     </span>
     <a href="{{ prefix|default('') }}/settings#supervisor"
        class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
-    <button id="poll-btn" onclick="triggerPoll()"
-            title="Manually trigger one supervision cycle: check task states, sync CodeRabbit quota, and execute any ready progression decisions"
-            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
+    <button type="button" id="poll-btn" onclick="triggerPoll()"
+            data-tooltip="Manually trigger one supervision cycle: check task states, sync CodeRabbit quota, and execute any ready progression decisions"
+            data-tooltip-wide data-tooltip-pos="bottom"
+            class="sova-btn sova-btn-primary sova-btn-md" disabled>
       Poll Now
     </button>
   </div>
@@ -73,10 +74,10 @@
       </div>
       <div class="flex items-center gap-1">
         <button type="button" id="hide-done-btn" onclick="toggleHideDone()" data-tooltip="Toggle visibility of completed work"
-                class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Show Done</button>
-        <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
-        <button type="button" onclick="zoomOut()" title="Zoom out" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">&minus;</button>
-        <button type="button" onclick="zoomFit()" title="Fit to view" class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Fit</button>
+                class="sova-btn sova-btn-secondary sova-btn-xs">Show Done</button>
+        <button type="button" onclick="zoomIn()" data-tooltip="Zoom in" aria-label="Zoom in" class="sova-btn sova-btn-secondary sova-btn-xs">+</button>
+        <button type="button" onclick="zoomOut()" data-tooltip="Zoom out" aria-label="Zoom out" class="sova-btn sova-btn-secondary sova-btn-xs">&minus;</button>
+        <button type="button" onclick="zoomFit()" data-tooltip="Fit to view" class="sova-btn sova-btn-secondary sova-btn-xs">Fit</button>
       </div>
     </div>
   </div>
@@ -110,7 +111,7 @@
       <div id="drawer-spec-info" class="hidden flex items-center gap-2 flex-wrap mb-3 text-xs"></div>
       <div id="drawer-actions" class="flex items-center gap-2 flex-wrap"></div>
     </div>
-    <button onclick="hideDrawer()" class="text-gray-600 hover:text-gray-400 text-xs shrink-0 mt-0.5">close</button>
+    <button type="button" onclick="hideDrawer()" class="sova-btn sova-btn-ghost sova-btn-xs shrink-0">close</button>
   </div>
 </div>
 
@@ -122,7 +123,7 @@
       <span class="text-xs text-gray-500 ml-2">Supervisor wants to run these. Review, then approve or skip each one.</span>
     </div>
     <button id="approve-all-btn" type="button" onclick="approvePlan()"
-            class="text-xs px-3 py-1 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors">
+            class="sova-btn sova-btn-success">
       Approve All
     </button>
   </div>
@@ -174,7 +175,7 @@
   </summary>
   <div class="px-4 pb-4">
     <div class="flex justify-end mb-2">
-      <button onclick="openSupervisorPersona()" class="text-xs text-accent hover:text-blue-300 transition-colors">Edit</button>
+      <button type="button" onclick="openSupervisorPersona()" class="sova-btn sova-btn-primary sova-btn-xs">Edit</button>
     </div>
     <pre id="supervisor-persona-preview" class="text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-surface rounded p-3 border border-gray-700/30 max-h-64 overflow-y-auto">Loading...</pre>
   </div>
@@ -281,10 +282,11 @@ function nodeReasonLabel(r) {
 }
 
 const DRAWER_MODE_BADGES = {
-  human: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-accent-red border border-red-700/30">Human Only</span>',
-  interactive: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30 border-dashed">Interactive Recommended</span>',
-  blocked: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-yellow-900/30 text-accent-yellow border border-yellow-700/30">Blocked</span>',
-  unclassified: '<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-gray-700/30 text-gray-400 border border-gray-600/30">Unclassified</span>',
+  human: badgeHtml('Human Only', { color: 'red' }),
+  // The dashed outline sets the one mode a person may still take on interactively apart from the hard stops.
+  interactive: badgeHtml('Interactive Recommended', { color: 'peach', className: 'border border-dashed border-current' }),
+  blocked: badgeHtml('Blocked', { color: 'yellow' }),
+  unclassified: badgeHtml('Unclassified', { color: 'gray' }),
 };
 
 // The drawer's mode badge, then one chip per classifier reason for a node no agent will pick up.
@@ -293,7 +295,7 @@ function drawerModeBadges(node) {
   let html = DRAWER_MODE_BADGES[mode] || '';
   if (['blocked', 'human', 'epic'].includes(mode)) {
     ((node.suitability && node.suitability.reasons) || []).forEach(r => {
-      html += `<span class="dep-reason-chip inline-flex items-center text-xs px-2 py-0.5 rounded-full bg-gray-700/30 text-gray-400 border border-gray-600/30">${esc(nodeReasonLabel(r))}</span>`;
+      html += badgeHtml(nodeReasonLabel(r), { color: 'gray', className: 'dep-reason-chip' });
     });
   }
   return html;
@@ -304,11 +306,11 @@ function drawerModeBadges(node) {
 function drawerQueueHtml(node) {
   if (isDoneState(node.state)) return '';
   if (node.queue_position) {
-    return `<span class="text-xs px-3 py-1.5 rounded bg-sky-700/20 text-sky-300 border border-sky-700/30">In queue (Q${node.queue_position})</span>`;
+    return badgeHtml(`In queue (Q${node.queue_position})`, { color: 'blue' });
   }
   const canQueue = node.suitability ? node.suitability.eligible : (!node.is_epic && !node.is_human_only);
   if (!canQueue) return '';
-  return `<button onclick="addToQueueFromDrawer(${node.id})" class="dep-queue-btn text-xs px-3 py-1.5 rounded bg-sky-700/30 text-sky-300 hover:bg-sky-700/50 transition-colors">Add to Queue</button>`;
+  return `<button onclick="addToQueueFromDrawer(${node.id})" class="dep-queue-btn sova-btn sova-btn-primary">Add to Queue</button>`;
 }
 
 function _computeGraphKey(data) {
@@ -524,7 +526,7 @@ async function loadPlannerHealth() {
     const data = await res.json();
 
     if (!data.success_count && !data.failure_count) {
-      panel.innerHTML = '<p class="text-xs text-gray-500">No planner activity yet (LLM planning may be disabled)</p>';
+      panel.innerHTML = emptyStateHtml('No planner activity yet', 'LLM planning may be disabled');
       // Health counters are in-memory and reset on server restart, so a
       // fresh dashboard load always sees this until the next poll cycle.
       // Trigger one immediately, once per page load, so first-visit doesn't
@@ -580,7 +582,8 @@ async function loadNextUp() {
       chip.className = 'dep-next-up px-2 py-0.5 rounded border border-gray-700/60 text-gray-300 hover:border-gray-500 transition-colors';
       chip.dataset.issue = t.number;
       chip.textContent = `#${t.number} ${t.title || ''}`;
-      chip.title = t.title || '';
+      if (t.title) chip.setAttribute('data-tooltip', t.title);
+      else chip.removeAttribute('data-tooltip');
       return chip;
     }));
   } catch (e) {
@@ -640,7 +643,7 @@ async function loadGraph() {
     if (!data.nodes || data.nodes.length === 0) {
       renderStateLegend([]);
       errorEl.classList.remove('hidden');
-      errorEl.innerHTML = '<p class="text-sm text-gray-500 bg-gray-700/30 px-4 py-2 rounded">No issues with dependencies found</p>';
+      errorEl.innerHTML = emptyStateHtml('No issues with dependencies found');
       return;
     }
 
@@ -1463,33 +1466,33 @@ function showDrawer(node) {
   const actionBtns = (node.available_actions || []).map(a => {
     if (a.type === 'link') {
       return `<a href="${prefix}${esc(a.url)}" target="_blank"
-        class="text-xs px-3 py-1.5 rounded bg-blue-700/30 text-blue-400 hover:bg-blue-700/50 transition-colors">
+        class="sova-btn sova-btn-primary">
         ${esc(a.label)}
       </a>`;
     }
     if (a.type === 'copy') {
       return `<button data-command="${esc(a.command)}"
-        class="dep-copy-btn text-xs px-3 py-1.5 rounded bg-orange-700/30 text-orange-300 hover:bg-orange-700/50 transition-colors">
+        class="dep-copy-btn sova-btn sova-btn-warning">
         ${esc(a.label)}
       </button>`;
     }
     if (a.type === 'api') {
       const btnCls = a.id === 'approve-spec'
-        ? 'bg-green-700/40 text-green-400 hover:bg-green-700/60'
-        : 'bg-yellow-700/30 text-yellow-400 hover:bg-yellow-700/50';
+        ? 'sova-btn-success'
+        : 'sova-btn-warning';
       return `<button data-issue="${node.id}" data-url="${esc(a.url)}" data-label="${esc(a.label)}"
-        class="dep-api-btn text-xs px-3 py-1.5 rounded ${btnCls} transition-colors">
+        class="dep-api-btn sova-btn ${btnCls}">
         ${esc(a.label)}
       </button>`;
     }
     return `<button data-issue="${node.id}" data-role="${esc(a.role)}"
-      class="dep-action-btn text-xs px-3 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+      class="dep-action-btn sova-btn sova-btn-primary">
       ${esc(a.label)}
     </button>`;
   }).join('');
 
   const lifecycleLink = `<a href="${prefix}/lifecycle/${node.id}"
-    class="text-xs px-3 py-1.5 rounded bg-gray-700/40 text-gray-400 hover:bg-gray-700/60">
+    class="sova-btn sova-btn-secondary">
     View Lifecycle
   </a>`;
 
@@ -1614,7 +1617,7 @@ async function loadDecisions() {
     const list = document.getElementById('decisions-list');
 
     if (!data.decisions || data.decisions.length === 0) {
-      list.innerHTML = '<p class="text-xs text-gray-500 text-center py-4">No decisions logged yet</p>';
+      list.innerHTML = emptyStateHtml('No decisions logged yet');
       return;
     }
 
@@ -1673,10 +1676,11 @@ async function loadPlan() {
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button type="button" data-approve-issue="${item.issue_number}"
-                  class="plan-approve-btn px-2 py-0.5 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors">Run</button>
+                  class="plan-approve-btn sova-btn sova-btn-success sova-btn-xs">Run</button>
           <button type="button" data-skip-issue="${item.issue_number}"
-                  title="Removes this item until the next supervisor poll cycle. To defer permanently, change the issue state or adjust supervisor gates."
-                  class="plan-skip-btn px-2 py-0.5 rounded bg-gray-700/60 text-gray-400 hover:text-gray-200 transition-colors">Skip</button>
+                  data-tooltip="Removes this item until the next supervisor poll cycle. To defer permanently, change the issue state or adjust supervisor gates."
+                  data-tooltip-wide data-tooltip-pos="left"
+                  class="plan-skip-btn sova-btn sova-btn-secondary sova-btn-xs">Skip</button>
         </div>
       </div>
     `).join('');

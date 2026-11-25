@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_components.html" import stat_card %}
+{% from "_components.html" import stat_card, btn %}
 {% block title %}Oversight - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
@@ -12,11 +12,7 @@
     </span>
     <a href="{{ prefix|default('') }}/settings#oversight"
        class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
-    <button id="run-now-btn" onclick="triggerRunNow()"
-            title="Trigger an immediate oversight cycle"
-            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
-      Run Now
-    </button>
+    {{ btn("Run Now", size="md", id="run-now-btn", tooltip="Trigger an immediate oversight cycle", disabled=True, attrs={"onclick": "triggerRunNow()"}) }}
   </div>
 </div>
 
@@ -65,7 +61,7 @@
   </summary>
   <div class="px-4 pb-4">
     <div class="flex justify-end mb-2">
-      <button onclick="openPersona()" class="text-xs text-accent hover:text-blue-300 transition-colors">Edit</button>
+      {{ btn("Edit", size="xs", attrs={"onclick": "openPersona()"}) }}
     </div>
     <pre id="persona-preview" class="text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-surface rounded p-3 border border-gray-700/30 max-h-64 overflow-y-auto">Loading...</pre>
   </div>
@@ -180,7 +176,7 @@ function renderFindings(findings, status) {
       created: 'No findings with issues created yet.',
       dismissed: 'No dismissed findings.',
     };
-    container.innerHTML = `<p class="text-sm text-gray-500">${msgs[status] || 'No findings'}</p>`;
+    container.innerHTML = emptyStateHtml(msgs[status] || 'No findings');
     return;
   }
 
@@ -210,8 +206,8 @@ function renderFindings(findings, status) {
         `<div class="flex items-center gap-2 mt-3">`;
 
     if (status === 'pending') {
-      html += `<button onclick="createIssue(${f.id})" class="px-3 py-1 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Create Issue</button>` +
-              `<button onclick="dismissFinding(${f.id})" class="px-3 py-1 rounded text-xs bg-gray-700/30 text-gray-400 hover:bg-gray-700/50 hover:text-gray-300 transition-colors">Dismiss</button>`;
+      html += sovaBtn('Create Issue', {variant: 'primary', attrs: {onclick: `createIssue(${Number(f.id)})`}}) +
+              sovaBtn('Dismiss', {variant: 'secondary', attrs: {onclick: `dismissFinding(${Number(f.id)})`}});
     } else if (f.github_issue_number) {
       html += `<span class="text-xs text-accent-green">Issue #${f.github_issue_number} created</span>`;
     } else if (f.dismissed) {
@@ -274,7 +270,7 @@ async function loadRuns() {
 function renderRuns(runs) {
   const container = document.getElementById('runs-container');
   if (runs.length === 0) {
-    container.innerHTML = '<p class="text-sm text-gray-500">No runs yet. The oversight agent has not completed any cycles.</p>';
+    container.innerHTML = emptyStateHtml('No runs yet.', 'The oversight agent has not completed any cycles.');
     return;
   }
 
@@ -292,12 +288,12 @@ function renderRuns(runs) {
     const dur = r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + 's' : '--';
     html += '<tr class="border-t border-gray-700/30">' +
       `<td class="py-2 pr-4 text-gray-400 font-mono text-xs">#${r.cycle_number}</td>` +
-      `<td class="py-2 pr-4 text-gray-400 text-xs" title="${esc(r.started_at || '')}">${timeAgo(r.started_at, 'Never')}</td>` +
+      `<td class="py-2 pr-4 text-gray-400 text-xs"${r.started_at ? ` data-tooltip="${esc(r.started_at)}"` : ''}>${timeAgo(r.started_at, 'Never')}</td>` +
       `<td class="py-2 pr-4">${statusBadge(r.status)}</td>` +
       `<td class="py-2 pr-4 text-right text-gray-300">${r.findings_count}</td>` +
       `<td class="py-2 pr-4 text-right ${r.issues_created > 0 ? 'text-accent-green' : 'text-gray-500'}">${r.issues_created}</td>` +
       `<td class="py-2 pr-4 text-right text-gray-400 text-xs">${dur}</td>` +
-      `<td class="py-2 text-xs text-accent-red truncate max-w-[200px]" title="${esc(r.error || '')}">${r.error ? esc(r.error) : ''}</td>` +
+      `<td class="py-2 text-xs text-accent-red">${r.error ? `<span class="block min-w-0 max-w-[200px]" data-tooltip="${esc(r.error)}" data-tooltip-align="start"><span class="block truncate">${esc(r.error)}</span></span>` : ''}</td>` +
       '</tr>';
   }
   html += '</tbody></table>';

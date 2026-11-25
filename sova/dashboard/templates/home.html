@@ -8,6 +8,7 @@
 </head>
 <body class="bg-surface text-gray-200 min-h-screen">
   {% from "_icons.html" import icon %}
+  {% from "_components.html" import stat_card, btn, empty_state %}
   <div class="max-w-5xl mx-auto px-6 py-8">
     {% include "_restart_banner.html" %}
     <!-- Header -->
@@ -30,22 +31,10 @@
 
     <!-- Global summary bar -->
     <div id="fleet-summary" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
-        <p class="text-xs text-gray-500 uppercase tracking-wide">Active Agents</p>
-        <p class="text-2xl font-bold text-accent" id="summary-active">--</p>
-      </div>
-      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
-        <p class="text-xs text-gray-500 uppercase tracking-wide">Total Slots</p>
-        <p class="text-2xl font-bold text-gray-200" id="summary-slots">--</p>
-      </div>
-      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
-        <p class="text-xs text-gray-500 uppercase tracking-wide">Queued</p>
-        <p class="text-2xl font-bold text-accent-yellow" id="summary-queued">--</p>
-      </div>
-      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
-        <p class="text-xs text-gray-500 uppercase tracking-wide">CodeRabbit</p>
-        <p class="text-2xl font-bold" id="summary-cr">--</p>
-      </div>
+      {{ stat_card("Active Agents", "summary-active", value_class="text-accent", size="md") }}
+      {{ stat_card("Total Slots", "summary-slots", value_class="text-gray-200", size="md") }}
+      {{ stat_card("Queued", "summary-queued", value_class="text-accent-yellow", size="md") }}
+      {{ stat_card("CodeRabbit", "summary-cr", size="md") }}
     </div>
 
     <!-- Project cards -->
@@ -73,19 +62,13 @@
               <span class="text-xs text-gray-400 w-4 text-center">2</span>
             </div>
             <!-- Uninstall button -->
-            <button type="button" data-slug="{{ slug | e }}" onclick="uninstallProject(event, this.dataset.slug)"
-                    aria-label="Uninstall SOVA from this project"
-                    data-tooltip="Uninstall SOVA from this project"
-                    class="p-2 rounded-md text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-colors">
-              {{ icon("trash", "w-4 h-4") }}
-            </button>
+            {{ btn(icon("trash", "w-4 h-4"), variant="ghost", size="icon", tooltip="Uninstall SOVA from this project", attrs={"data-slug": slug, "onclick": "uninstallProject(event, this.dataset.slug)", "aria-label": "Uninstall SOVA from this project"}) }}
           </div>
         </div>
       </div>
       {% else %}
-      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-5 py-8 text-center">
-        <p class="text-gray-400 mb-2">No projects registered yet.</p>
-        <p class="text-gray-500 text-sm">Use Setup to add your first project.</p>
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg">
+        {{ empty_state("No projects registered yet.", "Use Setup to add your first project.") }}
       </div>
       {% endfor %}
     </div>
@@ -134,10 +117,7 @@
           _updateText(crEl, data.global_coderabbit_unlimited ? 'No limit'
             : crLimit === 0 ? 'No data'
             : Math.max(crLimit - data.global_coderabbit_used, 0) + ' of ' + crLimit + ' available');
-          var wantColor = data.global_coderabbit_can_create ? 'text-accent-green' : 'text-accent-red';
-          var dropColor = data.global_coderabbit_can_create ? 'text-accent-red' : 'text-accent-green';
-          crEl.classList.remove(dropColor);
-          crEl.classList.add(wantColor);
+          setColorClasses(crEl, data.global_coderabbit_can_create ? 'text-accent-green' : 'text-accent-red');
         }
 
         // Track known slugs for stale card removal
@@ -165,13 +145,13 @@
           var queueColor = p.queued_tasks > 0 ? 'text-accent-yellow' : 'text-gray-500';
 
           statsEl.innerHTML =
-            '<span class="' + agentColor + '" title="Active agents">' +
+            '<span class="' + agentColor + '" data-tooltip="Active agents">' +
               p.active_agents + '/' + p.max_concurrent + ' agents</span>' +
-            '<span class="' + queueColor + '" title="Queued tasks">' +
+            '<span class="' + queueColor + '" data-tooltip="Queued tasks">' +
               p.queued_tasks + ' queued</span>';
 
           if (p.error) {
-            statsEl.innerHTML += '<span class="text-accent-red text-xs" title="' + escapeHtml(p.error) + '">error</span>';
+            statsEl.innerHTML += '<span class="text-accent-red text-xs" data-tooltip="' + escapeHtml(p.error) + '" data-tooltip-wide>error</span>';
           }
 
           // Sync slider value (avoid overwriting during user interaction)

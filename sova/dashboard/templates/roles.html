@@ -5,7 +5,7 @@
 {% from "_components.html" import btn %}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Roles</h2>
-  <button onclick="showCreateModal()" class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">New Role</button>
+  {{ btn("New Role", "primary", "md", attrs={"onclick": "showCreateModal()"}) }}
 </div>
 
 <div id="roles-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -56,7 +56,7 @@ async function loadRoles() {
 function renderRoles(roles) {
   const grid = document.getElementById('roles-grid');
   if (!roles.length) {
-    grid.innerHTML = '<p class="text-gray-500 text-sm col-span-full">No roles found</p>';
+    grid.innerHTML = '<div class="col-span-full">' + emptyStateHtml('No roles found') + '</div>';
     return;
   }
 
@@ -65,19 +65,19 @@ function renderRoles(roles) {
     const nodeCount = (r.graph_json?.nodes || []).length;
     const edgeCount = (r.graph_json?.edges || []).length;
     const statesBadges = (r.input_states || []).map(s =>
-      `<span class="inline-block px-1.5 py-0.5 text-xs rounded bg-accent-purple/20 text-accent-purple">${esc(s)}</span>`
+      badgeHtml(s, { color: 'purple' })
     ).join(' ');
     const outputBadge = r.output_state
-      ? `<span class="inline-block px-1.5 py-0.5 text-xs rounded bg-accent-green/20 text-accent-green">${esc(r.output_state)}</span>`
+      ? badgeHtml(r.output_state, { color: 'green' })
       : '';
     const typeBadge = isBuiltin
-      ? '<span class="text-xs px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Built-in</span>'
-      : '<span class="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent">Custom</span>';
+      ? badgeHtml('Built-in', { color: 'gray' })
+      : badgeHtml('Custom', { color: 'blue' });
 
     const actions = isBuiltin
       ? `<a href="${prefix}/roles/${encodeURIComponent(r.name)}" class="text-xs text-gray-400 hover:text-gray-200 transition-colors">View</a>`
       : `<a href="${prefix}/roles/${encodeURIComponent(r.name)}" class="text-xs text-accent hover:text-blue-300 transition-colors">Edit</a>
-         <button data-role="${esc(r.name)}" class="js-delete-role text-xs text-accent-red/60 hover:text-accent-red transition-colors">Delete</button>`;
+         ${sovaBtn('Delete', { variant: 'danger', size: 'xs', className: 'js-delete-role', attrs: { 'data-role': r.name } })}`;
 
     return `<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 flex flex-col">
       <div class="flex items-start justify-between mb-2">

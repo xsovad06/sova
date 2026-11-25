@@ -191,6 +191,7 @@
   function renderCommandPalette() {
     const list = document.getElementById('command-list');
     if (!commands.length) {
+      // Not emptyStateHtml(): its page-level padding does not fit the narrow palette column.
       list.innerHTML = '<p class="text-xs text-gray-500 p-2">No commands found</p>';
       return;
     }
@@ -206,9 +207,10 @@
     for (const [cat, cmds] of Object.entries(byCategory).sort()) {
       html += `<p class="text-xs text-gray-500 uppercase tracking-wide px-2 pt-2 pb-1">${esc(cat)}</p>`;
       for (const cmd of cmds) {
+        // The description is a second line, not a tooltip: the palette scrolls, and its overflow would clip a bubble.
+        const description = cmd.description ? `<span class="block text-gray-500 mt-0.5">${esc(cmd.description)}</span>` : '';
         html += `<button class="js-add-node w-full text-left text-xs px-2 py-1.5 rounded hover:bg-sidebar-hover text-gray-300 transition-colors"
-                         data-command="${esc(cmd.name)}"
-                         title="${esc(cmd.description || '')}">${esc(cmd.name)}</button>`;
+                         data-command="${esc(cmd.name)}">${esc(cmd.name)}${description}</button>`;
       }
     }
     list.innerHTML = html;
@@ -260,17 +262,17 @@
 
     if (inputs.length) {
       html += `<div><label class="text-xs text-gray-500 block mb-1">Inputs</label>
-        <div class="flex flex-wrap gap-1">${inputs.map(i => `<span class="text-xs px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${esc(i)}</span>`).join('')}</div></div>`;
+        <div class="flex flex-wrap gap-1">${inputs.map(i => badgeHtml(i, { color: 'purple' })).join('')}</div></div>`;
     }
     if (outputs.length) {
       html += `<div><label class="text-xs text-gray-500 block mb-1">Outputs</label>
-        <div class="flex flex-wrap gap-1">${outputs.map(o => `<span class="text-xs px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green">${esc(o)}</span>`).join('')}</div></div>`;
+        <div class="flex flex-wrap gap-1">${outputs.map(o => badgeHtml(o, { color: 'green' })).join('')}</div></div>`;
     }
 
     if (editable) {
       html += `<div class="pt-2 border-t border-gray-700/30 flex gap-2">
-        <button data-node-id="${esc(data.id)}" class="js-connect-from text-xs px-2 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Add edge from</button>
-        <button data-node-id="${esc(data.id)}" class="js-delete-node text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete</button>
+        ${sovaBtn('Add edge from', { variant: 'primary', size: 'xs', className: 'js-connect-from', attrs: { 'data-node-id': data.id } })}
+        ${sovaBtn('Delete', { variant: 'danger', size: 'xs', className: 'js-delete-node', attrs: { 'data-node-id': data.id } })}
       </div>`;
     }
 
@@ -322,7 +324,7 @@
 
     if (editable) {
       html += `<div class="pt-2 border-t border-gray-700/30">
-        <button data-edge-id="${esc(data.id)}" class="js-delete-edge text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">Delete edge</button>
+        ${sovaBtn('Delete edge', { variant: 'danger', size: 'xs', className: 'js-delete-edge', attrs: { 'data-edge-id': data.id } })}
       </div>`;
     }
 

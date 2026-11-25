@@ -107,6 +107,8 @@ All component classes are defined in `sova/dashboard/static/style.css`.
 | `.sova-stat-value` | Large bold number |
 | `.sova-stat-detail` | Small detail text below stat value |
 
+To recolour a stat value or a badge after it renders, call `setColorClasses(el, colorClasses)` (`app.js`): it swaps only the palette colour classes (text and background colours such as `text-accent-red`, `bg-gray-600/30`, `text-white`, plus `border-accent-*`) and keeps every other class, the component's own (`sova-stat-value` and its size, `sova-badge`) and size or alignment utilities (`text-xs`, `text-right`) alike, which a `className` write would drop.
+
 ### Buttons
 
 | Class | Color | Usage |
@@ -173,6 +175,7 @@ Defined in `sova/dashboard/templates/_components.html`:
 {% from "_components.html" import stat_card, card_header %}
 
 {{ stat_card("Active Agents", "card-active", detail_id="card-detail") }}
+{{ stat_card("Cycle Time", "metric-cycle-time", detail="median hours") }}  {# fixed detail text, rendered server-side #}
 {{ card_header("Recent Runs", action_text="View all", action_href="/work") }}
 ```
 
@@ -247,7 +250,7 @@ Never put a tooltip on an element that clips its own overflow (`truncate`): the 
 
 ### Sidebar Behavior
 
-Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS. Any `[data-tooltip]` inside `.sidebar` follows this rule. Inside `.sidebar` they are `position: fixed` (to the right of the collapsed sidebar, centred on the hovered element) rather than absolute, because the nav link list scrolls on short viewports and would clip an absolute one; `data-tooltip-pos` has no effect there.
+Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS. Any `[data-tooltip]` inside `.sidebar` follows this rule, except the unreadable-handoff banner (`#handoff-unreadable-banner`), whose label truncates in the expanded sidebar too, so its full file paths show either way. Inside `.sidebar` they are `position: fixed` (to the right of the collapsed sidebar, centred on the hovered element) rather than absolute, because the nav link list scrolls on short viewports and would clip an absolute one; `data-tooltip-pos` has no effect there.
 
 ### Disabled Buttons
 

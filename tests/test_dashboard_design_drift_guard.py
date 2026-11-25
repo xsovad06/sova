@@ -22,7 +22,8 @@ Detection is regex based and the false-positive handling is documented on each p
 as UTF-8 and the file list is sorted, so line endings, locale and directory order cannot change a count.
 For the `title_attr` pattern only, Jinja statements, expressions and comments are blanked out of `.html` files
 before matching (newlines are kept, so reported line numbers stay right): a macro keyword argument such as
-`card_header(title="x")` is not markup. The other four patterns match the raw text, so a violation written
+`card_header(title="x")` is not markup, though an `attrs={"title": x}` argument renders one and is matched on the
+raw text (`_RAW_PATTERNS`). The other patterns match the raw text, so a violation written
 inside a Jinja tag (`{% set c = '#f38ba8' %}`, `value_class='text-2xl font-bold'`) still counts.
 
 To re-seed after a deliberate scanner change, run `python3 -m tests.test_dashboard_design_drift_guard` and paste
@@ -43,14 +44,26 @@ SCAN_SUFFIXES = (".html", ".js")
 
 # Pattern name -> compiled regex. Each is matched per file after Jinja blocks are blanked out of templates.
 PATTERNS: dict[str, re.Pattern[str]] = {
-    # A markup `title=` attribute: preceded by whitespace (so `data-title=`, `aria-label=` and `.title=` do not
-    # match, and neither does `<title>` or an object key `title:`), followed by a quote, an escaped quote
-    # (a JS string holding markup) or a `${` interpolation. This is the form JS template strings use.
-    "title_attr": re.compile(r"(?<=\s)title=(?:[\"'\\]|\$\{)"),
+    # A native tooltip, in either form. The markup `title=` attribute: preceded by whitespace (so `data-title=`
+    # and `aria-label=` do not match, and neither does `<title>` or an object key `title:`), followed by a quote,
+    # an escaped quote (a JS string holding markup) or a `${` interpolation, the form JS template strings use.
+    # The DOM property assignment `el.title = x`: `document.title =` (the page title), `el.dataset.title =`
+    # (a data-title attribute) and a comparison (`el.title === x`) do not match.
+    # `el.title += x` counts as well, and so do `el['title'] = x`, `el.setAttribute('title', x)` and
+    # `Object.assign(el, {title: x})` (or the shorthand `{title}`). A component's `attrs` option carrying a `title`
+    # key is matched on the raw text, Jinja included: see _RAW_PATTERNS.
+    "title_attr": re.compile(
+        r"(?<=\s)title=(?:[\"'\\]|\$\{)"
+        r"|(?<!document)(?<!dataset)\.title\s*\+?=(?!=)"
+        r"|\[\s*[\"'`]title[\"'`]\s*\]\s*\+?=(?!=)"
+        r"|\.setAttribute\(\s*[\"'`]title[\"'`]"
+        r"|\bObject\.assign\([^,()]+,\s*\{[^{}]*?(?<=[{,\s])[\"']?title[\"']?\s*[:,}]"
+    ),
     # The tiny arbitrary font sizes; the type scale has text-xs (12px) as its floor.
     "arbitrary_text_size": re.compile(r"text-\[(?:9|10|11)px\]"),
     # The hand-rolled stat number (`text-2xl font-bold`, `text-xl font-bold`, either order) and any `.sova-stat`
     # class written outside the stat_card() macro (`sova-stat`, `sova-stat-label`, `sova-stat-value-sm`, ...).
+    # A heading styled the same way is not a stat card: see _EXEMPT_SPANS.
     "raw_stat_card": re.compile(r"\b(?:text-(?:2xl|xl) font-bold|font-bold text-(?:2xl|xl))\b|\bsova-stat\b"),
     # `#rgb`, `#rrggbb` and `#rrggbbaa`. The lookbehind skips `&#39;`-style entities and `word#fragment`; a
     # fragment link such as href="#add" is the one known false positive and is counted in the baseline.
@@ -87,32 +100,37 @@ EXEMPT_BLOCKS: dict[tuple[str, str], tuple[str, str, str]] = {
     ),
 }
 
+# pattern -> spans blanked before that pattern is matched, so only the span is exempt and the rest of its line and
+# file still counts. A page heading's opening tag (`<h1 class="text-2xl font-bold">Fleet</h1>`) and the markdown
+# renderer's heading-class literal (`token.depth === 1 ? 'text-xl font-bold ...'` in _head.html) share the stat number's
+# classes. Only a heading whose content is literal words is exempt: one holding an expression, a JS concatenation or
+# nothing for a script to fill (`<h3 class="text-2xl font-bold">{{ total }}</h3>`), or one carrying a `sova-stat`
+# class, is a stat value written as a heading, and still counts.
+# A heading must close at its own level, and a `Loading...` placeholder a script replaces is not literal words.
+# The renderer literal is exempt only while it holds classes and no markup.
+# For `title_attr`, an `<iframe>` or `<svg>` opening tag is blanked: its `title` is the accessible name, not a
+# tooltip.
+_EXEMPT_SPANS: dict[str, re.Pattern[str]] = {
+    "title_attr": re.compile(r"<(?:iframe|svg)\b[^>]*>"),
+    "raw_stat_card": re.compile(
+        r"<h([1-6])\b(?![^>]*\bsova-stat)[^>]*>(?=(?!\s*Loading)[^<{$'\"`+]*[A-Za-z][^<{$'\"`+]*</h\1>)"
+        r"|token\.depth\s*===\s*\d\s*\?\s*'[^'<\n]*'"
+    ),
+}
+
+# pattern -> a further regex matched on the text before Jinja is blanked, so a match inside a Jinja tag counts.
+# A component's `attrs` option with a `title` key (`btn("Go", attrs={"title": t})`,
+# `sovaBtn('Go', {attrs: {title: t}})`) renders a native `title=` attribute; `data-title` and `aria-label` keys do
+# not match.
+_RAW_PATTERNS: dict[str, re.Pattern[str]] = {
+    "title_attr": re.compile(r"\battrs\s*[:=]\s*\{[^{}]*?(?<=[{,\s])[\"']?title[\"']?\s*:"),
+}
+
 # pattern -> path relative to DASHBOARD_DIR -> allowed count. Seeded from the scanner itself (see _seed()).
 BASELINE: dict[str, dict[str, int]] = {
-    "title_attr": {
-        "static/role-editor.js": 1,
-        "templates/briefing.html": 1,
-        "templates/commands.html": 1,
-        "templates/fleet.html": 1,
-        "templates/home.html": 3,
-        "templates/oversight.html": 3,
-        "templates/supervisor.html": 5,
-    },
-    "arbitrary_text_size": {
-        "templates/base.html": 2,
-        "templates/commands.html": 11,
-    },
+    "title_attr": {},
+    "arbitrary_text_size": {},
     "raw_stat_card": {
-        "templates/_head.html": 1,
-        "templates/costs.html": 7,
-        "templates/dependency_health.html": 18,
-        "templates/fleet.html": 6,
-        "templates/home.html": 5,
-        "templates/pr_metrics.html": 6,
-        "templates/reliability.html": 1,
-        "templates/run_detail.html": 7,
-        "templates/setup.html": 1,
-        "templates/spec.html": 7,
         "templates/style_guide.html": 15,
         "templates/work.html": 12,
     },
@@ -150,11 +168,19 @@ def scan_text(text: str, *, jinja: bool, rel: str = "") -> dict[str, list[int]]:
     """Line numbers (1-based) of each pattern's matches in one file's text."""
     found: dict[str, list[int]] = {}
     for name, regex in PATTERNS.items():
+        raw = text
         view = _blank(text, _JINJA) if jinja and name in _BLANK_JINJA_FOR else text
+        if name in _EXEMPT_SPANS:
+            view = _blank(view, _EXEMPT_SPANS[name])
+            raw = _blank(raw, _EXEMPT_SPANS[name])
         block = EXEMPT_BLOCKS.get((name, rel))
         if block:
             view = _blank_block(view, block[0], block[1])
-        found[name] = [view.count("\n", 0, m.start()) + 1 for m in regex.finditer(view)]
+            raw = _blank_block(raw, block[0], block[1])
+        lines = [view.count("\n", 0, m.start()) + 1 for m in regex.finditer(view)]
+        if name in _RAW_PATTERNS:
+            lines += [raw.count("\n", 0, m.start()) + 1 for m in _RAW_PATTERNS[name].finditer(raw)]
+        found[name] = sorted(lines)
     return found
 
 
@@ -286,7 +312,31 @@ class TestScanner:
             ('<div data-title="x">', True, 0),
             ('{{ card_header("Runs", title="Recent") }}', True, 0),
             ('{% set t = {"title": "x"} %}{{ btn("Go", title="x") }}', True, 0),
-            ("el.title='x'", False, 0),
+            ("el.title='x'", False, 1),
+            ("chip.title = t.title || '';", False, 1),
+            ("document.title = 'SOVA';", False, 0),
+            ("if (item.title === x) {}", False, 0),
+            ("el.dataset.title = 'x';", False, 0),
+            ("el.title += ' (stale)';", False, 1),
+            ("el.setAttribute('title', reason);", False, 1),
+            ('el.setAttribute("title", reason);', False, 1),
+            ("el.setAttribute('data-title', x);", False, 0),
+            ("el.removeAttribute('title');", False, 0),
+            ('<iframe src="/logs" title="Logs">', True, 0),
+            ("'<iframe src=\"x\" title=\"' + name + '\">'", False, 0),
+            ('<svg viewBox="0 0 4 4" title="Graph">', True, 0),
+            ('<iframe title="Logs"></iframe><span title="x">', True, 1),
+            ("el['title'] = reason;", False, 1),
+            ('el["title"] += x;', False, 1),
+            ("if (el['title'] === x) {}", False, 0),
+            ("Object.assign(chip, {title: reason});", False, 1),
+            ("Object.assign(chip, {className: 'x', title});", False, 1),
+            ("Object.assign(chip, {dataset: {}});", False, 0),
+            ("badgeHtml(label, {attrs: {title: reason}});", False, 1),
+            ("sovaBtn('Go', {attrs: {'data-id': id, 'title': reason}});", False, 1),
+            ("sovaBtn('Go', {attrs: {'data-title': x, 'aria-label': y}});", False, 0),
+            ('{{ btn("Go", attrs={"title": reason}) }}', True, 1),
+            ('{{ btn("Go", attrs={"data-action": "go", "aria-label": "Go"}) }}', True, 0),
         ],
     )
     def test_title_attr(self, text: str, jinja: bool, expected: int) -> None:
@@ -311,6 +361,21 @@ class TestScanner:
             ('class="sova-stat"><p class="sova-stat-value-sm">', 2),
             ('class="sova-work-stat text-2xl"', 0),
             ('class="text-2xl"', 0),
+            ('<h1 class="text-2xl font-bold text-accent">Fleet</h1>', 0),
+            ('  <h2 class="text-2xl font-bold">Setup</h2>', 0),
+            ("var cls = token.depth === 1 ? 'text-xl font-bold mt-6' : '';", 0),
+            ("const html = token.depth ? '<p class=\"text-2xl font-bold\">$0</p>' : '';", 1),
+            ('<h1>Costs</h1>\n<p class="text-2xl font-bold">$0</p>', 1),
+            ('<h3 class="text-sm">Cost</h3><p class="text-2xl font-bold">$0</p>', 1),
+            ('<h3 class="text-2xl font-bold">{{ total }}</h3>', 1),
+            ('<h3 class="text-2xl font-bold" id="stat-total"></h3>', 1),
+            ('<h3 class="text-2xl font-bold">--</h3>', 1),
+            ('<h4 class="sova-stat-value">Total</h4>', 1),
+            ("'<h2 class=\"text-xl font-bold\">' + total + '</h2>'", 1),
+            ('<h1 class="text-2xl font-bold">\n  Dependency Health\n</h1>', 0),
+            ('<h1 class="text-2xl font-bold">Fleet</h3>', 1),
+            ('<h2 class="text-xl font-bold">Loading...</h2>', 1),
+            ("var cls = token.depth === 1 ? '<p class=\"text-2xl font-bold\">' : '';", 1),
         ],
     )
     def test_raw_stat_card(self, text: str, expected: int) -> None:

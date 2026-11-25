@@ -2,13 +2,14 @@
 
 {#- The class vocabulary below is mirrored by the JS twins in static/app.js (sovaBtn, badgeHtml, emptyStateHtml, statCardHtml); tests/test_dashboard_component_vocabulary.py compares the two. -#}
 
-{%- macro stat_card(label, value_id, value_class="", detail_id="", size="lg") -%}
+{#- detail is fixed text for the line under the value (a unit such as "median hours"); detail_id names that line so a script can fill it. Either one renders the line. -#}
+{%- macro stat_card(label, value_id, value_class="", detail_id="", size="lg", detail="") -%}
 {%- set size_class = {"md": "sova-stat-value-md", "sm": "sova-stat-value-sm"}.get(size, "") -%}
 <div class="sova-stat">
   <p class="sova-stat-label">{{ label }}</p>
   <p class="sova-stat-value{% if size_class %} {{ size_class }}{% endif %} {{ value_class }}" id="{{ value_id }}">--</p>
-  {%- if detail_id %}
-  <p class="sova-stat-detail" id="{{ detail_id }}"></p>
+  {%- if detail_id or detail %}
+  <p class="sova-stat-detail"{% if detail_id %} id="{{ detail_id }}"{% endif %}>{{ detail }}</p>
   {%- endif %}
 </div>
 {%- endmacro -%}

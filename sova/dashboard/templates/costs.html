@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import stat_card %}
 {% block title %}Costs - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between gap-3 flex-wrap mb-6">
@@ -13,37 +14,13 @@
 
 <!-- Summary row -->
 <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Total</p>
-    <p class="text-2xl font-bold text-accent-green" id="cost-total">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Today</p>
-    <p class="text-2xl font-bold" id="cost-today">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">7-Day</p>
-    <p class="text-2xl font-bold" id="cost-7d">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Invocations</p>
-    <p class="text-2xl font-bold" id="cost-invocations">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Compression Savings</p>
-    <p class="text-2xl font-bold text-accent-green" id="cost-tokens-saved">--</p>
-    <p class="text-xs text-gray-600 mt-0.5" id="cost-savings-detail"></p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Total Energy</p>
-    <p class="text-2xl font-bold text-accent-purple" id="cost-energy">--</p>
-    <p class="text-xs text-gray-600 mt-0.5" id="cost-energy-detail"></p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Total CO2</p>
-    <p class="text-2xl font-bold text-accent-purple" id="cost-co2">--</p>
-    <p class="text-xs text-gray-600 mt-0.5" id="cost-co2-detail"></p>
-  </div>
+  {{ stat_card("Total", "cost-total", value_class="text-accent-green", size="md") }}
+  {{ stat_card("Today", "cost-today", size="md") }}
+  {{ stat_card("7-Day", "cost-7d", size="md") }}
+  {{ stat_card("Invocations", "cost-invocations", size="md") }}
+  {{ stat_card("Compression Savings", "cost-tokens-saved", value_class="text-accent-green", detail_id="cost-savings-detail", size="md") }}
+  {{ stat_card("Total Energy", "cost-energy", value_class="text-accent-purple", detail_id="cost-energy-detail", size="md") }}
+  {{ stat_card("Total CO2", "cost-co2", value_class="text-accent-purple", detail_id="cost-co2-detail", size="md") }}
 </div>
 
 <!-- Daily chart -->
@@ -97,12 +74,11 @@
 
 {% block scripts %}
 <script>
-function setElementError(elementId, errorText, removeClasses) {
+function setElementError(elementId, errorText) {
   var el = document.getElementById(elementId);
   if (!el) return;
   el.textContent = errorText;
-  if (removeClasses) removeClasses.forEach(function(c) { el.classList.remove(c); });
-  el.classList.add('text-red-400');
+  setColorClasses(el, 'text-red-400');
 }
 
 async function loadSummary() {
@@ -111,7 +87,10 @@ async function loadSummary() {
     var zone = 'UTC';
     try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { /* keep UTC */ }
     var summary = await fetchAPI(apiUrl('/costs/summary?tz=' + encodeURIComponent(zone)));
-    document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
+    var totalEl = document.getElementById('cost-total');
+    totalEl.textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
+    // A reload after a failed one: setElementError() left the value red.
+    setColorClasses(totalEl, 'text-accent-green');
     document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
     document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
     document.getElementById('cost-invocations').textContent = summary.total_invocations;
@@ -120,7 +99,7 @@ async function loadSummary() {
     var savingsUsd = parseFloat(summary.compression_savings_usd || 0);
     document.getElementById('cost-savings-detail').textContent = savingsUsd > 0 ? '~$' + savingsUsd.toFixed(2) + ' saved' : '';
   } catch (err) {
-    setElementError('cost-total', 'Error', ['text-accent-green']);
+    setElementError('cost-total', 'Error');
     console.error('Failed to load cost summary:', err);
   }
 }
@@ -129,16 +108,20 @@ async function loadEnergy() {
   try {
     var energy = await fetchAPI(apiUrl('/resources/energy/total'));
     var ewh = parseFloat(energy.total_energy_wh || 0);
-    document.getElementById('cost-energy').textContent = ewh >= 1 ? ewh.toFixed(2) + ' Wh' : (ewh * 1000).toFixed(1) + ' mWh';
+    var energyEl = document.getElementById('cost-energy');
+    energyEl.textContent = ewh >= 1 ? ewh.toFixed(2) + ' Wh' : (ewh * 1000).toFixed(1) + ' mWh';
+    setColorClasses(energyEl, 'text-accent-purple');
     var co2g = parseFloat(energy.total_co2_grams || 0);
-    document.getElementById('cost-co2').textContent = co2g >= 1 ? co2g.toFixed(2) + ' g' : (co2g * 1000).toFixed(1) + ' mg';
+    var co2El = document.getElementById('cost-co2');
+    co2El.textContent = co2g >= 1 ? co2g.toFixed(2) + ' g' : (co2g * 1000).toFixed(1) + ' mg';
+    setColorClasses(co2El, 'text-accent-purple');
     if (energy.run_count > 0) {
       document.getElementById('cost-energy-detail').textContent = energy.run_count + ' runs tracked';
       document.getElementById('cost-co2-detail').textContent = energy.run_count + ' runs tracked';
     }
   } catch (err) {
-    setElementError('cost-energy', 'Error', ['text-accent-purple']);
-    setElementError('cost-co2', 'Error', ['text-accent-purple']);
+    setElementError('cost-energy', 'Error');
+    setElementError('cost-co2', 'Error');
     var detail1 = document.getElementById('cost-energy-detail');
     if (detail1) detail1.textContent = '';
     var detail2 = document.getElementById('cost-co2-detail');
@@ -152,7 +135,7 @@ async function loadDailyChart() {
     var daily = await fetchAPI(apiUrl('/costs/daily'));
     var maxCost = Math.max(...daily.map(d => parseFloat(d.cost_usd || 0)), 0.01);
     document.getElementById('daily-chart').innerHTML = daily.length === 0
-      ? '<p class="text-gray-500 text-sm">No cost data</p>'
+      ? emptyStateHtml('No cost data')
       : `<div class="flex gap-1 h-32">
           ${daily.map(d => {
             const pct = (parseFloat(d.cost_usd || 0) / maxCost) * 100;
@@ -176,11 +159,7 @@ async function loadCostTable(endpoint, containerId, keyField, emptyMessage) {
     var data = await fetchAPI(apiUrl(endpoint));
     var container = document.getElementById(containerId);
     if (data.length === 0) {
-      container.innerHTML = '';
-      var p = document.createElement('p');
-      p.className = 'text-gray-500 text-sm';
-      p.textContent = emptyMessage;
-      container.appendChild(p);
+      container.innerHTML = emptyStateHtml(emptyMessage);
     } else {
       container.innerHTML = renderCostTable(data, keyField);
     }

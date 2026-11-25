@@ -422,8 +422,8 @@ function _rerunButton(t) {
 }
 
 function _emptyTable() {
-  return '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 flex flex-col items-center gap-3">' +
-    '<p class="text-gray-500 text-sm">No runs match these filters.</p>' +
+  return '<div class="bg-surface-card rounded-lg border border-gray-700/50 pb-6 flex flex-col items-center gap-1">' +
+    emptyStateHtml('No runs match these filters.') +
     (_hasFilter() ? '<button type="button" class="sova-btn sova-btn-primary" data-action="history-clear">Clear filters</button>' : '') +
     '</div>';
 }

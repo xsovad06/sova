@@ -5,12 +5,8 @@
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-2xl font-semibold">Work</h2>
-  <button type="button" data-action="start-planner" id="run-planner-btn"
-    class="px-3 py-1.5 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors"
-    aria-label="Analyze project and propose new tasks"
-    data-tooltip="Analyze project and propose new tasks" data-tooltip-pos="left">
-    Run Planner
-  </button>
+  {{ btn("Run Planner", variant="purple", size="md", id="run-planner-btn", tooltip="Analyze project and propose new tasks",
+         attrs={"data-action": "start-planner", "aria-label": "Analyze project and propose new tasks", "data-tooltip-pos": "left"}) }}
 </div>
 
 <!-- Header: what runs, how often it succeeds, what merged, what it costs (static/js/pages/work/header.js) -->
@@ -206,8 +202,7 @@
     </select>
     <input type="text" id="filter-number" autocomplete="off" placeholder="Issue or PR number" aria-label="Issue or PR number"
       class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none w-40">
-    <button type="button" id="history-clear" data-action="history-clear"
-      class="hidden ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">
+    <button type="button" id="history-clear" data-action="history-clear" class="sova-btn sova-btn-ghost sova-btn-xs hidden ml-auto">
       {{ icon("close", "w-3.5 h-3.5") }} Clear filters
     </button>
   </div>
@@ -220,10 +215,10 @@
     </span>
     <div id="history-pager" class="hidden flex items-center gap-1 ml-auto text-xs text-gray-500 tabular-nums">
       <button type="button" data-action="history-prev" id="history-prev" aria-label="Previous page"
-        class="p-1.5 rounded hover:bg-surface-hover hover:text-gray-200 disabled:opacity-30 transition-colors" disabled>{{ icon("chevron-left", "w-4 h-4") }}</button>
+        class="sova-btn sova-btn-ghost sova-btn-icon" disabled>{{ icon("chevron-left", "w-4 h-4") }}</button>
       <span id="history-page-info" class="px-1.5"></span>
       <button type="button" data-action="history-next" id="history-next" aria-label="Next page"
-        class="p-1.5 rounded hover:bg-surface-hover hover:text-gray-200 disabled:opacity-30 transition-colors" disabled>{{ icon("chevron-right", "w-4 h-4") }}</button>
+        class="sova-btn sova-btn-ghost sova-btn-icon" disabled>{{ icon("chevron-right", "w-4 h-4") }}</button>
     </div>
   </div>
   <div id="history-table"></div>
@@ -248,7 +243,7 @@
         <p id="launch-suitability" class="hidden text-xs rounded px-3 py-2 bg-accent-yellow/20 text-accent-yellow"></p>
         <div class="flex items-center justify-between">
           <span class="text-xs text-gray-500 uppercase tracking-wider">Complexity</span>
-          <span id="launch-complexity" class="px-2 py-0.5 rounded-full text-xs bg-gray-600/30 text-gray-300"></span>
+          <span id="launch-complexity" class="sova-badge bg-gray-600/30 text-gray-300"></span>
         </div>
         <div id="launch-model-field">
           <label for="launch-model" class="text-xs text-gray-500 uppercase tracking-wider block mb-1.5">Model</label>
@@ -257,9 +252,11 @@
         </div>
         <div>
           <label for="launch-llm-model" class="text-xs text-gray-500 uppercase tracking-wider block mb-1.5">Internal LLM model (this run only)</label>
-          <select id="launch-llm-model" class="sova-input text-sm">
-            <option value="">Use configured model (no override)</option>
-          </select>
+          <div id="launch-llm-model-tip" data-tooltip-wide>
+            <select id="launch-llm-model" class="sova-input text-sm">
+              <option value="">Use configured model (no override)</option>
+            </select>
+          </div>
           <p id="launch-llm-model-help" class="text-xs text-gray-500 mt-1.5">Tried first for SOVA's own model calls in this run, ahead of the configured fallback chain. Separate from the coding agent's runtime model, and never saved to settings.</p>
         </div>
       </div>

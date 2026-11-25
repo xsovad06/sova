@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import stat_card, btn, empty_state %}
 {% block title %}PR Metrics - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center justify-between mb-6">
@@ -11,14 +12,8 @@
       <option value="180">180 days</option>
       <option value="365">1 year</option>
     </select>
-    <button type="button" onclick="runBackfill()" id="backfill-btn"
-            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
-      Backfill
-    </button>
-    <button type="button" onclick="loadAll()"
-            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
-      Refresh
-    </button>
+    {{ btn("Backfill", "secondary", id="backfill-btn", attrs={"onclick": "runBackfill()"}) }}
+    {{ btn("Refresh", "secondary", attrs={"onclick": "loadAll()"}) }}
   </div>
 </div>
 
@@ -26,48 +21,21 @@
 
 <!-- Empty state -->
 <div id="empty-state" class="hidden mb-6">
-  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
-    <p class="text-gray-400 mb-3">No PR event data found. Backfill from GitHub to populate metrics.</p>
-    <button type="button" onclick="runBackfill()"
-            class="px-4 py-2 text-sm rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
-      Backfill PR History
-    </button>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 pb-6 text-center">
+    {{ empty_state("No PR event data found. Backfill from GitHub to populate metrics.") }}
+    {{ btn("Backfill PR History", "primary", "md", attrs={"onclick": "runBackfill()"}) }}
   </div>
 </div>
 
 <!-- Summary cards -->
 <div id="summary-section">
   <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Cycle Time</p>
-      <p class="text-2xl font-bold text-accent-green" id="metric-cycle-time">--</p>
-      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
-    </div>
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Wait to Review</p>
-      <p class="text-2xl font-bold text-accent-yellow" id="metric-wait-review">--</p>
-      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
-    </div>
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Wait to Merge</p>
-      <p class="text-2xl font-bold text-accent-yellow" id="metric-wait-merge">--</p>
-      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
-    </div>
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Throughput</p>
-      <p class="text-2xl font-bold" id="metric-throughput">--</p>
-      <p class="text-xs text-gray-600 mt-0.5">PRs/week</p>
-    </div>
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Reviewers/PR</p>
-      <p class="text-2xl font-bold" id="metric-reviewers">--</p>
-      <p class="text-xs text-gray-600 mt-0.5">average</p>
-    </div>
-    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-      <p class="text-xs text-gray-500 uppercase">Line Churn</p>
-      <p class="text-2xl font-bold text-accent-green" id="metric-churn">--</p>
-      <p class="text-xs text-gray-600 mt-0.5" id="metric-churn-detail"></p>
-    </div>
+    {{ stat_card("Cycle Time", "metric-cycle-time", value_class="text-accent-green", detail="median hours", size="md") }}
+    {{ stat_card("Wait to Review", "metric-wait-review", value_class="text-accent-yellow", detail="median hours", size="md") }}
+    {{ stat_card("Wait to Merge", "metric-wait-merge", value_class="text-accent-yellow", detail="median hours", size="md") }}
+    {{ stat_card("Throughput", "metric-throughput", detail="PRs/week", size="md") }}
+    {{ stat_card("Reviewers/PR", "metric-reviewers", detail="average", size="md") }}
+    {{ stat_card("Line Churn", "metric-churn", value_class="text-accent-green", detail_id="metric-churn-detail", size="md") }}
   </div>
 </div>
 
@@ -126,6 +94,8 @@ async function loadSummary(gen, days) {
     document.getElementById('summary-section').classList.remove('hidden');
 
     document.getElementById('metric-cycle-time').textContent = fmtVal(data.cycle_time_median_hours, 'h');
+    // A load that follows a failed one takes back the card's colour along with its value.
+    setColorClasses(document.getElementById('metric-cycle-time'), 'text-accent-green');
     document.getElementById('metric-wait-review').textContent = fmtVal(data.wait_to_review_median_hours, 'h');
     document.getElementById('metric-wait-merge').textContent = fmtVal(data.wait_to_merge_median_hours, 'h');
     document.getElementById('metric-throughput').textContent = fmtVal(data.throughput_per_week);
@@ -138,8 +108,7 @@ async function loadSummary(gen, days) {
   } catch (err) {
     if (gen !== _loadGeneration) return;
     document.getElementById('metric-cycle-time').textContent = 'Error';
-    document.getElementById('metric-cycle-time').classList.remove('text-accent-green');
-    document.getElementById('metric-cycle-time').classList.add('text-red-400');
+    setColorClasses(document.getElementById('metric-cycle-time'), 'text-red-400');
     console.error('Failed to load PR metrics summary:', err);
   }
 }
@@ -152,7 +121,7 @@ async function loadTrends(gen, days) {
     var container = document.getElementById('trend-chart');
 
     if (monthly.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-sm">No trend data</p>';
+      container.innerHTML = emptyStateHtml('No trend data');
       return;
     }
 
@@ -187,7 +156,7 @@ async function loadAuthors(gen, days) {
     var container = document.getElementById('author-table');
 
     if (authors.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-sm">No contributor data</p>';
+      container.innerHTML = emptyStateHtml('No contributor data');
       return;
     }
 

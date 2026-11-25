@@ -111,7 +111,7 @@ export async function checkInterrupted() {
       var started = run.started_at ? new Date(run.started_at).toLocaleString() : '';
       var roleLabel = run.role && run.role !== 'auto' ? ' (' + escapeHtml(run.role) + ')' : '';
       var rerunHtml = run.issue_number
-        ? '<button type="button" class="rerun-btn text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors" data-action="rerun" ' +
+        ? '<button type="button" class="rerun-btn sova-btn sova-btn-primary" data-action="rerun" ' +
           'aria-label="Restart interrupted run" data-issue="' + escapeHtml(String(run.issue_number)) + '" ' +
           'data-role="' + escapeHtml(run.role || '') + '" data-pr="' + escapeHtml(String(run.pr_number || '')) + '" ' +
           'data-run-id="' + escapeHtml(String(run.id)) + '">Restart</button>'
@@ -130,7 +130,7 @@ export async function checkInterrupted() {
     banner.innerHTML = '<div class="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">' +
       '<div class="flex items-center justify-between mb-2">' +
         '<h3 class="text-sm font-medium text-accent-yellow">Interrupted Runs' + totalHint + '</h3>' +
-        '<button type="button"' + actionAttrs('dismiss-interrupted') + ' class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>' +
+        '<button type="button"' + actionAttrs('dismiss-interrupted') + ' class="sova-btn sova-btn-ghost sova-btn-xs">Dismiss</button>' +
       '</div>' +
       '<p class="text-xs text-gray-500 mb-3">These agent runs were interrupted when the dashboard was restarted.</p>' +
       '<div class="space-y-2">' + rowsHtml + '</div>' +
@@ -221,7 +221,7 @@ function _applyMemoryPressure(data) {
     var detail = availGb != null ? availGb.toFixed(1) + ' GB available' : '';
 
     var dismissBtn = isCritical ? '' :
-      '<button' + actionAttrs('dismiss-memory-pressure') + ' class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors">Dismiss</button>';
+      '<button type="button"' + actionAttrs('dismiss-memory-pressure') + ' class="sova-btn sova-btn-ghost sova-btn-xs">Dismiss</button>';
 
     banner.classList.remove('hidden');
     banner.innerHTML = '<div class="bg-' + colorClass + '/10 border border-' + colorClass + '/30 rounded-lg p-4">' +

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
@@ -818,7 +820,14 @@ class TestSpecPageDriftWiring:
         assert "classList.add('hidden')" in body
 
     def test_re_research_button_calls_revise_without_feedback_input(self, html: str) -> None:
-        section = html.split('id="drift-section"', 1)[1].split("<!-- Open Questions", 1)[0]
-        assert 'onclick="reviseSpec()"' in section and "Re-research" in section
+        start = html.index('<div id="drift-section"')
+        section = html[start : html.index("<!-- Open Questions", start)]
+        # The button is the shared btn() macro: render the section through it, so the handler is checked as emitted.
+        templates = Path(__file__).resolve().parent.parent / "sova" / "dashboard" / "templates"
+        env = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape(["html"]))
+        rendered = env.from_string('{% from "_components.html" import btn %}' + section).render()
+        assert re.search(
+            r'<button type="button" class="sova-btn [^"]*"[^>]* onclick="reviseSpec\(\)">Re-research</button>', rendered
+        )
         revise = html.split("async function reviseSpec()", 1)[1].split("async function skipSpec", 1)[0]
         assert "/revise" in revise and "feedback" not in revise

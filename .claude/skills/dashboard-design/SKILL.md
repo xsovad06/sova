@@ -167,7 +167,7 @@ With MOTION_INTENSITY at 2 (Static), interactions should be:
 `.sova-card` container, `.sova-card-header` or `card_header()` macro
 
 ### Stats
-`stat_card(label, value_id, size="lg"|"md"|"sm")` macro, or `statCardHtml(label, valueId, {size})` in JS; never hand-write the `.sova-stat` classes or `text-2xl font-bold`
+`stat_card(label, value_id, size="lg"|"md"|"sm", detail="fixed unit text")` macro, or `statCardHtml(label, valueId, {size, detail})` in JS (`detail_id`/`detailId` for a line a script fills); never hand-write the `.sova-stat` classes or `text-2xl font-bold`. Recolour a rendered stat value or badge with `setColorClasses(el, colorClasses)`, never a `className` write (it drops the size class)
 
 ### Capacity and quota meters
 Use the fuel-gauge model: a full bar means all capacity is available, an empty bar means it is depleted. Compute the fill as `remaining / total * 100`, never `consumed / total * 100`, and label it "X of Y available" or "X remaining", not "X / Y consumed". A filling-up bar next to "0 / 4 reviews" reads as contradictory (a full green bar with nothing used). Applies to every remaining-capacity widget: CodeRabbit quota, CI budget, agent slots.
@@ -179,7 +179,7 @@ Use the fuel-gauge model: a full bar means all capacity is available, an empty b
 `rounded-full` for other read-only pills, `rounded` for clickable buttons. `.sova-badge` is the tag form for a state indicator (0.25rem radius, the same `text-xs px-2 py-0.5 rounded` shape `statusBadge()` renders, not a `rounded-full` pill) and its text is 12px; build it with the `badge(label, color)` macro or `badgeHtml(label, {color})` (both take `cls`/`className` for extra classes), where `color` is a state color token (`STATE_BADGE_CLASSES`)
 
 ### Empty states
-`empty_state(title, hint)` macro or `emptyStateHtml(title, hint)` (`.sova-empty`), both plain text
+`empty_state(title, hint)` macro or `emptyStateHtml(title, hint)` (`.sova-empty`), both plain text (a `{% set %}` block passes Markup as the hint); its page-level padding does not fit a compact table row or palette, which keep a one-line note
 
 ### Tooltips
 `data-tooltip="text"` with optional `data-tooltip-pos="top|bottom|left|right"`; it shows on hover and on keyboard focus, never use a native `title=`

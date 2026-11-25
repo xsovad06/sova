@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Role Editor - SOVA{% endblock %}
 {% block content %}
+{% from "_components.html" import badge, btn %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js" integrity="sha384-H3uzGzTfGHUAumB8+s4GEdfFwzAceN9wCCndN8AXubWKFIPuBSWKKtWDx7RhSf/z" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js" integrity="sha384-2IH3T69EIKYC4c+RXZifZRvaH5SRUdacJW7j6HtE5rQbvLhKKdawxq6vpIzJ7j9M" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js" integrity="sha384-EHCdyFVbhtbpgI+4x7ETlZUvJwOkxJublmhTpH114NSk3fqfiUgcLl6pQm8JQwg9" crossorigin="anonymous"></script>
@@ -11,11 +12,11 @@
     <div class="flex items-center gap-3">
       <a href="{{ prefix|default('') }}/roles" class="text-sm text-gray-400 hover:text-gray-200 transition-colors">&larr; Back</a>
       <h2 class="text-xl font-semibold" id="role-title">Loading...</h2>
-      <span id="builtin-badge" class="hidden text-xs px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Read-only</span>
+      <span id="builtin-badge" class="hidden">{{ badge("Read-only") }}</span>
     </div>
     <div class="flex items-center gap-2" id="action-buttons">
-      <button onclick="validateDAG()" class="text-sm px-3 py-1.5 rounded bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">Validate</button>
-      <button onclick="saveRole()" id="btn-save" class="hidden text-sm px-3 py-1.5 rounded bg-accent text-white hover:bg-accent/80 transition-colors">Save</button>
+      {{ btn("Validate", "warning", attrs={"onclick": "validateDAG()"}) }}
+      {{ btn("Save", "primary", id="btn-save", cls="hidden", attrs={"onclick": "saveRole()"}) }}
     </div>
   </div>
 

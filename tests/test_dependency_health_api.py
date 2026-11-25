@@ -201,6 +201,9 @@ class TestDependencyHealthPage:
             resp = await client.get("/dependency-health")
         assert resp.status_code == 200
         assert b"Dependency Health" in resp.content
+        # The empty state's hint keeps its file names as code, not escaped markup.
+        assert b"Supported: <code>package.json</code>" in resp.content
+        assert b"&lt;code&gt;" not in resp.content
 
     async def test_multi_project_page_route_renders(self, tmp_path) -> None:
         from sova.config.registry import register_project, unregister_project

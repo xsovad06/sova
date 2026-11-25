@@ -361,7 +361,7 @@ function _renderPrTracker() {
       // Not "No open PRs": with no configured GitHub user nothing can be filtered.
       document.getElementById('pr-tracker-count').textContent = '';
       document.getElementById('pr-tracker-list').innerHTML =
-        '<p class="text-gray-500 text-sm py-4 text-center">No GitHub user is configured, so your PRs cannot be filtered</p>';
+        emptyStateHtml('No GitHub user is configured, so your PRs cannot be filtered');
       renderPrSummary([]);
       return;
     }
@@ -375,7 +375,7 @@ function _renderPrTracker() {
   var count = document.getElementById('pr-tracker-count');
   count.textContent = visible.length ? '(' + visible.length + ')' : '';
   if (!visible.length) {
-    list.innerHTML = '<p class="text-gray-500 text-sm py-4 text-center">No open PRs</p>';
+    list.innerHTML = emptyStateHtml('No open PRs');
   } else {
     var grouped = categorizePrs(visible);
     list.innerHTML = renderPrGroups(grouped);

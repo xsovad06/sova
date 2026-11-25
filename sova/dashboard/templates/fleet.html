@@ -2,15 +2,12 @@
 {% block title %}Fleet Insights - SOVA{% endblock %}
 {% block content %}
 {% from "_icons.html" import icon %}
-{% from "_components.html" import btn %}
+{% from "_components.html" import btn, stat_card %}
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Fleet Insights</h2>
   <div class="flex items-center gap-3">
     <span id="fleet-updated" class="text-xs text-gray-500"></span>
-    <button type="button" onclick="loadFleet(true)" id="refresh-btn"
-            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
-      Refresh
-    </button>
+    {{ btn("Refresh", size="md", id="refresh-btn", attrs={"onclick": "loadFleet(true)"}) }}
   </div>
 </div>
 
@@ -18,23 +15,12 @@
 <div id="fleet-error" class="hidden mb-4 px-4 py-3 rounded bg-accent-red/10 border border-accent-red/30 text-accent-red text-sm"></div>
 
 <!-- Health Summary -->
-<div id="health-summary" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Total Runs</p>
-    <p class="text-2xl font-bold" id="stat-total-runs">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Success Rate</p>
-    <p class="text-2xl font-bold" id="stat-success-rate">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Total Cost</p>
-    <p class="text-2xl font-bold text-accent-green" id="stat-total-cost">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Projects Scanned</p>
-    <p class="text-2xl font-bold" id="stat-projects">--</p>
-  </div>
+<div id="health-summary" class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+  {{ stat_card("Total Runs", "stat-total-runs", size="md") }}
+  {{ stat_card("Success Rate", "stat-success-rate", size="md") }}
+  {{ stat_card("Total Cost", "stat-total-cost", value_class="text-accent-green", size="md") }}
+  {{ stat_card("Projects Scanned", "stat-projects", size="md") }}
+  {{ stat_card("Retry Success Rate", "stat-retry-success", detail_id="stat-retry-detail", size="md") }}
 </div>
 
 <!-- Step Failure Leaderboard -->
@@ -63,16 +49,6 @@
     <h3 class="text-sm font-medium text-gray-400">Cost by Project</h3>
   </div>
   <div id="cost-breakdown" class="p-4">
-    <p class="text-sm text-gray-500">Loading...</p>
-  </div>
-</div>
-
-<!-- Retry Effectiveness -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
-  <div class="px-4 py-3 border-b border-gray-700/50">
-    <h3 class="text-sm font-medium text-gray-400">Retry Effectiveness</h3>
-  </div>
-  <div id="retry-effectiveness" class="p-4">
     <p class="text-sm text-gray-500">Loading...</p>
   </div>
 </div>
@@ -157,7 +133,7 @@ function renderFleet(data) {
 
   const srEl = document.getElementById('stat-success-rate');
   srEl.textContent = fmtRate(data.success_rate);
-  srEl.className = 'text-2xl font-bold ' + (data.success_rate >= 0.8 ? 'text-accent-green' : data.success_rate >= 0.5 ? 'text-accent-yellow' : 'text-accent-red');
+  setColorClasses(srEl, data.success_rate >= 0.8 ? 'text-accent-green' : data.success_rate >= 0.5 ? 'text-accent-yellow' : 'text-accent-red');
 
   document.getElementById('stat-total-cost').textContent = fmtCost(data.total_cost_usd);
   document.getElementById('stat-projects').textContent = data.projects_scanned.length;
@@ -175,7 +151,7 @@ function renderFleet(data) {
   const sfEl = document.getElementById('step-failures');
   sfEl.innerHTML = '';
   if (data.step_failure_stats.length === 0) {
-    sfEl.innerHTML = '<p class="text-sm text-gray-500">No step execution data</p>';
+    sfEl.innerHTML = emptyStateHtml('No step execution data');
   } else {
     let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
       '<th class="text-left py-1 pr-4">Step</th>' +
@@ -192,8 +168,7 @@ function renderFleet(data) {
         `<td class="py-2 pr-4 text-right text-gray-400">${s.failure_count}</td>` +
         `<td class="py-2 pr-4 text-right ${cc}">${fmtRate(s.failure_rate)}</td>` +
         `<td class="py-2 text-right">` +
-          `<button type="button" data-step="${esc(s.step_name)}" ` +
-            `class="propose-btn px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 transition-colors">Propose issue</button>` +
+          sovaBtn('Propose issue', {variant: 'primary', className: 'propose-btn', attrs: {'data-step': s.step_name}}) +
         `</td>` +
         '</tr>';
     }
@@ -208,7 +183,7 @@ function renderFleet(data) {
   const ecEl = document.getElementById('error-clusters');
   ecEl.innerHTML = '';
   if (data.failure_clusters.length === 0) {
-    ecEl.innerHTML = '<p class="text-sm text-gray-500">No failure clusters</p>';
+    ecEl.innerHTML = emptyStateHtml('No failure clusters');
   } else {
     let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
       '<th class="text-left py-1 pr-4">Pattern</th>' +
@@ -217,7 +192,9 @@ function renderFleet(data) {
       '</tr></thead><tbody>';
     for (const c of data.failure_clusters) {
       html += '<tr class="border-t border-gray-700/30">' +
-        `<td class="py-2 pr-4 text-gray-300 font-mono text-xs max-w-md truncate" title="${esc(c.pattern)}">${esc(c.pattern)}</td>` +
+        `<td class="py-2 pr-4">` +
+          `<span class="block min-w-0 max-w-md" data-tooltip="${esc(c.pattern)}" data-tooltip-align="start">` +
+          `<span class="block truncate text-gray-300 font-mono text-xs">${esc(c.pattern)}</span></span></td>` +
         `<td class="py-2 pr-4 text-right text-accent-red">${c.count}</td>` +
         `<td class="py-2 text-gray-400 text-xs">${c.projects.map(esc).join(', ')}</td>` +
         '</tr>';
@@ -230,7 +207,7 @@ function renderFleet(data) {
   const cbEl = document.getElementById('cost-breakdown');
   cbEl.innerHTML = '';
   if (data.cost_by_project.length === 0) {
-    cbEl.innerHTML = '<p class="text-sm text-gray-500">No cost data</p>';
+    cbEl.innerHTML = emptyStateHtml('No cost data');
   } else {
     let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
       '<th class="text-left py-1 pr-4">Project</th>' +
@@ -250,32 +227,31 @@ function renderFleet(data) {
     cbEl.innerHTML = html;
   }
 
-  // Retry Effectiveness
-  const reEl = document.getElementById('retry-effectiveness');
-  reEl.innerHTML = '';
-  if (data.total_runs === 0) {
-    reEl.innerHTML = '<p class="text-sm text-gray-500">No run data</p>';
-  } else if (data.retry_success_rate === 0) {
-    reEl.innerHTML = '<p class="text-sm text-gray-500">No retried runs in last 30 days</p>';
+  // Retry effectiveness: a summary stat card, with the reason it has no figure on its detail line.
+  const reEl = document.getElementById('stat-retry-success');
+  const reDetail = document.getElementById('stat-retry-detail');
+  if (data.total_runs === 0 || data.retry_success_rate === 0) {
+    reEl.textContent = '--';
+    setColorClasses(reEl, '');
+    reDetail.textContent = data.total_runs === 0 ? 'No run data' : 'No retried runs in last 30 days';
   } else {
-    const rc = data.retry_success_rate >= 0.5 ? 'text-accent-green' : 'text-accent-yellow';
-    reEl.innerHTML = `<div class="flex items-center gap-4">` +
-      `<div><p class="text-xs text-gray-500 uppercase">Retry Success Rate</p>` +
-      `<p class="text-2xl font-bold ${rc}">${fmtRate(data.retry_success_rate)}</p></div></div>`;
+    reEl.textContent = fmtRate(data.retry_success_rate);
+    setColorClasses(reEl, data.retry_success_rate >= 0.5 ? 'text-accent-green' : 'text-accent-yellow');
+    reDetail.textContent = '';
   }
 
   // Project Scan Status
   const ssEl = document.getElementById('scan-status');
   ssEl.innerHTML = '';
   if (data.projects_scanned.length === 0 && data.projects_skipped.length === 0) {
-    ssEl.innerHTML = '<p class="text-sm text-gray-500">No projects scanned</p>';
+    ssEl.innerHTML = emptyStateHtml('No projects scanned');
   } else {
     let html = '';
     if (data.projects_scanned.length > 0) {
       html += '<div class="mb-3"><p class="text-xs text-gray-500 uppercase mb-1">Scanned (' + data.projects_scanned.length + ')</p>';
       html += '<div class="flex flex-wrap gap-2">';
       for (const s of data.projects_scanned) {
-        html += `<span class="text-xs px-2 py-1 rounded bg-accent-green/10 text-accent-green">${esc(s)}</span>`;
+        html += badgeHtml(s, {color: 'green'});
       }
       html += '</div></div>';
     }
@@ -283,7 +259,7 @@ function renderFleet(data) {
       html += '<div><p class="text-xs text-gray-500 uppercase mb-1">Skipped (' + data.projects_skipped.length + ')</p>';
       html += '<div class="flex flex-wrap gap-2">';
       for (const s of data.projects_skipped) {
-        html += `<span class="text-xs px-2 py-1 rounded bg-accent-yellow/10 text-accent-yellow">${esc(s)}</span>`;
+        html += badgeHtml(s, {color: 'yellow'});
       }
       html += '</div></div>';
     }
@@ -336,9 +312,7 @@ async function openProposeDraft(stepName) {
     document.getElementById('propose-body').value = draft.body;
 
     const labelsEl = document.getElementById('propose-labels');
-    labelsEl.innerHTML = draft.labels.map(l =>
-      `<span class="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent">${esc(l)}</span>`
-    ).join('');
+    labelsEl.innerHTML = draft.labels.map(l => badgeHtml(l, {color: 'blue'})).join('');
   } catch (err) {
     errorEl.textContent = 'Failed to load draft: ' + err.message;
     errorEl.classList.remove('hidden');

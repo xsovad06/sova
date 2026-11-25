@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_components.html" import stat_card, btn %}
 {% block title %}Run #{{ run_id }} - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-6">
@@ -8,22 +9,10 @@
 
 <!-- Run summary -->
 <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6" id="run-summary">
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Issue</p>
-    <p class="text-xl font-bold text-accent" id="detail-issue">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Role</p>
-    <p class="text-xl font-bold" id="detail-role">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Status</p>
-    <p class="text-xl font-bold" id="detail-status">--</p>
-  </div>
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
-    <p class="text-xs text-gray-500 uppercase">Cost</p>
-    <p class="text-xl font-bold text-accent-green" id="detail-cost">--</p>
-  </div>
+  {{ stat_card("Issue", "detail-issue", value_class="text-accent", size="sm") }}
+  {{ stat_card("Role", "detail-role", size="sm") }}
+  {{ stat_card("Status", "detail-status", size="sm") }}
+  {{ stat_card("Cost", "detail-cost", value_class="text-accent-green", size="sm") }}
 </div>
 
 <!-- Run info (branch, PR, duration) -->
@@ -31,10 +20,8 @@
 
 <!-- Confidence score -->
 <div id="confidence-section" class="hidden mb-4">
-  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50 inline-block">
-    <p class="text-xs text-gray-500 uppercase">Confidence Score</p>
-    <p class="text-xl font-bold" id="detail-confidence">--</p>
-    <p class="text-xs text-gray-500 mt-1 max-w-md" id="detail-confidence-summary"></p>
+  <div class="inline-block max-w-md">
+    {{ stat_card("Confidence Score", "detail-confidence", detail_id="detail-confidence-summary", size="sm") }}
   </div>
 </div>
 
@@ -69,9 +56,7 @@
 <div id="run-error-banner" class="hidden mb-4 bg-accent-red/5 border border-accent-red/30 rounded-lg p-3">
   <pre class="text-sm text-accent-red whitespace-pre-wrap" id="run-error-text"></pre>
   <div id="sync-commands-action" class="hidden mt-3 flex items-center gap-3">
-    <button type="button" onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
-      Sync Commands
-    </button>
+    {{ btn("Sync Commands", "primary", attrs={"onclick": "syncCommands(event)"}) }}
     <span id="sync-commands-status" class="text-xs text-gray-500"></span>
   </div>
 </div>
@@ -101,16 +86,8 @@
 
 <!-- Actions -->
 <div id="actions-section" class="mt-2 flex items-center gap-3">
-  <button type="button" id="btn-resume" onclick="resumeRun()" class="hidden px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors"
-    aria-label="Resume from where it stopped"
-    data-tooltip="Resume from where it stopped">
-    Resume
-  </button>
-  <button type="button" id="btn-mark-failed" onclick="markFailed()" class="hidden px-4 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors"
-    aria-label="Manually mark this run as failed"
-    data-tooltip="Manually mark this run as failed">
-    Mark as Failed
-  </button>
+  {{ btn("Resume", "primary", "md", id="btn-resume", tooltip="Resume from where it stopped", cls="hidden", attrs={"onclick": "resumeRun()", "aria-label": "Resume from where it stopped"}) }}
+  {{ btn("Mark as Failed", "danger", "md", id="btn-mark-failed", tooltip="Manually mark this run as failed", cls="hidden", attrs={"onclick": "markFailed()", "aria-label": "Manually mark this run as failed"}) }}
 </div>
 {% endblock %}
 
@@ -198,7 +175,7 @@ function renderRunDetail(run, steps) {
     var scoreColor = score >= 80 ? 'text-accent-green' : (score >= 60 ? 'text-accent-yellow' : 'text-accent-red');
     var scoreEl = document.getElementById('detail-confidence');
     scoreEl.textContent = score + '/100';
-    scoreEl.className = 'text-xl font-bold ' + scoreColor;
+    setColorClasses(scoreEl, scoreColor);
     var confidenceDetails = run.confidence_details || {};
     document.getElementById('detail-confidence-summary').textContent = confidenceDetails.summary || '';
     document.getElementById('confidence-section').classList.remove('hidden');
@@ -286,7 +263,7 @@ function _renderRunInfo(run, livePatch) {
 function _setRunStatusAndCost(status, cost) {
   var statusEl = document.getElementById('detail-status');
   statusEl.textContent = status;
-  statusEl.className = 'text-xl font-bold ' + statusColor(status);
+  setColorClasses(statusEl, statusColor(status));
   document.getElementById('detail-cost').textContent = '$' + parseFloat(cost || 0).toFixed(4);
 }
 
@@ -592,7 +569,7 @@ function _stepRowHtml(s, isOutputTarget) {
   if (s.error_message) {
     row += '<div class="text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto mb-2">' + escapeHtml(s.error_message) + '</div>';
     if (s.error_message.indexOf('sova commands update') !== -1) {
-      row += '<div class="mt-2 flex items-center gap-3"><button type="button" onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Sync Commands</button><span class="text-xs text-gray-500 sync-commands-status"></span></div>';
+      row += '<div class="mt-2 flex items-center gap-3">' + sovaBtn('Sync Commands', {variant: 'primary', attrs: {onclick: 'syncCommands(event)'}}) + '<span class="text-xs text-gray-500 sync-commands-status"></span></div>';
     }
   }
 
@@ -644,7 +621,7 @@ function _showOutput(run, targetId, scrollState) {
 
 function renderStepList(steps, run) {
   if (steps.length === 0) {
-    document.getElementById('step-list').innerHTML = '<p class="text-gray-500 text-sm p-4">No steps recorded</p>';
+    document.getElementById('step-list').innerHTML = emptyStateHtml('No steps recorded');
     // Show fallback output area
     var fallback = document.getElementById('run-output-fallback');
     fallback.classList.remove('hidden');

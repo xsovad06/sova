@@ -51,7 +51,7 @@
     </div>
 
     <button type="button" id="filter-clear-btn" onclick="clearAllFilters()" style="display:none"
-      class="px-3 py-1.5 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
+      class="sova-btn sova-btn-ghost">
       Clear filters
     </button>
   </div>
@@ -68,17 +68,17 @@
       <span id="bulk-count" class="text-sm text-gray-300 font-medium"></span>
       <div class="w-px h-5 bg-gray-700"></div>
       <button type="button" id="bulk-triage-btn" onclick="executeBulkAction('triage')"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        class="sova-btn sova-btn-primary"
         disabled aria-label="Run triage on selected issues" data-tooltip="Run triage on selected issues">Triage</button>
       <button type="button" id="bulk-harden-btn" onclick="executeBulkAction('harden')"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        class="sova-btn sova-btn-purple"
         disabled aria-label="Run spec hardening on selected issues" data-tooltip="Run spec hardening on selected issues">Harden</button>
       <button type="button" id="bulk-run-btn" onclick="executeBulkAction('run')"
-        class="px-3 py-1.5 rounded text-xs font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        class="sova-btn sova-btn-success"
         disabled aria-label="Start agents for selected issues" data-tooltip="Start agents for selected issues">Run</button>
     </div>
     <div class="flex items-center gap-3">
-      <button type="button" onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors" aria-label="Clear selection" data-tooltip="Clear selection">
+      <button type="button" onclick="deselectAll()" class="sova-btn sova-btn-ghost sova-btn-xs" aria-label="Clear selection" data-tooltip="Clear selection">
         Deselect
       </button>
     </div>
@@ -89,39 +89,40 @@
 {% block scripts %}
 <script>
 var milestoneStyles = {
-  'Phase 1': { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
-  'Phase 2': { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
-  'Phase 3': { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
-  'Phase 4': { badge: 'bg-accent-purple/20 text-accent-purple', border: 'border-accent-purple/30' },
-  'Phase 5': { badge: 'bg-accent-green/20 text-accent-green', border: 'border-accent-green/30' },
-  'Phase 6': { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30' },
-  'Phase 7': { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
-  P1: { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
-  P2: { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
-  P3: { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
-  P4: { badge: 'bg-accent-purple/20 text-accent-purple', border: 'border-accent-purple/30' },
-  P5: { badge: 'bg-accent-green/20 text-accent-green', border: 'border-accent-green/30' },
-  P6: { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30' },
-  P7: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
-  '--': { badge: 'bg-gray-700/20 text-gray-500', border: 'border-gray-700/30' },
+  'Phase 1': { badge: 'red', border: 'border-accent-red/30' },
+  'Phase 2': { badge: 'yellow', border: 'border-accent-yellow/30' },
+  'Phase 3': { badge: 'blue', border: 'border-accent/30' },
+  'Phase 4': { badge: 'purple', border: 'border-accent-purple/30' },
+  'Phase 5': { badge: 'green', border: 'border-accent-green/30' },
+  'Phase 6': { badge: 'lavender', border: 'border-blue-500/30' },
+  'Phase 7': { badge: 'gray', border: 'border-gray-600/30' },
+  P1: { badge: 'red', border: 'border-accent-red/30' },
+  P2: { badge: 'yellow', border: 'border-accent-yellow/30' },
+  P3: { badge: 'blue', border: 'border-accent/30' },
+  P4: { badge: 'purple', border: 'border-accent-purple/30' },
+  P5: { badge: 'green', border: 'border-accent-green/30' },
+  P6: { badge: 'lavender', border: 'border-blue-500/30' },
+  P7: { badge: 'gray', border: 'border-gray-600/30' },
+  '--': { badge: 'gray-dim', border: 'border-gray-700/30' },
 };
 
+// Colour tokens for badgeHtml().
 var issueTypeStyles = {
-  Bug: 'bg-accent-red/20 text-accent-red',
-  Story: 'bg-accent/20 text-accent',
-  Task: 'bg-accent-yellow/20 text-accent-yellow',
-  Spike: 'bg-accent-purple/20 text-accent-purple',
-  Epic: 'bg-accent-purple/20 text-accent-purple',
+  Bug: 'red',
+  Story: 'blue',
+  Task: 'yellow',
+  Spike: 'purple',
+  Epic: 'purple',
 };
 
 var actionStyles = {
-  triage: 'bg-accent-yellow/20 text-accent-yellow',
-  research: 'bg-accent-purple/20 text-accent-purple',
-  review_spec: 'bg-accent-purple/20 text-accent-purple',
-  develop: 'bg-accent/20 text-accent',
-  review: 'bg-accent-green/20 text-accent-green',
-  resume: 'bg-accent/20 text-accent',
-  harden: 'bg-accent-purple/20 text-accent-purple',
+  triage: 'yellow',
+  research: 'purple',
+  review_spec: 'purple',
+  develop: 'blue',
+  review: 'green',
+  resume: 'blue',
+  harden: 'purple',
 };
 
 var actionLabels = {
@@ -164,14 +165,14 @@ function renderRunStatusBadge(item) {
   }
   if (run.status === 'done') {
     var ago = run.ended_at ? timeAgo(run.ended_at) : '';
-    return '<span class="px-2 py-1 rounded text-xs bg-accent-green/10 text-accent-green/70">Done ' + ago + '</span>';
+    return badgeHtml('Done ' + ago, {color: 'green'});
   }
   if (run.status === 'failed') {
     var ago = run.ended_at ? timeAgo(run.ended_at) : '';
-    return '<span class="px-2 py-1 rounded text-xs bg-accent-red/10 text-accent-red/70">Failed ' + ago + '</span>';
+    return badgeHtml('Failed ' + ago, {color: 'red'});
   }
   if (run.status === 'interrupted') {
-    return '<span class="px-2 py-1 rounded text-xs bg-accent-yellow/10 text-accent-yellow/70">Interrupted</span>';
+    return badgeHtml('Interrupted', {color: 'yellow'});
   }
   return '';
 }
@@ -187,7 +188,7 @@ var _STATE_ROLE_MAP = {
 function renderStartButton(item) {
   var isRunning = item.last_run && (item.last_run.status === 'running' || item.last_run.status === 'developing' || item.last_run.status === 'pending');
   if (isRunning) {
-    return '<button disabled class="px-3 py-1.5 rounded text-xs bg-gray-700/30 text-gray-600 cursor-not-allowed">Running</button>';
+    return sovaBtn('Running', {variant: 'secondary', disabled: true});
   }
 
   if (item.state === 'human_only') {
@@ -198,7 +199,7 @@ function renderStartButton(item) {
   if (item.state === 'researched' && item.spec_status && item.spec_status !== 'approved' && item.spec_status !== 'missing') {
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
     return '<a href="' + prefix + '/spec/' + escapeHtml(String(item.issue)) + '" ' +
-      'class="px-3 py-1.5 rounded text-xs bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors inline-flex items-center gap-1" ' +
+      'class="sova-btn sova-btn-purple" ' +
       'aria-label="Review spec before development" ' +
       'data-tooltip="Review spec before development">' +
       '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>' +
@@ -208,36 +209,37 @@ function renderStartButton(item) {
   var role = _STATE_ROLE_MAP[item.state] || 'developer';
   var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
   var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start ' + role + ' for this issue';
-  return '<button type="button" onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', \'' + role + '\', event)" ' +
-    'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
-    'aria-label="' + tooltip + '" ' +
-    'data-tooltip="' + tooltip + '">' +
-    label + '</button>';
+  return sovaBtn(label, {
+    variant: 'primary',
+    tooltip: tooltip,
+    attrs: {
+      onclick: "startFromQueue('" + escapeJsStr(String(item.issue)) + "', '" + role + "', event)",
+      'aria-label': tooltip,
+    },
+  });
 }
 
 function issueTypeBadge(type) {
   if (!type) return '';
-  var cls = issueTypeStyles[type] || 'bg-gray-600/30 text-gray-400';
-  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(type) + '</span>';
+  return badgeHtml(type, {color: issueTypeStyles[type] || 'gray'});
 }
 
 function stateBadge(item) {
-  return '<span class="px-1.5 py-0.5 rounded text-xs ' + stateBadgeClasses(item.state_color) + '">' + escapeHtml(item.state_label) + '</span>';
+  return badgeHtml(item.state_label, {color: item.state_color});
 }
 
 function actionBadge(action) {
-  var cls = actionStyles[action] || 'bg-gray-600/30 text-gray-400';
   var label = actionLabels[action] || action;
-  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(label) + '</span>';
+  return badgeHtml(label, {color: actionStyles[action] || 'gray'});
 }
 
 function specStatusBadge(specStatus) {
   if (!specStatus) return '';
   var styles = {
-    draft: 'bg-accent-yellow/15 text-accent-yellow',
-    approved: 'bg-accent-green/15 text-accent-green',
-    rejected: 'bg-accent-red/15 text-accent-red',
-    missing: 'bg-gray-600/30 text-gray-500',
+    draft: 'yellow',
+    approved: 'green',
+    rejected: 'red',
+    missing: 'gray-dim',
   };
   var labels = {
     draft: 'Spec: Draft',
@@ -245,9 +247,8 @@ function specStatusBadge(specStatus) {
     rejected: 'Spec: Rejected',
     missing: 'No Spec',
   };
-  var cls = styles[specStatus] || 'bg-gray-600/30 text-gray-500';
   var label = labels[specStatus] || specStatus;
-  return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
+  return badgeHtml(label, {color: styles[specStatus] || 'gray-dim'});
 }
 
 function renderQueueCard(item) {
@@ -266,7 +267,7 @@ function renderQueueCard(item) {
     return l.indexOf('agent:') !== 0 && l.indexOf('priority:') !== 0 && l.indexOf('role:') !== 0;
   });
   var labelsHtml = displayLabels.map(function(l) {
-    return '<span class="px-1.5 py-0.5 rounded text-xs bg-gray-700/50 text-gray-400">' + escapeHtml(l) + '</span>';
+    return badgeHtml(l, {color: 'gray'});
   }).join(' ');
 
   var metaParts = [];
@@ -293,7 +294,7 @@ function renderQueueCard(item) {
       'onchange="toggleSelection(\'' + escapeHtml(item.issue) + '\', \'' + escapeHtml(item.state) + '\')" ' +
       'class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50 cursor-pointer shrink-0">' +
     priorityIcon +
-    '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
+    badgeHtml(item.priority_label, {color: style.badge, className: 'font-bold'}) +
     '<div class="flex-1 min-w-0">' +
       '<div class="flex items-center gap-2">' +
         (item.url
@@ -411,10 +412,8 @@ async function loadQueue() {
     if (data.queue.length === 0) {
       selectAllWrapper.style.display = 'none';
       filterBar.classList.add('hidden');
-      document.getElementById('queue-content').innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
-        '<p class="text-gray-500">No actionable issues in queue</p>' +
-        '<p class="text-xs text-gray-600 mt-1">Issues appear here when they have agent-managed labels</p>' +
-      '</div>';
+      document.getElementById('queue-content').innerHTML = emptyStateHtml('No actionable issues in queue',
+        'Issues appear here when they have agent-managed labels');
       return;
     }
 
@@ -432,7 +431,6 @@ async function startFromQueue(issue, role, e) {
   var originalLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Starting...';
-  btn.style.opacity = '0.5';
 
   try {
     var resp = await fetch(apiUrl('/queue/start/' + issue), {
@@ -444,7 +442,6 @@ async function startFromQueue(issue, role, e) {
       showToast(await getErrorDetail(resp, 'Failed to start agent'), 'error');
       btn.disabled = false;
       btn.textContent = originalLabel;
-      btn.style.opacity = '1';
       return;
     }
     window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work';
@@ -452,7 +449,6 @@ async function startFromQueue(issue, role, e) {
     showToast('Failed to start agent: ' + e.message, 'error');
     btn.disabled = false;
     btn.textContent = originalLabel;
-    btn.style.opacity = '1';
   }
 }
 
@@ -593,13 +589,10 @@ function renderFilteredQueue() {
   var container = document.getElementById('queue-content');
   var filtered = getFilteredItems();
   var clearBtn = document.getElementById('filter-clear-btn');
-  if (clearBtn) clearBtn.style.display = hasActiveFilters() ? 'block' : 'none';
+  if (clearBtn) clearBtn.style.display = hasActiveFilters() ? 'inline-flex' : 'none';
 
   if (queueData.length > 0 && filtered.length === 0) {
-    container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
-      '<p class="text-gray-500">No issues match filters</p>' +
-      '<p class="text-xs text-gray-600 mt-1">Try adjusting your search or filter criteria</p>' +
-    '</div>';
+    container.innerHTML = emptyStateHtml('No issues match filters', 'Try adjusting your search or filter criteria');
     return;
   }
 
