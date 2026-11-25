@@ -1971,7 +1971,7 @@ document.addEventListener('visibilitychange', function() {
     if (!_restartPollInterval) _restartPollInterval = setInterval(_pollRestartRequired, 15000);
     if (_globalBatchId && !_globalBatchPollInterval) {
       _pollGlobalBatch();
-      _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+      _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
     }
   }
 });
@@ -2360,6 +2360,9 @@ function issueOrPrLabel(issueNumber, prNumber) {
 
 var _globalBatchId = null;
 var _globalBatchPollInterval = null;
+// The status route is limited per route and client (dashboard.rate_limit_per_minute, default 60): at 5 s one tab
+// polls 12 times a minute, so several tabs on one device stay under the default budget.
+var _GLOBAL_BATCH_POLL_MS = 5000;
 
 function _batchStorageKey() {
   var slug = window.SOVA_PROJECT_SLUG || '';
@@ -2388,14 +2391,14 @@ function startGlobalBatch(batchId, action, total) {
   _globalBatchId = batchId;
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar(action, total);
-  _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+  _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
 }
 
 function _resumeGlobalBatchPolling(batchId) {
   _globalBatchId = batchId;
   sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar('batch', 0);
-  _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+  _globalBatchPollInterval = setInterval(_pollGlobalBatch, _GLOBAL_BATCH_POLL_MS);
   _pollGlobalBatch();
 }
 
@@ -2416,7 +2419,11 @@ async function _pollGlobalBatch() {
   if (!_globalBatchId) return;
 
   try {
-    var data = await fetchAPI(apiUrl('/queue/batch/' + _globalBatchId + '/status'));
+    var res = await fetch(apiUrl('/queue/batch/' + _globalBatchId + '/status'));
+    // Over the rate limit: skip this tick and keep the bar, the next tick asks again.
+    if (res.status === 429) return;
+    if (!res.ok) throw new Error('API error: ' + res.status);
+    var data = await res.json();
 
     if (data.error) {
       _clearGlobalBatch();

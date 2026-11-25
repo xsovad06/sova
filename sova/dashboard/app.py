@@ -37,11 +37,11 @@ from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
 from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
+from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE, ApiRateLimiter, rate_limit_dependency, rate_limit_key
 from sova.dashboard.routers import (
     agents,
     auth,
@@ -993,15 +993,9 @@ def create_app(
             log.warning("dashboard.proxy_no_allowed_logins", proxy_origins=list(proxy_origins))
 
     if rate_limit > 0:
-
-        def rate_limit_key(request: Request) -> str | None:
-            """Get rate limit key for a request. Return None for exempt endpoints."""
-            path = request.url.path
-            # Exempt WebSocket, SSE, and static endpoints
-            if path.startswith("/ws/") or path.endswith("/stream") or path.startswith("/static/"):
-                return None
-            return get_remote_address(request)
-
+        # The middleware limits only the routes declared on the app itself (/healthz, the
+        # pages); every included router carries rate_limit_dependency() (sova/dashboard/rate_limit.py).
+        setattr(app.state, API_RATE_LIMITER_STATE, ApiRateLimiter(rate_limit))
         limiter = Limiter(
             key_func=rate_limit_key,
             default_limits=[f"{rate_limit}/minute"],
@@ -1182,7 +1176,11 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     app.add_middleware(ProjectContextMiddleware)
 
     # Fleet Manager API (global, not project-scoped)
-    app.include_router(fleet_manager.router, prefix="/api", dependencies=[Depends(require_same_origin_csrf)])
+    app.include_router(
+        fleet_manager.router,
+        prefix="/api",
+        dependencies=[Depends(rate_limit_dependency("/api")), Depends(require_same_origin_csrf)],
+    )
 
     # Home page (Fleet Manager command center)
     @app.get("/")
@@ -1607,42 +1605,47 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     single JSON-RPC POST endpoint a browser page is not meant to call with a cookie).
     `/api/telemetry/ingest` is exempt structurally: it is registered separately by
     `_register_telemetry_router`, not through this function.
+
+    ``dashboard.rate_limit_per_minute`` is applied the same way, ahead of the CSRF guard so
+    a rejected request still counts, and on ``mcp.router`` too (every local agent shares the
+    loopback key there); only the websocket router goes without it (sova/dashboard/rate_limit.py).
     """
-    csrf_dep = [Depends(require_same_origin_csrf)]
-    app.include_router(auth.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(overview.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(runs.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(costs.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(briefing.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(handoff.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(health.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(models.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(tasks.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(queue.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(settings.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(setup.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(agents.router, prefix=prefix, dependencies=csrf_dep)
+    rate_limit_dep = Depends(rate_limit_dependency(prefix))
+    guard_deps = [rate_limit_dep, Depends(require_same_origin_csrf)]
+    app.include_router(auth.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(overview.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(runs.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(costs.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(briefing.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(handoff.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(health.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(models.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(tasks.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(queue.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(settings.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(setup.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(agents.router, prefix=prefix, dependencies=guard_deps)
     # agents.ws_router carries only the /ws/agents/status websocket route: the CSRF
     # dependency expects an HTTP Request, which FastAPI cannot supply to a websocket
     # handler, so that one route is split onto its own router and checks the handshake
     # Origin itself (validate_websocket_origin in sova/dashboard/security.py).
     app.include_router(agents.ws_router, prefix=prefix)
-    app.include_router(work.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(issues.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(lifecycle.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(roles.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(spec.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(prs.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(quota.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(dependencies.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(dependency_health.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(resources.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(supervisor.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(oversight.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(mcp.router, prefix=prefix)
-    app.include_router(feed.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(fleet_insights.router, prefix=prefix, dependencies=csrf_dep)
-    app.include_router(reliability.router, prefix=prefix, dependencies=csrf_dep)
+    app.include_router(work.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(issues.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(lifecycle.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(roles.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(spec.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(prs.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(quota.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(dependencies.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(dependency_health.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(resources.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(supervisor.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(oversight.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(mcp.router, prefix=prefix, dependencies=[rate_limit_dep])
+    app.include_router(feed.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(fleet_insights.router, prefix=prefix, dependencies=guard_deps)
+    app.include_router(reliability.router, prefix=prefix, dependencies=guard_deps)
 
 
 def _register_telemetry_router(app: FastAPI) -> None:
