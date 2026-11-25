@@ -197,7 +197,9 @@ class SOVAServer:
 
     def _add_scheduler_routes(self, dashboard_app: FastAPI) -> None:
         """Add scheduler API routes to the dashboard app."""
-        from fastapi import APIRouter
+        from fastapi import APIRouter, Depends
+
+        from sova.dashboard.rate_limit import rate_limit_dependency
 
         scheduler_router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
@@ -213,7 +215,8 @@ class SOVAServer:
         async def scheduler_digest(hours: int = 24) -> dict:
             return await self._get_scheduler_digest(hours)
 
-        dashboard_app.include_router(scheduler_router)
+        # The router's own prefix is already in each route's path, so the bucket prefix is empty.
+        dashboard_app.include_router(scheduler_router, dependencies=[Depends(rate_limit_dependency(""))])
 
     def _add_health_route(self, dashboard_app: FastAPI) -> None:
         """Add general health check route to the dashboard app."""

@@ -1490,7 +1490,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "dashboard.rate_limit_per_minute",
         "Rate limit per minute",
-        "Maximum API requests per minute per IP address (default 60, set 0 to disable)",
+        "Maximum requests per minute to one route from one client address (default 60, set 0 to disable)",
         "dashboard",
         "number",
     ),

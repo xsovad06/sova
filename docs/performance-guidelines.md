@@ -138,7 +138,7 @@ Frontend JS polls these endpoints on fixed intervals (in `sova/dashboard/static/
 
 | Poll Target | Interval | Endpoint |
 |-------------|----------|----------|
-| Batch progress | 2s | `/api/queue/batch/active` |
+| Batch progress | 5s | `/api/queue/batch/{batch_id}/status` (`/api/queue/batch/active` once, to find a running batch) |
 | Connectivity banner | 15s | `/api/health/connectivity` |
 | Restart banner | 15s | `/api/health` |
 
