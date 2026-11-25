@@ -817,6 +817,14 @@ def _reset_work_item_graph_state() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_jira_ticket_cache() -> None:
+    """Forget the cached Jira ticket lookups (module state keyed by Jira project), so no test reads another's."""
+    from sova.dashboard.services.jira_ticket_service import clear_jira_ticket_cache
+
+    clear_jira_ticket_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_dashboard_snapshots() -> None:
     """Forget the last-result snapshots (work items, handoff), which are module state keyed by project.
 

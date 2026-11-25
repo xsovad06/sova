@@ -701,10 +701,10 @@ class TestPlannerCreateIssues:
         ]
         assert "Rate limited" not in resp.text
 
-    async def test_create_issues_jira_project_sends_no_labels(self, client: AsyncClient) -> None:
+    async def test_create_issues_jira_project_sends_priority_natively_and_no_labels(self, client: AsyncClient) -> None:
         """Jira rejects any label containing a space; a Jira-configured project
         must not forward the GitHub-style 'area: x' / 'priority: y' strings
-        the client used to build itself.
+        the client used to build itself. The priority goes to Jira's native field instead.
         """
         from unittest.mock import AsyncMock, patch
 
@@ -739,6 +739,7 @@ class TestPlannerCreateIssues:
         assert mock_adapter.create_issue.call_count == 1
         _, kwargs = mock_adapter.create_issue.call_args
         assert kwargs["labels"] is None
+        assert kwargs["priority"] == "high"
 
 
 class TestPlannerTaskLabels:
@@ -777,6 +778,16 @@ class TestPlannerTaskLabels:
 
         task = PlannedTaskRequest(title="t")
         assert planner_task_labels(task, is_github=True) is None
+
+    @pytest.mark.parametrize(
+        ("priority", "expected"),
+        [("High ", "high"), ("undefined", "undefined"), ("", "undefined"), (" ", "undefined"), ("urgent", "undefined")],
+    )
+    def test_priority_for_jiras_native_field(self, priority: str, expected: str) -> None:
+        from sova.dashboard.routers.agents import PlannedTaskRequest
+        from sova.dashboard.services.planner_issue_service import planner_task_priority
+
+        assert planner_task_priority(PlannedTaskRequest(title="t", priority=priority)) == expected
 
     def test_non_github_returns_none(self) -> None:
         from sova.dashboard.routers.agents import PlannedTaskRequest

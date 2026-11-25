@@ -782,8 +782,14 @@ def _append_standalone_pr_items(
     *,
     external_reviews_enabled: bool = True,
     max_address_cycles: int = 0,
+    jira_tickets: dict[str, Task] | None = None,
 ) -> None:
-    """Add work items for PRs not already covered by a queue task."""
+    """Add work items for PRs not already covered by a queue task.
+
+    On a Jira project a linked ticket outside the queue fills the row from the tracker: the dependency
+    graph's copy, else ``jira_tickets`` (looked up by key, see ``jira_ticket_service``). Only a row neither
+    resolves keeps its PR-label priority.
+    """
     for pr in prs:
         issue_num = str(pr.get("linked_issue", "")) if pr.get("linked_issue") else None
         if issue_num and issue_num in linked_issue_numbers:
@@ -811,6 +817,9 @@ def _append_standalone_pr_items(
         )
         # A linked issue outside the actionable queue still has its own tracker title and URL.
         task = graph.get_task(int(issue_num)) if graph is not None and issue_num and issue_num.isdigit() else None
+        jira_key = str(item.get("jira_key") or "").strip().upper()
+        if task is None and is_jira and jira_tickets and jira_key:
+            task = jira_tickets.get(jira_key)
         if task is not None and is_jira:
             item.update(
                 title=task.title,
@@ -818,6 +827,8 @@ def _append_standalone_pr_items(
                 assignees=list(task.assignees),
                 issue_priority=task.priority.value,
                 jira_key=task.metadata.get("key", ""),
+                jira_status=task.metadata.get("status", ""),
+                jira_priority=task.metadata.get("jira_priority", ""),
             )
         elif item["jira_key"] and jira_base_url:
             item["url"] = f"{jira_base_url.rstrip('/')}/browse/{item['jira_key']}"
@@ -933,6 +944,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
             )
         )
 
+    jira_tickets = await _lookup_outside_queue_tickets(cfg, prs, queue, graph)
     _append_standalone_pr_items(
         items,
         prs,
@@ -945,6 +957,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         is_jira=bool(cfg and cfg.task_source.type == "jira"),
         external_reviews_enabled=external_reviews_enabled,
         max_address_cycles=max_address_cycles,
+        jira_tickets=jira_tickets,
     )
 
     _sort_items(items)
@@ -996,6 +1009,31 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         # How old the graph the classification came from is, and whether its rebuild failed (None without one).
         "graph": graph_age_meta(project_dir),
     }
+
+
+async def _lookup_outside_queue_tickets(
+    cfg: ProjectConfig | None, prs: list[dict], queue: list[dict], graph: DependencyGraph | None
+) -> dict[str, Task]:
+    """The Jira tickets of PR rows no queue task or graph task covers, by upper-cased key (none off Jira)."""
+    if cfg is None or not cfg.task_source.is_jira:
+        return {}
+    from sova.dashboard.services.jira_ticket_service import lookup_jira_tickets
+
+    queued = {str(task["issue"]) for task in queue}
+
+    def covered(issue: str) -> bool:
+        # Only a numeric issue can be a graph task (``_append_standalone_pr_items`` applies the same guard).
+        if issue in queued:
+            return True
+        return graph is not None and issue.isdigit() and graph.get_task(int(issue)) is not None
+
+    keys = set()
+    for pr in prs:
+        issue = str(pr.get("linked_issue") or "")
+        jira_key = str(pr.get("linked_jira_key") or "").strip()
+        if issue and jira_key and not covered(issue):
+            keys.add(jira_key)
+    return await lookup_jira_tickets(cfg, keys)
 
 
 async def build_work_items(project_dir: Path | None) -> dict:
