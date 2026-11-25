@@ -22,7 +22,7 @@ from sova.core.steps._pr_body import (
 from sova.core.steps._pr_body import (
     title_from_branch as _title_from_branch,
 )
-from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.base import BaseStep, GateCheckResult, StepResult, trigger_coderabbit_review
 from sova.core.steps.commit_convention import (
     MAX_LINE_LENGTH,
     format_type_scope,
@@ -518,7 +518,7 @@ class CreatePRStep(BaseStep):
                 await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
             except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
-        await self._trigger_coderabbit_review(ctx, pr_number)
+        await trigger_coderabbit_review(ctx, pr_number, step="create_pr")
         if ctx.config.ldap.enabled:
             await self._suggest_reviewers(ctx, pr_number)
 
@@ -531,16 +531,6 @@ class CreatePRStep(BaseStep):
             issue_number=ctx.issue_number if ctx.has_issue else None,
             pr_number=pr_number,
         )
-
-    @staticmethod
-    async def _trigger_coderabbit_review(ctx: ExecutionContext, pr_number: int) -> None:
-        if not ctx.config.external_reviews.coderabbit.trigger_review:
-            return
-        log.info("step.create_pr.trigger_coderabbit", pr=pr_number)
-        try:
-            await ctx.adapter.post_pr_comment(pr_number, "@coderabbitai review")
-        except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
-            log.warning("step.create_pr.trigger_coderabbit_failed", pr=pr_number, exc_info=True)
 
     async def _generate_pr_body(
         self, ctx: ExecutionContext, task_title: str, fallback_title: str, *, request_title: bool = True

@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, TypedDict
 
 from sova.core.context import ExecutionContext
-from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.steps.base import BaseStep, GateCheckResult, StepResult, trigger_coderabbit_review
 from sova.core.steps.commit_convention import format_type_scope, resolve_default_scope, resolve_default_type
 from sova.git.artifact_exclusions import EXCLUDED_PATHSPECS, IGNORABLE_UNTRACKED_RE
 from sova.utils.logging import get_logger
@@ -221,16 +221,24 @@ class AddressExternalFindingsStep(BaseStep):
         # fix reviewers can't see.
         if coderabbit_thread_ids and pushed and (has_changes or new_commits):
             try:
-                await resolve_coderabbit_threads(
+                resolved_count = await resolve_coderabbit_threads(
                     coderabbit_thread_ids,
                     github_user=ctx.config.github_user,
                 )
                 log.info(
                     "step.address_external_findings.threads_resolved",
-                    count=len(coderabbit_thread_ids),
+                    count=resolved_count,
+                    requested=len(coderabbit_thread_ids),
                 )
             except RuntimeError:
                 log.warning("step.address_external_findings.resolve_failed", exc_info=True)
+            else:
+                # Resolving threads does not dismiss CodeRabbit's CHANGES_REQUESTED review: only its re-review
+                # of the pushed head does, and the PR waits in awaiting_bot_rereview until then. Posted once per
+                # step run (CodeRabbit allows one manual review an hour), never retried. A failed mutation is
+                # logged and not counted, so a run that resolved no thread has nothing to ask a re-review for.
+                if resolved_count:
+                    await trigger_coderabbit_review(ctx, ctx.pr_number, step="address_external_findings")
         elif coderabbit_thread_ids:
             reason = "no_changes_detected" if not (has_changes or new_commits) else "push_failed"
             log.info("step.address_external_findings.threads_not_resolved", reason=reason)
