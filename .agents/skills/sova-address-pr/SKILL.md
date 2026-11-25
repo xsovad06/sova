@@ -127,6 +127,8 @@ This command runs as a headless agent. You MUST execute every step below through
 
 5. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
+   **SOVA review findings**: the latest review with a `<!-- sova-review:` marker lists findings under `### Findings` and `### Advisory (not blocking)`. When it is newer than the latest `<!-- sova-addressed` review, every entry in both sections is a finding for steps 6 and 7, whatever the verdict: an APPROVE listing advisory entries is not "nothing to address", since a person runs this on an approved PR to get them fixed. When an address summary is newer, they were handled.
+
    ```bash
    echo "::sova-phase::fix"
    ```
