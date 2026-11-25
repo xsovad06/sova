@@ -7,6 +7,7 @@ import copy
 import functools
 import json
 import os
+import tomllib
 import types
 import typing
 from dataclasses import dataclass, field
@@ -1024,7 +1025,11 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
                 result["warning"] = warning
             return result
 
-        db_ok = await _save_setting_to_db(project_dir, key, cast)
+        if meta.json_editable:
+            # Edited as one JSON object: the save is the whole mapping, so no stored entry may outlive it.
+            db_ok = await _replace_object_setting_in_db(project_dir, key, cast)
+        else:
+            db_ok = await _save_setting_to_db(project_dir, key, cast)
         if not db_ok:
             log.warning("settings.db_write_failed", key=key)
 
@@ -1034,7 +1039,15 @@ async def update_config(project_dir: Path | None = None, *, key: str, value: str
     if not db_ok and not toml_ok:
         return {"error": "Failed to persist setting (neither DB nor TOML available)"}
 
-    return {"status": "ok", "key": key, "value": value}
+    result = {"status": "ok", "key": key, "value": value}
+    # The loader deep-merges sova.toml's table with the DB value, so an entry this save removed stays in
+    # effect while an un-updated sova.toml still lists it: say so rather than report plain success.
+    if meta.json_editable and not toml_ok and _toml_sets_key(project_dir, key):
+        result["warning"] = (
+            f"Saved, but sova.toml could not be updated and still sets '{key}': "
+            "entries removed here stay in effect until it is edited."
+        )
+    return result
 
 
 async def update_config_many(
@@ -1352,6 +1365,41 @@ async def _save_setting_to_db(project_dir: Path | None, key: str, value: object)
         return False
 
 
+async def _replace_object_setting_in_db(project_dir: Path | None, key: str, value: object) -> bool:
+    """Persist an object-typed setting as one row, replacing every per-entry row stored under it.
+
+    An object can be stored a row per entry (``key.<name>``); leaving those would merge them back into the new
+    value. Both happen in one transaction. Returns True on success.
+    """
+    try:
+        from sova.config.db_loader import delete_setting, save_setting
+
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            await delete_setting(session, key, with_children=True)
+            await save_setting(session, key, value)
+        _invalidate_config_cache(project_dir)
+        return True
+    except (OSError, RuntimeError, SQLAlchemyError):
+        log.warning("settings.db_save_failed", key=key, exc_info=True)
+        return False
+
+
+def _toml_sets_key(project_dir: Path | None, key: str) -> bool:
+    """Whether sova.toml sets ``key`` (a dotted path). An unreadable or unparseable file counts as setting it."""
+    toml_path = get_config_file_path(project_dir)
+    if not toml_path.exists():
+        return False
+    try:
+        node: object = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return True
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return True
+
+
 def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> bool:
     """Best-effort update of sova.toml. Returns True on success."""
     toml_path = get_config_file_path(project_dir)
@@ -1436,8 +1484,21 @@ def _validate_value_type(key: str, value: str) -> str | None:
         bad = [item for item in _cast_list(value) if not _is_positive_int_text(item)]
         if bad:
             return f"'{key}' expects positive whole numbers, got '{bad[0]}'"
+    elif meta.value_type == "object" and _parse_object(value) is None:
+        return f"""'{key}' expects a JSON object, e.g. {{"name": "value"}}, got '{value}'"""
 
     return None
+
+
+def _parse_object(value: str) -> dict | None:
+    """An object-typed setting's value parsed from JSON text ('' is an empty object), or None when it is not one."""
+    if not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _validate_config_consistency(project_dir: Path | None, key: str, value: object) -> str | None:
@@ -1506,6 +1567,9 @@ def _cast_value(value: str, value_type: str = "string", item_type: str = "string
         if item_type == "int":
             return [int(item) if _is_positive_int_text(item) else item for item in items]
         return items
+    if value_type == "object":
+        parsed = _parse_object(value)
+        return parsed if parsed is not None else value
     if value_type == "secret":
         # A secret must never be coerced to bool/int/float just because it
         # happens to look like one (an all-digit token, a "true"-shaped value).

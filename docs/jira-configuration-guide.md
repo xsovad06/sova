@@ -118,6 +118,7 @@ The `jira_api_token` field uses `repr=False` to prevent accidental logging.
 | `jira_component` | Filter issues by component | `""` (all) |
 | `jira_jql_filter` | Additional JQL clause appended to queries | `""` |
 | `jira_status_mapping` | Map Jira status names to SOVA states | `{}` |
+| `jira_priority_mapping` | Map Jira priority names to SOVA priorities (see "Priority Mapping" below) | `{}` |
 | `jira_state_transitions` | Override transition names for state changes | `{}` |
 | `jira_track_agent_work` | Track agent work on issues | `false` |
 
@@ -328,6 +329,22 @@ The adapter resolves SOVA state in this order:
 3. **Custom `jira_status_mapping`**: checked against the Jira status name
 4. **Default mapping**: the built-in status mapping table
 5. **Fallback**: `backlog` (with an unmapped warning)
+
+## Priority Mapping
+
+SOVA reads an issue's priority from Jira's native `priority` field, never from `priority:` labels. The built-in table maps the common names (Blocker, Highest/Critical, Major/High, Normal/Medium, Minor/Low/Trivial/Lowest), `Urgent` (critical) and the MoSCoW names (Must Have high, Should Have medium, Could Have, Won't Have and Optional low). Matching ignores case and surrounding whitespace, and strips a `P<n> - ` prefix and a ` (migrated)` suffix, so `P1 - Critical`, `Critical (migrated)` and `P2 - High (migrated)` resolve too. `Unprioritized`, or no priority at all, is `undefined`.
+
+Any other name resolves to `undefined` and logs `priority.unmapped` once per name. Map it with `jira_priority_mapping` (Jira priority name to one of `blocker`, `critical`, `high`, `medium`, `low`, `undefined`), which is checked before the built-in table and wins over it:
+
+```bash
+sova config set task_source.jira_priority_mapping '{"P1 - Urgent": "critical", "Nice to have": "low"}'
+```
+
+The settings page edits the same value as JSON text. Saving replaces the whole mapping, and an unknown level is rejected. If `sova.toml` also sets the mapping and cannot be updated, the save warns that entries removed here stay in effect until the file is edited.
+
+A planner-created ticket gets the planner's priority in the native field, using a name the project's create screen allows for that issue type. When the screen has no priority field, or its scheme has no name for the level, the field is left out (logged as `create_issue.priority_omitted`) and Jira applies its default. SOVA reads every page of the create metadata (going by Jira's `isLast` or `total`, since Jira may return fewer entries per page than asked for), and a lookup that fails (Jira unreachable or erroring) is not remembered, so the next ticket retries it.
+
+A PR row on the Work page whose ticket is outside the queue (excluded by `jira_jql_filter`) gets the ticket's priority, key and status from one bulk fetch per refresh (at most 100 tickets, cached for two minutes per Jira project, account, token and mapping, so a credential or mapping change is not answered from the old entry). This fetch is for display and ranking only: it never adds work to the queue. If Jira cannot be reached, the lookup fails in any other way, or the ticket is not found, the row falls back to its PR's `priority:` label; a ticket Jira returns in an unexpected shape is skipped (logged as `bulk_fetch.unparseable_issue`) without dropping the others.
 
 ## Step 5: Configure State Transitions (Optional)
 

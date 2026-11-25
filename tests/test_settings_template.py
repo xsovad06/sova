@@ -204,10 +204,11 @@ class TestModelsViewWrites:
 
 
 class TestEditability:
-    def test_only_objects_are_read_only(self, rows_source: str) -> None:
-        """Lists get the text box every other plain value gets; objects alone render as a read-only table."""
+    def test_only_opted_in_objects_are_editable(self, rows_source: str) -> None:
+        """Lists get the text box every other plain value gets; an object does only when its registry entry opts
+        in (``json_editable``, edited as JSON text that update_config() parses), else it is a read-only table."""
         body = _function_body(rows_source, "export function controlHtml(s) {")
-        assert "if (s.value_type === 'object') return objectControl(s);" in body
+        assert "if (s.value_type === 'object' && !s.json_editable) return objectControl(s);" in body
         assert "'list'" not in body
         assert body.rstrip().endswith("return textControl(s);")
 

@@ -18,6 +18,9 @@ class SettingMeta:
     # Entry type of a ``list`` setting: ``string``, or ``int`` for one whose entries are positive whole numbers
     # (issue numbers). The editor still sends comma-separated text; the server casts each entry.
     item_type: str = "string"
+    # An ``object`` setting the settings page edits as JSON text, where a save replaces the whole mapping. Only a
+    # flat name-to-value mapping opts in; every other object stays a read-only table that keeps its stored rows.
+    json_editable: bool = False
 
 
 _LABEL_POLL_INTERVAL = "Poll interval (s)"
@@ -594,6 +597,14 @@ _REGISTRY: list[SettingMeta] = [
         'Map JIRA board status names to SOVA states (e.g. ON_QA = "done", Selected for Development = "triaged")',
         "task_source",
         "object",
+    ),
+    SettingMeta(
+        "task_source.jira_priority_mapping",
+        "JIRA priority mapping",
+        'Map JIRA priority names to SOVA priorities, checked before the built-in names (e.g. "Urgent" = "critical")',
+        "task_source",
+        "object",
+        json_editable=True,
     ),
     SettingMeta(
         "task_source.jira_state_transitions",
@@ -2487,7 +2498,9 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
     ("keyring"/"database"/"unset", from ``secret_locations``) and
     ``keyring_capable`` (whether this key is actually resolved through the
     keyring; see ``keyring_store.RESOLVED_SECRET_KEYS``), which the settings
-    page uses to decide whether to offer a "Move to keychain" action.
+    page uses to decide whether to offer a "Move to keychain" action. A registered
+    ``value_type="object"`` entry carries ``json_editable``: the page edits only those
+    as JSON text and shows every other object as a read-only table.
     Settings without a registered group go into "other".
     """
     from sova.llm import keyring_store
@@ -2514,6 +2527,8 @@ def get_grouped_config(flat_config: dict, secret_locations: dict[str, str] | Non
                 "options": list(meta.options),
                 "options_source": meta.options_source,
             }
+            if meta.value_type == "object":
+                entry["json_editable"] = meta.json_editable
             if meta.value_type == "secret":
                 entry["secret_location"] = secret_locations.get(key, "unset")
                 entry["keyring_capable"] = key in keyring_store.RESOLVED_SECRET_KEYS
