@@ -1112,7 +1112,7 @@ async def start_command(
                 from sova.dashboard.services import handoff_service
 
                 handoff_service.clear_handoff(project_dir, issue=issue)
-            except Exception:  # noqa: BLE001 (non-fatal, handoff cleanup must not block command spawn)
+            except Exception:  # noqa: BLE001 (handoff cleanup is non-fatal and must not block command spawn)
                 log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         model = _resolve_config_model(project_dir)
