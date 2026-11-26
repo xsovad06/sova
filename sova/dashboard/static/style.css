@@ -2057,7 +2057,8 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
    shell's parts. The breakpoint is phone-shell.js's PHONE_QUERY. */
 .sova-topbar,
 .sova-tabbar,
-.sova-more-sheet { display: none; }
+.sova-more-sheet,
+.sova-graph-sheet { display: none; }
 
 @media (max-width: 767.98px) {
   :root {
@@ -2460,6 +2461,100 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
   .sova-history-runs tr.sova-history-result { padding-top: 0; }
   .sova-history-runs tr.sova-history-day td,
   .sova-history-runs tr.sova-history-result td { flex: 1 1 100%; max-width: none; margin-left: 0; }
+  /* Supervisor on the phone (#1566): one column led by its switch and Poll now, the off note, the pending actions
+     (an empty card says so while the panel is hidden) and the dependency graph row, then the switches, one per row
+     and at least 44px tall. The rest of the page follows in its own order. */
+  .sova-sup-page { display: flex; flex-direction: column; }
+  #supervisor-head { order: -5; }
+  #supervisor-off-note-phone { order: -4; }
+  #pending-plan,
+  #pending-empty { order: -3; }
+  #graph-open-btn { order: -2; }
+  #supervisor-switches { order: -1; }
+  #pending-plan:not(.hidden) + #pending-empty { display: none; }
+  /* The phone's own off note leads the page, so the switches card does not repeat it. */
+  #supervisor-off-note { display: none; }
+  .sova-sup-settings-link { display: inline-flex; align-items: center; min-height: 44px; }
+  .sova-sup-switch-row { min-height: 44px; padding-block: 0; }
+  .sova-sup-graph-entry {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 56px;
+    margin-bottom: 1rem;
+    padding: 8px 12px;
+    background: var(--color-surface-card);
+    border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+    border-radius: 0.75rem;
+    color: var(--ctp-text);
+    font-size: 0.875rem;
+    text-align: left;
+    transition: background-color 150ms ease;
+  }
+  .sova-sup-graph-entry:hover { background: var(--color-surface-hover); }
+
+  /* The graph sheet (supervisor/graph-sheet.js moves the graph card and the node drawer into it): the card fills
+     the sheet under its head, its legend is one line that scrolls sideways, and the drawer sits at the bottom edge.
+     The graph's own height is an inline style for the wide page, hence the !important. */
+  .sova-side-panel.sova-graph-sheet { display: flex; }
+  .sova-graph-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 6px var(--phone-gutter-right) 6px var(--phone-gutter-left);
+    border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  }
+  .sova-graph-sheet-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .sova-graph-sheet #graph-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 12px var(--phone-gutter-right) 0 var(--phone-gutter-left);
+    border: 0;
+    border-radius: 0;
+  }
+  .sova-graph-sheet .sova-graph-card-title { display: none; }
+  .sova-graph-sheet #graph-tools { width: 100%; min-width: 0; }
+  .sova-graph-sheet #graph-legend {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+  .sova-graph-sheet #graph-legend > * { flex-shrink: 0; }
+  /* Next up is one line that scrolls sideways too, so the graph keeps the height of the sheet. */
+  .sova-graph-sheet #graph-next-up,
+  .sova-graph-sheet #graph-next-up-items { flex-wrap: nowrap; min-width: 0; }
+  .sova-graph-sheet #graph-next-up { overflow-x: auto; scrollbar-width: none; }
+  .sova-graph-sheet #graph-next-up > *,
+  .sova-graph-sheet #graph-next-up-items > * { flex-shrink: 0; white-space: nowrap; }
+  .sova-graph-sheet #graph-legend::-webkit-scrollbar,
+  .sova-graph-sheet #graph-next-up::-webkit-scrollbar { display: none; }
+  .sova-graph-sheet #graph-container {
+    flex: 1;
+    height: auto !important;
+    min-height: 0 !important;
+    margin-inline: calc(-1 * var(--phone-gutter-left)) calc(-1 * var(--phone-gutter-right));
+    border-radius: 0;
+  }
+  /* A pinch or drag on the graph is d3's zoom, never the browser's page zoom or scroll. */
+  .sova-graph-sheet #graph-svg { touch-action: none; }
+  .sova-graph-sheet #action-drawer {
+    flex-shrink: 0;
+    max-height: 45dvh;
+    overflow-y: auto;
+    margin: 0;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+  }
+
   .sova-input,
   textarea,
   select,

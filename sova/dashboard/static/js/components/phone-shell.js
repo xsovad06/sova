@@ -14,18 +14,20 @@ export var PHONE_QUERY = '(max-width: 767.98px)';
 var _sheet = null;
 var _moves = [];
 
-// Each element that moves: where it lives on a wide screen (a marker left in its place) and its slot in the sheet.
-function _move(id, slotId) {
+// An element that moves into a sheet on a phone: where it lives on a wide screen (a marker left in its place) and
+// its slot in the sheet. Null when either is missing. The Supervisor's graph sheet moves its graph the same way.
+export function trackMove(id, slotId) {
   var el = document.getElementById(id);
   var slot = document.getElementById(slotId);
-  if (!el || !slot || !el.parentNode) return;
+  if (!el || !slot || !el.parentNode) return null;
   var marker = document.createComment(' ' + id + ' lives here on a wide screen ');
   el.parentNode.insertBefore(marker, el);
-  _moves.push({ el: el, slot: slot, marker: marker });
+  return { el: el, slot: slot, marker: marker };
 }
 
-function _placeWidgets(phone) {
-  _moves.forEach(function(m) {
+// Puts each tracked element in its sheet slot on a phone, and back in its own place on a wide screen.
+export function placeMoves(moves, phone) {
+  moves.forEach(function(m) {
     if (phone) {
       if (m.el.parentNode !== m.slot) m.slot.appendChild(m.el);
     } else if (m.el.previousSibling !== m.marker) {
@@ -48,12 +50,12 @@ export function init() {
   });
   menu.addEventListener('click', function() { _sheet.toggle(); });
 
-  _move('auth-widget', 'more-sheet-provider-slot');
-  _move('resource-widget', 'more-sheet-resources-slot');
+  _moves = [trackMove('auth-widget', 'more-sheet-provider-slot'), trackMove('resource-widget', 'more-sheet-resources-slot')]
+    .filter(Boolean);
   var query = typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_QUERY) : null;
   function apply() {
     var phone = !!(query && query.matches);
-    _placeWidgets(phone);
+    placeMoves(_moves, phone);
     // A window widened past the phone breakpoint shows the sidebar, which lists every page: the sheet has no place.
     if (!phone && _sheet.isOpen()) _sheet.close('wide');
   }
