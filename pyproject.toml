@@ -135,20 +135,12 @@ filterwarnings = [
     "ignore:unclosed file.*sova\\.db\\.migrate\\.lock.*:ResourceWarning",
     # A mocked async collaborator (AsyncMock) that a test's own early return,
     # exception path, or cancellation never awaits still creates a coroutine
-    # object, which warns on its own __del__. This entry is deliberately the
-    # widest in the list, and it is the one to narrow first: "coroutine X was
-    # never awaited" is also exactly how a forgotten `await` on production
-    # code surfaces, so the category-wide ignore costs real signal. Measured
-    # while promoting warnings to errors, replacing it with
-    # "ignore:coroutine 'AsyncMockMixin\\._execute_mock_call' was never awaited"
-    # (the AsyncMock case alone) fails tests on pre-existing leaks, none of
-    # them a test double: 'create_subprocess_exec' (tests/test_ipc.py),
-    # '_ConnectionManager._produce_loop'
-    # (tests/test_dashboard_app.py's websocket tests) and 'Queue.get' (garbage
-    # collected during the setup of a tests/test_output_stream_service.py test,
-    # so leaked by an earlier test on the same xdist worker, not yet traced).
-    # Fix those, then narrow this entry to the AsyncMock message.
-    "ignore:coroutine .* was never awaited:RuntimeWarning",
+    # object, which warns on its own __del__. Scoped to AsyncMock's coroutine:
+    # "coroutine X was never awaited" for any other coroutine is how a
+    # forgotten `await` on production code surfaces, or a mocked asyncio.run,
+    # wait_for or create_task dropping the coroutine it is handed (use
+    # tests/conftest.py's closing_stand_in for those), so it must fail.
+    "ignore:coroutine 'AsyncMockMixin\\._execute_mock_call' was never awaited:RuntimeWarning",
     # The same unawaited AsyncMock coroutine, when garbage collection
     # finalizes it while a namedtuple's __new__ is running: CPython builds
     # that __new__ from a string with an empty __builtins__, so the

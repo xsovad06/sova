@@ -16,6 +16,7 @@ from structlog.testing import capture_logs
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRunStatus
 from sova.oversight.agent import OversightAgent
+from tests.conftest import closing_stand_in
 
 # ---------------------------------------------------------------------------
 # Config tests
@@ -752,7 +753,7 @@ class TestOversightActionWiring:
 
         with (
             patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", side_effect=TimeoutError),
+            patch("asyncio.wait_for", side_effect=closing_stand_in(raises=TimeoutError)),
         ):
             await agent._auto_triage([finding])
 

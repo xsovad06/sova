@@ -17,7 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from sova.dashboard.app import create_app
 from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_same_origin_csrf
-from tests.conftest import agents_page_source
+from tests.conftest import agents_page_source, closing_stand_in
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
 # Uses the shared per-worker in-memory DB, emptied before each test
@@ -937,20 +937,6 @@ def _ws_headers(app: FastAPI) -> dict[str, str]:
     return {"origin": sorted(app.state.allowed_origins)[0]}
 
 
-def _close_coroutine_return(task: MagicMock):
-    """Stand-in for ``asyncio.create_task`` that closes the coroutine it is handed and returns ``task``.
-
-    A bare ``return_value`` drops the coroutine unawaited, and its "never awaited" warning surfaces as an
-    unraisable exception in whichever later test the garbage collector happens to run during.
-    """
-
-    def _create_task(coro, *args, **kwargs):
-        coro.close()
-        return task
-
-    return _create_task
-
-
 class TestWebSocketAgentStatus:
     @pytest.fixture(autouse=True)
     def _no_sidebar_builds(self):
@@ -1132,7 +1118,7 @@ class TestWebSocketAgentStatus:
         # Patch create_task to avoid needing a running event loop
         dummy_task = MagicMock()
         dummy_task.done.return_value = False
-        with patch("asyncio.create_task", side_effect=_close_coroutine_return(dummy_task)):
+        with patch("asyncio.create_task", side_effect=closing_stand_in(dummy_task)):
             mgr.connect(ws_a, dir_a)
             mgr.connect(ws_b, dir_b)
 
@@ -1182,7 +1168,7 @@ class TestWebSocketAgentStatus:
         ws.send_json = AsyncMock()
         dummy_task = MagicMock()
         dummy_task.done.return_value = False
-        with patch("asyncio.create_task", side_effect=_close_coroutine_return(dummy_task)):
+        with patch("asyncio.create_task", side_effect=closing_stand_in(dummy_task)):
             mgr.connect(ws, resolved_dir)
 
         mock_process = MagicMock()

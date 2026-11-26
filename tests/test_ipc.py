@@ -16,6 +16,7 @@ from sova.config.models import NotificationConfig
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.utils.shell import ShellResult
+from tests.conftest import closing_stand_in
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -3391,7 +3392,7 @@ class TestCheckCliAvailable:
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/tool"),
             patch(
                 "sova.ipc.runtime.asyncio.wait_for",
-                side_effect=asyncio.TimeoutError,
+                side_effect=closing_stand_in(raises=asyncio.TimeoutError),
             ),
         ):
             ok, detail = await _check_cli_available("tool", "install hint")

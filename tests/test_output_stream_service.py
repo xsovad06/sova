@@ -15,6 +15,7 @@ from sova.dashboard.services.output_stream_service import (
     OutputStreamService,
     get_output_stream_service,
 )
+from tests.conftest import closing_stand_in
 
 _T0 = datetime(2026, 11, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -325,7 +326,10 @@ async def test_output_stream_sends_done_on_terminal_run(reset_db_rows) -> None:
 
     with (
         patch("sova.dashboard.routers.agents._check_run_terminal", return_value=True),
-        patch("sova.dashboard.routers.agents.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        patch(
+            "sova.dashboard.routers.agents.asyncio.wait_for",
+            side_effect=closing_stand_in(raises=asyncio.TimeoutError),
+        ),
     ):
         response = await stream_agent_output(run_id=1, request=mock_request)
         chunks = []
