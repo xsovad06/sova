@@ -1,5 +1,6 @@
 // Phone page, "Waiting on you": the handoffs an agent left for a human (GET /handoff) and the supervisor's pending
-// plan (GET /supervisor/plan), each with the buttons that answer it.
+// plan (GET /supervisor/plan), each named by its issue's title (phone/summary.js, from the Work board) and with the
+// buttons that answer it.
 //
 // Every load replaces the whole section, its empty state included. The two sources load independently: one that
 // fails shows an error line in its place, never its previous rows (an old list must not pass for the current one),
@@ -13,6 +14,7 @@
 import { registerActions } from '../agents/actions.js';
 import { postJson, setSectionError, setSectionHtml } from './api.js';
 import { loadRunning } from './running.js';
+import { onTitles, titleOf } from './summary.js';
 
 var _SECTION = 'phone-waiting';
 // A failed read retries on this timer: an open socket with no change to push would otherwise never reload it.
@@ -73,14 +75,18 @@ function _handoffRow(h) {
   // handoff synthesized from a PR's review state has no file, so clearing it would report success and change nothing.
   var issue = ref.indexOf('pr:') === 0 || h.source === 'pr-review-state' ? '' : ref;
   if (issue) buttons += _button('Dismiss', 'ghost', busy, 'phone-handoff-dismiss', [issue]);
-  return '<li class="sova-card p-3 flex flex-col gap-2 min-w-0">' +
-    '<div class="flex flex-wrap items-center gap-2 min-w-0">' +
-      '<span class="text-sm font-medium text-gray-200">' + escapeHtml(ref ? _refLabel(ref) : 'Handoff') + '</span>' +
+  var pr = ref.indexOf('pr:') === 0 ? ref.slice(3) : null;
+  var title = titleOf(pr ? null : ref, pr);
+  var age = h.created_at ? timeAgo(h.created_at, '') : '';
+  return '<li class="sova-card sova-phone-row sova-phone-needs flex flex-col gap-1.5 min-w-0">' +
+    '<div class="flex items-center gap-2 min-w-0">' +
+      '<span class="text-sm font-semibold text-accent tabular-nums">' + escapeHtml(ref ? _refLabel(ref) : 'Handoff') + '</span>' +
       '<span class="sova-badge ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(role)) + '</span>' +
+      (age ? '<span class="ml-auto text-xs text-gray-500 shrink-0">' + escapeHtml(age) + '</span>' : '') +
     '</div>' +
-    '<p class="text-sm text-gray-300 break-words">' + escapeHtml(h.summary || '') + '</p>' +
-    (h.branch ? '<p class="text-xs text-gray-500 truncate">' + escapeHtml(h.branch) + '</p>' : '') +
-    (buttons ? '<div class="flex flex-wrap gap-2">' + buttons + '</div>' : '') +
+    (title ? '<p class="text-sm font-semibold text-gray-100 truncate">' + escapeHtml(title) + '</p>' : '') +
+    '<p class="text-sm text-gray-400 break-words">' + escapeHtml(h.summary || '') + '</p>' +
+    (buttons ? '<div class="flex flex-wrap gap-2 mt-1">' + buttons + '</div>' : '') +
     actionStatusHtml(key) +
   '</li>';
 }
@@ -90,14 +96,16 @@ function _planRow(d) {
   var busy = actionIsRunning(key);
   var rc = roleColor(d.role || '');
   var args = [d.issue_number, d.action || 'action'];
-  return '<li class="sova-card p-3 flex flex-col gap-2 min-w-0">' +
+  var title = titleOf(d.issue_number);
+  return '<li class="sova-card sova-phone-row sova-phone-needs flex flex-col gap-1.5 min-w-0">' +
     '<div class="flex flex-wrap items-center gap-2 min-w-0">' +
-      '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(d.issue_number) + '</span>' +
+      '<span class="text-sm font-semibold text-accent tabular-nums">#' + escapeHtml(d.issue_number) + '</span>' +
       '<span class="text-sm text-gray-300 break-words">' + escapeHtml(d.action || '') + '</span>' +
       (d.role ? '<span class="sova-badge ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(d.role)) + '</span>' : '') +
     '</div>' +
+    (title ? '<p class="text-sm font-semibold text-gray-100 truncate">' + escapeHtml(title) + '</p>' : '') +
     (d.reason ? '<p class="text-sm text-gray-400 break-words">' + escapeHtml(d.reason) + '</p>' : '') +
-    '<div class="flex flex-wrap gap-2">' +
+    '<div class="flex flex-wrap gap-2 mt-1">' +
       _button('Approve', 'success', busy, 'phone-plan-approve', args) +
       _button('Skip', 'ghost', busy, 'phone-plan-skip', args) +
     '</div>' +
@@ -160,8 +168,10 @@ function _render() {
   var html = _noticeHtml() + _outcomeHtml(listedKeys) + health;
   if (!_last.handoff) html += _sourceError('Could not load the handoffs. It retries on its own.');
   if (!_last.plan) html += _sourceError('Could not load the supervisor plan. It retries on its own.');
+  // A count is shown only when both sources loaded: one that failed leaves it unknown, never the other's number.
+  setText('phone-waiting-count', _last.handoff && _last.plan ? String(handoffs.length + pending.length) : '');
   if (handoffs.length || pending.length) {
-    html += '<ul class="flex flex-col gap-3 min-w-0">' +
+    html += '<ul class="flex flex-col gap-2 min-w-0">' +
       handoffs.map(_handoffRow).join('') + pending.map(_planRow).join('') + '</ul>';
   } else if (!health && _last.handoff && _last.plan) {
     html += emptyStateHtml('Nothing is waiting on you');
@@ -177,6 +187,7 @@ export async function loadWaiting() {
   var plan = settled[1].status === 'fulfilled' ? settled[1].value : null;
   if (!handoff && !plan) {
     _last = null;
+    setText('phone-waiting-count', '');
     setSectionError(_SECTION, 'Could not load what is waiting on you. It retries on its own.');
   } else {
     _last = { handoff: handoff, plan: plan };
@@ -267,4 +278,5 @@ export function init() {
     'phone-notice-dismiss': function(el, e, issue) { delete _notices[issue]; _render(); },
   });
   onActionStateChange(_render);
+  onTitles(_render);
 }

@@ -14,6 +14,19 @@
 </div>
 {%- endmacro -%}
 
+{#- A compact header tile, the Work header's `.sova-work-stat` (Home's glance row): its label, then what the call block
+    puts under it (the figure and anything beside it), then, with detail_id, the detail line a script fills, holding an
+    empty span with detail_text_id when the script writes into one. attrs adds attributes to the tile, e.g. its id. -#}
+{%- macro glance_tile(label, detail_id="", detail_text_id="", attrs={}) -%}
+<div class="sova-work-stat"{% for name, value in attrs.items() %} {{ name }}="{{ value }}"{% endfor %}>
+  <span class="sova-stat-label">{{ label }}</span>
+  {{ caller() }}
+  {%- if detail_id %}
+  <span id="{{ detail_id }}" class="sova-stat-detail">{% if detail_text_id %}<span id="{{ detail_text_id }}"></span>{% endif %}</span>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
 {#- variant: primary, success, danger, warning, purple, secondary or ghost (anything else renders as primary); size: "", "xs", "md" or "icon" (anything else is the default size). An icon-only button passes the icon() markup as its label and an aria-label in attrs. attrs adds attributes, e.g. {"data-action": "retry"}. cls adds extra classes (e.g. "ml-auto"); a "class" key in attrs is merged into it, and a "type" key is ignored (use the type argument). The macro never adds tabindex. -#}
 {%- macro btn(label, variant="primary", size="", id="", type="button", tooltip="", disabled=False, attrs={}, cls="") -%}
 {%- set extra_class = ((cls ~ " " ~ attrs.get("class", "")) | trim) -%}

@@ -1,54 +1,64 @@
-// Phone page, "Start a run": one issue number field that posts to POST /agents/start with no role, so the server
-// picks its default (the developer). The server already refuses an unsuitable, duplicate or over-budget start,
-// and its text is shown as it is. Role-aware starts stay on the Work board.
+// Phone page, starting a run: the Work page's own issue search (work/search.js, GET /work/search) finds any open
+// issue by its number or words of its title, and choosing one starts the agent its state calls for. That is the
+// `start` action the server attaches to every result (work_state.start_action(): the researcher on a triaged issue,
+// the developer on a researched one), sent through the Work page's own start (work/actions.js startOrQueue(), which
+// queues the issue when no slot is free). The server's refusal (unsuitable, duplicate, over budget) is shown as it is.
 //
-// An empty, zero, negative, non-numeric or unsafely large entry is rejected here, with a message and no request.
+// Each result names the run a tap starts; an issue whose state runs no agent (in review, done) says so, and choosing
+// it sends nothing. A start is confirmed first: a stray tap in the list must not spend an agent run.
 
-import { postJson, setSectionHtml } from './api.js';
+import { startOrQueue } from '../work/actions.js';
+import { init as initSearch } from '../work/search.js';
+import { setSectionHtml } from './api.js';
 import { loadRunning } from './running.js';
 
 var _KEY = 'phone-start';
-var _invalid = '';     // the message for the last rejected entry, until the next submit or edit
+var _notice = '';      // why the last choice started nothing, until the next choice
 
+function _role(entry) {
+  return (entry && entry.start && entry.start.handler_args && entry.start.handler_args.role) || '';
+}
+
+function _label(entry) {
+  return (entry.start && entry.start.label) || formatRole(_role(entry));
+}
+
+// The notice and the start's own status show together: a choice that starts nothing must not hide a start's refusal.
 function _render() {
-  var btn = document.getElementById('phone-start-btn');
-  if (btn) btn.disabled = actionIsRunning(_KEY);
-  setSectionHtml('phone-start-status', _invalid
-    ? '<p class="text-xs text-accent-red break-words" role="alert">' + escapeHtml(_invalid) + '</p>'
-    : actionStatusHtml(_KEY));
+  setSectionHtml('phone-start-status', (_notice
+    ? '<p class="text-xs text-accent-yellow break-words" role="status">' + escapeHtml(_notice) + '</p>'
+    : '') + actionStatusHtml(_KEY));
 }
 
-// The issue as a positive integer string, or '' for anything else ("#42" is accepted, "4x", "0" and "-3" are not,
-// nor a number past 2^53, which would round to a different issue).
-function _parse(raw) {
-  var text = String(raw || '').trim().replace(/^#/, '');
-  if (!/^\d+$/.test(text)) return '';
-  var value = Number(text);
-  return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
+// The right side of a search result: the run a tap starts, in its role's colour, or that none does.
+function _describe() {
+  return function(entry) {
+    var role = _role(entry);
+    if (!role) return '<span class="text-xs text-gray-500 whitespace-nowrap">no run in its state</span>';
+    var rc = roleColor(role);
+    return '<span class="sova-badge ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(_label(entry)) + '</span>';
+  };
 }
 
-async function _submit(e) {
-  e.preventDefault();
-  var input = document.getElementById('phone-start-issue');
-  var issue = _parse(input.value);
-  if (!issue) {
-    _invalid = 'Enter an issue number, like 42.';
+export async function startFromSearch(entry) {
+  var role = _role(entry);
+  if (!role) {
+    _notice = 'No agent runs on #' + entry.number + ' in its current state.';
     _render();
     return;
   }
-  _invalid = '';
-  var result = await runTrackedAction(_KEY, 'Starting #' + issue, async function() {
-    await postJson('/agents/start', { issue: issue }, 'Could not start #' + issue);
-    return 'Started #' + issue;
-  });
-  if (result.ok) input.value = '';
+  _notice = '';
+  _render();
+  if (actionIsRunning(_KEY)) return;
+  var label = _label(entry);
+  if (!(await sovaConfirm(label + ' #' + entry.number + '?', {
+    title: label, confirmText: label, details: entry.title ? [entry.title] : [],
+  }))) return;
+  await runTrackedAction(_KEY, 'Starting #' + entry.number, function() { return startOrQueue(entry.number, role); });
   await loadRunning();
 }
 
 export function init() {
-  var form = document.getElementById('phone-start-form');
-  if (form) form.addEventListener('submit', _submit);
-  var input = document.getElementById('phone-start-issue');
-  if (input) input.addEventListener('input', function() { if (_invalid) { _invalid = ''; _render(); } });
+  initSearch({ prefix: 'phone-search', onChoose: startFromSearch, describe: _describe });
   onActionStateChange(_render);
 }

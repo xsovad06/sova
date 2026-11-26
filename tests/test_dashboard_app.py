@@ -184,7 +184,10 @@ class TestDashboardHealth:
         assert 'window.SOVA_PROJECT_SLUG = "";' in resp.text
         assert 'id="phone-waiting"' in resp.text
         assert 'id="phone-running"' in resp.text
-        assert 'id="phone-start-form"' in resp.text
+        assert 'id="phone-search-input"' in resp.text
+        assert 'id="phone-finished"' in resp.text
+        assert 'id="triage-all-btn"' in resp.text
+        assert 'id="hdr-agents-running"' in resp.text
         assert 'id="phone-tabbar"' in resp.text
         assert re.search(r'<a href="/phone" class="sova-tab" aria-current="page">', resp.text)
         assert "window.SOVA_RUN_ACTIONS = {" in resp.text

@@ -1,4 +1,4 @@
-// Pure render helpers for the PR tracker and the Work board's cards.
+// Pure render helpers for the PR tracker, the Work board's cards and the phone Home page.
 //
 // A leaf module on purpose: it imports nothing from the other page modules.
 //
@@ -57,4 +57,22 @@ export function diffSizeColor(additions, deletions) {
   if (total <= 200) return 'text-accent';
   if (total <= 500) return 'text-accent-yellow';
   return 'text-accent-red';
+}
+
+// A run's place in its pipeline, from the 0-based index of its current step (the step progress the server sends):
+// the step's 1-based position and how far the run is, counted halfway through the current step, so step 1 of 1 is
+// under way rather than 0% done. null when either number is missing. The Work board's running cards and Home's
+// Running rows both read it, so the two never disagree about a run.
+export function stepProgress(index, total) {
+  if (!total || index == null) return null;
+  return {
+    position: Math.min(index + 1, total),
+    total: total,
+    pct: Math.min(100, Math.round((index + 0.5) / total * 100)),
+  };
+}
+
+// A pipeline step's name as words ("monitor_ci" is "monitor ci").
+export function humanStep(name) {
+  return (name || '').replace(/_/g, ' ');
 }

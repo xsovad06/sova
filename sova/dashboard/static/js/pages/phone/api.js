@@ -43,3 +43,11 @@ export function setSectionError(id, message) {
   _drawn[id] = marker;
   renderSectionError(id, message);
 }
+
+// An icon from the page's <template id="phone-icons"> (the shared icon macro, rendered by phone.html), as trusted
+// markup for sovaBtn()'s iconHtml; '' when the template or the icon is missing.
+export function iconHtml(name) {
+  var tpl = document.getElementById('phone-icons');
+  var el = tpl && tpl.content && tpl.content.querySelector('[data-icon="' + name + '"]');
+  return el ? el.innerHTML : '';
+}
