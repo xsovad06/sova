@@ -342,3 +342,48 @@ class TestPhoneShellModule:
         assert order.index("outside") < order.index("resource-widget"), "back in its own place, not appended"
         assert shell_run["closedWhenWide"] is False
         assert shell_run["phoneAgain"] == ["more-sheet-provider-slot", "more-sheet-resources-slot"]
+
+
+class TestHomeAndWorkOnThePhone:
+    """The stylesheet contract for Home and the Work page under 768 px (#1565); the layout itself was measured in
+    headless Chrome at 390 px (no sideways scroll) and at 768 and 1440 px (identical to main)."""
+
+    def test_the_work_tiles_are_one_strip_that_scrolls_sideways(self) -> None:
+        strip = _rule(_phone_block(), ".sova-work-tiles")
+        assert "flex-wrap: nowrap" in strip
+        assert "overflow-x: auto" in strip
+        assert "flex: 0 0 auto" in _rule(_phone_block(), ".sova-work-tiles > .sova-work-stat")
+
+    def test_the_board_shows_one_stage_per_screen_and_snaps_to_each(self) -> None:
+        block = _phone_block()
+        assert "scroll-snap-type: x mandatory" in _rule(block, ".sova-work-board")
+        assert "grid-auto-columns: 100%" in _rule(block, ".sova-work-track")
+        assert "scroll-snap-align: start" in _rule(block, ".sova-work-col")
+        assert "scroll-snap-stop: always" in _rule(block, ".sova-work-col")
+
+    def test_the_stage_chips_show_only_on_the_phone_and_are_tap_targets(self) -> None:
+        outside = _STYLE_CSS.replace(_phone_block(), "")
+        assert re.search(r"(?m)^\.sova-stage-chips \{ display: none; \}", outside)
+        assert "display: flex" in _rule(_phone_block(), ".sova-stage-chips")
+        assert "min-height: 44px" in _rule(_phone_block(), ".sova-stage-chip")
+
+    def test_the_run_history_stacks_its_rows(self) -> None:
+        block = _phone_block()
+        assert "display: none" in _rule(block, ".sova-history-runs thead")
+        assert "flex-wrap: wrap" in _rule(block, ".sova-history-runs tr")
+
+    def test_the_small_toggle_groups_and_search_results_are_tap_targets(self) -> None:
+        block = _phone_block()
+        assert "min-height: 44px" in _rule(block, ".sova-segment > button")
+        assert "min-height: 44px" in _rule(block, ".sova-work-search-row")
+
+    def test_a_touch_screen_is_not_told_to_drag(self) -> None:
+        hover = _STYLE_CSS[_STYLE_CSS.index("@media (hover: none) {") :]
+        assert re.search(r"\.sova-drag-hint \{ display: none; \}", hover[: hover.index("\n}\n")])
+        html = (DASHBOARD_DIR / "templates" / "work.html").read_text(encoding="utf-8")
+        assert '<span class="sova-drag-hint">Drag an Up next card into Queued or Running. </span>' in html
+
+    def test_the_pull_requests_stack_below_768_and_keep_one_line_above(self) -> None:
+        source = (_STATIC / "js" / "pages" / "agents" / "pr-tracker.js").read_text(encoding="utf-8")
+        assert "flex items-center gap-3 max-md:flex-wrap" in source
+        assert "truncate flex-1 max-md:basis-full max-md:order-first" in source

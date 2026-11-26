@@ -74,8 +74,8 @@ function renderPrSummary(prs) {
       { label: 'Stale', value: stale, color: stale > 0 ? 'text-accent-yellow' : 'text-gray-500' },
     ];
 
-    // grid-cols-6 must match metrics.length (currently 6)
-    var html = '<div class="grid grid-cols-' + metrics.length + ' gap-2 px-4 py-2 border-b border-gray-700/30">';
+    // grid-cols-6 must match metrics.length (currently 6); under 768 px they stack as two rows of three.
+    var html = '<div class="grid grid-cols-' + metrics.length + ' max-md:grid-cols-3 gap-2 px-4 py-2 border-b border-gray-700/30">';
     for (var j = 0; j < metrics.length; j++) {
       var m = metrics[j];
       var val = m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value);
@@ -254,7 +254,7 @@ function renderPrRow(pr) {
 
   var authorAvatar = '';
   if (pr.author) {
-    authorAvatar = '<div class="flex items-center gap-1.5 shrink-0 w-28">' +
+    authorAvatar = '<div class="flex items-center gap-1.5 shrink-0 w-28 max-md:w-auto">' +
       '<img src="https://avatars.githubusercontent.com/' + encodeURIComponent(pr.author) + '?size=32" ' +
         'alt="" width="20" height="20" loading="lazy" ' +
         'class="rounded-full shrink-0" ' +
@@ -283,10 +283,12 @@ function renderPrRow(pr) {
       pr.thread_resolved + '/' + pr.thread_total + '</span>';
   }
 
-  return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
+  // Under 768 px the row stacks: the title on a line of its own at the top (up to two lines), then the PR number,
+  // author and the rest wrapping below it, so nothing pushes the page sideways. At 768 px and wider it is one line.
+  return '<div class="flex items-center gap-3 max-md:flex-wrap max-md:gap-x-2 max-md:gap-y-1 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
     authorAvatar +
     '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent-lavender hover:underline shrink-0">PR #' + escapeHtml(String(pr.number)) + '</a>' +
-    '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
+    '<span class="text-sm text-gray-300 truncate flex-1 max-md:basis-full max-md:order-first max-md:whitespace-normal max-md:line-clamp-2">' + escapeHtml(pr.title) + '</span>' +
     issueRef +
     prDiffHtml +
     prDraftBadge +

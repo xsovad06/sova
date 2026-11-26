@@ -17,7 +17,8 @@
 </div>
 
 <!-- Header: what runs, how often it succeeds, what merged, what it costs (static/js/pages/work/header.js) -->
-<section id="work-header" class="flex flex-wrap items-stretch gap-2 mb-4" aria-label="Work at a glance">
+{#- Under 768 px the tiles are one strip that scrolls sideways (.sova-work-tiles, style.css). -#}
+<section id="work-header" class="sova-work-tiles flex flex-wrap items-stretch gap-2 mb-4" aria-label="Work at a glance">
   <div class="sova-work-stat sova-work-stat-narrow">
     <span class="sova-stat-label">Agents</span>
     <span class="flex items-baseline gap-1.5">
@@ -82,15 +83,20 @@
            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="work-search-results">
     <div id="work-search-results" class="sova-work-search-results" role="listbox" aria-label="Matching issues" hidden></div>
   </div>
-  <div id="work-owner-filter" class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Filter board by owner">
+  <div id="work-owner-filter" class="sova-segment inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Filter board by owner">
     <button type="button" data-owner-filter="mine" aria-pressed="false"
             data-tooltip="Issues assigned to your configured GitHub user or Jira display name, and PRs you authored or are assigned"
             class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">Mine</button>
     <button type="button" data-owner-filter="all" aria-pressed="true"
             class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors">All</button>
   </div>
-  <p class="text-xs text-gray-500 flex-1 min-w-[16rem]">Drag an Up next card into Queued or Running. Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, anywhere outside the details, or press Escape to close them.</p>
+  {#- The drag sentence is hidden on a touch screen, where the cards are not draggable (board.js): Queue and the
+      stage's start button do what a drop does. Under 768 px the whole hint goes, as in the phone mockup. -#}
+  <p class="text-xs text-gray-500 flex-1 min-w-[16rem] max-md:hidden"><span class="sova-drag-hint">Drag an Up next card into Queued or Running. </span>Click a card for its details: what it waits for and what it unblocks light up on every card. Click it again, anywhere outside the details, or press Escape to close them.</p>
 </div>
+
+<!-- Under 768 px: one chip per stage with its count; the board shows one stage at a time (static/js/pages/work/board.js) -->
+<div id="work-stage-chips" class="sova-stage-chips" role="group" aria-label="Board stage"></div>
 
 <!-- Board: columns, labels and colors come from GET /api/work/board (static/js/pages/work/board.js) -->
 <div id="work-board" class="sova-work-board mb-6" aria-label="Work board">
@@ -129,7 +135,7 @@
     </button>
     <!-- Outside the toggle button: its text changes on every update and would rename the button -->
     <span id="pr-tracker-stale" class="hidden text-xs text-accent-yellow" data-tooltip="Refreshes are failing; showing earlier data" role="status"></span>
-    <div id="pr-filter-toggle" class="flex rounded-md overflow-hidden border border-gray-600/50 text-xs" data-action="stop">
+    <div id="pr-filter-toggle" class="sova-segment flex rounded-md overflow-hidden border border-gray-600/50 text-xs" data-action="stop">
       <button type="button" data-pr-filter="mine" data-action="set-pr-filter" data-args='["mine"]' class="px-2.5 py-1 transition-colors">Mine</button>
       <button type="button" data-pr-filter="all" data-action="set-pr-filter" data-args='["all"]' class="px-2.5 py-1 transition-colors">All</button>
     </div>
@@ -178,14 +184,14 @@
 
   <div class="flex flex-wrap items-center gap-x-3 gap-y-2 mb-3">
     {# Neither view is pressed here: history.js reads the remembered one and presses it before the first request. #}
-    <div class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="History view">
+    <div class="sova-segment inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="History view">
       {% for value, label in [("issue", "By issue"), ("runs", "Every run")] %}
       <button type="button" id="history-view-{{ value }}" data-action="history-view" data-args='["{{ value }}"]'
         aria-pressed="false"
         class="px-2.5 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-surface-hover transition-colors aria-pressed:bg-gray-700 aria-pressed:text-white">{{ label }}</button>
       {% endfor %}
     </div>
-    <div class="inline-flex p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Date range">
+    <div class="sova-segment inline-flex max-md:flex-wrap p-0.5 rounded border border-gray-700/50 bg-surface-card" role="group" aria-label="Date range">
       {% for value, label in [("today", "Today"), ("7d", "Last 7 days"), ("30d", "Last 30 days"), ("all", "All time"), ("custom", "Custom")] %}
       <button type="button" id="history-range-{{ value }}" data-action="history-range" data-args='["{{ value }}"]'
         aria-pressed="{{ 'true' if value == '7d' else 'false' }}"

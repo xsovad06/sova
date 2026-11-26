@@ -1780,6 +1780,9 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 .sova-work-stepper .sova-stepper-btn { width: 1.25rem; height: 1.25rem; font-size: 0.75rem; }
 .sova-work-stepper .sova-stepper-value { min-width: 1.5rem; font-size: 0.75rem; }
 
+/* The stage chips show only under 768 px, where the board shows one stage at a time (the phone shell block below). */
+.sova-stage-chips { display: none; }
+
 /* Board: one column per stage the board API puts in its own column. It scrolls sideways inside itself,
    never the page; nothing in it uses data-tooltip, since the scroll container would clip the bubble. The columns
    live in a track, so the room a drawer needs beside the last column can be added to the scroll range without
@@ -2345,8 +2348,118 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
   .sova-stepper .sova-stepper-btn { width: 44px; height: 44px; }
   .sova-toggle { min-height: 44px; min-width: 44px; }
   .sova-input { min-height: 44px; }
-  /* An issue search result (Work, Home) is a tap target too. */
+  /* An issue search result (Work, Home) is a tap target too, and so is each button of a small toggle group (the
+     Work board's Mine and All, the pull requests' filter, the run history's view and date range). */
   .sova-work-search-row { min-height: 44px; }
+  .sova-segment > button { min-height: 44px; padding-inline: 0.75rem; }
+  /* The Work page's own small controls are tap targets too: the milestone filter, a column's collapsed group and
+     hidden list, the chain nodes, the pull requests' toggle and group headers, and the run history's tabs and
+     filters. */
+  #work-milestone,
+  .sova-work-col [data-action="work-toggle-group"],
+  .sova-work-col [data-action="work-toggle-hidden"],
+  .sova-work-node,
+  #pr-tracker-toggle,
+  [id^="pr-group-toggle-"],
+  #tab-history,
+  #tab-failed,
+  #filter-action,
+  #filter-status,
+  #filter-number,
+  #history-from,
+  #history-to { min-height: 44px; }
+  /* The Work search shares its row with Mine and All. */
+  #work-toolbar { flex-wrap: nowrap; }
+  #work-toolbar > .sova-work-search { flex: 1 1 0; min-width: 0; }
+
+  /* Work header: the tiles are one strip that scrolls sideways, edge to edge, each at its natural width (the figure
+     tiles at a fixed one, their lines wrapping). Its tooltips are hover help, which a touch screen does not show. */
+  .sova-work-tiles {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin-inline: calc(-1 * var(--phone-gutter-left)) calc(-1 * var(--phone-gutter-right));
+    padding-inline: var(--phone-gutter-left) var(--phone-gutter-right);
+    scroll-padding-inline: var(--phone-gutter-left);
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+  .sova-work-tiles::-webkit-scrollbar { display: none; }
+  .sova-work-tiles > .sova-work-stat { flex: 0 0 auto; scroll-snap-align: start; }
+  .sova-work-tiles > .sova-work-stat-wide { width: 11rem; }
+
+  /* The stage chips: one per column with its count, the stage on screen pressed. The row scrolls sideways when the
+     chips are wider than the screen (relative, so a chip's offsetLeft counts from the row, as board.js reads it against
+     the row's scroll); each chip is a 44px tap target around a 34px pill. */
+  .sova-stage-chips {
+    display: flex;
+    position: relative;
+    gap: 6px;
+    margin: 0 calc(-1 * var(--phone-gutter-right)) 4px calc(-1 * var(--phone-gutter-left));
+    padding-inline: var(--phone-gutter-left) var(--phone-gutter-right);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .sova-stage-chips::-webkit-scrollbar { display: none; }
+  .sova-stage-chip { display: inline-flex; align-items: center; flex-shrink: 0; min-height: 44px; padding: 0; background: none; border: 0; }
+  .sova-stage-chip-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 9999px;
+    background: var(--color-surface-card);
+    border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.6);
+    color: var(--ctp-subtext1);
+    font-size: 0.875rem;
+    white-space: nowrap;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .sova-stage-chip-count { font-size: 0.75rem; color: var(--ctp-subtext0); }
+  .sova-stage-chip[aria-pressed="true"] .sova-stage-chip-pill {
+    background: rgb(var(--ctp-blue-rgb) / 0.18);
+    border-color: transparent;
+    color: var(--ctp-blue);
+    font-weight: 600;
+  }
+  .sova-stage-chip[aria-pressed="true"] .sova-stage-chip-count { color: var(--ctp-blue); }
+
+  /* The board: one stage per screen. Each column is a full-width page of the board's own sideways scroll, which
+     snaps to it, so a swipe moves one stage; board.js sets the board's height to the stage on screen. The columns
+     lose their frame (the cards sit on the page, as in the mockup), and no drawer room is added past the last one:
+     the ticket detail is a full-screen sheet here. */
+  .sova-work-board {
+    overflow-y: hidden;
+    padding-bottom: 0;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .sova-work-board::-webkit-scrollbar { display: none; }
+  .sova-work-track { grid-auto-columns: 100%; gap: 1rem; }
+  .sova-work-col {
+    min-height: 0;
+    padding: 0;
+    background: none;
+    border: 0;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+  .sova-work-board-room .sova-work-track::after { display: none; }
+  .sova-work-card { gap: 0.5rem; padding: 0.75rem; border-radius: 0.75rem; }
+
+  /* The run history's run list: a stacked row per run instead of a table row. The header goes, each run's cells
+     wrap on one or two lines, the PR number says it is one, and the rerun button keeps to the right. */
+  .sova-history-runs thead { display: none; }
+  .sova-history-runs,
+  .sova-history-runs tbody { display: block; }
+  .sova-history-runs tr { display: flex; flex-wrap: wrap; align-items: center; column-gap: 0.75rem; row-gap: 0.25rem; padding: 0.5rem 0.75rem; }
+  .sova-history-runs td { display: block; padding: 0; }
+  .sova-history-runs td:last-child { margin-left: auto; }
+  .sova-history-runs td[data-label]::before { content: attr(data-label) " "; color: var(--ctp-subtext0); }
+  .sova-history-runs tr.sova-history-result { padding-top: 0; }
+  .sova-history-runs tr.sova-history-day td,
+  .sova-history-runs tr.sova-history-result td { flex: 1 1 100%; max-width: none; margin-left: 0; }
   .sova-input,
   textarea,
   select,
@@ -2359,6 +2472,8 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
    stuck open. They show on keyboard focus only, and the owl button keeps its resting size. */
 @media (hover: none) {
   [data-tooltip]:not(:focus-visible)::after { display: none !important; }
+  /* Nothing is dragged on a touch screen (work/board.js), so the Work page does not say to. */
+  .sova-drag-hint { display: none; }
   .feed-fab:hover { transform: none; }
 }
 

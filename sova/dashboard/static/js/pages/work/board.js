@@ -20,6 +20,13 @@ import { clearSelection, getSelected, onSelectionChange, relationChip, relationC
 // reload that still read the previous snapshot is followed by work_items_changed. The only timer this module
 // starts is the one-shot retry after a failed load (below).
 //
+// Under 768 px the board shows one stage per screen (phone layout): the columns are full-width pages of the board's own
+// sideways scroll, which snaps to each (style.css), so a swipe moves to the next stage with the browser's own scroll.
+// A row of chips (#work-stage-chips), one per column with its count, jumps to a stage and follows the swipe, and the
+// board's height follows the stage on screen, so a short stage leaves no blank page under it. On a touch screen
+// (no hover) the cards are not draggable and the page does not mention dragging: every drop has a card button
+// (Queue, and the stage's start), so nothing needs a drag. At 768 px and wider none of this applies.
+//
 // The page tells the server whether it is visible (work_visible, on every socket open, visibility change and
 // pagehide): only while a visible Work tab is connected does the server probe GitHub for changes made there
 // (#1534). Leaving the Work page is a full page load (the dashboard has no client-side router), which closes this
@@ -220,6 +227,19 @@ function _setError(message) {
 }
 
 // Rendering ----------------------------------------------------------------
+
+function _media(query) {
+  try {
+    return !!(window.matchMedia && window.matchMedia(query).matches);
+  } catch (_e) {
+    return false;
+  }
+}
+
+var _PHONE_QUERY = '(max-width: 767.98px)';
+var _TOUCH_QUERY = '(hover: none)';
+function _isPhone() { return _media(_PHONE_QUERY); }
+function _isTouch() { return _media(_TOUCH_QUERY); }
 
 var _PREFIX = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
 
@@ -578,7 +598,7 @@ function _card(entry, stage) {
   var key = selectionKey(entry);
   var rel = key != null ? relationClass(key) : '';
   var selectable = key != null;
-  var draggable = stage === 'next'
+  var draggable = stage === 'next' && !_isTouch()
     ? ' draggable="true" data-drag-issue="' + n + '" data-start-role="' + escapeHtml(_startRole(entry)) + '"'
     : '';
   var status = actionStatusHtml(entryKey(entry));
@@ -618,6 +638,17 @@ var _EMPTY = {
   done: 'Nothing merged yet today.',
 };
 
+// The same, on a touch screen, where nothing is dragged.
+var _EMPTY_TOUCH = {
+  queued: 'Press Queue on an Up next card.',
+  running: 'No agent is running. Press Start on an Up next card.',
+};
+
+function _emptyText(stage) {
+  if (_isTouch() && _EMPTY_TOUCH[stage]) return _EMPTY_TOUCH[stage];
+  return _EMPTY[stage] || 'Nothing here.';
+}
+
 function _milestoneSelect() {
   var options = (_board.milestones || []).slice();
   if (_milestone && options.indexOf(_milestone) === -1) options.unshift(_milestone);
@@ -630,7 +661,7 @@ function _milestoneSelect() {
 
 function _columnExtra(col) {
   if (col.stage === 'next') return _milestoneSelect();
-  if (col.stage === 'queued') return '<span class="text-gray-500">drag here</span>';
+  if (col.stage === 'queued') return _isTouch() ? '' : '<span class="text-gray-500">drag here</span>';
   if (col.stage === 'running' && _board.agents && _board.agents.limit != null && _board.agents.running != null) {
     return '<span class="text-gray-500">' + Math.max(_board.agents.limit - _board.agents.running, 0) + ' free</span>';
   }
@@ -697,6 +728,8 @@ function _group(col) {
 export function renderBoard() {
   var host = document.getElementById('work-board');
   if (!host || !_board) return;
+  // The phone layout's stage height belongs to the columns; a message in their place takes its own height.
+  if (host.style) host.style.height = '';
   if (_boardOwner !== _ownerFilter) {
     host.innerHTML = '<p class="text-sm text-gray-400 py-6">Loading ' + (_ownerFilter === 'mine' ? 'your work' : 'all work') + '...</p>';
     return;
@@ -710,15 +743,18 @@ export function renderBoard() {
     return;
   }
   var cols = _board.columns || [];
+  var counts = [];
+  var touch = _isTouch();
   var html = cols.filter(function(col) { return col.column === col.stage; }).map(function(col) {
     var entries = (_board[col.entries] || []).filter(_ownedByMe);
     var otherRunCount = col.stage === 'running' ? (_board.other_runs || []).filter(_ownedByMe).length : 0;
+    counts.push({ col: col, count: entries.length + otherRunCount });
     var groups = cols.filter(function(g) { return g.column === col.stage && g.stage !== col.stage; });
-    var drop = col.stage === 'queued' || col.stage === 'running' ? ' data-drop="' + col.stage + '"' : '';
-    return '<div class="sova-work-col"' + drop + ' aria-label="' + escapeHtml(col.label) + '">' +
+    var drop = !touch && (col.stage === 'queued' || col.stage === 'running') ? ' data-drop="' + col.stage + '"' : '';
+    return '<div class="sova-work-col"' + drop + ' data-stage-col="' + escapeHtml(col.stage) + '" aria-label="' + escapeHtml(col.label) + '">' +
       _colHeader(col, entries.length + otherRunCount, _columnExtra(col)) +
       (entries.map(function(e) { return _card(e, col.stage); }).join('') ||
-        (otherRunCount ? '' : _empty(_EMPTY[col.stage] || 'Nothing here.'))) +
+        (otherRunCount ? '' : _empty(_emptyText(col.stage)))) +
       _columnFooter(col) +
       groups.map(_group).join('') +
     '</div>';
@@ -732,6 +768,9 @@ export function renderBoard() {
   var focused = _focusedControl(host);
   host.innerHTML = '<div class="sova-work-track">' + html + '</div>';
   host.scrollLeft = scroll;
+  _renderStageChips(counts);
+  _fitStage();
+  _observeStages(host);
   _restoreFocus(host, focused);
   _renderedListeners.forEach(function(fn) {
     try {
@@ -744,6 +783,135 @@ export function renderBoard() {
   // covers one that armed its listener after this render already fired the event.
   if (host && typeof host.setAttribute === 'function') host.setAttribute('data-rendered', '1');
   if (typeof document.dispatchEvent === 'function') document.dispatchEvent(new CustomEvent('sova:board-rendered'));
+}
+
+// Phone layout: one stage per screen ------------------------------------------
+
+var _stage = null;          // the stage the chips mark as on screen; null until the first render picks the first one
+var _stageScrollTimer = null;
+var _STAGE_SETTLE_MS = 90;  // a swipe is over once the board has not scrolled for this long
+
+function _stageColumns(host) {
+  return host && typeof host.querySelectorAll === 'function'
+    ? Array.prototype.slice.call(host.querySelectorAll('[data-stage-col]')) : [];
+}
+
+function _el(tag, className, text) {
+  var el = document.createElement(tag);
+  el.className = className;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+// The chip row: one button per column, its label and its count (the column header's), the one on screen pressed.
+// Hidden at 768 px and wider by style.css, where every column shows at once. Built with DOM calls: the label is the
+// server's text and goes in as text.
+function _renderStageChips(counts) {
+  var row = document.getElementById('work-stage-chips');
+  if (!row || typeof row.replaceChildren !== 'function') return;
+  if (_stage === null || !counts.some(function(c) { return c.col.stage === _stage; })) {
+    _stage = counts.length ? counts[0].col.stage : null;
+  }
+  // The row is rebuilt on every redraw, which would drop the keyboard from the chip it is on: the chip is found again by
+  // its stage and focused without scrolling.
+  var active = document.activeElement;
+  var focusedArgs = active && typeof row.contains === 'function' && row.contains(active) ? active.getAttribute('data-args') : null;
+  var chips = counts.map(function(c) {
+    var chip = _el('button', 'sova-stage-chip');
+    chip.type = 'button';
+    chip.setAttribute('aria-pressed', String(c.col.stage === _stage));
+    chip.setAttribute('data-action', 'work-stage');
+    chip.setAttribute('data-args', JSON.stringify([c.col.stage]));
+    var pill = _el('span', 'sova-stage-chip-pill', c.col.label + ' ');
+    pill.appendChild(_el('span', 'sova-stage-chip-count tabular-nums', String(c.count)));
+    chip.appendChild(pill);
+    return chip;
+  });
+  row.replaceChildren.apply(row, chips);
+  if (focusedArgs === null) return;
+  var again = chips.find(function(chip) { return chip.getAttribute('data-args') === focusedArgs; });
+  if (again && typeof again.focus === 'function') again.focus({ preventScroll: true });
+}
+
+function _markStageChip() {
+  var row = document.getElementById('work-stage-chips');
+  if (!row || typeof row.querySelectorAll !== 'function') return;
+  row.querySelectorAll('[data-action="work-stage"]').forEach(function(chip) {
+    var on = chip.getAttribute('data-args') === JSON.stringify([_stage]);
+    chip.setAttribute('aria-pressed', String(on));
+    // Keep the pressed chip in the row's view: the row scrolls sideways when the chips are wider than the screen.
+    if (on && typeof row.scrollTo === 'function' &&
+        (chip.offsetLeft < row.scrollLeft || chip.offsetLeft + chip.offsetWidth > row.scrollLeft + row.clientWidth)) {
+      row.scrollTo({ left: Math.max(chip.offsetLeft - 16, 0), behavior: 'smooth' });
+    }
+  });
+}
+
+// The board is as tall as the stage on screen; at 768 px and wider it is as tall as its tallest column again.
+function _fitStage() {
+  var host = document.getElementById('work-board');
+  if (!host || !host.style) return;
+  if (!_isPhone()) {
+    host.style.height = '';
+    return;
+  }
+  var col = _stageColumns(host).find(function(c) { return c.getAttribute('data-stage-col') === _stage; });
+  host.style.height = col ? col.offsetHeight + 'px' : '';
+}
+
+// The board is cut to the stage's height, so anything that changes a column's height afterwards (the width changing
+// inside the phone range, a status push that patches a running card's line, a late font) must refit it. Each render
+// replaces the columns, so the observer is pointed at the new ones; at 768 px and wider nothing is observed.
+var _stageObserver = null;
+
+function _observeStages(host) {
+  if (typeof ResizeObserver !== 'function') return;
+  if (!_stageObserver) _stageObserver = new ResizeObserver(_fitStage);
+  _stageObserver.disconnect();
+  if (_isPhone()) _stageColumns(host).forEach(function(col) { _stageObserver.observe(col); });
+}
+
+// A chip's tap: bring its stage on screen. The scroll's own end (below) marks the chip and fits the height.
+export function showStage(stage) {
+  var host = document.getElementById('work-board');
+  var col = _stageColumns(host).find(function(c) { return c.getAttribute('data-stage-col') === stage; });
+  if (!col) return;
+  _stage = stage;
+  _markStageChip();
+  _fitStage();
+  var reduce = _media('(prefers-reduced-motion: reduce)');
+  if (typeof host.scrollTo === 'function') host.scrollTo({ left: col.offsetLeft, behavior: reduce ? 'auto' : 'smooth' });
+}
+
+// After a swipe (or a chip's scroll, or a card the search brought into view) settles, the stage whose column starts
+// nearest the board's left edge is the one on screen.
+function _onBoardScroll() {
+  if (!_isPhone()) return;
+  if (_stageScrollTimer !== null) clearTimeout(_stageScrollTimer);
+  _stageScrollTimer = setTimeout(function() {
+    _stageScrollTimer = null;
+    var host = document.getElementById('work-board');
+    var cols = _stageColumns(host);
+    if (!cols.length) return;
+    var nearest = cols.reduce(function(best, c) {
+      return Math.abs(c.offsetLeft - host.scrollLeft) < Math.abs(best.offsetLeft - host.scrollLeft) ? c : best;
+    });
+    var stage = nearest.getAttribute('data-stage-col');
+    if (stage === _stage) return;
+    _stage = stage;
+    _markStageChip();
+    _fitStage();
+  }, _STAGE_SETTLE_MS);
+}
+
+// Crossing 768 px, or a touch screen appearing, changes what the board draws (draggable cards, the stage height).
+function _watchLayout() {
+  [_PHONE_QUERY, _TOUCH_QUERY].forEach(function(query) {
+    try {
+      var mq = window.matchMedia && window.matchMedia(query);
+      if (mq && typeof mq.addEventListener === 'function') mq.addEventListener('change', renderBoard);
+    } catch (_e) { /* no media queries: the layout never changes under the page */ }
+  });
 }
 
 // The board redraws from scratch on every change (a selection, an action's state, a reload), which removes the
@@ -964,6 +1132,7 @@ export function init() {
     ['scrollend', 'wheel', 'touchstart', 'pointerdown', 'keydown'].forEach(function(type) {
       host.addEventListener(type, _releaseScrollHold, { passive: true });
     });
+    host.addEventListener('scroll', _onBoardScroll, { passive: true });
     host.addEventListener('change', function(e) {
       if (e.target && e.target.id === 'work-milestone') setMilestone(e.target.value);
     });
@@ -975,6 +1144,7 @@ export function init() {
       }
     });
   }
+  _watchLayout();
   document.addEventListener('visibilitychange', _reportVisibility);
   if (typeof window.addEventListener === 'function') window.addEventListener('pagehide', _onPageHide);
   subscribeSovaSocket({

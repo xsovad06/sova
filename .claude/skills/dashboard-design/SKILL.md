@@ -215,6 +215,7 @@ Common patterns that reveal AI-generated code:
 - Controls are at least 44 px tall and text fields use 16 px text under 768 px; the shared classes do this, so a page rule must not shrink them back.
 - Height uses `dvh`, never `vh`, and anything fixed to an edge pads itself with `env(safe-area-inset-*)`.
 - A tooltip is hover help only: on a touch screen it shows on keyboard focus, so never put information only in a tooltip.
+- Reuse a page's modules at phone width rather than forking phone copies: Home runs the Work header and search with the same element ids, and the Work board shows one stage per screen through scroll snap on its own scroller. A drag needs a button that does the same, since a touch screen drags nothing.
 
 ## 9. Overflow Rule
 
