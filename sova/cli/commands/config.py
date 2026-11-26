@@ -155,7 +155,12 @@ def _echo_route(key: str, step: str, routing: dict[str, str]) -> None:
 @config_app.command("set")
 def set_setting(
     key: Annotated[str, typer.Argument(help="Setting key, e.g. awareness.providers")],
-    value: Annotated[str, typer.Argument(help="New value. Lists accept JSON or comma-separated text.")],
+    value: Annotated[
+        str,
+        typer.Argument(
+            help="New value. Lists accept JSON or comma-separated text. For a secret, '-' reads it from stdin."
+        ),
+    ],
     project: Annotated[Optional[Path], _PROJECT_OPTION] = None,
 ) -> None:
     """Set one configuration value in the project database."""
@@ -163,6 +168,13 @@ def set_setting(
 
     from sova.dashboard.services.settings_service import update_config
     from sova.dashboard.settings_meta import _META_BY_KEY
+
+    meta = _META_BY_KEY.get(key)
+    if value == "-" and meta is not None and meta.value_type == "secret":
+        # A secret passed as an argument is visible to every user in the process list while this runs.
+        import sys
+
+        value = sys.stdin.read().rstrip("\r\n")
 
     project_dir = (project or Path.cwd()).resolve()
     result = asyncio.run(update_config(project_dir, key=key, value=value))
@@ -176,7 +188,6 @@ def set_setting(
         console.print(f"[yellow]{key} unchanged.[/yellow]")
         return
 
-    meta = _META_BY_KEY.get(key)
     if meta is not None and meta.value_type == "secret":
         console.print(f"[green]{key} = (secret, updated)[/green]")
         warning = result.get("warning")

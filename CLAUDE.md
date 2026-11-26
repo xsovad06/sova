@@ -59,7 +59,8 @@ SOVA uses **database-backed configuration** (`.claude/sova.db`) instead of `sova
 - **Read**: `sova config` prints a summary table; `sova config get <key>` prints one resolved value (lists and dicts as JSON, a secret key as `(secret)`, an unknown key as exit code 1), which is how a command or script reads a setting it must not hardcode (log warnings go to stderr, so stdout carries only the value)
 - **Edit**: `sova config set <key> <value>`, or the dashboard settings page. Both go through the same
   validation, so neither can persist a value that makes `load_config()` raise. List-valued keys accept
-  a JSON array or comma-separated text: `sova config set awareness.providers "gmail, gcal"`
+  a JSON array or comma-separated text: `sova config set awareness.providers "gmail, gcal"`. A secret
+  key takes `-` to read the value from stdin, keeping it out of `ps`
 - **Model routes**: `sova config set llm.routing '{"develop": "<model ID>"}'` replaces every per-task route (`'{}'` clears them), `llm.routing.<task>` sets one or, with an empty value, clears it. The Models view's "Save as default for new projects" writes `~/.config/sova/model-profile.json`, which `sova install` (run by `sova setup` too) and the dashboard setup wizard apply to keys a new project has no value for (docs/model-selection-architecture.md)
 - **Last resort**: `sqlite3 .claude/sova.db` (all values stored as JSON; see troubleshooting below).
   Prefer `sova config set`, which writes valid JSON for you
