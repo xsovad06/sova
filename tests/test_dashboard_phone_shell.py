@@ -20,6 +20,9 @@ from httpx import AsyncClient
 
 from sova.dashboard.navigation import NAV_PAGES
 from tests.conftest import DASHBOARD_DIR
+from tests.dashboard_helpers import PHONE_MEDIA
+from tests.dashboard_helpers import css_rule as _rule
+from tests.dashboard_helpers import phone_css_block as _phone_block
 
 pytestmark = pytest.mark.usefixtures("reset_db_rows")
 
@@ -28,27 +31,7 @@ _STYLE_CSS = (_STATIC / "style.css").read_text(encoding="utf-8")
 _PHONE_SHELL_JS = _STATIC / "js" / "components" / "phone-shell.js"
 _SIDE_PANEL_JS = _STATIC / "js" / "components" / "side-panel.js"
 _FAKE_DOM = Path(__file__).parent / "fixtures" / "fake_dom.cjs"
-_PHONE_MEDIA = "@media (max-width: 767.98px) {"
-
-
-def _phone_block() -> str:
-    """The stylesheet's phone shell block: from its media query to the matching closing brace."""
-    start = _STYLE_CSS.index(_PHONE_MEDIA)
-    depth = 0
-    for i in range(start, len(_STYLE_CSS)):
-        if _STYLE_CSS[i] == "{":
-            depth += 1
-        elif _STYLE_CSS[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return _STYLE_CSS[start : i + 1]
-    raise AssertionError("unterminated phone block")
-
-
-def _rule(block: str, selector: str) -> str:
-    match = re.search(rf"(?m)^\s*{re.escape(selector)}\s*\{{(.*?)\}}", block, re.DOTALL)
-    assert match, f"no rule for {selector}"
-    return match.group(1)
+_PHONE_MEDIA = PHONE_MEDIA
 
 
 def _between(html: str, start: str, end: str) -> str:
@@ -101,7 +84,8 @@ class TestShellMarkup:
 class TestShellStyle:
     def test_the_shell_is_hidden_on_wider_screens(self) -> None:
         head = _STYLE_CSS[: _STYLE_CSS.index(_PHONE_MEDIA)]
-        assert re.search(r"\.sova-topbar,\s*\.sova-tabbar,\s*\.sova-more-sheet \{ display: none; \}", head)
+        # The phone-only sheets of single pages (the Supervisor's graph sheet) join the same rule.
+        assert re.search(r"\.sova-topbar,\s*\.sova-tabbar,\s*\.sova-more-sheet,?[^{]*\{ display: none; \}", head)
         block = _phone_block()
         assert "display: none" in _rule(block, ".sidebar")
         assert "margin-left: 0" in _rule(block, "main.sidebar-main")

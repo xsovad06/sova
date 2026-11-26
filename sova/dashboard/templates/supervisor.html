@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Supervisor - SOVA{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6 max-md:flex-wrap max-md:gap-3">
+{% from "_icons.html" import icon %}
+{#- Under 768 px the page is one column in another order (style.css, "Supervisor on the phone"): the switch and Poll
+    now, the off note, the pending actions, the dependency graph row, then the switches. -#}
+<div id="supervisor-page" class="sova-sup-page">
+<div id="supervisor-head" class="flex items-center justify-between mb-6 max-md:flex-wrap max-md:gap-3">
   <h2 class="text-2xl font-semibold">Supervisor</h2>
   <div class="flex items-center gap-3 max-md:flex-wrap">
     <span class="flex items-center gap-2">
@@ -10,7 +14,7 @@
       <span id="supervisor-toggle-label" class="text-xs text-gray-400">Loading...</span>
     </span>
     <a href="{{ prefix|default('') }}/settings#supervisor"
-       class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
+       class="sova-sup-settings-link text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
     <button type="button" id="poll-btn" onclick="triggerPoll()"
             data-tooltip="Manually trigger one supervision cycle: check task states, sync CodeRabbit quota, and execute any ready progression decisions"
             data-tooltip-wide data-tooltip-pos="bottom"
@@ -19,6 +23,7 @@
     </button>
   </div>
 </div>
+<p id="supervisor-off-note-phone" class="hidden md:hidden text-sm text-accent-yellow mb-4">The supervisor is off, so the switches below act only once it is on.</p>
 
 <!-- What the supervisor may do: its 13 switches, saved one by one (settingSwitch in app.js) -->
 {# The groups come from settings_meta.SUPERVISOR_SWITCH_GROUPS, shared with the Settings Overview. #}
@@ -34,9 +39,9 @@
       {% for title, keys in column %}
       <div>
         <div class="text-xs uppercase tracking-wider text-gray-500 mb-1">{{ title }}</div>
-        <div class="grid grid-cols-1 {{ 'sm:grid-cols-2' if keys|length > 4 else '' }} gap-x-8">
+        <div class="grid grid-cols-1 {{ 'md:grid-cols-2' if keys|length > 4 else '' }} gap-x-8">
           {% for key in keys %}{% set meta = setting_meta(key) %}
-          <div class="flex items-center justify-between gap-3 py-1.5 border-b border-gray-700/20">
+          <div class="sova-sup-switch-row flex items-center justify-between gap-3 py-1.5 border-b border-gray-700/20">
             <span class="text-sm text-gray-300" data-tooltip="{{ meta.description }}" data-tooltip-wide>{{ meta.label }}</span>
             <span class="flex" data-setting-switch="{{ key }}" data-label="{{ meta.label }}"></span>
           </div>
@@ -49,12 +54,22 @@
   </div>
 </div>
 
-<!-- Dependency Graph (full width, primary board) -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
+<!-- The dependency graph on the phone: a row that opens it full screen (graph-sheet.js) -->
+<button type="button" id="graph-open-btn" class="sova-sup-graph-entry md:hidden" aria-controls="graph-sheet" aria-expanded="false">
+  {{ icon("share", "w-5 h-5 shrink-0 text-gray-400") }}
+  <span class="flex-1 min-w-0 flex flex-col">
+    <span class="font-semibold">Dependency graph</span>
+    <span class="text-xs text-gray-400">Opens full screen. Pinch to zoom, tap a node for its chain.</span>
+  </span>
+  {{ icon("chevron-right", "w-4 h-4 shrink-0 text-gray-400") }}
+</button>
+
+<!-- Dependency Graph (full width, primary board). On a phone it lives in the graph sheet below. -->
+<div id="graph-card" class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
   <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
-    <h3 class="text-sm font-medium text-gray-300">Dependency Graph <span class="text-xs text-gray-600 font-normal ml-1">left = ready, right = blocked &middot; click node to highlight chain</span></h3>
-    <div class="flex items-center gap-3 max-md:flex-wrap">
-      <div class="flex items-center gap-2 text-xs text-gray-500 max-md:flex-wrap">
+    <h3 class="sova-graph-card-title text-sm font-medium text-gray-300">Dependency Graph <span class="text-xs text-gray-600 font-normal ml-1">left = ready, right = blocked &middot; click node to highlight chain</span></h3>
+    <div id="graph-tools" class="flex items-center gap-3 max-md:flex-wrap">
+      <div id="graph-legend" class="flex items-center gap-2 text-xs text-gray-500 max-md:flex-wrap">
         <span id="graph-state-legend" class="flex items-center gap-2"></span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-peach inline-block"></span> Handoff</span>
@@ -117,7 +132,7 @@
 
 <!-- Pending Actions panel (only visible when require_approval=true and decisions exist) -->
 <div id="pending-plan" class="hidden bg-surface-card rounded-lg border border-yellow-600/40 p-4 mb-4">
-  <div class="flex items-center justify-between mb-3">
+  <div class="flex items-center justify-between mb-3 max-md:flex-wrap max-md:gap-2">
     <div>
       <h3 class="text-sm font-medium text-gray-300 inline">Pending Actions</h3>
       <span class="text-xs text-gray-500 ml-2">Supervisor wants to run these. Review, then approve or skip each one.</span>
@@ -133,6 +148,11 @@
     <h4 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Deferred</h4>
     <div id="plan-deferred-items" class="space-y-1"></div>
   </div>
+</div>
+{#- The phone always shows the pending actions; while the panel above is hidden there are none. -#}
+<div id="pending-empty" class="md:hidden bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
+  <h3 class="text-sm font-medium text-gray-300">Pending actions <span class="text-xs font-normal text-gray-500 ml-1">0</span></h3>
+  <p class="text-sm text-gray-400 mt-1">Nothing waits for your approval.</p>
 </div>
 
 <!-- The task queue lives on the Work page board (Queued column), where it can be reordered and started -->
@@ -213,6 +233,17 @@
 }
 .graph-node-highlight { animation: graph-node-pulse 1s ease-in-out 2; }
 </style>
+</div>
+
+{#- The dependency graph on a phone: a full-screen sheet on the shared side panel. The graph card and the node
+    drawer move into its slot while the window is phone-sized (static/js/pages/supervisor/graph-sheet.js). -#}
+<aside id="graph-sheet" class="sova-side-panel sova-graph-sheet" aria-label="Dependency graph" aria-hidden="true" inert>
+  <div class="sova-graph-sheet-head">
+    <h3 class="text-base font-semibold">Dependency graph</h3>
+    <button type="button" class="sova-btn sova-btn-ghost sova-btn-icon" data-panel-close aria-label="Close the dependency graph">{{ icon("close", "w-5 h-5") }}</button>
+  </div>
+  <div id="graph-sheet-slot" class="sova-graph-sheet-body"></div>
+</aside>
 {% endblock %}
 
 {% block scripts %}
@@ -385,7 +416,8 @@ function _confirmRunning() {
 
 const _supervisorControls = mountSettingControls(document, {
   'supervisor.enabled': {
-    onValue: (on) => document.getElementById('supervisor-off-note').classList.toggle('hidden', on),
+    onValue: (on) => ['supervisor-off-note', 'supervisor-off-note-phone']
+      .forEach(id => document.getElementById(id).classList.toggle('hidden', on)),
     onSaved: async (on) => {
       if (on) _confirmRunning(); else _stopConfirmPoll();
       await loadStatus();
@@ -1383,6 +1415,14 @@ function renderGraph(data) {
   svg.call(zoom.transform, _savedTransform || _fitTransform);
 }
 
+// Fits the graph to its container again, for a container that changed size: the phone's graph sheet moves the
+// card in and out (graph-sheet.js) and fits it each time it opens.
+function refitGraph() {
+  if (!_lastGraphData) return;
+  _savedTransform = null;
+  renderGraph(_lastGraphData);
+}
+
 // Action drawer
 function showDrawer(node) {
   const oldBadges = document.getElementById('drawer-status-badges');
@@ -1667,14 +1707,14 @@ async function loadPlan() {
 
     // Render pending action items
     itemsEl.innerHTML = items.map(item => `
-      <div class="flex items-center justify-between gap-3 text-xs py-1.5 px-2 rounded bg-surface/60 border border-gray-700/40">
-        <div class="flex items-center gap-2 min-w-0">
+      <div class="flex items-center justify-between gap-3 text-xs py-1.5 px-2 rounded bg-surface/60 border border-gray-700/40 max-md:flex-wrap max-md:gap-2 max-md:text-sm">
+        <div class="flex items-center gap-2 min-w-0 max-md:flex-wrap max-md:gap-x-2 max-md:gap-y-1">
           <span class="font-mono text-accent shrink-0">#${item.issue_number}</span>
           <span class="text-gray-400 capitalize shrink-0">${esc((item.action || '').replace(/_/g, ' '))}</span>
           ${item.role ? `<span class="text-gray-600 shrink-0">(${esc(item.role)})</span>` : ''}
-          <span class="text-gray-600 truncate">${esc(item.reason || '')}</span>
+          <span class="text-gray-600 truncate max-md:basis-full max-md:whitespace-normal">${esc(item.reason || '')}</span>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+        <div class="flex items-center gap-1.5 shrink-0 max-md:ml-auto">
           <button type="button" data-approve-issue="${item.issue_number}"
                   class="plan-approve-btn sova-btn sova-btn-success sova-btn-xs">Run</button>
           <button type="button" data-skip-issue="${item.issue_number}"
@@ -1886,5 +1926,10 @@ setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadPlannerHealth
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
 });
+</script>
+<script type="module">
+import { init } from '/static/js/pages/supervisor/graph-sheet.js';
+
+init({ refit: () => refitGraph() });
 </script>
 {% endblock %}
