@@ -363,11 +363,16 @@ def _resolve_scoped_api_key(cfg: LLMConfig, project_dir: Path | None) -> str:
     legacy, unscoped ``"llm.api_key"`` keyring entry (read-only, never
     migrated or deleted) for a user upgrading from before this scoping
     existed, then to ``cfg.api_key`` as stored in the database.
+
+    The scope is the checkout that owns the config: a ``sova run`` started inside a linked worktree (every
+    PR run is) resolves its project from the working directory, and the worktree's own path names no
+    keyring entry, so the call went out with no key at all.
     """
     from sova.config.context import resolve_project_dir
+    from sova.config.root import owning_config_dir
     from sova.llm.keyring_store import resolve_secret, scoped_secret_name
 
-    resolved_dir = resolve_project_dir(project_dir)
+    resolved_dir = owning_config_dir(resolve_project_dir(project_dir))
     scoped_name = scoped_secret_name("llm.api_key", resolved_dir, cfg.provider)
     return resolve_secret(scoped_name, cfg.api_key, legacy_name="llm.api_key")
 

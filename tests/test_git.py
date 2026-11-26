@@ -3784,6 +3784,32 @@ class TestGetPrFiles:
             with pytest.raises(RuntimeError, match="Failed to get files"):
                 await get_pr_files(42, repo="user/repo")
 
+    async def test_network_failure_is_retried(self) -> None:
+        # One dropped TLS handshake used to fail the whole review run.
+        tls = _shell_fail(stderr='Post "https://api.github.com/graphql": net/http: TLS handshake timeout')
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock, side_effect=[tls, _shell_ok(stdout="a.py\n")]) as run,
+            patch("sova.git.pr.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            assert await get_pr_files(42, repo="user/repo") == ["a.py"]
+        assert run.await_count == 2
+
+    async def test_network_failure_gives_up_after_the_retries(self) -> None:
+        tls = _shell_fail(stderr='Post "https://api.github.com/graphql": net/http: TLS handshake timeout')
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock, return_value=tls) as run,
+            patch("sova.git.pr.asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(RuntimeError, match="TLS handshake timeout"),
+        ):
+            await get_pr_diff(42, repo="user/repo")
+        assert run.await_count == 3
+
+    async def test_non_network_failure_is_not_retried(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock, return_value=_shell_fail(stderr="not found")) as run:
+            with pytest.raises(RuntimeError):
+                await get_pr_files(42, repo="user/repo")
+        assert run.await_count == 1
+
 
 class TestGetPrBranch:
     async def test_returns_branch(self) -> None:

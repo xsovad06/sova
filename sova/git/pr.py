@@ -966,10 +966,32 @@ _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
 }
 
 
+# A read the reviewer cannot do without (the PR's diff and file list) is retried this many times when gh
+# never reached GitHub: one dropped TLS handshake otherwise failed the whole review run.
+_NETWORK_RETRIES = 2
+_NETWORK_RETRY_DELAY_SECONDS = 3.0
+
+
+async def _run_gh_read(*args: str, env: dict[str, str] | None = None) -> ShellResult:
+    """Run a read-only gh command, retrying it when the network was unreachable.
+
+    Only a transport failure is retried (``ShellResult.is_network_unreachable``): a 404, an auth error or a
+    rate limit reached GitHub and would fail identically. Safe for reads only, never for a write.
+    """
+    result = await run(*args, env=env)
+    for attempt in range(1, _NETWORK_RETRIES + 1):
+        if not result.is_network_unreachable:
+            break
+        log.warning("gh.read_network_retry", command=" ".join(args[:3]), attempt=attempt, stderr=result.stderr[:200])
+        await asyncio.sleep(_NETWORK_RETRY_DELAY_SECONDS * attempt)
+        result = await run(*args, env=env)
+    return result
+
+
 async def get_pr_diff(pr_number: int, *, repo: str, github_user: str = "") -> str:
     """Fetch the full diff of a pull request via gh CLI."""
     env = await resolve_gh_env(github_user)
-    result = await run(
+    result = await _run_gh_read(
         "gh",
         "pr",
         "diff",
@@ -987,7 +1009,7 @@ async def get_pr_diff(pr_number: int, *, repo: str, github_user: str = "") -> st
 async def get_pr_files(pr_number: int, *, repo: str, github_user: str = "") -> list[str]:
     """Fetch the list of changed file paths in a pull request."""
     env = await resolve_gh_env(github_user)
-    result = await run(
+    result = await _run_gh_read(
         "gh",
         "pr",
         "diff",

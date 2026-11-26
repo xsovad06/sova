@@ -22,7 +22,13 @@ from sova.dashboard.services.work_state import (
     resolve_next_action,
 )
 from sova.dashboard.services.work_verdict import parse_review_history
-from sova.llm.errors import BillingError, ContentFilteredError, LLMTimeoutError, note_content_filtered_models
+from sova.llm.errors import (
+    BillingError,
+    ConfigurationError,
+    ContentFilteredError,
+    LLMTimeoutError,
+    note_content_filtered_models,
+)
 from sova.llm.guard import PromptInjectionError, ScanResult, guard_prompt
 from sova.llm.models import LLMResult
 from sova.roles._review_comments import (
@@ -184,6 +190,15 @@ class TestSingleReviewUnreviewedChunks:
 
         assert mock_invoke.await_count == 1
         assert result.unreviewed_files == ["a.py"]
+
+    async def test_configuration_error_stops_the_review_without_a_retry(self, tmp_path: Path) -> None:
+        """A missing key fails every chunk identically: neither the retry nor the next chunk is attempted."""
+        error = ConfigurationError("Missing credentials")
+        with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=error) as mock_invoke:
+            with pytest.raises(ConfigurationError):
+                await ReviewerRole()._run_review(_ctx(tmp_path), _task(), TWO_FILE_DIFF, ["a.py", "b.py"])
+
+        assert mock_invoke.await_count == 1
 
     async def test_all_chunks_failing_is_revise_not_approve(self, tmp_path: Path) -> None:
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=RuntimeError("down")):

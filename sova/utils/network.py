@@ -54,6 +54,9 @@ _AMBIGUOUS_PATTERNS: tuple[str, ...] = (
     "connection reset by peer",
     "failed to connect to",
     "could not read from remote repository",
+    # Go's net/http text, which gh prints verbatim: 'Post "https://api.github.com/graphql": net/http: TLS
+    # handshake timeout' (a reviewer run on 2026-11-26 lost its PR file list to one).
+    "tls handshake timeout",
     # Covers SOVA's own phrasing for a verification it could not complete
     # ("GitHub was unreachable while checking PR #687"), which must round-trip
     # through this predicate: the messages this codebase writes are re-read
