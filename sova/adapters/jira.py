@@ -214,7 +214,11 @@ class JiraAdapter(TaskAdapter):
         state_transitions: dict[str, str] | None = None,
         status_mapping: dict[str, str] | None = None,
         priority_mapping: dict[str, str] | None = None,
+        pr_forge: TaskAdapter | None = None,
     ) -> None:
+        # pr_forge is the GitHub adapter for the repository holding this project's pull requests: Jira tracks
+        # the issues, but reviews, PR comments and reviewers live on GitHub. None when github_repo names no
+        # GitHub repository (a GitLab project), which leaves PR writes with nowhere to go.
         # jql_filter is appended verbatim to queries: callers own validation.
         # component is sanitized; jql_filter is not because it may contain
         # operators, functions, and nested clauses that sanitization would break.
@@ -224,6 +228,7 @@ class JiraAdapter(TaskAdapter):
         self.project_key = project_key
         self.component = component
         self.jql_filter = jql_filter
+        self._pr_forge = pr_forge
         self._state_transitions = state_transitions or {}
 
         effective: dict[str, TaskState] = dict(_JIRA_STATUS_TO_STATE)
@@ -510,8 +515,8 @@ class JiraAdapter(TaskAdapter):
         return exact_matches[0]["accountId"]
 
     async def add_reviewer(self, task_id: str, pr_number: int, username: str) -> None:
-        # Jira has no native concept of a GitHub PR reviewer; this is a GitHub-specific operation.
-        log.info("add_reviewer.no_op_for_jira", pr=pr_number, user=username)
+        # The Jira key is only logged by the forge: the request goes to *pr_number* on its GitHub repository.
+        await self._require_pr_forge("request a reviewer", pr_number).add_reviewer(task_id, pr_number, username)
 
     async def add_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
@@ -520,7 +525,12 @@ class JiraAdapter(TaskAdapter):
             json={"update": {"labels": [{"add": label}]}},
         )
         if response.status_code not in (200, 204):
-            log.warning("add_label.failed", issue=issue_key, label=label, status=response.status_code)
+            # Raised, as GitHubAdapter does: a swallowed failure let the reviewer log its verdict label as
+            # written. Jira's message is kept because an expired token reads as anonymous and fails every write
+            # with a bare 400, which the status alone does not explain.
+            raise RuntimeError(
+                f"Failed to add label '{label}' to {issue_key}: HTTP {response.status_code} {response.text[:200]}"
+            )
 
     async def remove_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
@@ -529,7 +539,13 @@ class JiraAdapter(TaskAdapter):
             json={"update": {"labels": [{"remove": label}]}},
         )
         if response.status_code not in (200, 204):
-            log.warning("remove_label.failed", issue=issue_key, label=label, status=response.status_code)
+            log.warning(
+                "remove_label.failed",
+                issue=issue_key,
+                label=label,
+                status=response.status_code,
+                detail=response.text[:200],
+            )
 
     async def _do_post_comment(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
@@ -540,8 +556,22 @@ class JiraAdapter(TaskAdapter):
         if response.status_code not in (200, 201):
             log.warning("post_comment.failed", issue=issue_key, status=response.status_code)
 
+    def _require_pr_forge(self, operation: str, pr_number: int) -> TaskAdapter:
+        """The GitHub adapter for this project's PRs, or a raised error naming why the write cannot happen.
+
+        A PR write that returned normally without one read as delivered: the reviewer logged a posted review
+        and labelled the issue while nothing reached the PR.
+        """
+        if self._pr_forge is None:
+            raise RuntimeError(
+                f"Cannot {operation} on PR #{pr_number}: github_repo does not name a GitHub repository (owner/repo)"
+            )
+        return self._pr_forge
+
     async def _do_post_pr_comment(self, pr_number: int, body: str) -> None:
-        log.info("post_pr_comment.no_op_for_jira", pr=pr_number)
+        # The body was already egress-filtered by TaskAdapter.post_pr_comment(), so the forge's own
+        # unfiltered write is called rather than its public method, which would filter it again.
+        await self._require_pr_forge("comment", pr_number)._do_post_pr_comment(pr_number, body)
 
     async def _do_post_pr_review(
         self,
@@ -551,7 +581,8 @@ class JiraAdapter(TaskAdapter):
         comments: list[dict],
         fallback_body: str | None = None,
     ) -> None:
-        log.info("post_pr_review.no_op_for_jira", pr=pr_number)
+        forge = self._require_pr_forge("post a review", pr_number)
+        await forge._do_post_pr_review(pr_number, body, event, comments, fallback_body=fallback_body)
 
     async def _do_edit_body(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
@@ -564,8 +595,9 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(msg)
 
     async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
-        log.info("get_pr_reviews.no_op_for_jira", pr=pr_number)
-        return []
+        # Raised rather than an empty list without a forge: [] reads as "no prior reviews", so a re-review
+        # would be taken for a first one and fail only later, at post time.
+        return await self._require_pr_forge("read reviews", pr_number).get_pr_reviews(pr_number)
 
     async def get_comments(self, task_id: str) -> list[str]:
         issue_key = self._resolve_key(task_id)

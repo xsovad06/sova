@@ -7336,6 +7336,9 @@ class TestReviewerExceptionPaths:
             await role._write_verdict_label(ctx, review)
 
         assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["reviewer.verdict_label_failed"]
+        # Added before the stale verdicts are removed: a rejected add (a Jira 400 now raises) keeps the
+        # previous verdict label instead of leaving the issue with none.
+        adapter.remove_label.assert_not_awaited()
 
     async def test_write_verdict_label_skipped_when_no_issue(self, tmp_path: Path) -> None:
         """_write_verdict_label is a no-op when issue_number is missing."""
