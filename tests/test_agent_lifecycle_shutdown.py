@@ -187,6 +187,32 @@ class TestShutdownTasks:
 
         assert sweep.cancelled()
 
+    async def test_a_watchdog_failing_to_stop_does_not_leave_the_others_running(self) -> None:
+        """The hub runs one watchdog per project; one raising from stop() must not skip the rest."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.app import _shutdown_tasks
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        sweep = asyncio.create_task(_hang())
+        failing = MagicMock(stop=AsyncMock(side_effect=RuntimeError("stop failed")))
+        healthy = MagicMock(stop=AsyncMock())
+
+        cancel_bg = "sova.dashboard.services.agent_lifecycle.cancel_background_tasks"
+        cancel_batch = "sova.dashboard.services.batch_service.cancel_all_batches"
+        with (
+            patch(cancel_bg, new_callable=AsyncMock),
+            patch("sova.dashboard.routers.agents._ws_manager") as mock_ws,
+            patch(cancel_batch, new_callable=AsyncMock),
+        ):
+            mock_ws.cancel_all = AsyncMock()
+            await _shutdown_tasks(sweep, [], [], None, [failing, healthy])
+
+        healthy.stop.assert_awaited_once()
+        assert sweep.cancelled()
+
     async def test_handles_empty_bg_task_lists(self) -> None:
         """_shutdown_tasks works with empty pr_throttle and pr_monitor lists."""
         from unittest.mock import AsyncMock, patch

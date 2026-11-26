@@ -50,6 +50,14 @@ _PORT_PROBE_TIMEOUT_SECONDS = 1.0
 # single slow or retried cycle is not reported as a stall.
 _STALE_SCAN_MULTIPLIER = 3
 
+# A single-project server whose scheduler is enabled reports "degraded" when its watch loop is absent this long
+# after ``_start_scheduler()``. The loop task creates ``WatchLoop`` on its first turn, so the window only has to
+# cover that gap; it keeps the very first health probes from flapping. Fixed rather than derived from the
+# never-scanned window (``_STALE_SCAN_MULTIPLIER * watch.interval_idle``): that one waits out a whole idle poll
+# interval, often minutes, while a loop that never got created is wrong within one event-loop turn, so tying the
+# two together would hide a missing loop for as long as the operator's idle interval.
+_SCHEDULER_START_GRACE_SECONDS = 30.0
+
 
 def _build_ready_notifying_server(config: object) -> object:
     """A ``uvicorn.Server`` that tells systemd it is ready once the port is bound, not before.
@@ -143,6 +151,13 @@ class SOVAServer:
         self._running = False
         self._watch_task: asyncio.Task[None] | None = None
         self._watch_loop = None
+        # Set by _run_watch_loop() when the loop dies on an exception, before it clears _watch_loop, so /api/health
+        # can tell a crashed loop from one that has not started yet.
+        self._watch_loop_crashed = False
+        self._scheduler_started_at: float | None = None
+        # Hub only: slugs whose missing or non-SOVA directory /api/health has already logged, so a monitor polling
+        # health does not repeat the same warning forever.
+        self._warned_unprobeable: set[str] = set()
         self._start_time = time.monotonic()
 
     @property
@@ -338,19 +353,57 @@ class SOVAServer:
 
         return await _check_db_health(self._project_dir) == "ok"
 
+    async def _probe_project_databases(self) -> dict[str, str]:
+        """Hub only: probe every registered project's database, keyed by slug ("ok" or "unreachable").
+
+        A registered directory that no longer exists, or exists without a ``.claude/``, is "unreachable" without a
+        probe, since opening its database would create files there; each such slug is logged once per process.
+        Empty when no project is registered (and when the registry cannot be read, which ``registry_readable()``
+        reports separately).
+        """
+        from sova.config.registry import list_projects
+        from sova.dashboard.app import _check_db_health
+
+        async def probe(slug: str, path: Path) -> str:
+            reason = "missing" if not path.is_dir() else "not_a_sova_project" if not (path / ".claude").is_dir() else ""
+            if reason:
+                if slug not in self._warned_unprobeable:
+                    self._warned_unprobeable.add(slug)
+                    log.warning("server.project_unprobeable", slug=slug, path=str(path), reason=reason)
+                return "unreachable"
+            return "ok" if await _check_db_health(path) == "ok" else "unreachable"
+
+        projects = list_projects()
+        results = await asyncio.gather(*(probe(slug, Path(path)) for slug, path in projects.items()))
+        return dict(zip(projects, results, strict=True))
+
     async def _get_health_check(self) -> dict:
         """Get general health check status.
 
-        ``status`` is "degraded" when the watch loop has stalled or the database probe fails.
+        ``status`` is "degraded" when the watch loop has stalled, crashed or is missing (single-project, scheduler
+        enabled), or a database probe fails. On the hub ``databases`` carries one probe per registered project, and
+        ``database`` is "ok" only when every one of them is. A hub with no registered project has no database of
+        its own to probe, so it reports "ok" without opening one: the start directory (the home directory by
+        default) is not a project, and probing it would create a database there. A hub whose registry file exists
+        but cannot be read reports ``registry: "unreadable"`` and "degraded", since it cannot know its projects.
         """
+        from sova.config.registry import registry_readable
+
         uptime = time.monotonic() - self._start_time
         agents_active = self._count_active_agents()
-        database_ok = await self._probe_database()
-        status = self._compute_health_status() if database_ok else "degraded"
+        registry_ok = True
+        if self._multi_project:
+            registry_ok = registry_readable()
+            databases = await self._probe_project_databases()
+            database_ok = all(result == "ok" for result in databases.values())
+        else:
+            databases = {}
+            database_ok = await self._probe_database()
+        status = self._compute_health_status() if database_ok and registry_ok else "degraded"
         # Informational only: a stale-but-working server must not trip an external probe, so this never
         # feeds ``status``.
         staleness = get_code_staleness()
-        return {
+        body = {
             "status": status,
             "database": "ok" if database_ok else "unreachable",
             "uptime_s": round(uptime, 1),
@@ -362,9 +415,30 @@ class SOVAServer:
             "checkout_sha": staleness.current_sha,
             "restart_required": staleness.restart_required,
         }
+        if self._multi_project:
+            body["databases"] = databases
+            body["registry"] = "ok" if registry_ok else "unreadable"
+        return body
+
+    def _scheduler_dead(self) -> bool:
+        """True when this server should run a watch loop and it has crashed or is still missing past the grace window.
+
+        Only a single-project server with the scheduler enabled runs one (the hub never does), so ``--no-scheduler``,
+        ``server.scheduler_enabled = false`` and the hub are never dead. A server whose lifespan has not reached
+        ``_start_scheduler()`` yet is starting, not dead.
+        """
+        if self._multi_project or not self._config.server.scheduler_enabled:
+            return False
+        if self._watch_loop_crashed:
+            return True
+        if self._watch_loop is not None or self._scheduler_started_at is None:
+            return False
+        return time.monotonic() - self._scheduler_started_at > _SCHEDULER_START_GRACE_SECONDS
 
     def _compute_health_status(self) -> str:
-        """Report "degraded" once the watch loop's last scan has gone stale.
+        """Report "degraded" once the watch loop has died or its last scan has gone stale.
+
+        A dead loop (``_scheduler_dead()``) is "degraded" whatever its last scan said.
 
         A loop that is mid-task reports "ok". ``WatchLoop.run()`` awaits
         ``process_task()`` inline, and a developer pipeline routinely runs far
@@ -384,6 +458,8 @@ class SOVAServer:
         naive timestamp reaching the subtraction) are caught, so a health
         probe never turns into a 500.
         """
+        if self._scheduler_dead():
+            return "degraded"
         if not self._watch_loop:
             return "ok"
 
@@ -437,6 +513,8 @@ class SOVAServer:
             return
 
         self._running = True
+        self._watch_loop_crashed = False
+        self._scheduler_started_at = time.monotonic()
         self._watch_task = asyncio.create_task(self._run_watch_loop())
         log.info("scheduler.started")
 
@@ -445,30 +523,39 @@ class SOVAServer:
         from sova.adapters import create_adapter
         from sova.scheduler.watch import WatchLoop
 
-        adapter = create_adapter(self._config)
-        self._watch_loop = WatchLoop(
-            config=self._config,
-            adapter=adapter,
-            project_dir=str(self._project_dir) if self._project_dir else None,
-        )
-
         try:
+            # Inside the try: an adapter that cannot be built is a crashed loop too, not an unobserved task error.
+            adapter = create_adapter(self._config)
+            self._watch_loop = WatchLoop(
+                config=self._config,
+                adapter=adapter,
+                project_dir=str(self._project_dir) if self._project_dir else None,
+            )
             await self._watch_loop.run()
         except asyncio.CancelledError:
-            self._watch_loop.stop()
+            if self._watch_loop is not None:
+                self._watch_loop.stop()
             raise
         except Exception:  # noqa: BLE001 (daemon loop must survive any error rather than kill the server)
+            # Before the finally clears _watch_loop, so /api/health never sees a crashed loop as merely absent.
+            self._watch_loop_crashed = True
             log.error("scheduler.crash", exc_info=True)
         finally:
             self._running = False
             self._watch_loop = None
 
     async def _stop_scheduler(self) -> None:
-        """Stop the watch loop background task."""
+        """Stop the watch loop background task.
+
+        A deliberate stop is not a failure, so it clears the start time and the crash flag: ``_scheduler_dead()``
+        then reads the loop as not started rather than missing or crashed.
+        """
         if self._watch_task and not self._watch_task.done():
             self._watch_task.cancel()
             await asyncio.gather(self._watch_task, return_exceptions=True)
         self._running = False
+        self._scheduler_started_at = None
+        self._watch_loop_crashed = False
         log.info("scheduler.stopped")
 
     async def stop(self) -> None:

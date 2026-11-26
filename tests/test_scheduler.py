@@ -87,9 +87,10 @@ def _invoke_install_service(
     service_type: str,
     *,
     home_dir: Path,
-    project_dir: Path,
+    project_dir: Path | None,
     sova_bin: str = "/usr/bin/sova",
     private_tmp_roots: tuple[Path, ...] = (),
+    extra_args: tuple[str, ...] = (),
 ) -> Result:
     """Run ``install-service`` with ``$HOME`` and the resolved sova binary stubbed out.
 
@@ -113,7 +114,8 @@ def _invoke_install_service(
         patch("sova.scheduler.server._DEFAULT_PID_DIR", home_dir / ".config" / "sova"),
         patch("sova.cli.commands.server._PRIVATE_TMP_ROOTS", private_tmp_roots),
     ):
-        return CliRunner().invoke(app, ["install-service", "--type", service_type, "--project", str(project_dir)])
+        project_args = ["--project", str(project_dir)] if project_dir is not None else []
+        return CliRunner().invoke(app, ["install-service", "--type", service_type, *project_args, *extra_args])
 
 
 def _cli_output(result: Result) -> str:
@@ -123,6 +125,11 @@ def _cli_output(result: Result) -> str:
     so every assertion on an install-service message has to look at both.
     """
     return result.stdout + (result.stderr or "")
+
+
+def _flat_output(result: Result) -> str:
+    """``_cli_output`` with Rich's line wrapping undone, for matching a sentence that may span lines."""
+    return " ".join(_cli_output(result).split())
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +741,36 @@ class TestMultiProjectPidDiscovery:
             patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
         ):
             result = self._invoke(["stop"], has_projects=True)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] is None
+
+    @pytest.mark.parametrize("has_projects", [True, False])
+    def test_stop_multi_reads_only_the_hub_pid_file(self, dirs: tuple[Path, Path], has_projects: bool) -> None:
+        """The hub unit's ExecStop names --multi: it stops the hub whatever the registry says, and never a project
+        server started from the same directory."""
+        project, global_dir = dirs
+        (project / ".claude" / "sova-server.pid").write_text("1111", encoding="utf-8")
+        (global_dir / "sova-server.pid").write_text("2222", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.STOPPED) as mock_stop,
+        ):
+            result = self._invoke(["stop", "--multi"], has_projects=has_projects)
+        assert result.exit_code == 0, _cli_output(result)
+        assert mock_stop.call_args.kwargs["project_dir"] is None
+
+    def test_stop_multi_with_no_hub_running_does_not_fall_back_to_a_project_server(
+        self, dirs: tuple[Path, Path]
+    ) -> None:
+        project, _ = dirs
+        (project / ".claude" / "sova-server.pid").write_text("1111", encoding="utf-8")
+        with (
+            patch("sova.scheduler.server.is_process_alive", return_value=True),
+            patch("pathlib.Path.cwd", return_value=project),
+            patch("sova.scheduler.server.stop_server", return_value=StopResult.NOT_RUNNING) as mock_stop,
+        ):
+            result = self._invoke(["stop", "--multi"], has_projects=False)
         assert result.exit_code == 0, _cli_output(result)
         assert mock_stop.call_args.kwargs["project_dir"] is None
 
@@ -1673,6 +1710,163 @@ class TestSOVAServerEdgeCases:
             server = _server_with_watch_health(last_scan_at=bad)
             assert server._compute_health_status() == "ok"
 
+    @pytest.mark.parametrize(
+        ("scheduler_enabled", "multi_project", "started_ago", "crashed", "expected"),
+        [
+            (True, False, 600.0, False, "degraded"),
+            (True, False, 1.0, False, "ok"),
+            (True, False, None, False, "ok"),
+            (True, False, 1.0, True, "degraded"),
+            (False, False, 600.0, False, "ok"),
+            (True, True, 600.0, True, "ok"),
+        ],
+        ids=[
+            "loop-gone-after-grace",
+            "inside-start-grace",
+            "scheduler-not-started-yet",
+            "crashed-inside-grace",
+            "scheduler-disabled",
+            "hub-runs-no-loop",
+        ],
+    )
+    def test_health_status_for_a_missing_watch_loop(
+        self,
+        scheduler_enabled: bool,
+        multi_project: bool,
+        started_ago: float | None,
+        crashed: bool,
+        expected: str,
+    ) -> None:
+        """Only a single-project server with the scheduler enabled must have a loop; a crash needs no grace."""
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        config.server.scheduler_enabled = scheduler_enabled
+        server = SOVAServer(config=config, multi_project=multi_project)
+        server._scheduler_started_at = None if started_ago is None else time.monotonic() - started_ago
+        server._watch_loop_crashed = crashed
+
+        assert server._compute_health_status() == expected
+
+    async def test_health_check_reports_a_crashed_watch_loop_as_503(self) -> None:
+        """The loop task dies on an exception: /api/health must not read the cleared loop as "not started"."""
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        app = server.create_app()
+        crashing_loop = MagicMock()
+        crashing_loop.run = AsyncMock(side_effect=RuntimeError("tracker client exploded"))
+
+        with (
+            patch("sova.adapters.create_adapter"),
+            patch("sova.scheduler.watch.WatchLoop", return_value=crashing_loop),
+        ):
+            server._start_scheduler()
+            await server._watch_task
+
+        # Pin the database probe to ok so the 503 can only come from the crashed loop.
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="ok")):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+
+        assert server._watch_loop_crashed is True
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert resp.json()["database"] == "ok"
+        assert resp.json()["scheduler_running"] is False
+
+    async def test_health_check_is_503_when_the_database_and_the_watch_loop_both_fail(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        app = server.create_app()
+        server._watch_loop_crashed = True
+
+        with patch("sova.dashboard.app._check_db_health", new=AsyncMock(return_value="fail")):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert resp.json()["database"] == "unreachable"
+
+    async def test_hub_health_probes_every_registered_project_database(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One probe per project; a removed project directory is unreachable and is not recreated by a probe."""
+        from sova.config import registry
+        from sova.scheduler.server import SOVAServer
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        for name in ("alpha", "beta", "gone", "bare"):
+            (tmp_path / name).mkdir()
+            registry.register_project(tmp_path / name, slug=name)
+        (tmp_path / "alpha" / ".claude").mkdir()
+        (tmp_path / "beta" / ".claude").mkdir()
+        (tmp_path / "gone").rmdir()
+
+        async def fake_probe(project_dir: Path | None = None, timeout: float = 2.0) -> str:
+            return "fail" if project_dir is not None and project_dir.name == "beta" else "ok"
+
+        server = SOVAServer(config=_make_config(), multi_project=True)
+        probe_mock = AsyncMock(side_effect=fake_probe)
+        with patch("sova.dashboard.app._check_db_health", new=probe_mock), capture_logs() as logs:
+            body = await server._get_health_check()
+            await server._get_health_check()
+
+        assert body["databases"] == {"alpha": "ok", "beta": "unreachable", "gone": "unreachable", "bare": "unreachable"}
+        assert body["database"] == "unreachable"
+        assert body["registry"] == "ok"
+        assert body["status"] == "degraded"
+        assert not (tmp_path / "gone").exists()
+        # A directory without .claude/ is never opened, so a probe cannot create a database inside it.
+        assert {call.args[0].name for call in probe_mock.await_args_list} == {"alpha", "beta"}
+        assert not (tmp_path / "bare" / ".claude").exists()
+        # Each unprobeable slug is logged once, not on every poll.
+        warned = [entry["slug"] for entry in logs if entry["event"] == "server.project_unprobeable"]
+        assert sorted(warned) == ["bare", "gone"]
+
+    async def test_hub_health_with_no_registered_project_probes_nothing(self) -> None:
+        """The hub's start directory (home by default) is not a project: probing it would create a database there."""
+        from sova.scheduler.server import SOVAServer
+
+        server = SOVAServer(config=_make_config(), multi_project=True)
+        probe_mock = AsyncMock(return_value="ok")
+        with patch("sova.dashboard.app._check_db_health", new=probe_mock):
+            body = await server._get_health_check()
+
+        probe_mock.assert_not_awaited()
+        assert body["databases"] == {}
+        assert body["database"] == "ok"
+        assert body["status"] == "ok"
+
+    async def test_hub_health_with_an_unreadable_registry_answers_503_in_its_contract_shape(self) -> None:
+        """A corrupt registry reads as empty to list_projects(); health must say so rather than report "ok"."""
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.config import registry
+        from sova.scheduler.server import SOVAServer
+
+        registry._REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        registry._REGISTRY_FILE.write_text("{not json", encoding="utf-8")
+        server = SOVAServer(config=_make_config(), multi_project=True)
+        app = server.create_app()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/health")
+
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "degraded"
+        assert resp.json()["registry"] == "unreadable"
+        assert resp.json()["databases"] == {}
+
     def test_run_disables_uvicorn_access_log(self, tmp_path: Path) -> None:
         """An access-log line per dashboard poll is exactly the unbounded growth this fixes."""
         from sova.scheduler.server import SOVAServer
@@ -1932,6 +2126,21 @@ class TestSOVAServerEdgeCases:
         await server._stop_scheduler()
         assert not server._running
         assert server._watch_task.cancelled() or server._watch_task.done()
+
+    async def test_deliberate_stop_is_not_reported_as_a_dead_scheduler(self) -> None:
+        """A stop clears the start time and crash flag, so health never reads it as a missing or crashed loop."""
+        from sova.scheduler.server import _SCHEDULER_START_GRACE_SECONDS, SOVAServer
+
+        server = SOVAServer(config=_make_config())
+        server._scheduler_started_at = time.monotonic() - _SCHEDULER_START_GRACE_SECONDS - 1
+        server._watch_loop_crashed = True
+        server._running = True
+
+        await server._stop_scheduler()
+
+        assert server._scheduler_started_at is None
+        assert server._watch_loop_crashed is False
+        assert server._scheduler_dead() is False
 
     async def test_stop_scheduler_no_task(self) -> None:
         """_stop_scheduler() is safe when no watch task exists."""
@@ -2497,3 +2706,126 @@ class TestServerCLICommands:
             assert result.exit_code == 0
             assert existing_file.read_text() != "old content"
             assert "ExecStart=/usr/bin/sova" in existing_file.read_text()
+
+    @staticmethod
+    def _register_projects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *names: str) -> list[Path]:
+        """Register projects as a hub has them: reset_db_rows' SOVA_DATABASE_URL would refuse a second one."""
+        from sova.config import registry
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        dirs = []
+        for name in names:
+            project = tmp_path / name
+            project.mkdir()
+            registry.register_project(project, slug=name.replace(" ", "-"))
+            dirs.append(project.resolve())
+        return dirs
+
+    def test_install_service_multi_systemd_starts_the_hub_from_the_home_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No --project, a fixed WorkingDirectory=, and every registered project writable (git commits there)."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        alpha, beta = self._register_projects(tmp_path, monkeypatch, "alpha", "beta")
+
+        result = _invoke_install_service("systemd", home_dir=home_dir, project_dir=None, extra_args=("--multi",))
+
+        assert result.exit_code == 0, _cli_output(result)
+        content = (home_dir / ".config" / "systemd" / "user" / "sova-server.service").read_text()
+        assert "ExecStart=/usr/bin/sova server start --host 127.0.0.1 --port 8111 --multi\n" in content
+        assert "ExecStop=/usr/bin/sova server stop --multi\n" in content
+        assert f"WorkingDirectory={home_dir.resolve()}\n" in content
+        # The home directory stays read-only: its .claude/ is already listed.
+        assert f"ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex {alpha} {beta}\n" in content
+        assert "--project" not in content
+        assert "SOVA_PROJECT_DIR" not in content
+        assert "KillMode=process" in content
+
+    def test_install_service_multi_refuses_an_unreadable_registry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt registry reads as empty: the unit would list no writable project, so the install stops."""
+        from sova.config import registry
+
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        self._register_projects(tmp_path, monkeypatch, "alpha")
+        registry._REGISTRY_FILE.write_text("not json", encoding="utf-8")
+
+        result = _invoke_install_service("systemd", home_dir=home_dir, project_dir=None, extra_args=("--multi",))
+
+        assert result.exit_code == 1
+        assert "unreadable or malformed" in _flat_output(result)
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_multi_launchd_starts_the_hub_from_the_given_workdir(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / "home"
+        workdir = tmp_path / "hub"
+        home_dir.mkdir()
+        workdir.mkdir()
+
+        result = _invoke_install_service(
+            "launchd", home_dir=home_dir, project_dir=None, extra_args=("--multi", "--workdir", str(workdir))
+        )
+
+        assert result.exit_code == 0, _cli_output(result)
+        content = (home_dir / "Library" / "LaunchAgents" / "com.sova.server.plist").read_text()
+        assert "<string>8111</string>\n        <string>--multi</string>\n    </array>" in content
+        assert f"<key>WorkingDirectory</key>\n    <string>{workdir.resolve()}</string>" in content
+        assert "--project" not in content
+        assert "SOVA_PROJECT_DIR" not in content
+        # The hub writes the global PID file, so log rotation signals that one.
+        newsyslog = (home_dir / ".config" / "sova" / "sova-server.newsyslog.conf").read_text()
+        assert f"{home_dir / '.config' / 'sova' / 'sova-server.pid'}" in newsyslog
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (("--multi", "--project", "{dir}"), "--project selects a single-project server"),
+            (("--workdir", "{dir}"), "--workdir applies only with --multi"),
+        ],
+        ids=["project-with-multi", "workdir-without-multi"],
+    )
+    def test_install_service_rejects_mixing_hub_and_project_options(
+        self, tmp_path: Path, args: tuple[str, ...], message: str
+    ) -> None:
+        extra_args = tuple(a.replace("{dir}", str(tmp_path)) for a in args)
+
+        result = _invoke_install_service("systemd", home_dir=tmp_path, project_dir=None, extra_args=extra_args)
+
+        assert result.exit_code == 1
+        assert message in _flat_output(result)
+        assert not (tmp_path / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_install_service_multi_systemd_refuses_a_registered_project_path_with_whitespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The hub unit lists every registered project in the whitespace-split ReadWritePaths=."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        self._register_projects(tmp_path, monkeypatch, "My Project")
+
+        result = _invoke_install_service("systemd", home_dir=home_dir, project_dir=None, extra_args=("--multi",))
+
+        assert result.exit_code == 1
+        assert "registered project path contains whitespace" in _flat_output(result)
+        assert not (home_dir / ".config" / "systemd" / "user" / "sova-server.service").exists()
+
+    def test_start_multi_refuses_a_shared_database_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        self._register_projects(tmp_path, monkeypatch, "alpha", "beta")
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://db.example/sova")
+
+        with (
+            patch("sova.cli.commands.server.load_config", return_value=_make_config()),
+            patch("sova.scheduler.server.SOVAServer.run") as run,
+        ):
+            result = CliRunner().invoke(app, ["start", "--multi"])
+
+        assert result.exit_code == 1
+        assert "SOVA_DATABASE_URL is set and more than one project is registered" in _flat_output(result)
+        run.assert_not_called()

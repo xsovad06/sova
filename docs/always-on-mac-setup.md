@@ -49,7 +49,7 @@ Run these in the project directory. The first line is optional and stops the ser
 - **It starts at login, not at boot.** The plist is a LaunchAgent, so launchd starts it in your login session. With FileVault on, the disk stays locked after a restart until someone logs in at the login window, so after a reboot (an update, a power cut) SOVA stays down until you log in once. This guide does not cover auto-login or a LaunchDaemon.
 - **PATH.** launchd starts a LaunchAgent with `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, which misses `~/.local/bin` (where `claude` installs) and `/opt/homebrew/bin` (`gh`, Homebrew's `git`). The generated plist sets `PATH` to the directory of each of `claude`, `node` (an npm-installed `claude` needs it), `gh`, `git`, `codex`, `terminal-notifier` and `uvx` found at install time, then `sova`'s own directory, then that default. Re-run `install-service --force` and reload after moving one of them, for example after a Python upgrade moves `sova`. Under a plist generated before SOVA added this, `sova doctor` fails `claude CLI`, `gh CLI`, `llm provider` and `agent runtime`, and `git` resolves to Apple's `/usr/bin/git`.
 - **Credentials.** The service runs in your login session, so `claude` uses your `claude auth login` credential from the login keychain and `gh` its own keyring login. Put no token in the plist. On the test Mac a server started from the generated plist spawned a Claude agent that ran `gh pr list`, `gh issue list` and `gh api graphql` and finished `done`.
-- **One project, and the scheduler.** The plist runs `sova server start --project <dir>`, which is single-project mode: the dashboard is at `/work` and the phone page at `/phone`, and the multi-project hub's `/p/<slug>/` paths return 404. Single-project mode also runs the scheduler's watch loop when `server.scheduler_enabled` is on (the default). On the test Mac it picked the top `agent:ready` issue within a minute of starting, waited the 30-second veto window and started a developer run. To start runs only yourself, set `server.scheduler_enabled` to `false` before loading the plist (it is read at startup). Running the multi-project hub (`sova server start --multi`) under launchd needs a hand-edited plist and is not covered here.
+- **One project, and the scheduler.** The plist runs `sova server start --project <dir>`, which is single-project mode: the dashboard is at `/work` and the phone page at `/phone`, and the multi-project hub's `/p/<slug>/` paths return 404. Single-project mode also runs the scheduler's watch loop when `server.scheduler_enabled` is on (the default). On the test Mac it picked the top `agent:ready` issue within a minute of starting, waited the 30-second veto window and started a developer run. To start runs only yourself, set `server.scheduler_enabled` to `false` before loading the plist (it is read at startup). To run the multi-project hub under launchd instead, see [Start the Hub at Login](#start-the-hub-at-login).
 
 To restart the service, run `launchctl kickstart -k gui/$(id -u)/com.sova.server`; to stop it until the next login, `launchctl bootout gui/$(id -u)/com.sova.server`.
 
@@ -210,10 +210,103 @@ The multi-project hub (`sova server start --multi`) serves every project in `~/.
 | Remote Control | One `claude remote-control` per folder, so one screen per folder | Serve only the folders you steer from the phone |
 | `notification.ntfy_url`, `ntfy_topic`, `link_base_url` | The project's database | `sova config set` inside that project's checkout; `link_base_url` ends in that project's `/p/<slug>` |
 | The ntfy token | A keychain entry named by the project path | The [Tokens](#tokens) script, once per project |
-| `dashboard.proxy_origins`, `dashboard.proxy_allowed_logins` | The whole hub, read from the directory it was started in | Once, in that project |
+| `dashboard.proxy_origins`, `dashboard.proxy_allowed_logins` | The whole hub, read from the directory it was started in (the service's working directory) | Once, in that project |
 | `server.scheduler_enabled` | One project, but only a single-project server runs the watch loop (from code: `scheduler_enabled and not multi_project`) | The hub never runs it; `sova_status` shows `scheduler_running: false` |
+| Agent watchdog (`watchdog.*`, `memory_guard.*`) | One watchdog per registered project, from that project's own settings, acting on that project's agents only. Free memory is machine-wide, so under memory pressure each project with `memory_guard.runtime_action = "stop_newest"` stops its own newest run at the same moment: with N such projects one pressure event can stop N runs, so enable `stop_newest` on only the projects whose runs you can afford to lose | In each project; a project registered after the hub started gets none until the hub restarts |
+| LLM provider and agent runtime | The whole hub, read from the directory it was started in; the hub has no per-project provider | Once, in that project |
+| Oversight agent (`oversight.*`) | The whole hub, read from the directory it was started in | Once, in that project |
+| Watch loop, startup worktree cleanup (`dashboard.gc_on_startup`), cross-project metrics snapshot | A single-project server only; the hub logs `hub.component_skipped` for each at startup | Not available on the hub |
+| `SOVA_DATABASE_URL` | Every project at once, ahead of each project's own `.claude/sova.db` | Leave it unset for the hub: with it set and more than one project registered, the hub refuses to start and registering another project is refused |
 
 `sova config` reads the project from the current directory, so run it in the project you mean. A linked git worktree reads the primary checkout's settings (from `sova/config/root.py`), but the token entry is named by the path the code runs in: second test, a test push sent from a worktree reached the server and was rejected with 403, because no token is stored under the worktree's path. Run the token script and the test push from the primary checkout. Second test: pushes from two projects reached the same topic with the project name leading the body, and tapping one opened the Work page of the project whose `link_base_url` it carried (checked for one of the two).
+
+### Start the Hub at Login
+
+```bash
+sova server install-service --type launchd --multi --workdir /path/to/project
+launchctl load ~/Library/LaunchAgents/com.sova.server.plist
+curl -s http://127.0.0.1:8111/api/health
+```
+
+From code; not yet tested on the test Macs:
+
+- **Fixed working directory.** The plist runs `sova server start --multi` (no `--project`) with launchd's `WorkingDirectory` set to `--workdir`, or to your home directory when it is left off. The rows above that are read "from the directory it was started in" come from that directory, so name the project whose proxy settings, provider and oversight settings the hub should use. They no longer depend on which terminal ran the last restart. With the home directory, the hub keeps its log and settings in `~/.claude/`.
+- **It replaces the single-project service.** Both use the label `com.sova.server` and the same file. Run `launchctl bootout gui/$(id -u)/com.sova.server` first, add `--force` to `install-service`, then load the new plist. Restart and stop it with the commands in [Start the Server at Login](#start-the-server-at-login). A restart also picks up projects registered since the last start.
+- **One database per project.** Each project keeps its own `.claude/sova.db`. While `SOVA_DATABASE_URL` is set (an empty value counts as unset) and more than one project is registered, the hub exits at startup with a message saying so, and the dashboard refuses to register another project.
+- **Linux.** `--type systemd --multi` writes the matching user unit: `WorkingDirectory=` instead of `--project`, and every registered project in `ReadWritePaths=`, since agents commit there. A project registered later is not writable until you re-run `install-service --multi --force` and restart. A registered project path with whitespace, a backslash or a percent sign is refused, as the single-project unit refuses its project path.
+- **Health.** `/api/health` on the hub probes every registered project's database and lists the results under `databases`. One unreachable database, or a registered directory that no longer exists or has no `.claude/` (reported without opening a database there, and logged once), makes it `degraded` (HTTP 503), as does a registry file that cannot be read (`registry: "unreadable"`). A hub with no registered project probes nothing and reports `database: "ok"`.
+
+### Check the Server from Outside
+
+A server that has crashed, or stays up but `degraded`, sends no push about itself. A second launchd job can poll `/api/health` every five minutes and publish to ntfy when the answer is not 200 (`curl --fail-with-body` treats the 503 that `degraded` returns as a failure, as it does no answer at all, and keeps the JSON body, so the push says which check failed: a database, a dead scheduler, a stale scan, or on the hub an unreadable registry). It pushes once when the check starts failing and once when it recovers. Save it as `~/.local/bin/sova-health-check.sh` and make it executable:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Publish to ntfy when the SOVA server's /api/health stops answering 200, and again when it recovers.
+health_url="${SOVA_HEALTH_URL:-http://127.0.0.1:8111/api/health}"
+ntfy_url="${NTFY_URL:?set NTFY_URL}"
+ntfy_topic="${NTFY_TOPIC:?set NTFY_TOPIC}"
+state_file="$HOME/Library/Caches/sova-health-check.failed"
+
+publish() {
+  local title="$1" body="$2" token
+  # A missing or locked keychain item must be visible: under set -e it would otherwise end every run silently.
+  token="$(security find-generic-password -s sova-health-check -a ntfy -w)" \
+    || { logger -t sova-health-check "ntfy token missing from the keychain"; exit 1; }
+  curl --silent --show-error --fail --max-time 10 \
+    -H "Authorization: Bearer $token" -H "Title: $title" -H "Priority: high" \
+    --data-binary "$body" "$ntfy_url/$ntfy_topic" > /dev/null
+}
+
+# --fail-with-body (curl 7.76+, which macOS ships) still fails on a 503 but keeps the "degraded" JSON.
+if body="$(curl --silent --show-error --fail-with-body --max-time 10 "$health_url" 2>&1)"; then
+  if [[ -f "$state_file" ]]; then
+    publish "SOVA server recovered" "$health_url answers 200 again."
+    rm -f "$state_file"
+  fi
+  exit 0
+fi
+
+if [[ ! -f "$state_file" ]]; then
+  publish "SOVA health check failed" "$health_url: ${body:0:500}"
+  touch "$state_file"
+fi
+```
+
+Store the ntfy token for it once, with `security add-generic-password -s sova-health-check -a ntfy -w` (it prompts for the token with echo off). The item is created by `security` itself, so the script reads it back without a keychain prompt. Then add `~/Library/LaunchAgents/com.sova.health-check.plist`, with your home directory in the script path (launchd does not expand `~`) and the server address and topic from [Push Notifications with ntfy](#push-notifications-with-ntfy):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sova.health-check</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/you/.local/bin/sova-health-check.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NTFY_URL</key>
+        <string>https://mac.example.ts.net:8443</string>
+        <key>NTFY_TOPIC</key>
+        <string>sova</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/sova-health-check.err</string>
+</dict>
+</plist>
+```
+
+Load it with `launchctl load ~/Library/LaunchAgents/com.sova.health-check.plist`, and test it by stopping the server: a push should arrive within five minutes, and another once the server is back. Run on the server's own Mac, the check cannot report that Mac sleeping or losing power, since it stops with it. Not yet tested on the test Macs.
 
 ### Use an Existing ntfy Server from Another Machine
 
@@ -247,7 +340,7 @@ Every push from every machine goes through the server's machine, so a push arriv
 
 ### Run the Hub by Hand
 
-Without launchd, the hub is whatever terminal started it. Closing that terminal, pressing Ctrl+C in it, or a reboot stops the dashboard, and it does not come back on its own; the table in [What Happens to Running Agents](#what-happens-to-running-agents) says what happens to agents. To restart it:
+Without launchd (see [Start the Hub at Login](#start-the-hub-at-login)), the hub is whatever terminal started it. Closing that terminal, pressing Ctrl+C in it, or a reboot stops the dashboard, and it does not come back on its own; the table in [What Happens to Running Agents](#what-happens-to-running-agents) says what happens to agents. To restart it:
 
 ```bash
 sova server status

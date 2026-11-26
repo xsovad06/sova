@@ -578,6 +578,9 @@ class TestDeveloperStartPrNumber:
         capture.assert_not_awaited()
 
 
+# The "custom" checkpoint role is not a built-in, so get_role_async() looks it up in the database; without the
+# shared test DB that lookup passed only when an earlier test on the same worker had initialised a session.
+@pytest.mark.usefixtures("reset_db_rows")
 class TestRunKeepsStoredPrForDispatch:
     """`sova run` hands the stored PR to dispatch() untouched: only DeveloperRole resets on a closed PR."""
 
