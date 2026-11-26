@@ -40,7 +40,15 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
-from sova.config.registry import RegistryUnreadableError, get_project_path, has_projects, list_projects
+from sova.config.registry import (
+    SHARED_DATABASE_MESSAGE,
+    RegistryUnreadableError,
+    SharedDatabaseError,
+    check_database_isolation,
+    get_project_path,
+    has_projects,
+    list_projects,
+)
 from sova.dashboard.navigation import NavLink, nav_links
 from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE, ApiRateLimiter, rate_limit_dependency, rate_limit_key
 from sova.dashboard.routers import (
@@ -192,24 +200,67 @@ def _try_load_config(project_path: Path) -> ProjectConfig | None:
         return None
 
 
+def _registered_project_configs() -> list[tuple[str, Path, ProjectConfig]]:
+    """Every registered project whose directory exists and whose config loads, as (slug, directory, config).
+
+    Each other one is logged and skipped.
+    """
+    targets: list[tuple[str, Path, ProjectConfig]] = []
+    for slug, path_str in list_projects().items():
+        p = Path(path_str)
+        if not p.is_dir():
+            log.warning("hub.project_missing", slug=slug, path=path_str)
+            continue
+        pcfg = _try_load_config(p)
+        if pcfg is not None:
+            targets.append((slug, p, pcfg))
+    return targets
+
+
+# Lifespan components a multi-project hub does not run for its projects. Each is logged once at startup, and the
+# scope table in docs/always-on-mac-setup.md ("Several Projects and a Second Machine") lists them.
+_HUB_SKIPPED_COMPONENTS = (
+    ("watch_loop", "only a single-project server runs the scheduler"),
+    ("startup_gc", "dashboard.gc_on_startup runs only on a single-project server"),
+    ("metrics_snapshot_writer", "only a single-project server writes the cross-project metrics snapshot"),
+)
+
+
+def _start_watchdogs(resolved: Path, cfg: ProjectConfig, *, is_multi: bool) -> list[AgentWatchdog]:
+    """Start one agent watchdog per project, each from that project's own ``watchdog`` and ``memory_guard``.
+
+    In multi-project mode every registered project at startup gets its own; one registered later gets none until
+    the next restart.
+    """
+    from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
+
+    # A single-project server's agents live in the default pool (slug None); each hub project's in its own.
+    targets = _registered_project_configs() if is_multi else [(None, resolved, cfg)]
+    watchdogs: list[AgentWatchdog] = []
+    for slug, project_dir, project_cfg in targets:
+        if not project_cfg.watchdog.enabled:
+            continue
+        try:
+            watchdog = _AgentWatchdog(
+                config=project_cfg.watchdog, project_dir=project_dir, memory_guard=project_cfg.memory_guard, slug=slug
+            )
+            watchdog.start()
+        except Exception:  # noqa: BLE001 (one project's watchdog failure must not abort the other projects or the lifespan)
+            log.warning("hub.watchdog_start_failed", slug=slug, project=str(project_dir), exc_info=True)
+            continue
+        watchdogs.append(watchdog)
+        get_daemon_components().setdefault(str(project_dir.resolve()), {})["watchdog"] = watchdog
+    return watchdogs
+
+
 async def _start_pr_throttle_loops(resolved: Path, cfg: ProjectConfig, *, is_multi: bool) -> None:
     """Start a throttle loop for every project whose own config enables the quota.
 
     The root config decides nothing in multi-project mode: each registered project is judged on its own
     ``coderabbit_quota``. One project failing to load or start must not stop the others, or the lifespan.
     """
-    targets = [(resolved, cfg)]
-    if is_multi:
-        targets = []
-        for path_str in list_projects().values():
-            p = Path(path_str)
-            if not p.is_dir():
-                continue
-            pcfg = _try_load_config(p)
-            if pcfg is not None:
-                targets.append((p, pcfg))
-
-    for project_dir, project_cfg in targets:
+    targets = _registered_project_configs() if is_multi else [(None, resolved, cfg)]
+    for _slug, project_dir, project_cfg in targets:
         try:
             await ensure_pr_throttle_loop(project_dir, project_cfg)
         except Exception:  # noqa: BLE001 (one project's DB or loop failure must not abort the other projects or the lifespan)
@@ -229,6 +280,16 @@ def _load_config_or_fail(project_path: Path) -> ProjectConfig:
         return load_config(project_path)
     except (RuntimeError, ValueError, ImportError) as exc:
         log.error("dashboard.config_load_failed", project=str(project_path), error=str(exc), exc_info=True)
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _check_database_isolation_or_fail() -> None:
+    """Refuse to serve several projects from one ``SOVA_DATABASE_URL``, exiting with a readable message."""
+    try:
+        check_database_isolation()
+    except SharedDatabaseError as exc:
+        log.error("hub.shared_database_refused", error=str(exc))
         print(f"Configuration error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
@@ -505,7 +566,7 @@ async def _shutdown_tasks(
     pr_throttle_tasks: list[asyncio.Task],
     pr_monitor_tasks: list[asyncio.Task],
     metrics_writer: MetricsSnapshotWriter | None,
-    watchdog: AgentWatchdog | None = None,
+    watchdogs: list[AgentWatchdog] | None = None,
     recovery_task: asyncio.Task | None = None,
     oversight_agent: OversightAgent | None = None,
     supervisor_daemons: list[SupervisorDaemon] | None = None,
@@ -530,8 +591,11 @@ async def _shutdown_tasks(
         await metrics_writer.stop()
     if oversight_agent is not None:
         await oversight_agent.stop()
-    if watchdog is not None:
-        await watchdog.stop()
+    for watchdog in watchdogs or []:
+        try:
+            await watchdog.stop()
+        except Exception:  # noqa: BLE001 (one watchdog failing to stop must not leave the others running)
+            log.warning("lifespan.watchdog_stop_failed", exc_info=True)
     for daemon in supervisor_daemons or []:
         await daemon.stop()
     bg_tasks = pr_throttle_tasks + pr_monitor_tasks + (merge_queue_tasks or [])
@@ -659,6 +723,12 @@ async def _registry_unreadable_handler(request: Request, exc: Exception) -> Resp
     return JSONResponse({"detail": detail}, status_code=409)
 
 
+def _shared_database_handler(request: Request, exc: Exception) -> Response:
+    """Report a registration refused for a shared ``SOVA_DATABASE_URL`` as a 409 carrying the refusal's message."""
+    log.warning("registry.shared_database_refused", route=request.url.path)
+    return JSONResponse({"detail": SHARED_DATABASE_MESSAGE}, status_code=409)
+
+
 def _import_error_handler(request: Request, exc: Exception) -> Response:
     """Turn an ImportError that escapes a route into a 503 that says to restart.
 
@@ -741,6 +811,8 @@ def create_app(
 
     is_multi = multi_project
     resolved = (project_dir or Path.cwd()).resolve()
+    if is_multi:
+        _check_database_isolation_or_fail()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -771,6 +843,8 @@ def create_app(
         gc_task: asyncio.Task | None = None
         if is_multi:
             log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
+            for component, reason in _HUB_SKIPPED_COMPONENTS:
+                log.info("hub.component_skipped", component=component, reason=reason)
 
             for path_str in list_projects().values():
                 p = Path(path_str)
@@ -857,15 +931,7 @@ def create_app(
             get_daemon_components().setdefault(str(resolved), {})
             get_daemon_components()[str(resolved)].setdefault("merge_queue_monitors", []).append(mq_monitor)
 
-        # Start agent watchdog
-        from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
-
-        watchdog: AgentWatchdog | None = None
-        if cfg.watchdog.enabled and not is_multi:
-            watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved, memory_guard=cfg.memory_guard)
-            watchdog.start()
-            get_daemon_components().setdefault(str(resolved), {})
-            get_daemon_components()[str(resolved)]["watchdog"] = watchdog
+        watchdogs = _start_watchdogs(resolved, cfg, is_multi=is_multi)
 
         # Start cross-project metrics snapshot writer
         from sova.monitoring.cross_project import MetricsSnapshotWriter
@@ -928,7 +994,7 @@ def create_app(
                         get_pr_throttle_tasks(),
                         pr_monitor_tasks,
                         metrics_writer,
-                        watchdog,
+                        watchdogs,
                         recovery_task=recovery_task,
                         oversight_agent=oversight_agent,
                         supervisor_daemons=supervisor_daemons,
@@ -1046,6 +1112,7 @@ def create_app(
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.add_exception_handler(RegistryUnreadableError, _registry_unreadable_handler)
+    app.add_exception_handler(SharedDatabaseError, _shared_database_handler)
     app.add_exception_handler(ImportError, _import_error_handler)
     app.add_exception_handler(EditorUnavailableError, _editor_unavailable_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)

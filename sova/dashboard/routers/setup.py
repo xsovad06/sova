@@ -225,9 +225,9 @@ async def install_project(req: InstallRequest) -> dict:
     # Logged before the install so a failure that reaches the catch-all handler can be tied to this directory.
     log.info("setup.install.start", project=str(project), update_only=req.update_only)
     await _install(path=project, no_dashboard=True, update=req.update_only)
-    # Only an unreadable registry (RegistryUnreadableError) is answered as a 409 by the app's handler, so a
-    # finished install is not reported as a failed one for that case. Any other registration failure is a 500,
-    # hence the line below ties it to this project in the log.
+    # Only an unreadable registry (RegistryUnreadableError) and a shared SOVA_DATABASE_URL (SharedDatabaseError) are
+    # answered as a 409 by the app's handlers, so a finished install is not reported as a failed one for those
+    # cases. Any other registration failure is a 500, hence the line below ties it to this project in the log.
     log.info("setup.install.done", project=str(project))
     slug = register_project(project)
     return {"status": "ok", "slug": slug}

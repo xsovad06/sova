@@ -62,6 +62,14 @@ def _start_server(project: Path | None, host: str, port: int, no_scheduler: bool
     config = load_config(resolved_dir)
 
     multi = resolve_multi_mode(project, multi)
+    if multi:
+        from sova.config.registry import SharedDatabaseError, check_database_isolation
+
+        try:
+            check_database_isolation()
+        except SharedDatabaseError as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
 
     if no_scheduler:
         config.server.scheduler_enabled = False
@@ -121,6 +129,10 @@ def start(
 @app.command()
 def stop(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    multi: Annotated[
+        Optional[bool],
+        typer.Option("--multi/--no-multi", help="Stop only the multi-project hub (or only a single-project server)."),
+    ] = None,
 ) -> None:
     """Stop the running SOVA server."""
     from sova.scheduler.server import (
@@ -135,7 +147,11 @@ def stop(
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
 
-    found_multi, _ = locate_running_server(config, resolved_dir, resolve_multi_mode(project), fallback=project is None)
+    # A named mode (--project or --multi/--no-multi) reads only that mode's PID file, so it never stops a server it
+    # did not address; the hub's service unit passes --multi for that reason.
+    found_multi, _ = locate_running_server(
+        config, resolved_dir, resolve_multi_mode(project, multi), fallback=project is None and multi is None
+    )
     result = stop_server(config, project_dir=pid_scope_dir(resolved_dir, found_multi))
     if result is StopResult.STOPPED:
         console.print("[green]Server stopped.[/green]")
@@ -256,7 +272,7 @@ def digest(
     console.print(f"  Total cost: ${data['cost']:.2f}")
 
 
-def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
+def _generate_newsyslog_config(log_dir: Path, project_dir: Path, *, multi: bool = False) -> None:
     """Write a path-substituted newsyslog.d config for the launchd service's log files.
 
     launchd does not rotate StandardOutPath/StandardErrorPath on its own, and
@@ -277,14 +293,17 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
     at all, so a home directory containing a space (/Users/Jane Doe) can only
     produce an entry newsyslog silently ignores. Say so instead of writing one,
     the same way the systemd branch of install_service() refuses.
+
+    For the hub (``multi``), ``project_dir`` is its working directory, whose config may name a PID file, and
+    the PID file is otherwise the global one the hub writes.
     """
     import signal
 
-    from sova.scheduler.server import _resolve_pid_path
+    from sova.scheduler.server import _resolve_pid_path, pid_scope_dir
 
     newsyslog_dir = Path.home() / ".config" / "sova"
     newsyslog_file = newsyslog_dir / "sova-server.newsyslog.conf"
-    pid_path = _resolve_pid_path(load_config(project_dir), project_dir)
+    pid_path = _resolve_pid_path(load_config(project_dir), pid_scope_dir(project_dir, multi))
     if any(c.isspace() for c in str(log_dir)) or any(c.isspace() for c in str(pid_path)):
         console.print(f"\n[yellow]Log or PID path contains whitespace: {log_dir} / {pid_path}[/yellow]")
         console.print("[yellow]newsyslog.conf cannot quote paths, so no rotation config was generated.[/yellow]")
@@ -316,19 +335,57 @@ def _generate_newsyslog_config(log_dir: Path, project_dir: Path) -> None:
     )
 
 
+def _hub_project_dirs() -> list[Path]:
+    """Registered project directories the hub's systemd unit must be able to write; a missing one is skipped."""
+    from sova.config.registry import _REGISTRY_FILE, list_projects, registry_readable
+
+    # list_projects() reads an unreadable registry as empty, which would write a unit with no writable project.
+    if not registry_readable():
+        console.print(f"[red]The project registry {_REGISTRY_FILE} is unreadable or malformed; fix or remove it.[/red]")
+        raise typer.Exit(code=1)
+    dirs: list[Path] = []
+    for slug, path_str in list_projects().items():
+        path = Path(path_str).resolve()
+        if path.is_dir():
+            dirs.append(path)
+        else:
+            console.print(f"[yellow]Skipping registered project '{slug}': {path} does not exist.[/yellow]")
+    return dirs
+
+
 @app.command()
 def install_service(
     service_type: Annotated[str, typer.Option("--type", help="Service type (systemd|launchd).")],
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     force: Annotated[bool, typer.Option("--force", help="Overwrite existing service file.")] = False,
+    multi: Annotated[
+        bool, typer.Option("--multi", help="Install the multi-project hub (every registered project) instead.")
+    ] = False,
+    workdir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--workdir",
+            help="Hub working directory (--multi only), whose config supplies hub-wide settings. Default: home.",
+        ),
+    ] = None,
 ) -> None:
     """Install SOVA server as a system service (systemd or launchd)."""
     import html
     import shutil
 
-    resolved_dir = (project or Path.cwd()).resolve()
+    if multi and project is not None:
+        console.print("[red]Error: --project selects a single-project server; use --workdir with --multi.[/red]")
+        raise typer.Exit(code=1)
+    if workdir is not None and not multi:
+        console.print("[red]Error: --workdir applies only with --multi.[/red]")
+        raise typer.Exit(code=1)
+
+    # The hub starts from a fixed working directory chosen here, so the settings it reads from the directory it
+    # starts in (dashboard.proxy_origins, the PID file) never depend on where launchd or systemd happened to run it.
+    dir_label = "working directory" if multi else "project directory"
+    resolved_dir = ((workdir or Path.home()) if multi else (project or Path.cwd())).resolve()
     if not resolved_dir.is_dir():
-        console.print(f"[red]Error: project directory does not exist: {resolved_dir}[/red]")
+        console.print(f"[red]Error: {dir_label} does not exist: {resolved_dir}[/red]")
         raise typer.Exit(code=1)
 
     # Find sova binary location
@@ -355,7 +412,14 @@ def install_service(
             ("\\", "a backslash (systemd line continuation or escape sequence)"),
             ("%", "a percent sign (systemd specifier expansion)"),
         )
-        for label, candidate in (("project path", str(resolved_dir)), ("sova binary path", str(sova_bin))):
+        # The hub unit lists every registered project in ReadWritePaths=, so each one clears the same bar.
+        hub_dirs = _hub_project_dirs() if multi else []
+        path_checks = [
+            ("working directory" if multi else "project path", resolved_dir),
+            *(("registered project path", d) for d in hub_dirs),
+        ]
+        for label, path in (*path_checks, ("sova binary path", sova_bin)):
+            candidate = str(path)
             if any(c.isspace() for c in candidate):
                 reason = "whitespace"
             else:
@@ -374,7 +438,7 @@ def install_service(
         # from the host's. ReadWritePaths= does not restore visibility into the host's
         # /tmp from inside that namespace, so a project or sova binary living there
         # would install successfully but be unreachable once the service starts.
-        for label, candidate in (("project path", resolved_dir), ("sova binary path", Path(sova_bin).resolve())):
+        for label, candidate in (*path_checks, ("sova binary path", Path(sova_bin).resolve())):
             if any(candidate.is_relative_to(root) for root in _PRIVATE_TMP_ROOTS):
                 console.print(f"[red]Error: {label} is under /tmp: {candidate}[/red]")
                 console.print(
@@ -396,8 +460,24 @@ def install_service(
         # spawned coding-agent CLI keeps its own state there. The "-" prefix on %h/.claude.json and
         # %h/.codex lets a host without one still start the unit. KillMode=process, Type=notify,
         # WatchdogSec and WatchdogSignal are explained in deploy/sova-server.service.
+        # The hub has no --project: it starts from WorkingDirectory= and must write every registered project
+        # (a project registered later needs a re-install with --force). Its working directory is listed too,
+        # unless it is the home directory, whose .claude/ is already writable and which must stay read-only.
+        if multi:
+            description = "SOVA Server (Multi-Project Hub)"
+            location_line = f"WorkingDirectory={resolved_dir}"
+            start_args = "--multi"
+            stop_args = " --multi"
+            rw_dirs = [d for d in dict.fromkeys([resolved_dir, *hub_dirs]) if d != Path.home().resolve()]
+        else:
+            description = "SOVA Server (Dashboard + Scheduler)"
+            location_line = f"Environment=SOVA_PROJECT_DIR={resolved_dir}"
+            start_args = f"--project {resolved_dir}"
+            stop_args = f" --project {resolved_dir}"
+            rw_dirs = [resolved_dir]
+        rw_suffix = "".join(f" {d}" for d in rw_dirs)
         template = f"""[Unit]
-Description=SOVA Server (Dashboard + Scheduler)
+Description={description}
 Documentation=https://github.com/xsovad06/sova
 After=network.target
 
@@ -408,9 +488,9 @@ WatchdogSignal=SIGTERM
 TimeoutStartSec=300
 KillMode=process
 Environment=HOME=%h
-Environment=SOVA_PROJECT_DIR={resolved_dir}
-ExecStart={sova_bin} server start --host 127.0.0.1 --port 8111 --project {resolved_dir}
-ExecStop={sova_bin} server stop --project {resolved_dir}
+{location_line}
+ExecStart={sova_bin} server start --host 127.0.0.1 --port 8111 {start_args}
+ExecStop={sova_bin} server stop{stop_args}
 StandardOutput=journal
 StandardError=journal
 Restart=on-failure
@@ -420,7 +500,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex {resolved_dir}
+ReadWritePaths=%h/.config/sova %h/.claude -%h/.claude.json -%h/.codex{rw_suffix}
 
 [Install]
 WantedBy=default.target
@@ -436,6 +516,14 @@ WantedBy=default.target
         resolved_dir_escaped = html.escape(str(resolved_dir))
         log_dir_escaped = html.escape(str(log_dir))
         path_escaped = html.escape(_launchd_path(sova_bin))
+        if multi:
+            target_args = "        <string>--multi</string>"
+            working_dir = f"\n    <key>WorkingDirectory</key>\n    <string>{resolved_dir_escaped}</string>\n"
+            project_env = ""
+        else:
+            target_args = f"        <string>--project</string>\n        <string>{resolved_dir_escaped}</string>"
+            working_dir = ""
+            project_env = f"        <key>SOVA_PROJECT_DIR</key>\n        <string>{resolved_dir_escaped}</string>\n"
 
         template = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -453,17 +541,14 @@ WantedBy=default.target
         <string>127.0.0.1</string>
         <string>--port</string>
         <string>8111</string>
-        <string>--project</string>
-        <string>{resolved_dir_escaped}</string>
+{target_args}
     </array>
-
+{working_dir}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>{path_escaped}</string>
-        <key>SOVA_PROJECT_DIR</key>
-        <string>{resolved_dir_escaped}</string>
-        <key>SOVA_SERVER_LOG</key>
+{project_env}        <key>SOVA_SERVER_LOG</key>
         <string>{log_dir_escaped}/sova-server.log</string>
         <key>SOVA_SERVER_ERR_LOG</key>
         <string>{log_dir_escaped}/sova-server.err</string>
@@ -517,6 +602,11 @@ WantedBy=default.target
         console.print("  systemctl --user enable sova-server")
         console.print("  systemctl --user start sova-server")
         console.print("  systemctl --user status sova-server")
+        if multi:
+            console.print(
+                "\n[yellow]ReadWritePaths= lists the projects registered now: after registering another, "
+                "re-run install-service --multi --force and restart the service.[/yellow]"
+            )
         console.print(
             "\n[yellow]Unverified (tracked in #1241): the Claude CLI rewrites ~/.claude.json through a temp file "
             "and a rename, which the single-file ReadWritePaths entry under ProtectHome=read-only may not "
@@ -529,4 +619,4 @@ WantedBy=default.target
         console.print("  launchctl start com.sova.server")
         console.print("  launchctl list | grep sova")
 
-        _generate_newsyslog_config(log_dir, resolved_dir)
+        _generate_newsyslog_config(log_dir, resolved_dir, multi=multi)

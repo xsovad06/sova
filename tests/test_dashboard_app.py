@@ -735,6 +735,16 @@ class TestRouterLevelCsrfCoverage:
 
 
 class TestMultiProject:
+    @pytest.fixture(autouse=True)
+    def _allow_the_shared_test_database(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Lift the one-database-per-project guard, which TestHubDatabaseIsolation covers.
+
+        ``reset_db_rows`` points ``SOVA_DATABASE_URL`` at one in-memory database for this whole module, so the
+        guard would refuse every hub here; these tests are about routing between registered projects.
+        """
+        monkeypatch.setattr("sova.config.registry.check_database_isolation", lambda project_count=None: None)
+        monkeypatch.setattr("sova.dashboard.app.check_database_isolation", lambda project_count=None: None)
+
     @pytest.fixture
     async def multi_client(self, tmp_path):
         """Create a multi-project dashboard with two registered projects."""
@@ -1235,6 +1245,125 @@ class TestMultiProject:
 def _ws_headers(app: FastAPI) -> dict[str, str]:
     """Origin header a browser on the dashboard's own address would send."""
     return {"origin": sorted(app.state.allowed_origins)[0]}
+
+
+class TestHubDatabaseIsolation:
+    """One database per project: a hub refuses to serve several projects from one SOVA_DATABASE_URL."""
+
+    def test_create_app_refuses_two_projects_with_a_database_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from sova.config import registry
+
+        monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        for name in ("alpha", "beta"):
+            (tmp_path / name).mkdir()
+            registry.register_project(tmp_path / name, slug=name)
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://db.example/sova")
+
+        with pytest.raises(SystemExit):
+            create_app(multi_project=True)
+        assert registry.SHARED_DATABASE_MESSAGE in capsys.readouterr().err
+
+    async def test_one_project_starts_and_registering_a_second_answers_409(self, setup_root_tmp: Path) -> None:
+        """reset_db_rows sets SOVA_DATABASE_URL; exactly one registered project is still a valid hub.
+
+        Registration only accepts a path inside the setup roots, so `setup_root_tmp` allows `tmp_path`.
+        """
+        tmp_path = setup_root_tmp
+        from sova.config import registry
+
+        assert os.environ.get("SOVA_DATABASE_URL")
+        for name in ("alpha", "beta"):
+            (tmp_path / name).mkdir()
+        registry.register_project(tmp_path / "alpha", slug="alpha")
+
+        app = create_app(multi_project=True)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.headers.update(_csrf_request_headers(client))
+            resp = await client.post("/api/projects/register", json={"path": str(tmp_path / "beta")})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == registry.SHARED_DATABASE_MESSAGE
+        assert list(registry.list_projects()) == ["alpha"]
+
+
+class TestHubWatchdogs:
+    """The hub starts an agent watchdog for every registered project, each from that project's own config."""
+
+    async def test_starts_one_watchdog_per_enabled_project(self, tmp_path: Path) -> None:
+        import sova.dashboard.app as app_module
+        from sova.config.models import ProjectConfig, WatchdogConfig
+        from sova.dashboard.services import daemon_registry
+
+        projects = {name: str(tmp_path / name) for name in ("on", "off", "broken")}
+        for path in projects.values():
+            Path(path).mkdir()
+        projects["gone"] = str(tmp_path / "gone")
+        configs = {
+            projects["on"]: ProjectConfig(watchdog=WatchdogConfig(enabled=True, check_interval_seconds=77)),
+            projects["off"]: ProjectConfig(watchdog=WatchdogConfig(enabled=False)),
+            projects["broken"]: None,
+        }
+        # The start directory's config disables the watchdog: it no longer decides for the registered projects.
+        root_cfg = ProjectConfig(watchdog=WatchdogConfig(enabled=False))
+
+        previous = daemon_registry.get_daemon_components()
+        daemon_registry.set_daemon_components({})
+        watchdogs = []
+        try:
+            with (
+                patch.object(app_module, "list_projects", return_value=projects),
+                patch.object(app_module, "_try_load_config", side_effect=lambda p: configs[str(p)]),
+                patch("sova.supervisor.watchdog.AgentWatchdog._run_loop", new=AsyncMock()),
+            ):
+                watchdogs = app_module._start_watchdogs(tmp_path, root_cfg, is_multi=True)
+
+            assert [w._project_dir for w in watchdogs] == [Path(projects["on"])]
+            assert watchdogs[0]._config.check_interval_seconds == 77
+            # A kill must reach the project's own agent pool, not the default one.
+            assert watchdogs[0]._slug == "on"
+            components = daemon_registry.get_daemon_components()
+            assert components[str(Path(projects["on"]).resolve())]["watchdog"] is watchdogs[0]
+        finally:
+            for watchdog in watchdogs:
+                await watchdog.stop()
+            daemon_registry.set_daemon_components(previous)
+
+    async def test_one_projects_watchdog_failing_to_start_does_not_stop_the_others(self, tmp_path: Path) -> None:
+        import sova.dashboard.app as app_module
+        from sova.config.models import ProjectConfig, WatchdogConfig
+        from sova.dashboard.services import daemon_registry
+        from sova.supervisor.watchdog import AgentWatchdog
+
+        projects = {name: str(tmp_path / name) for name in ("bad", "good")}
+        for path in projects.values():
+            Path(path).mkdir()
+        cfg = ProjectConfig(watchdog=WatchdogConfig(enabled=True))
+        real_init = AgentWatchdog.__init__
+
+        def _init(self: AgentWatchdog, *args: object, **kwargs: object) -> None:
+            if kwargs.get("slug") == "bad":
+                raise ValueError("invalid memory_guard value")
+            real_init(self, *args, **kwargs)
+
+        previous = daemon_registry.get_daemon_components()
+        daemon_registry.set_daemon_components({})
+        watchdogs = []
+        try:
+            with (
+                patch.object(app_module, "list_projects", return_value=projects),
+                patch.object(app_module, "_try_load_config", return_value=cfg),
+                patch.object(AgentWatchdog, "__init__", _init),
+                patch("sova.supervisor.watchdog.AgentWatchdog._run_loop", new=AsyncMock()),
+            ):
+                watchdogs = app_module._start_watchdogs(tmp_path, cfg, is_multi=True)
+
+            assert [w._slug for w in watchdogs] == ["good"]
+        finally:
+            for watchdog in watchdogs:
+                await watchdog.stop()
+            daemon_registry.set_daemon_components(previous)
 
 
 class TestWebSocketAgentStatus:
