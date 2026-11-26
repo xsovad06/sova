@@ -194,9 +194,10 @@ class TestSingleReviewUnreviewedChunks:
     async def test_configuration_error_stops_the_review_without_a_retry(self, tmp_path: Path) -> None:
         """A missing key fails every chunk identically: neither the retry nor the next chunk is attempted."""
         error = ConfigurationError("Missing credentials")
+        role, ctx, task = ReviewerRole(), _ctx(tmp_path), _task()
         with patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=error) as mock_invoke:
             with pytest.raises(ConfigurationError):
-                await ReviewerRole()._run_review(_ctx(tmp_path), _task(), TWO_FILE_DIFF, ["a.py", "b.py"])
+                await role._run_review(ctx, task, TWO_FILE_DIFF, ["a.py", "b.py"])
 
         assert mock_invoke.await_count == 1
 
