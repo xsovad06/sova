@@ -191,7 +191,7 @@ class TestMarkedCallSites:
 
 
 class TestSpecIssueNumberLiteral:
-    @pytest.mark.parametrize("issue_number", ["42", "RHCLOUD-123", "7\\';x", '7"<b>x'])
+    @pytest.mark.parametrize("issue_number", ["42", "PROJ-123", "7\\';x", '7"<b>x'])
     async def test_issue_number_is_a_string_literal_holding_the_path_value(
         self, dashboard_app, issue_number: str
     ) -> None:

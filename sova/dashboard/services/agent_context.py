@@ -39,7 +39,7 @@ _SOVA_ROOT = Path(__file__).resolve().parents[3]
 # ``params``). A ``role`` key appears only on ``mode="agent"`` actions, which go to start_agent().
 COMMAND_ARG_KEYS = frozenset({"issue", "pr"})
 
-# An issue key or PR number (``42``, ``#42``, ``RHCLOUD-123``, ``owner/repo#42``): nothing that can
+# An issue key or PR number (``42``, ``#42``, ``PROJ-123``, ``owner/repo#42``): nothing that can
 # carry a space or a newline. An ``owner/repo`` prefix must end in ``#``, so each part is delimited
 # by a character the part before it cannot contain and the match never backtracks.
 _COMMAND_ARG_VALUE_RE = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+#|#)?[A-Za-z0-9][A-Za-z0-9_.-]*")

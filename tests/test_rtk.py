@@ -642,7 +642,7 @@ def test_configure_mcp_injects_atlassian_when_enabled(tmp_path: Path) -> None:
 
     cfg = ProjectConfig()
     cfg.mcp.atlassian.enabled = True
-    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.jira_url = "https://jira.example.com"
     cfg.mcp.atlassian.auth_type = "pat"
     cfg.mcp.atlassian.token = "onprem-pat"
 
@@ -667,7 +667,7 @@ def test_configure_mcp_reports_atlassian_approval_failure(tmp_path: Path, capsys
 
     cfg = ProjectConfig()
     cfg.mcp.atlassian.enabled = True
-    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.jira_url = "https://jira.example.com"
     cfg.mcp.atlassian.auth_type = "pat"
     cfg.mcp.atlassian.token = "onprem-pat"
 
@@ -724,7 +724,7 @@ def test_configure_mcp_removes_stale_atlassian_entry_on_opt_out(tmp_path: Path) 
 
     cfg = ProjectConfig()
     cfg.mcp.atlassian.enabled = True
-    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.jira_url = "https://jira.example.com"
     cfg.mcp.atlassian.auth_type = "pat"
     cfg.mcp.atlassian.token = "onprem-pat"
     _configure_mcp_servers(project_dir, claude_dir, cfg)
@@ -750,7 +750,7 @@ def test_configure_mcp_removes_stale_atlassian_entry_when_config_becomes_invalid
 
     cfg = ProjectConfig()
     cfg.mcp.atlassian.enabled = True
-    cfg.mcp.atlassian.jira_url = "https://issues.redhat.com"
+    cfg.mcp.atlassian.jira_url = "https://jira.example.com"
     cfg.mcp.atlassian.auth_type = "pat"
     cfg.mcp.atlassian.token = "onprem-pat"
     _configure_mcp_servers(project_dir, claude_dir, cfg)

@@ -218,7 +218,7 @@ def test_build_atlassian_config_api_token_auth() -> None:
 def test_build_atlassian_config_pat_auth() -> None:
     cfg = AtlassianMCPConfig(
         enabled=True,
-        jira_url="https://issues.redhat.com",
+        jira_url="https://jira.example.com",
         auth_type="pat",
         token="onprem-pat",
         read_only=False,
@@ -235,7 +235,7 @@ def test_build_atlassian_config_pat_auth() -> None:
 
 
 def test_build_atlassian_config_empty_toolsets_omitted() -> None:
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", toolsets=[])
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", toolsets=[])
     server = build_atlassian_mcp_server_config(cfg)
     assert "TOOLSETS" not in server["env"]
 
@@ -308,7 +308,7 @@ def test_approval_skips_malformed_key(tmp_path: Path) -> None:
 
 
 def test_atlassian_problems_none_when_complete() -> None:
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat", token="t")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", auth_type="pat", token="t")
     assert atlassian_config_problems(cfg) == []
 
 
@@ -320,7 +320,7 @@ def test_atlassian_problems_missing_urls_and_token(monkeypatch) -> None:
 
 
 def test_atlassian_problems_rejects_http_urls() -> None:
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="http://issues.redhat.com", auth_type="pat", token="t")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="http://jira.example.com", auth_type="pat", token="t")
     problems = atlassian_config_problems(cfg)
     assert any("jira_url" in p and "https" in p for p in problems)
 
@@ -328,8 +328,8 @@ def test_atlassian_problems_rejects_http_urls() -> None:
 def test_atlassian_problems_accepts_https_urls() -> None:
     cfg = AtlassianMCPConfig(
         enabled=True,
-        jira_url="https://issues.redhat.com",
-        confluence_url="https://issues.redhat.com/wiki",
+        jira_url="https://jira.example.com",
+        confluence_url="https://jira.example.com/wiki",
         auth_type="pat",
         token="t",
     )
@@ -345,13 +345,13 @@ def test_atlassian_problems_api_token_requires_email() -> None:
 def test_atlassian_problems_token_from_env(monkeypatch) -> None:
     """An exported token satisfies the credential check (placeholder expansion path)."""
     monkeypatch.setenv(ATLASSIAN_TOKEN_ENV, "env-token")
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", auth_type="pat")
     assert atlassian_config_problems(cfg) == []
 
 
 def test_build_atlassian_config_uses_env_placeholder_without_token() -> None:
     """With no stored token the secret stays out of .mcp.json entirely."""
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", auth_type="pat")
     env = build_atlassian_mcp_server_config(cfg)["env"]
     assert env["JIRA_PERSONAL_TOKEN"] == "${SOVA_MCP_ATLASSIAN_TOKEN}"
 
@@ -359,7 +359,7 @@ def test_build_atlassian_config_uses_env_placeholder_without_token() -> None:
 def test_build_atlassian_config_uses_placeholder_for_env_token(monkeypatch) -> None:
     """A token that came from the environment is referenced, not copied into .mcp.json."""
     monkeypatch.setenv(ATLASSIAN_TOKEN_ENV, "env-token")
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat", token="env-token")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", auth_type="pat", token="env-token")
     assert atlassian_token_inlined(cfg) is False
     env = build_atlassian_mcp_server_config(cfg)["env"]
     assert env["JIRA_PERSONAL_TOKEN"] == "${SOVA_MCP_ATLASSIAN_TOKEN}"
@@ -367,7 +367,7 @@ def test_build_atlassian_config_uses_placeholder_for_env_token(monkeypatch) -> N
 
 def test_atlassian_token_inlined_for_stored_token(monkeypatch) -> None:
     monkeypatch.delenv(ATLASSIAN_TOKEN_ENV, raising=False)
-    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://issues.redhat.com", auth_type="pat", token="stored")
+    cfg = AtlassianMCPConfig(enabled=True, jira_url="https://jira.example.com", auth_type="pat", token="stored")
     assert atlassian_token_inlined(cfg) is True
     assert build_atlassian_mcp_server_config(cfg)["env"]["JIRA_PERSONAL_TOKEN"] == "stored"
 

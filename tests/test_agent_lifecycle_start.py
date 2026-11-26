@@ -1860,7 +1860,7 @@ class TestStartCommandValidatesItsInput:
             (None, True),
             ({}, True),
             ({"issue": "42", "pr": 10}, True),
-            ({"issue": "RHCLOUD-123"}, True),
+            ({"issue": "PROJ-123"}, True),
             ({"issue": "", "pr": None}, True),
             ({"pr": "10"}, True),
             ({"role": "developer"}, False),
@@ -1898,7 +1898,7 @@ class TestStartCommandValidatesItsInput:
             {"issue": "42", "pr": 10},
             {"issue": "42", "pr": None},
             # claude-command handoff actions (handoff_to_user, handoff_to_reviewer, reviewer role).
-            {"issue": "RHCLOUD-123", "pr": 10},
+            {"issue": "PROJ-123", "pr": 10},
             # A workflow (DAG) node's params from the role editor, or a node without params.
             {},
             None,

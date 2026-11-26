@@ -418,7 +418,7 @@ class TestSanitizeIssueNumber:
         assert _sanitize_issue_number("42") == "42"
 
     def test_preserves_alphanumeric(self) -> None:
-        assert _sanitize_issue_number("RHCLOUD-42") == "RHCLOUD-42"
+        assert _sanitize_issue_number("PROJ-42") == "PROJ-42"
 
 
 class TestSpecStep:

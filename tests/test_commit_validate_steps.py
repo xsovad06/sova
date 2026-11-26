@@ -2963,8 +2963,8 @@ class TestCommitStepJira:
             config=ProjectConfig(
                 task_source=TaskSourceConfig(
                     type="jira",
-                    jira_project_key="RHCLOUD",
-                    jira_base_url="https://issues.redhat.com",
+                    jira_project_key="PROJ",
+                    jira_base_url="https://jira.example.com",
                 )
             ),
         )
@@ -2986,7 +2986,7 @@ class TestCommitStepJira:
 
         assert result.success
         msg = mock_commit.call_args[0][0]
-        assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48767" in msg
+        assert "JIRA: https://jira.example.com/browse/PROJ-48767" in msg
         assert "Closes #" not in msg
 
     async def test_github_commit_message_unchanged(self, tmp_path: Path) -> None:

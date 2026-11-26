@@ -56,7 +56,7 @@ _COMMENTED = {"state": "COMMENTED", "author": {"login": "reviewer"}}
 def test_pr_jira_key_comes_from_body_before_title_or_branch() -> None:
     raw = {
         "body": "JIRA: https://jira.example.test/browse/ARVAC-42",
-        "title": "[RHCLOUD-9] change",
+        "title": "[PROJ-9] change",
         "headRefName": "fix/OTHER-7",
     }
 
@@ -65,25 +65,25 @@ def test_pr_jira_key_comes_from_body_before_title_or_branch() -> None:
 
 
 def test_pr_jira_key_prefers_the_issue_section_to_other_body_mentions() -> None:
-    raw = {"body": "## Summary\nRHCLOUD-9 is related\n\n## Issue\n\nARVAC-42\n\n## Test plan\nDone"}
+    raw = {"body": "## Summary\nPROJ-9 is related\n\n## Issue\n\nARVAC-42\n\n## Test plan\nDone"}
 
     assert extract_jira_key(raw) == "ARVAC-42"
 
 
 def test_pr_jira_key_reads_the_issue_section_at_end_of_body() -> None:
-    raw = {"body": "## Summary\nRHCLOUD-9 is related\n\n## Issue\nARVAC-42"}
+    raw = {"body": "## Summary\nPROJ-9 is related\n\n## Issue\nARVAC-42"}
 
     assert extract_jira_key(raw) == "ARVAC-42"
 
 
 def test_pr_jira_key_ignores_fenced_issue_section() -> None:
-    raw = {"body": "```markdown\n## Issue\nRHCLOUD-9\n```\n## Issue\nARVAC-42"}
+    raw = {"body": "```markdown\n## Issue\nPROJ-9\n```\n## Issue\nARVAC-42"}
 
     assert extract_jira_key(raw) == "ARVAC-42"
 
 
 def test_pr_jira_key_rejects_conflicting_link_label() -> None:
-    raw = {"body": "## Issue\n[ARVAC-42](https://jira.example.test/browse/RHCLOUD-42)"}
+    raw = {"body": "## Issue\n[ARVAC-42](https://jira.example.test/browse/PROJ-42)"}
 
     assert extract_jira_key(raw) == ""
     assert extract_jira_key({"body": raw["body"].removeprefix("## Issue\n"), "title": "[ARVAC-42] Change"}) == ""
@@ -109,7 +109,7 @@ def test_bare_jira_key_in_issue_section_does_not_link_a_github_issue() -> None:
 
 
 def test_pr_jira_key_ignores_a_body_mention_without_a_link() -> None:
-    raw = {"body": "## Summary\nThis also affects RHCLOUD-9.", "title": "Update dependencies"}
+    raw = {"body": "## Summary\nThis also affects PROJ-9.", "title": "Update dependencies"}
 
     assert extract_jira_key(raw) == ""
 
@@ -485,13 +485,13 @@ class TestParseLinkedIssue:
             pytest.param("", None, id="empty-body"),
             pytest.param("Closes #10\nFixes #20", 10, id="first-match"),
             pytest.param(
-                "## JIRA\n[RHCLOUD-48767](https://issues.redhat.com/browse/RHCLOUD-48767)",
+                "## JIRA\n[PROJ-48767](https://jira.example.com/browse/PROJ-48767)",
                 48767,
                 id="jira-markdown-link",
             ),
-            pytest.param("JIRA: https://issues.redhat.com/browse/RHCLOUD-48767", 48767, id="jira-plain-link"),
+            pytest.param("JIRA: https://jira.example.com/browse/PROJ-48767", 48767, id="jira-plain-link"),
             pytest.param(
-                "Closes #42\nJIRA: https://issues.redhat.com/browse/RHCLOUD-48767", 42, id="github-preferred-over-jira"
+                "Closes #42\nJIRA: https://jira.example.com/browse/PROJ-48767", 42, id="github-preferred-over-jira"
             ),
             pytest.param("[ABC-123](https://jira.example.com/browse/ABC-123)", 123, id="jira-multi-letter-project"),
             pytest.param("Part of #42\n\nNot done in this PR:\n- Some thing", 42, id="part-of-marker"),
@@ -516,7 +516,7 @@ class TestParseLinkedIssue:
             pytest.param(
                 "## Summary\n- Closes #42\n\n## Issue\n\nPart of #1354", 1354, id="section-outranks-body-keyword"
             ),
-            pytest.param("Part of #5\nJIRA: https://issues.redhat.com/browse/RHCLOUD-9", 9, id="jira-above-part-of"),
+            pytest.param("Part of #5\nJIRA: https://jira.example.com/browse/PROJ-9", 9, id="jira-above-part-of"),
         ],
     )
     def test_parse_linked_issue(self, body: str | None, expected: int | None) -> None:
@@ -560,17 +560,17 @@ class TestExtractLinkedIssue:
                 id="title-number-in-parens-without-hash-is-not-issue",
             ),
             pytest.param(
-                _linked_raw("", "[RHCLOUD-49651] feat: eval() security fix", "feat/some-branch"),
+                _linked_raw("", "[PROJ-49651] feat: eval() security fix", "feat/some-branch"),
                 49651,
                 id="title-jira-key-brackets",
             ),
             pytest.param(_linked_raw("", "[ABC-7] fix something", "main"), 7, id="title-jira-key-with-short-project"),
             pytest.param(
-                _linked_raw("", "some fix", "feat/RHCLOUD-49651-turnpike-eval-security"), 49651, id="branch-jira-key"
+                _linked_raw("", "some fix", "feat/PROJ-49651-turnpike-eval-security"), 49651, id="branch-jira-key"
             ),
             pytest.param(_linked_raw("", "some fix", "fix/ABC-123"), 123, id="branch-jira-key-at-end"),
             pytest.param(
-                _linked_raw("", "some fix", "feat/rhcloud-49651-stuff"),
+                _linked_raw("", "some fix", "feat/proj-49651-stuff"),
                 None,
                 id="branch-jira-key-does-not-match-lowercase",
             ),
@@ -583,9 +583,9 @@ class TestExtractLinkedIssue:
             ),
             pytest.param(
                 _linked_raw(
-                    "JIRA: https://redhat.atlassian.net/browse/RHCLOUD-48767",
-                    "[RHCLOUD-49651] feat: something",
-                    "feat/RHCLOUD-49651-stuff",
+                    "JIRA: https://acme.atlassian.net/browse/PROJ-48767",
+                    "[PROJ-49651] feat: something",
+                    "feat/PROJ-49651-stuff",
                 ),
                 48767,
                 id="body-preferred-over-title-jira-key",

@@ -1496,7 +1496,7 @@ class TestBuildTaskItem:
             "priority": 2,
             "story_points": 3.0,
             "sprint": "Sprint 5",
-            "components": ["RBAC"],
+            "components": ["Backend"],
             "jira_status": "In Progress",
             "jira_priority": "High",
             "updated_at": "2026-06-10T08:00:00Z",
@@ -1504,7 +1504,7 @@ class TestBuildTaskItem:
         item = _build_task_item(task, pr_data=None, running=None, handoff=None)
         assert item["story_points"] == 3.0
         assert item["sprint"] == "Sprint 5"
-        assert item["components"] == ["RBAC"]
+        assert item["components"] == ["Backend"]
         assert item["jira_status"] == "In Progress"
         assert item["jira_priority"] == "High"
         assert item["updated_at"] == "2026-06-10T08:00:00Z"
@@ -1813,7 +1813,7 @@ class TestGetWorkItems:
             {
                 "number": 300,
                 "linked_issue": 42,
-                "linked_jira_key": "RHCLOUD-42",
+                "linked_jira_key": "PROJ-42",
                 "computed_state": "ci_failed",
                 "state": "OPEN",
             },
@@ -1930,7 +1930,7 @@ class TestGetWorkItems:
             )
         )
         prs = [
-            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "PROJ-42"},
             {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-7"},
         ]
         with (
@@ -1947,7 +1947,7 @@ class TestGetWorkItems:
         from sova.dashboard.services.work_item_service import _safe_prs
 
         prs = [
-            {"number": 300, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 300, "linked_jira_key": "PROJ-42"},
             {"number": 301, "linked_jira_key": "ARVAC-7"},
         ]
         with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs)):
@@ -1971,7 +1971,7 @@ class TestGetWorkItems:
     def test_jira_scope_uses_the_key_even_if_github_mentions_another_number(self) -> None:
         prs = [
             {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-42"},
-            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "PROJ-42"},
             {"number": 302, "linked_issue": 42},
         ]
 
@@ -5027,7 +5027,7 @@ class TestBoardExclusions:
     async def test_jira_prs_map_to_this_project_key_only(self) -> None:
         cfg = ProjectConfig(task_source=TaskSourceConfig(type="jira", jira_project_key="ARVAC"))
         prs = [
-            {"number": 300, "linked_issue": 42, "linked_jira_key": "RHCLOUD-42"},
+            {"number": 300, "linked_issue": 42, "linked_jira_key": "PROJ-42"},
             {"number": 301, "linked_issue": 99, "linked_jira_key": "ARVAC-7"},
         ]
         with (

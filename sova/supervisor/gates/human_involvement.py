@@ -82,7 +82,7 @@ async def check_human_involvement_gate(
     including address-review/integrate), so an issue that acquires `type: epic`
     after a PR already exists stays blocked until the label is removed.
 
-    `issue` accepts a Jira-style string id (e.g. `"RHCLOUD-42"`) as well as a
+    `issue` accepts a Jira-style string id (e.g. `"PROJ-42"`) as well as a
     GitHub-style int, matching `Task.id`'s `str` type; only the numeric-only
     GitHub case ever reaches a `DependencyGraph`, and this gate never builds
     one (`consider_dependencies=False` below).

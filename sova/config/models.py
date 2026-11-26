@@ -71,7 +71,7 @@ class TaskSourceConfig(BaseSettings):
         return self.type == "jira" and bool(self.jira_project_key) and bool(self.jira_base_url)
 
     def jira_issue_key(self, issue_number: str) -> str:
-        """Return the full JIRA issue key, e.g. ``RHCLOUD-48767``."""
+        """Return the full JIRA issue key, e.g. ``PROJ-48767``."""
         return f"{self.jira_project_key}-{issue_number}"
 
     def jira_browse_url(self, issue_number: str) -> str:
@@ -865,24 +865,46 @@ class ExternalReviewsConfig(BaseSettings):
         return self.enabled and "sonarcloud" in self.tools and bool(self.sonarcloud.project_key)
 
 
+# Person profile fields an LDAP directory can fill, and the standard (inetOrgPerson / RFC 2798)
+# attributes they read by default. A field without a default has no standard attribute.
+LDAP_PROFILE_FIELDS: tuple[str, ...] = (
+    "job_title",
+    "cost_center",
+    "cost_center_desc",
+    "organization",
+    "team_lead",
+    "geo",
+    "location",
+)
+DEFAULT_LDAP_ATTRIBUTE_MAP: dict[str, str] = {
+    "job_title": "title",
+    "cost_center": "departmentNumber",
+    "organization": "o",
+    "location": "l",
+}
+
+
 class LdapConfig(BaseSettings):
     """LDAP directory configuration for issue routing and reviewer suggestions.
 
-    Opt-in and organization-specific (default server targets Red Hat's
-    corporate LDAP). Queries require VPN connectivity; callers must degrade
-    gracefully to ``github_user`` when the directory is unreachable.
+    Opt-in and organization-specific: ``server``, ``base_dn`` and ``group_base_dn``
+    have no default. Enabling LDAP while ``server`` or ``base_dn`` is empty is a no-op
+    that logs ``ldap.not_configured`` instead of querying a directory nobody chose
+    (``group_base_dn`` is only needed for team mappings). Queries may require VPN
+    connectivity; callers must degrade gracefully to ``github_user`` when the
+    directory is unreachable.
     """
 
     enabled: bool = False
-    server: str = "ldaps://ldap.corp.redhat.com"
-    base_dn: str = "ou=users,dc=redhat,dc=com"
-    group_base_dn: str = "ou=adhoc,ou=managedGroups,dc=redhat,dc=com"
+    server: str = ""
+    base_dn: str = ""
+    group_base_dn: str = ""
     timeout_seconds: int = Field(5, gt=0)
     cache_ttl_seconds: int = Field(300, ge=0)
-    # Directory-specific naming attribute for a person's unique id. Red Hat's LDAP (and most
-    # OpenLDAP-derived directories) use "uid"; Active Directory-derived servers commonly use
-    # "sAMAccountName" instead. Used for person-search filters, requested attributes, and
-    # parsing uids out of group-member DNs.
+    # Directory-specific naming attribute for a person's unique id. Most OpenLDAP-derived
+    # directories use "uid"; Active Directory-derived servers commonly use "sAMAccountName"
+    # instead. Used for person-search filters, requested attributes, and parsing uids out of
+    # group-member DNs.
     uid_attribute: str = "uid"
     # Cleartext (non-ldaps://) servers are rejected by default (CWE-319). Set True only for a
     # local development directory that has no TLS listener.
@@ -898,12 +920,26 @@ class LdapConfig(BaseSettings):
     # different (e.g. GitHub username vs. Kerberos id). Unmapped users fall back to using
     # github_user as the LDAP uid directly (a best-effort assumption, not a guarantee).
     uid_mapping: dict[str, str] = Field(default_factory=dict)
+    # Maps a Person profile field to the directory attribute that holds it. The defaults are
+    # standard inetOrgPerson attributes; entries you set are merged over them, so a directory
+    # with its own schema overrides only the fields it names. An empty attribute name turns a
+    # field off, and a field with no attribute stays empty.
+    attribute_map: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_LDAP_ATTRIBUTE_MAP))
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LDAP_")
 
+    @field_validator("attribute_map")
+    @classmethod
+    def _known_profile_fields(cls, value: dict[str, str]) -> dict[str, str]:
+        unknown = sorted(set(value) - set(LDAP_PROFILE_FIELDS))
+        if unknown:
+            msg = f"ldap.attribute_map has unknown field(s) {unknown}; valid fields: {list(LDAP_PROFILE_FIELDS)}"
+            raise ValueError(msg)
+        return {**DEFAULT_LDAP_ATTRIBUTE_MAP, **value}
+
     @model_validator(mode="after")
     def _require_secure_scheme(self) -> LdapConfig:
-        if not self.allow_insecure and urlparse(self.server).scheme != "ldaps":
+        if self.server and not self.allow_insecure and urlparse(self.server).scheme != "ldaps":
             msg = (
                 f"ldap.server must use the ldaps:// scheme (got {self.server!r}). "
                 "Set ldap.allow_insecure = true for a development-only cleartext directory."

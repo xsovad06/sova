@@ -1226,9 +1226,9 @@ class TestFindPRForIssue:
     async def test_finds_pr_whose_closing_reference_is_a_hashless_jira_key(self) -> None:
         """A Jira key needs no '#', and a PR on an unrelated branch name is only linkable by its body."""
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
-            mock_run.side_effect = self._body_search_only("Closes RHCLOUD-123")
+            mock_run.side_effect = self._body_search_only("Closes PROJ-123")
 
-            result = await find_pr_for_issue("RHCLOUD-123", repo="user/repo")
+            result = await find_pr_for_issue("PROJ-123", repo="user/repo")
 
             assert result is not None
             assert result.number == 83
@@ -1438,7 +1438,7 @@ class TestFindPRForIssue:
                 {
                     "number": 3148,
                     "url": "https://github.com/org/repo/pull/3148",
-                    "body": "## JIRA\n\n[RHCLOUD-48809](https://issues.redhat.com/browse/RHCLOUD-48809)",
+                    "body": "## JIRA\n\n[PROJ-48809](https://jira.example.com/browse/PROJ-48809)",
                     "headRefName": "feat/issue-48809",
                 }
             ]
@@ -1664,9 +1664,9 @@ class TestClosingKeywordSharing:
     def test_per_issue_pattern_matches_a_jira_key_without_a_hash(self) -> None:
         from sova.utils.gh import closing_pattern_for
 
-        pattern = closing_pattern_for("RHCLOUD-123")
-        assert pattern.search("Closes RHCLOUD-123")
-        assert pattern.search("Closes RHCLOUD-1234") is None
+        pattern = closing_pattern_for("PROJ-123")
+        assert pattern.search("Closes PROJ-123")
+        assert pattern.search("Closes PROJ-1234") is None
 
     def test_closes_re_keeps_the_hash_mandatory(self) -> None:
         """CLOSES_RE captures a numeric GitHub issue, so a bare number is not a reference."""
@@ -1924,7 +1924,7 @@ class TestGetCIChecks:
             assert not checks[0].is_failed
 
     async def test_queued_state_maps_to_queued(self) -> None:
-        checks_json = json.dumps([{"name": "Konflux Build", "state": "QUEUED", "link": ""}])
+        checks_json = json.dumps([{"name": "Acme CI Build", "state": "QUEUED", "link": ""}])
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=checks_json)
 
@@ -1952,7 +1952,7 @@ class TestGetCIChecks:
             assert not checks[0].is_failed
 
     async def test_neutral_state_maps_to_completed_neutral(self) -> None:
-        checks_json = json.dumps([{"name": "Konflux / bonfire-tekton", "state": "NEUTRAL", "link": ""}])
+        checks_json = json.dumps([{"name": "Acme CI / integration-tekton", "state": "NEUTRAL", "link": ""}])
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=checks_json)
 

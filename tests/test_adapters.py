@@ -1826,8 +1826,8 @@ class TestAdapterFactory:
     @pytest.mark.parametrize(
         ("github_repo", "has_forge"),
         [
-            ("project-kessel/insights-rbac", True),
-            ("https://gitlab.cee.redhat.com/service/app-interface", False),
+            ("acme-org/service-api", True),
+            ("https://gitlab.example.com/service/deploy-config", False),
             ("", False),
             ("owner/repo\n", False),  # a trailing newline once passed the $-anchored match
             ("owner/r\u00e9po", False),  # \w is ASCII only: gh rejects a non-ASCII name anyway

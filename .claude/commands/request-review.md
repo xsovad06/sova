@@ -16,17 +16,17 @@ Draft a Slack message for requesting a PR review. Can be used with a PR number a
    - One-line summary of what the PR does (from the title or body, in plain language)
 
 3. **Draft the Slack message**:
-   - Format: casual, very short — tag `@pr-review-group1`, a few words from the PR title, PR link
+   - Format: casual, very short — tag the team's review group (for example `@reviewers`), a few words from the PR title, PR link
    - Vary the greeting naturally (Hi, Hey, Hola, etc.)
    - No emojis, no bullet points, no formatting — keep it under 20 words (excluding the link)
    - Examples of good messages:
-     - `Hi @pr-review-group1, PR for review — add name filtering indexes: <link>`
-     - `Hola @pr-review-group1, PR for review — audit logging for role bindings: <link>`
-     - `Hey @pr-review-group1, PR for review — unify V2 name filtering: <link>`
+     - `Hi @reviewers, PR for review — add search indexes: <link>`
+     - `Hola @reviewers, PR for review — audit logging for settings changes: <link>`
+     - `Hey @reviewers, PR for review — retry flaky webhook delivery: <link>`
 
 4. **Move JIRA tickets to Code Review**:
-   - Extract JIRA ticket numbers from the PR title/body (format: `[RHCLOUD-XXXXX]` or JIRA links)
-   - Move each ticket: `jira issue move RHCLOUD-XXXXX "Code Review"`
+   - Extract JIRA ticket numbers from the PR title/body (format: `[PROJ-XXXXX]` or JIRA links)
+   - Move each ticket: `jira issue move PROJ-XXXXX "Code Review"`
    - Report which tickets were moved
 
 5. **Output**:

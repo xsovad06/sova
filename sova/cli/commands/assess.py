@@ -22,7 +22,7 @@ console = Console(stderr=True)
 app = typer.Typer(name="assess", help="Manage local suitability assessments.", no_args_is_help=True)
 
 _PROJECT_OPTION = typer.Option("--project", "-p", exists=True, file_okay=False, help="Project directory.")
-_ISSUE_ARGUMENT = typer.Argument(help="Issue number or key, e.g. 1234, #1234, RHCLOUD-1234.")
+_ISSUE_ARGUMENT = typer.Argument(help="Issue number or key, e.g. 1234, #1234, PROJ-1234.")
 _SUITABILITY_CHOICES = "ready, interactive, human-only"
 
 
@@ -57,13 +57,13 @@ def _expected_tracker_prefix(task_source, github_repo: str) -> str:
 
 
 def _normalize_issue_number(raw: str, *, expected_prefix: str = "") -> str:
-    """Strip a leading '#' and any tracker key prefix (e.g. 'RHCLOUD-1234' -> '1234').
+    """Strip a leading '#' and any tracker key prefix (e.g. 'PROJ-1234' -> '1234').
 
     Handles any project prefix, not just one tracker's convention: everything
     up to and including the last '-' before the numeric suffix is dropped.
     When ``expected_prefix`` is given, a present prefix is additionally
     validated against it, so a foreign ticket key (e.g. 'ABC-1234' pasted
-    into a project configured for 'RHCLOUD') is never silently misattributed
+    into a project configured for 'PROJ') is never silently misattributed
     to a local issue of the same number.
 
     Raises:

@@ -142,6 +142,7 @@ async def suggest_ldap_reviewers(
     github_user: str,
     issue_number: str | None,
     pr_number: int,
+    scope: str = "",
 ) -> None:
     """Suggest teammates of the PR author as reviewers via LDAP org data.
 
@@ -163,7 +164,7 @@ async def suggest_ldap_reviewers(
     """
     from sova.adapters.ldap_client import create_ldap_client
 
-    client = create_ldap_client(ldap_config)
+    client = create_ldap_client(ldap_config, scope)
     if client is None:
         return
 
@@ -530,6 +531,7 @@ class CreatePRStep(BaseStep):
             github_user=ctx.config.github_user,
             issue_number=ctx.issue_number if ctx.has_issue else None,
             pr_number=pr_number,
+            scope=str(ctx.project_dir),
         )
 
     async def _generate_pr_body(

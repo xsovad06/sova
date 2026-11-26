@@ -447,8 +447,8 @@ class TestCreatePRStepJira:
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
@@ -456,7 +456,7 @@ class TestCreatePRStepJira:
 
         assert result.success
         title_arg = mock_create_pr.call_args.kwargs["title"]
-        assert "[RHCLOUD-48928]" in title_arg
+        assert "[PROJ-48928]" in title_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
@@ -492,15 +492,15 @@ class TestCreatePRStepJira:
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
         await step.execute(ctx)
 
         body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
+        assert "https://jira.example.com/browse/PROJ-48928" in body_arg
         assert "Closes #48928" not in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
@@ -536,15 +536,15 @@ class TestCreatePRStepJira:
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
         await step.execute(ctx)
 
         body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
+        assert "https://jira.example.com/browse/PROJ-48928" in body_arg
         assert "Closes #48928" not in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
@@ -619,13 +619,13 @@ class TestCreatePRStepJiraPrompt:
             tmp_path,
             task=Task(id="48928", title="Improve output"),
             issue_number="48928",
-            branch_name="feat/RHCLOUD-48928-improve-output",
+            branch_name="feat/PROJ-48928-improve-output",
         )
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
@@ -633,8 +633,8 @@ class TestCreatePRStepJiraPrompt:
 
         prompt_arg = mock_invoke.call_args[0][0]
         assert "Closes #48928" not in prompt_arg
-        assert "RHCLOUD-48928" in prompt_arg
-        assert "issues.redhat.com/browse/RHCLOUD-48928" in prompt_arg
+        assert "PROJ-48928" in prompt_arg
+        assert "jira.example.com/browse/PROJ-48928" in prompt_arg
         assert "JIRA: JIRA:" not in prompt_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
@@ -668,20 +668,20 @@ class TestCreatePRStepJiraPrompt:
             adapter=adapter,
             task=None,
             issue_number="48928",
-            branch_name="feat/RHCLOUD-48928-security-logging",
+            branch_name="feat/PROJ-48928-security-logging",
         )
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
         await step.execute(ctx)
 
         title_arg = mock_create_pr.call_args.kwargs["title"]
-        assert "feat/RHCLOUD" not in title_arg
+        assert "feat/PROJ" not in title_arg
         assert "security logging" in title_arg.lower() or "security-logging" in title_arg.lower()
 
 
@@ -942,7 +942,7 @@ class TestCreatePRTitleFromBranch:
     def test_strips_jira_key_prefix(self) -> None:
         from sova.core.steps.create_pr import _title_from_branch
 
-        result = _title_from_branch("feat/RHCLOUD-48767-security-logging")
+        result = _title_from_branch("feat/PROJ-48767-security-logging")
         assert result == "security logging"
 
     def test_strips_fix_prefix(self) -> None:

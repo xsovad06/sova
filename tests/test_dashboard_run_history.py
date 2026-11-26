@@ -298,10 +298,10 @@ class TestHistoryFilters:
         result = await get_work_history(session, number="524", limit=50)
         assert [t["id"] for t in result["tasks"]] == [runs["legacy_integrate"].id]
 
-    @pytest.mark.parametrize("number", ["RHCLOUD-42", "rhcloud-42", "RhCloud-42"])
+    @pytest.mark.parametrize("number", ["PROJ-42", "proj-42", "Proj-42"])
     async def test_number_matches_a_tracker_key(self, session: AsyncSession, number: str) -> None:
         async with session.begin():
-            run = await _add_run(session, role="developer", issue="RHCLOUD-42")
+            run = await _add_run(session, role="developer", issue="PROJ-42")
         result = await get_work_history(session, number=number, limit=50)
         assert [t["id"] for t in result["tasks"]] == [run.id]
 

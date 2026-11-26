@@ -66,7 +66,7 @@ def pilot_repo_refusal(repo: str, configured_repo: str) -> str | None:
 
 
 class TestPilotRepoGuard:
-    @pytest.mark.parametrize("repo", ["xsovad06/sova", "RedHatInsights/SOVA", "someone/gwym", "GWYM/Gwym"])
+    @pytest.mark.parametrize("repo", ["xsovad06/sova", "AcmeOrg/SOVA", "someone/gwym", "GWYM/Gwym"])
     def test_production_repositories_are_refused(self, repo: str) -> None:
         assert pilot_repo_refusal(repo, repo) is not None
 

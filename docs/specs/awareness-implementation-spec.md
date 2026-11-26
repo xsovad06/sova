@@ -3,7 +3,6 @@
 **Status**: Ready for development
 **Date**: 2026-07-20
 **Depends on**: [Use Case Specification](awareness-use-cases.md)
-**Related**: [JARVIS Vision](../../morning-agent/JARVIS.md), [Hackathon Plan](https://docs.google.com/document/d/1vX0GRPioJzgmhaGfmMD5yoydTuGC9zWvGpoDrwE9KJg/edit)
 
 ## 1. Problem Summary
 
@@ -422,27 +421,27 @@ Options:
 ╰──────────────────────────────────────────────────────────────╯
 
 NEEDS ATTENTION
-  [!!] PR Review requested: [insights-rbac#3199] refactor(models): optimize query fields
-       From: lpichler - 3 hours ago - CI: passing
-  [!!] PR Review requested: [insights-rbac#3200] fix(ci): always run JIRA ticket check
-       From: lpichler - 3 hours ago - CI: passing
-  [!]  Email: Device management next step: Returning devices
-       From: Nikki Jacobs <njacobs@redhat.com> - Jul 16
+  [!!] PR Review requested: [acme-api#3199] refactor(models): optimize query fields
+       From: alice - 3 hours ago - CI: passing
+  [!!] PR Review requested: [acme-api#3200] fix(ci): always run ticket check
+       From: alice - 3 hours ago - CI: passing
+  [!]  Email: Quarterly planning: next steps
+       From: Dana Lee <dana@example.com> - Jul 16
 
 TODAY'S SCHEDULE
-  10:00  Kessel Scrum of Scrums (30m), 5 attendees
+  10:00  Team sync (30m), 5 attendees
   14:00  Free block (3h)
   17:00  EOD
 
 PROJECT PULSE
-  insights-rbac    2 PRs open - agents idle - CI passing
+  acme-api         2 PRs open - agents idle - CI passing
   sova             0 PRs open - agents idle - CI passing
 
 RECENT EMAILS (5 new)
-  > Rehor: Re: [insights-rbac#3199] SQL queries to validate... (3h ago)
-  > Libor Pichler: Review requested on #3199 and #3200 (3h ago)
-  > Nikki Jacobs: Device management next step (Jul 16)
-  > Gemini: Notes: "Kessel Scrum of Scrums" Jul 16 (Jul 16)
+  > Build bot: Re: [acme-api#3199] SQL queries to validate... (3h ago)
+  > Alice Chen: Review requested on #3199 and #3200 (3h ago)
+  > Dana Lee: Quarterly planning: next steps (Jul 16)
+  > Meeting notes: "Team sync" Jul 16 (Jul 16)
   > [2 more informational]
 
 Reminders: Nothing due today
@@ -652,7 +651,7 @@ For a colleague to use this:
 
 These are explicitly out of scope for initial implementation but documented for roadmap:
 
-- **Slack integration**: Read channel messages, DMs. Blocked by Red Hat policy — revisit when/if corporate Slack app approval is possible.
+- **Slack integration**: Read channel messages, DMs. Blocked by some organizations' policies on third-party Slack apps: revisit when a workspace approves one.
 - **AI-powered triage**: Use Claude to summarize emails, suggest which are urgent, draft responses. Requires LLM calls per briefing — cost consideration.
 - **Voice interface**: `sova briefing --speak` using macOS `say` command. Low effort, high demo value.
 - **Proactive notifications**: Background polling that pushes desktop notifications when something urgent arrives (not just when you run `sova briefing`).
