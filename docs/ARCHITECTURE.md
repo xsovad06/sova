@@ -85,7 +85,7 @@ sova/
     *-guidelines.md                # Domain-specific guidelines (7 files)
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
-    naming-journey.md              # How SOVA got its name
+    archive/                       # Historical docs kept for reference
   assets/
     agent-icon.png                 # Notification icon
 ```
@@ -144,9 +144,8 @@ Every other file under `docs/`, grouped by purpose. Dated reports and drafts are
 | [authentication-ui-design.md](authentication-ui-design.md) | Design record for the dashboard Connections page |
 | [pipeline-determinism.html](pipeline-determinism.html) | Pipeline determinism analysis |
 | [benchmark-results.md](benchmark-results.md) | SOVA vs interactive velocity benchmark, 2026-08-10 (written by `/benchmark-report`) |
-| [failure-audit-2026-08-20.md](failure-audit-2026-08-20.md) | Failure rate audit, 2026-08-20 |
-| [blog-post-draft.md](blog-post-draft.md) | Unpublished blog post draft |
-| [naming-journey.md](naming-journey.md) | How SOVA got its name |
+| [archive/blog-post-draft.md](archive/blog-post-draft.md) | Unpublished blog post draft (archived) |
+| [archive/naming-journey.md](archive/naming-journey.md) | How SOVA got its name (archived) |
 
 ### Specs
 
@@ -154,8 +153,6 @@ Design specs for shipped or planned work. Specs written by `/spec` during develo
 
 | File | Purpose |
 |------|---------|
-| [specs/571-benchmark-report-command.md](specs/571-benchmark-report-command.md) | `/benchmark-report` command (#571) |
-| [specs/issue-602-llm-planning.md](specs/issue-602-llm-planning.md) | LLM planning step for the supervisor (#602) |
 | [specs/awareness-use-cases.md](specs/awareness-use-cases.md) | Awareness subsystem use cases |
 | [specs/awareness-implementation-spec.md](specs/awareness-implementation-spec.md) | Awareness subsystem implementation spec |
 | [specs/model-selection-research-context.md](specs/model-selection-research-context.md) | Original model selection briefing, superseded by [model-selection-architecture.md](model-selection-architecture.md) |

@@ -77,4 +77,4 @@ The real insight from this benchmark: the bottleneck in AI-assisted development 
 
 *SOVA is open source. The benchmark data, event logs, and analysis scripts are in the repository.*
 
-*[Full benchmark results with methodology and raw data](benchmark-results.md)*
+*[Full benchmark results with methodology and raw data](../benchmark-results.md)*

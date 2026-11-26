@@ -54,4 +54,3 @@ After Fix:  13 runs, 2 failed (15.4%)
 **Related**:
 - Issue #710: SOVA project failure rate audit
 - Issues #687, #699: Timeout fix that resolved the systemic issue
-- `docs/failure-audit-2026-08-20.md`: Full audit report from August 2026
