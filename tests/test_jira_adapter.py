@@ -1232,8 +1232,9 @@ class TestAddReviewer:
     @respx.mock
     async def test_add_reviewer_without_forge_raises(self) -> None:
         # A request that returned normally without a forge read as delivered.
+        adapter = _adapter()
         with pytest.raises(RuntimeError, match="Cannot request a reviewer on PR #42"):
-            await _adapter().add_reviewer("1", 42, "jdoe")
+            await adapter.add_reviewer("1", 42, "jdoe")
         assert respx.calls.call_count == 0
 
     async def test_add_reviewer_sends_the_pr_number_and_never_the_jira_key_to_github(self) -> None:
@@ -1294,21 +1295,24 @@ class TestPrOperations:
 
     @respx.mock
     async def test_post_pr_review_without_forge_raises(self) -> None:
+        adapter = _adapter()
         with pytest.raises(RuntimeError, match="Cannot post a review on PR #42"):
-            await _adapter().post_pr_review(42, "body", "APPROVE", [])
+            await adapter.post_pr_review(42, "body", "APPROVE", [])
         assert respx.calls.call_count == 0
 
     @respx.mock
     async def test_post_pr_comment_without_forge_raises(self) -> None:
+        adapter = _adapter()
         with pytest.raises(RuntimeError, match="Cannot comment on PR #42"):
-            await _adapter().post_pr_comment(42, "review")
+            await adapter.post_pr_comment(42, "review")
         assert respx.calls.call_count == 0
 
     @respx.mock
     async def test_get_pr_reviews_without_forge_raises(self) -> None:
         # An empty list read as "no prior reviews", so a re-review was taken for a first one.
+        adapter = _adapter()
         with pytest.raises(RuntimeError, match="Cannot read reviews on PR #42"):
-            await _adapter().get_pr_reviews(42)
+            await adapter.get_pr_reviews(42)
         assert respx.calls.call_count == 0
 
 
