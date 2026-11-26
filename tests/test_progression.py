@@ -4103,7 +4103,7 @@ class TestHumanInvolvementGate:
         """A Jira-style id must not raise: the gate skips dependency resolution
         entirely (`consider_dependencies=False`), so it never builds a
         `DependencyGraph`, which would otherwise crash on a non-numeric id."""
-        result = await check_human_involvement_gate("RHCLOUD-42", ["agent:human-only"])
+        result = await check_human_involvement_gate("PROJ-42", ["agent:human-only"])
         assert result is not None
         assert result.gate == "human_involvement"
 

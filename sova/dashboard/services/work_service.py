@@ -207,7 +207,7 @@ def _number_clause(number: str | None) -> ColumnElement[bool] | None:
     # ASCII digits only ("²" passes isdigit() but not int()), and short enough to fit the INTEGER column.
     if value.isascii() and value.isdigit() and len(value) <= 18:
         return or_(TaskRun.issue_number == value, TaskRun.pr_number == int(value))
-    # Tracker keys are stored upper-case (RHCLOUD-12) but typed in any case.
+    # Tracker keys are stored upper-case (PROJ-12) but typed in any case.
     return func.lower(TaskRun.issue_number) == value.lower()
 
 

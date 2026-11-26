@@ -310,7 +310,7 @@ def closing_pattern_for(issue_num: str) -> re.Pattern[str]:
     A numeric GitHub issue needs its ``#``, as in CLOSES_RE: GitHub does not auto-close on
     ``Fixes 42``, and a bare number would make ``Fixed 3 flaky tests`` look like the PR for
     issue #3, so ``find_pr_for_issue()`` could adopt the wrong PR. A Jira-keyed issue is
-    never written with a ``#`` (``Closes RHCLOUD-123``), so for a non-numeric key it is optional.
+    never written with a ``#`` (``Closes PROJ-123``), so for a non-numeric key it is optional.
     """
     hash_prefix = "#" if re.fullmatch(r"[0-9]+", issue_num) else "#?"
     return re.compile(rf"{CLOSING_REFERENCE_PREFIX}{hash_prefix}{re.escape(issue_num)}\b", re.IGNORECASE)

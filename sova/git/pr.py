@@ -285,7 +285,7 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     branch name matches, or whose body's own ``## Issue`` section contains
     'Part of #N' (see :func:`_match_pr_results`), and verifies the match to
     avoid false positives from free-text search. Falls back to branch name
-    search for JIRA issues where the body contains 'RHCLOUD-N' instead of
+    search for JIRA issues where the body contains 'PROJ-N' instead of
     '#N'.
 
     Returns ``None`` both when no PR is found and when the lookup itself

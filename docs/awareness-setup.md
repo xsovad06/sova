@@ -273,4 +273,3 @@ project's own database). Other projects still contribute to the briefing.
 
 - [Awareness Implementation Spec](specs/awareness-implementation-spec.md) — Architecture and design
 - [Awareness Use Cases](specs/awareness-use-cases.md) — User stories and workflows
-- [JARVIS Vision (Google Doc)](https://docs.google.com/document/d/1vX0GRPioJzgmhaGfmMD5yoydTuGC9zWvGpoDrwE9KJg/edit) — Future conversational interface

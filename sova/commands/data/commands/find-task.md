@@ -89,7 +89,7 @@ Reporter and blockers are retrieved, never inferred:
 ### 5. Classify Into One Mode
 
 - **AUTO**: change confined to this repo, verifiable by this repo's own tests and lint, acceptance criteria present, no unanswered question, blocker data successfully retrieved, and every blocker closed with its code already merged.
-- **INTERACTIVE**: needs another repo (app-interface, a `*-actions` repo, IQE), needs a tool an autonomous agent cannot reach (bonfire or an ephemeral environment, stage or prod, `oc`, VPN, AWS, Splunk, quay), is an investigation or spike, or needs a human decision or conversation. A title or label matching `triage.interactive_title_prefixes`/`triage.interactive_labels` is also INTERACTIVE, unless it also matches `triage.skip_title_prefixes`/`triage.skip_labels`, in which case it is BLOCKED as human work (mirroring `sova triage`'s human_only-over-interactive precedence).
+- **INTERACTIVE**: needs another repo (a deployment-config repo, a `*-actions` repo, an integration-test suite), needs a tool an autonomous agent cannot reach (an ephemeral environment, stage or prod, `oc`, VPN, AWS, Splunk, quay), is an investigation or spike, or needs a human decision or conversation. A title or label matching `triage.interactive_title_prefixes`/`triage.interactive_labels` is also INTERACTIVE, unless it also matches `triage.skip_title_prefixes`/`triage.skip_labels`, in which case it is BLOCKED as human work (mirroring `sova triage`'s human_only-over-interactive precedence).
 - **BLOCKED**: not pickable right now. Name the cause in the `Needs` column, because step 7 records each cause differently:
   - **Dependency**: an open blocker. The ticket waits on another ticket, not on a person.
   - **Hold**: a lead's hold comment, the current user's own unanswered question, or an `agent:on-hold` label already on the ticket (a lead can add it by hand) that no later comment lifts. A ticket can be both dependency-blocked and held.
@@ -102,7 +102,7 @@ Reporter and blockers are retrieved, never inferred:
 Print exactly this, in this order:
 
 1. One table, columns `# | Key | Reporter | Repo | What | Status | Needs | Mode | Deps`, at most 12 rows, ordered: critical items blocking other teams first, then CLOSE, then AUTO by priority, then INTERACTIVE, then BLOCKED.
-2. At most 3 one-line actions (for example "close RHCLOUD-123, PR merged" or "ping @lead on RHCLOUD-456").
+2. At most 3 one-line actions (for example "close PROJ-123, PR merged" or "ping @lead on PROJ-456").
 3. One line: `Skipped: N` with counts by reason (epic, spike, held, other repo, ops).
 4. One line: `Labeled: N  Recorded: M`, printed after the step 7 write-back completes.
 
@@ -143,7 +143,7 @@ For **every** AUTO/INTERACTIVE/BLOCKED ticket (self-assigned or unassigned), als
 sova assess set <ISSUE_NUMBER> <shorthand>
 ```
 
-`<ISSUE_NUMBER>` can be passed as-is in any form the tracker uses (`1234`, `#1234`, `RHCLOUD-1234`): the CLI normalizes it to the bare number. Re-running this command on the same ticket is safe: the local record is append-only and the latest write wins.
+`<ISSUE_NUMBER>` can be passed as-is in any form the tracker uses (`1234`, `#1234`, `PROJ-1234`): the CLI normalizes it to the bare number. Re-running this command on the same ticket is safe: the local record is append-only and the latest write wins.
 
 Print item 4 of the output contract, `Labeled: N  Recorded: M`: `N` counts only the self-assigned tickets whose tracker labels changed (a suitability label or `agent:on-hold`), and `M` counts every successful `sova assess set` call (self-assigned and unassigned alike). A ticket counts toward `M` only when the command exits 0; a failed call (for example a rejected tracker-key prefix) does not increment it, so a wholly failed write-back loop is visible as `Recorded: 0` rather than looking identical to a correct run.
 

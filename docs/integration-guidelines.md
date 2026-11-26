@@ -70,7 +70,7 @@ For setup instructions, JQL filter recipes, and status mapping configuration, se
 `[mcp.atlassian]` (`AtlassianMCPConfig` in `sova/config/models.py`) configures [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) as an opt-in MCP sidecar server for the Claude Code CLI, separate from the `TaskAdapter` used for issue state transitions. It gives agents read access to Confluence pages and richer Jira queries during research/development, not a replacement for the Jira adapter's workflow-level operations.
 
 - `mcp.atlassian.enabled` (default `False`): opt-in per project
-- `auth_type`: `"pat"` (on-prem Personal Access Token, e.g. Red Hat's `issues.redhat.com`) or `"api_token"` (Cloud, paired with `email`)
+- `auth_type`: `"pat"` (on-prem Personal Access Token, e.g. a self-hosted `jira.example.com`) or `"api_token"` (Cloud, paired with `email`)
 - `read_only` (default `True`): mcp-atlassian's `READ_ONLY_MODE` env var; writes still go through the `TaskAdapter`
 - `toolsets` (default `["default"]`): mcp-atlassian's `TOOLSETS` env var; unrecognized names are silently ignored by the sidecar, so stick to documented toolset names (e.g. `default`, `all`, `jira_agile`)
 - `sova/utils/mcp_config.py:build_atlassian_mcp_server_config()` builds the server entry (`uvx mcp-atlassian` plus auth env vars); `sova/cli/commands/project.py:_configure_atlassian_mcp()` writes it during `sova install` when enabled, mirroring the existing PatternFly MCP auto-configuration

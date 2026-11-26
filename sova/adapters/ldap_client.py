@@ -1,8 +1,9 @@
 """LDAP directory client for issue routing and reviewer suggestions.
 
 Standalone query service, not a task adapter (LDAP is not a task source).
-Default configuration targets Red Hat's corporate LDAP (anonymous bind,
-VPN-only). ``ldap3`` is an optional dependency (``pip install sova[ldap]``);
+The directory is opt-in and has no default server: ``ldap.server`` and
+``ldap.base_dn`` must be set before an enabled config produces a client
+(anonymous bind). ``ldap3`` is an optional dependency (``pip install sova[ldap]``);
 all imports are guarded so the rest of SOVA works without it installed.
 
 All ``ldap3`` calls are synchronous and wrapped in ``asyncio.to_thread()``
@@ -19,7 +20,7 @@ import warnings
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from sova.config.models import LdapConfig
+from sova.config.models import DEFAULT_LDAP_ATTRIBUTE_MAP, LDAP_PROFILE_FIELDS, LdapConfig
 from sova.utils.logging import get_logger
 
 try:
@@ -40,24 +41,34 @@ log = get_logger(component="adapters.ldap")
 _DEFAULT_LDAP_PORT = 389
 _DEFAULT_LDAPS_PORT = 636
 
-# Red Hat-specific LDAP attributes plus the common ones needed for org traversal.
-# The uid attribute name is directory-specific (see LdapConfig.uid_attribute) and is
-# prepended dynamically by LdapClient._person_attributes().
+# Attributes every person search requests. The uid attribute name is directory-specific
+# (LdapConfig.uid_attribute) and the profile attributes come from LdapConfig.attribute_map;
+# LdapClient._person_attributes() adds both. A directory without an attribute simply
+# returns no value for it.
 _PERSON_ATTRIBUTES_BASE = [
     "cn",
     "displayName",
     "mail",
-    "rhatJobTitle",
-    "rhatCostCenter",
-    "rhatCostCenterDesc",
-    "rhatOrganization",
-    "rhatTeamLead",
-    "rhatGeo",
-    "rhatLocation",
     "manager",
 ]
 
 _CACHE_MISS = object()
+
+# Configuration warnings already logged at warning level in this process, keyed by event and
+# the config values behind it. A pipeline builds a client per lookup, so repeating the same
+# warning on every call would bury other log lines; the repeats go to debug instead.
+_warned_once: set[tuple[str, ...]] = set()
+
+
+def _warn_once(event: str, key: tuple[str, ...], **fields: object) -> None:
+    """Log ``event`` at warning level the first time ``key`` is seen, then at debug level."""
+    marker = (event, *key)
+    if marker in _warned_once:
+        log.debug(event, **fields)
+        return
+    _warned_once.add(marker)
+    log.warning(event, **fields)
+
 
 # RFC 4515 filter-special characters that must be escaped in LDAP filter values.
 _FILTER_ESCAPE_MAP = {
@@ -108,20 +119,21 @@ def _first(value: object) -> str:
     return str(value) if value else ""
 
 
-def _parse_person(raw: dict, uid_attribute: str = "uid") -> Person:
+def _parse_person(raw: dict, uid_attribute: str = "uid", attribute_map: dict[str, str] | None = None) -> Person:
+    """Build a Person, reading each profile field from the attribute ``attribute_map`` names for it.
+
+    ``attribute_map`` defaults to the standard attributes (``DEFAULT_LDAP_ATTRIBUTE_MAP``); a
+    profile field with no entry, or an empty attribute name, stays empty.
+    """
+    mapping = attribute_map if attribute_map is not None else DEFAULT_LDAP_ATTRIBUTE_MAP
+    profile = {field: _first(raw.get(attr)) for field, attr in mapping.items() if attr and field in LDAP_PROFILE_FIELDS}
     return Person(
         uid=_first(raw.get(uid_attribute)),
         dn=str(raw.get("dn", "")),
         display_name=_first(raw.get("displayName")),
         mail=_first(raw.get("mail")),
-        job_title=_first(raw.get("rhatJobTitle")),
-        cost_center=_first(raw.get("rhatCostCenter")),
-        cost_center_desc=_first(raw.get("rhatCostCenterDesc")),
-        organization=_first(raw.get("rhatOrganization")),
-        team_lead=_first(raw.get("rhatTeamLead")),
-        geo=_first(raw.get("rhatGeo")),
-        location=_first(raw.get("rhatLocation")),
         manager_dn=_first(raw.get("manager")),
+        **profile,
     )
 
 
@@ -171,7 +183,7 @@ class LdapClient:
         safe = _escape_filter_value(query)
         filter_str = f"(|({uid_attr}=*{safe}*)(cn=*{safe}*)(mail=*{safe}*))"
         raw = await self._search(self._config.base_dn, filter_str, self._person_attributes())
-        people = [_parse_person(r, uid_attr) for r in raw]
+        people = [self._parse(r) for r in raw]
         self._cache_set(cache_key, people)
         return people
 
@@ -185,7 +197,7 @@ class LdapClient:
         uid_attr = self._config.uid_attribute
         safe = _escape_filter_value(uid)
         raw = await self._search(self._config.base_dn, f"({uid_attr}={safe})", self._person_attributes(), size_limit=1)
-        person = _parse_person(raw[0], uid_attr) if raw else None
+        person = self._parse(raw[0]) if raw else None
         self._cache_set(cache_key, person)
         return person
 
@@ -216,7 +228,21 @@ class LdapClient:
         return await self._direct_reports(manager.dn, depth)
 
     async def get_group_members(self, group_cn: str) -> list[str]:
-        """Enumerate uids belonging to a group entry."""
+        """Enumerate uids belonging to a group entry.
+
+        Returns ``[]`` (and logs ``ldap.group_base_dn_not_set``, at warning level once per
+        directory) when ``group_base_dn`` is empty:
+        searching from an empty base would span the whole directory. The caller (triage's
+        team-mapping lookup) treats ``[]`` as no unambiguous owner and moves on to its other
+        resolution paths.
+        """
+        if not self._config.group_base_dn:
+            _warn_once(
+                "ldap.group_base_dn_not_set",
+                (self._config.server, self._config.base_dn),
+                hint="set ldap.group_base_dn to use ldap.team_mapping",
+            )
+            return []
         cache_key = f"group:{group_cn.lower()}"
         cached = self._cache_get(cache_key)
         if cached is not _CACHE_MISS:
@@ -238,15 +264,22 @@ class LdapClient:
     # internals ---------------------------------------------------------------
 
     def _person_attributes(self) -> list[str]:
-        """Requested attributes for a person search, using the configured uid attribute."""
-        return [self._config.uid_attribute, *_PERSON_ATTRIBUTES_BASE]
+        """Requested attributes for a person search: the uid attribute, the base set and the mapped profile ones."""
+        attributes = [self._config.uid_attribute, *_PERSON_ATTRIBUTES_BASE]
+        for attr in self._config.attribute_map.values():
+            if attr and attr not in attributes:
+                attributes.append(attr)
+        return attributes
+
+    def _parse(self, raw: dict) -> Person:
+        return _parse_person(raw, self._config.uid_attribute, self._config.attribute_map)
 
     async def _direct_reports(self, manager_dn: str, depth: int) -> list[Person]:
         if depth <= 0:
             return []
         safe_dn = _escape_filter_value(manager_dn)
         raw = await self._search(self._config.base_dn, f"(manager={safe_dn})", self._person_attributes())
-        reports = [_parse_person(r, self._config.uid_attribute) for r in raw]
+        reports = [self._parse(r) for r in raw]
         if depth > 1:
             for report in list(reports):
                 if report.dn:
@@ -255,7 +288,7 @@ class LdapClient:
 
     async def _get_person_by_dn(self, dn: str) -> Person | None:
         raw = await self._search(dn, "(objectClass=*)", self._person_attributes(), scope="BASE", size_limit=1)
-        return _parse_person(raw[0], self._config.uid_attribute) if raw else None
+        return self._parse(raw[0]) if raw else None
 
     async def _search(
         self,
@@ -330,13 +363,23 @@ class LdapClient:
         self._cache[key] = (time.monotonic() + self._config.cache_ttl_seconds, value)
 
 
-def create_ldap_client(config: LdapConfig) -> LdapClient | None:
+def create_ldap_client(config: LdapConfig, scope: str = "") -> LdapClient | None:
     """Return an ``LdapClient`` if LDAP routing is enabled and available.
 
     Returns ``None`` (with a log entry) on any unmet precondition so callers
     can fall back to ``github_user`` without special-casing failure modes.
+    ``scope`` names the project (its directory) so the ``ldap.not_configured`` warning
+    is logged once per project, not once per process: the multi-project hub serves
+    several projects from one process.
     """
     if not config.enabled:
+        return None
+    if not config.server or not config.base_dn:
+        _warn_once(
+            "ldap.not_configured",
+            (scope, config.server, config.base_dn),
+            hint="set ldap.server and ldap.base_dn",
+        )
         return None
     if not _LDAP3_AVAILABLE:
         log.warning("ldap.package_unavailable", hint="pip install sova[ldap]")

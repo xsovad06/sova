@@ -262,7 +262,7 @@ class TestMonitorCIStep:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
-        config.ci.exclude_checks = ["Konflux"]
+        config.ci.exclude_checks = ["Acme CI"]
         config.ci.no_checks_grace_period = 120
         config.ci.poll_interval = 30
         config.ci.max_wait = 600
@@ -270,7 +270,7 @@ class TestMonitorCIStep:
         step = MonitorCIStep()
 
         excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
-        excluded.name = "Red Hat Konflux / build"
+        excluded.name = "Acme CI / build"
         with (
             patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
             patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
@@ -663,14 +663,14 @@ class TestMonitorCIStep:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
-        config.ci.exclude_checks = ["bonfire-tekton"]
+        config.ci.exclude_checks = ["integration-tekton"]
         ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()
 
         passed = MagicMock(is_completed=True, is_passed=True, is_failed=False)
         passed.name = "Tests"
         excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
-        excluded.name = "Red Hat Konflux / rbac-bonfire-tekton / insights-rbac"
+        excluded.name = "Acme CI / service-integration-tekton / service-api"
         with (
             patch.object(step, "_get_local_head_sha", new_callable=AsyncMock, return_value="abc123def456"),
             patch("sova.core.steps.monitor_ci.get_ci_checks_for_sha", new_callable=AsyncMock) as mock_checks,
@@ -686,7 +686,7 @@ class TestMonitorCIStep:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
         config = ProjectConfig()
-        config.ci.exclude_checks = ["bonfire-tekton"]
+        config.ci.exclude_checks = ["integration-tekton"]
         config.ci.max_fix_attempts = 0
         ctx = _make_ctx(tmp_path, pr_number=10, config=config)
         step = MonitorCIStep()

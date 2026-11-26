@@ -94,8 +94,8 @@ class TestAssessSetGet:
         assert result.output.strip() == "ready"
 
     def test_jira_key_prefix_is_normalized(self, tmp_path: Path) -> None:
-        _write_repo(tmp_path, repo="RHCLOUD")
-        _invoke("set", "RHCLOUD-1234", "ready", project=tmp_path)
+        _write_repo(tmp_path, repo="PROJ")
+        _invoke("set", "PROJ-1234", "ready", project=tmp_path)
 
         result = _invoke("get", "1234", project=tmp_path)
         assert result.output.strip() == "ready"
@@ -110,7 +110,7 @@ class TestAssessSetGet:
     def test_non_numeric_issue_is_rejected(self, tmp_path: Path) -> None:
         """The gate reads by integer issue id, so a non-numeric row is unreadable."""
         _write_repo(tmp_path)
-        result = _invoke("set", "RHCLOUD-ABC", "ready", project=tmp_path)
+        result = _invoke("set", "PROJ-ABC", "ready", project=tmp_path)
         assert result.exit_code == 1
         assert "Unrecognized issue number" in result.output
 
@@ -154,7 +154,7 @@ class TestProjectValidation:
         assert not (tmp_path / ".claude" / "sova.db").exists()
 
     @staticmethod
-    def _write_jira_repo(project: Path, *, jira_project_key: str = "RHCLOUD") -> None:
+    def _write_jira_repo(project: Path, *, jira_project_key: str = "PROJ") -> None:
         (project / "sova.toml").write_text(
             f'github_repo = "owner/repo"\n[task_source]\ntype = "jira"\njira_project_key = "{jira_project_key}"\n'
         )
@@ -170,7 +170,7 @@ class TestProjectValidation:
     def test_matching_jira_prefix_accepted(self, tmp_path: Path) -> None:
         self._write_jira_repo(tmp_path)
 
-        result = _invoke("set", "RHCLOUD-1234", "ready", project=tmp_path)
+        result = _invoke("set", "PROJ-1234", "ready", project=tmp_path)
         assert result.exit_code == 0, result.output
 
 

@@ -737,7 +737,7 @@ class TestDoneToday:
 
         midnight = board._local_midnight(self.NOW)
         prs = [
-            self._merged(1, midnight, body="JIRA: https://jira.example.test/browse/RHCLOUD-42", closing=[42]),
+            self._merged(1, midnight, body="JIRA: https://jira.example.test/browse/PROJ-42", closing=[42]),
             self._merged(2, midnight, body="JIRA: https://jira.example.test/browse/ARVAC-7", closing=[99]),
         ]
         prs[1]["author"] = {"login": "dsova"}

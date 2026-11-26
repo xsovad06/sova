@@ -888,14 +888,14 @@ class TestListTasksFiltering:
             email="test@example.com",
             api_token="test-token",
             project_key="TEST",
-            component="RBAC",
+            component="Backend",
         )
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
             return_value=Response(200, json={"issues": []}),
         )
         await adapter.list_tasks(TaskFilters(state="open"))
         body = json.loads(route.calls[0].request.content)
-        assert 'component = "RBAC"' in body["jql"]
+        assert 'component = "Backend"' in body["jql"]
 
     @respx.mock
     async def test_jql_filter_appended(self) -> None:

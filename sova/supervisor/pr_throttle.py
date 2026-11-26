@@ -513,6 +513,7 @@ async def run_post_create_side_effects(
                 github_user=github_user,
                 issue_number=issue_number,
                 pr_number=pr_number,
+                scope=str(project_dir) if project_dir is not None else "",
             )
 
     await _trigger_coderabbit_review(pr_number=pr_number, repo=repo, github_user=github_user, project_dir=project_dir)

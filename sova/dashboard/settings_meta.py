@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sova.config.models import LDAP_PROFILE_FIELDS
+
 
 @dataclass(frozen=True, slots=True)
 class SettingMeta:
@@ -583,7 +585,7 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("task_source.jira_base_url", "JIRA base URL", "Base URL for JIRA API calls", "task_source"),
     SettingMeta("task_source.jira_email", "JIRA email", "Email for JIRA authentication", "task_source"),
-    SettingMeta("task_source.jira_project_key", "JIRA project key", "Jira project key (e.g. RHCLOUD)", "task_source"),
+    SettingMeta("task_source.jira_project_key", "JIRA project key", "Jira project key (e.g. PROJ)", "task_source"),
     SettingMeta("task_source.jira_component", "JIRA component", "Filter issues by Jira component name", "task_source"),
     SettingMeta(
         "task_source.jira_jql_filter",
@@ -854,7 +856,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "ci.exclude_checks",
         "Exclude checks",
-        "Substring patterns for CI checks to skip entirely during polling (e.g. 'bonfire-tekton')",
+        "Substring patterns for CI checks to skip entirely during polling (e.g. 'integration-tekton')",
         "ci",
         "list",
     ),
@@ -1386,13 +1388,13 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "ldap.server",
         "LDAP server",
-        "LDAP server URI (e.g. ldaps://ldap.corp.redhat.com)",
+        "LDAP server URI (e.g. ldaps://ldap.example.com)",
         "ldap",
     ),
     SettingMeta(
         "ldap.base_dn",
         "Base DN",
-        "Search base for people entries (e.g. ou=users,dc=redhat,dc=com)",
+        "Search base for people entries (e.g. ou=users,dc=example,dc=com)",
         "ldap",
     ),
     SettingMeta(
@@ -1418,7 +1420,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "ldap.uid_attribute",
         "UID attribute",
-        "Directory attribute holding a person's unique id (uid for Red Hat LDAP, sAMAccountName for AD)",
+        "Directory attribute holding a person's unique id (uid for OpenLDAP, sAMAccountName for AD)",
         "ldap",
     ),
     SettingMeta(
@@ -1445,6 +1447,14 @@ _REGISTRY: list[SettingMeta] = [
         "ldap.uid_mapping",
         "UID mapping",
         "Maps a github_user to its LDAP uid when the two identifiers differ",
+        "ldap",
+        "object",
+    ),
+    SettingMeta(
+        "ldap.attribute_map",
+        "Profile attribute map",
+        f"Maps a person profile field ({', '.join(LDAP_PROFILE_FIELDS)}) to the directory attribute that holds "
+        "it; entries are merged over the standard inetOrgPerson defaults, and an empty value turns a field off",
         "ldap",
         "object",
     ),

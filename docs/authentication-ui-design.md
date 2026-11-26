@@ -236,7 +236,7 @@ After re-auth, agent automatically retries
 │  ┌──────────────────────────────────────────────────────┐ │
 │  │ Claude Code CLI                             [OK]  │ │
 │  │                                                      │ │
-│  │ Email:           damian.sova@gmail.com              │ │
+│  │ Email:           you@example.com                    │ │
 │  │ Subscription:    Max                                │ │
 │  │ Status:          Authenticated                      │ │
 │  │ Last checked:    2 minutes ago                       │ │

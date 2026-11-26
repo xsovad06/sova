@@ -400,13 +400,13 @@ class TestCreatePRStepJiraBodyCleaning:
             tmp_path,
             task=Task(id="48928", title="Fix parity", body=""),
             issue_number="48928",
-            branch_name="feat/RHCLOUD-48928",
+            branch_name="feat/PROJ-48928",
         )
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = CreatePRStep()
@@ -416,7 +416,7 @@ class TestCreatePRStepJiraBodyCleaning:
         body_arg = mock_create_pr.call_args.kwargs["body"]
         # Should strip "Closes #48928" and add JIRA link
         assert "Closes #48928" not in body_arg
-        assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
+        assert "JIRA: https://jira.example.com/browse/PROJ-48928" in body_arg
 
 
 class TestCreatePRStepClosingSection:
@@ -549,11 +549,11 @@ class TestCreatePRStepJiraTitleBuilding:
 
         ts = TaskSourceConfig(
             type="jira",
-            jira_project_key="RHCLOUD",
-            jira_base_url="https://issues.redhat.com",
+            jira_project_key="PROJ",
+            jira_base_url="https://jira.example.com",
         )
         title = _build_pr_title("Add widget support", "48928", task_source=ts)
-        assert title == "[RHCLOUD-48928] feat: add widget support"
+        assert title == "[PROJ-48928] feat: add widget support"
 
     def test_jira_title_with_conventional_prefix(self) -> None:
         """JIRA PR titles should prepend [KEY-N] and preserve existing type."""
@@ -910,10 +910,10 @@ class TestGithubTitleScope:
         from sova.core.steps.commit_convention import MAX_LINE_LENGTH
         from sova.core.steps.create_pr import _build_pr_title
 
-        ts = TaskSourceConfig(type="jira", jira_project_key="RHCLOUD", jira_base_url="https://issues.redhat.com")
+        ts = TaskSourceConfig(type="jira", jira_project_key="PROJ", jira_base_url="https://jira.example.com")
         title = _build_pr_title("Rework the whole scheduling subsystem " * 5, "4242", task_source=ts)
 
-        assert title.startswith("[RHCLOUD-4242] feat: rework the whole scheduling subsystem")
+        assert title.startswith("[PROJ-4242] feat: rework the whole scheduling subsystem")
         assert len(title) <= MAX_LINE_LENGTH
 
 
@@ -925,7 +925,7 @@ class TestResolveChangedFiles:
         """JIRA titles don't infer a scope, so no git diff should be run."""
         from sova.core.steps.create_pr import CreatePRStep
 
-        ts = TaskSourceConfig(type="jira", jira_project_key="RHCLOUD", jira_base_url="https://issues.redhat.com")
+        ts = TaskSourceConfig(type="jira", jira_project_key="PROJ", jira_base_url="https://jira.example.com")
         ctx = _make_ctx(tmp_path, config=ProjectConfig(task_source=ts))
         result = await CreatePRStep._resolve_changed_files(ctx)
 
@@ -1101,18 +1101,18 @@ class TestCreatePRStepJiraFallbackBody:
             tmp_path,
             task=Task(id="48928", title="Fix parity", body=""),
             issue_number="48928",
-            branch_name="feat/RHCLOUD-48928",
+            branch_name="feat/PROJ-48928",
         )
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
 
         body = CreatePRStep._build_fallback_body(ctx, "Fix parity", "abc123 feat", "x.py | 3 +++")
-        assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48928" in body
+        assert "JIRA: https://jira.example.com/browse/PROJ-48928" in body
         assert "Closes" not in body
 
 
@@ -1243,7 +1243,10 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
-        ctx.config = ProjectConfig(github_user="", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
         mock_client = AsyncMock()
         with patch("sova.adapters.ldap_client.create_ldap_client", return_value=mock_client):
@@ -1258,7 +1261,10 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
-        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="octocat",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = False
@@ -1274,7 +1280,10 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
-        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="octocat",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = True
@@ -1292,9 +1301,12 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None, issue_number="42")
-        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="octocat",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
-        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
+        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=example,dc=com")
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = True
         mock_client.find_manager_chain.return_value = [manager]
@@ -1322,9 +1334,12 @@ class TestCreatePRStepLdapReviewerSuggestion:
         adapter = _mock_adapter()
         adapter.add_reviewer.side_effect = RuntimeError("API error")
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None, issue_number="42")
-        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="octocat",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
-        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
+        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=example,dc=com")
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = True
         mock_client.find_manager_chain.return_value = [manager]
@@ -1351,7 +1366,7 @@ class TestCreatePRStepLdapReviewerSuggestion:
             github_user="octocat", ldap=LdapConfig(enabled=True, uid_mapping={"octocat": "jdoe"})
         )
 
-        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=redhat,dc=com")
+        manager = Person(uid="mgr", dn="uid=mgr,ou=users,dc=example,dc=com")
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = True
         mock_client.find_manager_chain.return_value = [manager]
@@ -1369,7 +1384,10 @@ class TestCreatePRStepLdapReviewerSuggestion:
 
         adapter = _mock_adapter()
         ctx = _make_ctx(tmp_path, adapter=adapter, pr_number=None)
-        ctx.config = ProjectConfig(github_user="octocat", ldap=LdapConfig(enabled=True))
+        ctx.config = ProjectConfig(
+            github_user="octocat",
+            ldap=LdapConfig(enabled=True, server="ldaps://ldap.example.com", base_dn="ou=users,dc=example,dc=com"),
+        )
 
         mock_client = AsyncMock()
         mock_client.check_connectivity.return_value = True

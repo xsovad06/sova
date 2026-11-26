@@ -85,7 +85,7 @@ def _github_adapter(config: ProjectConfig) -> TaskAdapter:
     )
 
 
-# owner/repo, the only github_repo form gh accepts for --repo without a host; a GitLab URL (app-interface) is
+# owner/repo, the only github_repo form gh accepts for --repo without a host; a GitLab URL is
 # not one. ASCII only and matched in full, so a trailing newline or a non-ASCII name is rejected up front
 # instead of by gh. A bare GitLab "group/project" has the same shape and cannot be told apart: the config
 # has no forge field, so it is taken for GitHub and fails at gh.

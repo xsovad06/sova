@@ -135,7 +135,7 @@ If the connection fails, check:
 - API token is set in the environment (`echo $SOVA_TASK_JIRA_API_TOKEN`)
 - Email matches the account that owns the API token
 - `jira_base_url` does not have a trailing slash
-- `jira_project_key` is the short key (e.g., `RHCLOUD`), not the project name
+- `jira_project_key` is the short key (e.g., `PROJ`), not the project name
 
 ## Step 3: Configure JQL Filters
 
@@ -166,15 +166,15 @@ For example, with this config:
 ```toml
 [task_source]
 type = "jira"
-jira_project_key = "RHCLOUD"
-jira_component = "RBAC"
+jira_project_key = "PROJ"
+jira_component = "Backend"
 jira_jql_filter = 'issuetype in (Bug, Story, Task)'
 ```
 
 SOVA generates:
 
 ```
-project = RHCLOUD AND statusCategory != Done AND component = "RBAC" AND (issuetype in (Bug, Story, Task))
+project = PROJ AND statusCategory != Done AND component = "Backend" AND (issuetype in (Bug, Story, Task))
 ```
 
 ### Common JQL filter recipes
@@ -230,11 +230,11 @@ When `jira_component` is set, SOVA automatically appends `component = "COMPONENT
 
 ```toml
 # WRONG: component appears twice in the generated JQL
-jira_component = "RBAC"
-jira_jql_filter = 'component = "RBAC" AND issuetype = Bug'
+jira_component = "Backend"
+jira_jql_filter = 'component = "Backend" AND issuetype = Bug'
 
 # CORRECT: let jira_component handle component filtering
-jira_component = "RBAC"
+jira_component = "Backend"
 jira_jql_filter = 'issuetype = Bug'
 ```
 
@@ -391,7 +391,7 @@ Note: available transitions depend on the issue's current status. Run this for i
 `triaged`, `researched`, `needs_spec`, and `human_only` have no entry in the
 default transition table above and are not meant to gain one: they are SOVA's
 own lifecycle labels, with no corresponding Jira workflow status on most
-boards. A board like RBAC's, for example, has no "Researched" status between
+boards. A typical team board, for example, has no "Researched" status between
 "Backlog" and "In Progress", and should not be forced to invent one just to
 satisfy SOVA.
 
@@ -422,8 +422,8 @@ github_user = "my-github-user"
 type = "jira"
 jira_base_url = "https://acme.atlassian.net"
 jira_email = "developer@example.com"
-jira_project_key = "RHCLOUD"
-jira_component = "RBAC"
+jira_project_key = "PROJ"
+jira_component = "Backend"
 jira_jql_filter = 'issuetype in (Bug, Story, Task) AND sprint in openSprints()'
 
 [task_source.jira_status_mapping]
@@ -448,7 +448,7 @@ export SOVA_TASK_JIRA_API_TOKEN="your-jira-api-token"
 ### What this configuration does
 
 1. Connects to Jira Cloud at `acme.atlassian.net`
-2. Scopes issues to the `RHCLOUD` project, `RBAC` component
+2. Scopes issues to the `PROJ` project, `Backend` component
 3. Filters to bugs, stories, and tasks in open sprints only
 4. Maps five Jira statuses to SOVA states (anything in the `Done` category is automatically mapped to `done`)
 5. Configures explicit transition names for moving issues between states

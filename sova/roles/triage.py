@@ -1275,7 +1275,7 @@ class TriageRole(AgentRole):
         """
         from sova.adapters.ldap_client import create_ldap_client
 
-        client = create_ldap_client(ctx.config.ldap)
+        client = create_ldap_client(ctx.config.ldap, str(ctx.project_dir))
         if client is None:
             return None, False
 

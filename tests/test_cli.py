@@ -2565,7 +2565,7 @@ class TestMergeSubjectCommand:
         assert result.stdout == "Add the Widget (#42)\n"
 
     def test_freeform_does_not_exempt_a_jira_title(self) -> None:
-        result = self._invoke(title="[RHCLOUD-7] perf: add widget", pr_title_format="freeform", is_jira=True)
+        result = self._invoke(title="[PROJ-7] perf: add widget", pr_title_format="freeform", is_jira=True)
 
         assert result.exit_code == 4
         assert "unknown type 'perf'" in result.output
@@ -2655,7 +2655,7 @@ class TestMergeSubjectCommand:
         assert "optional" not in without_ci.output
 
     def test_scope_hint_for_a_jira_title_says_the_scope_is_optional_after_the_key(self) -> None:
-        result = self._invoke(title="[RHCLOUD-7] perf: x", is_jira=True)
+        result = self._invoke(title="[PROJ-7] perf: x", is_jira=True)
 
         assert "(a scope is optional only after a [KEY-N] ticket key)" in result.output
 

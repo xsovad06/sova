@@ -1776,6 +1776,7 @@ class TestRunPostCreateSideEffects:
             github_user="octocat",
             issue_number=None,
             pr_number=1,
+            scope="",
         )
 
     async def test_ldap_disabled_skips_reviewer_suggestion(self) -> None:

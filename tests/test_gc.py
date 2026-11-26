@@ -28,14 +28,14 @@ class TestExtractIssueFromBranch:
         [
             pytest.param("feat/issue-42-login", ("42", None), id="github-issue-branch"),
             pytest.param("fix/issue-100", ("100", None), id="fix-github-branch"),
-            pytest.param("feat/RHCLOUD-123-fix-auth", (None, "RHCLOUD-123"), id="jira-branch"),
+            pytest.param("feat/PROJ-123-fix-auth", (None, "PROJ-123"), id="jira-branch"),
             pytest.param("refactor/PROJ-7-cleanup", (None, "PROJ-7"), id="refactor-jira"),
             pytest.param("main", (None, None), id="no-match"),
             pytest.param("feature/login-page", (None, None), id="no-match-random-branch"),
             pytest.param("chore/issue-5-deps", ("5", None), id="chore-branch"),
             pytest.param("docs/ABC-99-readme", (None, "ABC-99"), id="docs-jira"),
             pytest.param("wip/feat/issue-42", (None, None), id="prefixed-branch-not-matched"),
-            pytest.param("backup/feat/RHCLOUD-9", (None, None), id="archive-branch-not-matched"),
+            pytest.param("backup/feat/PROJ-9", (None, None), id="archive-branch-not-matched"),
         ],
     )
     def test_extract_issue_from_branch(self, branch: str, expected: tuple[str | None, str | None]) -> None:
@@ -125,7 +125,7 @@ class TestCleanupByIssueState:
                 patch(
                     "sova.git.worktree._list_local_branches",
                     new_callable=AsyncMock,
-                    return_value=["feat/RHCLOUD-42-auth"],
+                    return_value=["feat/PROJ-42-auth"],
                 ),
                 patch("sova.git.worktree._has_gone_upstream", new_callable=AsyncMock, return_value=True),
                 patch("sova.git.worktree._list_stashes", new_callable=AsyncMock, return_value=[]),
@@ -134,12 +134,12 @@ class TestCleanupByIssueState:
         assert gc.branches_removed == 1
 
     async def test_jira_worktree_cleaned_when_upstream_gone(self, project: Path) -> None:
-        (project / ".claude" / "worktrees" / "RHCLOUD-42").mkdir()
+        (project / ".claude" / "worktrees" / "PROJ-42").mkdir()
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _ok(stdout=""),
                 _ok(stdout=""),
-                _ok(stdout="feat/RHCLOUD-42-auth\n"),
+                _ok(stdout="feat/PROJ-42-auth\n"),
                 _ok(stdout=""),
             ]
             with (
@@ -154,12 +154,12 @@ class TestCleanupByIssueState:
         assert gc.worktrees_removed == 1
 
     async def test_jira_worktree_kept_when_upstream_tracked(self, project: Path) -> None:
-        (project / ".claude" / "worktrees" / "RHCLOUD-42").mkdir()
+        (project / ".claude" / "worktrees" / "PROJ-42").mkdir()
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _ok(stdout=""),
                 _ok(stdout=""),
-                _ok(stdout="feat/RHCLOUD-42-auth\n"),
+                _ok(stdout="feat/PROJ-42-auth\n"),
             ]
             with (
                 patch("sova.git.worktree.cleanup_worktree", new_callable=AsyncMock) as mock_cw,

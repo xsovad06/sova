@@ -110,8 +110,8 @@ class TestBuildMergeSubject:
             pytest.param("feat(core): add widget(#42)", "feat(core): add widget (#42)", id="suffix-without-space"),
             pytest.param("feat(core): add widget  (#42)", "feat(core): add widget (#42)", id="suffix-extra-space"),
             pytest.param(
-                "[RHCLOUD-7] feat(core): add widget",
-                "[RHCLOUD-7] feat(core): add widget (#42)",
+                "[PROJ-7] feat(core): add widget",
+                "[PROJ-7] feat(core): add widget (#42)",
                 id="jira-key-kept-not-validated-as-type",
             ),
             pytest.param(
@@ -121,7 +121,7 @@ class TestBuildMergeSubject:
             ),
             pytest.param("  feat(core): add widget  ", "feat(core): add widget (#42)", id="trimmed"),
             pytest.param(
-                "[RHCLOUD-7] feat: add widget", "[RHCLOUD-7] feat: add widget (#42)", id="jira-scopeless-as-create-pr"
+                "[PROJ-7] feat: add widget", "[PROJ-7] feat: add widget (#42)", id="jira-scopeless-as-create-pr"
             ),
         ],
     )
@@ -146,7 +146,7 @@ class TestBuildMergeSubject:
         assert build_merge_subject(title, 42, types=TYPES, scopes=SCOPES) == f"{title} (#42)"
 
     def test_jira_title_at_the_limit_with_its_key_is_valid(self) -> None:
-        prefix = "[RHCLOUD-12345] feat(core): "
+        prefix = "[PROJ-12345] feat(core): "
         title = prefix + "a" * (MAX_LINE_LENGTH - len(prefix))
         assert build_merge_subject(title, 42, types=TYPES, scopes=SCOPES, jira=True) == f"{title} (#42)"
 
@@ -158,10 +158,10 @@ class TestBuildMergeSubject:
             pytest.param("feat: x", "missing scope", id="missing-scope"),
             pytest.param("feat(core): " + "a" * 61, "73 characters", id="length"),
             pytest.param("feat(core): one\ntwo", "several lines", id="multi-line"),
-            pytest.param("[RHCLOUD-7] perf(core): x", "unknown type 'perf'", id="jira-prefixed-invalid"),
-            pytest.param("[RHCLOUD-7] feat(bogus): x", "unknown scope 'bogus'", id="jira-unknown-scope"),
+            pytest.param("[PROJ-7] perf(core): x", "unknown type 'perf'", id="jira-prefixed-invalid"),
+            pytest.param("[PROJ-7] feat(bogus): x", "unknown scope 'bogus'", id="jira-unknown-scope"),
             pytest.param("   ", "empty", id="empty"),
-            pytest.param("[RHCLOUD-12345] feat(core): " + "a" * 50, "characters, over the 72", id="jira-key-counts"),
+            pytest.param("[PROJ-12345] feat(core): " + "a" * 50, "characters, over the 72", id="jira-key-counts"),
         ],
     )
     def test_invalid_names_the_problem(self, title: str, message: str) -> None:

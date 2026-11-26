@@ -92,7 +92,7 @@ class Priority(StrEnum):
         """Map a Jira priority name to a level, or None when the name is unrecognized.
 
         Jira's priority scheme is configurable per instance, so the built-in
-        table covers the common defaults plus the redhat.atlassian.net names
+        table covers the common defaults plus customized schemes
         ('P1 - Critical', 'Critical (migrated)', MoSCoW). ``overrides`` (the
         operator's ``task_source.jira_priority_mapping``, Jira name to level
         value) is checked first and wins over the built-in table. Matching is

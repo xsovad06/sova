@@ -1711,8 +1711,8 @@ github_repo = "user/repo"
 
 [mcp.atlassian]
 enabled = true
-jira_url = "https://issues.redhat.com"
-confluence_url = "https://docs.engineering.redhat.com"
+jira_url = "https://jira.example.com"
+confluence_url = "https://wiki.example.com"
 auth_type = "pat"
 token = "secret-token"
 read_only = true
@@ -1721,8 +1721,8 @@ toolsets = ["jira_read", "confluence_read"]
         (tmp_path / "sova.toml").write_text(toml_content)
         cfg = load_config(tmp_path)
         assert cfg.mcp.atlassian.enabled is True
-        assert cfg.mcp.atlassian.jira_url == "https://issues.redhat.com"
-        assert cfg.mcp.atlassian.confluence_url == "https://docs.engineering.redhat.com"
+        assert cfg.mcp.atlassian.jira_url == "https://jira.example.com"
+        assert cfg.mcp.atlassian.confluence_url == "https://wiki.example.com"
         assert cfg.mcp.atlassian.auth_type == "pat"
         assert cfg.mcp.atlassian.token == "secret-token"
         assert cfg.mcp.atlassian.toolsets == ["jira_read", "confluence_read"]
@@ -1737,7 +1737,7 @@ def test_ldap_env_overrides_beat_toml(tmp_path: Path, monkeypatch: pytest.Monkey
     sova.toml.
     """
     toml_file = tmp_path / "sova.toml"
-    toml_file.write_text('[ldap]\nenabled = false\nserver = "ldaps://ldap.corp.redhat.com"\n')
+    toml_file.write_text('[ldap]\nenabled = false\nserver = "ldaps://ldap.example.com"\n')
     monkeypatch.setenv("SOVA_LDAP_ENABLED", "true")
     monkeypatch.setenv("SOVA_LDAP_SERVER", "ldaps://ldap.override.example.com")
 
@@ -1834,12 +1834,12 @@ class TestConfigGet:
     """
 
     def test_get_prints_a_string_value(self, tmp_path: Path) -> None:
-        (tmp_path / "sova.toml").write_text('[task_source]\njira_jql_filter = "project = RHCLOUD"\n')
+        (tmp_path / "sova.toml").write_text('[task_source]\njira_jql_filter = "project = PROJ"\n')
 
         result = _run_config_get("task_source.jira_jql_filter", tmp_path)
 
         assert result.exit_code == 0
-        assert result.output.strip() == "project = RHCLOUD"
+        assert result.output.strip() == "project = PROJ"
 
     def test_get_prints_a_list_value_as_json(self, tmp_path: Path) -> None:
         (tmp_path / "sova.toml").write_text('[triage]\nskip_labels = ["wontfix", "duplicate"]\n')

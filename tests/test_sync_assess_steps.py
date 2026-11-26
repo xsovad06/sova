@@ -772,8 +772,8 @@ class TestWorktreeStepJira:
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = WorktreeStep()
@@ -782,7 +782,7 @@ class TestWorktreeStepJira:
             mock_wt.return_value = MagicMock(path=tmp_path / "wt")
             await step.execute(ctx)
 
-        assert ctx.branch_name == "feat/RHCLOUD-48767-Add-security-logging"
+        assert ctx.branch_name == "feat/PROJ-48767-Add-security-logging"
 
     async def test_jira_branch_name_without_task_title(self, tmp_path: Path) -> None:
         """JIRA branch name without task title should use bare JIRA key."""
@@ -793,8 +793,8 @@ class TestWorktreeStepJira:
         ctx.config = ProjectConfig(
             task_source=TaskSourceConfig(
                 type="jira",
-                jira_project_key="RHCLOUD",
-                jira_base_url="https://issues.redhat.com",
+                jira_project_key="PROJ",
+                jira_base_url="https://jira.example.com",
             )
         )
         step = WorktreeStep()
@@ -803,7 +803,7 @@ class TestWorktreeStepJira:
             mock_wt.return_value = MagicMock(path=tmp_path / "wt")
             await step.execute(ctx)
 
-        assert ctx.branch_name == "feat/RHCLOUD-48767"
+        assert ctx.branch_name == "feat/PROJ-48767"
 
     async def test_github_branch_name_unchanged(self, tmp_path: Path) -> None:
         """GitHub projects should still produce feat/issue-N branch names."""

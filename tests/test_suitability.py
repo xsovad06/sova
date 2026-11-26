@@ -373,7 +373,7 @@ class TestConsiderDependenciesFalse:
         `int(t.id)`), so a caller that does not consider dependencies must
         never construct one: this must not raise.
         """
-        task = Task(id="RHCLOUD-42", title="x", labels=["agent:human-only"])
+        task = Task(id="PROJ-42", title="x", labels=["agent:human-only"])
         assert assess_suitability(task, consider_dependencies=False).mode == SuitabilityMode.HUMAN
 
 
@@ -389,11 +389,11 @@ class TestSuitabilityMode:
 
     def test_non_numeric_task_id_is_blocked_not_crashing(self) -> None:
         """A Jira-style id can never be a graph node, so dependency data is unavailable."""
-        task = Task(id="RHCLOUD-42", title="x", labels=[])
+        task = Task(id="PROJ-42", title="x", labels=[])
         assert assess_suitability(task, DependencyGraph([])).mode == SuitabilityMode.BLOCKED
 
     def test_non_numeric_task_id_still_honours_labels(self) -> None:
-        task = Task(id="RHCLOUD-42", title="x", labels=["agent:human-only"])
+        task = Task(id="PROJ-42", title="x", labels=["agent:human-only"])
         assert assess_suitability(task, DependencyGraph([])).mode == SuitabilityMode.HUMAN
 
 

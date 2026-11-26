@@ -4,7 +4,6 @@
 **Date**: 2026-07-20
 **Related**:
 - [Implementation Specification](awareness-implementation-spec.md)
-- [Hackathon Plan (Google Doc)](https://docs.google.com/document/d/1vX0GRPioJzgmhaGfmMD5yoydTuGC9zWvGpoDrwE9KJg/edit)
 
 ## 1. Problem Statement
 
