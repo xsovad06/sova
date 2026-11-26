@@ -1508,8 +1508,10 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "dashboard.csrf_secret",
         "CSRF secret",
-        "Unblocks state-changing auth endpoints on a non-loopback bind. Only its "
-        "presence is checked, never its value: an explicit opt-in, not a credential",
+        "Signs the CSRF token on a non-loopback bind, where every API request needs it; "
+        "without it, or with one shorter than 32 characters or with fewer than 8 distinct characters, "
+        "such a bind refuses every request but its health probes and self-authenticating machine endpoints. "
+        "Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'. Unused on a loopback bind",
         "dashboard",
         "secret",
     ),

@@ -20,6 +20,9 @@ from sova.dashboard.security import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, require_
 from tests.conftest import agents_page_source, closing_stand_in
 from tests.conftest import csrf_request_headers as _csrf_request_headers
 
+# Long and varied enough for is_strong_csrf_secret(), which a non-loopback bind requires.
+_STRONG_SECRET = "Kq7vN2xR9mPz4LwT8bYc1HdF6sJg3AeU"
+
 # Uses the shared per-worker in-memory DB, emptied before each test
 # (see ``tests/conftest.py:reset_db_rows``). A test here that leaves a
 # background task touching the DB when its event loop closes (the real
@@ -987,6 +990,12 @@ class TestMultiProject:
         assert resp.status_code == 200
         assert "Issue " in resp.text and "#42" in resp.text
 
+    @pytest.mark.parametrize("path", ["/p/nosuchproject/work", "/p/nosuchproject/lifecycle/42"])
+    async def test_project_page_for_an_unregistered_slug_is_404(self, multi_client: AsyncClient, path: str) -> None:
+        resp = await multi_client.get(path)
+        assert resp.status_code == 404
+        assert "nosuchproject" not in resp.text
+
     async def test_uninstall_api_accepts_json_body(self, multi_client: AsyncClient) -> None:
         from unittest.mock import Mock, patch
 
@@ -1020,6 +1029,137 @@ class TestMultiProject:
         assert data["removed"] is False
         assert data["files_cleaned"] is False
         mock_uninstall.assert_not_called()
+
+    async def test_uninstall_without_remove_files_only_unregisters(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import Mock
+
+        with patch("sova.cli.commands.project._uninstall", new_callable=Mock) as mock_uninstall:
+            resp = await multi_client.post("/api/projects/uninstall", json={"slug": "Alpha", "remove_files": False})
+        assert resp.status_code == 200
+        assert resp.json() == {"removed": True, "files_cleaned": False}
+        mock_uninstall.assert_not_called()
+        assert (await multi_client.get("/p/alpha/work")).status_code == 404
+
+    async def test_uninstall_whose_file_removal_exits_still_unregisters(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import Mock
+
+        with patch("sova.cli.commands.project._uninstall", new_callable=Mock, side_effect=SystemExit(1)):
+            resp = await multi_client.post("/api/projects/uninstall", json={"slug": "alpha", "remove_files": True})
+        assert resp.status_code == 200
+        assert resp.json() == {"removed": True, "files_cleaned": False}
+
+    async def test_uninstall_with_a_failed_removal_reports_files_not_cleaned(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import Mock
+
+        with patch("sova.cli.commands.project._uninstall", new_callable=Mock, return_value=["CLAUDE.md"]):
+            resp = await multi_client.post("/api/projects/uninstall", json={"slug": "alpha", "remove_files": True})
+        assert resp.json() == {"removed": True, "files_cleaned": False}
+
+    async def test_register_with_an_invalid_slug_is_400(self, multi_client: AsyncClient, setup_root_tmp: Path) -> None:
+        (setup_root_tmp / "gamma").mkdir()
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db:
+            resp = await multi_client.post(
+                "/api/projects/register", json={"path": str(setup_root_tmp / "gamma"), "slug": "!!!"}
+            )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Invalid project slug"
+        init_db.assert_not_awaited()
+
+    async def test_openapi_documents_register_400_and_project_page_404(self, multi_client: AsyncClient) -> None:
+        paths = (await multi_client.get("/openapi.json")).json()["paths"]
+        assert "400" in paths["/api/projects/register"]["post"]["responses"]
+        project_pages = [path for path in paths if path.startswith("/p/{slug}/") and "get" in paths[path]]
+        documented = [path for path in project_pages if "404" in paths[path]["get"]["responses"]]
+        assert "/p/{slug}/work" in documented
+        assert "/p/{slug}/supervisor" in documented
+        assert "/p/{slug}/dashboard" not in documented
+
+    async def test_register_inside_setup_roots_uses_the_resolved_path(
+        self, multi_client: AsyncClient, setup_root_tmp: Path
+    ) -> None:
+        project = setup_root_tmp / "gamma"
+        project.mkdir()
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db:
+            resp = await multi_client.post(
+                "/api/projects/register", json={"path": f"{setup_root_tmp}/x/../gamma/", "slug": "gamma"}
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"slug": "gamma", "path": str(project.resolve())}
+        init_db.assert_awaited_once_with(project.resolve())
+
+    async def test_register_an_already_registered_path_keeps_its_slug(
+        self, multi_client: AsyncClient, setup_root_tmp: Path
+    ) -> None:
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock):
+            resp = await multi_client.post(
+                "/api/projects/register", json={"path": str(setup_root_tmp / "project-alpha"), "slug": "alpha"}
+            )
+        assert resp.status_code == 200
+        assert resp.json()["slug"] == "alpha"
+
+    @pytest.mark.parametrize("case", ["outside", "outside-slash", "dotdot", "symlink", "file", "missing"])
+    async def test_register_a_bad_path_is_one_generic_400(
+        self, multi_client: AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+    ) -> None:
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        (allowed / "notes.txt").write_text("x", encoding="utf-8")
+        (allowed / "escape").symlink_to(outside, target_is_directory=True)
+        monkeypatch.setenv("SOVA_DASHBOARD_SETUP_ROOTS", f'["{allowed}"]')
+        path = {
+            "outside": str(outside),
+            "outside-slash": f"{outside}/",
+            "dotdot": f"{allowed}/../outside",
+            "symlink": str(allowed / "escape"),
+            "file": str(allowed / "notes.txt"),
+            "missing": str(allowed / "missing"),
+        }[case]
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db:
+            resp = await multi_client.post("/api/projects/register", json={"path": path})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Path is not a project directory the dashboard may register"
+        init_db.assert_not_awaited()
+
+    @pytest.mark.parametrize("path", ["", "   ", ".", "sub", "./sub"])
+    async def test_register_an_empty_or_relative_path_is_the_generic_400(
+        self, multi_client: AsyncClient, setup_root_tmp: Path, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Resolved against the working directory, these would name a directory inside the setup roots."""
+        (setup_root_tmp / "sub").mkdir()
+        monkeypatch.chdir(setup_root_tmp)
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db:
+            resp = await multi_client.post("/api/projects/register", json={"path": path})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Path is not a project directory the dashboard may register"
+        init_db.assert_not_awaited()
+
+    async def test_register_with_setup_roots_unset_follows_the_wizard_default(
+        self, multi_client: AsyncClient, tmp_path: Path
+    ) -> None:
+        """The wizard's default root is the home directory, which the test harness points elsewhere."""
+        project = tmp_path / "not-under-home"
+        project.mkdir()
+        with patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db:
+            resp = await multi_client.post("/api/projects/register", json={"path": str(project)})
+        assert resp.status_code == 400
+        init_db.assert_not_awaited()
+
+    async def test_register_a_directory_that_vanishes_is_the_generic_path_400(
+        self, multi_client: AsyncClient, setup_root_tmp: Path
+    ) -> None:
+        """Only a bad slug says "Invalid project slug"; any other registry ValueError is the path 400."""
+        project = setup_root_tmp / "vanishing"
+        project.mkdir()
+        with (
+            patch("sova.config.registry.register_project", side_effect=ValueError("Not a directory: x")),
+            patch("sova.dashboard.app.init_db_for_project", new_callable=AsyncMock) as init_db,
+        ):
+            resp = await multi_client.post("/api/projects/register", json={"path": str(project), "slug": "ok"})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Path is not a project directory the dashboard may register"
+        init_db.assert_not_awaited()
 
     async def test_try_load_config_returns_none_on_broken_toml(self, tmp_path):
         """_try_load_config returns None when the project has invalid config."""
@@ -1235,10 +1375,13 @@ class TestWebSocketAgentStatus:
         from starlette.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "x" * 32)
+        from sova.dashboard.security import sign_csrf_token
+
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", _STRONG_SECRET)
         app = create_app(multi_project=False, host="192.168.1.10", port=8111)
         assert app.state.csrf_fail_closed is False
         client = TestClient(app)
+        client.cookies.set(CSRF_COOKIE_NAME, sign_csrf_token(_STRONG_SECRET))
         with client.websocket_connect("/api/ws/agents/status", headers={"origin": "http://192.168.1.10:8111"}) as ws:
             assert ws.receive_json()["type"] == "status_update"
         with (
@@ -1546,10 +1689,40 @@ class TestDashboardCsrfGuard:
     async def test_nonloopback_bind_with_secret(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, fail_closed: bool
     ) -> None:
-        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", _STRONG_SECRET)
         app = create_app(project_dir=tmp_path, host=host, port=8111)
         assert app.state.is_loopback_bind is False
         assert app.state.csrf_fail_closed is fail_closed
+
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            pytest.param("1", id="pre-1568-opt-in-value"),
+            pytest.param("operator-secret", id="too-short"),
+            pytest.param("a" * 40, id="long-but-one-character"),
+        ],
+    )
+    async def test_a_weak_secret_fails_closed_with_a_clear_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, secret: str
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", secret)
+        with capture_logs() as logs:
+            app = create_app(project_dir=tmp_path, host="192.168.1.5", port=8111)
+        assert app.state.csrf_fail_closed is True
+        assert app.state.csrf_signing_secret == ""
+        weak = [e for e in logs if e["event"] == "dashboard.csrf_secret_too_weak"]
+        assert len(weak) == 1
+        assert "secrets.token_urlsafe(32)" in weak[0]["hint"]
+        assert secret not in [value for event in logs for value in event.values()]
+
+    async def test_a_weak_secret_does_not_matter_on_a_loopback_bind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "1")
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        assert app.state.csrf_fail_closed is False
 
     async def test_port_env_beats_toml_port(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "sova.toml").write_text("[dashboard]\nport = 8111\n")
@@ -1624,7 +1797,7 @@ class TestDashboardCsrfGuard:
         """Even with a matching cookie/header and a configured secret, a wildcard
         bind must reject: there is no real origin it could ever match (issue
         #1020 review)."""
-        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", "test-secret")
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", _STRONG_SECRET)
         app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
         self._mount_guarded_route(app)
         transport = ASGITransport(app=app)

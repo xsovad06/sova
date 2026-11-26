@@ -16,3 +16,9 @@ paths = [
     '''tests/test_fail_fast_gaps\.py''',
     '''tests/test_claude_stream\.py''',
 ]
+
+[[allowlists]]
+description = "The fake CSRF signing secret the dashboard tests use (long enough for is_strong_csrf_secret)"
+regexes = [
+    '''Kq7vN2xR9mPz4LwT8bYc1HdF6sJg3AeU''',
+]

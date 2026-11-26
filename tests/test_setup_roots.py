@@ -86,8 +86,8 @@ async def test_root_configured_as_symlink_allows_its_target(
     link_root = tmp_path / "link-root"
     link_root.symlink_to(target, target_is_directory=True)
     monkeypatch.setenv("SOVA_DASHBOARD_SETUP_ROOTS", json.dumps([str(link_root)]))
-    assert setup_router._resolve_allowed_path(str(link_root / "proj")) == (target / "proj").resolve()
-    assert setup_router._resolve_allowed_path(str(target / "proj")) == (target / "proj").resolve()
+    assert setup_router.resolve_allowed_setup_path(str(link_root / "proj")) == (target / "proj").resolve()
+    assert setup_router.resolve_allowed_setup_path(str(target / "proj")) == (target / "proj").resolve()
 
 
 async def test_path_inside_root_is_allowed(client: AsyncClient, roots) -> None:

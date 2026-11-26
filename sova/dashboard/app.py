@@ -75,10 +75,16 @@ from sova.dashboard.routers import (
     work,
 )
 from sova.dashboard.security import (
+    CSRF_SECRET_MIN_DISTINCT_CHARS,
+    CSRF_SECRET_MIN_LENGTH,
+    FAIL_CLOSED_DETAIL,
+    CsrfCookieRefreshMiddleware,
     ProxyIdentityMiddleware,
     build_allowed_hosts,
     build_allowed_origins,
+    is_fail_closed_exempt,
     is_loopback_host,
+    is_strong_csrf_secret,
     is_wildcard_host,
     issue_csrf_cookie,
     proxy_hostnames,
@@ -110,6 +116,15 @@ from sova.utils.process import is_process_alive
 from sova.utils.version import get_code_staleness, record_startup_code_sha
 
 log = get_logger(component="dashboard.app")
+
+
+_REGISTER_PATH_REJECTED_DETAIL = "Path is not a project directory the dashboard may register"
+# OpenAPI note for every /p/{slug} page: _project_page() answers 404 for a slug the registry does not hold.
+_UNKNOWN_PROJECT_RESPONSE: dict[int | str, dict[str, object]] = {404: {"description": "Unknown project"}}
+
+# Extra Host header values TrustedHostMiddleware accepts. Empty in production; tests/conftest.py sets
+# the test transports' hosts ("test", "testserver") for the length of a test session.
+HARNESS_TRUSTED_HOSTS: tuple[str, ...] = ()
 
 
 class RegisterRequest(BaseModel):
@@ -955,48 +970,66 @@ def create_app(
     # A wildcard bind (0.0.0.0, ::) has no computable allowed-origin entry a real
     # browser could ever send, so it fails closed even with a secret configured
     # (see is_wildcard_host docstring in sova/dashboard/security.py).
+    # A secret too weak to key the signed token's HMAC (an opt-in value such as "1" from before issue
+    # #1568, when only its presence was checked) fails closed like a missing one.
+    weak_secret = bool(cfg.dashboard.csrf_secret) and not is_strong_csrf_secret(cfg.dashboard.csrf_secret)
     app.state.csrf_fail_closed = not app.state.is_loopback_bind and (
-        is_wildcard_host(host) or not cfg.dashboard.csrf_secret
+        is_wildcard_host(host) or not cfg.dashboard.csrf_secret or weak_secret
     )
     if app.state.csrf_fail_closed:
-        log.warning("dashboard.nonloopback_no_secret", host=host, port=port, wildcard=is_wildcard_host(host))
+        # A present but weak secret on a specific host gets only the event naming that fix.
+        if weak_secret and not is_wildcard_host(host):
+            log.error(
+                "dashboard.csrf_secret_too_weak",
+                host=host,
+                min_length=CSRF_SECRET_MIN_LENGTH,
+                min_distinct_chars=CSRF_SECRET_MIN_DISTINCT_CHARS,
+                hint="generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'",
+            )
+        else:
+            log.warning("dashboard.nonloopback_no_secret", host=host, port=port, wildcard=is_wildcard_host(host))
+    # Set only on a non-loopback bind that has a secret: the CSRF token is then signed, and reads need
+    # it too. A loopback bind keeps the plain double-submit pair the MCP operator client sends.
+    app.state.csrf_signing_secret = (
+        cfg.dashboard.csrf_secret if not app.state.is_loopback_bind and not app.state.csrf_fail_closed else ""
+    )
 
     # Host header validation (Starlette's TrustedHostMiddleware). A wildcard bind has
     # no single derivable host (the browser sends the server's real LAN IP/hostname,
     # never the literal wildcard), so there is nothing meaningful to allowlist here.
-    # The CSRF guard's fail-closed behavior above only covers state-changing routes;
-    # a GET on a wildcard bind is still reachable through a spoofed Host (e.g. DNS
-    # rebinding), matching is_wildcard_host's docstring in security.py. That is the
-    # accepted "access to the bound interface implies access to the dashboard"
-    # deployment model (`docs/architecture-deep-dive.md`, "Dashboard access control"),
-    # not a gap this middleware closes: fully closing it needs an operator-supplied
-    # trusted-host list for wildcard binds, which is a config surface this PR does
-    # not add.
+    # A wildcard bind is fail-closed, and the `refuse_when_fail_closed` middleware below refuses
+    # every request there but the status probes and the independently authenticated machine endpoints
+    # (`is_fail_closed_exempt`), pages included, so a spoofed Host (e.g. DNS rebinding) reaches nothing
+    # that renders project data.
     #
-    # "test"/"testserver" are permanently included: httpx's ASGITransport (this
-    # repo's dashboard test harness, used across dozens of test modules) sends
-    # Host: test for the conventional base_url="http://test", and "testserver"
-    # is Starlette's own TestClient default. Neither is a registrable production
-    # hostname, and even a spoofed "Host: test" against a real deployment still
-    # cannot pass the separate Origin/CSRF guard above, which never allowlists
-    # it: that guard, not this middleware, carries the real protection.
-    _TEST_TRANSPORT_HOSTS = ("test", "testserver")
+    # The test harness's transport hosts ("test" for httpx's base_url="http://test", "testserver" for
+    # Starlette's TestClient) are trusted only when tests/conftest.py sets HARNESS_TRUSTED_HOSTS.
     trusted_hosts = (
-        ["*"] if is_wildcard_host(host) else [*build_allowed_hosts(host, proxy_origins), *_TEST_TRANSPORT_HOSTS]
+        ["*"] if is_wildcard_host(host) else [*build_allowed_hosts(host, proxy_origins), *HARNESS_TRUSTED_HOSTS]
     )
+    # Added first, so it runs inside the Host and proxy identity checks below: a request they refuse
+    # never gets its signed CSRF cookie renewed.
+    app.add_middleware(CsrfCookieRefreshMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
-    if proxy_origins:
-        # Added after TrustedHostMiddleware, so it runs before it: a request is identity-checked
-        # before anything routes it, and the later @app.middleware layers still add the security
-        # headers to its 403.
-        app.add_middleware(
-            ProxyIdentityMiddleware,
-            proxy_hosts=proxy_hostnames(proxy_origins),
-            allowed_logins=cfg.dashboard.proxy_allowed_logins,
+    # Installed whatever proxy_origins holds, and added after TrustedHostMiddleware so it runs before
+    # it: the later @app.middleware layers still add the security headers to its 403. With no proxy
+    # origin the login allowlist is empty, so a request carrying a proxy marker header is refused
+    # whatever login it sends (an operator who clears proxy_origins while Serve still forwards turns
+    # remote access off). The allowlist is read once here, from the start directory's config.
+    app.add_middleware(
+        ProxyIdentityMiddleware,
+        proxy_hosts=proxy_hostnames(proxy_origins),
+        allowed_logins=cfg.dashboard.proxy_allowed_logins if proxy_origins else (),
+    )
+    if proxy_origins and not cfg.dashboard.proxy_allowed_logins:
+        log.warning("dashboard.proxy_no_allowed_logins", proxy_origins=list(proxy_origins))
+    elif not proxy_origins and cfg.dashboard.proxy_allowed_logins:
+        log.warning(
+            "dashboard.proxy_logins_ignored",
+            reason="dashboard.proxy_origins is empty, so every proxied request is refused",
+            proxy_allowed_logins=list(cfg.dashboard.proxy_allowed_logins),
         )
-        if not cfg.dashboard.proxy_allowed_logins:
-            log.warning("dashboard.proxy_no_allowed_logins", proxy_origins=list(proxy_origins))
 
     if rate_limit > 0:
         # The middleware limits only the routes declared on the app itself (/healthz, the
@@ -1032,6 +1065,11 @@ def create_app(
             projects = list_projects()
             if not projects:
                 checks["db"] = await _check_db_health()
+            elif getattr(app.state, "csrf_fail_closed", False):
+                # This probe is reachable without a token on a fail-closed bind, so it names no project:
+                # one aggregate result, never a `db_<slug>` key an unauthenticated client could enumerate.
+                results = [await _check_db_health(project_dir=Path(path_str)) for path_str in projects.values()]
+                checks["db"] = "ok" if all(status == "ok" for status in results) else "fail"
             else:
                 for slug, path_str in projects.items():
                     checks[f"db_{slug}"] = await _check_db_health(project_dir=Path(path_str))
@@ -1071,6 +1109,22 @@ def create_app(
         )
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+
+    @app.middleware("http")
+    async def refuse_when_fail_closed(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        """Refuse every request on a fail-closed bind, pages included, but the exempt ones.
+
+        The CSRF guard already refuses the API routers there, but a page renders server-side data
+        (the hub lists every registered project path), so a page must not render either. The status
+        probes, the agent cards and the machine endpoints that carry their own authentication (telemetry
+        ingest, MCP, the A2A cancel route) stay reachable (`is_fail_closed_exempt`). Read per request, not at
+        startup, so the decision always follows `app.state.csrf_fail_closed`.
+        """
+        if getattr(request.app.state, "csrf_fail_closed", False) and not is_fail_closed_exempt(request.url.path):
+            return JSONResponse({"detail": FAIL_CLOSED_DETAIL}, status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def static_cache_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -1194,9 +1248,82 @@ def _setup_single_project(
     _register_a2a_routes(app)
 
 
+def _resolve_registrable_dir(raw: str) -> Path | None:
+    """The resolved directory `raw` names inside the setup roots, or None when it is not one.
+
+    An empty or relative path is refused before resolving: `.resolve()` would otherwise turn it into
+    the server's working directory (or one under it), which usually sits inside the default `~` root.
+    Blocking (resolve, stat), so the caller runs it in a thread.
+    """
+    try:
+        expanded = Path(raw).expanduser() if raw.strip() else None
+    except RuntimeError:  # `~nosuchuser/x`
+        return None
+    if expanded is None or not expanded.is_absolute():
+        return None
+    try:
+        resolved = setup.resolve_allowed_setup_path(raw)
+    except HTTPException:
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+async def _register_project(req: RegisterRequest) -> dict:
+    """Register a project directory inside the setup roots and initialize its database.
+
+    One generic 400 whatever is wrong with the path, so the answer never reveals whether a path
+    outside the setup roots exists. The roots are the setup wizard's own (`dashboard.setup_roots`).
+    """
+    from sova.config.registry import InvalidSlugError, register_project
+
+    def _check_and_register() -> tuple[Path, str] | None:
+        # One thread for the resolve, the stat and the registry write (file I/O), so none of it blocks the loop.
+        resolved = _resolve_registrable_dir(req.path)
+        if resolved is None:
+            return None
+        return resolved, register_project(resolved, req.slug)
+
+    try:
+        registered = await asyncio.to_thread(_check_and_register)
+    except InvalidSlugError as exc:
+        raise HTTPException(status_code=400, detail="Invalid project slug") from exc
+    except ValueError as exc:
+        # The directory vanished between the check and registration.
+        raise HTTPException(status_code=400, detail=_REGISTER_PATH_REJECTED_DETAIL) from exc
+    if registered is None:
+        raise HTTPException(status_code=400, detail=_REGISTER_PATH_REJECTED_DETAIL)
+    p, result_slug = registered
+    await init_db_for_project(p)
+    return {"slug": result_slug, "path": str(p)}
+
+
+def _uninstall_project(req: UninstallRequest) -> dict[str, bool]:
+    """Unregister a project, first removing its SOVA files when asked to."""
+    from sova.config.registry import get_project_path, unregister_project
+
+    slug = req.slug.lower()
+    project_path = get_project_path(slug)
+    if project_path is None or not req.remove_files:
+        return {"removed": unregister_project(slug), "files_cleaned": False}
+
+    from sova.cli.commands.project import _uninstall
+
+    try:
+        failures = _uninstall(
+            path=project_path,
+            remove_commands=req.remove_commands,
+            remove_rules=req.remove_rules,
+            remove_memory=req.remove_memory,
+            remove_config=req.remove_config,
+        )
+    except SystemExit:
+        return {"removed": unregister_project(slug), "files_cleaned": False}
+    return {"removed": True, "files_cleaned": len(failures) == 0}
+
+
 def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     """Configure routes for multi-project mode."""
-    from sova.config.registry import register_project, unregister_project
+    from sova.config.registry import unregister_project
     from sova.dashboard.middleware import ProjectContextMiddleware
     from sova.dashboard.routers import fleet_manager
 
@@ -1216,16 +1343,18 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "home.html", {"projects": projects}))
 
     # Project API
-    @app.get("/api/projects")
+    # Guarded like every router: a read needs the signed cookie on a non-loopback bind.
+    @app.get("/api/projects", dependencies=[Depends(require_same_origin_csrf)])
     async def api_list_projects() -> dict:
         return {"projects": list_projects()}
 
-    @app.post("/api/projects/register", dependencies=[Depends(require_same_origin_csrf)])
+    @app.post(
+        "/api/projects/register",
+        dependencies=[Depends(require_same_origin_csrf)],
+        responses={400: {"description": "The path or slug cannot be registered"}},
+    )
     async def api_register_project(req: RegisterRequest) -> dict:
-        p = Path(req.path)
-        result_slug = register_project(p, req.slug)
-        await init_db_for_project(p)
-        return {"slug": result_slug, "path": str(p)}
+        return await _register_project(req)
 
     @app.post("/api/projects/unregister", dependencies=[Depends(require_same_origin_csrf)])
     async def api_unregister_project(req: UnregisterRequest) -> dict:
@@ -1234,32 +1363,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.post("/api/projects/uninstall", dependencies=[Depends(require_same_origin_csrf)])
     async def api_uninstall_project(req: UninstallRequest) -> dict[str, bool]:
-        from sova.config.registry import get_project_path
-
-        slug = req.slug.lower()
-        project_path = get_project_path(slug)
-        if project_path is None:
-            removed = unregister_project(slug)
-            return {"removed": removed, "files_cleaned": False}
-
-        if req.remove_files:
-            from sova.cli.commands.project import _uninstall
-
-            try:
-                failures = _uninstall(
-                    path=project_path,
-                    remove_commands=req.remove_commands,
-                    remove_rules=req.remove_rules,
-                    remove_memory=req.remove_memory,
-                    remove_config=req.remove_config,
-                )
-            except SystemExit:
-                removed = unregister_project(slug)
-                return {"removed": removed, "files_cleaned": False}
-            return {"removed": True, "files_cleaned": len(failures) == 0}
-
-        removed = unregister_project(slug)
-        return {"removed": removed, "files_cleaned": False}
+        return _uninstall_project(req)
 
     # Setup page (global, not project-scoped)
     @app.get("/setup")
@@ -1275,18 +1379,18 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         # what this route redirects to.
         return RedirectResponse(url=f"/p/{slug}/work", status_code=307)
 
-    @app.get("/p/{slug}/briefing")
+    @app.get("/p/{slug}/briefing", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_briefing(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "briefing.html", "briefing"))
 
-    @app.get("/p/{slug}/work")
+    @app.get("/p/{slug}/work", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_work(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(
             request,
             _project_page(request, templates, slug, "work.html", "work", status_options=_STATUS_OPTIONS),
         )
 
-    @app.get("/p/{slug}/phone")
+    @app.get("/p/{slug}/phone", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_phone(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "phone.html", "phone"))
 
@@ -1301,7 +1405,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
             raise HTTPException(status_code=404, detail="Unknown project")
         return _manifest_response(f"/p/{slug}", f"SOVA {project_path.name}")
 
-    @app.get("/p/{slug}/work/{run_id}")
+    @app.get("/p/{slug}/work/{run_id}", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
         return _with_csrf_cookie(
             request, _project_page(request, templates, slug, "run_detail.html", "work", run_id=run_id)
@@ -1345,54 +1449,54 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return RedirectResponse(url=f"/p/{slug}/work/{run_id}", status_code=301)
 
     # Unchanged project pages
-    @app.get("/p/{slug}/costs")
+    @app.get("/p/{slug}/costs", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_costs(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "costs.html", "costs"))
 
-    @app.get("/p/{slug}/queue")
+    @app.get("/p/{slug}/queue", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_queue(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "queue.html", "queue"))
 
-    @app.get("/p/{slug}/specs")
+    @app.get("/p/{slug}/specs", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_specs(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "specs.html", "specs"))
 
-    @app.get("/p/{slug}/settings")
+    @app.get("/p/{slug}/settings", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_settings(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "settings.html", "settings"))
 
-    @app.get("/p/{slug}/connections")
+    @app.get("/p/{slug}/connections", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_connections(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "connections.html", "connections"))
 
-    @app.get("/p/{slug}/lifecycle/{issue_number}")
+    @app.get("/p/{slug}/lifecycle/{issue_number}", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_lifecycle(request: Request, slug: str, issue_number: int) -> Response:
         return _with_csrf_cookie(
             request, _project_page(request, templates, slug, "lifecycle.html", "work", issue_number=issue_number)
         )
 
-    @app.get("/p/{slug}/roles")
+    @app.get("/p/{slug}/roles", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_roles(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "roles.html", "roles"))
 
-    @app.get("/p/{slug}/roles/{name}")
+    @app.get("/p/{slug}/roles/{name}", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_role_detail(request: Request, slug: str, name: str) -> Response:
         return _with_csrf_cookie(
             request, _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
         )
 
-    @app.get("/p/{slug}/commands")
+    @app.get("/p/{slug}/commands", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_commands(request: Request, slug: str) -> Response:
         """Render the command content browser page for a specific project."""
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "commands.html", "commands"))
 
-    @app.get("/p/{slug}/spec/{issue_number}")
+    @app.get("/p/{slug}/spec/{issue_number}", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
         return _with_csrf_cookie(
             request, _project_page(request, templates, slug, "spec.html", "work", issue_number=issue_number)
         )
 
-    @app.get("/p/{slug}/supervisor")
+    @app.get("/p/{slug}/supervisor", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_supervisor(request: Request, slug: str) -> Response:
         from sova.config.registry import get_project_path
 
@@ -1405,29 +1509,29 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         page = _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
         return _with_csrf_cookie(request, page)
 
-    @app.get("/p/{slug}/fleet")
+    @app.get("/p/{slug}/fleet", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_fleet(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "fleet.html", "fleet"))
 
-    @app.get("/p/{slug}/oversight")
+    @app.get("/p/{slug}/oversight", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_oversight(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "oversight.html", "oversight"))
 
-    @app.get("/p/{slug}/pr-metrics")
+    @app.get("/p/{slug}/pr-metrics", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_pr_metrics(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "pr_metrics.html", "pr-metrics"))
 
-    @app.get("/p/{slug}/style-guide")
+    @app.get("/p/{slug}/style-guide", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_style_guide(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "style_guide.html", "style-guide"))
 
-    @app.get("/p/{slug}/dependency-health")
+    @app.get("/p/{slug}/dependency-health", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_dependency_health(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(
             request, _project_page(request, templates, slug, "dependency_health.html", "dependency-health")
         )
 
-    @app.get("/p/{slug}/reliability")
+    @app.get("/p/{slug}/reliability", responses=_UNKNOWN_PROJECT_RESPONSE)
     async def project_reliability(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "reliability.html", "reliability"))
 
@@ -1448,14 +1552,16 @@ def _project_page(
     page: str,
     **extra: object,
 ) -> object:
-    """Render a project-scoped page with context."""
+    """Render a project-scoped page with context, or 404 for a slug the registry does not hold."""
     from sova.config.registry import get_project_path
 
     project_path = get_project_path(slug)
+    if project_path is None:
+        raise HTTPException(status_code=404, detail="Unknown project")
     ctx = {
         "page": page,
         "project_slug": slug,
-        "project_name": project_path.name if project_path else slug,
+        "project_name": project_path.name,
         "prefix": f"/p/{slug}",
         **extra,
     }

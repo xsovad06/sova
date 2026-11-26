@@ -155,12 +155,28 @@ function _rewriteCsrfRejection(res) {
     var method = (init.method || (request && request.method) || 'GET').toUpperCase();
     if (MUTATING_METHODS.indexOf(method) === -1) return originalFetch(input, init);
     var headers = new Headers(init.headers || (request ? request.headers : {}));
+    var echoed = '';
     if (!headers.has('X-CSRF-Token')) {
       var csrf = csrfHeaders();
-      if (csrf['X-CSRF-Token']) headers.set('X-CSRF-Token', csrf['X-CSRF-Token']);
+      if (csrf['X-CSRF-Token']) {
+        echoed = csrf['X-CSRF-Token'];
+        headers.set('X-CSRF-Token', echoed);
+      }
     }
     init = Object.assign({}, init, {headers: headers});
-    return originalFetch(input, init).then(_rewriteCsrfRejection);
+    return originalFetch(input, init).then(function (res) {
+      /* A signed cookie is renewed past half its life, so a call whose header was read just before a
+         concurrent response renewed it is refused as a mismatch. One retry with the renewed cookie
+         recovers it; a Request object (a body that may be spent) and a caller's own header are not retried. */
+      var renewed = csrfHeaders()['X-CSRF-Token'];
+      if (res.status !== 403 || request || !echoed || !renewed || renewed === echoed) return res;
+      return res.clone().json().then(function (body) {
+        if (!body || body.detail !== CSRF_REJECTED_DETAIL) return res;
+        var retryHeaders = new Headers(headers);
+        retryHeaders.set('X-CSRF-Token', renewed);
+        return originalFetch(input, Object.assign({}, init, {headers: retryHeaders}));
+      }, function () { return res; });
+    }).then(_rewriteCsrfRejection);
   };
 })();
 

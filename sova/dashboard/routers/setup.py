@@ -74,7 +74,7 @@ def _is_within_roots(path: Path, roots: list[Path]) -> bool:
     return any(path.is_relative_to(root) for root in roots)
 
 
-def _resolve_allowed_path(raw: str, roots: list[Path] | None = None) -> Path:
+def resolve_allowed_setup_path(raw: str, roots: list[Path] | None = None) -> Path:
     """Resolve a client-supplied project path and require it to sit inside an allowed root.
 
     The root check runs before any existence check, so a 403 versus 404 never reveals whether a
@@ -174,7 +174,7 @@ async def browse_directory(req: BrowseRequest) -> dict:
     # A root that does not exist yet is skipped: `browse_directory` would otherwise list its parent,
     # which sits outside the roots.
     if req.path:
-        start = await asyncio.to_thread(_resolve_allowed_path, req.path, roots)
+        start = await asyncio.to_thread(resolve_allowed_setup_path, req.path, roots)
     elif roots:
         start = await asyncio.to_thread(_first_existing_dir, roots)
     else:
@@ -200,7 +200,7 @@ async def browse_directory(req: BrowseRequest) -> dict:
 async def scan_project(req: ScanRequest) -> dict:
     """Scan a project to detect tech stack and suggest configuration."""
     roots = await asyncio.to_thread(_allowed_roots)
-    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
+    project = await asyncio.to_thread(resolve_allowed_setup_path, req.project_path, roots)
     return await setup_service.scan_project(str(project))
 
 
@@ -218,7 +218,7 @@ async def install_project(req: InstallRequest) -> dict:
     from sova.cli.commands.project import _install
 
     roots = await asyncio.to_thread(_allowed_roots)
-    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
+    project = await asyncio.to_thread(resolve_allowed_setup_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
@@ -244,7 +244,7 @@ async def install_project(req: InstallRequest) -> dict:
 async def configure_project(req: ConfigureRequest) -> dict:
     """Save project config to the database and register the project."""
     roots = await asyncio.to_thread(_allowed_roots)
-    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
+    project = await asyncio.to_thread(resolve_allowed_setup_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
@@ -463,7 +463,7 @@ class CreateMilestonesRequest(BaseModel):
 async def create_milestones(req: CreateMilestonesRequest) -> dict:
     """Create default phase milestones on the tracker."""
     roots = await asyncio.to_thread(_allowed_roots)
-    project = await asyncio.to_thread(_resolve_allowed_path, req.project_path, roots)
+    project = await asyncio.to_thread(resolve_allowed_setup_path, req.project_path, roots)
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
