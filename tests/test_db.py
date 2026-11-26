@@ -3632,3 +3632,61 @@ class TestInspectSchema:
 
         assert result.at_head is True
         assert result.missing == ("task_runs.bogus_column",)
+
+
+class TestRedactDatabaseUrl:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            (
+                "postgresql+asyncpg://sova:hunter2@db.example.com:5432/sova",
+                "postgresql+asyncpg://sova:***@db.example.com:5432/sova",
+            ),
+            ("postgresql://sova@db.example.com/sova", "postgresql://sova@db.example.com/sova"),
+            (
+                "sqlite+aiosqlite:////home/u/project/.claude/sova.db",
+                "sqlite+aiosqlite:////home/u/project/.claude/sova.db",
+            ),
+            ("/home/u/project/.claude/sova.db", "/home/u/project/.claude/sova.db"),
+            ("postgresql://sova:hunter2@db.example.com:notaport/sova", "<unparseable database URL>"),
+            ("not a url sova:hunter2@db", "<unparseable database URL>"),
+            (
+                "postgresql+asyncpg://sova@db.example.com/sova?password=hunter2&ssl=require",
+                "postgresql+asyncpg://sova@db.example.com/sova?password=redacted&ssl=require",
+            ),
+            (
+                "postgresql://sova:hunter2@db.example.com/sova?sslpassword=hunter2",
+                "postgresql://sova:***@db.example.com/sova?sslpassword=redacted",
+            ),
+            (
+                "postgresql://sova@db.example.com/sova?api_key=k1&auth=a1&credential=c1&sslmode=require",
+                "postgresql://sova@db.example.com/sova?api_key=redacted&auth=redacted&credential=redacted&sslmode=require",
+            ),
+            ("postgresql://sova:p@ss@db.example.com/sova", "<unparseable database URL>"),
+            ("postgresql://sova:a/b@c@db.example.com/sova", "<unparseable database URL>"),
+            ("postgresql://sova:p?x@r@db.example.com/sova", "<unparseable database URL>"),
+            (
+                "postgresql://sova:hunter2@db.example.com/sova?application_name=me@host",
+                "postgresql://sova:***@db.example.com/sova?application_name=me%40host",
+            ),
+        ],
+        ids=[
+            "password",
+            "no-password",
+            "sqlite",
+            "bare-path",
+            "bad-port",
+            "malformed",
+            "query-password",
+            "both",
+            "query-key-auth-credential",
+            "unencoded-at-in-password",
+            "unencoded-slash-and-at-in-password",
+            "unencoded-question-mark-and-at-in-password",
+            "at-in-query-only",
+        ],
+    )
+    def test_password_never_survives(self, url: str, expected: str) -> None:
+        from sova.db.session import redact_database_url
+
+        assert redact_database_url(url) == expected

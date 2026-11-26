@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import IO, Literal
 
 from sqlalchemy import Connection, inspect, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base
@@ -83,6 +85,44 @@ def _get_database_url(project_dir: Path | None = None, *, create_dirs: bool = Tr
     if create_dirs:
         db_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite+aiosqlite:///{db_path}"
+
+
+# Word, not "***": render_as_string percent-encodes a query value, so "***" would print as "%2A%2A%2A".
+_REDACTED = "redacted"
+# Substrings of a URL query key whose value is a credential (password, passwd, pwd, sslpassword, auth_token,
+# api_key, credentials, ...). A non-secret key they also match (sslkey, a file path) is masked harmlessly.
+_SECRET_QUERY_MARKERS = ("pass", "pwd", "secret", "token", "key", "auth", "cred")
+_UNPARSEABLE_URL = "<unparseable database URL>"
+
+
+def redact_database_url(url: str) -> str:
+    """Render a database URL for a log line or an error message, with its password hidden.
+
+    A URL without a password (SQLite, a trust-authenticated PostgreSQL) comes back unchanged, and a
+    URL that does not parse is replaced by a placeholder, since its text may still hold a password.
+    A bare file path (no scheme and no userinfo) holds no credentials and is returned as is.
+    """
+    if "://" not in url and "@" not in url:
+        return url
+    # make_url ends the password at its first "@", so with an unencoded "@" in the password the rest of
+    # it would render as part of the host. A second "@" before the query cannot be split safely.
+    if url.partition("://")[2].split("?", 1)[0].count("@") > 1:
+        return _UNPARSEABLE_URL
+    try:
+        parsed = make_url(url)
+        # The host group of make_url's regex accepts "@", so a password holding "@" after a "?" or "/" parses
+        # with the rest of the password as part of the host and would render unmasked.
+        if parsed.host is not None and "@" in parsed.host:
+            return _UNPARSEABLE_URL
+        # hide_password masks only the userinfo password; a driver also takes one as a query argument
+        # (`?password=...`), so a credential-bearing query value is masked the same way.
+        masked_query = {
+            key: (_REDACTED if any(marker in key.lower() for marker in _SECRET_QUERY_MARKERS) else value)
+            for key, value in parsed.query.items()
+        }
+        return parsed.set(query=masked_query).render_as_string(hide_password=True)
+    except (ArgumentError, ValueError):
+        return _UNPARSEABLE_URL
 
 
 def _get_db_path_from_url(url: str) -> Path | None:
