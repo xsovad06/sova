@@ -83,6 +83,7 @@ SOURCE_PATCHES: dict[str, dict[str, tuple[int, tuple[str, ...]]]] = {
         "invalidate_config_cache": (3, ("sova.dashboard.services.fleet_manager_service",)),
     },
     "test_ipc.py": {"load_config": (1, ("sova.utils.env",))},  # configured_passthrough()
+    "test_project_scoped_backends.py": {"load_config": (4, ("sova.ipc.runtime",))},  # runtime_for() imports it lazily
     "test_utils_env.py": {"load_config": (5, ("sova.utils.env",))},
 }
 
