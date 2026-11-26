@@ -610,8 +610,8 @@ WantedBy=default.target
         console.print(
             "\n[yellow]Unverified (tracked in #1241): the Claude CLI rewrites ~/.claude.json through a temp file "
             "and a rename, which the single-file ReadWritePaths entry under ProtectHome=read-only may not "
-            "allow. If agents cannot save state, set ProtectHome=false in the unit (see the README, "
-            "Server Management).[/yellow]"
+            "allow. If agents cannot save state, set ProtectHome=false in the unit's [Service] section, "
+            "then run systemctl --user daemon-reload and restart the service.[/yellow]"
         )
     elif service_type == "launchd":
         console.print("\n[cyan]Next steps:[/cyan]")
