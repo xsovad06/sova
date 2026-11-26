@@ -365,7 +365,12 @@ class SOVAServer:
         from sova.dashboard.app import _check_db_health
 
         async def probe(slug: str, path: Path) -> str:
-            reason = "missing" if not path.is_dir() else "not_a_sova_project" if not (path / ".claude").is_dir() else ""
+            if not path.is_dir():
+                reason = "missing"
+            elif not (path / ".claude").is_dir():
+                reason = "not_a_sova_project"
+            else:
+                reason = ""
             if reason:
                 if slug not in self._warned_unprobeable:
                     self._warned_unprobeable.add(slug)
