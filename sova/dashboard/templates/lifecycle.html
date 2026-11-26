@@ -34,6 +34,7 @@
 
 {% block scripts %}
 <script>
+var _ISSUE_NUMBER = {{ issue_number|int|tojson }};
 var PHASES = ['development', 'post_pr', 'review', 'address_review', 'integrate', 'post_merge'];
 var PHASE_LABELS = {
   development: 'Development',
@@ -259,13 +260,13 @@ function renderSummary(data) {
 
 async function loadLifecycle() {
   try {
-    var data = await fetchAPI(apiUrl('/lifecycle/issue/{{ issue_number }}'));
+    var data = await fetchAPI(apiUrl('/lifecycle/issue/' + encodeURIComponent(_ISSUE_NUMBER)));
     if (data.error) {
       document.getElementById('phase-rail').innerHTML = '<p class="text-gray-500">' + escapeHtml(data.error) + '</p>';
       return;
     }
     var lcLink = document.getElementById('lc-issue-link');
-    if (lcLink) lcLink.innerHTML = issueLink('{{ issue_number }}');
+    if (lcLink) lcLink.innerHTML = issueLink(String(_ISSUE_NUMBER));
 
     // Skip re-render if nothing changed
     if (_lastUpdated && data.updated_at === _lastUpdated) return;

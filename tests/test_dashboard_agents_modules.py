@@ -3850,8 +3850,9 @@ console.log(JSON.stringify(out));
         assert out["done"] == {"markFailedHidden": True, "resumeHidden": True}
 
     def test_mark_failed_reports_the_error_body_of_a_run_that_already_finished(self) -> None:
-        mark = "async " + self._function(self._RUN_DETAIL, "markFailed").replace("{{ run_id }}", "7")
+        mark = "async " + self._function(self._RUN_DETAIL, "markFailed")
         script = f"""
+const _RUN_ID = 7;
 const toasts = [];
 let reloads = 0;
 const sovaConfirm = async () => true;
@@ -4042,8 +4043,9 @@ console.log(JSON.stringify(result));
     def test_a_refresh_asked_for_mid_fetch_runs_after_it_instead_of_being_dropped(self) -> None:
         _require_node("node is required to run the run detail refresh")
         # _function() starts at "function", so the async keyword is restored for the awaits inside.
-        refresh = "async " + self._function(self._RUN_DETAIL, "_refreshRun").replace("{{ run_id }}", "7")
+        refresh = "async " + self._function(self._RUN_DETAIL, "_refreshRun")
         script = f"""
+const _RUN_ID = 7;
 let _runRefreshing = false, _runRefreshQueued = false, _runSeenInPush = false, _pushedStatus = null;
 let _pushedStep = null, _runStatusChannel = {{}};
 const _isLive = (s) => s === 'running';
@@ -4082,7 +4084,7 @@ console.log(JSON.stringify({{ fetches, rendered }}));
         return match.group(0)
 
     def _fn_src(self, source: str, name: str) -> str:
-        body = self._function(source, name).replace("{{ run_id }}", "7")
+        body = self._function(source, name)
         return ("async " if f"async function {name}(" in source else "") + body
 
     def test_the_dashboard_terminal_table_matches_the_server_terminal_list(self) -> None:

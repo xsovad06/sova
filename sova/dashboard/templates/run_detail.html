@@ -103,7 +103,7 @@ var _outputTargetStep = null;
 // run still streams: sovaOutputFinished() is the one "finished" rule).
 var _outputRenderer = sovaOutputRenderer();
 var _outputStream = sovaOutputStream(_outputRenderer);
-var _RUN_ID = parseInt('{{ run_id }}', 10);
+var _RUN_ID = {{ run_id|int|tojson }};
 var _RESTARTABLE = ['failed', 'interrupted', 'paused', 'stopped'];
 var _runStatusChannel = null;
 // The status the last full render or the last push carried, so a push only costs a refetch when it moved.
@@ -147,7 +147,7 @@ function safeStepId(name) {
 async function loadRunDetail() {
   var seq = _runRenderSeq;
   try {
-    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    var data = await fetchAPI(apiUrl('/work/' + _RUN_ID));
     // A full render that landed while this fetched is newer than this result.
     if (seq !== _runRenderSeq) return;
     renderRunDetail(data.run, data.steps);
@@ -393,7 +393,7 @@ async function _refreshRun(fromAbsence, force) {
   var seq = _runRenderSeq;
   var failed = false;
   try {
-    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    var data = await fetchAPI(apiUrl('/work/' + _RUN_ID));
     _runRefreshFailures = 0;
     _runRefreshRetryAt = 0;
     // A terminal render that landed while this fetched (a Mark as Failed reload) is newer than this result, and
@@ -446,7 +446,7 @@ async function _checkWaitingRun() {
   _waitingChecking = true;
   var seq = _runRenderSeq;
   try {
-    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    var data = await fetchAPI(apiUrl('/work/' + _RUN_ID));
     if (seq === _runRenderSeq && data.run.status !== _pushedStatus) renderRunDetail(data.run, data.steps);
   } catch (e) {
     console.error('Failed to check the waiting run:', e);
@@ -780,7 +780,7 @@ async function markFailed() {
   var ok = await sovaConfirm('Mark this run as failed?', { confirmText: 'Mark Failed', confirmClass: 'danger' });
   if (!ok) return;
   try {
-    var res = await fetch(apiUrl('/work/{{ run_id }}/mark-failed'), {
+    var res = await fetch(apiUrl('/work/' + _RUN_ID + '/mark-failed'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({reason: 'Manually abandoned via dashboard'}),
@@ -840,8 +840,8 @@ function resourceCard(label, value, cls) {
 async function loadResources() {
   try {
     var results = await Promise.all([
-      fetchAPI(apiUrl('/resources/{{ run_id }}/summary')),
-      fetchAPI(apiUrl('/resources/{{ run_id }}/samples'))
+      fetchAPI(apiUrl('/resources/' + _RUN_ID + '/summary')),
+      fetchAPI(apiUrl('/resources/' + _RUN_ID + '/samples'))
     ]);
     var summaryData = results[0];
     var samplesData = results[1];

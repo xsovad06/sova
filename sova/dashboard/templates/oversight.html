@@ -70,7 +70,7 @@
 
 {% block scripts %}
 <script>
-const prefix = '{{ prefix|default("") }}';
+const prefix = {{ prefix|default("")|tojson }};
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const POLL_MS = 15000;
 

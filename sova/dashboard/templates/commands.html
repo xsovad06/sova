@@ -32,7 +32,7 @@
 {% block scripts %}
 <script>
 (function() {
-  const prefix = '{{ prefix|default("") }}';
+  const prefix = {{ prefix|default("")|tojson }};
   const apiBase = prefix ? `${prefix}/api` : '/api';
   let allCommands = [];
   let activeCommand = null;
