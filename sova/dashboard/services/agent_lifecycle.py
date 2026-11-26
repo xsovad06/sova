@@ -214,7 +214,10 @@ from sova.ipc.codex_runtime import _codex_extra_env
 from sova.ipc.runtime import (
     _PIPELINE_ROLES,
     RUN_RUNTIME_MODEL_OVERRIDE_ENV,
+    AgentRuntime,
     get_runtime,
+    project_scoped_runtimes_enabled,
+    runtime_for,
     spawn_direct,
 )
 from sova.llm.backends import TIER_NAMES
@@ -256,6 +259,24 @@ COMMAND_INPUT_ERRORS = frozenset({UNKNOWN_COMMAND, INVALID_COMMAND_ARGS})
 # a model call over a diff plus GitHub/DB writes, so running it outside any
 # runtime sandbox is correct regardless of ``agent.runtime``.
 _DIRECT_SPAWN_ROLES = _PIPELINE_ROLES | {"reviewer"}
+
+
+def _project_runtime(project_dir: Path | None) -> AgentRuntime:
+    """The coding runtime *project_dir* is configured for; the one resolver for spawning and adopting a run.
+
+    A multi-project server keeps one runtime per project (``runtime_for()``); everywhere else the global
+    runtime is the project's own, read through this module's ``get_runtime`` name. May read the project's
+    config, so an event-loop caller uses ``_project_runtime_async()``.
+    """
+    return runtime_for(project_dir) if project_scoped_runtimes_enabled() else get_runtime()
+
+
+async def _project_runtime_async(project_dir: Path | None) -> AgentRuntime:
+    """``_project_runtime()`` off the event loop: a project's runtime may need its config read first."""
+    if not project_scoped_runtimes_enabled():
+        return get_runtime()
+    return await asyncio.to_thread(_project_runtime, project_dir)
+
 
 # Roles whose ``sova run --run-id`` process runs a WorkflowEngine and persists its own output rows to the run
 # (step markers, agent text). The dashboard buffers and streams that process's stdout for such a run but never
@@ -893,7 +914,7 @@ async def start_agent(
                 if not model:
                     model = _resolve_config_model(project_dir)
                 fallback_model = _resolve_config_fallback_model(project_dir)
-                runtime = get_runtime()
+                runtime = await _project_runtime_async(project_dir)
                 process = await runtime.spawn(
                     prompt,
                     cwd,
@@ -1179,7 +1200,7 @@ async def start_command(
         stream_parser = None
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            runtime = get_runtime()
+            runtime = await _project_runtime_async(project_dir)
             process = await runtime.spawn(
                 prompt,
                 cwd,

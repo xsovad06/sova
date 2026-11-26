@@ -226,6 +226,23 @@ def _trust_test_transport_hosts() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_project_scoped_backends() -> Iterator[None]:
+    """Turn per-project provider and runtime resolution off, and forget the server's project, after each test.
+
+    A multi-project ``create_app()`` lifespan switches it on process-wide, and a later test on the same
+    xdist worker that injects a provider or runtime would otherwise be bypassed for a per-project one.
+    """
+    yield
+    from sova.dashboard.services.agent_pool import set_server_project_dir
+    from sova.ipc.runtime import enable_project_scoped_runtimes
+    from sova.llm.client import enable_project_scoped_providers
+
+    enable_project_scoped_providers(False)
+    enable_project_scoped_runtimes(False)
+    set_server_project_dir(None)
+
+
+@pytest.fixture(autouse=True)
 def _no_review_post_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """A review post that fails every method retries once; skip the real pause so failure-path tests stay fast."""
     monkeypatch.setattr("sova.roles.reviewer._POST_RETRY_DELAY_SECONDS", 0)

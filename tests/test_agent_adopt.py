@@ -395,7 +395,7 @@ class TestStreamParserOnAdoption:
         pa = ProjectAgents(project_dir=tmp_path)
         with (
             patch.object(agent_adopt, "_pool_for", return_value=pa),
-            patch("sova.ipc.runtime.get_runtime", return_value=runtime),
+            patch("sova.dashboard.services.agent_lifecycle.get_runtime", return_value=runtime),
         ):
             assert await agent_adopt.adopt_orphaned_run(run, tmp_path) is True
 
@@ -408,7 +408,7 @@ class TestStreamParserOnAdoption:
         pa = ProjectAgents(project_dir=tmp_path)
         with (
             patch.object(agent_adopt, "_pool_for", return_value=pa),
-            patch("sova.ipc.runtime.get_runtime") as get_runtime,
+            patch("sova.dashboard.services.agent_lifecycle.get_runtime") as get_runtime,
         ):
             assert await agent_adopt.adopt_orphaned_run(_run(), tmp_path) is True
 
@@ -427,7 +427,7 @@ class TestStreamParserOnAdoption:
         pa = ProjectAgents(project_dir=tmp_path)
         with (
             patch.object(agent_adopt, "_pool_for", return_value=pa),
-            patch("sova.ipc.runtime.get_runtime", return_value=runtime),
+            patch("sova.dashboard.services.agent_lifecycle.get_runtime", return_value=runtime),
         ):
             assert await agent_adopt.adopt_orphaned_run(run, tmp_path) is True
 
@@ -442,7 +442,9 @@ class TestRuntimeBuildFailureOnAdoption:
         pa = ProjectAgents(project_dir=tmp_path)
         with (
             patch.object(agent_adopt, "_pool_for", return_value=pa),
-            patch("sova.ipc.runtime.get_runtime", side_effect=RuntimeError("runtime config broken")),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_runtime", side_effect=RuntimeError("runtime config broken")
+            ),
         ):
             assert await agent_adopt.adopt_orphaned_run(run, tmp_path) is True
 

@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Awaitable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -26,6 +27,9 @@ from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
 from sova.db.session import get_session
 from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.llm.provider import LLMProvider
 
 log = get_logger(component="oversight.agent")
 
@@ -256,11 +260,10 @@ class OversightAgent:
         Returns:
             Tuple of (list of findings, error message or None).
         """
-        from sova.llm.client import get_provider
         from sova.oversight.analysis import analyze_snapshot
 
         try:
-            provider = get_provider()
+            provider = await self._analysis_provider()
             findings, error = await analyze_snapshot(
                 snapshot,
                 run_id,
@@ -275,6 +278,20 @@ class OversightAgent:
         except Exception as exc:  # noqa: BLE001 (LLM analysis failure is reported as a cycle error, not a crash)
             log.warning("oversight.analyze_failed", run_id=run_id, exc_info=True)
             return [], f"analyze_failed: {exc}"
+
+    async def _analysis_provider(self) -> LLMProvider:
+        """The LLM provider for this project's analysis.
+
+        On a multi-project server that is the project's own (the global one belongs to the server's project),
+        so its config is read, off the event loop. Everywhere else the global provider is the project's, and
+        no config is read.
+        """
+        from sova.llm.client import get_provider, project_scoped_providers_enabled, provider_for_async
+
+        if not project_scoped_providers_enabled() or self._db_scope is None:
+            return get_provider()
+        cfg = await asyncio.to_thread(load_config, self._db_scope)
+        return await provider_for_async(cfg, self._db_scope)
 
     async def _propose_issues(self, findings: list[OversightFinding]) -> None:
         """Create GitHub Issues from high-confidence findings (action phase).

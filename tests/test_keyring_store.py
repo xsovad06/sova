@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from sova.llm import keyring_store
 
@@ -312,3 +316,27 @@ def test_resolved_secret_keys_contains_llm_api_key() -> None:
 
 def test_sentinel_is_not_a_plausible_real_secret() -> None:
     assert ":" in keyring_store.SENTINEL
+
+
+def test_scoped_api_key_from_a_linked_worktree_reads_the_primary_checkouts_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``sova run`` started in a PR worktree resolves the key stored for the checkout that owns the config.
+
+    The worktree's own path names no keyring entry: the reviewer's OpenAI calls went out with no key.
+    """
+    from sova.config.models import LLMConfig
+    from sova.llm.provider import _resolve_scoped_api_key
+
+    primary = tmp_path / "project"
+    worktree = tmp_path / "pr-worktree"
+    git = ["git", "-c", "user.email=t@example.invalid", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q", str(primary)], check=True)
+    subprocess.run([*git, "-C", str(primary), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    subprocess.run([*git, "-C", str(primary), "worktree", "add", "-q", str(worktree)], check=True)
+    (primary / "sova.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(worktree)
+
+    stored = {keyring_store.scoped_secret_name("llm.api_key", primary, "openai"): "sk-primary"}
+    with patch.object(keyring_store, "get_secret", side_effect=stored.get):
+        assert _resolve_scoped_api_key(LLMConfig(provider="openai", model="openai/x"), None) == "sk-primary"

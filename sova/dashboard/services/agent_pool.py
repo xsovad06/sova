@@ -244,6 +244,21 @@ def get_default_project_dir() -> Path | None:
     return _default_project_dir
 
 
+# The project the server started in (both modes): its config built the global LLM provider and agent runtime.
+_server_project_dir: Path | None = None
+
+
+def set_server_project_dir(path: Path | None) -> None:
+    """Record the project whose config the server's global provider and runtime were built from."""
+    global _server_project_dir  # noqa: PLW0603
+    _server_project_dir = path.resolve() if path is not None else None
+
+
+def get_server_project_dir() -> Path | None:
+    """The project the server started in, or None before a ``create_app()`` lifespan has run."""
+    return _server_project_dir
+
+
 def set_project_dir(path: Path) -> None:
     """Set the default project directory (single-project mode)."""
     global _default_project_dir
