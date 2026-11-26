@@ -481,7 +481,7 @@ function _runRows(tasks, withDays) {
     if (withDays && key !== day) {
       day = key;
       if (day) {
-        out += '<tr><td colspan="' + _COLUMNS + '" class="px-3 pt-3 pb-1 text-xs font-medium uppercase tracking-wider ' +
+        out += '<tr class="sova-history-day"><td colspan="' + _COLUMNS + '" class="px-3 pt-3 pb-1 text-xs font-medium uppercase tracking-wider ' +
           'text-gray-500 border-t border-gray-700/30">' + escapeHtml(_dayLabel(t)) +
           (days[day] ? '<span class="ml-2 normal-case tracking-normal font-normal text-gray-600">' +
             escapeHtml(_plural(days[day].runs, 'run') + ', ' + _formatCost(days[day].cost)) + '</span>' : '') +
@@ -496,13 +496,13 @@ function _runRows(tasks, withDays) {
       '<td class="' + td + '"><a href="' + escapeHtml(prefix + '/work/' + t.id) + '" data-action="stop" ' +
         'class="inline-flex px-2 py-0.5 rounded text-xs font-medium hover:underline ' + _pillBorder(t.status === 'failed') +
         ' ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(t.action_label || t.role || '') + '</a></td>' +
-      '<td class="' + td + '">' + (t.pr_number ? prLink(t.pr_number, { bare: true }) : muted) + '</td>' +
+      '<td class="' + td + '"' + (t.pr_number ? ' data-label="PR"' : '') + '>' + (t.pr_number ? prLink(t.pr_number, { bare: true }) : muted) + '</td>' +
       '<td class="' + td + ' text-right text-gray-400">' + escapeHtml(t.duration_formatted || '--') + '</td>' +
       '<td class="' + td + ' text-right text-gray-200">' + _formatRunCost(t.total_cost_usd) + '</td>' +
       '<td class="px-3 py-1.5 text-right">' + _rerunButton(t) + '</td>' +
     '</tr>';
     if (hasResult) {
-      out += '<tr class="hover:bg-surface-hover cursor-pointer transition-colors"' + nav + '>' +
+      out += '<tr class="sova-history-result hover:bg-surface-hover cursor-pointer transition-colors"' + nav + '>' +
         '<td colspan="' + _COLUMNS + '" class="px-3 pb-2 pt-0 text-xs max-w-0">' +
         _truncated(t.outcome, _resultColor(t.status === 'failed')) + '</td></tr>';
     }
@@ -515,7 +515,9 @@ function _runRows(tasks, withDays) {
 function renderHistoryTable(tasks, card) {
   if (!tasks.length) return _emptyTable();
   var th = 'font-medium px-3 py-2.5';
-  var table = '<table class="w-full text-sm tabular-nums">' +
+  // Under 768 px each run is a stacked row instead of a table row (.sova-history-runs, style.css): no header, the cells
+  // wrapping on one or two lines, the PR number named.
+  var table = '<table class="sova-history-runs w-full text-sm tabular-nums">' +
     '<thead><tr class="text-gray-500 text-xs uppercase tracking-wider border-b border-gray-700/50">' +
       '<th class="text-left ' + th + ' w-36">When</th>' +
       '<th class="text-left ' + th + ' w-24">Issue</th>' +

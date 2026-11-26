@@ -1628,6 +1628,168 @@ if (scenario === 'start-no-slot') {
   ]);
   await dismissActionState('issue:8');
   out.dismissed = deleted.sort();
+} else if (scenario === 'phone-stages') {
+  // Under 768 px (#1565): a chip per stage with its count, one stage on screen, a chip tap and a swipe moving it, the
+  // board as tall as that stage; on a touch screen no card is draggable and nothing says to drag. `phone` and `touch`
+  // answer the two media queries board.js asks.
+  let phone = true;
+  let touch = true;
+  globalThis.matchMedia = (q) => ({
+    matches: q.includes('max-width') ? phone : (q.includes('hover: none') ? touch : false), addEventListener() {},
+  });
+  const COL_WIDTH = 374;
+  const heights = { next: 300, queued: 64, running: 220, done: 140 };
+  const hostListeners = {};
+  const scrolls = [];
+  const cols = () => [...host.innerHTML.matchAll(/data-stage-col="([^"]+)"/g)].map((m, i) => ({
+    getAttribute: (k) => (k === 'data-stage-col' ? m[1] : null), offsetLeft: i * COL_WIDTH, offsetHeight: heights[m[1]],
+  }));
+  const host = {
+    innerHTML: '', scrollLeft: 0, style: { height: '' }, contains: () => false,
+    addEventListener: (type, fn) => { (hostListeners[type] = hostListeners[type] || []).push(fn); },
+    querySelectorAll: (sel) => (sel === '[data-stage-col]' ? cols() : []),
+    scrollTo: (opts) => { scrolls.push(opts); host.scrollLeft = opts.left; },
+  };
+  // The chips are built with DOM calls (no innerHTML): a created element keeps its attributes, text and children.
+  const created = (tag) => ({
+    tag, attrs: {}, children: [], className: '', textContent: '', offsetLeft: 0, offsetWidth: 80,
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    appendChild(c) { this.children.push(c); return c; },
+    focus(opts) {
+      focused.push({ stage: JSON.parse(this.attrs['data-args'])[0], preventScroll: !!(opts && opts.preventScroll) });
+    },
+  });
+  const focused = [];
+  document.createElement = created;
+  const chips = {
+    kids: [], scrollLeft: 0, clientWidth: 358,
+    replaceChildren(...kids) { this.kids = kids; },
+    querySelectorAll: () => chips.kids,
+    contains: (el) => chips.kids.includes(el),
+    scrollTo() {},
+  };
+  // Each chip as {stage, pressed, label, count}.
+  const chipState = () => chips.kids.map((c) => ({
+    stage: JSON.parse(c.getAttribute('data-args'))[0], pressed: c.getAttribute('aria-pressed'),
+    action: c.getAttribute('data-action'), cls: c.className,
+    label: c.children[0].textContent.trim(), count: c.children[0].children[0].textContent,
+  }));
+  const pressed = () => chipState().filter((c) => c.pressed === 'true').map((c) => c.stage);
+  const els = {
+    'work-board': host, 'work-stage-chips': chips,
+    'work-board-error': { textContent: '', classList: { toggle() {} } },
+  };
+  document.getElementById = (id) => els[id] || null;
+  real('actionKey');
+  routes = {
+    'GET /api/work/board': [200, {
+      columns: [
+        { stage: 'next', column: 'next', label: 'Up next', color: 'blue', entries: 'up_next' },
+        { stage: 'queued', column: 'queued', label: 'Queued', color: 'gray', entries: 'queued' },
+        { stage: 'running', column: 'running', label: 'Running', color: 'yellow', entries: 'running' },
+        { stage: 'done', column: 'done', label: 'Done today', color: 'green', entries: 'done_today' },
+        { stage: 'yours', column: 'done', label: 'Your own work', color: 'purple', entries: 'yours' },
+      ],
+      up_next: [{ number: 5, title: 'Five', rank: 1, actions: [],
+        start: { label: 'Develop', handler: 'start_agent', handler_args: { role: 'developer' } } }],
+      queued: [], running: [], other_runs: [{ run_id: 9, role: 'planner' }], done_today: [{ number: 6, title: 'Six' }],
+      yours: [{ number: 7, title: 'Seven' }], agents: { running: 1, limit: 4 },
+    }],
+    'GET /api/work/actions': [200, { actions: [] }],
+  };
+  // A ResizeObserver that records what it observes and lets the test fire it, as the browser does when a column's
+  // height changes.
+  let fireResize = () => {};
+  const observed = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback) { fireResize = () => callback([]); }
+    observe(el) { observed.push(el.getAttribute('data-stage-col')); }
+    disconnect() { observed.length = 0; }
+  };
+  const board = await work('board');
+  board.init();
+  await board.loadBoard();
+  out.chips = chipState();
+  out.touchBoard = host.innerHTML;
+  out.heightOnLoad = host.style.height;
+  // A chip's tap: its stage's column comes on screen and the board takes its height.
+  board.showStage('running');
+  out.chipScroll = scrolls.slice();
+  out.pressedAfterChip = pressed();
+  out.heightAfterChip = host.style.height;
+  // A swipe: the board's own scroll settles on the last column, and the chip and the height follow it.
+  host.scrollLeft = 3 * COL_WIDTH + 10;
+  (hostListeners.scroll || []).forEach((fn) => fn({}));
+  out.pressedMidSwipe = pressed();
+  await new Promise((r) => setTimeout(r, 150));
+  out.pressedAfterSwipe = pressed();
+  out.heightAfterSwipe = host.style.height;
+  // A redraw keeps the stage on screen pressed.
+  board.renderBoard();
+  out.pressedAfterRedraw = pressed();
+  // A redraw rebuilds the chip row: the chip the keyboard is on is focused again (and one nothing is on is not).
+  out.focusedWithoutAChip = focused.length;
+  document.activeElement = chips.kids[2];
+  board.renderBoard();
+  out.focusedAfterRedraw = focused.slice();
+  document.activeElement = null;
+  // Every stage column is observed on the phone layout, and a change of the stage on screen's height (a resize, a
+  // status push that patches a running card's line) refits the board without a redraw.
+  out.observedOnPhone = observed.slice();
+  heights.done = 180;
+  fireResize();
+  out.heightAfterResize = host.style.height;
+  // A message in the columns' place (switching to Mine shows one until its board arrives) is not cut to a stage.
+  board.setOwnerFilter('mine');
+  out.heightWithMessage = host.style.height;
+  out.messageBoard = host.innerHTML;
+  board.setOwnerFilter('all');
+  await tick(); await tick();
+  // 768 px and wider with a mouse: draggable cards, drop targets, the board's own height.
+  phone = false;
+  touch = false;
+  board.renderBoard();
+  out.observedOnDesktop = observed.slice();
+  out.desktopBoard = host.innerHTML;
+  out.desktopHeight = host.style.height;
+  // A desktop scroll is no stage change.
+  const before = JSON.stringify(chipState());
+  host.scrollLeft = 0;
+  (hostListeners.scroll || []).forEach((fn) => fn({}));
+  await new Promise((r) => setTimeout(r, 150));
+  out.desktopScrollChangedChips = JSON.stringify(chipState()) !== before;
+
+  // A tap on a card's button runs that button's action and never opens the card's details; a tap on the card does.
+  // The card's markup runs through the shared click dispatcher (agents/actions.js) in a parsed DOM (fake_dom.cjs).
+  phone = true;
+  touch = true;
+  board.renderBoard();
+  const { createRequire } = await import('node:module');
+  const { Document, clickOn } = createRequire(import.meta.url)(
+    path.join(staticDir, '..', '..', '..', 'tests', 'fixtures', 'fake_dom.cjs'));
+  let bodyClick = null;
+  document.body.addEventListener = (type, fn) => { if (type === 'click') bodyClick = fn; };
+  globalThis.runTrackedAction = async (key, label, fn) => {
+    try { return { ok: true, message: await fn() }; } catch (e) { return { ok: false, message: e.message }; }
+  };
+  routes['POST /api/supervisor/queue'] = [201, { queue: [5] }];
+  const agentActions = await import(pathToFileURL(path.join(staticDir, 'js', 'pages', 'agents', 'actions.js')).href);
+  agentActions.init();
+  const selection = await work('selection');
+  (await work('actions')).init();
+  const dom = new Document();
+  dom.body.innerHTML = host.innerHTML;
+  dom.body.addEventListener('click', bodyClick);
+  const card = dom.body.querySelector('[data-work-card]');
+  const queueBtn = card.querySelectorAll('button').find((b) => b.textContent.trim() === 'Queue');
+  requests.length = 0;
+  clickOn(queueBtn);
+  await tick(); await tick();
+  out.buttonRequests = requests.map((r) => r.key);
+  out.selectedAfterButton = selection.getSelected();
+  clickOn(card.querySelector('.text-sm'));
+  out.selectedAfterCard = selection.getSelected();
 }
 process.stdout.write(JSON.stringify(out));
 """
@@ -2573,3 +2735,79 @@ class TestStatToneBeatsTheNeutralDetailColour:
         assert all("-trend" in line for line in calls), calls
         assert "-text', " not in "".join(line for line in header.splitlines() if "classList" in line)
         assert header.count("sova-tone-") == 2, "the tone classes are named once, in _TONE_CLASSES"
+
+
+class TestPhoneBoard:
+    """Under 768 px the board shows one stage at a time with a chip row, and a touch screen drags nothing (#1565)."""
+
+    def test_a_chip_per_column_with_its_count_and_the_first_stage_pressed(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert [(c["label"], c["count"], c["pressed"]) for c in out["chips"]] == [
+            ("Up next", "1", "true"),
+            ("Queued", "0", "false"),
+            ("Running", "1", "false"),
+            ("Done today", "1", "false"),
+        ], "a group inside a column (Your own work) gets no chip; Running counts the run no card shows"
+        assert {(c["action"], c["cls"]) for c in out["chips"]} == {("work-stage", "sova-stage-chip")}
+        assert out["heightOnLoad"] == "300px", "the board is as tall as the stage on screen"
+
+    def test_a_chip_brings_its_stage_on_screen(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert [s["left"] for s in out["chipScroll"]] == [2 * 374]
+        assert out["pressedAfterChip"] == ["running"]
+        assert out["heightAfterChip"] == "220px"
+
+    def test_a_swipe_moves_the_pressed_chip_and_the_height_once_it_settles(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert out["pressedMidSwipe"] == ["running"], "nothing changes while the board still moves"
+        assert out["pressedAfterSwipe"] == ["done"]
+        assert out["heightAfterSwipe"] == "140px"
+        assert out["pressedAfterRedraw"] == ["done"], "a redraw keeps the stage on screen pressed"
+
+    def test_a_redraw_keeps_the_keyboard_on_its_chip(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert out["focusedWithoutAChip"] == 0, "no chip had focus, so none is given it"
+        assert out["focusedAfterRedraw"] == [{"stage": "running", "preventScroll": True}]
+
+    def test_the_height_follows_a_resized_stage_and_drops_for_a_message(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert out["observedOnPhone"] == ["next", "queued", "running", "done"], "every stage column is observed"
+        assert out["heightAfterResize"] == "180px", "a column that grows must not leave its last cards cut off"
+        assert out["observedOnDesktop"] == [], "nothing is observed at 768 px and wider"
+        assert "Loading" in out["messageBoard"] or "Set the project" in out["messageBoard"]
+        assert out["heightWithMessage"] == "", "a message takes its own height, not the last stage's"
+
+    def test_a_touch_screen_drags_nothing_and_is_not_told_to(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert 'draggable="true"' not in out["touchBoard"]
+        assert "data-drop=" not in out["touchBoard"]
+        assert "drag here" not in out["touchBoard"]
+        assert "Press Queue on an Up next card." in out["touchBoard"]
+        assert "Drag" not in out["touchBoard"]
+
+    def test_wider_than_a_phone_the_board_is_as_it_was(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert 'draggable="true" data-drag-issue="5"' in out["desktopBoard"]
+        assert 'data-drop="queued"' in out["desktopBoard"]
+        assert 'data-drop="running"' in out["desktopBoard"]
+        assert "drag here" in out["desktopBoard"]
+        assert out["desktopHeight"] == ""
+        assert out["desktopScrollChangedChips"] is False
+
+    def test_a_cards_button_acts_without_opening_the_card(self, tmp_path: Path) -> None:
+        out = _run_node(tmp_path, "phone-stages")
+        assert out["buttonRequests"] == ["POST /api/supervisor/queue", "GET /api/work/board"], "queued, then reloaded"
+        assert out["selectedAfterButton"] is None
+        assert out["selectedAfterCard"] == 5
+
+    def test_every_drop_has_a_card_button(self) -> None:
+        """A drop on Queued queues the card and a drop on Running starts its stage's agent: the Up next card offers
+        both as buttons, so a touch screen, which drags nothing, loses no action."""
+        actions = (_WORK_JS / "actions.js").read_text(encoding="utf-8")
+        board = (_WORK_JS / "board.js").read_text(encoding="utf-8")
+        drop = actions[actions.index("host.addEventListener('drop'") :]
+        assert "_queue(issue)" in drop
+        assert "_start(issue," in drop
+        next_stage = board[board.index("if (stage === 'next') {") : board.index("} else if (stage === 'queued')")]
+        assert "_startBtn(entry" in next_stage
+        assert "'work-queue'" in next_stage

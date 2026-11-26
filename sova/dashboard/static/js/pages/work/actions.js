@@ -1,6 +1,6 @@
 import { registerActions } from '../agents/actions.js';
 import { openLog } from '../agents/log-viewer.js';
-import { loadBoard, setDragging, toggleGroup, toggleHidden } from './board.js';
+import { loadBoard, setDragging, showStage, toggleGroup, toggleHidden } from './board.js';
 import { isSelected, select } from './selection.js';
 
 // Every button on the Work board, and the drag from Up next into Queued or onto Running.
@@ -267,6 +267,8 @@ export function init() {
     'work-copy-command': function(el, e, issue, command) { _copyCommand(issue, command); },
     'work-toggle-group': function(el, e, stage) { toggleGroup(stage); },
     'work-toggle-hidden': function() { toggleHidden(); },
+    // A stage chip (under 768 px): that stage's column on screen.
+    'work-stage': function(el, e, stage) { showStage(stage); },
   });
   var host = document.getElementById('work-board');
   if (host) _initDrag(host);
