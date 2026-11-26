@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -77,6 +78,98 @@ def get_provider() -> LLMProvider:
 
         _provider = ClaudeCodeProvider()
     return _provider
+
+
+# Multi-project server: one provider per project, built from that project's own ``llm`` section. The global
+# provider above is built from the project the server started in, so a project on another provider (OpenAI
+# while the hub is on Claude Code) had its in-process calls (supervisor planner, batch harden, oversight)
+# sent to the wrong backend with its own model names. Off by default: a ``sova run`` process serves one
+# project, and tests inject a provider with ``set_provider()``.
+_project_scoped_providers = False
+_project_providers: dict[Path, tuple[str, LLMProvider]] = {}
+_project_providers_lock = threading.Lock()
+
+
+def enable_project_scoped_providers(enabled: bool = True) -> None:
+    """Resolve the provider per project (multi-project server) instead of using the global one."""
+    global _project_scoped_providers  # noqa: PLW0603
+    _project_scoped_providers = enabled
+    clear_project_providers()
+
+
+def project_scoped_providers_enabled() -> bool:
+    """Whether ``provider_for()`` resolves a provider per project (a multi-project server)."""
+    return _project_scoped_providers
+
+
+def clear_project_providers(project_dir: Path | None = None) -> None:
+    """Drop *project_dir*'s provider, or every per-project provider, so the next call rebuilds it.
+
+    A settings save drops only the saved project's entry: the other projects' providers are still current.
+    A dropped provider is not closed, as ``reload_provider()`` does not close the global one it replaces:
+    no provider has a close method, and an in-flight call may still hold it, so it is released with its
+    last reference.
+    """
+    root = _config_root(project_dir) if project_dir is not None else None
+    with _project_providers_lock:
+        if project_dir is None:
+            _project_providers.clear()
+        elif root is not None:
+            _project_providers.pop(root, None)
+
+
+def _scoped_provider_key(cfg: ProjectConfig | None, cwd: Path | str | None) -> tuple[Path, str] | None:
+    """``(project checkout, llm fingerprint)`` when *cfg* and *cwd* name a project's own provider, else None."""
+    if not _project_scoped_providers or cfg is None or not cwd:
+        return None
+    project_dir = _config_root(cwd)
+    if project_dir is None:
+        return None
+    return project_dir, cfg.llm.model_dump_json()
+
+
+def _cached_project_provider(key: tuple[Path, str]) -> LLMProvider | None:
+    with _project_providers_lock:
+        cached = _project_providers.get(key[0])
+    return cached[1] if cached is not None and cached[0] == key[1] else None
+
+
+def provider_for(cfg: ProjectConfig | None, cwd: Path | str | None) -> LLMProvider:
+    """Return the provider for the project owning *cwd*, or the global provider.
+
+    The global provider is returned unless project scoping is enabled and both the project's config and
+    a directory naming the project are known. A project's provider is rebuilt when its ``llm`` section
+    changes, so a provider switch in the settings needs no server restart.
+
+    Building one may read the OS keyring, which can block, so it happens outside the cache lock and an
+    event-loop caller uses ``provider_for_async()``.
+    """
+    key = _scoped_provider_key(cfg, cwd)
+    if key is None or cfg is None:
+        return get_provider()
+    cached = _cached_project_provider(key)
+    if cached is not None:
+        return cached
+    project_dir, fingerprint = key
+    built = create_provider(cfg.llm, project_dir)
+    with _project_providers_lock:
+        current = _project_providers.get(project_dir)
+        if current is not None and current[0] == fingerprint:
+            return current[1]  # another thread built it first: keep one provider per project
+        _project_providers[project_dir] = (fingerprint, built)
+    log.info("llm.project_provider", project=str(project_dir), provider=type(built).__name__)
+    return built
+
+
+async def provider_for_async(cfg: ProjectConfig | None, cwd: Path | str | None) -> LLMProvider:
+    """``provider_for()`` for an event-loop caller: a provider not yet cached is built in a worker thread."""
+    key = _scoped_provider_key(cfg, cwd)
+    if key is None:
+        return get_provider()
+    cached = _cached_project_provider(key)
+    if cached is not None:
+        return cached
+    return await asyncio.to_thread(provider_for, cfg, cwd)
 
 
 def set_provider(provider: LLMProvider) -> None:
@@ -653,6 +746,7 @@ async def _invoke_with_fallback(
     caller_fallback: str | None,
     timeout: float,
     max_budget_usd: Decimal | None = None,
+    cwd: Path | str | None = None,
 ) -> LLMResult:
     """Bind the active provider to *attempt* and walk the model chain on it.
 
@@ -672,7 +766,7 @@ async def _invoke_with_fallback(
     still comes from whichever attempt succeeded, so a run that falls back off
     the override reports the model that actually executed.
     """
-    provider = get_provider()
+    provider = await provider_for_async(cfg, cwd)
     _raise_if_budget_cap_unsupported(provider, max_budget_usd)
     override = run_model_override()
     if override:
@@ -687,6 +781,11 @@ async def _invoke_with_fallback(
     ) -> LLMResult:
         return await attempt(provider, candidate, next_hop, attempt_timeout, attempt_budget)
 
+    def _normalize(model: str | None) -> str | None:
+        # The walk's de-duplication and availability cache compare names the way the provider making the
+        # calls spells them, not the global one, which on a multi-project server serves another project.
+        return provider.normalize_model_name(model) if model is not None else None
+
     return await walk_model_chain(
         _bound,
         primary=primary,
@@ -694,6 +793,7 @@ async def _invoke_with_fallback(
         caller_fallback=caller_fallback,
         timeout=timeout,
         max_budget_usd=max_budget_usd,
+        normalize=_normalize,
         prepend=override,
     )
 
@@ -919,6 +1019,7 @@ async def invoke(
         caller_fallback=fallback_model,
         timeout=resolved_timeout,
         max_budget_usd=max_budget_usd,
+        cwd=cwd,
     )
     # Runs once, against the winning attempt: failed attempts raise before
     # producing a result, so nothing is double-counted.
@@ -1376,6 +1477,7 @@ async def invoke_command(
             caller_fallback=fallback_model,
             timeout=resolved_timeout,
             max_budget_usd=max_budget_usd,
+            cwd=cwd,
         )
 
 
@@ -1466,7 +1568,8 @@ async def invoke_batch(
     if batch_provider is not None:
         return await batch_provider.invoke_batch(requests, poll_interval=poll_interval, timeout=timeout)
 
-    return await get_provider().invoke_batch(requests, poll_interval=poll_interval, timeout=timeout)
+    provider = await provider_for_async(cfg, cwd)
+    return await provider.invoke_batch(requests, poll_interval=poll_interval, timeout=timeout)
 
 
 async def invoke_streaming(
@@ -1490,7 +1593,7 @@ async def invoke_streaming(
     _increment_call_counter()
     prompt = maybe_compress(prompt, cwd, cfg=cfg)
     resolved = select_model(_resolve_task_type_model(model, task_type, cfg=cfg), cfg)
-    provider = get_provider()
+    provider = await provider_for_async(cfg, cwd)
     _raise_if_budget_cap_unsupported(provider, max_budget_usd)
     async for event in provider.invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event

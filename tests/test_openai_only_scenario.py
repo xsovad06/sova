@@ -453,6 +453,41 @@ class TestOpenAIOnlyHandoffAndRecovery:
         assert verdict.details["next_action"] == "approve"
         assert [action.id for action in verdict.next_actions] == ["integrate"]
 
+    async def test_missing_api_key_fails_the_review_without_posting_or_labelling(
+        self, no_claude: None, openai_text: _FakeLiteLLM, tmp_path: Path
+    ) -> None:
+        """A key no call can find fails the run once, with the cause, instead of a "review unavailable" verdict.
+
+        Before, LiteLLM's InternalServerError read as a provider outage: every model in the chain, the chunk
+        retry and the provider's own fallback were each tried, and the run ended "done" with a REVISE label.
+        """
+
+        class InternalServerError(Exception):
+            pass
+
+        async def no_key(*, messages: list[dict], model: str, **kwargs: object) -> None:
+            openai_text.calls.append({"model": model})
+            raise InternalServerError(
+                "litellm.InternalServerError: InternalServerError: OpenAIException - Missing credentials. Please "
+                "pass an `api_key`, `workload_identity`, `admin_api_key`, or set the `OPENAI_API_KEY` environment "
+                "variable."
+            )
+
+        openai_text.acompletion = no_key  # type: ignore[method-assign]
+        reviewer = _ctx(
+            tmp_path, _openai_config(), "Fix the thing in a.py.", role="reviewer", state=TaskState.IN_REVIEW
+        )
+        reviewer.pr_number, reviewer.branch_name = 7, "feat/issue-42"
+        fetch_diff, fetch_files, fetch_head = _pr_fetches()
+        with fetch_diff, fetch_files, fetch_head:
+            result = await ReviewerRole().execute(reviewer)
+
+        assert not result.success
+        assert "Missing credentials" in (result.error or "")
+        assert len(openai_text.calls) == 1
+        reviewer.adapter.post_pr_review.assert_not_awaited()
+        reviewer.adapter.add_label.assert_not_awaited()
+
     async def test_change_request_becomes_an_address_review_cycle_on_codex(
         self, no_claude: None, openai_text: _FakeLiteLLM, tmp_path: Path
     ) -> None:

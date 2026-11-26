@@ -826,14 +826,18 @@ def create_app(
             **rotation_kwargs(cfg.server.log_max_bytes, cfg.server.log_backup_count),
         )
 
-        # Initialize the global LLM provider from project config.
-        # NOTE: in multi_project mode this uses the first resolved dir's config.
-        # Per-project provider selection requires threading through ExecutionContext.
-        from sova.ipc.runtime import reload_runtime
-        from sova.llm.client import reload_provider_async
+        # The global LLM provider and agent runtime come from this project's config. A multi-project server
+        # also resolves them per project (``provider_for()``, ``runtime_for()``), so every registered project's
+        # in-process calls and spawned commands use its own provider and runtime, not this one's.
+        from sova.dashboard.services.agent_pool import set_server_project_dir
+        from sova.ipc.runtime import enable_project_scoped_runtimes, reload_runtime
+        from sova.llm.client import enable_project_scoped_providers, reload_provider_async
 
         await reload_provider_async(cfg, resolved)
         reload_runtime(cfg)
+        set_server_project_dir(resolved)
+        enable_project_scoped_providers(is_multi)
+        enable_project_scoped_runtimes(is_multi)
 
         from sova.core.output import cleanup_old_output
         from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
@@ -842,7 +846,6 @@ def create_app(
 
         gc_task: asyncio.Task | None = None
         if is_multi:
-            log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
             for component, reason in _HUB_SKIPPED_COMPONENTS:
                 log.info("hub.component_skipped", component=component, reason=reason)
 

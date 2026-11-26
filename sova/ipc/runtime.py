@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -1072,6 +1073,74 @@ def set_runtime(runtime: AgentRuntime) -> None:
     """Set the module-level agent runtime."""
     global _runtime  # noqa: PLW0603
     _runtime = runtime
+
+
+# Multi-project server: one runtime per project, from that project's ``agent.runtime`` and ``codex`` sections.
+# The global runtime above belongs to the project the server started in, so a command started for a project
+# on Codex spawned Claude Code (with the Codex project's model names) when the server's own project used it.
+# Off by default, like ``sova.llm.client.enable_project_scoped_providers()``.
+_project_scoped_runtimes = False
+_project_runtimes: dict[Path, tuple[str, AgentRuntime]] = {}
+# runtime_for() runs in worker threads (runtime_for_async(), adoption), so the cache is guarded.
+_project_runtimes_lock = threading.Lock()
+
+
+def enable_project_scoped_runtimes(enabled: bool = True) -> None:
+    """Resolve the runtime per project (multi-project server) instead of using the global one."""
+    global _project_scoped_runtimes  # noqa: PLW0603
+    _project_scoped_runtimes = enabled
+    clear_project_runtimes()
+
+
+def clear_project_runtimes(project_dir: Path | None = None) -> None:
+    """Drop *project_dir*'s runtime, or every per-project runtime, so the next spawn rebuilds it (settings saves)."""
+    from sova.config.root import owning_config_dir
+
+    key = owning_config_dir(project_dir) if project_dir is not None else None
+    with _project_runtimes_lock:
+        if key is None:
+            _project_runtimes.clear()
+        else:
+            _project_runtimes.pop(key, None)
+
+
+def project_scoped_runtimes_enabled() -> bool:
+    """Whether ``runtime_for()`` resolves a runtime per project (a multi-project server)."""
+    return _project_scoped_runtimes
+
+
+def runtime_for(project_dir: Path | None, cfg: ProjectConfig | None = None) -> AgentRuntime:
+    """Return the runtime *project_dir* is configured for, or the global runtime when project scoping is off.
+
+    *cfg* is the project's config when the caller already holds it; otherwise it is loaded here, and only
+    when scoping is on. Rebuilt when the project's runtime settings change, so switching ``agent.runtime``
+    needs no restart. That check reads the project's config on every call: ``load_config()``'s cache makes a
+    hit a file-stamp check, but a miss (first use, or after a settings save) reads the TOML and the database,
+    so an event-loop caller goes through ``runtime_for_async()`` instead.
+    """
+    if not _project_scoped_runtimes or project_dir is None:
+        return get_runtime()
+    from sova.config.loader import load_config
+    from sova.config.root import owning_config_dir
+
+    key = owning_config_dir(project_dir)
+    cfg = cfg if cfg is not None else load_config(key)
+    fingerprint = f"{cfg.agent.runtime}|{cfg.codex.model_dump_json()}"
+    with _project_runtimes_lock:
+        cached = _project_runtimes.get(key)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        runtime = create_runtime(cfg.agent.runtime, codex=cfg.codex)
+        _project_runtimes[key] = (fingerprint, runtime)
+    log.info("runtime.project_runtime", project=str(key), runtime=cfg.agent.runtime)
+    return runtime
+
+
+async def runtime_for_async(project_dir: Path | None) -> AgentRuntime:
+    """``runtime_for()`` for an event-loop caller: the project's config is read in a worker thread."""
+    if not _project_scoped_runtimes or project_dir is None:
+        return get_runtime()
+    return await asyncio.to_thread(runtime_for, project_dir)
 
 
 def reload_runtime(cfg: ProjectConfig) -> None:

@@ -2882,6 +2882,13 @@ class _MockStreamChunk:
         self.usage = usage
 
 
+def _litellm_missing_credentials() -> Exception:
+    """LiteLLM's missing-key error: an InternalServerError (stubbed by name) carrying OpenAI's message."""
+    return type("InternalServerError", (Exception,), {})(
+        "litellm.InternalServerError: OpenAIException - Missing credentials. Please pass an `api_key`"
+    )
+
+
 class TestLiteLLMProvider:
     @pytest.fixture(autouse=True)
     def _reset_model_cache(self):
@@ -3146,6 +3153,49 @@ class TestLiteLLMProvider:
         assert result.text == "Fallback response"
         assert result.model == "ollama/qwen3-coder"
         assert mock_litellm.acompletion.call_count == 2
+
+    async def test_missing_credentials_do_not_fall_back(self, mock_litellm: MagicMock) -> None:
+        """A missing key fails on every model: one call, raised as a configuration error."""
+        from sova.llm.errors import ConfigurationError
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = _litellm_missing_credentials()
+
+        provider = LiteLLMProvider(model="openai/gpt-6.1-sol", fallback_model="openai/gpt-6-sol")
+        with pytest.raises(ConfigurationError, match="Missing credentials"):
+            await provider.invoke("Hello")
+        assert mock_litellm.acompletion.call_count == 1
+
+    async def test_missing_credentials_do_not_fall_back_when_streaming(self, mock_litellm: MagicMock) -> None:
+        """The streaming path reaches _should_fall_back with the classified error, so it stops after one call."""
+        from sova.llm.errors import ConfigurationError
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = _litellm_missing_credentials()
+
+        provider = LiteLLMProvider(model="openai/gpt-6.1-sol", fallback_model="openai/gpt-6-sol")
+        with pytest.raises(ConfigurationError, match="Missing credentials"):
+            async for _ in provider.invoke_streaming("Hello"):
+                pass
+        assert mock_litellm.acompletion.call_count == 1
+
+    async def test_no_internal_fallback_when_chain_tries_it_next(self, mock_litellm: MagicMock) -> None:
+        """The client's chain names the fallback model as the next hop: calling it here too doubled it."""
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = RuntimeError("Primary model unavailable")
+
+        provider = LiteLLMProvider(model="openai/gpt-6.1-sol", fallback_model="openai/gpt-6-sol")
+        with pytest.raises(RuntimeError, match="Primary model unavailable"):
+            await provider.invoke("Hello", fallback_model="openai/gpt-6-sol")
+        assert mock_litellm.acompletion.call_count == 1
+
+    def test_litellm_debug_banner_is_suppressed(self) -> None:
+        """LiteLLM's "Give Feedback / Get Help" banner otherwise lands in every failed run's output."""
+        litellm = pytest.importorskip("litellm")
+        import sova.llm.litellm_provider  # noqa: F401 (the import sets the flag)
+
+        assert litellm.suppress_debug_info is True
 
     async def test_no_fallback_raises(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider

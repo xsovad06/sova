@@ -114,6 +114,33 @@ record this way). The same applies to `.claude/sova.log`, and the commit step st
 `make test` and `make lint`): without them the baseline records exit code 2 and validation has
 nothing to check.
 
+## Switch a Project's Stored Configuration
+
+The same fields can be stored in a project's database instead, so every run of that project, including
+those the dashboard and a multi-project hub start, uses OpenAI and Codex. Order matters: `llm.provider =
+"openai"` is rejected until `llm.model` names a model, and `llm.api_key` is stored in the keyring under the
+provider active when it is written.
+
+```bash
+sova config set llm.model openai/gpt-6.1-sol
+sova config set llm.provider openai
+printf '%s' "$OPENAI_API_KEY" | sova config set llm.api_key -   # after the provider; see below
+sova config set agent.runtime codex
+sova config set codex.model gpt-6.1-sol
+sova config set codex.allow_unenforced_budget true
+# then every model field listed above, and check:
+sova doctor   # llm provider: openai (API key configured); openai-only models: OK; agent runtime: codex
+```
+
+The key is set after the provider because one set before it lands under the old provider. `-` reads it
+from stdin: passed as an argument, it is visible in the process list (`ps`) while the command runs (`printf`
+is a shell builtin, so it never appears there). The dashboard's Connections page stores it the same way.
+
+The key is stored for the project's primary checkout and found from its worktrees too. A multi-project hub
+keeps one provider and one runtime per project and rebuilds them when the provider, model or runtime settings
+change, so a switch needs no restart; a key replaced from the command line does not change those settings, so
+save it on the dashboard's Connections page or restart the hub.
+
 ## Run
 
 ```bash

@@ -24,6 +24,7 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from sova.dashboard.services.agent_pool import ProjectAgents
     from sova.db.models import TaskRun
+    from sova.ipc.runtime import AgentRuntime
 
 log = get_logger(component="dashboard.adopt")
 
@@ -103,7 +104,7 @@ def _runtime_result_is_error(lines: list[str], parser: object) -> bool | None:
     return outcome
 
 
-def _read_result_is_error(stdout_path: Path, role: str = "") -> bool | None:
+def _read_result_is_error(stdout_path: Path, role: str = "", project_dir: Path | None = None) -> bool | None:
     """Whether the run recorded in *stdout_path* ended in an error, or None when its tail does not say.
 
     Asks the runtime's own stream parser first when the run has one (the runtime configured now, as at
@@ -112,21 +113,31 @@ def _read_result_is_error(stdout_path: Path, role: str = "") -> bool | None:
     lines = _read_tail_lines(stdout_path)
     if not lines:
         return None
-    parser = _fresh_stream_parser(role)
+    parser = _fresh_stream_parser(role, project_dir)
     if parser is not None:
         return _runtime_result_is_error(lines, parser)
     return _claude_result_is_error(lines)
 
 
-def _fresh_stream_parser(role: str) -> object | None:
+def _project_runtime(project_dir: Path | None) -> AgentRuntime:
+    """The runtime *project_dir* is configured for, resolved as ``start_agent`` resolved it at spawn.
+
+    Delegates to the spawn path's resolver so a run and its adoption cannot pick different runtimes (and
+    parsers). It may read the project's config, so it is only called from a worker thread.
+    """
+    from sova.dashboard.services.agent_lifecycle import _project_runtime as spawn_runtime
+
+    return spawn_runtime(project_dir)
+
+
+def _fresh_stream_parser(role: str, project_dir: Path | None = None) -> object | None:
     """A new per-process stream parser for *role*'s runtime, or None (direct spawn, Claude, or a failure)."""
     from sova.dashboard.services.agent_lifecycle import _DIRECT_SPAWN_ROLES
-    from sova.ipc.runtime import get_runtime
 
     if role in _DIRECT_SPAWN_ROLES:
         return None
     try:
-        return get_runtime().create_stream_parser()
+        return _project_runtime(project_dir).create_stream_parser()
     except Exception:  # noqa: BLE001 (no parser means the Claude tail read is used)
         log.warning("adopt.stream_parser_failed", role=role, exc_info=True)
         return None
@@ -227,14 +238,16 @@ async def _derive_exit_code(
     # Only a command run's stdout is stream-json; a pipeline run's holds CLI output, which proves nothing
     # (the same rule as ``_derive_finished_outcome``, so a run gets one answer whenever it ended).
     if role.startswith(_COMMAND_ROLE_PREFIX):
-        is_error = await asyncio.to_thread(_read_result_is_error, stdout_path, role)
+        is_error = await asyncio.to_thread(_read_result_is_error, stdout_path, role, project_dir)
         if is_error is not None:
             return 1 if is_error else 0
     log.warning("adopt.exit_outcome_unknown", run_id=run_id, db_status=status)
     return EXIT_OUTCOME_UNKNOWN
 
 
-def _runtime_stream_setup(role: str, run_id: int) -> tuple[object | None, float | None, str | None]:
+def _runtime_stream_setup(
+    role: str, run_id: int, project_dir: Path | None = None
+) -> tuple[object | None, float | None, str | None]:
     """``(stream_parser, drain_timeout, runtime_name)`` for an adopted run, as ``start_agent`` sets them at spawn.
 
     A direct-spawn role never goes through an AgentRuntime, so it gets none. The runtime is the one
@@ -242,12 +255,11 @@ def _runtime_stream_setup(role: str, run_id: int) -> tuple[object | None, float 
     which is why a parser that cannot be built is logged and left as the inline Claude parser.
     """
     from sova.dashboard.services.agent_lifecycle import _DIRECT_SPAWN_ROLES
-    from sova.ipc.runtime import get_runtime
 
     if role in _DIRECT_SPAWN_ROLES:
         return None, None, None
     try:
-        runtime = get_runtime()
+        runtime = _project_runtime(project_dir)
     except Exception:  # noqa: BLE001 (a runtime that cannot be built must not stop a live run being adopted)
         log.warning("adopt.stream_parser_failed", run_id=run_id, runtime=None, exc_info=True)
         return None, None, None
@@ -421,7 +433,7 @@ async def adopt_orphaned_run(run: TaskRun, project_dir: Path | None) -> bool:
             stderr_path=root / ".claude" / "agent-output" / f"{run_id}.stderr",
             tail_from_end=True,
         )
-        stream_parser, drain_timeout, runtime_name = _runtime_stream_setup(role, run_id)
+        stream_parser, drain_timeout, runtime_name = await asyncio.to_thread(_runtime_stream_setup, role, run_id, root)
         agent = AgentState(
             run_id=run_id,
             issue=issue or "",

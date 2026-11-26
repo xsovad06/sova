@@ -1934,13 +1934,42 @@ async def dispatch_config_reload(
         for mqm in components.get("merge_queue_monitors", []):
             mqm.reload_config(cfg.integration, cfg.notification)
     elif target == "llm":
-        from sova.llm.client import reload_provider_async
+        from sova.llm.client import clear_project_providers, project_scoped_providers_enabled, reload_provider_async
 
-        await reload_provider_async(cfg, project_dir)
+        # On a multi-project server the global provider belongs to the server's own project: a save for any
+        # other project must not replace it, only drop that project's provider so it is rebuilt. A save for
+        # the server's own project does both, since callers with no project in scope still use the global one.
+        if project_scoped_providers_enabled():
+            clear_project_providers(project_dir)
+            if _is_server_project(project_dir):
+                await reload_provider_async(cfg, project_dir)
+        else:
+            await reload_provider_async(cfg, project_dir)
     elif target == "runtime":
-        from sova.ipc.runtime import reload_runtime
+        from sova.ipc.runtime import clear_project_runtimes, project_scoped_runtimes_enabled, reload_runtime
 
-        reload_runtime(cfg)
+        if project_scoped_runtimes_enabled():
+            clear_project_runtimes(project_dir)
+            if _is_server_project(project_dir):
+                reload_runtime(cfg)
+        else:
+            reload_runtime(cfg)
+
+
+def _is_server_project(project_dir: Path | None) -> bool:
+    """Whether *project_dir* is the project the server started in (None: the working directory's, the same).
+
+    The comparison goes through each side's owning checkout, so a save scoped to a worktree of the server's
+    project counts as that project.
+    """
+    from sova.config.root import owning_config_dir
+    from sova.dashboard.services.agent_pool import get_server_project_dir
+
+    server = get_server_project_dir()
+    if server is None:
+        return False
+    target = project_dir if project_dir is not None else Path.cwd()
+    return owning_config_dir(target) == owning_config_dir(server)
 
 
 async def reload_all_configs(project_dir: Path | None, key: str) -> str | None:
