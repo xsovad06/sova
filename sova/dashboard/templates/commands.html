@@ -2,11 +2,11 @@
 {% block title %}Commands - SOVA{% endblock %}
 {% block content %}
 <div class="flex-1 p-6 min-w-0">
-  <div class="flex items-center justify-between mb-6">
+  <div class="flex items-center justify-between mb-6 max-md:flex-wrap max-md:gap-3">
     <h2 class="text-xl font-semibold text-gray-100">Commands</h2>
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-3 max-md:flex-wrap max-md:min-w-0">
       <input id="cmd-search" type="text" placeholder="Filter commands..."
-             class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-56 focus:outline-none focus:border-accent/50">
+             class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-56 max-md:max-w-full focus:outline-none focus:border-accent/50">
       <select id="cmd-category" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 focus:outline-none focus:border-accent/50">
         <option value="">All categories</option>
       </select>

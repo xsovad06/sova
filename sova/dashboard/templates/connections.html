@@ -64,7 +64,7 @@ function renderLLMCard(c) {
         '<span class="text-sm font-medium text-gray-200">' + escapeHtml(c.label) + '</span>' +
         (c.active ? ACTIVE_BADGE : '') +
       '</div>' +
-      '<div class="flex items-center gap-2">' +
+      '<div class="flex items-center gap-2 max-md:flex-wrap">' +
         modelField +
         apiBaseField +
         '<button type="button" class="sova-btn sova-btn-primary" onclick="validateLLM(\'' + c.id + '\')">Validate</button>' +
@@ -100,7 +100,7 @@ function renderReconnectBlock(c) {
       '</div>';
   }
   return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
-    '<div class="flex items-center gap-2">' +
+    '<div class="flex items-center gap-2 max-md:flex-wrap">' +
       '<button type="button" class="sova-btn sova-btn-primary" id="reconnect-start-btn" onclick="claudeFlow.start()">Start reconnect (claude auth login)</button>' +
       '<button type="button" class="sova-btn sova-btn-danger hidden" id="reconnect-cancel-btn" onclick="claudeFlow.cancel()">Cancel</button>' +
       '<span class="text-xs text-gray-500" id="reconnect-status-text"></span>' +
@@ -120,7 +120,7 @@ function renderApiKeyBlock(providerId) {
     ? ' Used in preference to any OPENAI_API_KEY exported in the server\'s environment.'
     : '';
   return '<div class="mt-3 pt-3 border-t border-gray-700/40">' +
-    '<div class="flex items-center gap-2">' +
+    '<div class="flex items-center gap-2 max-md:flex-wrap">' +
       '<input type="password" class="sova-input text-xs" style="width:auto" id="apikey-' + providerId + '" placeholder="' + (CATALOG.api_key_configured ? '••••••••' : 'API key') + '">' +
       '<button type="button" class="sova-btn sova-btn-primary" onclick="saveApiKey(\'' + providerId + '\')">Save key</button>' +
     '</div>' +
@@ -137,7 +137,7 @@ function renderRuntimeCard(c) {
         '<span class="text-sm font-medium text-gray-200">' + escapeHtml(c.label) + '</span>' +
         (c.active ? ACTIVE_BADGE : '') +
       '</div>' +
-      '<div class="flex items-center gap-2">' +
+      '<div class="flex items-center gap-2 max-md:flex-wrap">' +
         '<button type="button" class="sova-btn sova-btn-primary" onclick="validateRuntime(\'' + c.id + '\')">Validate</button>' +
         '<button type="button" class="sova-btn sova-btn-success" onclick="activateRuntime(\'' + c.id + '\')">Activate</button>' +
       '</div>' +

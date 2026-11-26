@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Specs - SOVA{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
+<div class="flex items-center justify-between mb-6 max-md:flex-wrap max-md:gap-3">
   <h2 class="text-2xl font-semibold">Specs</h2>
-  <div class="flex items-center gap-3">
+  <div class="flex items-center gap-3 max-md:flex-wrap max-md:min-w-0">
     <input type="text" id="spec-search" placeholder="Search by issue or title..."
-      class="px-3 py-1.5 rounded-lg bg-surface border border-gray-700/50 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50 w-64"
+      class="px-3 py-1.5 rounded-lg bg-surface border border-gray-700/50 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50 w-64 max-md:max-w-full"
       oninput="filterSpecs()">
     <select id="spec-status-filter" onchange="filterSpecs()"
       class="px-3 py-1.5 rounded-lg bg-surface border border-gray-700/50 text-sm text-gray-300 focus:outline-none focus:border-accent/50">
