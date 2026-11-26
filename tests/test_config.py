@@ -380,7 +380,7 @@ github_repo = "user/repo"
 
 def test_sensitive_fields_hidden_from_repr() -> None:
     """Sensitive config fields must not appear in repr() output."""
-    from sova.config.models import NotificationConfig, TaskSourceConfig
+    from sova.config.models import MCPConfig, NotificationConfig, TaskSourceConfig
 
     ts = TaskSourceConfig(jira_api_token="secret-jira-token")
     assert "secret-jira-token" not in repr(ts)
@@ -388,6 +388,8 @@ def test_sensitive_fields_hidden_from_repr() -> None:
     nc = NotificationConfig(slack_webhook_url="https://hooks.slack.com/secret")
     assert "https://hooks.slack.com/secret" not in repr(nc)
     assert "desktop" in repr(nc)
+
+    assert "mcp-signing-secret" not in repr(MCPConfig(token_secret="mcp-signing-secret"))
 
 
 def test_dashboard_section_loaded_from_toml(tmp_path: Path) -> None:
@@ -752,6 +754,35 @@ class TestProjectRegistry:
         assert registry.unregister_project("test") is True
         assert registry.unregister_project("test") is False
         assert registry.list_projects() == {}
+
+    def test_concurrent_registrations_all_survive(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Overlapping registrations (the dashboard runs one in a worker thread) must not drop an entry."""
+        import threading
+        import time
+
+        from sova.config import registry
+
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", tmp_path / "projects.json")
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+        real_save = registry._save_entries
+
+        def slow_save(entries: dict) -> None:
+            time.sleep(0.02)  # widen the window between the load and this save
+            real_save(entries)
+
+        monkeypatch.setattr(registry, "_save_entries", slow_save)
+        projects = []
+        for i in range(6):
+            project = tmp_path / f"proj-{i}"
+            project.mkdir()
+            projects.append(project)
+        threads = [threading.Thread(target=registry.register_project, args=(p, p.name)) for p in projects]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert sorted(registry.list_projects()) == sorted(p.name for p in projects)
 
     def test_slug_deduplication(self, tmp_path: Path, monkeypatch: object) -> None:
         from sova.config import registry

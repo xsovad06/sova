@@ -1044,7 +1044,7 @@ class MCPConfig(BaseSettings):
     """MCP (Model Context Protocol) endpoint configuration."""
 
     enabled: bool = True
-    token_secret: str = ""
+    token_secret: str = Field("", repr=False)
     token_expiry_hours: int = Field(24, gt=0)
     atlassian: AtlassianMCPConfig = Field(default_factory=AtlassianMCPConfig)
 
