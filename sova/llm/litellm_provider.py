@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from sova.llm.client import cached_enumeration
-from sova.llm.errors import LLMError, ProviderUnavailableError, classify_exception
+from sova.llm.errors import ConfigurationError, LLMError, ProviderUnavailableError, classify_exception
 from sova.llm.gcp_auth import VertexTokenProvider
 from sova.llm.models import (
     CURATED_MODELS,
@@ -155,6 +155,9 @@ def _vertex_model_id(entry: dict) -> str:
 try:
     import litellm  # type: ignore[import-untyped]
 
+    # LiteLLM prints a "Give Feedback / Get Help" banner to stdout on every failed call, which lands in each
+    # run's output between SOVA's own structured error lines.
+    litellm.suppress_debug_info = True
     _HAS_LITELLM = True
 except Exception:  # noqa: BLE001 (catch broken installs (AttributeError, SyntaxError, etc.))
     _HAS_LITELLM = False
@@ -272,6 +275,17 @@ class LiteLLMProvider(LLMProvider):
         self._warned_unpriced_models: set[str] = set()
         self._vertex_token_provider = VertexTokenProvider()
 
+    def _should_fall_back(self, exc: BaseException, target_model: str | None, next_hop: str | None) -> bool:
+        """Whether a failed call on *target_model* is retried on ``llm.fallback_model`` inside this provider.
+
+        Not when the failure is a configuration fault no model can fix (a missing API key is the same on every
+        model), and not when *next_hop*, the model the client's fallback chain tries next, already is
+        ``llm.fallback_model``: the chain would otherwise call it twice in a row.
+        """
+        if not self.fallback_model or target_model == self.fallback_model or next_hop == self.fallback_model:
+            return False
+        return not isinstance(exc, ConfigurationError)
+
     async def invoke(
         self,
         prompt: str,
@@ -299,7 +313,7 @@ class LiteLLMProvider(LLMProvider):
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 (LiteLLM raises arbitrary exceptions from providers)
-            if not self.fallback_model or target_model == self.fallback_model:
+            if not self._should_fall_back(exc, target_model, fallback_model):
                 raise
             reason = "connection_error" if _is_connection_error(exc) else "api_error"
             log.warning(
@@ -337,7 +351,7 @@ class LiteLLMProvider(LLMProvider):
             async for event in self._stream(target_model, prompt, start):
                 yield event
         except Exception as exc:  # noqa: BLE001 (LiteLLM raises arbitrary exceptions from providers)
-            if not self.fallback_model or target_model == self.fallback_model:
+            if not self._should_fall_back(exc, target_model, None):
                 raise
             reason = "connection_error" if _is_connection_error(exc) else "api_error"
             log.warning(

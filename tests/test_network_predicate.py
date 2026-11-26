@@ -68,6 +68,14 @@ class TestAmbiguousPatternsRequireCorroboration:
     def test_bare_connection_refused_is_not_an_outage(self) -> None:
         assert looks_like_network_outage("test fixture: connection refused on 127.0.0.1:5432") is False
 
+    def test_gh_tls_handshake_timeout_is_an_outage(self) -> None:
+        # Verbatim from a reviewer run whose PR file list fetch failed (2026-11-26).
+        message = 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'
+        assert looks_like_network_outage(message) is True
+
+    def test_bare_tls_handshake_timeout_is_not_an_outage(self) -> None:
+        assert looks_like_network_outage("test_tls.py: TLS handshake timeout against the local fixture") is False
+
 
 class TestFalsePositiveGuards:
     @pytest.mark.parametrize(

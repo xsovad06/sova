@@ -194,6 +194,32 @@ _EXCEPTION_NAMES: dict[str, type[LLMError]] = {
     "TimeoutError": LLMTimeoutError,
 }
 
+# A missing or rejected credential: no model and no retry can succeed until the operator fixes it, so
+# classify_exception() files these as ConfigurationError (see _is_credential_failure()).
+_CREDENTIAL_EXCEPTION_NAMES: frozenset[str] = frozenset({"AuthenticationError"})
+# The message patterns below are only read from an exception a provider SDK raised: one of these class names
+# (matched by name, as _EXCEPTION_NAMES is) or a class defined in one of these packages. A plain exception can
+# carry an agent's stdout, where a task touching auth code may well say "invalid api key".
+_SDK_ERROR_NAMES: frozenset[str] = frozenset(
+    {
+        "APIConnectionError",
+        "APIError",
+        "APIStatusError",
+        "BadRequestError",
+        "InternalServerError",
+        "PermissionDeniedError",
+        "ServiceUnavailableError",
+    }
+)
+_SDK_MODULE_PREFIXES: tuple[str, ...] = ("litellm", "openai", "anthropic")
+_CREDENTIAL_PATTERNS: tuple[str, ...] = (
+    "missing credentials",
+    "incorrect api key provided",
+    "invalid api key",
+    "invalid x-api-key",
+    "no api key provided",
+)
+
 # HTTP status codes for SDK exceptions whose class name is not in the table
 # above (e.g. a bare anthropic APIStatusError).
 _STATUS_CODES: dict[int, type[LLMError]] = {
@@ -232,6 +258,9 @@ def classify_exception(exc: BaseException) -> type[LLMError]:
     if isinstance(exc, LLMError):
         return type(exc)
 
+    if _is_credential_failure(exc):
+        return ConfigurationError
+
     for cls in type(exc).__mro__:
         mapped = _EXCEPTION_NAMES.get(cls.__name__)
         if mapped is not None:
@@ -245,6 +274,34 @@ def classify_exception(exc: BaseException) -> type[LLMError]:
             return ProviderUnavailableError
 
     return classify_error(str(exc))
+
+
+def _is_credential_failure(exc: BaseException) -> bool:
+    """Return True when a provider exception says its credential is missing or rejected.
+
+    Checked ahead of the class-name table because LiteLLM wraps a missing API key in an
+    ``InternalServerError``, which maps to ``ProviderUnavailableError``: the fallback chain and the
+    reviewer's chunk retry then resend the call to every model, each failing identically. The message
+    patterns are matched here, only on an exception a provider SDK raised (``_is_sdk_exception()``), and
+    never in ``classify_error()``, which also reads a target project's captured test output.
+    """
+    if any(cls.__name__ in _CREDENTIAL_EXCEPTION_NAMES for cls in type(exc).__mro__):
+        return True
+    if not _is_sdk_exception(exc):
+        return False
+    lower = str(exc).lower()
+    return any(p in lower for p in _CREDENTIAL_PATTERNS)
+
+
+def _is_sdk_exception(exc: BaseException) -> bool:
+    """Whether *exc* was raised by a provider SDK (LiteLLM, OpenAI, Anthropic) rather than carried other text."""
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _SDK_ERROR_NAMES:
+            return True
+        module = cls.__module__ or ""
+        if module.split(".", 1)[0] in _SDK_MODULE_PREFIXES:
+            return True
+    return False
 
 
 def resolve_error_category(exc: object) -> type[LLMError]:

@@ -6,6 +6,7 @@ import pytest
 
 from sova.llm.errors import (
     BillingError,
+    ConfigurationError,
     ContentFilteredError,
     LLMError,
     LLMInvocationError,
@@ -332,6 +333,42 @@ class TestClassifyException:
     def test_exception_name_wins_over_message(self) -> None:
         """A typed rate limit stays a rate limit even when the text mentions billing."""
         assert classify_exception(_sdk_exc("RateLimitError", "billing tier throttle")) is RateLimitError
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            # Verbatim from a reviewer run whose OpenAI key was not found: LiteLLM wraps it in an
+            # InternalServerError, which the class-name table alone files as a fallback-eligible outage.
+            _sdk_exc(
+                "InternalServerError",
+                "litellm.InternalServerError: InternalServerError: OpenAIException - Missing credentials. Please "
+                "pass an `api_key`, `workload_identity`, `admin_api_key`, or set the `OPENAI_API_KEY` or "
+                "`OPENAI_ADMIN_KEY` environment variable.",
+            ),
+            _sdk_exc("AuthenticationError", "litellm.AuthenticationError: bad key"),
+            _sdk_exc("APIStatusError", "Incorrect API key provided: sk-abc", status_code=401),
+        ],
+    )
+    def test_credential_failure_is_configuration_error(self, exc: BaseException) -> None:
+        """No model and no retry can fix a missing or rejected key, so it is never fallback-eligible."""
+        assert classify_exception(exc) is ConfigurationError
+        assert not is_fallback_eligible(ConfigurationError(str(exc)))
+
+    def test_credential_text_in_a_plain_exception_is_not_a_configuration_error(self) -> None:
+        """A non-SDK exception can carry an agent's output; a task touching auth code mentions invalid keys."""
+        exc = RuntimeError("agent stdout: fixed the 'invalid api key' branch in auth/client.py")
+        assert classify_exception(exc) is not ConfigurationError
+
+    def test_credential_text_in_an_sdk_module_exception_is_a_configuration_error(self) -> None:
+        """An SDK class not in the name set still counts when it is defined in the SDK's own package."""
+        exc_type = type("OpenAIError", (Exception,), {"__module__": "openai._exceptions"})
+        assert classify_exception(exc_type("No API key provided.")) is ConfigurationError
+
+    def test_credential_text_in_step_output_is_not_a_configuration_error(self) -> None:
+        """classify_error() reads captured test output too, so the credential patterns stay out of it."""
+        assert classify_error("FAILED test_client.py::test_missing_credentials - Missing credentials") is not (
+            ConfigurationError
+        )
 
 
 class TestIsBillingFailureExceptions:
