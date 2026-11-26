@@ -8,6 +8,10 @@ import { select } from './selection.js';
 // entry, whose `start` action is the run its stage calls for, so no open issue is out of reach of the page.
 //
 // Keys: "/" focuses the box, the arrows move through the results, Enter opens one, Escape closes the list.
+//
+// Home (templates/phone.html) runs the same search with its own options (init(opts)): its elements' id prefix, what a
+// chosen result does (it starts the issue's run instead of opening the drawer) and what each row shows on its right.
+// One search per page, so the options are module state.
 
 var _DEBOUNCE_MS = 200;
 
@@ -19,8 +23,12 @@ var _request = 0;     // the latest search's number: a slower, older answer must
 var _results = [];
 var _active = -1;     // the highlighted result, -1 for none
 
-function _input() { return document.getElementById('work-search-input'); }
-function _list() { return document.getElementById('work-search-results'); }
+var _prefix = 'work-search';   // the host's id; the input, the list and each row add -input, -results and -opt-<i>
+var _onChoose = _openOnBoard;
+var _describe = _boardDescriber;
+
+function _input() { return document.getElementById(_prefix + '-input'); }
+function _list() { return document.getElementById(_prefix + '-results'); }
 
 function _setOpen(open) {
   var input = _input();
@@ -41,7 +49,7 @@ function _setActive(i) {
     row.setAttribute('aria-selected', String(on));
     if (on) row.scrollIntoView({ block: 'nearest' });
   });
-  if (i >= 0) input.setAttribute('aria-activedescendant', 'work-search-opt-' + i);
+  if (i >= 0) input.setAttribute('aria-activedescendant', _prefix + '-opt-' + i);
   else input.removeAttribute('aria-activedescendant');
 }
 
@@ -52,12 +60,18 @@ function _where(entry, columns) {
   return '<span class="px-1.5 rounded-full text-xs whitespace-nowrap ' + stateBadgeClasses(col.color) + '">' + escapeHtml(col.label) + '</span>';
 }
 
-function _row(entry, i, columns) {
-  return '<button type="button" id="work-search-opt-' + i + '" class="sova-work-search-row" role="option" tabindex="-1"' +
+// The Work page's describer: one board index for the whole list, not one per row.
+function _boardDescriber() {
+  var columns = boardColumns();
+  return function(entry) { return _where(entry, columns); };
+}
+
+function _row(entry, i, describe) {
+  return '<button type="button" id="' + _prefix + '-opt-' + i + '" class="sova-work-search-row" role="option" tabindex="-1"' +
     ' aria-selected="' + (i === _active) + '" data-search-index="' + i + '">' +
     '<span class="text-xs font-bold text-accent tabular-nums shrink-0">#' + entry.number + '</span>' +
     '<span class="text-sm text-gray-200 truncate flex-1 min-w-0">' + escapeHtml(entry.title || '') + '</span>' +
-    '<span class="flex items-center gap-1 shrink-0">' + _where(entry, columns) + '</span></button>';
+    '<span class="flex items-center gap-1 shrink-0">' + describe(entry) + '</span></button>';
 }
 
 function _note(text, cls) {
@@ -67,10 +81,9 @@ function _note(text, cls) {
 function _render(query, more) {
   var list = _list();
   if (!list) return;
-  // One board index for the whole list, not one per row.
-  var columns = boardColumns();
+  var describe = _describe();
   list.innerHTML = _results.length
-    ? _results.map(function(entry, i) { return _row(entry, i, columns); }).join('') + (more ? _note(more + ' more match. Add words to narrow it down.') : '')
+    ? _results.map(function(entry, i) { return _row(entry, i, describe); }).join('') + (more ? _note(more + ' more match. Add words to narrow it down.') : '')
     : _note('No open issue matches "' + query + '".');
   _setOpen(true);
   _setActive(_results.length ? 0 : -1);
@@ -104,9 +117,14 @@ function _clear() {
 function _choose(i) {
   var entry = _results[i];
   if (!entry) return;
+  _clear();
+  _onChoose(entry);
+}
+
+// The Work page's choice: the issue's details in the drawer, and its card brought into view.
+function _openOnBoard(entry) {
   showOffBoard(entry);
   select(entry.number);
-  _clear();
   var card = document.querySelector('#work-board [data-action="work-select"][data-args="[' + Number(entry.number) + ']"]');
   if (card) card.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
 }
@@ -146,7 +164,13 @@ function _typingIn(el) {
   return el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 }
 
-export function init() {
+// opts (all optional, the Work page passes none): {prefix: the host element's id, onChoose(entry): what choosing a
+// result does, describe(): a function of an entry that returns the trusted markup at the right of its row}.
+export function init(opts) {
+  opts = opts || {};
+  if (opts.prefix) _prefix = opts.prefix;
+  if (opts.onChoose) _onChoose = opts.onChoose;
+  if (opts.describe) _describe = opts.describe;
   var input = _input();
   var list = _list();
   if (!input || !list) return;
@@ -160,7 +184,7 @@ export function init() {
     if (row) _choose(Number(row.getAttribute('data-search-index')));
   });
   document.addEventListener('click', function(e) {
-    var host = document.getElementById('work-search');
+    var host = document.getElementById(_prefix);
     if (host && !list.hidden && !host.contains(e.target)) _setOpen(false);
   });
   document.addEventListener('keydown', function(e) {

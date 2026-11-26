@@ -1981,7 +1981,8 @@ class TestAgentsPageMarkup:
     def test_each_module_is_imported_and_initialised(self, name: str) -> None:
         html = _WORK_TEMPLATE.read_text(encoding="utf-8")
         assert f"/static/js/pages/{name}.js" in html
-        assert "export function init() {" in _module_source(name)
+        # The issue search takes options (Home runs it with its own); the Work page calls it with none.
+        assert re.search(r"export function init\((opts)?\) \{", _module_source(name))
 
     def test_each_init_runs_isolated_with_actions_first(self) -> None:
         """One module throwing during init() must not stop the modules after it from starting."""

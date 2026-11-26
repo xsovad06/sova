@@ -562,9 +562,24 @@ input[type="date"] { color-scheme: dark; }
   outline: none;
 }
 
-/* Phone page (templates/phone.html): 44px tap targets, and a 16px field so iOS does not zoom on focus */
+/* Phone page (templates/phone.html, static/js/pages/phone/): Home, at any width, so its 44px tap targets hold even
+   where the phone shell's own rules do not apply. */
 .sova-phone-tap { min-height: 44px; justify-content: center; }
-.sova-phone-input { min-height: 44px; font-size: 1rem; }
+/* The glance tiles: the Work header's .sova-work-stat, three to a row. */
+.sova-phone-glance { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.sova-phone-glance .sova-work-stat { padding: 0.625rem; border-radius: 0.75rem; }
+/* A third of a 390px screen: the eyebrow's tracking is eased so "Spend today" stays on one line. */
+.sova-phone-glance .sova-stat-label { letter-spacing: 0.03em; white-space: nowrap; }
+/* A section's card: Waiting on you, Running, Finished today. */
+.sova-phone-row { padding: 0.75rem; border-radius: 0.75rem; }
+/* Something waits on the user: the card's edge says so in the "needs you" colour of the top bar's chip. */
+.sova-card.sova-phone-needs { border-color: rgb(var(--ctp-yellow-rgb) / 0.35); }
+/* A running agent's place in its pipeline: a thin bar in the running colour. */
+.sova-phone-progress { height: 0.25rem; border-radius: 9999px; background: rgb(var(--ctp-surface1-rgb) / 0.6); overflow: hidden; }
+.sova-phone-progress > span { display: block; height: 100%; border-radius: 9999px; background: var(--ctp-yellow); }
+/* The search takes the row beside Triage all, at any width, and its results open across the whole row (the row is
+   their positioned ancestor), so a title has the screen's width rather than the field's. */
+.sova-work-search.sova-phone-search { position: static; flex: 1 1 auto; min-width: 0; max-width: none; }
 
 /* Tables */
 .sova-table { width: 100%; font-size: 0.875rem; }
@@ -2330,6 +2345,8 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
   .sova-stepper .sova-stepper-btn { width: 44px; height: 44px; }
   .sova-toggle { min-height: 44px; min-width: 44px; }
   .sova-input { min-height: 44px; }
+  /* An issue search result (Work, Home) is a tap target too. */
+  .sova-work-search-row { min-height: 44px; }
   .sova-input,
   textarea,
   select,

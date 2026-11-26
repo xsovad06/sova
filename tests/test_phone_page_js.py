@@ -1,8 +1,9 @@
-"""Behavior of the phone page's modules (static/js/pages/phone/, #1454), run under node.
+"""Behavior of the phone Home page's modules (static/js/pages/phone/, #1454, #1565), run under node.
 
 The tests run the shipped app.js and the shipped page modules against a small fake DOM and a routed fake fetch
 (tests/fixtures/phone_page_harness.mjs). A scenario drives the page the way a tap does: through the real click
-dispatcher (agents/actions.js), with the buttons found in the markup each section renders.
+dispatcher (agents/actions.js), with the buttons found in the markup each section renders. Home reuses the Work
+page's header (work/header.js) and issue search (work/search.js), which run here too.
 """
 
 from __future__ import annotations
@@ -77,6 +78,36 @@ def _assert_csrf_on_writes_only(requests: list) -> None:
 
 
 _PLAN_ITEM = {"issue_number": 12, "action": "start", "role": "developer", "reason": "Ready and unblocked"}
+
+
+_GROUP = {
+    "key": "issue:1571",
+    "issue_number": 1571,
+    "pr_number": 1580,
+    "title": "Back up the database daily",
+    "state_label": "Merged",
+    "state_color": "green",
+    "total_cost_usd": "28.48",
+    "runs": [{"action_label": "Develop", "role": "developer"}],
+}
+
+
+def _paths(requests: list) -> list[str]:
+    """Each request as METHOD and path, its query left out (the finished-today read carries the local midnight)."""
+    return sorted(r["method"] + " " + r["path"].split("?")[0] for r in requests)
+
+
+def _board(**extra: object) -> dict:
+    """A Work board payload: the agent counts the glance tiles read and the lists the titles come from."""
+    base = {
+        "columns": [{"stage": "next", "label": "Up next", "color": "blue", "entries": "up_next", "column": "next"}],
+        "agents": {"running": 1, "limit": 4},
+        "up_next": [{"number": 42, "title": "Fix the login page"}],
+        "review": [{"number": None, "pr_number": 7, "title": "A PR with no issue"}],
+    }
+    return {**base, **extra}
+
+
 _AGENT = {
     "run_id": 5,
     "issue": "42",
@@ -95,30 +126,55 @@ class TestWiring:
             """
             phone.page.init();
             await settle();
-            const first = requests.splice(0).map((r) => r.method + ' ' + r.path).sort();
-            const options = sockets[0];
-            options.onMessage({ type: 'handoff' });
+            const first = requests.splice(0);
+            const options = pageSocket();
+            const after = (type) => { options.onMessage({ type }); };
+            after('handoff');
             await settle();
-            const afterHandoff = requests.splice(0).map((r) => r.path).sort();
-            options.onMessage({ type: 'activity' });
+            const afterHandoff = requests.splice(0);
+            after('activity');
             await settle();
-            const afterActivity = requests.splice(0).map((r) => r.path).sort();
-            options.onMessage({ type: 'status_update' });
+            const afterActivity = requests.splice(0);
+            after('work_items_changed');
+            await settle();
+            const afterBoard = requests.splice(0);
+            after('agent_finished');
+            await settle();
+            const afterFinished = requests.splice(0);
+            after('status_update');
             await settle();
             const afterStatus = requests.length;
             options.onOpen();
             await settle();
             const hooks = [typeof options.onOpen, typeof options.onFallbackPoll];
-            return { first, afterHandoff, afterActivity, afterStatus, hooks, reloadedOnOpen: requests.length };
+            return {
+              first, afterHandoff, afterActivity, afterBoard, afterFinished, afterStatus, hooks,
+              reloadedOnOpen: requests,
+            };
             """,
             _waiting_routes(),
         )["result"]
-        assert out["first"] == ["GET /agents/active", "GET /handoff", "GET /supervisor/plan"]
-        assert out["afterHandoff"] == ["/handoff", "/supervisor/plan"]
-        assert out["afterActivity"] == ["/agents/active"]
+        assert _paths(out["first"]) == [
+            "GET /agents/active",
+            "GET /handoff",
+            "GET /settings/config",
+            "GET /supervisor/plan",
+            "GET /work/board",
+            "GET /work/history",
+        ]
+        assert _paths(out["afterHandoff"]) == ["GET /handoff", "GET /supervisor/plan"]
+        assert _paths(out["afterActivity"]) == ["GET /agents/active"]
+        assert _paths(out["afterBoard"]) == ["GET /handoff", "GET /supervisor/plan", "GET /work/board"]
+        assert _paths(out["afterFinished"]) == ["GET /work/history"]
         assert out["afterStatus"] == 0
         assert out["hooks"] == ["function", "function"]
-        assert out["reloadedOnOpen"] == 3
+        assert _paths(out["reloadedOnOpen"]) == [
+            "GET /agents/active",
+            "GET /handoff",
+            "GET /supervisor/plan",
+            "GET /work/board",
+            "GET /work/history",
+        ]
 
     def test_the_fallback_poll_reloads_every_section_and_clears_what_is_gone(self) -> None:
         out = _run(
@@ -127,9 +183,9 @@ class TestWiring:
             await settle();
             const before = [html('phone-waiting'), html('phone-running')];
             requests.length = 0;
-            sockets[0].onFallbackPoll();
+            pageSocket().onFallbackPoll();
             await settle();
-            const polled = requests.map((r) => r.method + ' ' + r.path).sort();
+            const polled = requests.map((r) => r.method + ' ' + r.path.split('?')[0]).sort();
             return { before, polled, after: [html('phone-waiting'), html('phone-running')] };
             """,
             {
@@ -138,7 +194,13 @@ class TestWiring:
                 "GET /agents/active": [{"body": {"agents": [_AGENT]}}, {"body": {"agents": []}}],
             },
         )["result"]
-        assert out["polled"] == ["GET /agents/active", "GET /handoff", "GET /supervisor/plan"]
+        assert out["polled"] == [
+            "GET /agents/active",
+            "GET /handoff",
+            "GET /supervisor/plan",
+            "GET /work/board",
+            "GET /work/history",
+        ]
         assert "Review" in out["before"][0]
         assert "Stop" in out["before"][1]
         assert "Nothing is waiting on you" in out["after"][0]
@@ -161,6 +223,31 @@ class TestWiring:
         assert out["count"] == 1
         assert out["ms"] > 0
         assert out["visible"] == ["/agents/active", "/handoff", "/supervisor/plan"]
+
+    def test_finished_today_reloads_when_the_local_date_changes(self) -> None:
+        out = _run(
+            """
+            const RealDate = Date;
+            let day = 'Thu Nov 26 2026';
+            globalThis.Date = class extends RealDate { toDateString() { return day; } };
+            phone.page.init();
+            await settle();
+            const finished = () => requests.filter((r) => r.path.startsWith('/work/history')).length;
+            requests.length = 0;
+            intervals[0].fn();
+            await settle();
+            const sameDay = finished();
+            day = 'Fri Nov 27 2026';
+            intervals[0].fn();
+            await settle();
+            const nextDay = finished();
+            intervals[0].fn();
+            await settle();
+            return { sameDay, nextDay, again: finished() };
+            """,
+            {**_waiting_routes(), "GET /work/history": {"body": {"groups": [], "total": 0}}},
+        )["result"]
+        assert out == {"sameDay": 0, "nextDay": 1, "again": 1}
 
     def test_a_hidden_page_skips_the_timer_and_a_visible_one_reloads_once(self) -> None:
         out = _run(
@@ -188,11 +275,11 @@ class TestWiring:
             """
             phone.page.init();
             await settle();
-            const ids = ['phone-waiting', 'phone-running'];
+            const ids = ['phone-waiting', 'phone-running', 'phone-finished'];
             const before = ids.map((id) => byId(id).renders);
-            sockets[0].onFallbackPoll();
+            pageSocket().onFallbackPoll();
             await settle();
-            sockets[0].onFallbackPoll();
+            pageSocket().onFallbackPoll();
             await settle();
             return { before, after: ids.map((id) => byId(id).renders) };
             """,
@@ -200,9 +287,10 @@ class TestWiring:
                 "GET /handoff": {"body": {"handoffs": [_handoff()]}},
                 "GET /supervisor/plan": {"body": {"pending": [_PLAN_ITEM]}},
                 "GET /agents/active": {"body": {"agents": [_AGENT]}},
+                "GET /work/history": {"body": {"groups": [_GROUP], "total": 1}},
             },
         )["result"]
-        assert out["before"] == [1, 1]
+        assert out["before"] == [1, 1, 1]
         assert out["after"] == out["before"]
 
     def test_a_changed_section_is_still_redrawn_after_an_unchanged_one(self) -> None:
@@ -210,10 +298,10 @@ class TestWiring:
             """
             phone.page.init();
             await settle();
-            sockets[0].onFallbackPoll();
+            pageSocket().onFallbackPoll();
             await settle();
             const same = byId('phone-running').renders;
-            sockets[0].onFallbackPoll();
+            pageSocket().onFallbackPoll();
             await settle();
             return { same, after: byId('phone-running').renders, text: html('phone-running') };
             """,
@@ -243,7 +331,15 @@ class TestWiring:
             },
             prefix="/p/alpha/api",
         )
-        assert {r["path"] for r in out["requests"]} == {"/handoff", "/supervisor/plan", "/agents/active"}
+        # The harness answers only paths that follow the prefix: every read here went through apiUrl().
+        assert {r["path"].split("?")[0] for r in out["requests"]} == {
+            "/handoff",
+            "/supervisor/plan",
+            "/agents/active",
+            "/work/board",
+            "/work/history",
+            "/settings/config",
+        }
 
 
 class TestWaiting:
@@ -256,7 +352,6 @@ class TestWaiting:
             _waiting_routes([_handoff(summary="<b>x</b> & more")]),
         )["result"]
         assert "&lt;b&gt;x&lt;/b&gt; &amp; more" in out["html"]
-        assert "feat/issue-42" in out["html"]
         assert [(b["label"], b["action"], b["args"]) for b in out["buttons"]] == [
             ("Review", "phone-handoff-run", ["42", "review", "Review", False]),
             ("Drop it", "phone-handoff-run", ["42", "drop", "Drop it", True]),
@@ -761,9 +856,8 @@ class TestRunning:
         )["result"]
         assert "#42" in out["html"]
         assert "#99" not in out["html"]
-        assert "develop (5/17)" in out["html"]
-        assert "1m 15s" in out["html"]
-        assert [(b["label"], b["args"]) for b in out["buttons"]] == [("Stop", [5, "#42"])]
+        assert "develop · step 6 of 17 · 1m 15s" in out["html"]
+        assert [(b["label"], b["args"]) for b in out["buttons"]] == [("Stop the agent on #42", [5, "#42"])]
 
     def test_no_agents_clears_the_rows(self) -> None:
         out = _run(
@@ -859,51 +953,370 @@ class TestRunning:
         assert out["requests"] == []
 
 
+class TestGlance:
+    """The glance tiles are the Work header's (work/header.js), fed from the same sources as on the Work page."""
+
+    @pytest.mark.parametrize(
+        ("running", "limit", "free"),
+        [(1, 4, "3 slots free"), (3, 4, "1 slot free"), (4, 4, "no slot free"), (5, 4, "over the limit")],
+    )
+    def test_the_agents_tile_shows_running_of_the_limit_from_the_board(
+        self, running: int, limit: int, free: str
+    ) -> None:
+        out = _run(
+            """
+            phone.page.init();
+            await settle();
+            return ['hdr-agents-running', 'hdr-agents-of', 'hdr-agents-free'].map((id) => byId(id).textContent);
+            """,
+            {**_waiting_routes(), "GET /work/board": {"body": _board(agents={"running": running, "limit": limit})}},
+        )["result"]
+        assert out == [str(running), f"of {limit}", free]
+
+    def test_a_failed_board_read_shows_the_count_as_unknown(self) -> None:
+        out = _run(
+            """
+            await phone.summary.loadSummary();
+            const before = byId('hdr-agents-running').textContent;
+            await phone.summary.loadSummary();
+            return [before, byId('hdr-agents-running').textContent, byId('hdr-agents-free').textContent];
+            """,
+            {"GET /work/board": [{"body": _board()}, {"status": 503, "body": {"detail": "down"}}]},
+        )["result"]
+        assert out == ["1", "--", ""]
+
+    def test_a_failed_board_read_is_retried_on_a_timer(self) -> None:
+        out = _run(
+            """
+            const timers = [];
+            globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+            await phone.summary.loadSummary();
+            await phone.summary.loadSummary();
+            const scheduled = timers.length;
+            const failed = byId('hdr-agents-running').textContent;
+            timers[0].fn();
+            await settle();
+            return { scheduled, failed, recovered: byId('hdr-agents-running').textContent };
+            """,
+            {"GET /work/board": [{"status": 503, "body": {}}, {"status": 503, "body": {}}, {"body": _board()}]},
+        )["result"]
+        assert out == {"scheduled": 1, "failed": "--", "recovered": "1"}
+
+    def test_spend_and_the_supervisor_come_from_the_work_headers_sources(self) -> None:
+        out = _run(
+            """
+            phone.page.init();
+            await settle();
+            requests.length = 0;
+            sockets.forEach((s) => s.onOpen && s.onOpen());
+            await settle();
+            return {
+              spend: byId('hdr-spend').textContent,
+              detail: byId('hdr-spend-detail-text').textContent,
+              supervisor: byId('hdr-supervisor-label').textContent,
+              switches: byId('hdr-supervisor-switch').children.length,
+              paths: requests.map((r) => r.path.split('?')[0]),
+            };
+            """,
+            {
+                **_waiting_routes(),
+                "GET /settings/config": {"body": {"config": {"supervisor.enabled": True}}},
+                "GET /overview/stats": {
+                    "body": {"spend": {"today_usd": "50.57", "week_usd": 421, "previous_week_usd": 500}},
+                },
+                "GET /queue/untriaged": {"body": {"untriaged": []}},
+            },
+        )["result"]
+        assert out["spend"] == "$50.57"
+        assert out["detail"] == "$421 in 7 days", "Home has no comparison span, so no dangling comma"
+        assert out["supervisor"] == "On"
+        assert out["switches"] == 1
+        assert "/overview/stats" in out["paths"]
+        assert "/quota/coderabbit" not in out["paths"], "Home has no CodeRabbit tile to read a quota for"
+
+    def test_triage_all_shows_the_backlog_count_and_is_enabled_only_with_one(self) -> None:
+        out = _run(
+            """
+            phone.page.init();
+            await settle();
+            sockets.forEach((s) => s.onOpen && s.onOpen());
+            await settle();
+            return { count: byId('triage-all-count').textContent, disabled: byId('triage-all-btn').disabled };
+            """,
+            {
+                **_waiting_routes(),
+                "GET /queue/untriaged": {
+                    "body": {"untriaged": [{"issue": 1, "title": "a"}, {"issue": 2, "title": "b"}]},
+                },
+            },
+        )["result"]
+        assert out == {"count": "2", "disabled": False}
+
+
+class TestTitles:
+    def test_a_handoff_and_a_running_agent_are_named_by_their_issue_title(self) -> None:
+        out = _run(
+            """
+            phone.page.init();
+            await settle();
+            return { waiting: html('phone-waiting'), running: html('phone-running') };
+            """,
+            {
+                **_waiting_routes([_handoff(), _handoff(id="h2", issue=None, pr_number=7)]),
+                "GET /agents/active": {"body": {"agents": [{**_AGENT, "cost_usd": "4.27"}]}},
+                "GET /work/board": {"body": _board()},
+            },
+        )["result"]
+        assert out["waiting"].count("Fix the login page") == 1
+        assert "A PR with no issue" in out["waiting"], "a PR-only handoff is named by its PR's title"
+        assert "Fix the login page" in out["running"]
+        assert "$4.27" in out["running"]
+
+    def test_titles_that_arrive_after_a_section_redraw_it(self) -> None:
+        out = _run(
+            """
+            phone.waiting.init();
+            await phone.waiting.loadWaiting();
+            const before = html('phone-waiting');
+            await phone.summary.loadSummary();
+            return { before, after: html('phone-waiting') };
+            """,
+            {**_waiting_routes([_handoff()]), "GET /work/board": {"body": _board()}},
+        )["result"]
+        assert "Fix the login page" not in out["before"]
+        assert "Fix the login page" in out["after"]
+
+    def test_an_issue_only_a_chain_lists_is_named_by_its_title(self) -> None:
+        out = _run(
+            "await phone.summary.loadSummary(); await phone.waiting.loadWaiting(); return html('phone-waiting');",
+            {
+                **_waiting_routes([_handoff(issue="77")]),
+                "GET /work/board": {"body": _board(chains=[{"issues": [{"number": 77, "title": "Only in a chain"}]}])},
+            },
+        )["result"]
+        assert "Only in a chain" in out
+
+    def test_a_hostile_title_is_escaped(self) -> None:
+        out = _run(
+            "await phone.summary.loadSummary(); await phone.waiting.loadWaiting(); return html('phone-waiting');",
+            {
+                **_waiting_routes([_handoff()]),
+                "GET /work/board": {"body": _board(up_next=[{"number": 42, "title": "<img src=x onerror=alert(1)>"}])},
+            },
+        )["result"]
+        assert "&lt;img" in out
+        assert "<img" not in out
+
+    def test_the_waiting_and_running_counts_follow_their_lists(self) -> None:
+        out = _run(
+            """
+            await phone.waiting.loadWaiting();
+            await phone.running.loadRunning();
+            return [byId('phone-waiting-count').textContent, byId('phone-running-count').textContent];
+            """,
+            {
+                **_waiting_routes([_handoff()], pending=[_PLAN_ITEM]),
+                "GET /agents/active": {"body": {"agents": [_AGENT, {**_AGENT, "run_id": 6, "issue": "43"}]}},
+            },
+        )["result"]
+        assert out == ["2", "2"]
+
+    def test_a_failed_source_leaves_the_waiting_count_unknown(self) -> None:
+        """The count is of both sources: with one failed, the other's number must not read as the whole count."""
+        for source in ("GET /handoff", "GET /supervisor/plan"):
+            routes = _waiting_routes([_handoff()], pending=[_PLAN_ITEM])
+            routes[source] = {"status": 500, "body": {"detail": "boom"}}
+            code = "await phone.waiting.loadWaiting(); return byId('phone-waiting-count').textContent;"
+            assert _run(code, routes)["result"] == "", source
+
+    def test_a_running_row_shows_its_progress_as_a_bar(self) -> None:
+        out = _run(
+            "await phone.running.loadRunning(); return html('phone-running');",
+            {"GET /agents/active": {"body": {"agents": [_AGENT]}}},
+        )["result"]
+        # Step index 5 of 17 is the sixth step, counted halfway through: round(5.5 / 17 * 100).
+        assert 'role="progressbar"' in out
+        assert 'aria-valuenow="32"' in out
+        assert "width:32%" in out
+
+
+class TestFinished:
+    def test_finished_today_reads_the_grouped_history_since_local_midnight(self) -> None:
+        out = _run(
+            """
+            const now = new Date();
+            await phone.finished.loadFinished();
+            const path = requests[0].path;
+            const since = new URLSearchParams(path.split('?')[1]).get('since');
+            const d = new Date(since);
+            return { path, html: html('phone-finished'), count: byId('phone-finished-count').textContent,
+              midnight: d.getTime() === new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() };
+            """,
+            {"GET /work/history": {"body": {"groups": [_GROUP], "total": 1}}},
+        )["result"]
+        assert out["path"].startswith("/work/history?group=issue&limit=10&since=")
+        assert out["midnight"] is True
+        assert "#1571" in out["html"]
+        assert "Back up the database daily" in out["html"]
+        assert "$28.48" in out["html"]
+        assert 'href="/work?number=1571"' in out["html"], "a row opens the Work page's history for its issue"
+        assert out["count"] == "1"
+
+    def test_nothing_finished_says_so_and_more_than_shown_points_to_the_history(self) -> None:
+        out = _run(
+            """
+            await phone.finished.loadFinished();
+            const empty = html('phone-finished');
+            await phone.finished.loadFinished();
+            return { empty, more: html('phone-finished') };
+            """,
+            {
+                "GET /work/history": [
+                    {"body": {"groups": [], "total": 0}},
+                    {"body": {"groups": [_GROUP], "total": 13}},
+                ]
+            },
+        )["result"]
+        assert "Nothing finished today" in out["empty"]
+        assert "12 more in the run history" in out["more"]
+
+    def test_a_failed_read_shows_an_error_not_the_old_rows_and_retries(self) -> None:
+        out = _run(
+            """
+            const timers = [];
+            globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+            await phone.finished.loadFinished();
+            await phone.finished.loadFinished();
+            const failed = html('phone-finished');
+            timers[0].fn();
+            await settle();
+            return { failed, scheduled: timers.length, after: html('phone-finished') };
+            """,
+            {
+                "GET /work/history": [
+                    {"body": {"groups": [_GROUP], "total": 1}},
+                    {"status": 503, "body": {}},
+                    {"body": {"groups": [], "total": 0}},
+                ]
+            },
+        )["result"]
+        assert "Could not load the runs finished today" in out["failed"]
+        assert "#1571" not in out["failed"]
+        assert out["scheduled"] == 1
+        assert "Nothing finished today" in out["after"]
+
+
+def _result(number: int, title: str, role: str | None) -> dict:
+    start = (
+        {"id": "start", "label": role.capitalize(), "handler": "start_agent", "handler_args": {"role": role}}
+        if role
+        else None
+    )
+    return {"number": number, "title": title, "state": "triaged", "start": start}
+
+
+_SEARCH = {
+    "GET /work/search?q=fix": {
+        "body": {"results": [_result(12, "Fix the login page", "researcher"), _result(13, "Done already", None)]}
+    },
+    "GET /agents/active": {"body": {"agents": []}},
+}
+
+
 class TestStart:
-    @pytest.mark.parametrize("entry", ["", "   ", "0", "-3", "4x", "abc", "1.5", "9007199254740993", "1" + "0" * 21])
-    def test_an_invalid_entry_is_rejected_inline_with_no_request(self, entry: str) -> None:
-        out = _run(
-            f"""
-            phone.start.init();
-            await submitStart({json.dumps(entry)});
-            return html('phone-start-status');
-            """,
-            {},
-        )
-        assert "Enter an issue number" in out["result"]
-        assert out["requests"] == []
+    """Home's search is the Work page's (work/search.js); choosing a result starts the run its state calls for."""
 
-    @pytest.mark.parametrize(("entry", "issue"), [("42", "42"), (" #42 ", "42"), ("007", "7")])
-    def test_a_valid_entry_starts_the_issue_with_the_default_role(self, entry: str, issue: str) -> None:
+    def test_each_result_names_the_run_a_tap_starts(self) -> None:
         out = _run(
-            f"""
-            phone.start.init();
-            await submitStart({json.dumps(entry)});
-            return {{ status: html('phone-start-status'), field: byId('phone-start-issue').value }};
-            """,
-            {"POST /agents/start": {"body": {"status": "started"}}, "GET /agents/active": {"body": {"agents": []}}},
+            "phone.start.init(); await search('fix'); return html('phone-search-results');",
+            _SEARCH,
         )
-        starts = [r for r in out["requests"] if r["path"] == "/agents/start"]
-        assert [r["body"] for r in starts] == [{"issue": issue}]
-        assert f"Started #{issue}" in out["result"]["status"]
-        assert out["result"]["field"] == ""
-        assert any(r["path"] == "/agents/active" for r in out["requests"])
-        _assert_csrf_on_writes_only(out["requests"])
+        assert [r["path"] for r in out["requests"]] == ["/work/search?q=fix"]
+        assert "Fix the login page" in out["result"]
+        assert "Researcher" in out["result"]
+        assert "no run in its state" in out["result"]
+        assert 'id="phone-search-opt-0"' in out["result"]
 
-    def test_a_refusal_is_shown_verbatim_and_keeps_the_entry(self) -> None:
+    def test_choosing_a_result_confirms_and_starts_its_role(self) -> None:
         out = _run(
             """
             phone.start.init();
-            await submitStart('42');
-            return { status: html('phone-start-status'), field: byId('phone-start-issue').value };
+            await search('fix');
+            await chooseResult(0);
+            return { status: html('phone-start-status'), field: byId('phone-search-input').value };
+            """,
+            {**_SEARCH, "POST /agents/start": {"body": {"status": "started"}}},
+        )
+        starts = [r for r in out["requests"] if r["path"] == "/agents/start"]
+        assert [r["body"] for r in starts] == [{"issue": "12", "role": "researcher"}]
+        assert out["confirms"] == [
+            {"message": "Researcher #12?", "title": "Researcher", "details": ["Fix the login page"]}
+        ]
+        assert "Started the researcher agent on #12" in out["result"]["status"]
+        assert out["result"]["field"] == "", "the search clears once a result is chosen"
+        assert any(r["path"] == "/agents/active" for r in out["requests"]), "Running reloads after a start"
+        _assert_csrf_on_writes_only(out["requests"])
+
+    def test_a_declined_confirmation_starts_nothing(self) -> None:
+        out = _run(
+            "phone.start.init(); await search('fix'); await chooseResult(0);",
+            {**_SEARCH, "POST /agents/start": {"body": {}}},
+            confirm=False,
+        )
+        assert len(out["confirms"]) == 1
+        assert not [r for r in out["requests"] if r["method"] == "POST"]
+
+    def test_a_result_whose_state_runs_no_agent_says_so_and_sends_nothing(self) -> None:
+        out = _run(
+            "phone.start.init(); await search('fix'); await chooseResult(1); return html('phone-start-status');",
+            _SEARCH,
+        )
+        assert "No agent runs on #13" in out["result"]
+        assert out["confirms"] == []
+        assert not [r for r in out["requests"] if r["method"] == "POST"]
+
+    def test_no_free_slot_queues_the_issue_as_the_work_page_does(self) -> None:
+        out = _run(
+            "phone.start.init(); await search('fix'); await chooseResult(0); return html('phone-start-status');",
+            {
+                **_SEARCH,
+                "POST /agents/start": {"status": 409, "body": {"detail": {"code": "no_free_slot", "message": "Full"}}},
+                "POST /supervisor/queue": {"body": {"queue": [12]}},
+            },
+        )
+        assert [r["body"] for r in out["requests"] if r["path"] == "/supervisor/queue"] == [{"issue_number": 12}]
+        assert "queued at position 1" in out["result"]
+
+    def test_a_notice_does_not_hide_a_starts_refusal(self) -> None:
+        out = _run(
+            """
+            phone.start.init();
+            await search('fix');
+            await chooseResult(0);
+            await search('fix');
+            await chooseResult(1);
+            return html('phone-start-status');
             """,
             {
+                **_SEARCH,
                 "POST /agents/start": {
                     "status": 409,
                     "body": {"detail": {"code": "budget_exceeded", "message": "Over budget"}},
                 },
-                "GET /agents/active": {"body": {"agents": []}},
             },
         )["result"]
-        assert "Over budget" in out["status"]
-        assert out["field"] == "42"
+        assert "Over budget" in out
+        assert "No agent runs on #13" in out
+
+    def test_a_refusal_is_shown_verbatim(self) -> None:
+        out = _run(
+            "phone.start.init(); await search('fix'); await chooseResult(0); return html('phone-start-status');",
+            {
+                **_SEARCH,
+                "POST /agents/start": {
+                    "status": 409,
+                    "body": {"detail": {"code": "budget_exceeded", "message": "Over budget"}},
+                },
+            },
+        )
+        assert "Over budget" in out["result"]

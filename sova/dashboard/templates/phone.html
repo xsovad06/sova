@@ -1,41 +1,90 @@
 {% extends "base.html" %}
 {#- The phone Home page: the tab bar's Home tab, inside the shell like every other page. base.html sets the slug and
-    the API prefix, so apiUrl() scopes every call to this project in hub mode. -#}
+    the API prefix, so apiUrl() scopes every call to this project in hub mode. The glance tiles, Triage all and the
+    search reuse the Work page's modules and element ids (work/header.js, work/search.js); static/js/pages/phone/
+    draws the rest. -#}
+{% from "_icons.html" import icon %}
+{% from "_components.html" import btn, glance_tile %}
 {% block title %}Home - SOVA{% endblock %}
 {% block content %}
-<div class="max-w-md mx-auto flex flex-col gap-6 min-w-0">
-  <h1 class="text-2xl font-semibold text-gray-100">Home</h1>
+<div class="max-w-md mx-auto flex flex-col gap-4 min-w-0">
+  <h1 class="sr-only">Home</h1>
+
+  <!-- At a glance: the Work header's tiles, from the same sources (static/js/pages/work/header.js, phone/summary.js) -->
+  <section aria-label="At a glance" class="sova-phone-glance">
+    {% call glance_tile("Agents", detail_id="hdr-agents-free") %}
+      <span class="flex items-baseline gap-1.5">
+        <span id="hdr-agents-running" class="text-xl font-semibold tabular-nums">--</span>
+        <span id="hdr-agents-of" class="text-xs text-gray-500"></span>
+      </span>
+    {% endcall %}
+    {% call glance_tile("Spend today", detail_id="hdr-spend-detail", detail_text_id="hdr-spend-detail-text",
+                        attrs={"id": "hdr-spend-tile", "tabindex": "0", "data-tooltip-pos": "bottom", "data-tooltip-multiline": ""}) %}
+      <span id="hdr-spend" class="text-xl font-semibold tabular-nums">--</span>
+    {% endcall %}
+    {% call glance_tile("Supervisor") %}
+      <span class="flex items-center gap-2">
+        <span id="hdr-supervisor-switch" class="flex"></span>
+        <span id="hdr-supervisor-label" class="text-sm text-gray-300"></span>
+      </span>
+    {% endcall %}
+  </section>
 
   <!-- Handoffs and the supervisor's pending plan (static/js/pages/phone/waiting.js) -->
   <section aria-labelledby="phone-waiting-title" class="min-w-0">
-    <h2 id="phone-waiting-title" class="text-sm font-semibold text-gray-300 mb-2">Waiting on you</h2>
-    <div id="phone-waiting" class="flex flex-col gap-3 min-w-0">
+    <div class="flex items-baseline gap-2 mb-2">
+      <h2 id="phone-waiting-title" class="text-sm font-semibold text-gray-200">Waiting on you</h2>
+      <span id="phone-waiting-count" class="text-xs text-gray-500 tabular-nums"></span>
+    </div>
+    <div id="phone-waiting" class="flex flex-col gap-2 min-w-0">
       <p class="text-sm text-gray-500">Loading...</p>
     </div>
   </section>
 
   <!-- Active agents with Stop (static/js/pages/phone/running.js) -->
   <section aria-labelledby="phone-running-title" class="min-w-0">
-    <h2 id="phone-running-title" class="text-sm font-semibold text-gray-300 mb-2">Running</h2>
-    <div id="phone-running" class="flex flex-col gap-3 min-w-0">
+    <div class="flex items-baseline gap-2 mb-2">
+      <h2 id="phone-running-title" class="text-sm font-semibold text-gray-200">Running</h2>
+      <span id="phone-running-count" class="text-xs text-gray-500 tabular-nums"></span>
+    </div>
+    <div id="phone-running" class="flex flex-col gap-2 min-w-0">
       <p class="text-sm text-gray-500">Loading...</p>
     </div>
   </section>
 
-  <!-- One issue number, started with the server's default role (static/js/pages/phone/start.js) -->
-  <section aria-labelledby="phone-start-title" class="min-w-0">
-    <h2 id="phone-start-title" class="text-sm font-semibold text-gray-300 mb-2">Start a run</h2>
-    <form id="phone-start-form" class="flex flex-col gap-2 min-w-0" novalidate>
-      <label for="phone-start-issue" class="text-xs text-gray-500">Issue number</label>
-      <div class="flex gap-2 min-w-0">
-        <input id="phone-start-issue" type="text" inputmode="numeric" autocomplete="off" placeholder="42"
-               class="sova-input sova-phone-input min-w-0 flex-1">
-        <button type="submit" id="phone-start-btn" class="sova-btn sova-btn-primary sova-btn-md sova-phone-tap shrink-0">Start</button>
+  <!-- Find an open issue and start the run its state calls for (work/search.js, phone/start.js), and Triage all
+       (work/header.js, disabled until the count arrives, at zero and while a batch runs) -->
+  <section aria-label="Start work" class="flex flex-col gap-2 min-w-0">
+    <div class="relative flex items-start gap-2 min-w-0">
+      <div id="phone-search" class="sova-work-search sova-phone-search">
+        {{ icon("search", "w-4 h-4") }}
+        <input id="phone-search-input" type="search" class="sova-input" autocomplete="off" spellcheck="false"
+               placeholder="Find an issue to start" aria-label="Find an issue to start, by number or title"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="phone-search-results">
+        <div id="phone-search-results" class="sova-work-search-results" role="listbox" aria-label="Matching issues" hidden></div>
       </div>
-      <div id="phone-start-status" class="min-w-0" role="status"></div>
-    </form>
+      {% set triage_label %}Triage all <span id="triage-all-count" class="sova-inline-count tabular-nums">--</span>{% endset %}
+      {{ btn(triage_label, variant="warning", size="md", id="triage-all-btn", disabled=True, cls="shrink-0") }}
+    </div>
+    <div id="phone-start-status" class="min-w-0" role="status"></div>
+  </section>
+
+  <!-- The run history's Today, by issue (static/js/pages/phone/finished.js) -->
+  <section aria-labelledby="phone-finished-title" class="min-w-0">
+    <div class="flex items-baseline gap-2 mb-2">
+      <h2 id="phone-finished-title" class="text-sm font-semibold text-gray-200">Finished today</h2>
+      <span id="phone-finished-count" class="text-xs text-gray-500 tabular-nums"></span>
+    </div>
+    <div id="phone-finished" class="flex flex-col gap-2 min-w-0">
+      <p class="text-sm text-gray-500">Loading...</p>
+    </div>
   </section>
 </div>
+
+<!-- Icons the sections render, from the shared icon macro -->
+<template id="phone-icons">
+  <span data-icon="stop">{{ icon("stop", "w-4 h-4 shrink-0") }}</span>
+</template>
 {% endblock %}
 {% block scripts %}
 <script type="module">

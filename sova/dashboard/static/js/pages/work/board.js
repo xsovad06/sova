@@ -1,6 +1,6 @@
 import { actionAttrs } from '../agents/actions.js';
 import { _updateApiHealthBanner } from '../agents/live-status.js';
-import { diffSizeColor, diffSizeLabel, formatAgeBadge } from '../agents/render-utils.js';
+import { diffSizeColor, diffSizeLabel, formatAgeBadge, humanStep, stepProgress } from '../agents/render-utils.js';
 import { renderHeader } from './header.js';
 import { clearSelection, getSelected, onSelectionChange, relationChip, relationClass, select, selectionKey, setSelectionBoard } from './selection.js';
 
@@ -423,8 +423,6 @@ function _localTime(iso) {
   return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function _humanStep(name) { return (name || '').replace(/_/g, ' '); }
-
 // The role the issue's stage runs next (its `start` action, from work_state.start_action() on the server):
 // researcher on a triaged issue, developer on a researched one; '' when no agent runs on it in its state.
 function _startRole(entry) {
@@ -491,12 +489,10 @@ export function cardParts(entry, stage) {
       _btn('', '', 'work-queue-move', [n, 1], { icon: 'arrow-down', ariaLabel: 'Move #' + n + ' down', disabled: busy || pos[0] >= pos[1] }) +
       _btn('', '', 'work-unqueue', [n], Object.assign({ icon: 'close', ariaLabel: 'Remove #' + n + ' from the queue' }, off));
   } else if (stage === 'running') {
-    var total = entry.total_steps || 0;
-    var index = entry.step_index != null ? entry.step_index : null;
-    // Halfway through the current step: step 1 of 1 is under way, not 0% done.
-    var pct = total && index != null ? Math.min(100, Math.round((index + 0.5) / total * 100)) : null;
+    var progress = stepProgress(entry.step_index, entry.total_steps);
+    var pct = progress ? progress.pct : null;
     right = pct != null ? pct + '%' : '';
-    var stepText = [entry.role ? formatRole(entry.role) : '', _humanStep(entry.step_name), total && index != null ? 'step ' + Math.min(index + 1, total) + ' of ' + total : '']
+    var stepText = [entry.role ? formatRole(entry.role) : '', humanStep(entry.step_name), progress ? 'step ' + progress.position + ' of ' + progress.total : '']
       .filter(Boolean).join(' · ');
     body = (pct != null ? '<div class="h-1 rounded bg-surface-hover overflow-hidden"><div class="h-full bg-accent-yellow" style="width:' + pct + '%"></div></div>' : '') +
       _sub([stepText ? _span(stepText) : '']) + _prStrip(entry) +
@@ -655,7 +651,7 @@ function _otherRunCard(run) {
     '</div>' +
     (run.run_label ? '<div class="text-sm text-gray-200 line-clamp-2">' + escapeHtml(run.run_label) + '</div>' : '') +
     _contributors(run) +
-    _sub([run.step_name ? _span(_humanStep(run.step_name)) : '']) +
+    _sub([run.step_name ? _span(humanStep(run.step_name)) : '']) +
     _runActivity(run.run_id) +
     actionStatusHtml(key) +
     '<div class="flex flex-wrap items-center gap-0.5">' +

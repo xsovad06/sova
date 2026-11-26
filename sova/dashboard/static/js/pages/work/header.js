@@ -2,7 +2,12 @@
 // PRs over 7 days, spend today, CodeRabbit reviews available this hour (only on a project that uses CodeRabbit)
 // and the supervisor switch. Beside Run Planner, Triage all starts the batch triage of every backlog issue.
 //
-// The running count comes from the board payload (renderHeader, called by board.js after each load). The
+// Home (templates/phone.html) shows the same tiles with the same ids and runs this module too: its agents tile adds
+// "of N" and the free slots, its spend tile has no comparison, and it has no limit stepper, CodeRabbit tile or
+// figures tiles, so each part works only where its elements are.
+//
+// The running count comes from the board payload (renderHeader, called by board.js after each load, or on Home by
+// phone/summary.js). The
 // success, merged and spend figures come from GET /overview/stats and the CodeRabbit quota from its own
 // endpoint, both read when the socket (re)opens and when an agent finishes, so this module adds no polling of
 // its own: the quota endpoint refreshes a stale count in the background. The limit and the two switches save
@@ -17,10 +22,19 @@ function _renderAgents(board, limitIsStale) {
   var running = agents.running;
   var limit = agents.limit;
   setText('hdr-agents-running', running == null ? '--' : String(running));
+  setText('hdr-agents-of', limit == null ? '' : 'of ' + limit);
+  setText('hdr-agents-free', _freeSlots(running, limit));
   // A save that completed while the board was loading makes the board's limit older than the stepper's.
   if (_limitControl && limit != null && !limitIsStale) _limitControl.sovaSetValue(limit);
   var over = document.getElementById('hdr-agents-over');
   if (over) over.classList.toggle('hidden', !(running != null && limit != null && running > limit));
+}
+
+// Home's agents detail line: the slots a start can still take, read like the Work page's "over the limit" note.
+function _freeSlots(running, limit) {
+  if (running == null || limit == null) return '';
+  if (running > limit) return 'over the limit';
+  return running === limit ? 'no slot free' : _plural(limit - running, 'slot') + ' free';
 }
 
 function _renderSupervisorText() {
@@ -57,10 +71,12 @@ function _setTone(id, tone) {
 }
 
 // A line of text and, after a comma, a comparison phrase: only the phrase sits in the toned `<id>-trend` span, so
-// the counts and amounts beside it stay neutral. No comparison leaves no comma and an empty span.
+// the counts and amounts beside it stay neutral. No comparison leaves no comma and an empty span, and so does a line
+// with no trend span (Home's spend tile shows the week's spend alone).
 function _setLine(id, text, change) {
   var cmp = change || { text: '', tone: '' };
-  setText(id + '-text', text && cmp.text ? text + ', ' : text);
+  var shown = cmp.text && document.getElementById(id + '-trend') ? cmp.text : '';
+  setText(id + '-text', text && shown ? text + ', ' : text);
   setText(id + '-trend', cmp.text);
   _setTone(id + '-trend', cmp.tone);
 }
@@ -398,7 +414,8 @@ async function _triageAll() {
 
 function _refreshSideFigures() {
   _loadStats();
-  _loadCodeRabbit();
+  // Home has no CodeRabbit tile: no read for a figure nothing shows.
+  if (document.getElementById('hdr-coderabbit-tile')) _loadCodeRabbit();
   _loadBacklog();
 }
 
