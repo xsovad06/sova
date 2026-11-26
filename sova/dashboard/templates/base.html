@@ -2,9 +2,20 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  {#- viewport-fit=cover lets the phone shell draw under the notch and the home indicator; the top bar, the tab bar
+      and the sheets pad themselves with env(safe-area-inset-*). Pinch zoom stays on. -#}
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>{% block title %}SOVA Dashboard{% endblock %}</title>
   {% include "_head.html" %}
+  {#- Home screen: the manifest (app.py, web_app_manifest) opens the project's Home page without browser chrome.
+      The colour is the top bar's surface, the manifest's theme colour (app.py): a meta tag cannot read a CSS
+      custom property. -#}
+  <link rel="manifest" href="{{ prefix|default('') }}/manifest.webmanifest">
+  <meta name="theme-color" content="{{ app_theme_color }}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SOVA">
   <script>
     if (localStorage.getItem('sova-sidebar-collapsed') === '1') {
       document.documentElement.style.setProperty('--sidebar-width', '64px');
@@ -21,6 +32,7 @@
   {% from "_components.html" import owl_avatar %}
   <!-- Sidebar -->
   {% set prefix = prefix|default("") %}
+  {% set nav = nav_links(prefix) %}
   <nav class="sidebar bg-sidebar flex flex-col fixed h-full border-r border-gray-700/50 z-50">
     <div class="sidebar-logo-section p-4 border-b border-gray-700/50 relative flex items-center gap-3">
       <a href="{{ prefix or '/' }}" class="sidebar-logo-link flex items-center gap-3 hover:opacity-90 transition-opacity min-w-0">
@@ -64,25 +76,10 @@
       </a>
     </div>
     <div class="sidebar-nav-scroll flex-1 py-2">
-      {% set nav_items = [
-        ("work", prefix + "/work", "Work", "work"),
-        ("supervisor", prefix + "/supervisor", "Supervisor", "supervisor"),
-        ("oversight", prefix + "/oversight", "Oversight", "oversight"),
-        ("costs", prefix + "/costs", "Costs", "costs"),
-      ] %}
-      {% set more_items = ([("briefing", prefix + "/briefing", "Briefing", "bell")] if awareness_enabled() else []) + [
-        ("queue", prefix + "/queue", "Queue", "queue"),
-        ("specs", prefix + "/specs", "Specs", "document-text"),
-        ("pr-metrics", prefix + "/pr-metrics", "PR Metrics", "chart-bar"),
-        ("reliability", prefix + "/reliability", "Reliability", "chart-bar"),
-        ("roles", prefix + "/roles", "Roles", "roles"),
-        ("commands", prefix + "/commands", "Commands", "commands"),
-        ("dependency-health", prefix + "/dependency-health", "Dependencies", "shield"),
-        ("fleet", prefix + "/fleet", "Fleet", "fleet"),
-        ("connections", prefix + "/connections", "Connections", "link"),
-        ("setup", "/setup", "Add Project", "plus-circle"),
-      ] %}
-      {% set more_active = page in (more_items | map(attribute=0) | list) %}
+      {#- One navigation definition (sova/dashboard/navigation.py) feeds the sidebar, the phone tab bar and the
+          phone More sheet. `nav` is set at the top of the body, before the sidebar. -#}
+      {% set more_items = nav | selectattr("sidebar", "equalto", "more") | list %}
+      {% set more_active = page in (more_items | map(attribute="id") | list) %}
       {% macro nav_link(id, href, label, icon_name) %}
       <a href="{{ href }}"
          aria-label="{{ label }}"
@@ -93,8 +90,8 @@
         <span class="sidebar-label">{{ label }}</span>
       </a>
       {% endmacro %}
-      {% for id, href, label, icon_name in nav_items %}
-      {{ nav_link(id, href, label, icon_name) }}
+      {% for item in nav if item.sidebar == "main" %}
+      {{ nav_link(item.id, item.href, item.label, item.icon) }}
       {% endfor %}
 
       <!-- More: collapsed group, open on a child page (server-rendered) or by the remembered preference (app.js) -->
@@ -110,14 +107,16 @@
         <svg class="sidebar-more-chevron sidebar-hide ml-auto w-3 h-3 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
       </button>
       <div id="sidebar-more-group" class="{{ '' if more_active else 'hidden' }}">
-        {% for id, href, label, icon_name in more_items %}
-        {{ nav_link(id, href, label, icon_name) }}
+        {% for item in more_items %}
+        {{ nav_link(item.id, item.href, item.label, item.icon) }}
         {% endfor %}
       </div>
 
       <div class="sidebar-divider border-t border-gray-700/30 my-2 mx-5"></div>
 
-      {{ nav_link("settings", prefix + "/settings", "Settings", "settings") }}
+      {% for item in nav if item.sidebar == "bottom" %}
+      {{ nav_link(item.id, item.href, item.label, item.icon) }}
+      {% endfor %}
     </div>
     <!-- Collapse toggle -->
     <div class="shrink-0 border-t border-gray-700/50">
@@ -186,6 +185,65 @@
       </div>
     </div>
   </nav>
+
+  <!-- Phone shell (under 768 px; docs/design-system.md, "Phone Shell"): the top bar, the tab bar and the More sheet,
+       rendered from the same navigation definition as the sidebar. The owl in the tab bar's centre is the feed's
+       owl button (#feed-fab below), placed there by the stylesheet. Wider screens hide all three. -->
+  {% set home_href = (nav | selectattr("id", "equalto", "phone") | first).href %}
+  {% set in_project = project_slug is defined and project_slug %}
+  <header id="phone-topbar" class="sova-topbar">
+    <a href="{{ home_href }}" class="sova-topbar-home" aria-label="Home">{{ owl_avatar("sm") }}</a>
+    {% if in_project %}
+    <a href="/" class="sova-topbar-project" aria-label="Switch project, current project {{ project_name }}">
+      <span class="truncate">{{ project_name }}</span>{{ icon("chevron-down", "w-3.5 h-3.5 shrink-0") }}
+    </a>
+    {% else %}
+    <span class="sova-topbar-project"><span class="truncate">{{ single_project_name() }}</span></span>
+    {% endif %}
+    <span id="topbar-activity-dot" class="sova-topbar-dot w-2 h-2 rounded-full bg-gray-500 shrink-0" role="img" aria-label="Agent activity unknown"></span>
+    <a id="needs-you-chip" href="{{ home_href }}" class="sova-needs-chip" hidden>
+      <span class="sova-needs-chip-pill"><span class="sova-needs-chip-dot" aria-hidden="true"></span><span id="needs-you-count">0</span>&nbsp;needs you</span>
+    </a>
+    <button type="button" id="phone-menu-btn" class="sova-topbar-menu" aria-label="More pages" aria-expanded="false" aria-controls="more-sheet">
+      {{ icon("menu", "w-6 h-6") }}
+    </button>
+  </header>
+
+  <nav id="phone-tabbar" class="sova-tabbar" aria-label="Main">
+    {% set tabs = nav | selectattr("tab") | list %}
+    {% for item in tabs %}
+    {% if loop.index0 == tabs | length // 2 %}<span class="sova-tabbar-gap" aria-hidden="true"></span>{% endif %}
+    <a href="{{ item.href }}" class="sova-tab"{% if page == item.id %} aria-current="page"{% endif %}>
+      {{ icon(item.icon, "sova-tab-icon") }}<span class="sova-tab-label">{{ item.label }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+
+  <!-- More sheet: a side panel (static/js/components/phone-shell.js) that rises from the bottom. Every page the tab
+       bar does not show, then the provider status and system resources (the sidebar's account row and the agents
+       widget, moved in here on a phone) and the project switch. -->
+  <aside id="more-sheet" class="sova-side-panel sova-more-sheet" aria-label="More pages" aria-hidden="true" inert>
+    <div class="sova-more-sheet-head">
+      <span class="sova-more-sheet-title">More</span>
+      <button type="button" data-panel-close class="sova-btn sova-btn-ghost sova-btn-icon" aria-label="Close the menu">{{ icon("close", "w-5 h-5") }}</button>
+    </div>
+    <div class="sova-side-panel-body sova-more-sheet-body">
+      <ul class="sova-more-grid">
+        {% for item in nav if not item.tab %}
+        <li><a href="{{ item.href }}" class="sova-more-link"{% if page == item.id %} aria-current="page"{% endif %}>{{ icon(item.icon, "sova-more-icon") }}<span class="truncate">{{ item.label }}</span></a></li>
+        {% endfor %}
+      </ul>
+      <div class="sova-more-status">
+        <div id="more-sheet-provider-slot"></div>
+        <div id="more-sheet-resources-slot"></div>
+        {% if in_project %}
+        <a href="/" class="sova-more-row">
+          {{ icon("arrows-right-left", "sova-more-icon") }}<span class="flex-1">Switch project</span><span class="sova-more-row-value truncate">{{ project_name }}</span>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </aside>
 
   <!-- Activity feed: a side panel (static/js/components/side-panel.js) opened by the owl button through
        static/js/feed/panel.js. The scrim dims the page while it is open; a click on it closes the panel. -->
@@ -352,6 +410,9 @@
       .then(function() { return import('/static/js/feed/activity.js'); })
       .then(function(m) { m.init(); })
       .catch(function(e) { console.error('feed activity failed to start', e); });
+    import('/static/js/components/phone-shell.js')
+      .then(function(m) { m.init(); })
+      .catch(function(e) { console.error('phone shell failed to start', e); });
   </script>
   {% block scripts %}{% endblock %}
 </body>

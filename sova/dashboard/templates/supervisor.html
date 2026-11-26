@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Supervisor - SOVA{% endblock %}
 {% block content %}
-<div class="flex items-center justify-between mb-6">
+<div class="flex items-center justify-between mb-6 max-md:flex-wrap max-md:gap-3">
   <h2 class="text-2xl font-semibold">Supervisor</h2>
-  <div class="flex items-center gap-3">
+  <div class="flex items-center gap-3 max-md:flex-wrap">
     <span class="flex items-center gap-2">
       <span id="supervisor-switch" class="flex" data-setting-switch="supervisor.enabled" data-label="Supervisor"
             data-tooltip="Turn the supervisor on or off. It starts or stops at once, without a restart."></span>
@@ -53,8 +53,8 @@
 <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
   <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
     <h3 class="text-sm font-medium text-gray-300">Dependency Graph <span class="text-xs text-gray-600 font-normal ml-1">left = ready, right = blocked &middot; click node to highlight chain</span></h3>
-    <div class="flex items-center gap-3">
-      <div class="flex items-center gap-2 text-xs text-gray-500">
+    <div class="flex items-center gap-3 max-md:flex-wrap">
+      <div class="flex items-center gap-2 text-xs text-gray-500 max-md:flex-wrap">
         <span id="graph-state-legend" class="flex items-center gap-2"></span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-peach inline-block"></span> Handoff</span>

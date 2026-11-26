@@ -37,12 +37,12 @@ If your generated code includes ANY of these, the output fails quality checks:
 ### Layout
 - Generic 3-equal-column grids with identical cards (the "SaaS landing page" look)
 - Cards with no visual hierarchy: all same padding, same font size, same weight
-- Full-width sections with no constraint (content stays within the `ml-64 p-8` main area)
+- Full-width sections with no constraint (content stays within the `ml-64 p-8` main area, or the 16 px gutters of the phone shell under 768 px)
 - Centered text blocks wider than `max-w-2xl`
 
 ### Color
 - Any color outside Catppuccin Mocha palette (no hardcoded hex, rgb, hsl)
-- Gradient backgrounds on containers or sections (SOVA is flat, not glassmorphic)
+- Gradient backgrounds or translucent, blurred surfaces on containers or sections (SOVA is flat, not glassmorphic). The one exception is the phone tab bar's translucent blur, approved with the phone mockups; nothing else gets `backdrop-filter`
 - Random opacity values: use the established scale: `text-gray-500` for muted, `/30` for borders, `/20` for subtle fills, `/10` for faint backgrounds
 - `rgba(0,0,0,...)` or similar generic shadows: use Catppuccin surface colors
 
@@ -206,11 +206,21 @@ Common patterns that reveal AI-generated code:
 | Gratuitous `<hr>` dividers everywhere | Use spacing (margin/padding) for separation |
 | Generic `transition: all` on everything | Specify: `transition-colors`, `transition-opacity` |
 
-## 8. Overflow Rule
+## 8. Phone Shell (under 768 px)
+
+`base.html` swaps the sidebar for a top bar, a tab bar with the owl in its centre and a More sheet; side panels become full-screen sheets (docs/design-system.md, "Phone Shell").
+
+- A new page goes in `NAV_PAGES` (`sova/dashboard/navigation.py`): the sidebar, the tab bar and the More sheet all render from it. Never hand-write a nav link in a template.
+- Nothing scrolls the page sideways at 390 px: a wide table scrolls inside its own box, and a header row that cannot fit wraps below 768 px only (`max-md:flex-wrap`), leaving the desktop layout as it was.
+- Controls are at least 44 px tall and text fields use 16 px text under 768 px; the shared classes do this, so a page rule must not shrink them back.
+- Height uses `dvh`, never `vh`, and anything fixed to an edge pads itself with `env(safe-area-inset-*)`.
+- A tooltip is hover help only: on a touch screen it shows on keyboard focus, so never put information only in a tooltip.
+
+## 9. Overflow Rule
 
 Never set `overflow: hidden|auto|scroll` on containers with absolutely-positioned children (tooltips, popovers, notification panel). CSS computes the other axis to `auto`, clipping popouts. Use `max-width` and opacity transitions on individual children instead.
 
-## 9. Pre-Flight Checklist
+## 10. Pre-Flight Checklist
 
 Before delivering UI work:
 
@@ -227,4 +237,5 @@ Before delivering UI work:
 - [ ] No scroll-triggered animations
 - [ ] Tooltips use `data-tooltip`, not native `title`
 - [ ] No AI-tell patterns (side-stripes, gradient text, identical triplets)
+- [ ] At 390 px the page does not scroll sideways and its controls are 44 px tall; at 768 px and wider it is unchanged
 - [ ] No emojis, no placeholder text, no AI cliches

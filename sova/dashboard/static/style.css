@@ -100,6 +100,7 @@
      instead of the control covering the panel; the sidebar and the batch bar stay above both. */
   --z-sticky:   20;   /* a sticky page header (Settings) */
   --z-dropdown: 30;   /* a menu or result list inside the page (Work search) */
+  --z-bar:      35;   /* the phone shell's top bar and tab bar, under the owl in the bar's centre */
   --z-float:    40;   /* the owl button and the agents widget */
   --z-scrim:    44;   /* the page dimmed behind the activity feed */
   --z-panel:    45;   /* a side panel: the activity feed, the Work ticket detail */
@@ -211,8 +212,8 @@ input[type="date"] { color-scheme: dark; }
 
 #toast-container {
   position: fixed;
-  top: 1rem;
-  right: 1rem;
+  top: calc(1rem + env(safe-area-inset-top, 0px));
+  right: calc(1rem + env(safe-area-inset-right, 0px));
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
@@ -577,13 +578,19 @@ input[type="date"] { color-scheme: dark; }
    5. COLLAPSIBLE SIDEBAR
    ============================================================ */
 
+/* The page draws under the notch and the home indicator (viewport-fit=cover, base.html), so every fixed or edge-anchored
+   desktop piece pads itself with env(safe-area-inset-*). env() is 0 where a device has no inset, so an ordinary desktop
+   is pixel-identical; a notched phone in landscape or an iPad opened from the home screen keeps the sidebar, the page
+   and the floating controls clear of the notch, the status bar and the home indicator. The sidebar grows by the left
+   inset instead of shrinking its content, so a collapsed 64px sidebar keeps its 64px of room. */
 .sidebar {
-  width: var(--sidebar-width);
+  width: calc(var(--sidebar-width) + env(safe-area-inset-left, 0px));
+  padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   transition: width 300ms ease;
 }
 
 .sidebar-main {
-  margin-left: var(--sidebar-width);
+  margin-left: calc(var(--sidebar-width) + env(safe-area-inset-left, 0px));
   transition: margin-left 300ms ease;
 }
 
@@ -591,7 +598,10 @@ input[type="date"] { color-scheme: dark; }
    cover the last row. The element selector outranks Tailwind's p-8; min-h-screen includes the padding
    (border-box), so a short page that fits the viewport does not gain a scrollbar. */
 main.sidebar-main {
-  padding-bottom: 6rem;
+  /* p-8 (2rem) plus the insets; the bottom is the 6rem float room plus the home indicator. */
+  padding-top: calc(2rem + env(safe-area-inset-top, 0px));
+  padding-right: calc(2rem + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(6rem + env(safe-area-inset-bottom, 0px));
 }
 
 .sidebar-more-chevron {
@@ -603,7 +613,7 @@ main.sidebar-main {
 }
 
 .sidebar-batch-bar {
-  left: var(--sidebar-width);
+  left: calc(var(--sidebar-width) + env(safe-area-inset-left, 0px));
   transition: left 300ms ease;
 }
 
@@ -1345,7 +1355,8 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   visibility: hidden;
   transition: opacity var(--motion-panel-out) var(--ease-in), visibility 0s var(--motion-panel-out);
 }
-body[data-side-panel="feed"] .feed-scrim {
+body[data-side-panel="feed"] .feed-scrim,
+body[data-side-panel="more"] .feed-scrim {
   opacity: 1;
   visibility: visible;
   transition: opacity var(--motion-panel-in) var(--ease-out), visibility 0s;
@@ -1497,8 +1508,8 @@ a.feed-period:hover { color: rgb(var(--ctp-text-rgb)); text-decoration: underlin
 /* Floating owl trigger button (bottom-right) */
 .feed-fab {
   position: fixed;
-  bottom: 1.5rem;
-  right: 1.5rem;
+  bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+  right: calc(1.5rem + env(safe-area-inset-right, 0px));
   width: 52px;
   height: 52px;
   border-radius: 9999px;
@@ -1582,7 +1593,10 @@ body.feed-resizing { -webkit-user-select: none; user-select: none; cursor: col-r
     width: 100%;
   }
   .feed-resize-handle { display: none; }
-  .feed-fab { bottom: 1rem; right: 1rem; }
+  .feed-fab {
+    bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+    right: calc(1rem + env(safe-area-inset-right, 0px));
+  }
 }
 
 /* ============================================================
@@ -1591,10 +1605,10 @@ body.feed-resizing { -webkit-user-select: none; user-select: none; cursor: col-r
 
 .resource-widget {
   position: fixed;
-  bottom: 1rem;
+  bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
   /* Offset well left of the feed FAB (right: 1.5rem + 52px wide) so the two
      bottom-right floating elements have clear separation. */
-  right: 6rem;
+  right: calc(6rem + env(safe-area-inset-right, 0px));
   z-index: var(--z-float);
   transition: translate var(--motion-panel-out) var(--ease-in), opacity 150ms ease, visibility 0s;
 }
@@ -1705,7 +1719,7 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
   display: block;
   position: fixed;
   bottom: auto;
-  left: calc(var(--sidebar-width) + 0.5rem);
+  left: calc(var(--sidebar-width) + env(safe-area-inset-left, 0px) + 0.5rem);
   top: var(--sidebar-tip-y, 50%);
   transform: translateY(-50%);
   margin-bottom: 0;
@@ -2017,6 +2031,321 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
 .out-fold-body { padding-left: 0.75rem; border-left: 1px solid var(--ctp-surface1); }
 
 /* ============================================================
+   PHONE SHELL (base.html, static/js/components/phone-shell.js)
+   ============================================================ */
+
+/* Under 768 px the sidebar gives way to a top bar, a floating tab bar with the owl in its centre, and full-screen
+   sheets for the feed and the ticket detail (docs/design-system.md, "Phone Shell"). Wider screens never show the
+   shell's parts. The breakpoint is phone-shell.js's PHONE_QUERY. */
+.sova-topbar,
+.sova-tabbar,
+.sova-more-sheet { display: none; }
+
+@media (max-width: 767.98px) {
+  :root {
+    --phone-topbar-height: calc(56px + env(safe-area-inset-top, 0px));
+    /* The tab bar floats above the home indicator, or 16px above the bottom edge where there is none. */
+    --phone-bar-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+    --phone-tabbar-height: 64px;
+    --phone-gutter-left: max(16px, env(safe-area-inset-left, 0px));
+    --phone-gutter-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  /* Full height means the dynamic viewport (dvh), never vh, which is taller than the visible page while Safari's
+     toolbar shows. */
+  .min-h-screen { min-height: 100dvh; }
+
+  /* The sidebar and the batch bar's sidebar offset give way: the content takes the full width with 16px gutters,
+     starts under the top bar and ends clear of the tab bar and the owl rising above it. */
+  .sidebar { display: none; }
+  main.sidebar-main {
+    margin-left: 0;
+    padding: calc(var(--phone-topbar-height) + 16px) var(--phone-gutter-right)
+      calc(var(--phone-bar-bottom) + var(--phone-tabbar-height) + 40px) var(--phone-gutter-left);
+  }
+  /* A sticky page bar (the Queue filters) sticks under the top bar, not under the status bar behind it. */
+  main .sticky.top-0 { top: var(--phone-topbar-height); }
+
+  /* Top bar: home owl, project switch, activity dot, the "needs you" chip and the menu button. */
+  .sova-topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: var(--z-bar);
+    height: var(--phone-topbar-height);
+    padding: env(safe-area-inset-top, 0px) var(--phone-gutter-right) 0 var(--phone-gutter-left);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--color-surface-card);
+    border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  }
+  .sova-topbar-home { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-left: -7px; }
+  .sova-topbar-project {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 44px;
+    color: var(--ctp-text);
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  .sova-needs-chip { display: inline-flex; align-items: center; height: 44px; margin-left: auto; flex-shrink: 0; }
+  .sova-needs-chip[hidden] { display: none; }
+  .sova-needs-chip-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 9999px;
+    background: rgb(var(--ctp-yellow-rgb) / 0.14);
+    color: var(--ctp-yellow);
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .sova-needs-chip-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--ctp-yellow); }
+  .sova-topbar-menu {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    margin-left: auto;
+    margin-right: -10px;
+    border-radius: 10px;
+    color: var(--ctp-subtext1);
+    transition: background-color 150ms ease;
+  }
+  .sova-needs-chip:not([hidden]) + .sova-topbar-menu { margin-left: 0; }
+  .sova-topbar-menu:hover,
+  .sova-topbar-menu[aria-expanded="true"] { background: var(--color-surface-hover); }
+
+  /* Tab bar: the one translucent surface in the dashboard, a deliberate exception to the flat style
+     (docs/design-system.md, "Phone Shell"). It floats over the page, blurred, and turns solid where the browser cannot
+     blur what is behind it. */
+  .sova-tabbar {
+    position: fixed;
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    bottom: var(--phone-bar-bottom);
+    z-index: var(--z-bar);
+    height: var(--phone-tabbar-height);
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    border-radius: 32px;
+    background: rgb(var(--ctp-base-rgb) / 0.62);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
+    backdrop-filter: blur(22px) saturate(170%);
+    border: 1px solid rgb(var(--ctp-text-rgb) / 0.16);
+    box-shadow: 0 10px 30px rgb(var(--ctp-crust-rgb) / 0.55);
+  }
+  @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+    .sova-tabbar { background: var(--color-surface-card); }
+  }
+  .sova-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border-radius: 26px;
+    color: var(--ctp-subtext1);
+    font-size: 0.75rem;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+  .sova-tab-icon { width: 22px; height: 22px; flex-shrink: 0; }
+  .sova-tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sova-tab[aria-current="page"] {
+    background: rgb(var(--ctp-blue-rgb) / 0.18);
+    color: var(--ctp-blue);
+    font-weight: 600;
+  }
+  .sova-tabbar-gap { width: 76px; flex-shrink: 0; }
+
+  /* The owl: the feed's owl button, raised out of the tab bar's centre. Its ears overflow the circle (the owl avatar
+     rule); the unread badge sits on its edge. */
+  .feed-fab {
+    left: 50%;
+    right: auto;
+    bottom: calc(var(--phone-bar-bottom) + 12px);
+    width: 64px;
+    height: 64px;
+    margin-left: -32px;
+    border-color: rgb(var(--ctp-text-rgb) / 0.22);
+    box-shadow: 0 10px 30px rgb(var(--ctp-crust-rgb) / 0.55);
+  }
+  .feed-fab .sova-owl-lg { width: 64px; height: 64px; }
+  .feed-fab-badge { top: -3px; right: -3px; border-color: var(--color-surface); }
+
+  /* Sheets: on a phone every side panel is a full-screen sheet that rises from the bottom edge (the slide's
+     transition and curves are .sova-side-panel's own) and pads itself clear of the notch and the home indicator. */
+  .sova-side-panel {
+    top: 0;
+    bottom: auto;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-left: 0;
+    box-shadow: none;
+    transform: translateY(100%);
+  }
+  .sova-side-panel[data-open] { transform: none; }
+  /* The page behind an open sheet stays put: the body's overflow locks the viewport's scroll. */
+  body[data-side-panel] { overflow: hidden; }
+  /* Nothing floats over an open sheet. */
+  body[data-side-panel] .sova-float {
+    translate: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  /* Except the agents widget that phone-shell.js moved into the More sheet: it keeps the class that hides a float
+     (and the feed's 'hide' state hides it too), but it is only ever seen while the sheet is open. */
+  body[data-side-panel] .sova-more-sheet .sova-float {
+    translate: none;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  body[data-side-panel] #global-batch-bar { visibility: hidden; }
+
+  .feed-close-btn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+  /* The ticket detail's actions stay pinned under its scrolling body. */
+  .sova-work-drawer-actions {
+    order: 1;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+    border-bottom: 0;
+  }
+
+  /* The More sheet: a shorter sheet from the bottom edge over the dimmed page, scrolling when its list is taller. */
+  .sova-side-panel.sova-more-sheet {
+    display: flex;
+    top: auto;
+    bottom: 0;
+    height: auto;
+    max-height: calc(100dvh - var(--phone-topbar-height));
+    padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    border-radius: 24px 24px 0 0;
+    border-top: 1px solid rgb(var(--ctp-text-rgb) / 0.16);
+    box-shadow: 0 -12px 32px rgb(var(--ctp-crust-rgb) / 0.6);
+  }
+  .sova-more-sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 2px; flex-shrink: 0; }
+  .sova-more-sheet-title { font-size: 0.75rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ctp-subtext0); }
+  .sova-more-sheet-body { display: flex; flex-direction: column; gap: 12px; }
+  .sova-more-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .sova-more-link,
+  .sova-more-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    min-height: 52px;
+    padding: 0 12px;
+    border-radius: 12px;
+    color: var(--ctp-text);
+    font-size: 0.9375rem;
+    transition: background-color 150ms ease;
+  }
+  .sova-more-link { background: var(--ctp-surface0); }
+  .sova-more-link:hover { background: var(--ctp-surface1); }
+  .sova-more-link[aria-current="page"] { background: rgb(var(--ctp-blue-rgb) / 0.18); color: var(--ctp-blue); }
+  .sova-more-icon { width: 20px; height: 20px; flex-shrink: 0; color: var(--ctp-subtext1); }
+  .sova-more-link[aria-current="page"] .sova-more-icon { color: var(--ctp-blue); }
+  .sova-more-status { display: flex; flex-direction: column; border-radius: 12px; background: var(--ctp-surface0); }
+  .sova-more-status > * + * { border-top: 1px solid rgb(var(--ctp-surface2-rgb) / 0.6); }
+  /* A slot with nothing to show (the agents widget hides itself until its first answer) takes no row. The slots are
+     rendered without inner whitespace so :empty matches; a hidden widget is caught by its inline display (either
+     serialisation) or the hidden attribute. */
+  .sova-more-status > :empty,
+  .sova-more-status > :has(> :where([hidden], [style*="display: none"], [style*="display:none"])) { display: none; }
+  .sova-more-row:hover { background: var(--ctp-surface1); }
+  .sova-more-row-value { max-width: 50%; color: var(--ctp-subtext1); }
+
+  /* The provider status and the agents widget, moved into the More sheet (phone-shell.js): rows that open in place
+     instead of popovers. A collapsed desktop sidebar hides its labels; here they always show. */
+  .sova-more-sheet .auth-widget-toggle,
+  .sova-more-sheet .resource-widget-toggle {
+    width: 100%;
+    min-height: 52px;
+    align-items: center;
+    padding: 0 12px;
+    gap: 10px;
+    background: none;
+    border: 0;
+    border-radius: 12px;
+    box-shadow: none;
+    font-size: 0.9375rem;
+  }
+  .sova-more-sheet .auth-widget-toggle .sidebar-icon-wrap { width: auto; height: auto; margin: 0 6px; }
+  body .sova-more-sheet .sidebar-label { opacity: 1; max-width: none; flex: 1; }
+  body .sova-more-sheet .sidebar-hide { display: none; }
+  .sova-more-sheet .auth-widget-panel,
+  .sova-more-sheet .resource-widget-panel {
+    position: static;
+    width: auto;
+    max-height: none;
+    margin: 0 12px 12px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  .sova-more-sheet .resource-widget { position: static; }
+  .sova-more-sheet .resource-widget-dot { margin: 0 6px; }
+  .sova-more-sheet .resource-widget-chevron { margin-left: auto; }
+  /* Never left floating over the tab bar, even before phone-shell.js has moved it (or if it failed to load). */
+  body > #resource-widget { display: none !important; }
+
+  /* The global batch bar floats above the tab bar and the owl, at the gutters, instead of under them. */
+  #global-batch-bar {
+    left: max(12px, env(safe-area-inset-left, 0px));
+    right: max(12px, env(safe-area-inset-right, 0px));
+    bottom: calc(var(--phone-bar-bottom) + 100px);
+    padding: 12px 16px;
+    border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+    border-radius: 16px;
+  }
+  #global-batch-bar > div { flex-wrap: wrap; gap: 8px; }
+
+  /* Toasts drop in under the top bar at the gutters, the tab bar's opposite edge. */
+  #toast-container { top: calc(var(--phone-topbar-height) + 8px); left: var(--phone-gutter-left); right: var(--phone-gutter-right); }
+  .sova-toast { min-width: 0; max-width: none; }
+
+  /* The shared touch baseline: every shared control is at least 44px tall, and every text field uses 16px text, below
+     which iOS zooms the page on focus. The !important beats page rules that set a smaller field font. */
+  .sova-btn { min-height: 44px; }
+  .sova-btn-icon { min-width: 44px; justify-content: center; }
+  .sova-stepper .sova-stepper-btn { width: 44px; height: 44px; }
+  .sova-toggle { min-height: 44px; min-width: 44px; }
+  .sova-input { min-height: 44px; }
+  .sova-input,
+  textarea,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]) {
+    font-size: 16px !important;
+  }
+}
+
+/* Touch screens have no hover, and a tapped element keeps :hover until something else is tapped: a tooltip would stay
+   stuck open. They show on keyboard focus only, and the owl button keeps its resting size. */
+@media (hover: none) {
+  [data-tooltip]:not(:focus-visible)::after { display: none !important; }
+  .feed-fab:hover { transform: none; }
+}
+
+/* ============================================================
    REDUCED MOTION FOR THE SIDE PANEL, ITS SCRIM AND THE FLOATS
    ============================================================ */
 
@@ -2026,7 +2355,7 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
    motion. */
 @media (prefers-reduced-motion: reduce) {
   .sova-side-panel, .sova-side-panel[data-open],
-  .feed-scrim, body[data-side-panel="feed"] .feed-scrim,
+  .feed-scrim, body[data-side-panel="feed"] .feed-scrim, body[data-side-panel="more"] .feed-scrim,
   .sova-float, body[data-side-panel-floats] .sova-float,
   #global-batch-bar, body[data-side-panel] #global-batch-bar { transition: none; }
 }

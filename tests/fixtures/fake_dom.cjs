@@ -14,9 +14,26 @@ function decode(text) {
   return text.replace(/&(#?\w+);/g, (m, name) => (name in ENTITIES ? ENTITIES[name] : m));
 }
 
+// A node's neighbours in its parent's child list (text and comment nodes included), null at either end.
+function sibling(node, step) {
+  if (!node.parentNode) return null;
+  const list = node.parentNode.childNodes;
+  return list[list.indexOf(node) + step] || null;
+}
+
 class TextNode {
   constructor(text) { this.nodeType = 3; this.text = text; this.parentNode = null; }
   get textContent() { return this.text; }
+  get previousSibling() { return sibling(this, -1); }
+  get nextSibling() { return sibling(this, 1); }
+}
+
+// A comment: a marker in the tree with no text of its own in textContent, as in the DOM.
+class CommentNode {
+  constructor(text) { this.nodeType = 8; this.data = text; this.parentNode = null; }
+  get textContent() { return ''; }
+  get previousSibling() { return sibling(this, -1); }
+  get nextSibling() { return sibling(this, 1); }
 }
 
 class Element {
@@ -77,6 +94,18 @@ class Element {
     this.childNodes.push(child);
     return child;
   }
+  // Like the DOM: a null reference appends, and a child moved from elsewhere leaves its old place first.
+  insertBefore(child, ref) {
+    if (ref === null || ref === undefined) return this.appendChild(child);
+    if (child === ref) return child;
+    if (ref.parentNode !== this) throw new Error('fake_dom: insertBefore reference is not a child');
+    if (child.parentNode) child.parentNode.childNodes.splice(child.parentNode.childNodes.indexOf(child), 1);
+    child.parentNode = this;
+    this.childNodes.splice(this.childNodes.indexOf(ref), 0, child);
+    return child;
+  }
+  get previousSibling() { return sibling(this, -1); }
+  get nextSibling() { return sibling(this, 1); }
   remove() {
     if (!this.parentNode) return;
     this.parentNode.childNodes.splice(this.parentNode.childNodes.indexOf(this), 1);
@@ -164,6 +193,7 @@ class Document extends Element {
   get isConnected() { return true; }
   get rendered() { return true; }
   createElement(tag) { return new Element(this, tag); }
+  createComment(text) { return new CommentNode(text); }
   getElementById(id) { return this.querySelector('#' + id); }
 }
 

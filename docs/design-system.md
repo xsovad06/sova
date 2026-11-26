@@ -351,6 +351,7 @@ panel.open(); panel.close('deselected'); panel.toggle(); panel.isOpen();
 - **Scroll containment**: a wheel over the panel never scrolls the page. The module (a non-passive wheel listener) stops a wheel that nothing between its target and the panel can take (the header, or a list already at that end) and leaves the rest to the browser; `overscroll-behavior: contain` on the panel and on `.sova-side-panel-body` covers the momentum of a trackpad at either end. A pinch (ctrlKey) is left to the browser.
 - **Motion**: it slides in with `--ease-out` over `--motion-panel-in` (260 ms) and out with `--ease-in` over `--motion-panel-out` (200 ms). A closed panel waits off the right edge with `visibility: hidden`, so it takes no focus and leaves the accessibility tree once it has slid out (`aria-hidden="true"` too). It is also `inert` from the moment it closes, so its content stays visible while it slides out but no Tab or click reaches it; the templates render both panels with `aria-hidden="true"` and `inert`, so they are closed before the module runs. Under `prefers-reduced-motion: reduce` nothing animates: the panel, the feed scrim, the floats and the batch bar lose their transitions in one `@media` block at the end of `style.css`, after every rule it overrides (at equal specificity the later rule wins).
 - **The body**: while a panel is open the body carries `data-side-panel="<name>"`, `data-side-panel-floats` and `--side-panel-width` (the panel's laid-out width, kept current by a ResizeObserver). The floats read them to move or hide (a float shifted by one panel slides back while it fades behind the other), and the global batch bar ends at the panel's left edge, its edge moving with the panel's own curves. The feed also dims the page behind it with a scrim (`.feed-scrim`), a click on which is a click outside.
+- **On a phone**: under 768 px every panel is a full-screen sheet rising from the bottom edge, and the page behind it is locked ("Phone Shell" below).
 - **Width**: `min(26rem, 100%)` unless the panel sets its own. The feed keeps its drag-resizable width (`--feed-panel-width`, 400 to 800 px, remembered as `sova.feed.width`).
 
 `tests/test_dashboard_feed_panel.py` runs the module under node over `tests/fixtures/fake_dom.cjs`, and `tests/test_work_page.py` runs the ticket detail on it.
@@ -363,6 +364,7 @@ Fixed and floating elements stack by the `--z-*` tokens on `:root` in `style.css
 |-------|-------|-------|
 | `--z-sticky` | 20 | A sticky page header (Settings) |
 | `--z-dropdown` | 30 | A menu or result list inside the page (the Work search) |
+| `--z-bar` | 35 | The phone shell's top bar and tab bar (under 768 px) |
 | `--z-float` | 40 | The floating owl button and agents widget (`.sova-float`) |
 | `--z-scrim` | 44 | The page dimmed behind the activity feed |
 | `--z-panel` | 45 | A side panel: the activity feed, the Work ticket detail |
@@ -375,13 +377,29 @@ The floats sit under the panels on purpose: they never overlap an open panel, be
 
 ## Owl Avatar
 
-The SOVA owl (`static/owl-avatar.png`, transparent, ears at the top corners) is never clipped into a circle. Render it with the `owl_avatar(size)` macro or its twin `owlAvatarHtml(size)` in `app.js` (`sm` 30 px, `md` 36 px, `lg` 52 px): a `.sova-owl` circle that is only a backdrop, with the image at 90% of it, `object-fit: contain`, no `overflow` on the circle and no radius on the image, so the ears stick out past the circle. The feed's owl button, the feed header and the morning briefing card all use it; the owl button is itself the circle, so its avatar has no backdrop of its own. Never `object-fit: cover` with a round clip. `tests/test_dashboard_component_vocabulary.py` checks the macro and the twin emit the same markup.
+The SOVA owl (`static/owl-avatar.png`, transparent, ears at the top corners) is never clipped into a circle. Render it with the `owl_avatar(size)` macro or its twin `owlAvatarHtml(size)` in `app.js` (`sm` 30 px, `md` 36 px, `lg` 52 px): a `.sova-owl` circle that is only a backdrop, with the image at 90% of it, `object-fit: contain`, no `overflow` on the circle and no radius on the image, so the ears stick out past the circle. The feed's owl button, the feed header, the morning briefing card and the phone top bar all use it; the owl button is itself the circle, so its avatar has no backdrop of its own. Never `object-fit: cover` with a round clip. `tests/test_dashboard_component_vocabulary.py` checks the macro and the twin emit the same markup.
+
+## Phone Shell
+
+Under 768 px (`@media (max-width: 767.98px)` in `style.css`, `PHONE_QUERY` in `static/js/components/phone-shell.js`) every page that extends `base.html` drops the sidebar and shows the phone shell (#1564). At 768 px and wider nothing of it shows and the layout is the desktop one.
+
+- **One navigation definition**: `NAV_PAGES` in `sova/dashboard/navigation.py`, given to templates as `nav_links(prefix)`. The sidebar lists each page where its `sidebar` field says (main, the More group, the bottom), the tab bar shows the `tab` pages in order, and the More sheet shows every other page. Add a page there, never in a template. The sidebar's More group is open on a child page, else by the `sova.sidebar.moreOpen` localStorage preference, which only an explicit toggle writes (`initSidebarMore()` in `app.js`).
+- **Top bar** (`#phone-topbar`, fixed, 56 px plus the top safe area): the owl (the `owl_avatar` helper) linking Home, the project name linking the project list (a single project shows its own name as plain text, with nothing to switch to), the activity dot (`#topbar-activity-dot`, the sidebar dot's twin, with an accessible name), the "N needs you" chip (`#needs-you-chip`, the handoffs awaiting action, hidden at zero and while the handoff state is unknown) and the menu button that opens the More sheet.
+- **Tab bar** (`#phone-tabbar`): Home (`/phone`), Work, the owl, Supervisor and Settings; the current page carries `aria-current="page"`. It floats 12 px from the sides and 16 px above the bottom edge, or above the home indicator. The owl is the feed's own owl button (`#feed-fab`), placed in the bar's centre by the stylesheet, so its unread badge and toggle are the feed's; its ears overflow the circle.
+- **The one translucent surface**: the tab bar is translucent (`--ctp-base` at 62% with `backdrop-filter: blur(22px) saturate(170%)`). It is the single, deliberate exception to the flat style, approved with the phone mockups, and turns solid `--color-surface-card` where `backdrop-filter` is unsupported (`@supports not`). Every other surface, the More sheet included, stays flat.
+- **Sheets**: on a phone every side panel is a full-screen sheet (`100dvh`, padded by the top and bottom safe areas) that rises from the bottom edge on the side panel's own curves (ease-out in, ease-in out, none under reduced motion). While one is open the body's `overflow: hidden` locks the page behind it and nothing floats over it. The ticket detail's actions (`.sova-work-drawer-actions`) are pinned under its scrolling body; on a wide screen the same block continues the header.
+- **More sheet** (`#more-sheet`): a shorter sheet on the shared side panel (`name: 'more'`, the feed's scrim behind it) listing every page the bar does not show, then the provider status and the system resources and, with several projects, Switch project. The provider row and the agents widget are the sidebar's account row and the floating widget, moved in by `phone-shell.js` while the window is phone-sized and put back in their own places when it widens (their scripts keep working, since a moved element keeps its id and listeners); the sheet closes when the window widens.
+- **Fixed layers**: the global batch bar floats above the tab bar and the owl, toasts drop in under the top bar, and the agents widget never floats on a phone. A sticky page bar (`.sticky.top-0`) sticks under the top bar.
+- **Touch baseline**: under 768 px `.sova-btn`, `.sova-toggle`, the stepper buttons and `.sova-input` are at least 44 px tall (an icon button 44 px wide too), and every text field uses 16 px text (`!important`, so no page rule can bring back the iOS zoom on focus). On a screen without hover (`@media (hover: none)`) a tooltip shows on keyboard focus only, so a tap never leaves one stuck open.
+- **Safe areas and height**: the viewport is `viewport-fit=cover`; the bars, sheets and page gutters pad themselves with `env(safe-area-inset-*)`, and full-height elements use `dvh`, never `vh`. Pinch zoom stays on. `viewport-fit=cover` applies at every width, so the wide layout pads its fixed edges the same way (the sidebar, `main`, the batch bar, the owl button, the agents widget and the toasts); `env()` is 0 without an inset, so a desktop is unchanged, while a notched phone in landscape or an iPad opened from the home screen stays clear of the notch and the home indicator.
+- **Home screen**: `base.html` links a web app manifest (`/manifest.webmanifest`, or `/p/<slug>/manifest.webmanifest`, from `web_app_manifest()` in `app.py`) that opens the project's Home page standalone, with the theme colour and the Apple web app tags.
+- **Page layouts**: the shell gives each page the full width with 16 px gutters. A page row that cannot fit at 390 px wraps below 768 px only (`max-md:flex-wrap`), so the desktop layout never changes.
 
 ## Layout Tokens
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--sidebar-width` | `256px` | Sidebar width (Tailwind `w-64`) |
+| `--sidebar-width` | `256px` | Sidebar width (Tailwind `w-64`); none under 768 px |
 | Main margin | `ml-64` | Main content left margin |
 | Main padding | `p-8` | Main content padding |
 | Nav item padding | `px-5 py-3` | Sidebar navigation items |
@@ -394,7 +412,9 @@ The SOVA owl (`static/owl-avatar.png`, transparent, ears at the top corners) is 
 | `sova/dashboard/templates/_head.html` | Shared Tailwind config + favicon links |
 | `sova/dashboard/templates/_icons.html` | SVG icon macro (Heroicons v2) |
 | `sova/dashboard/templates/_components.html` | Jinja2 component macros |
-| `sova/dashboard/templates/base.html` | Main layout, sidebar, activity feed panel and owl button |
-| `sova/dashboard/static/js/components/side-panel.js` | The shared side panel (feed, Work ticket detail) |
+| `sova/dashboard/templates/base.html` | Main layout, sidebar, phone shell, activity feed panel and owl button |
+| `sova/dashboard/navigation.py` | The one navigation definition (sidebar, tab bar, More sheet) |
+| `sova/dashboard/static/js/components/side-panel.js` | The shared side panel (feed, Work ticket detail, More sheet) |
+| `sova/dashboard/static/js/components/phone-shell.js` | The phone shell's More sheet and the widgets it hosts |
 | `sova/dashboard/static/app.js` | Color system, toasts, confirmation modal, browser notifications, utilities |
 | `sova/dashboard/templates/style_guide.html` | Living style guide at `/style-guide` |

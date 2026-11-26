@@ -239,7 +239,15 @@ function _render() {
     ['Last run', last ? '<span class="flex flex-wrap items-center gap-1">' + lastRunHtml(entry, true) +
       '<a class="text-accent hover:underline" href="' + (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/work/' + last.run_id + '">details</a></span>' : ''],
   ]);
-  var html = '<div class="flex flex-col gap-2 px-4 pt-4 pb-3 border-b border-gray-700/50">' +
+  // The run status and the buttons are their own block under the title, so a phone sheet can pin them to its bottom
+  // edge (style.css, "Phone Shell"); on a wide screen the block continues the header with the same 0.5rem gap.
+  var actionsInner = actionStatusHtml(entryKey(entry)) +
+    (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
+    _moreActions(entry, parts, busy);
+  var actions = actionsInner
+    ? '<div class="sova-work-drawer-actions flex flex-col gap-2 px-4 pt-2 pb-3 border-b border-gray-700/50">' + actionsInner + '</div>'
+    : '';
+  var html = '<div class="flex flex-col gap-2 px-4 pt-4 ' + (actions ? '' : 'pb-3 border-b border-gray-700/50') + '">' +
       '<div class="flex flex-wrap items-center gap-1.5">' +
         (!prOnly && entry.priority != null && stage !== 'done' ? '<img src="' + priorityIconUrl(entry.priority) + '" alt="' + escapeHtml(priorityDisplayName(entry.priority)) + ' priority" width="16" height="16">' : '') +
         '<span class="text-sm font-bold text-accent tabular-nums">' + escapeHtml(ref) + '</span>' + _pill(board, stage) + statePill(entry) +
@@ -249,10 +257,7 @@ function _render() {
         '</span>' +
       '</div>' +
       '<h3 class="text-base font-semibold text-white leading-snug">' + escapeHtml(entry.title || (prOnly ? ref : 'Issue #' + number)) + '</h3>' +
-      actionStatusHtml(entryKey(entry)) +
-      (parts.buttons ? '<div class="flex flex-wrap items-center gap-0.5">' + parts.buttons + '</div>' : '') +
-      _moreActions(entry, parts, busy) +
-    '</div>' +
+    '</div>' + actions +
     '<div class="sova-side-panel-body sova-work-drawer-body flex flex-col gap-4 px-4 py-3">' +
       _section('Why it is here', '<p class="flex items-start gap-2 text-sm text-gray-300">' +
         '<span class="w-2 h-2 mt-1.5 rounded-full shrink-0" style="background:' + stateHex(col ? col.color : 'gray') + '"></span>' +

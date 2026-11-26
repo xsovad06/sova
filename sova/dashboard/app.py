@@ -40,7 +40,8 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
-from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
+from sova.config.registry import RegistryUnreadableError, get_project_path, has_projects, list_projects
+from sova.dashboard.navigation import NavLink, nav_links
 from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE, ApiRateLimiter, rate_limit_dependency, rate_limit_key
 from sova.dashboard.routers import (
     agents,
@@ -143,6 +144,11 @@ _RECOVERY_INTERVAL = 300  # 5 minutes
 _CONNECTIVITY_PROBE_INTERVAL = 30  # seconds
 _SWEEP_WRITE_RETRY_ATTEMPTS = 5
 _SWEEP_WRITE_RETRY_DELAY = 3.0
+# The phone shell's home-screen colours: the top bar's surface (Catppuccin base) and the page behind it (mantle). A
+# manifest cannot read the CSS custom properties, so these repeat --ctp-base and --ctp-mantle from style.css
+# (tests/test_dashboard_phone_shell.py checks they still match).
+_APP_THEME_COLOR = "#1e1e2e"
+_APP_BACKGROUND_COLOR = "#181825"
 
 # CDN hosts pinned (exact version + integrity hash) by invariants/cdn-integrity.sh.
 # 'unsafe-inline' is required because templates use inline <script> blocks (Jinja-
@@ -1117,7 +1123,28 @@ def create_app(
 
         return setup_service.get_github_user(_get_ctx_project_dir())
 
+    def _nav_links(prefix: str = "") -> list[NavLink]:
+        """Jinja global: the one navigation definition (sova/dashboard/navigation.py) resolved for this page.
+
+        The sidebar, the phone tab bar and the phone More sheet in base.html all render from it.
+        """
+        return nav_links(prefix, _awareness_nav_enabled())
+
+    def _single_project_name() -> str:
+        """Jinja global: the single project's name for the phone top bar (hub mode shows the slug's).
+
+        Distinct from the `project_name` a project page passes (`_project_page`), which also feeds the desktop sidebar
+        logo: setting that for a single project would change the desktop layout.
+        """
+        from sova.config.context import get_project_dir as _get_ctx_project_dir
+
+        project_dir = _get_ctx_project_dir()
+        return Path(project_dir).name if project_dir else "SOVA"
+
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+    templates.env.globals["single_project_name"] = _single_project_name
+    templates.env.globals["nav_links"] = _nav_links
+    templates.env.globals["app_theme_color"] = _APP_THEME_COLOR
     templates.env.globals["github_user"] = _footer_github_user
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
@@ -1262,6 +1289,17 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/p/{slug}/phone")
     async def project_phone(request: Request, slug: str) -> Response:
         return _with_csrf_cookie(request, _project_page(request, templates, slug, "phone.html", "phone"))
+
+    @app.get("/p/{slug}/manifest.webmanifest")
+    async def project_manifest(slug: str) -> JSONResponse:
+        try:
+            project_path = get_project_path(slug)
+        except RegistryUnreadableError:
+            # An unreadable registry must not cost the home-screen install its manifest: name it by the slug.
+            return _manifest_response(f"/p/{slug}", f"SOVA {slug}")
+        if project_path is None:
+            raise HTTPException(status_code=404, detail="Unknown project")
+        return _manifest_response(f"/p/{slug}", f"SOVA {project_path.name}")
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
@@ -1424,6 +1462,32 @@ def _project_page(
     return templates.TemplateResponse(request, template, ctx)
 
 
+def web_app_manifest(prefix: str, name: str) -> dict[str, object]:
+    """The web app manifest for a project at `prefix` ('' in single-project mode).
+
+    Added to the iOS or Android home screen, the dashboard opens on the phone Home page without browser chrome. The
+    scope is the whole site, so Add Project (`/setup`, outside any project prefix) stays inside the app window.
+    """
+    return {
+        "id": f"{prefix}/phone",
+        "name": name,
+        "short_name": "SOVA",
+        "start_url": f"{prefix}/phone",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": _APP_BACKGROUND_COLOR,
+        "theme_color": _APP_THEME_COLOR,
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        ],
+    }
+
+
+def _manifest_response(prefix: str, name: str) -> JSONResponse:
+    return JSONResponse(web_app_manifest(prefix, name), media_type="application/manifest+json")
+
+
 def _with_csrf_cookie(request: Request, response: Response) -> Response:
     """Issue a fresh double-submit CSRF cookie on a page that POSTs to a guarded endpoint.
 
@@ -1452,6 +1516,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/phone")
     async def phone_page(request: Request) -> Response:
         return _with_csrf_cookie(request, templates.TemplateResponse(request, "phone.html", {"page": "phone"}))
+
+    @app.get("/manifest.webmanifest")
+    async def manifest() -> JSONResponse:
+        return _manifest_response("", "SOVA")
 
     @app.get("/agents")
     async def agents_redirect() -> RedirectResponse:
