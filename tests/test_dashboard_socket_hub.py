@@ -81,13 +81,15 @@ const elements = {};
 function element(id) {
   if (!elements[id]) {
     const toggle = (_c, force) => { elements[id].hidden = !!force; };
-    elements[id] = { hidden: true, textContent: '', classList: { toggle } };
+    elements[id] = { hidden: true, textContent: '', classList: { toggle }, attributes: {},
+      setAttribute(name, value) { this.attributes[name] = value; } };
   }
   return elements[id];
 }
 // The sidebar elements are exposed only after load, so app.js does not start its sidebar subscription.
 const sidebarIds = new Set([
   'activity-dot', 'checkpoint-banner', 'handoff-unknown-banner', 'handoff-unreadable-banner',
+  'topbar-activity-dot', 'needs-you-chip', 'needs-you-count',
 ]);
 let exposeSidebar = false;
 const tab = { hidden: false };
@@ -318,6 +320,28 @@ const scenarios = {
       afterClear: dot().includes(' bg-accent ') && !dot().includes('bg-accent-yellow'),
       bannerHidden: element('checkpoint-banner').hidden,
     };
+  },
+
+  thePhoneTopBarRepeatsTheDotAndCountsWhatNeedsYou() {
+    exposeSidebar = true;
+    const top = () => element('topbar-activity-dot').className;
+    const chip = element('needs-you-chip');
+    ctx._applyActivity({ agents: [{ run_id: 1 }] });
+    const running = top().includes(' bg-accent ') || top().endsWith(' bg-accent animate-pulse');
+    ctx._applyHandoff({ handoffs: [{ status: 'awaiting_action' }, { status: 'awaiting_action' }, { status: 'done' }] });
+    const awaiting = { dot: top().includes('bg-accent-yellow'), chipShown: !chip.hidden,
+      count: element('needs-you-count').textContent };
+    const label = () => element('topbar-activity-dot').attributes['aria-label'];
+    const labels = { awaiting: label() };
+    ctx._setHandoffUnknown();
+    const unknownHidesChip = chip.hidden;
+    ctx._applyHandoff({ handoffs: [] });
+    labels.cleared = label();
+    ctx._applyActivity({ agents: [] });
+    labels.idle = label();
+    return { running, awaiting, labels, unknownHidesChip, clearedHidesChip: chip.hidden,
+      sameAsSidebar: top().split(' ').filter((c) => c.startsWith('bg-')).join() ===
+        element('activity-dot').className.split(' ').filter((c) => c.startsWith('bg-')).join() };
   },
 
   async aHandoffUnavailableMessageMarksTheStateUnknownWithoutRefetching() {
@@ -552,6 +576,18 @@ class TestSidebarDot:
             "checkpointHidden": True,
             "unreadableHidden": True,
             "unknownBannerShown": True,
+        }
+
+    def test_the_phone_top_bar_repeats_the_dot_and_counts_what_needs_you(self) -> None:
+        out = _run("thePhoneTopBarRepeatsTheDotAndCountsWhatNeedsYou")
+        assert out == {
+            "running": True,
+            "awaiting": {"dot": True, "chipShown": True, "count": "2"},
+            # The dot's accessible name follows the same state as its colour.
+            "labels": {"awaiting": "Waiting on you", "cleared": "Agents running", "idle": "No agents running"},
+            "unknownHidesChip": True,
+            "clearedHidesChip": True,
+            "sameAsSidebar": True,
         }
 
     def test_a_catch_up_answer_that_lands_after_a_newer_push_is_dropped(self) -> None:

@@ -1,61 +1,45 @@
-<!DOCTYPE html>
-<html lang="en" class="dark">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Phone - SOVA</title>
-  {% include "_head.html" %}
-</head>
-{#- Standalone, like home.html: base.html's fixed sidebar and p-8 padding break a 390 px layout. The page sets the
-    slug and API prefix itself, so apiUrl() scopes every call to this project in hub mode. -#}
-<body class="bg-surface text-gray-200 min-h-screen">
-  {% set prefix = prefix|default("") %}
-  <main class="max-w-md mx-auto px-4 py-4 flex flex-col gap-6 min-w-0">
-    <header class="flex items-center justify-between gap-3 min-w-0">
-      <h1 class="text-lg font-semibold text-gray-100 truncate">SOVA{% if project_slug %} / {{ project_slug }}{% endif %}</h1>
-      <a href="{{ prefix }}/work" class="text-sm text-accent shrink-0 sova-phone-tap inline-flex items-center">Work page</a>
-    </header>
+{% extends "base.html" %}
+{#- The phone Home page: the tab bar's Home tab, inside the shell like every other page. base.html sets the slug and
+    the API prefix, so apiUrl() scopes every call to this project in hub mode. -#}
+{% block title %}Home - SOVA{% endblock %}
+{% block content %}
+<div class="max-w-md mx-auto flex flex-col gap-6 min-w-0">
+  <h1 class="text-2xl font-semibold text-gray-100">Home</h1>
 
-    <!-- Handoffs and the supervisor's pending plan (static/js/pages/phone/waiting.js) -->
-    <section aria-labelledby="phone-waiting-title" class="min-w-0">
-      <h2 id="phone-waiting-title" class="text-sm font-semibold text-gray-300 mb-2">Waiting on you</h2>
-      <div id="phone-waiting" class="flex flex-col gap-3 min-w-0">
-        <p class="text-sm text-gray-500">Loading...</p>
+  <!-- Handoffs and the supervisor's pending plan (static/js/pages/phone/waiting.js) -->
+  <section aria-labelledby="phone-waiting-title" class="min-w-0">
+    <h2 id="phone-waiting-title" class="text-sm font-semibold text-gray-300 mb-2">Waiting on you</h2>
+    <div id="phone-waiting" class="flex flex-col gap-3 min-w-0">
+      <p class="text-sm text-gray-500">Loading...</p>
+    </div>
+  </section>
+
+  <!-- Active agents with Stop (static/js/pages/phone/running.js) -->
+  <section aria-labelledby="phone-running-title" class="min-w-0">
+    <h2 id="phone-running-title" class="text-sm font-semibold text-gray-300 mb-2">Running</h2>
+    <div id="phone-running" class="flex flex-col gap-3 min-w-0">
+      <p class="text-sm text-gray-500">Loading...</p>
+    </div>
+  </section>
+
+  <!-- One issue number, started with the server's default role (static/js/pages/phone/start.js) -->
+  <section aria-labelledby="phone-start-title" class="min-w-0">
+    <h2 id="phone-start-title" class="text-sm font-semibold text-gray-300 mb-2">Start a run</h2>
+    <form id="phone-start-form" class="flex flex-col gap-2 min-w-0" novalidate>
+      <label for="phone-start-issue" class="text-xs text-gray-500">Issue number</label>
+      <div class="flex gap-2 min-w-0">
+        <input id="phone-start-issue" type="text" inputmode="numeric" autocomplete="off" placeholder="42"
+               class="sova-input sova-phone-input min-w-0 flex-1">
+        <button type="submit" id="phone-start-btn" class="sova-btn sova-btn-primary sova-btn-md sova-phone-tap shrink-0">Start</button>
       </div>
-    </section>
-
-    <!-- Active agents with Stop (static/js/pages/phone/running.js) -->
-    <section aria-labelledby="phone-running-title" class="min-w-0">
-      <h2 id="phone-running-title" class="text-sm font-semibold text-gray-300 mb-2">Running</h2>
-      <div id="phone-running" class="flex flex-col gap-3 min-w-0">
-        <p class="text-sm text-gray-500">Loading...</p>
-      </div>
-    </section>
-
-    <!-- One issue number, started with the server's default role (static/js/pages/phone/start.js) -->
-    <section aria-labelledby="phone-start-title" class="min-w-0">
-      <h2 id="phone-start-title" class="text-sm font-semibold text-gray-300 mb-2">Start a run</h2>
-      <form id="phone-start-form" class="flex flex-col gap-2 min-w-0" novalidate>
-        <label for="phone-start-issue" class="text-xs text-gray-500">Issue number</label>
-        <div class="flex gap-2 min-w-0">
-          <input id="phone-start-issue" type="text" inputmode="numeric" autocomplete="off" placeholder="42"
-                 class="sova-input sova-phone-input min-w-0 flex-1">
-          <button type="submit" id="phone-start-btn" class="sova-btn sova-btn-primary sova-btn-md sova-phone-tap shrink-0">Start</button>
-        </div>
-        <div id="phone-start-status" class="min-w-0" role="status"></div>
-      </form>
-    </section>
-  </main>
-
-  <script>
-    window.SOVA_PROJECT_SLUG = {{ project_slug|default('')|tojson }};
-    window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api" : "/api";
-    window.SOVA_RUN_ACTIONS = {{ run_actions_json() }};
-  </script>
-  <script src="/static/app.js"></script>
-  <script type="module">
-    import { init } from '/static/js/pages/phone/page.js';
-    init();
-  </script>
-</body>
-</html>
+      <div id="phone-start-status" class="min-w-0" role="status"></div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script type="module">
+  import { init } from '/static/js/pages/phone/page.js';
+  init();
+</script>
+{% endblock %}

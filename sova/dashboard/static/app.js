@@ -1989,15 +1989,36 @@ function _setActivityDot(running) {
   _renderActivityDot();
 }
 
+// The phone shell's top bar repeats the sidebar dot (the sidebar is hidden under 768 px), named for a screen reader.
+function _renderTopbarDot(color, animate, label) {
+  var dot = document.getElementById('topbar-activity-dot');
+  if (!dot) return;
+  dot.className = 'sova-topbar-dot w-2 h-2 rounded-full shrink-0 ' + color + (animate ? ' animate-pulse' : '');
+  if (dot.setAttribute) dot.setAttribute('aria-label', label);
+}
+
 function _renderActivityDot() {
   var dot = document.getElementById('activity-dot');
   if (!dot) return;
   // A known activity state shows through an unknown handoff one (the banner says the handoff is unknown), so
   // gray means the activity source itself failed.
-  if (_handoffAwaiting === true) dot.className = _dotClass('bg-accent-yellow', true);
+  var state;
+  if (_handoffAwaiting === true) state = ['bg-accent-yellow', true, 'Waiting on you'];
   else if (_activityRunning === undefined) return;
-  else if (_activityRunning === null) dot.className = _dotClass('bg-gray-500', false);
-  else dot.className = _activityRunning ? _dotClass('bg-accent', true) : _dotClass('bg-accent-green', false);
+  else if (_activityRunning === null) state = ['bg-gray-500', false, 'Agent activity unknown'];
+  else state = _activityRunning ? ['bg-accent', true, 'Agents running'] : ['bg-accent-green', false, 'No agents running'];
+  dot.className = _dotClass(state[0], state[1]);
+  _renderTopbarDot(state[0], state[1], state[2]);
+}
+
+// The phone top bar's "needs you" chip: the number of handoffs awaiting action, hidden at zero and while the handoff
+// state is unknown (null).
+function _renderNeedsYou(count) {
+  var chip = document.getElementById('needs-you-chip');
+  if (!chip) return;
+  chip.hidden = !count;
+  var label = document.getElementById('needs-you-count');
+  if (label && count) label.textContent = String(count);
 }
 
 function _applyActivity(data) {
@@ -2039,6 +2060,7 @@ function _setHandoffUnknown() {
   if (unreadable) unreadable.classList.toggle('hidden', true);
   var unknown = document.getElementById('handoff-unknown-banner');
   if (unknown) unknown.classList.toggle('hidden', false);
+  _renderNeedsYou(null);
   _renderActivityDot();
 }
 
@@ -2075,6 +2097,7 @@ function _applyHandoff(data) {
 
   _handoffAwaiting = handoffs.length > 0;
   banner.classList.toggle('hidden', !_handoffAwaiting);
+  _renderNeedsYou(handoffs.length);
   _renderActivityDot();
 }
 

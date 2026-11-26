@@ -186,6 +186,65 @@
     </div>
   </nav>
 
+  <!-- Phone shell (under 768 px; docs/design-system.md, "Phone Shell"): the top bar, the tab bar and the More sheet,
+       rendered from the same navigation definition as the sidebar. The owl in the tab bar's centre is the feed's
+       owl button (#feed-fab below), placed there by the stylesheet. Wider screens hide all three. -->
+  {% set home_href = (nav | selectattr("id", "equalto", "phone") | first).href %}
+  {% set in_project = project_slug is defined and project_slug %}
+  <header id="phone-topbar" class="sova-topbar">
+    <a href="{{ home_href }}" class="sova-topbar-home" aria-label="Home">{{ owl_avatar("sm") }}</a>
+    {% if in_project %}
+    <a href="/" class="sova-topbar-project" aria-label="Switch project, current project {{ project_name }}">
+      <span class="truncate">{{ project_name }}</span>{{ icon("chevron-down", "w-3.5 h-3.5 shrink-0") }}
+    </a>
+    {% else %}
+    <span class="sova-topbar-project"><span class="truncate">{{ single_project_name() }}</span></span>
+    {% endif %}
+    <span id="topbar-activity-dot" class="sova-topbar-dot w-2 h-2 rounded-full bg-gray-500 shrink-0" role="img" aria-label="Agent activity unknown"></span>
+    <a id="needs-you-chip" href="{{ home_href }}" class="sova-needs-chip" hidden>
+      <span class="sova-needs-chip-pill"><span class="sova-needs-chip-dot" aria-hidden="true"></span><span id="needs-you-count">0</span>&nbsp;needs you</span>
+    </a>
+    <button type="button" id="phone-menu-btn" class="sova-topbar-menu" aria-label="More pages" aria-expanded="false" aria-controls="more-sheet">
+      {{ icon("menu", "w-6 h-6") }}
+    </button>
+  </header>
+
+  <nav id="phone-tabbar" class="sova-tabbar" aria-label="Main">
+    {% set tabs = nav | selectattr("tab") | list %}
+    {% for item in tabs %}
+    {% if loop.index0 == tabs | length // 2 %}<span class="sova-tabbar-gap" aria-hidden="true"></span>{% endif %}
+    <a href="{{ item.href }}" class="sova-tab"{% if page == item.id %} aria-current="page"{% endif %}>
+      {{ icon(item.icon, "sova-tab-icon") }}<span class="sova-tab-label">{{ item.label }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+
+  <!-- More sheet: a side panel (static/js/components/phone-shell.js) that rises from the bottom. Every page the tab
+       bar does not show, then the provider status and system resources (the sidebar's account row and the agents
+       widget, moved in here on a phone) and the project switch. -->
+  <aside id="more-sheet" class="sova-side-panel sova-more-sheet" aria-label="More pages" aria-hidden="true" inert>
+    <div class="sova-more-sheet-head">
+      <span class="sova-more-sheet-title">More</span>
+      <button type="button" data-panel-close class="sova-btn sova-btn-ghost sova-btn-icon" aria-label="Close the menu">{{ icon("close", "w-5 h-5") }}</button>
+    </div>
+    <div class="sova-side-panel-body sova-more-sheet-body">
+      <ul class="sova-more-grid">
+        {% for item in nav if not item.tab %}
+        <li><a href="{{ item.href }}" class="sova-more-link"{% if page == item.id %} aria-current="page"{% endif %}>{{ icon(item.icon, "sova-more-icon") }}<span class="truncate">{{ item.label }}</span></a></li>
+        {% endfor %}
+      </ul>
+      <div class="sova-more-status">
+        <div id="more-sheet-provider-slot"></div>
+        <div id="more-sheet-resources-slot"></div>
+        {% if in_project %}
+        <a href="/" class="sova-more-row">
+          {{ icon("arrows-right-left", "sova-more-icon") }}<span class="flex-1">Switch project</span><span class="sova-more-row-value truncate">{{ project_name }}</span>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </aside>
+
   <!-- Activity feed: a side panel (static/js/components/side-panel.js) opened by the owl button through
        static/js/feed/panel.js. The scrim dims the page while it is open; a click on it closes the panel. -->
   <div id="feed-scrim" class="feed-scrim" aria-hidden="true"></div>
@@ -351,6 +410,9 @@
       .then(function() { return import('/static/js/feed/activity.js'); })
       .then(function(m) { m.init(); })
       .catch(function(e) { console.error('feed activity failed to start', e); });
+    import('/static/js/components/phone-shell.js')
+      .then(function(m) { m.init(); })
+      .catch(function(e) { console.error('phone shell failed to start', e); });
   </script>
   {% block scripts %}{% endblock %}
 </body>

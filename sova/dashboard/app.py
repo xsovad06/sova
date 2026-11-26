@@ -40,7 +40,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
-from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
+from sova.config.registry import RegistryUnreadableError, get_project_path, has_projects, list_projects
 from sova.dashboard.navigation import NavLink, nav_links
 from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE, ApiRateLimiter, rate_limit_dependency, rate_limit_key
 from sova.dashboard.routers import (
@@ -138,16 +138,17 @@ _WORK_URL = "/work"
 # the backend query would silently return zero rows for (or hide one it does).
 _STATUS_OPTIONS = [(status, status.replace("_", " ").capitalize()) for status in sorted(_TERMINAL)]
 _SWEEP_INTERVAL = 5  # seconds
-# The phone shell's home-screen colours: the top bar's surface (Catppuccin base) and the page behind it (mantle). A
-# manifest cannot read the CSS custom properties, so these repeat --ctp-base and --ctp-mantle from style.css.
-_APP_THEME_COLOR = "#1e1e2e"
-_APP_BACKGROUND_COLOR = "#181825"
 _RECOVERY_INTERVAL = 300  # 5 minutes
 # Probe cadence. With the tracker's decisive-probe rule this is also the
 # worst-case time for an outage to reach the operator's banner.
 _CONNECTIVITY_PROBE_INTERVAL = 30  # seconds
 _SWEEP_WRITE_RETRY_ATTEMPTS = 5
 _SWEEP_WRITE_RETRY_DELAY = 3.0
+# The phone shell's home-screen colours: the top bar's surface (Catppuccin base) and the page behind it (mantle). A
+# manifest cannot read the CSS custom properties, so these repeat --ctp-base and --ctp-mantle from style.css
+# (tests/test_dashboard_phone_shell.py checks they still match).
+_APP_THEME_COLOR = "#1e1e2e"
+_APP_BACKGROUND_COLOR = "#181825"
 
 # CDN hosts pinned (exact version + integrity hash) by invariants/cdn-integrity.sh.
 # 'unsafe-inline' is required because templates use inline <script> blocks (Jinja-
@@ -1129,7 +1130,19 @@ def create_app(
         """
         return nav_links(prefix, _awareness_nav_enabled())
 
+    def _single_project_name() -> str:
+        """Jinja global: the single project's name for the phone top bar (hub mode shows the slug's).
+
+        Distinct from the `project_name` a project page passes (`_project_page`), which also feeds the desktop sidebar
+        logo: setting that for a single project would change the desktop layout.
+        """
+        from sova.config.context import get_project_dir as _get_ctx_project_dir
+
+        project_dir = _get_ctx_project_dir()
+        return Path(project_dir).name if project_dir else "SOVA"
+
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+    templates.env.globals["single_project_name"] = _single_project_name
     templates.env.globals["nav_links"] = _nav_links
     templates.env.globals["app_theme_color"] = _APP_THEME_COLOR
     templates.env.globals["github_user"] = _footer_github_user
@@ -1279,10 +1292,14 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/manifest.webmanifest")
     async def project_manifest(slug: str) -> JSONResponse:
-        from sova.config.registry import get_project_path
-
-        project_path = get_project_path(slug)
-        return _manifest_response(f"/p/{slug}", f"SOVA {project_path.name if project_path else slug}")
+        try:
+            project_path = get_project_path(slug)
+        except RegistryUnreadableError:
+            # An unreadable registry must not cost the home-screen install its manifest: name it by the slug.
+            return _manifest_response(f"/p/{slug}", f"SOVA {slug}")
+        if project_path is None:
+            raise HTTPException(status_code=404, detail="Unknown project")
+        return _manifest_response(f"/p/{slug}", f"SOVA {project_path.name}")
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:

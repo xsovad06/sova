@@ -174,18 +174,19 @@ class TestDashboardHealth:
         assert resp.status_code == 200
         assert resp.json()["checks"]["scheduler"] == "ok"
 
-    async def test_phone_page_is_standalone_and_unscoped(self, client: AsyncClient) -> None:
-        """/phone has no sidebar and leaves the API prefix to its unscoped default (the single project)."""
+    async def test_phone_page_is_the_home_tab_inside_the_shell(self, client: AsyncClient) -> None:
+        """/phone renders inside base.html as the Home tab and leaves the API prefix to its unscoped default."""
         resp = await client.get("/phone")
         assert resp.status_code == 200
         assert 'window.SOVA_PROJECT_SLUG = "";' in resp.text
         assert 'id="phone-waiting"' in resp.text
         assert 'id="phone-running"' in resp.text
         assert 'id="phone-start-form"' in resp.text
-        assert 'class="sidebar' not in resp.text
-        assert 'href="/work"' in resp.text
+        assert 'id="phone-tabbar"' in resp.text
+        assert re.search(r'<a href="/phone" class="sova-tab" aria-current="page">', resp.text)
         assert "window.SOVA_RUN_ACTIONS = {" in resp.text
-        assert re.search(r"<h1[^>]*>\s*SOVA\s*</h1>", resp.text)
+        assert "import { init } from '/static/js/pages/phone/page.js';" in resp.text
+        assert re.search(r"<h1[^>]*>\s*Home\s*</h1>", resp.text)
         assert "sova_csrf=" in resp.headers["set-cookie"]
 
     @pytest.mark.parametrize(
@@ -537,6 +538,57 @@ class TestNavigationDefinition:
         ]
         assert _sidebar_hrefs((await client.get("/work")).text) == expected
 
+    async def test_briefing_shows_in_the_sidebar_and_the_more_sheet_with_awareness_on(
+        self, client: AsyncClient
+    ) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.navigation import NAV_PAGES
+
+        with patch("sova.dashboard.services.awareness_service.is_awareness_enabled", return_value=True):
+            html = (await client.get("/work")).text
+        more = [p.path for p in NAV_PAGES if p.sidebar == "more"]
+        sidebar = _sidebar_hrefs(html)
+        assert "/briefing" in sidebar
+        assert sidebar.index("/briefing") < sidebar.index("/queue"), (
+            "in the definition's order, first of the More group"
+        )
+        assert "/briefing" in more
+        sheet = html[html.index('<aside id="more-sheet"') :]
+        assert 'href="/briefing" class="sova-more-link"' in sheet.split("</aside>", 1)[0]
+
+    async def test_every_sidebar_link_is_reachable_from_the_phone_shell(self, client: AsyncClient) -> None:
+        html = (await client.get("/work")).text
+        shell = html[html.index('<header id="phone-topbar"') : html.index('<div id="feed-scrim"')]
+        for href in _sidebar_hrefs(html):
+            assert f'href="{href}"' in shell, f"{href} is in the sidebar but not in the phone shell"
+
+    async def test_the_root_pages_the_logo_links_to_land_on_a_tab(self, client: AsyncClient) -> None:
+        from sova.dashboard.navigation import NAV_PAGES
+
+        # The sidebar logo links to the root, which a phone cannot tap: the root only redirects to the Work page, a tab.
+        resp = await client.get("/", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/work"
+        assert any(p.tab and p.path == "/work" for p in NAV_PAGES)
+
+
+class TestPhoneTopBarProject:
+    @pytest.mark.parametrize("path", ["/phone", "/work"])
+    async def test_a_single_project_shows_its_name_in_the_top_bar(
+        self, client: AsyncClient, tmp_path: Path, path: str
+    ) -> None:
+        from unittest.mock import patch
+
+        project = tmp_path / "my-project"
+        project.mkdir()
+        with patch("sova.config.context.get_project_dir", return_value=project):
+            html = (await client.get(path)).text
+        top = html[html.index('<header id="phone-topbar"') : html.index("</header>")]
+        assert '<span class="sova-topbar-project"><span class="truncate">my-project</span></span>' in top
+        # The sidebar logo keeps its single-project wording: the desktop layout is unchanged.
+        assert "Dashboard</p>" in html
+
 
 class TestHomeScreen:
     async def test_the_manifest_opens_the_home_page_standalone(self, client: AsyncClient) -> None:
@@ -554,6 +606,8 @@ class TestHomeScreen:
     async def test_a_page_links_the_manifest_and_the_apple_web_app_tags(self, client: AsyncClient) -> None:
         html = (await client.get("/work")).text
         assert '<link rel="manifest" href="/manifest.webmanifest">' in html
+        assert len(re.findall(r'rel="manifest"', html)) == 1, "a second manifest link would win in tree order"
+        assert "site.webmanifest" not in html
         assert "viewport-fit=cover" in html
         assert "user-scalable=no" not in html and "maximum-scale" not in html, "pinch zoom stays on"
         assert '<meta name="theme-color" content="#1e1e2e">' in html
@@ -905,6 +959,28 @@ class TestMultiProject:
         assert manifest["name"] == "SOVA project-alpha"
         html = (await multi_client.get("/p/alpha/work")).text
         assert '<link rel="manifest" href="/p/alpha/manifest.webmanifest">' in html
+
+    async def test_a_project_root_lands_on_its_work_tab(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/p/alpha/work"
+
+    async def test_an_unknown_project_has_no_manifest(self, multi_client: AsyncClient) -> None:
+        assert (await multi_client.get("/p/nope/manifest.webmanifest")).status_code == 404
+
+    async def test_an_unreadable_registry_still_serves_a_manifest_named_by_the_slug(
+        self, multi_client: AsyncClient
+    ) -> None:
+        from unittest.mock import patch
+
+        from sova.config.registry import RegistryUnreadableError
+
+        with patch(
+            "sova.dashboard.app.get_project_path", side_effect=RegistryUnreadableError(Path("/x/projects.json"))
+        ):
+            resp = await multi_client.get("/p/alpha/manifest.webmanifest")
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "SOVA alpha"
 
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")
