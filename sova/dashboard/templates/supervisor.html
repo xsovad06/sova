@@ -1885,7 +1885,6 @@ setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadPlannerHealth
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
-  if (_supervisorWs) { _supervisorWs.onclose = null; _supervisorWs.close(); _supervisorWs = null; }
 });
 </script>
 {% endblock %}
