@@ -80,9 +80,14 @@ class AgentWatchdog:
         project_dir: Path,
         *,
         memory_guard: MemoryGuardConfig | None = None,
+        slug: str | None = None,
     ) -> None:
         self._config = config
         self._project_dir = project_dir
+        # The hub's agent pool for this project. A background task has no request context, so without it
+        # stop_agent() would look in the default pool and never find a hub project's run. None on a single-project
+        # server, whose agents live in that default pool.
+        self._slug = slug
         self._memory_guard = memory_guard if memory_guard is not None else MemoryGuardConfig()
         self._cooldowns: dict[tuple[int, str], float] = {}
         # (run_id, step_name) -> monotonic time when that step was first seen
@@ -474,6 +479,6 @@ class AgentWatchdog:
             detail=finding.detail,
         )
         try:
-            await stop_agent(run_id=finding.run_id, cause=finding.signal.value, requester="watchdog")
+            await stop_agent(self._slug, run_id=finding.run_id, cause=finding.signal.value, requester="watchdog")
         except Exception:  # noqa: BLE001 (kill is best-effort; the finding is recorded regardless)
             log.warning("watchdog.kill_failed", run_id=finding.run_id, exc_info=True)

@@ -58,9 +58,9 @@ def _make_run(
     return run
 
 
-def _make_watchdog(**config_overrides: object) -> AgentWatchdog:
+def _make_watchdog(slug: str | None = None, **config_overrides: object) -> AgentWatchdog:
     cfg = _make_config(**config_overrides)
-    return AgentWatchdog(config=cfg, project_dir=Path("/fake"))
+    return AgentWatchdog(config=cfg, project_dir=Path("/fake"), slug=slug)
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +323,15 @@ class TestExecuteFinding:
             await wd._execute_finding(finding)
             mock_stop.assert_not_called()  # should skip because status is terminal
 
+    # None is a single-project server's default pool; a hub watchdog names its project's pool, since a
+    # background task has no request context to find it from.
+    @pytest.mark.parametrize("slug", [None, "proj-a"])
     @patch("sova.supervisor.watchdog.emit_safe")
     @patch("sova.supervisor.watchdog.get_session")
-    async def test_kill_calls_stop_agent(self, mock_get_session: AsyncMock, _mock_emit: MagicMock) -> None:
-        wd = _make_watchdog()
+    async def test_kill_calls_stop_agent(
+        self, mock_get_session: AsyncMock, _mock_emit: MagicMock, slug: str | None
+    ) -> None:
+        wd = _make_watchdog(slug=slug)
         finding = WatchdogFinding(
             run_id=1,
             issue_number="42",
@@ -346,7 +351,11 @@ class TestExecuteFinding:
 
         with patch("sova.dashboard.services.agent_lifecycle.stop_agent", new_callable=AsyncMock) as mock_stop:
             await wd._execute_finding(finding)
-            mock_stop.assert_called_once_with(run_id=1, cause="pipeline_not_adopted", requester="watchdog")
+            mock_stop.assert_called_once_with(slug, run_id=1, cause="pipeline_not_adopted", requester="watchdog")
+        # The status re-query is scoped to the watchdog's own project directory in both modes (the single-project
+        # server's directory when slug is None), never to whatever the ambient default resolves to.
+        assert mock_get_session.call_args_list
+        assert all(call.kwargs == {"project_dir": wd._project_dir} for call in mock_get_session.call_args_list)
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +415,62 @@ class TestScanOnce:
         findings = await wd._scan_once()
         assert len(findings) == 1
         assert findings[0].signal == AnomalySignal.NO_OUTPUT_WARN
+
+    @patch("sova.supervisor.watchdog.emit_safe")
+    @patch("sova.supervisor.watchdog.is_process_alive", return_value=True)
+    @patch("sova.supervisor.watchdog.get_session")
+    async def test_hub_watchdog_tick_reads_and_stops_in_its_own_project(
+        self, mock_get_session: AsyncMock, _mock_alive: MagicMock, _mock_emit: MagicMock
+    ) -> None:
+        """A hub watchdog has no request context: every session it opens names its project_dir, and the memory
+        guard's newest run is stopped in that project's agent pool, never the default or start-directory one."""
+        from sova.config.models import MemoryGuardConfig
+
+        project_dir = Path("/projects/proj-a")
+        wd = AgentWatchdog(
+            config=_make_config(),
+            project_dir=project_dir,
+            memory_guard=MemoryGuardConfig(enabled=True, block_threshold_gb=1.5, runtime_action="stop_newest"),
+            slug="proj-a",
+        )
+        now = datetime.now(timezone.utc)
+        older = _make_run(run_id=1, started_at=now - timedelta(minutes=2))
+        newer = _make_run(run_id=2, started_at=now - timedelta(minutes=1))
+
+        statuses_requeried: list[str] = []
+
+        async def _execute(stmt: object) -> MagicMock:
+            # One distinct answer per query: the run scan, the output-timestamp scan, the status re-query.
+            sql = str(stmt)
+            result = MagicMock()
+            if "max(" in sql.lower():
+                result.all.return_value = [(1, now), (2, now)]  # recent output keeps the no-output checks quiet
+            elif sql.lstrip().upper().startswith("SELECT TASK_RUNS.STATUS"):
+                statuses_requeried.append(sql)
+                result.first.return_value = ("running",)
+            else:
+                result.scalars.return_value.all.return_value = [older, newer]
+            return result
+
+        mock_session = AsyncMock()
+        mock_session.execute = _execute
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_get_session.return_value = mock_session
+
+        with (
+            patch("sova.supervisor.watchdog.psutil") as mock_psutil,
+            patch("sova.dashboard.services.agent_lifecycle.stop_agent", new_callable=AsyncMock) as mock_stop,
+        ):
+            mock_psutil.virtual_memory.return_value = _mock_virtual_memory(0.5)
+            findings = await wd._scan_once()
+
+        assert [f.signal for f in findings] == [AnomalySignal.MEMORY_PRESSURE]
+        # Every session the scan and the kill's status re-query open names this project's database.
+        assert mock_get_session.call_count >= 1
+        assert len(statuses_requeried) == 1
+        assert all(call.kwargs == {"project_dir": project_dir} for call in mock_get_session.call_args_list)
+        mock_stop.assert_awaited_once_with("proj-a", run_id=2, cause="memory_pressure", requester="watchdog")
 
 
 # ---------------------------------------------------------------------------
