@@ -2057,6 +2057,44 @@ class TestCommitConfigTypeScopeValidation:
             CommitConfig(types=["feat"], scopes=["Web"])
 
 
+class TestProjectRegistryDatabaseIsolation:
+    """SOVA_DATABASE_URL beats each project's own database, so it allows only one registered project."""
+
+    def test_refuses_a_second_project_while_database_url_is_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.config import registry
+
+        monkeypatch.setenv("SOVA_DATABASE_URL", "postgresql://db.example/sova")
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+
+        assert registry.register_project(first) == "first"
+        with pytest.raises(registry.SharedDatabaseError, match="SOVA_DATABASE_URL is set and more than one project"):
+            registry.register_project(second)
+
+        assert list(registry.list_projects()) == ["first"]
+        assert registry.register_project(first) == "first"  # re-registering stays a no-op
+
+    @pytest.mark.parametrize("database_url", [None, ""], ids=["unset", "empty"])
+    def test_allows_several_projects_without_a_database_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_url: str | None
+    ) -> None:
+        from sova.config import registry
+
+        if database_url is None:
+            monkeypatch.delenv("SOVA_DATABASE_URL", raising=False)
+        else:
+            monkeypatch.setenv("SOVA_DATABASE_URL", database_url)
+        for name in ("first", "second"):
+            (tmp_path / name).mkdir()
+            registry.register_project(tmp_path / name)
+
+        registry.check_database_isolation()
+        assert sorted(registry.list_projects()) == ["first", "second"]
+
+
 class TestProjectRegistryUnreadable:
     """A registry that exists but cannot be read is never replaced by a rewrite."""
 

@@ -6,6 +6,7 @@ Stores registered projects in ~/.config/sova/projects.json.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -27,6 +28,36 @@ class RegistryUnreadableError(RuntimeError):
     def __init__(self, path: Path) -> None:
         super().__init__(f"Project registry {path} is unreadable or malformed; fix or remove it, then retry")
         self.path = path
+
+
+# One text for every refusal (hub startup, register_project(), the dashboard's 409), so each says the same thing.
+SHARED_DATABASE_MESSAGE = (
+    "SOVA_DATABASE_URL is set and more than one project is registered, so every project would share one "
+    "database. Unset SOVA_DATABASE_URL for the hub, or run one single-project server per project, each with "
+    "its own SOVA_DATABASE_URL (sova server start --project <dir>)."
+)
+
+
+class SharedDatabaseError(RuntimeError):
+    """``SOVA_DATABASE_URL`` is set while more than one project is (or would be) registered.
+
+    The variable takes precedence over each project's own ``.claude/sova.db`` (``_get_database_url()``), so every
+    project would read and write one shared database. Raised by ``check_database_isolation()`` for the hub's
+    startup and for ``register_project()``, so both refuse with the same message.
+    """
+
+
+def check_database_isolation(project_count: int | None = None) -> None:
+    """Refuse a registry of more than one project while ``SOVA_DATABASE_URL`` is set.
+
+    ``project_count`` defaults to the number registered now; ``register_project()`` passes the count after the
+    registration it is about to make. An empty variable counts as unset, as ``_get_database_url()`` reads it.
+    """
+    if not os.environ.get("SOVA_DATABASE_URL"):
+        return
+    count = project_count if project_count is not None else len(_load())
+    if count > 1:
+        raise SharedDatabaseError(SHARED_DATABASE_MESSAGE)
 
 
 @dataclass
@@ -83,6 +114,15 @@ def _load_entries() -> dict[str, ProjectEntry]:
     return result
 
 
+def registry_readable() -> bool:
+    """True when the registry file is absent or holds a JSON object; False when it exists but cannot be read.
+
+    ``list_projects()`` reads an unreadable file as empty, which is right for a lookup but cannot tell "no project
+    registered" from "the registry is corrupt". The hub's ``/api/health`` asks this to report the second case.
+    """
+    return not _REGISTRY_FILE.exists() or isinstance(read_json_or_none(_REGISTRY_FILE), dict)
+
+
 def _load_entries_for_update() -> dict[str, ProjectEntry]:
     """Load entries ahead of a rewrite, refusing to replace a registry that exists but cannot be read.
 
@@ -90,7 +130,7 @@ def _load_entries_for_update() -> dict[str, ProjectEntry]:
     empty, which is right for a lookup but would make the following save drop every existing
     registration.
     """
-    if _REGISTRY_FILE.exists() and not isinstance(read_json_or_none(_REGISTRY_FILE), dict):
+    if not registry_readable():
         raise RegistryUnreadableError(_REGISTRY_FILE)
     return _load_entries()
 
@@ -139,7 +179,9 @@ def register_project(path: Path, slug: str | None = None) -> str:
 
     If slug is None, auto-generates from directory name. A slug already taken by a different
     path gets a numeric suffix. Raises InvalidSlugError for a slug with no safe character, and
-    ValueError for a path that is not a directory.
+    ValueError for a path that is not a directory. Raises ``SharedDatabaseError`` when the new entry
+    would make a second project while ``SOVA_DATABASE_URL`` is set; re-registering an already-registered
+    path stays a no-op.
     """
     path = _validate_project_path(path)
 
@@ -159,6 +201,7 @@ def register_project(path: Path, slug: str | None = None) -> str:
                 n += 1
             slug = f"{base}-{n}"
 
+        check_database_isolation(len(entries) + 1)
         entries[slug] = ProjectEntry(path=str(path))
         _save_entries(entries)
         return slug
