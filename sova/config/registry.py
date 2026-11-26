@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,12 @@ class ProjectEntry:
 
     path: str
     fleet_priority: int = 0
+
+
+# Held across a whole load-modify-save sequence, so two registrations (the dashboard runs one in a
+# worker thread) cannot each load the same file and have the later save drop the other's entry.
+# Never taken inside _load_entries() or _save_entries(), so it is never acquired twice in one thread.
+_REGISTRY_WRITE_LOCK = threading.Lock()
 
 
 def _load_raw() -> dict[str, str | dict]:
@@ -99,11 +106,15 @@ def _save_entries(entries: dict[str, ProjectEntry]) -> None:
     write_text_atomic(_REGISTRY_FILE, json.dumps(data, indent=2) + "\n")
 
 
+class InvalidSlugError(ValueError):
+    """A requested project slug holds no safe character, so no slug can be derived from it."""
+
+
 def _validate_slug(slug: str) -> str:
     """Validate a slug contains only safe characters (alphanumeric, hyphens)."""
     sanitized = re.sub(r"[^a-z0-9-]", "", slug.lower())
     if not sanitized:
-        raise ValueError(f"Invalid slug: {slug!r}")
+        raise InvalidSlugError(f"Invalid slug: {slug!r}")
     return sanitized
 
 
@@ -126,39 +137,42 @@ def _validate_project_path(path: Path) -> Path:
 def register_project(path: Path, slug: str | None = None) -> str:
     """Register a project. Returns the slug used.
 
-    If slug is None, auto-generates from directory name.
-    Raises ValueError if slug is already taken by a different path.
+    If slug is None, auto-generates from directory name. A slug already taken by a different
+    path gets a numeric suffix. Raises InvalidSlugError for a slug with no safe character, and
+    ValueError for a path that is not a directory.
     """
     path = _validate_project_path(path)
 
-    entries = _load_entries_for_update()
-    slug = slug or _slugify(path.name)
-    slug = _validate_slug(slug)
+    with _REGISTRY_WRITE_LOCK:
+        entries = _load_entries_for_update()
+        slug = slug or _slugify(path.name)
+        slug = _validate_slug(slug)
 
-    if slug in entries:
-        # path was validated at registration time
-        existing = Path(entries[slug].path).resolve()  # NOSONAR
-        if existing == path:
-            return slug  # preserve existing entry (fleet_priority, etc.)
-        base = slug
-        n = 2
-        while f"{base}-{n}" in entries:
-            n += 1
-        slug = f"{base}-{n}"
+        if slug in entries:
+            # path was validated at registration time
+            existing = Path(entries[slug].path).resolve()  # NOSONAR
+            if existing == path:
+                return slug  # preserve existing entry (fleet_priority, etc.)
+            base = slug
+            n = 2
+            while f"{base}-{n}" in entries:
+                n += 1
+            slug = f"{base}-{n}"
 
-    entries[slug] = ProjectEntry(path=str(path))
-    _save_entries(entries)
-    return slug
+        entries[slug] = ProjectEntry(path=str(path))
+        _save_entries(entries)
+        return slug
 
 
 def unregister_project(slug: str) -> bool:
     """Remove a project from the registry. Returns True if it existed."""
-    entries = _load_entries_for_update()
-    if slug not in entries:
-        return False
-    del entries[slug]
-    _save_entries(entries)
-    return True
+    with _REGISTRY_WRITE_LOCK:
+        entries = _load_entries_for_update()
+        if slug not in entries:
+            return False
+        del entries[slug]
+        _save_entries(entries)
+        return True
 
 
 def list_projects() -> dict[str, str]:
@@ -203,9 +217,10 @@ def get_project_entries() -> dict[str, ProjectEntry]:
 
 def update_fleet_priority(slug: str, priority: int) -> bool:
     """Update fleet_priority for a project. Returns True if found."""
-    entries = _load_entries_for_update()
-    if slug not in entries:
-        return False
-    entries[slug].fleet_priority = priority
-    _save_entries(entries)
-    return True
+    with _REGISTRY_WRITE_LOCK:
+        entries = _load_entries_for_update()
+        if slug not in entries:
+            return False
+        entries[slug].fleet_priority = priority
+        _save_entries(entries)
+        return True
