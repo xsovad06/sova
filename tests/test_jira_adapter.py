@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -22,6 +22,16 @@ from sova.adapters.jira import (
 )
 from sova.adapters.priority import Priority
 from sova.roles.triage import compute_quality_score
+
+
+def _adapter_with_forge(forge: object) -> JiraAdapter:
+    return JiraAdapter(
+        base_url="https://test.atlassian.net",
+        email="test@example.com",
+        api_token="test-token",
+        project_key="TEST",
+        pr_forge=forge,  # type: ignore[arg-type]
+    )
 
 
 def _adapter(
@@ -1110,6 +1120,30 @@ class TestLabels:
         body = route.calls[0].request.content
         assert b"remove" in body
 
+    @respx.mock
+    async def test_add_label_failure_raises_with_jira_message(self) -> None:
+        # An expired token reads as anonymous and fails every write with a bare 400: Jira's own message is
+        # what explains it, and a swallowed failure let the reviewer log its verdict label as written.
+        adapter = _adapter()
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(400, text='{"errorMessages":["Field labels cannot be set"]}'),
+        )
+        with pytest.raises(RuntimeError, match=r"sova:revise.*HTTP 400.*cannot be set"):
+            await adapter.add_label("1", "sova:revise")
+
+    @respx.mock
+    async def test_remove_label_failure_logs_jira_message_without_raising(self) -> None:
+        adapter = _adapter()
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(400, text="label update rejected"),
+        )
+        with capture_logs() as logs:
+            await adapter.remove_label("1", "sova:approved")
+
+        [event] = [e for e in logs if e["event"] == "remove_label.failed"]
+        assert event["status"] == 400
+        assert event["detail"] == "label update rejected"
+
 
 class TestAssignToUser:
     @respx.mock
@@ -1196,13 +1230,28 @@ class TestAssignToUser:
 
 class TestAddReviewer:
     @respx.mock
-    async def test_add_reviewer_is_noop_for_jira(self) -> None:
-        adapter = _adapter()
-        with capture_logs() as logs:
-            await adapter.add_reviewer("1", 42, "jdoe")
-
-        assert [e["event"] for e in logs] == ["add_reviewer.no_op_for_jira"]
+    async def test_add_reviewer_without_forge_raises(self) -> None:
+        # A request that returned normally without a forge read as delivered.
+        with pytest.raises(RuntimeError, match="Cannot request a reviewer on PR #42"):
+            await _adapter().add_reviewer("1", 42, "jdoe")
         assert respx.calls.call_count == 0
+
+    async def test_add_reviewer_sends_the_pr_number_and_never_the_jira_key_to_github(self) -> None:
+        """The Jira key reaches the GitHub forge only as a log field: gh is called for the PR alone."""
+        from sova.adapters.github import GitHubAdapter
+        from sova.utils.shell import ShellResult
+
+        forge = GitHubAdapter(repo="owner/repo", github_user="me")
+        with patch.object(forge, "_gh", AsyncMock(return_value=ShellResult(0, "", ""))) as gh:
+            await _adapter_with_forge(forge).add_reviewer("TEST-123", 42, "jdoe")
+
+        gh.assert_awaited_once_with("pr", "edit", "42", "--repo", "owner/repo", "--add-reviewer", "jdoe")
+
+    async def test_add_reviewer_delegates_to_forge(self) -> None:
+        forge = AsyncMock()
+        await _adapter_with_forge(forge).add_reviewer("1", 42, "jdoe")
+
+        forge.add_reviewer.assert_awaited_once_with("1", 42, "jdoe")
 
 
 class TestPostComment:
@@ -1218,23 +1267,48 @@ class TestPostComment:
         assert b"SOVA analysis complete" in body
 
 
-class TestPrNoOps:
-    @respx.mock
-    async def test_post_pr_comment_is_noop(self) -> None:
-        adapter = _adapter()
-        with capture_logs() as logs:
-            await adapter.post_pr_comment(42, "review")
+class TestPrOperations:
+    """Jira tracks the issue, but the PR lives on GitHub: PR writes go to the GitHub forge.
 
-        assert [e["event"] for e in logs] == ["post_pr_comment.no_op_for_jira"]
+    A review that returned normally without reaching GitHub read as posted, so a write with no forge raises.
+    """
+
+    async def test_post_pr_review_delegates_to_forge(self) -> None:
+        forge = AsyncMock()
+        comments = [{"path": "a.py", "line": 3, "body": "x"}]
+        await _adapter_with_forge(forge).post_pr_review(42, "body", "COMMENT", comments, fallback_body="full")
+
+        forge._do_post_pr_review.assert_awaited_once_with(42, "body", "COMMENT", comments, fallback_body="full")
+
+    async def test_post_pr_comment_delegates_to_forge(self) -> None:
+        forge = AsyncMock()
+        await _adapter_with_forge(forge).post_pr_comment(42, "review")
+
+        forge._do_post_pr_comment.assert_awaited_once_with(42, "review")
+
+    async def test_get_pr_reviews_delegates_to_forge(self) -> None:
+        forge = AsyncMock()
+        forge.get_pr_reviews.return_value = ["review"]
+
+        assert await _adapter_with_forge(forge).get_pr_reviews(42) == ["review"]
+
+    @respx.mock
+    async def test_post_pr_review_without_forge_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="Cannot post a review on PR #42"):
+            await _adapter().post_pr_review(42, "body", "APPROVE", [])
         assert respx.calls.call_count == 0
 
     @respx.mock
-    async def test_post_pr_review_is_noop(self) -> None:
-        adapter = _adapter()
-        with capture_logs() as logs:
-            await adapter.post_pr_review(42, "body", "APPROVE", [])
+    async def test_post_pr_comment_without_forge_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="Cannot comment on PR #42"):
+            await _adapter().post_pr_comment(42, "review")
+        assert respx.calls.call_count == 0
 
-        assert [e["event"] for e in logs] == ["post_pr_review.no_op_for_jira"]
+    @respx.mock
+    async def test_get_pr_reviews_without_forge_raises(self) -> None:
+        # An empty list read as "no prior reviews", so a re-review was taken for a first one.
+        with pytest.raises(RuntimeError, match="Cannot read reviews on PR #42"):
+            await _adapter().get_pr_reviews(42)
         assert respx.calls.call_count == 0
 
 
@@ -1602,13 +1676,6 @@ class TestTriggerTransitionEdgeCases:
 
         assert result is False
         assert [e["event"] for e in logs if e["log_level"] == "warning"] == ["transition.post_failed"]
-
-
-class TestGetPrReviews:
-    async def test_returns_empty_list(self) -> None:
-        adapter = _adapter()
-        result = await adapter.get_pr_reviews(42)
-        assert result == []
 
 
 class TestCreateIssue:

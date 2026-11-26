@@ -1823,6 +1823,45 @@ class TestAdapterFactory:
         assert isinstance(adapter, JiraAdapter)
         assert adapter.project_key == "TEST"
 
+    @pytest.mark.parametrize(
+        ("github_repo", "has_forge"),
+        [
+            ("project-kessel/insights-rbac", True),
+            ("https://gitlab.cee.redhat.com/service/app-interface", False),
+            ("", False),
+            ("owner/repo\n", False),  # a trailing newline once passed the $-anchored match
+            ("owner/r\u00e9po", False),  # \w is ASCII only: gh rejects a non-ASCII name anyway
+        ],
+    )
+    def test_create_jira_adapter_builds_github_pr_forge(self, github_repo: str, has_forge: bool) -> None:
+        # Jira tracks the issue, GitHub holds the PR: the reviewer's review must reach the PR's repository.
+        from sova.adapters import create_adapter
+        from sova.adapters.github import GitHubAdapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(
+            github_repo=github_repo,
+            github_user="someone",
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_base_url="https://test.atlassian.net",
+                jira_email="test@example.com",
+                jira_api_token="token",
+                jira_project_key="TEST",
+            ),
+        )
+        forge = create_adapter(config)._pr_forge
+        if has_forge:
+            assert isinstance(forge, GitHubAdapter)
+            assert (forge.repo, forge.github_user) == (github_repo, "someone")
+            # Built on the GitHub project's construction path, so the settings the two pass cannot drift.
+            sentinel = object()
+            with patch("sova.adapters._github_adapter", return_value=sentinel) as build:
+                assert create_adapter(config)._pr_forge is sentinel
+            build.assert_called_once_with(config)
+        else:
+            assert forge is None
+
     def test_create_jira_adapter_missing_config_raises(self) -> None:
         from sova.adapters import create_adapter
         from sova.config.models import ProjectConfig, TaskSourceConfig

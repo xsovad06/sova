@@ -49,7 +49,7 @@ from sova.ipc.handoff import (
     write_handoff_file,
 )
 from sova.llm.client import invoke, resolve_bare_tier_for_provider, resolve_model, runs_as_role
-from sova.llm.errors import was_content_filtered
+from sova.llm.errors import ConfigurationError, was_content_filtered
 from sova.llm.guard import PromptInjectionError
 from sova.llm.models import CostSource, accumulate_llm_result
 
@@ -296,6 +296,11 @@ class ReviewerRole(AgentRole):
                 result=accumulator,
                 rereview=rereview,
             )
+        except ConfigurationError as exc:
+            await self._record_review_costs(ctx, accumulator)
+            error = f"Review of PR #{ctx.pr_number} could not run: {exc}"
+            log.error("reviewer.configuration_error", issue=ctx.issue_number, pr=ctx.pr_number, error=str(exc)[:300])
+            return RoleResult(success=False, summary=error, error=error)
         except BaseException:
             await asyncio.shield(self._record_review_costs(ctx, accumulator))
             raise
@@ -907,6 +912,10 @@ class ReviewerRole(AgentRole):
                 findings, summary = await self._review_chunk_with_retry(
                     ctx, prompt, chunk, i, model, share_budget, result
                 )
+            except ConfigurationError:
+                # A missing or rejected credential fails every chunk the same way: stop here, so the run fails
+                # with the cause instead of posting a "review unavailable" verdict and labelling the issue.
+                raise
             except Exception as exc:  # noqa: BLE001 (a failed chunk must not abort the review; remaining chunks still run)
                 log.warning("reviewer.llm_failed", chunk=i + 1, total=len(chunks), exc_info=True)
                 failed_chunks += 1
@@ -1014,7 +1023,7 @@ class ReviewerRole(AgentRole):
             return await self._review_chunk(
                 ctx, prompt, chunk, chunk_index, model, chunk_budget, result, first_call, label
             )
-        except PromptInjectionError:
+        except (PromptInjectionError, ConfigurationError):
             raise
         except Exception as exc:  # noqa: BLE001 (any transient failure is retried once before the chunk is reported unreviewed)
             if was_content_filtered(exc):
@@ -1310,9 +1319,11 @@ class ReviewerRole(AgentRole):
     async def _write_verdict_label(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Write a sova:{verdict} label to the issue for cross-machine visibility.
 
-        Removes any existing sova:* verdict labels first (idempotent), then adds
-        the current verdict. Non-fatal: if the label write fails, the GitHub
-        review marker resolve_sova_verdict() reads remains the source of truth.
+        Adds the current verdict, then removes any other sova:* verdict label
+        (idempotent). Added first so a failed add (both adapters raise) leaves
+        the previous verdict in place rather than no verdict label at all.
+        Non-fatal: if the label write fails, the GitHub review marker
+        resolve_sova_verdict() reads remains the source of truth.
 
         Derives the verdict from ``review.verdict_findings`` (excluding
         protected-path) rather than from ``review.blocking()``: both
@@ -1335,9 +1346,9 @@ class ReviewerRole(AgentRole):
         if not issue:
             return
         try:
+            await ctx.adapter.add_label(issue, label)
             for old_label in set(_VERDICT_TO_LABEL.values()) - {label}:
                 await ctx.adapter.remove_label(issue, old_label)
-            await ctx.adapter.add_label(issue, label)
             log.info("reviewer.verdict_label_written", issue=issue, label=label)
         except Exception:  # noqa: BLE001 (adapter raises AdapterError/ValueError too; stay fail-open)
             log.warning("reviewer.verdict_label_failed", issue=issue, label=label, exc_info=True)
