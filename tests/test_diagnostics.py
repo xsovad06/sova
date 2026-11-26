@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sova.config.models import CodexConfig
+from sova.config.models import CodexConfig, LdapConfig
 from sova.dashboard.services import settings_service
 from sova.db.session import SchemaInspection
 from sova.llm import keyring_store
@@ -27,6 +27,7 @@ from sova.utils.diagnostics import (
     _check_install_completeness,
     _check_jira_config,
     _check_keyring_secrets,
+    _check_ldap_config,
     _check_llm_provider,
     _check_ollama,
     _check_python_version,
@@ -1117,6 +1118,7 @@ class TestValidateSovaConfig:
 
     def test_github_task_source_adds_the_github_rows(self, tmp_path: Path) -> None:
         cfg = MagicMock()
+        cfg.ldap = LdapConfig()
         cfg.task_source.type = "github"
         cfg.github_repo = "owner/repo"
         cfg.github_user = "someone"
@@ -1130,6 +1132,7 @@ class TestValidateSovaConfig:
 
     def test_jira_task_source_adds_the_jira_rows(self, tmp_path: Path) -> None:
         cfg = MagicMock()
+        cfg.ldap = LdapConfig()
         cfg.task_source.type = "jira"
         cfg.task_source.jira_base_url = "https://example.atlassian.net"
         cfg.task_source.jira_email = "someone@example.com"
@@ -1151,6 +1154,7 @@ class TestValidateSovaConfig:
 
     def test_an_unknown_task_source_adds_no_provider_rows(self, tmp_path: Path) -> None:
         cfg = MagicMock()
+        cfg.ldap = LdapConfig()
         cfg.task_source.type = "manual"
 
         with patch("sova.config.loader.load_config", return_value=cfg):
@@ -1446,3 +1450,61 @@ class TestOpenAIOnlyModels:
             names_claude_model(v) for v in ("sonnet", "anthropic/claude-sonnet-5-5", "us.anthropic.claude-opus-5-5")
         )
         assert not names_claude_model("openai/gpt-6.1-sol")
+
+
+class TestCheckLdapConfig:
+    """`_check_ldap_config` names the empty LDAP keys an enabled config still needs."""
+
+    @staticmethod
+    def _cfg(**ldap: object) -> MagicMock:
+        cfg = MagicMock()
+        cfg.ldap = LdapConfig(**ldap)
+        return cfg
+
+    def test_disabled_reports_nothing(self) -> None:
+        assert _check_ldap_config(self._cfg()) == []
+
+    @pytest.mark.parametrize(
+        ("server", "base_dn", "expected"),
+        [
+            ("", "", "ldap.server and ldap.base_dn"),
+            ("ldaps://ldap.example.com", "", "ldap.base_dn"),
+            ("", "dc=example,dc=com", "ldap.server"),
+        ],
+    )
+    def test_enabled_without_directory_warns(self, server: str, base_dn: str, expected: str) -> None:
+        checks = _check_ldap_config(self._cfg(enabled=True, server=server, base_dn=base_dn))
+        assert [(c.name, c.passed, c.required) for c in checks] == [("ldap", False, False)]
+        assert f"{expected} not set" in checks[0].detail
+
+    def test_configured_directory_passes(self) -> None:
+        with patch("importlib.util.find_spec", return_value=object()):
+            checks = _check_ldap_config(
+                self._cfg(enabled=True, server="ldaps://ldap.example.com", base_dn="dc=example,dc=com")
+            )
+        assert [(c.name, c.passed) for c in checks] == [("ldap", True)]
+
+    def test_configured_directory_without_ldap3_fails(self) -> None:
+        """A green row while the package is missing would hide that every lookup is skipped."""
+        with patch("importlib.util.find_spec", return_value=None):
+            checks = _check_ldap_config(
+                self._cfg(enabled=True, server="ldaps://ldap.example.com", base_dn="dc=example,dc=com")
+            )
+        assert [(c.name, c.passed, c.required) for c in checks] == [("ldap", False, False)]
+        assert "ldap3 is not installed" in checks[0].detail
+
+    def test_team_mapping_without_group_base_dn_warns(self) -> None:
+        with patch("importlib.util.find_spec", return_value=object()):
+            checks = _check_ldap_config(
+                self._cfg(
+                    enabled=True,
+                    server="ldaps://ldap.example.com",
+                    base_dn="dc=example,dc=com",
+                    team_mapping={"auth": "team-auth"},
+                )
+            )
+        assert [(c.name, c.passed, c.required) for c in checks] == [
+            ("ldap", True, False),
+            ("ldap.group_base_dn", False, False),
+        ]
+        assert "return no members" in checks[1].detail
