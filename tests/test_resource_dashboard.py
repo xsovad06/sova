@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord, TaskRun
 from sova.db.session import get_session
@@ -653,6 +654,114 @@ class TestRunToDict:
         assert run_dict.get("peak_cpu_percent") == 55.0
         assert run_dict.get("peak_memory_rss_bytes") == 190_000_000
         assert [str(w.message) for w in caught if "Connection.cursor" in str(w.message)] == []
+
+    @pytest.mark.asyncio
+    async def test_get_run_with_summary_returns_none_for_unknown_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import _get_run_with_summary, get_run
+
+        assert await _get_run_with_summary(session, 999_999) is None
+        assert await get_run(session, 999_999) is None
+
+    @pytest.mark.asyncio
+    async def test_get_run_with_summary_reloads_an_expired_relationship(
+        self, session: AsyncSession, seed_run_with_resources
+    ) -> None:
+        from sqlalchemy import inspect as sa_inspect
+
+        from sova.dashboard.services.work_service import _get_run_with_summary
+
+        session.expire(seed_run_with_resources, ["resource_summary"])
+        assert "resource_summary" in sa_inspect(seed_run_with_resources).unloaded
+
+        run = await _get_run_with_summary(session, seed_run_with_resources.id)
+
+        assert run is seed_run_with_resources
+        assert "resource_summary" not in sa_inspect(run).unloaded
+        assert run.resource_summary is not None
+        assert run.resource_summary.peak_memory_rss_bytes == 190_000_000
+
+    @pytest.mark.asyncio
+    async def test_run_to_dict_skips_an_unloaded_summary_without_lazy_loading(
+        self, session: AsyncSession, seed_run_with_resources
+    ) -> None:
+        from sova.dashboard.services.work_service import _run_to_dict
+
+        session.expire(seed_run_with_resources, ["resource_summary"])
+
+        with capture_logs() as logs:
+            run_dict = _run_to_dict(seed_run_with_resources)
+
+        assert run_dict["id"] == seed_run_with_resources.id
+        assert [e["run_id"] for e in logs if e["event"] == "work.run_to_dict.resource_summary_not_loaded"] == [
+            seed_run_with_resources.id
+        ]
+        assert "peak_cpu_percent" not in run_dict
+        assert "peak_memory_rss_bytes" not in run_dict
+
+    @pytest.mark.asyncio
+    async def test_run_to_dict_keeps_a_missing_peak_cpu_as_none(
+        self, session: AsyncSession, seed_run_without_resources
+    ) -> None:
+        from sova.dashboard.services.work_service import get_run
+
+        session.add(
+            ResourceSummaryRecord(
+                task_run_id=seed_run_without_resources.id,
+                sample_count=0,
+                peak_cpu_percent=None,
+                peak_memory_rss_bytes=42,
+            )
+        )
+        await session.commit()
+        session.expire(seed_run_without_resources, ["resource_summary"])
+
+        run_dict = await get_run(session, seed_run_without_resources.id)
+
+        assert run_dict is not None
+        assert run_dict["peak_cpu_percent"] is None
+        assert run_dict["peak_memory_rss_bytes"] == 42
+
+    @pytest.mark.asyncio
+    async def test_get_work_detail_includes_the_summary_of_a_held_run(
+        self, session: AsyncSession, seed_run_with_resources
+    ) -> None:
+        from sova.dashboard.services.work_service import get_work_detail
+
+        detail = await get_work_detail(session, seed_run_with_resources.id)
+
+        assert detail is not None
+        assert detail["run"]["peak_cpu_percent"] == 55.0
+        assert detail["run"]["peak_memory_rss_bytes"] == 190_000_000
+
+    @pytest.mark.asyncio
+    async def test_get_work_detail_returns_none_for_unknown_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_detail
+
+        assert await get_work_detail(session, 999_999) is None
+
+    @pytest.mark.asyncio
+    async def test_mark_run_failed_keeps_the_summary_of_a_held_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import mark_run_failed
+
+        run = TaskRun(issue_number="102", role="developer", status="running", project_slug="test")
+        session.add(run)
+        await session.flush()
+        session.add(ResourceSummaryRecord(task_run_id=run.id, sample_count=1, peak_cpu_percent=12.5))
+        await session.commit()
+        session.expire(run, ["resource_summary"])
+
+        result = await mark_run_failed(session, run.id, reason="stuck")
+
+        assert result is not None
+        assert result["status"] == "failed"
+        assert result["error_message"] == "stuck"
+        assert result["peak_cpu_percent"] == 12.5
+
+    @pytest.mark.asyncio
+    async def test_mark_run_failed_returns_none_for_unknown_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import mark_run_failed
+
+        assert await mark_run_failed(session, 999_999) is None
 
 
 class TestAgentLiveMetrics:
