@@ -371,3 +371,47 @@ class TestHomeAndWorkOnThePhone:
         source = (_STATIC / "js" / "pages" / "agents" / "pr-tracker.js").read_text(encoding="utf-8")
         assert "flex items-center gap-3 max-md:flex-wrap" in source
         assert "truncate flex-1 max-md:basis-full max-md:order-first" in source
+
+
+class TestRemainingPagesOnThePhone:
+    """The other pages get the shared baseline only (#1566): at 390 px no page scrolls sideways, and a wide table
+    scrolls inside its own box. Measured in headless Chrome with a long unbroken string in every table cell; the
+    boxes that were missing are max-md: only, so 768 px and wider keep their layout."""
+
+    # Every element a page renders a table into.
+    TABLE_BOXES = (
+        ("oversight.html", "runs-container"),
+        ("fleet.html", "step-failures"),
+        ("fleet.html", "error-clusters"),
+        ("fleet.html", "cost-breakdown"),
+        ("reliability.html", "success-by-role"),
+        ("reliability.html", "failure-taxonomy"),
+        ("reliability.html", "usage-by-role"),
+        ("reliability.html", "usage-by-step"),
+        ("pr_metrics.html", "author-table"),
+        ("costs.html", "by-routing"),
+        ("costs.html", "by-issue"),
+        ("costs.html", "by-phase"),
+        ("costs.html", "by-model"),
+        ("dependency_health.html", "package-table"),
+    )
+
+    @pytest.mark.parametrize(("template", "box_id"), TABLE_BOXES)
+    def test_each_table_scrolls_inside_its_own_box(self, template: str, box_id: str) -> None:
+        html = (DASHBOARD_DIR / "templates" / template).read_text(encoding="utf-8")
+        tag = re.search(rf'<div[^>]*\bid="{box_id}"[^>]*>', html)
+        assert tag, f"{template} has no #{box_id}"
+        class_attr = re.search(r'class="([^"]*)"', tag.group(0))
+        assert class_attr, tag.group(0)
+        tokens = class_attr.group(1).split()
+        assert {"overflow-x-auto", "max-md:overflow-x-auto"} & set(tokens), tag.group(0)
+
+    def test_the_boxes_added_for_the_phone_leave_768_px_and_wider_alone(self) -> None:
+        for template, box_id in (("oversight.html", "runs-container"), ("fleet.html", "error-clusters")):
+            html = (DASHBOARD_DIR / "templates" / template).read_text(encoding="utf-8")
+            assert f'id="{box_id}" class="p-4 max-md:overflow-x-auto"' in html
+
+    def test_long_unbroken_text_wraps(self) -> None:
+        block = _phone_block()
+        assert "overflow-wrap: anywhere" in _rule(block, "#spend-by-outcome .sova-stat-label")
+        assert "overflow-wrap: anywhere" in _rule(block, "main .whitespace-pre-wrap,\n  #drift-files")

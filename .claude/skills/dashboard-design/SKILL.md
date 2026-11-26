@@ -211,11 +211,12 @@ Common patterns that reveal AI-generated code:
 `base.html` swaps the sidebar for a top bar, a tab bar with the owl in its centre and a More sheet; side panels become full-screen sheets (docs/design-system.md, "Phone Shell").
 
 - A new page goes in `NAV_PAGES` (`sova/dashboard/navigation.py`): the sidebar, the tab bar and the More sheet all render from it. Never hand-write a nav link in a template.
-- Nothing scrolls the page sideways at 390 px: a wide table scrolls inside its own box, and a header row that cannot fit wraps below 768 px only (`max-md:flex-wrap`), leaving the desktop layout as it was.
+- Nothing scrolls the page sideways at 390 px: a wide table scrolls inside its own box (`max-md:overflow-x-auto` where the box is missing, so 768 px and wider keep their layout), and a header row that cannot fit wraps below 768 px only (`max-md:flex-wrap`), leaving the desktop layout as it was.
 - Controls are at least 44 px tall and text fields use 16 px text under 768 px; the shared classes do this, so a page rule must not shrink them back.
 - Height uses `dvh`, never `vh`, and anything fixed to an edge pads itself with `env(safe-area-inset-*)`.
 - A tooltip is hover help only: on a touch screen it shows on keyboard focus, so never put information only in a tooltip.
 - Reuse a page's modules at phone width rather than forking phone copies: Home runs the Work header and search with the same element ids, and the Work board shows one stage per screen through scroll snap on its own scroller. A drag needs a button that does the same, since a touch screen drags nothing.
+- A page that needs its own phone layout reorders with CSS `order` in the phone block (Supervisor), opens a wide part as a sheet on the shared side panel that the page's own element moves into with `trackMove()`/`placeMoves()` (the Supervisor's graph), or shows one view at a time from a `data-view` attribute the phone block keys on and a wide screen ignores (Settings). Never hide a setting or a control on the phone: give it a place.
 
 ## 9. Overflow Rule
 
