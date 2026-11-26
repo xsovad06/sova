@@ -106,6 +106,14 @@ export function hiddenKeys() {
 
 export function filtering() { return !!view.query.trim() || view.changedOnly; }
 
+/* The view the page lays out for a URL hash (without its '#'): the results while a search or Changed only filters,
+   the home view with no hash, and a section view for any other. A phone shows one view at a time (style.css,
+   "Settings on the phone"); a wide screen lays every view out the same way. */
+export function layoutView(hash) {
+  if (filtering()) return 'results';
+  return hash ? 'section' : 'home';
+}
+
 /* The settings the current search and changed-only filter keep, in one group. */
 export function visibleIn(group) {
   const toks = tokens(view.query);

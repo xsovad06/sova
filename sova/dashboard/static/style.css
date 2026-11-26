@@ -2555,6 +2555,108 @@ span.out-text { border-left: 2px solid transparent; padding-left: 0.6rem; }
     border-radius: 16px 16px 0 0;
   }
 
+  /* Settings on the phone (#1566). The layout's data-view (page.js) picks one view at a time. Home (no section in the
+     URL): search and Changed on one row, then Overview's supervisor switch, agent limit, oversight switch and command
+     sync as one card of rows, then the section list; the rest of Overview (the 13 switches, the health checks) stays
+     in the Overview section. A section opens as its own view with a back control, its rows already stacked label
+     above control (the 1279px block), and the search results replace both. */
+  .sova-settings-header { margin-bottom: 1rem; padding-bottom: 0; border-bottom: 0; }
+  .sova-settings-title { margin-bottom: 0.5rem; }
+  .sova-settings-tools { flex-wrap: nowrap; gap: 8px; }
+  .sova-settings-search { flex: 1 1 0; min-width: 0; max-width: none; }
+  .sova-settings-chip { flex-shrink: 0; }
+  .sova-settings-layout { display: flex; flex-direction: column; align-items: stretch; gap: 1rem; }
+  .sova-settings-layout[data-view="home"] .sova-settings-nav { order: 1; }
+  .sova-settings-layout:not([data-view="home"]) .sova-settings-nav { display: none; }
+  .sova-settings-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 44px;
+    margin: -0.5rem 0 0.25rem -0.25rem;
+    color: var(--ctp-blue);
+    font-size: 0.9375rem;
+  }
+  .sova-settings-layout[data-view="home"] .sova-settings-back,
+  .sova-settings-layout[data-view="results"] .sova-settings-back { display: none; }
+  /* A group (or a search result's group) scrolls into view below the top bar, not under it. */
+  .sova-settings-group { scroll-margin-top: calc(var(--phone-topbar-height) + 1rem); }
+  .sova-settings-group-head { align-items: center; }
+  /* The page's text links and buttons (a group's anchor, Open in, a card's All settings, Reset to default, the Models
+     view's Pin and Refresh list) are tap targets, and a description's long unbroken key or path wraps. */
+  .sova-settings-anchor,
+  .sova-setting-link { display: inline-flex; align-items: center; min-height: 44px; }
+  .sova-setting-desc { overflow-wrap: anywhere; }
+
+  /* The section list: one card of rows with the count and a chevron. */
+  .sova-settings-nav {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 0;
+    padding: 0 12px;
+    background: var(--color-surface-card);
+    border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+    border-radius: 0.75rem;
+  }
+  .sova-settings-nav .sova-settings-eyebrow { display: block; padding: 12px 0 4px; }
+  .sova-settings-nav-item {
+    min-height: 50px;
+    padding: 0;
+    border-radius: 0;
+    border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+    color: var(--ctp-text);
+    font-size: 0.9375rem;
+  }
+  .sova-settings-nav-item:last-of-type { border-bottom: 0; }
+  .sova-settings-nav-item > span:first-child { flex: 1; min-width: 0; }
+  .sova-settings-nav-item.sova-settings-nav-on { background: none; }
+  .sova-settings-nav-chevron { flex-shrink: 0; color: var(--ctp-subtext1); }
+
+  /* Home: the four controls checked most, as one card of rows (title over its line on the left, the control on the
+     right). The cards' own boxes give way (display: contents) so their parts take the row's grid. */
+  .sova-settings-layout[data-view="home"] #section-overview > .sova-settings-section-head,
+  .sova-settings-layout[data-view="home"] .sova-overview-health,
+  .sova-settings-layout[data-view="home"] .sova-overview-switches,
+  .sova-settings-layout[data-view="home"] .sova-overview-offnote,
+  .sova-settings-layout[data-view="home"] .sova-overview-state,
+  .sova-settings-layout[data-view="home"] .sova-overview-grid .sova-settings-push,
+  .sova-settings-layout[data-view="home"] #overview-commands .sova-overview-card-title { display: none; }
+  .sova-settings-layout[data-view="home"] .sova-overview-grid {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0 12px;
+    background: var(--color-surface-card);
+    border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+    border-radius: 0.75rem;
+  }
+  .sova-settings-layout[data-view="home"] .sova-overview-side,
+  .sova-settings-layout[data-view="home"] .sova-overview-grid :is(.sova-card-header, .sova-card-body, .sova-overview-row, .sova-overview-limit) { display: contents; }
+  .sova-settings-layout[data-view="home"] .sova-overview-grid .sova-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 10px;
+    min-height: 60px;
+    padding: 8px 0;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+    border-radius: 0;
+  }
+  .sova-settings-layout[data-view="home"] .sova-overview-side > .sova-card:last-child { border-bottom: 0; }
+  .sova-settings-layout[data-view="home"] .sova-overview-card-title { grid-column: 1; }
+  .sova-settings-layout[data-view="home"] .sova-overview-name { grid-column: 1; font-size: 0.75rem; color: var(--ctp-subtext0); }
+  .sova-settings-layout[data-view="home"] .sova-overview-grid :is([data-setting-switch], [data-setting-stepper], .sova-setting-readonly) { grid-column: 2; grid-row: 1 / span 2; }
+  .sova-settings-layout[data-view="home"] .sova-overview-grid :is(.sova-setting-msg, .sova-overview-capacity) { grid-column: 1 / -1; }
+  .sova-settings-layout[data-view="home"] .sova-overview-capacity { margin-top: 0.25rem; }
+  /* The command sync: its state is the row's title and its button sits on the right; Review changes with Sync all
+     take their own line. */
+  .sova-settings-layout[data-view="home"] #overview-commands :is(.sova-settings-sync, .sova-settings-note) { grid-column: 1; margin: 0; }
+  .sova-settings-layout[data-view="home"] #overview-commands .sova-settings-actions { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+  .sova-settings-layout[data-view="home"] #overview-commands .sova-settings-actions:has(> [data-act="install-sync"]) { grid-column: 1 / -1; grid-row: auto; margin: 0.5rem 0 0.25rem; }
+
   .sova-input,
   textarea,
   select,
