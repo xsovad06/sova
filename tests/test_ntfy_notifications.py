@@ -282,7 +282,9 @@ class TestSendNtfy:
 
         mock_log.warning.assert_called_once()
         args, kwargs = mock_log.warning.call_args
-        assert kwargs["exc_info"] is True
+        assert "exc_info" not in kwargs
+        assert kwargs["error"] == "HTTPStatusError"
+        assert kwargs["host"] == "ntfy.example.com"
         assert kwargs["status"] == 401
         assert kwargs["topic"] == "sova"
         assert TOKEN not in str(args) + str(kwargs)
@@ -293,14 +295,30 @@ class TestSendNtfy:
         with patch("sova.ipc.notifications.log") as mock_log:
             await send_ntfy_notification(_ntfy_config(), "SOVA", "Body")
 
-        assert mock_log.warning.call_args.kwargs["status"] is None
+        kwargs = mock_log.warning.call_args.kwargs
+        assert kwargs["status"] is None
+        assert "exc_info" not in kwargs
+        assert kwargs["error"] == "ConnectError"
+        assert kwargs["host"] == "ntfy.example.com"
+
+    async def test_url_userinfo_is_never_logged(self, http_client: MagicMock) -> None:
+        """An ntfy_url with credentials, or one httpx rejects (its message quotes the URL), logs only the host."""
+        http_client.post.side_effect = httpx.InvalidURL("Invalid port: 'x' in https://user:pw@ntfy.example.com:x/")
+
+        with patch("sova.ipc.notifications.log") as mock_log:
+            await send_ntfy_notification(_ntfy_config(ntfy_url="https://user:pw@ntfy.example.com"), "SOVA", "Body")
+
+        args, kwargs = mock_log.warning.call_args
+        assert kwargs["host"] == "ntfy.example.com"
+        assert kwargs["error"] == "InvalidURL"
+        assert "pw" not in str(args) + str(kwargs)
 
 
 class TestTokenAbsentFromRenderedLogs:
     """Run the failure branch through the project's real logging config and inspect the rendered output.
 
-    A mocked ``log.warning`` only proves the arguments are clean; ``exc_info=True`` also renders the
-    traceback, and httpx/httpcore frames hold the Authorization header in their locals.
+    A mocked ``log.warning`` only proves the arguments are clean; a rendered traceback would hold the
+    Authorization header in httpx/httpcore frame locals, so the failure is logged without one.
     """
 
     @pytest.fixture(autouse=True)
@@ -340,7 +358,7 @@ class TestTokenAbsentFromRenderedLogs:
         captured = capsys.readouterr()
         rendered = captured.out + captured.err
         assert "notify.ntfy_failed" in rendered
-        assert "Traceback" in rendered or "traceback" in rendered or "exception" in rendered
+        assert "Traceback" not in rendered
         assert TOKEN not in rendered
 
 
