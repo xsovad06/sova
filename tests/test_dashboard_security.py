@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict, deque
+
 import pytest
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.testclient import TestClient
@@ -9,13 +12,18 @@ from fastapi.testclient import TestClient
 from sova.dashboard.security import (
     CSRF_COOKIE_NAME,
     CSRF_HEADER_NAME,
+    CSRF_REJECTED_DETAIL,
+    CSRF_TOKEN_MAX_AGE_SECONDS,
     build_allowed_hosts,
     build_allowed_origins,
     is_loopback_host,
+    is_strong_csrf_secret,
     is_wildcard_host,
     issue_csrf_cookie,
     require_same_origin_csrf,
+    sign_csrf_token,
     validate_origin,
+    verify_signed_csrf_token,
 )
 
 
@@ -282,11 +290,12 @@ class TestRequireSameOriginCsrf:
         response = client.get("/guarded-read")
         assert response.status_code == 200
 
-    def test_get_request_bypasses_even_when_fail_closed(self, guarded_app: FastAPI) -> None:
+    def test_get_request_is_refused_when_fail_closed(self, guarded_app: FastAPI) -> None:
+        """A non-loopback bind without a secret cannot verify a token, so reads fail closed too."""
         guarded_app.state.csrf_fail_closed = True
         client = TestClient(guarded_app)
         response = client.get("/guarded-read")
-        assert response.status_code == 200
+        assert response.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +572,7 @@ class TestProxyIdentityAccess:
             assert ws.receive_json()["type"] == "status_update"
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestProxyWithoutAllowedLogins:
     def test_every_proxied_request_is_refused_and_startup_warns(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -581,8 +591,9 @@ class TestProxyWithoutAllowedLogins:
         assert TestClient(app, base_url="http://127.0.0.1:8111").get("/healthz").status_code == 200
 
 
+@pytest.mark.usefixtures("reset_db_rows")
 class TestNoProxyConfigured:
-    def test_proxy_host_is_refused_and_no_identity_middleware_is_installed(
+    def test_identity_middleware_is_installed_and_refuses_a_proxy_marker(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from sova.dashboard.app import create_app
@@ -590,7 +601,451 @@ class TestNoProxyConfigured:
 
         monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
         app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
-        assert all(m.cls is not ProxyIdentityMiddleware for m in app.user_middleware)
+        assert any(m.cls is ProxyIdentityMiddleware for m in app.user_middleware)
         assert app.state.allowed_origins == build_allowed_origins("127.0.0.1", 8111)
-        response = TestClient(app).get("/healthz", headers=_proxied_headers())
-        assert response.status_code == 400
+        client = TestClient(app, base_url="http://127.0.0.1:8111")
+        assert client.get("/healthz").status_code == 200
+        assert client.get("/healthz", headers={"x-forwarded-for": "100.64.0.9"}).status_code == 403
+        assert client.get("/healthz", headers=_proxied_headers()).status_code == 403
+        assert TestClient(app).get("/healthz", headers={"host": _PROXY_HOST}).status_code == 400
+
+    def test_an_allowed_login_does_not_pass_without_a_proxy_origin(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clearing proxy_origins turns remote access off even while Serve still forwards an allowed login."""
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS", f'["{_LOGIN}"]')
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        client = TestClient(app, base_url="http://127.0.0.1:8111")
+        forwarded = {"x-forwarded-for": "100.64.0.9", "tailscale-user-login": _LOGIN}
+        assert client.get("/healthz", headers=forwarded).status_code == 403
+        assert client.get("/healthz", headers={"tailscale-user-login": _LOGIN}).status_code == 403
+        assert client.get("/healthz").status_code == 200
+
+
+@pytest.mark.usefixtures("reset_db_rows")
+class TestHarnessTrustedHosts:
+    def test_test_transport_hosts_are_refused_unless_the_harness_passes_them(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.app.HARNESS_TRUSTED_HOSTS", ())
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        app = create_app(project_dir=tmp_path, host="127.0.0.1", port=8111)
+        assert TestClient(app, base_url="http://testserver").get("/healthz").status_code == 400
+        assert TestClient(app, base_url="http://test").get("/healthz").status_code == 400
+        assert TestClient(app, base_url="http://127.0.0.1:8111").get("/healthz").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Signed CSRF token on a non-loopback bind (issue #1568)
+# ---------------------------------------------------------------------------
+
+_LAN_HOST = "192.168.1.5"
+_LAN_ORIGIN = f"http://{_LAN_HOST}:8111"
+# Long and varied enough for is_strong_csrf_secret(), which a non-loopback bind requires.
+_SECRET = "Kq7vN2xR9mPz4LwT8bYc1HdF6sJg3AeU"
+
+
+@pytest.fixture
+def signed_app() -> FastAPI:
+    """`guarded_app`'s routes on a non-loopback bind that has a CSRF secret."""
+    test_app = FastAPI()
+    test_app.state.is_loopback_bind = False
+    test_app.state.allowed_origins = build_allowed_origins(_LAN_HOST, 8111)
+    test_app.state.csrf_fail_closed = False
+    test_app.state.csrf_signing_secret = _SECRET
+
+    @test_app.post("/guarded", dependencies=[Depends(require_same_origin_csrf)])
+    def guarded() -> dict:
+        return {"ok": True}
+
+    @test_app.get("/guarded-read", dependencies=[Depends(require_same_origin_csrf)])
+    def guarded_read() -> dict:
+        return {"ok": True}
+
+    @test_app.get("/issue-cookie")
+    def issue_cookie(response: Response, request: Request) -> dict:
+        return {"token": issue_csrf_cookie(response, request)}
+
+    return test_app
+
+
+def _tampered(token: str) -> str:
+    return token[:-1] + ("0" if token[-1] != "0" else "1")
+
+
+def _bad_pair(case: str) -> tuple[str, str]:
+    """A (cookie, header) pair the signed guard must reject."""
+    good = sign_csrf_token(_SECRET)
+    nonce = good.rpartition(".")[0]
+    return {
+        "self-chosen": ("abc", "abc"),
+        "tampered": (_tampered(good), _tampered(good)),
+        "other-secret": (sign_csrf_token("other-secret"),) * 2,
+        "valid-nonce-wrong-signature": (f"{nonce}.{'0' * 64}",) * 2,
+        "no-signature": (nonce, nonce),
+        "empty-cookie": ("", good),
+        "empty-header": (good, ""),
+        "non-ascii": (f"{nonce}.\u00e9", f"{nonce}.\u00e9"),
+    }[case]
+
+
+_BAD_PAIRS = [
+    "self-chosen",
+    "tampered",
+    "other-secret",
+    "valid-nonce-wrong-signature",
+    "no-signature",
+    "empty-cookie",
+    "empty-header",
+    "non-ascii",
+]
+
+
+class TestSignedCsrfToken:
+    def test_token_round_trips_only_under_its_own_secret(self) -> None:
+        token = sign_csrf_token(_SECRET)
+        assert verify_signed_csrf_token(token, _SECRET) is True
+        assert verify_signed_csrf_token(token, "other") is False
+        assert verify_signed_csrf_token(token, "") is False
+        assert verify_signed_csrf_token("", _SECRET) is False
+
+    def test_issued_cookie_is_signed_and_passes_a_write_and_a_read(self, signed_app: FastAPI) -> None:
+        client = TestClient(signed_app, base_url=_LAN_ORIGIN)
+        token = client.get("/issue-cookie").json()["token"]
+        assert verify_signed_csrf_token(token, _SECRET)
+        write = client.post("/guarded", headers={"Origin": _LAN_ORIGIN, CSRF_HEADER_NAME: token})
+        assert write.status_code == 200
+        assert client.get("/guarded-read").status_code == 200
+        assert client.get("/guarded-read", headers={CSRF_HEADER_NAME: token}).status_code == 200
+
+    @pytest.mark.parametrize("case", _BAD_PAIRS)
+    @pytest.mark.parametrize("method", ["POST", "GET"])
+    def test_a_forged_or_empty_pair_is_rejected(self, signed_app: FastAPI, case: str, method: str) -> None:
+        cookie, header = _bad_pair(case)
+        client = TestClient(signed_app, base_url=_LAN_ORIGIN)
+        # Raw bytes, so a non-ASCII value reaches the server as a browser could send it.
+        headers = {
+            "Origin": _LAN_ORIGIN,
+            "Cookie": f"{CSRF_COOKIE_NAME}={cookie}".encode(),
+            CSRF_HEADER_NAME: header.encode(),
+        }
+        path = "/guarded" if method == "POST" else "/guarded-read"
+        response = client.request(method, path, headers=headers)
+        assert response.status_code == 403
+        assert response.json()["detail"] == CSRF_REJECTED_DETAIL
+
+    def test_token_carries_its_issue_time_and_expires(self) -> None:
+        now = int(time.time())
+        assert sign_csrf_token(_SECRET, issued_at=now).startswith(f"{now}.")
+        fresh = sign_csrf_token(_SECRET, issued_at=now - CSRF_TOKEN_MAX_AGE_SECONDS + 60)
+        expired = sign_csrf_token(_SECRET, issued_at=now - CSRF_TOKEN_MAX_AGE_SECONDS - 60)
+        far_future = sign_csrf_token(_SECRET, issued_at=now + 3600)
+        assert verify_signed_csrf_token(fresh, _SECRET) is True
+        assert verify_signed_csrf_token(expired, _SECRET) is False
+        assert verify_signed_csrf_token(far_future, _SECRET) is False
+
+    def test_a_restamped_token_fails_its_signature(self) -> None:
+        """Moving an old token's issue time forward without the secret breaks the HMAC."""
+        old = sign_csrf_token(_SECRET, issued_at=int(time.time()) - CSRF_TOKEN_MAX_AGE_SECONDS - 60)
+        _, nonce, signature = old.split(".")
+        assert verify_signed_csrf_token(f"{int(time.time())}.{nonce}.{signature}", _SECRET) is False
+
+    @pytest.mark.parametrize("method", ["POST", "GET"])
+    def test_an_expired_token_is_rejected(self, signed_app: FastAPI, method: str) -> None:
+        expired = sign_csrf_token(_SECRET, issued_at=int(time.time()) - CSRF_TOKEN_MAX_AGE_SECONDS - 60)
+        client = TestClient(signed_app, base_url=_LAN_ORIGIN)
+        client.cookies.set(CSRF_COOKIE_NAME, expired)
+        path = "/guarded" if method == "POST" else "/guarded-read"
+        response = client.request(method, path, headers={"Origin": _LAN_ORIGIN, CSRF_HEADER_NAME: expired})
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize(
+        ("secret", "strong"),
+        [
+            pytest.param("", False, id="empty"),
+            pytest.param("1", False, id="opt-in-value"),
+            pytest.param("operator-secret", False, id="short"),
+            pytest.param("ab" * 20, False, id="long-but-two-characters"),
+            pytest.param(_SECRET, True, id="generated"),
+        ],
+    )
+    def test_secret_strength(self, secret: str, strong: bool) -> None:
+        assert is_strong_csrf_secret(secret) is strong
+
+    def test_a_read_without_a_cookie_is_rejected(self, signed_app: FastAPI) -> None:
+        assert TestClient(signed_app, base_url=_LAN_ORIGIN).get("/guarded-read").status_code == 403
+
+    def test_no_cookie_is_issued_to_a_foreign_origin(self, signed_app: FastAPI) -> None:
+        client = TestClient(signed_app, base_url=_LAN_ORIGIN)
+        response = client.get("/issue-cookie", headers={"Origin": "http://evil.example.com"})
+        assert response.json() == {"token": None}
+        assert "set-cookie" not in response.headers
+
+
+@pytest.fixture
+def lan_app(tmp_path, monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    """A real dashboard app bound to a LAN address with a CSRF secret configured."""
+    from sova.dashboard.app import create_app
+
+    monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", _SECRET)
+    monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+    return create_app(project_dir=tmp_path, host=_LAN_HOST, port=8111)
+
+
+class TestNonLoopbackBind:
+    # The websocket test stays off reset_db_rows: its shared in-memory engine belongs to the test's event
+    # loop, and the status socket's producer reaching it from TestClient's portal thread never returns.
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_page_issues_a_signed_cookie_and_api_reads_require_it(self, lan_app: FastAPI) -> None:
+        client = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        assert client.get("/api/agents/active").status_code == 403
+        client.get("/work")
+        assert verify_signed_csrf_token(client.cookies[CSRF_COOKIE_NAME], _SECRET)
+        assert client.get("/api/agents/active").status_code == 200
+
+    @pytest.mark.parametrize(
+        ("cookie", "accepted"),
+        [
+            pytest.param("signed", True, id="signed-cookie"),
+            pytest.param(None, False, id="no-cookie"),
+            pytest.param("abc", False, id="self-chosen"),
+            pytest.param("other-secret", False, id="other-secret"),
+        ],
+    )
+    def test_websocket_follows_the_read_rule(self, lan_app: FastAPI, cookie: str | None, accepted: bool) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        client = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        if cookie is not None:
+            value = {"signed": sign_csrf_token(_SECRET), "other-secret": sign_csrf_token("other-secret")}.get(cookie)
+            client.cookies.set(CSRF_COOKIE_NAME, value or cookie)
+        headers = {"origin": _LAN_ORIGIN}
+        if accepted:
+            with client.websocket_connect("/api/ws/agents/status", headers=headers) as ws:
+                assert ws.receive_json()["type"] == "status_update"
+            return
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers=headers),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_a_cookie_past_half_its_life_is_renewed_on_any_request(self, lan_app: FastAPI) -> None:
+        aging = sign_csrf_token(_SECRET, issued_at=int(time.time()) - CSRF_TOKEN_MAX_AGE_SECONDS // 2 - 60)
+        client = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        client.cookies.set(CSRF_COOKIE_NAME, aging)
+        response = client.get("/api/agents/active")
+        assert response.status_code == 200
+        renewed = response.cookies[CSRF_COOKIE_NAME]
+        assert renewed != aging
+        assert verify_signed_csrf_token(renewed, _SECRET)
+        # A young cookie is left alone, and a forged one is never swapped for a valid one.
+        young = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        young.cookies.set(CSRF_COOKIE_NAME, renewed)
+        assert "set-cookie" not in young.get("/api/agents/active").headers
+        forged = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        forged.cookies.set(CSRF_COOKIE_NAME, "abc")
+        assert "set-cookie" not in forged.get("/healthz").headers
+
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_a_fail_closed_hub_renders_no_project_path(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A wildcard bind trusts any Host, so its pages must refuse too: the hub lists every project path."""
+        import sova.config.registry as reg_mod
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr(reg_mod, "_REGISTRY_FILE", tmp_path / "registry" / "projects.json")
+        monkeypatch.setattr(reg_mod, "_REGISTRY_DIR", tmp_path / "registry")
+        project = tmp_path / "private-project-name"
+        (project / ".claude").mkdir(parents=True)
+        reg_mod.register_project(project, slug="private")
+        app = create_app(multi_project=True, host="0.0.0.0", port=8111)
+        assert app.state.csrf_fail_closed is True
+        client = TestClient(app, base_url=_LAN_ORIGIN)
+        for path in ("/", "/p/private/work", "/p/private/supervisor", "/api/projects"):
+            response = client.get(path)
+            assert response.status_code == 403, path
+            assert "private-project-name" not in response.text
+            assert response.headers["X-Frame-Options"] == "DENY"
+        assert client.get("/healthz").status_code != 403
+        assert client.get("/api/health/connectivity").status_code == 200
+
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_a_fail_closed_healthz_names_no_project(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The probe needs no token on a fail-closed bind, so it reports one aggregate db result."""
+        import sova.config.registry as reg_mod
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr(reg_mod, "_REGISTRY_FILE", tmp_path / "registry" / "projects.json")
+        monkeypatch.setattr(reg_mod, "_REGISTRY_DIR", tmp_path / "registry")
+        project = tmp_path / "proj"
+        (project / ".claude").mkdir(parents=True)
+        reg_mod.register_project(project, slug="private-slug")
+
+        async def _db_ok(project_dir=None, **_: object) -> str:
+            return "ok"
+
+        # No real session: the TestClient's loop closes after the request and would strand a connection.
+        monkeypatch.setattr("sova.dashboard.app._check_db_health", _db_ok)
+        app = create_app(multi_project=True, host="0.0.0.0", port=8111)
+        assert app.state.csrf_fail_closed is True
+        response = TestClient(app, base_url=_LAN_ORIGIN).get("/healthz")
+        assert "private-slug" not in response.text
+        assert response.json()["checks"]["db"] == "ok"
+        assert not any(key.startswith("db_") for key in response.json()["checks"])
+
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_hub_project_list_needs_the_signed_cookie(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sova.config.registry as reg_mod
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr(reg_mod, "_REGISTRY_FILE", tmp_path / "registry" / "projects.json")
+        monkeypatch.setattr(reg_mod, "_REGISTRY_DIR", tmp_path / "registry")
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", _SECRET)
+        client = TestClient(create_app(multi_project=True, host=_LAN_HOST, port=8111), base_url=_LAN_ORIGIN)
+        assert client.get("/api/projects").status_code == 403
+        client.get("/")
+        assert client.get("/api/projects").status_code == 200
+
+    @pytest.mark.usefixtures("reset_db_rows")
+    def test_a_wildcard_bind_still_takes_authenticated_telemetry(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Machine endpoints with their own authentication stay reachable on a fail-closed bind; pages do not."""
+        from sova.dashboard.app import create_app
+        from sova.dashboard.routers import telemetry as telemetry_mod
+
+        monkeypatch.setenv("SOVA_TELEMETRY_TOKEN", "telemetry-token")
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        monkeypatch.setattr(telemetry_mod, "_rate_windows", defaultdict(deque))
+        app = create_app(project_dir=tmp_path, host="0.0.0.0", port=8111)
+        assert app.state.csrf_fail_closed is True
+        client = TestClient(app, base_url=_LAN_ORIGIN)
+        payload = {
+            "machine_id": "machine-001",
+            "run_id": "run-001",
+            "project_slug": "my-project",
+            "role": "developer",
+            "status": "done",
+            "run_at": "2026-07-26T10:00:00Z",
+        }
+        ingest = client.post("/api/telemetry/ingest", json=payload, headers={"Authorization": "Bearer telemetry-token"})
+        assert ingest.status_code == 201
+        assert client.post("/api/telemetry/ingest", json=payload).status_code == 401
+        assert client.post("/api/mcp", json={}).status_code == 401
+        for path in ("/", "/work", "/api/agents/active"):
+            assert client.get(path).status_code == 403, path
+
+    @pytest.mark.parametrize("secret", ["", "1", "ab" * 20], ids=["no-secret", "opt-in-value", "two-characters"])
+    def test_websocket_is_refused_on_a_fail_closed_bind(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, secret: str
+    ) -> None:
+        """No usable secret leaves no signing key, and the handshake must not fall back to Origin alone."""
+        from starlette.websockets import WebSocketDisconnect
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", secret)
+        monkeypatch.setattr("sova.dashboard.services.agent_pool._default_project_dir", None)
+        app = create_app(project_dir=tmp_path, host=_LAN_HOST, port=8111)
+        assert app.state.csrf_fail_closed is True
+        assert app.state.csrf_signing_secret == ""
+        client = TestClient(app, base_url=_LAN_ORIGIN)
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/api/ws/agents/status", headers={"origin": _LAN_ORIGIN}),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            pytest.param({"X-Forwarded-For": "100.64.0.9"}, id="proxied-without-login"),
+            pytest.param({"host": "evil.example.com"}, id="untrusted-host"),
+        ],
+    )
+    def test_a_refused_request_gets_no_renewed_cookie(self, lan_app: FastAPI, headers: dict[str, str]) -> None:
+        """The renewal runs inside the Host and proxy identity checks, so their refusals carry no token."""
+        aging = sign_csrf_token(_SECRET, issued_at=int(time.time()) - CSRF_TOKEN_MAX_AGE_SECONDS // 2 - 60)
+        client = TestClient(lan_app, base_url=_LAN_ORIGIN)
+        client.cookies.set(CSRF_COOKIE_NAME, aging)
+        response = client.get("/api/agents/active", headers=headers)
+        assert response.status_code in (400, 403)
+        assert "set-cookie" not in response.headers
+
+
+class TestFailClosedExemptions:
+    @pytest.mark.parametrize(
+        ("path", "exempt"),
+        [
+            ("/healthz", True),
+            ("/api/health", True),
+            ("/api/health/connectivity", True),
+            ("/api/telemetry/ingest", True),
+            ("/api/mcp", True),
+            ("/p/alpha/api/mcp", True),
+            ("/a2a/tasks/sova-run-1/cancel", True),
+            ("/.well-known/agent.json", True),
+            ("/a2a/planner/agent.json", True),
+            ("/a2a/tasks", False),
+            ("/a2a/tasks/sova-run-1", False),
+            ("/a2a/tasks//cancel", False),
+            ("/a2a//agent.json", False),
+            ("/.well-known/other.json", False),
+            ("/", False),
+            ("/work", False),
+            ("/api/projects", False),
+            ("/api/scheduler/digest", False),
+            ("/api/telemetry/ingest/x", False),
+            ("/p/alpha/api/mcp/x", False),
+            ("/p//api/mcp", False),
+            ("/a2a", False),
+        ],
+    )
+    def test_exempt_paths(self, path: str, exempt: bool) -> None:
+        from sova.dashboard.security import is_fail_closed_exempt
+
+        assert is_fail_closed_exempt(path) is exempt
+
+
+class TestStartupLogs:
+    @pytest.mark.parametrize(
+        ("host", "secret", "events"),
+        [
+            pytest.param(_LAN_HOST, "", ["dashboard.nonloopback_no_secret"], id="no-secret"),
+            pytest.param(_LAN_HOST, "1", ["dashboard.csrf_secret_too_weak"], id="weak-secret"),
+            pytest.param("0.0.0.0", "1", ["dashboard.nonloopback_no_secret"], id="wildcard"),
+            pytest.param(_LAN_HOST, _SECRET, [], id="strong-secret"),
+        ],
+    )
+    def test_fail_closed_event_names_the_fix(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, host: str, secret: str, events: list[str]
+    ) -> None:
+        from structlog.testing import capture_logs
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setenv("SOVA_DASHBOARD_CSRF_SECRET", secret)
+        with capture_logs() as logs:
+            create_app(project_dir=tmp_path, host=host, port=8111)
+        names = {"dashboard.nonloopback_no_secret", "dashboard.csrf_secret_too_weak"}
+        assert [e["event"] for e in logs if e["event"] in names] == events
+
+    def test_logins_without_origins_are_reported(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from structlog.testing import capture_logs
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setenv("SOVA_DASHBOARD_PROXY_ALLOWED_LOGINS", '["owner@github"]')
+        with capture_logs() as logs:
+            create_app(project_dir=tmp_path)
+        assert [e["event"] for e in logs if e["event"].startswith("dashboard.proxy_")] == [
+            "dashboard.proxy_logins_ignored"
+        ]

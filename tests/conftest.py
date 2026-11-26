@@ -212,6 +212,19 @@ def _configure_test_logging() -> None:
     configure_test_logging()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _trust_test_transport_hosts() -> Iterator[None]:
+    """Let ``create_app()`` trust the test transports' Host values, which production never does.
+
+    httpx's ``ASGITransport`` sends ``Host: test`` for ``base_url="http://test"`` and Starlette's
+    ``TestClient`` sends ``Host: testserver``. A test that checks the production allowlist clears
+    ``HARNESS_TRUSTED_HOSTS`` itself before building its app.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("sova.dashboard.app.HARNESS_TRUSTED_HOSTS", ("test", "testserver"))
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_review_post_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
     """A review post that fails every method retries once; skip the real pause so failure-path tests stay fast."""

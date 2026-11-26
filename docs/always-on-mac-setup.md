@@ -172,7 +172,7 @@ On a single-project server, leave `/p/<slug>` off the link. These are read when 
 
 **What a push looks like.** The title names the event and the body holds the project and the detail, for example "Developer failed #1557" over "sova | Step 'validate' failed: 2 tests failed". A symbol before the title marks the kind: a bell for "needs you", a warning sign for a failure, a check mark for a finish. On iOS every push shows the ntfy app's icon; ntfy's per-message `icon` URL did not change it (tested). Second test: a `needs_human` push showed the bell.
 
-**Send a test push.** `send_ntfy_notification` never raises. A failed publish prints a `notify.ntfy_failed` warning with the HTTP status (second test: 403 for a missing token) and a traceback, and returns normally; a successful one prints nothing at the default log level, and neither does a project whose `ntfy_url` or `ntfy_topic` is empty. A quiet run is therefore not proof of delivery: the phone is. Run it in a project's primary checkout, with the three notification settings and a stored token for that path:
+**Send a test push.** `send_ntfy_notification` never raises. A failed publish prints a `notify.ntfy_failed` warning with the HTTP status (second test: 403 for a missing token), the server host and the error type (no traceback, since one would carry the token), and returns normally; a successful one prints nothing at the default log level, and neither does a project whose `ntfy_url` or `ntfy_topic` is empty. A quiet run is therefore not proof of delivery: the phone is. Run it in a project's primary checkout, with the three notification settings and a stored token for that path:
 
 ```bash
 cd /path/to/project
