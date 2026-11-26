@@ -53,7 +53,7 @@ sova/
     VISION.md                      # This file
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
-    naming-journey.md              # How SOVA got its name
+    archive/                       # Historical docs kept for reference
   tests/                           # pytest suite (11200+ test functions)
   deploy/                          # systemd + launchd service files
 ```
