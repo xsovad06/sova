@@ -37,6 +37,7 @@ async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
 _OUTCOME_STATUS = {
     handoff_service.ActionOutcome.NOT_FOUND: 404,
     handoff_service.ActionOutcome.REFUSED: 409,
+    handoff_service.ActionOutcome.INVALID_INPUT: 400,
     handoff_service.ActionOutcome.UNSUPPORTED: 400,
     handoff_service.ActionOutcome.FAILED: 500,
 }
@@ -47,7 +48,7 @@ _OUTCOME_STATUS = {
     responses={
         404: {"description": "No active handoff or action not found"},
         409: {"description": "The start was refused; the handoff stays pending"},
-        400: {"description": "Unsupported execution type"},
+        400: {"description": "Unsupported execution type, or a command or argument the dashboard does not accept"},
         500: {"description": "The run record or spawn failed; the handoff stays pending"},
     },
 )

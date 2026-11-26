@@ -1139,10 +1139,8 @@ class TestExecuteHandoffActionBranches:
             "sova.dashboard.services.handoff_service.get_synthesized_handoff",
             AsyncMock(return_value=synthesized),
         )
-        monkeypatch.setattr(
-            "sova.dashboard.services.control_service.start_command",
-            AsyncMock(return_value={"status": "started", "run_id": 2}),
-        )
+        start = AsyncMock(return_value={"status": "started", "run_id": 2})
+        monkeypatch.setattr("sova.dashboard.services.control_service.start_command", start)
         monkeypatch.setattr(
             "sova.dashboard.services.handoff_service.invalidate_synthesis_cache",
             lambda *a: None,
@@ -1152,6 +1150,39 @@ class TestExecuteHandoffActionBranches:
         assert resp.status_code == 200
         data = resp.json()
         assert data["action"] == "Integrate PR"
+        # The stored slash form reaches start_command() as the catalog name it validates.
+        start.assert_awaited_once_with("integrate-pr", {"issue": "42", "pr": 99}, _skip_handoff_clear=True)
+
+    async def test_execute_unknown_claude_command_is_refused(
+        self, client: AsyncClient, monkeypatch, project_agents, fake_runtime
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        synthesized = {
+            "source": "pr-review-state",
+            "issue": "42",
+            "pr_number": 99,
+            "next_actions": [
+                {
+                    "id": "next",
+                    "label": "Next step",
+                    "mode": "claude-command",
+                    "command": "/not-a-real-command 99",
+                    "args": {"issue": "42", "pr": 99},
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.services.handoff_service.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "next"})
+
+        # The same input refusal is a 400 here as on /agents/command.
+        assert resp.status_code == 400
+        assert "not-a-real-command" in resp.json()["detail"]
+        assert fake_runtime.spawn_calls == []
 
     async def test_execute_shell_action_rejected(self, client: AsyncClient, monkeypatch) -> None:
         from unittest.mock import AsyncMock

@@ -354,6 +354,19 @@ def clear_all_handoffs(project_dir: Path | None = None) -> bool:
     return cleared
 
 
+def command_name(raw: str | None) -> str:
+    """The catalog name in a handoff action's command: ``"/integrate-pr 42"`` becomes ``"integrate-pr"``.
+
+    A handoff stores the slash form a person would type; start_command() takes only the bare
+    name (the PR and issue travel in ``args``) and refuses anything outside the catalog. A missing
+    command (None, empty, or not a string) yields "", which every caller treats as nothing to run.
+    """
+    if not isinstance(raw, str):
+        return ""
+    parts = raw.strip().lstrip("/").split()
+    return parts[0] if parts else ""
+
+
 def build_action_command(action: dict) -> dict:
     """Map a handoff action to execution parameters.
 
@@ -381,7 +394,7 @@ def build_action_command(action: dict) -> dict:
         return {"type": "agent", "issue": ticket, "role": args.get("role"), "pr_number": args.get("pr")}
 
     if mode == "claude-command":
-        return {"type": "claude-command", "command": command, "args": args}
+        return {"type": "claude-command", "command": command_name(command), "args": args}
 
     if mode == "shell":
         return {"type": "shell", "command": command}
@@ -395,6 +408,7 @@ class ActionOutcome(StrEnum):
     STARTED = "started"
     NOT_FOUND = "not_found"
     REFUSED = "refused"
+    INVALID_INPUT = "invalid_input"
     UNSUPPORTED = "unsupported"
     FAILED = "failed"
 
@@ -441,12 +455,20 @@ def _refusal_codes() -> frozenset[str]:
 
 
 def _failure_outcome(result: dict) -> ActionResult:
-    """The outcome of an unsuccessful start: REFUSED only for a known conflict code, FAILED for anything else.
+    """The outcome of an unsuccessful start: INVALID_INPUT for a command or argument start_command() rejects, REFUSED
+    for a known conflict code, FAILED for anything else.
 
     REFUSED (HTTP 409) tells the client to retry later, so it is opt-in: an uncoded or unknown error (a broken run
     record or spawn, a worktree that could not be resolved, an unsupported model) would fail again the same way.
+    INVALID_INPUT (HTTP 400) is the same refusal ``POST /agents/command`` answers with 400 for the same input.
     """
-    outcome = ActionOutcome.REFUSED if result.get("code") in _refusal_codes() else ActionOutcome.FAILED
+    from sova.dashboard.services.agent_lifecycle import COMMAND_INPUT_ERRORS
+
+    code = result.get("code")
+    if code in COMMAND_INPUT_ERRORS:
+        outcome = ActionOutcome.INVALID_INPUT
+    else:
+        outcome = ActionOutcome.REFUSED if code in _refusal_codes() else ActionOutcome.FAILED
     return ActionResult(outcome, detail=result.get("detail") or result.get("error") or "Action failed")
 
 
@@ -587,8 +609,9 @@ async def execute_action(action_id: str, issue: str | None = None) -> ActionResu
 
     File-backed handoffs are searched first, then the synthesized (PR state) one, then the spec actions of an
     awaiting_approval run. A refused or failed start leaves the handoff pending, so the same action can be retried:
-    REFUSED is a conflict with current state (no free slot, a start of the same handoff already in flight), FAILED
-    anything else (a broken run record or spawn, an uncoded error).
+    REFUSED is a conflict with current state (no free slot, a start of the same handoff already in flight),
+    INVALID_INPUT a command name or argument outside what start_command() accepts, FAILED anything else (a broken
+    run record or spawn, an uncoded error).
     """
     not_found = ActionResult(ActionOutcome.NOT_FOUND, detail=f"Action '{action_id}' not found in any handoff")
     ref = _parse_ref(issue)

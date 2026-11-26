@@ -251,6 +251,13 @@ def _gh_reviews_json(*reviews: dict) -> str:
 class TestHydrateCollapsedFindings:
     """Tests for recovering collapsed finding text from inline PR review comments."""
 
+    @pytest.fixture(autouse=True)
+    def _trust_dev(self):
+        """Reviews and inline comments by ``dev`` are the trusted reviewer's (the loader imports the helper inside
+        its body, so the source module is patched)."""
+        with patch("sova.utils.gh.get_active_gh_user", new=AsyncMock(return_value="dev")):
+            yield
+
     def test_parse_inline_comment_body_splits_sova_shape(self) -> None:
         from sova.core.steps.address_review import _parse_inline_comment_body
 
@@ -443,7 +450,13 @@ class TestHydrateCollapsedFindings:
         reviews_json = _gh_reviews_json({"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body})
         comments_json = json.dumps(
             [
-                {"user": {"login": "human", "type": "User"}, "path": "a.py", "line": 7, "body": "unrelated note"},
+                {
+                    "user": {"login": "human", "type": "User"},
+                    "author_association": "COLLABORATOR",
+                    "path": "a.py",
+                    "line": 7,
+                    "body": "unrelated note",
+                },
                 {
                     "user": {"login": "dev", "type": "User"},
                     "path": "a.py",
@@ -508,6 +521,13 @@ class TestHydrateCollapsedFindings:
 
 class TestLoadFindingsFromGithubReviews:
     """Tests for _load_findings_from_github_reviews (calls gh api directly)."""
+
+    @pytest.fixture(autouse=True)
+    def _trust_dev(self):
+        """Reviews and inline comments by ``dev`` are the trusted reviewer's (the loader imports the helper inside
+        its body, so the source module is patched)."""
+        with patch("sova.utils.gh.get_active_gh_user", new=AsyncMock(return_value="dev")):
+            yield
 
     def _patch_run(self, gh_json: str):
         return patch(
@@ -590,7 +610,12 @@ class TestLoadFindingsFromGithubReviews:
             "reaches the response. Please use escape() before rendering it."
         )
         gh_json = _gh_reviews_json(
-            {"user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED", "body": body},
+            {
+                "user": {"login": "reviewer", "type": "User"},
+                "author_association": "COLLABORATOR",
+                "state": "COMMENTED",
+                "body": body,
+            },
         )
         with self._patch_run(gh_json):
             findings = await _load_findings_from_github_reviews(ctx)

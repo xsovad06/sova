@@ -65,6 +65,8 @@ from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_context import (
+    command_args_error,
+    known_command_names,
     with_check_worker_cap,
 )
 from sova.dashboard.services.agent_db import (
@@ -229,6 +231,13 @@ NO_FREE_SLOT = "no_free_slot"
 # broke. handoff_service.execute_action() reports them as FAILED (HTTP 500), not as a 409 refusal.
 RUN_RECORD_FAILED = "run_record_failed"
 SPAWN_FAILED = "spawn_failed"
+
+# The error codes of a command start_command() refuses before anything else: a name outside the
+# command catalog, or an argument outside COMMAND_ARG_KEYS or its value shape. Both HTTP routes
+# (``/agents/command`` and ``/handoff/execute``) answer them with 400.
+UNKNOWN_COMMAND = "unknown_command"
+INVALID_COMMAND_ARGS = "invalid_command_args"
+COMMAND_INPUT_ERRORS = frozenset({UNKNOWN_COMMAND, INVALID_COMMAND_ARGS})
 
 # Roles spawned as a plain trusted subprocess (spawn_direct) rather than
 # through a coding-agent runtime wrapper. Reviewer joins the pipeline roles
@@ -1017,6 +1026,36 @@ async def stop_agent(
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
 
 
+def _command_request_rejection(command: object, args: dict | None, project_dir: Path) -> dict | None:
+    """The refusal for a command name outside the catalog or a disallowed argument, else None.
+
+    Checked inside start_command() so every caller gets it: the HTTP route, the handoff action
+    route, auto-handoff, workflow (DAG) nodes and the supervisor. An unknown name is both a path
+    (it names a command file) and a prompt (``_resolve_command_prompt()`` falls back to a bare
+    ``/{command}``), and each argument is written into that prompt as ``key=value``.
+    """
+    # A DAG node or handoff file missing its command can hand over None or a non-string.
+    shown = command[:100] if isinstance(command, str) else repr(command)[:100]
+    if not isinstance(command, str) or command not in known_command_names(project_dir):
+        code, error = UNKNOWN_COMMAND, f"Unknown command: {shown}"
+    else:
+        arg_error = command_args_error(args)
+        if arg_error is None:
+            return None
+        code, error = INVALID_COMMAND_ARGS, arg_error
+    log.warning("start_command.rejected", command=shown, code=code, error=error)
+    return {"error": error, "code": code}
+
+
+def command_request_rejection(command: object, args: dict | None, slug: str | None = None) -> dict | None:
+    """The refusal start_command() would return for *command* and *args*, else None.
+
+    Lets a route reject bad input before it records an action, so an input error is a 400 rather
+    than a failed entry in the action history. start_command() still runs the same check itself.
+    """
+    return _command_request_rejection(command, args, _get_project_agents(slug).project_dir)
+
+
 async def start_command(
     command: str,
     args: dict | None = None,
@@ -1025,6 +1064,10 @@ async def start_command(
 ) -> dict:
     """Start a Claude Code command (e.g. /agent-resume, /integrate-pr).
 
+    *command* is a catalog name without the slash (``integrate-pr``) and *args* holds only
+    ``COMMAND_ARG_KEYS``; anything else is refused with ``UNKNOWN_COMMAND`` or
+    ``INVALID_COMMAND_ARGS`` before any gate, lookup or spawn.
+
     *_skip_handoff_clear* leaves the issue's handoff in place for a caller that clears it itself once the start
     succeeded, like ``start_agent()``'s flag of the same name.
     """
@@ -1032,6 +1075,9 @@ async def start_command(
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
 
     pa = _get_project_agents(slug)
+    rejection = _command_request_rejection(command, args, pa.project_dir)
+    if rejection is not None:
+        return rejection
     safe_args = args or {}
     pr_number, issue = await _resolve_command_context(safe_args, command, pa.project_dir)
 

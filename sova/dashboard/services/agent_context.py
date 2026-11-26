@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,18 @@ _CLAUDE_DIR = ".claude"
 # Repo root of this SOVA checkout (sova/dashboard/services/ -> three levels up).
 # Only meaningful for an editable install; a wheel install has no `.claude/` there.
 _SOVA_ROOT = Path(__file__).resolve().parents[3]
+
+# The only command arguments start_command() accepts. Each becomes a ``key=value`` token in the
+# agent's prompt (``_resolve_command_prompt()``), so neither key nor value may be free text. Every
+# producer sends only these two: the supervisor, the ``claude-command`` handoff actions
+# (``handoff_to_user``, ``handoff_to_reviewer``, the reviewer role) and workflow nodes (empty
+# ``params``). A ``role`` key appears only on ``mode="agent"`` actions, which go to start_agent().
+COMMAND_ARG_KEYS = frozenset({"issue", "pr"})
+
+# An issue key or PR number (``42``, ``#42``, ``RHCLOUD-123``, ``owner/repo#42``): nothing that can
+# carry a space or a newline. An ``owner/repo`` prefix must end in ``#``, so each part is delimited
+# by a character the part before it cannot contain and the match never backtracks.
+_COMMAND_ARG_VALUE_RE = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+#|#)?[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 async def _resolve_branch_name(pr_number: int | None, project_dir: Path) -> str:
@@ -303,6 +316,25 @@ def known_command_names(project_dir: Path) -> frozenset[str]:
         if d.is_dir():
             names.update(p.stem for p in d.glob("*.md") if p.is_file())
     return frozenset(names)
+
+
+def command_args_error(args: dict | None) -> str | None:
+    """Why *args* cannot be passed to a command, or None when every entry is allowed.
+
+    A key must be in ``COMMAND_ARG_KEYS``. A value must be None, empty, an int (not a bool),
+    or a string matching ``_COMMAND_ARG_VALUE_RE``: a handoff file or workflow node supplies
+    these, and anything else would reach the agent's prompt verbatim.
+    """
+    for key, value in (args or {}).items():
+        if key not in COMMAND_ARG_KEYS:
+            return f"Unsupported command argument: {str(key)[:40]!r}"
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            return f"Command argument {key!r} must be a string or an integer"
+        if isinstance(value, str) and not _COMMAND_ARG_VALUE_RE.fullmatch(value):
+            return f"Command argument {key!r} is not an issue key or number"
+    return None
 
 
 def _render_canonical_template(content: str, project_dir: Path) -> str:

@@ -212,12 +212,12 @@ class TestHydrationRecordsCommentId:
             "summary",
             inline_comment_keys={("a.py", 7)},
         )
-        reviews = json.dumps([{"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": body}])
+        reviews = json.dumps([{"user": {"login": "xsovad06", "type": "User"}, "state": "COMMENTED", "body": body}])
         comments = json.dumps(
             [
                 {
                     "id": 555,
-                    "user": {"login": "dev", "type": "User"},
+                    "user": {"login": "xsovad06", "type": "User"},
                     "path": "a.py",
                     "line": 7,
                     "body": "**[CRITICAL] bug**: crash on empty input",

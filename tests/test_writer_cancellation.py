@@ -163,8 +163,9 @@ async def test_output_writer_timed_flush_rearms_after_its_insert_is_cancelled(
 
     monkeypatch.setattr(writer, "_insert", _cancel_first)
     writer.write_line("retry-me")
-    for _ in range(200):
-        if attempts >= 2 and not writer._buffer:
+    # The buffer empties when the retry starts, before its insert commits, so wait on the committed row instead.
+    for _ in range(500):
+        if attempts >= 2 and _row_count(project, "output_lines") == 1:
             break
         await asyncio.sleep(0.01)
 

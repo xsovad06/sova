@@ -22,7 +22,12 @@ from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.security import validate_websocket_origin
 from sova.dashboard.services import control_service, llm_suggestion_service, planner_issue_service, work_service
 from sova.dashboard.services.action_registry import tracked_action
-from sova.dashboard.services.agent_lifecycle import LLM_MODEL_OVERRIDE_ROLES, NO_FREE_SLOT
+from sova.dashboard.services.agent_lifecycle import (
+    COMMAND_INPUT_ERRORS,
+    LLM_MODEL_OVERRIDE_ROLES,
+    NO_FREE_SLOT,
+    command_request_rejection,
+)
 from sova.dashboard.services.agent_validation import (
     STATE_NOT_READY,
     suitability_blocked_detail,
@@ -974,7 +979,13 @@ async def get_issue_pr_status(issue_number: str) -> dict:
     return await get_pr_status_for_issue(issue_number)
 
 
-@router.post("/agents/command")
+@router.post(
+    "/agents/command",
+    responses={
+        400: {"description": "Unknown command, or an argument outside its allowlist"},
+        409: {"description": "The command could not be started"},
+    },
+)
 async def run_command(req: RunCommandRequest) -> dict:
     """Execute a Claude Code command (e.g. /integrate-pr, /address-pr).
 
@@ -982,17 +993,15 @@ async def run_command(req: RunCommandRequest) -> dict:
     own commands directories, so an unvalidated value is a path-traversal and
     prompt-injection vector (`_resolve_command_prompt` falls back to sending a
     bare `/{command}` to the headless, tool-using agent for anything it cannot
-    find). Rejecting anything outside the known catalog closes both at once.
+    find). start_command() refuses anything outside the known catalog, and any
+    argument outside its allowlist, for every caller; this route checks the same
+    rule before recording an action, so bad input is a 400 and never a failed
+    action in the history.
     """
-    from sova.config.context import resolve_project_dir
-    from sova.dashboard.services.agent_context import known_command_names
-    from sova.dashboard.services.agent_pool import get_default_project_dir
-
-    project_dir = resolve_project_dir(default_project_dir=get_default_project_dir())
-    if req.command not in known_command_names(project_dir):
-        raise HTTPException(status_code=400, detail=f"Unknown command: {req.command}")
-
     args = req.args or {}
+    rejection = command_request_rejection(req.command, args)
+    if rejection is not None:
+        raise HTTPException(status_code=400, detail=rejection["error"])
     pr = _issue_number(args.get("pr"))
     async with tracked_action(
         _action_project_dir(),
@@ -1002,6 +1011,8 @@ async def run_command(req: RunCommandRequest) -> dict:
         pr=pr,
     ) as action:
         result = await control_service.start_command(req.command, args)
+        if isinstance(result, dict) and result.get("code") in COMMAND_INPUT_ERRORS:
+            raise HTTPException(status_code=400, detail=result["error"])
         if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
             raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
         action.message = f"Started /{req.command}"

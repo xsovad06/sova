@@ -202,7 +202,7 @@ async def _start_follow_up(
 
     Returns the start's result, or ``None`` when the action names nothing that can be started.
     """
-    from sova.dashboard.services import agent_lifecycle
+    from sova.dashboard.services import agent_lifecycle, handoff_service
 
     if action.mode == "agent":
         result = await agent_lifecycle.start_agent(
@@ -211,10 +211,11 @@ async def _start_follow_up(
         log.info("auto_handoff.agent_started", result=result, slug=slug)
         return result
     if action.mode == "claude-command":
-        cmd = action.command.lstrip("/").split()[0] if action.command else ""
+        cmd = handoff_service.command_name(action.command)
         if cmd:
             result = await agent_lifecycle.start_command(cmd, action.args, slug=slug, _skip_handoff_clear=True)
-            log.info("auto_handoff.command_started", result=result)
+            if handoff_service.start_succeeded(result):
+                log.info("auto_handoff.command_started", result=result)
             return result
         return None
     log.warning("auto_handoff.unsupported_mode", mode=action.mode)
