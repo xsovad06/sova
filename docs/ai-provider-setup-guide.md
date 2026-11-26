@@ -367,12 +367,14 @@ sova config set llm.model claude-sonnet-5
 **Option A: Connections page or `sova config set` (recommended)**
 
 ```bash
-sova config set llm.api_key "sk-ant-..."
+printf '%s' "$ANTHROPIC_KEY" | sova config set llm.api_key -
 ```
+
+`-` reads a secret from stdin, so the key never appears in the process list (`ps`) the way a command-line argument does while the command runs (`printf` is a shell builtin).
 
 `llm.api_key` is stored in the OS keyring (Keychain/Credential Manager/Secret Service) when a usable backend exists, scoped to this project and provider (`sova/llm/keyring_store.py`); otherwise it falls back to the plaintext `project_settings` database column. It is the first-class credential source and takes precedence over the environment variable below.
 
-The provider in that scope is whichever `llm.provider` is active when the key is written, not whichever provider you later switch to: `sova config set` always resolves the scope from the currently active provider. Run step 2 (set `llm.provider`) before this step, as shown above. If you switch providers later, re-run `sova config set llm.api_key "sk-ant-..."` after the switch; the key saved under the old provider's scope is not carried over, and the Connections page's per-provider card avoids this entirely by saving its own `provider` in the request.
+The provider in that scope is whichever `llm.provider` is active when the key is written, not whichever provider you later switch to: `sova config set` always resolves the scope from the currently active provider. Run step 2 (set `llm.provider`) before this step, as shown above. If you switch providers later, re-run the command above after the switch; the key saved under the old provider's scope is not carried over, and the Connections page's per-provider card avoids this entirely by saving its own `provider` in the request.
 
 **Option B: Environment variable (temporary, this session only)**
 
@@ -562,7 +564,7 @@ sova server start --multi
 
 1. Check `llm.api_key` first: it is keyring-resolved (`_resolve_scoped_api_key()`, `sova/llm/provider.py`) and takes precedence over `ANTHROPIC_API_KEY`, so an env var alone is not the whole picture (see [3. Set API Key](#3-set-api-key) above):
    ```bash
-   sova config set llm.api_key "sk-ant-..."
+   printf '%s' "$ANTHROPIC_KEY" | sova config set llm.api_key -
    ```
    or set it from the Anthropic API card on the Connections page. If you recently switched `llm.provider`, re-run this command after the switch: the keyring entry is scoped to whichever provider was active when it was written, so a key saved under the old provider is not read for the new one.
 

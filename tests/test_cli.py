@@ -284,6 +284,36 @@ class TestConfigCommand:
         assert "sk-super-secret-token" not in result.output
         assert "llm.api_key" in result.output
 
+    def test_set_reads_a_secret_from_stdin_for_dash(self, tmp_path: Path) -> None:
+        """'-' keeps the key out of the process list: the value comes from stdin, without its newline."""
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "llm.api_key"},
+        ) as update:
+            result = runner.invoke(
+                app, ["config", "set", "llm.api_key", "-", "--project", str(tmp_path)], input="sk-from-stdin\n"
+            )
+
+        assert result.exit_code == 0
+        assert update.await_args.kwargs["value"] == "sk-from-stdin"
+        assert "sk-from-stdin" not in result.output
+
+    def test_set_dash_is_literal_for_a_non_secret(self, tmp_path: Path) -> None:
+        from sova.cli.app import app
+
+        with patch(
+            "sova.dashboard.services.settings_service.update_config",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "key": "github_repo"},
+        ) as update:
+            result = runner.invoke(app, ["config", "set", "github_repo", "-", "--project", str(tmp_path)], input="x\n")
+
+        assert result.exit_code == 0
+        assert update.await_args.kwargs["value"] == "-"
+
     def test_set_prints_keyring_fallback_warning(self, tmp_path: Path) -> None:
         """update_config()'s plaintext-fallback warning must reach the console."""
         from sova.cli.app import app

@@ -24,7 +24,7 @@ model = "gpt-5"
 ```
 
 Requires a credential, plus the LiteLLM extra (`pip install sova[litellm]`). `llm.api_key` (set via the
-Connections page or `sova config set llm.api_key <key>`, stored in the OS keyring when available) is the
+Connections page or `sova config set llm.api_key -` reading it from stdin, stored in the OS keyring when available) is the
 first-class source and takes precedence; an `OPENAI_API_KEY` exported in the environment is only a
 fallback when `llm.api_key` is not configured. No local daemon is needed. `sova doctor`'s "llm provider"
 check (`LiteLLMProvider.check_available()`) confirms both that LiteLLM is importable and that a credential
