@@ -687,3 +687,24 @@ class TestSectionCounts:
             payload=payload,
         )
         assert out["result"] == {"plain": 5, "searching": 0, "stored": 6}
+
+
+class TestLayoutView:
+    """Which view the page lays out (the phone shows one at a time, #1566): the home view with no section in the URL,
+    a section view for a section, group or view hash, and the results while a search or Changed only filters."""
+
+    def test_no_hash_is_home_and_any_hash_is_a_section(self) -> None:
+        out = _run("return [state.layoutView(''), state.layoutView('pipeline'), state.layoutView('overview')];")
+        assert out["result"] == ["home", "section", "section"]
+
+    def test_a_search_or_changed_only_shows_the_results(self) -> None:
+        out = _run(
+            """
+            state.view.query = 'model';
+            const searching = [state.layoutView(''), state.layoutView('pipeline')];
+            state.view.query = '';
+            state.view.changedOnly = true;
+            return {searching, changed: state.layoutView('')};
+            """
+        )
+        assert out["result"] == {"searching": ["results", "results"], "changed": "results"}

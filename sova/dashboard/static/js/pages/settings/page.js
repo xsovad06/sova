@@ -10,6 +10,7 @@ import * as state from './state.js';
 import * as rows from './rows.js';
 import * as widgets from './widgets.js';
 import * as models from './models.js';
+import { createBackNav } from './back-nav.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -173,7 +174,20 @@ function showSection(id) {
   updateNav();
 }
 
+/* The layout's data-view: home, section or results (state.layoutView). */
+function applyView() {
+  const layout = document.querySelector('.sova-settings-layout');
+  if (layout) layout.dataset.view = state.layoutView(currentHash());
+}
+
+function currentHash() {
+  let hash = location.hash.slice(1);
+  try { hash = decodeURIComponent(hash); } catch (_e) { /* a malformed escape (#100%): use the raw text */ }
+  return hash;
+}
+
 function updateNav() {
+  applyView();
   const filtering = state.filtering();
   document.querySelectorAll('[data-section-link]').forEach((link) => {
     const on = !filtering && link.dataset.sectionLink === state.view.section;
@@ -214,14 +228,13 @@ function scrollToEl(el) {
 
 /* Opens what the hash names: a section, or the section holding a group and that group. */
 function route() {
-  let hash = location.hash.slice(1);
-  try { hash = decodeURIComponent(hash); } catch (_e) { /* a malformed escape (#100%): use the raw text */ }
+  const hash = currentHash();
   const clearFilters = () => {
     state.view.query = '';
     state.view.changedOnly = false;
     $('settings-search').value = '';
   };
-  if (!hash) { clearFilters(); showSection('overview'); updateCounts(); return; }
+  if (!hash) { clearFilters(); showSection('overview'); updateCounts(); window.scrollTo(0, 0); return; }
   const sec = state.sectionById(hash);
   if (sec) { clearFilters(); showSection(sec.id); updateCounts(); window.scrollTo(0, 0); return; }
   const gid = state.sectionForGroup(hash) ? hash : (state.sectionForGroup(hash.replace(/-/g, '_')) ? hash.replace(/-/g, '_') : null);
@@ -245,15 +258,25 @@ function route() {
   if (!state.filtering()) showSection(state.view.section);
 }
 
-function go(hash) {
-  // Following the same hash again (a second click on the current section) fires no hashchange.
-  if (location.hash === '#' + hash) route();
-  else location.hash = hash;
-}
+const nav = createBackNav({
+  history,
+  location,
+  route: () => route(),
+  isHomeView: () => {
+    const layout = document.querySelector('.sova-settings-layout');
+    return !!(layout && layout.dataset.view === 'home');
+  },
+  scrollTop: () => window.scrollTo(0, 0),
+});
 
 /* --- Events ------------------------------------------------------------------------------------------------- */
 
 function onClick(e) {
+  if (e.target.closest('[data-settings-back]')) {
+    e.preventDefault();
+    nav.goHome();
+    return;
+  }
   // Only the page's own links: the sidebar and banners have href="#" links of their own.
   const link = e.target.closest('[data-section-link], [data-group-link], a[href^="#"]');
   if (link && link.closest('.sova-settings-layout')) {
@@ -264,11 +287,11 @@ function onClick(e) {
       const block = $('results-' + target);
       if (block) { scrollToEl(block); return; }
       // No results there (or Overview): leave the search and open the section.
-      go(target);
+      nav.go(target);
       return;
     }
     e.preventDefault();
-    go(target);
+    nav.go(target);
     return;
   }
   if (widgets.handleClick(e.target)) return;

@@ -26,18 +26,21 @@
       <button id="settings-search-clear" type="button" class="sova-btn sova-settings-clear" hidden>Clear</button>
     </div>
     <button id="settings-changed" type="button" class="sova-btn sova-settings-chip" aria-pressed="false">
-      Changed only <span id="settings-changed-count" class="sova-settings-chip-count">0</span>
+      <span class="max-md:hidden">Changed only</span><span class="md:hidden">Changed</span> <span id="settings-changed-count" class="sova-settings-chip-count">0</span>
     </button>
   </div>
 </div>
 
-<div class="sova-settings-layout">
+{#- data-view is home, section or results (page.js): a phone shows one view at a time (style.css, "Settings on the
+    phone"), with the section list on the home view only. -#}
+<div class="sova-settings-layout" data-view="home">
   <nav class="sova-settings-nav" aria-label="Settings sections">
     <div class="sova-settings-eyebrow">Sections</div>
     {% for section_id, group_ids in settings_sections.items() %}
     <a href="#{{ section_id }}" class="sova-settings-nav-item" data-section-link="{{ section_id }}">
       <span>{{ settings_section_labels[section_id] }}</span>
       <span class="sova-settings-nav-count" data-section-count="{{ section_id }}"></span>
+      {{ icon("chevron-right", "sova-settings-nav-chevron md:hidden w-4 h-4") }}
     </a>
     {% if group_ids %}
     <div class="sova-settings-nav-sub" data-section-sub="{{ section_id }}" hidden>
@@ -52,6 +55,7 @@
   </nav>
 
   <div class="sova-settings-main">
+    <a href="#" class="sova-settings-back md:hidden" data-settings-back>{{ icon("chevron-left", "w-4 h-4") }}<span>Settings</span></a>
     <div id="settings-error" class="sova-settings-error" role="alert" hidden></div>
 
     {#- Overview: the settings the user checks most. Each control is the same setting as in its own group. -#}
@@ -125,7 +129,7 @@
             </div>
           </div>
 
-          <div class="sova-card">
+          <div id="overview-commands" class="sova-card">
             <div class="sova-card-header">
               <h4 class="sova-overview-card-title">Commands</h4>
               <span class="sova-settings-status-muted sova-settings-push">SOVA Installation</span>
