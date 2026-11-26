@@ -492,6 +492,53 @@ class TestDashboardHealth:
 
 
 # ---------------------------------------------------------------------------
+# Navigation definition (sova/dashboard/navigation.py)
+# ---------------------------------------------------------------------------
+
+
+def _sidebar_hrefs(html: str) -> list[str]:
+    """The page links of the desktop sidebar's nav list, in order."""
+    nav = html[html.index('class="sidebar-nav-scroll') :]
+    nav = nav[: nav.index("<!-- Collapse toggle -->")]
+    return re.findall(r'<a href="([^"]+)"', nav)
+
+
+class TestNavigationDefinition:
+    def test_every_page_is_listed_once(self) -> None:
+        from sova.dashboard.navigation import NAV_PAGES
+
+        ids = [p.id for p in NAV_PAGES]
+        paths = [p.path for p in NAV_PAGES]
+        assert len(ids) == len(set(ids))
+        assert len(paths) == len(set(paths))
+
+    def test_prefix_applies_to_project_pages_only(self) -> None:
+        from sova.dashboard.navigation import nav_links
+
+        hrefs = {link.id: link.href for link in nav_links("/p/alpha", awareness_enabled=True)}
+        assert hrefs["work"] == "/p/alpha/work"
+        assert hrefs["phone"] == "/p/alpha/phone"
+        assert hrefs["setup"] == "/setup"
+
+    @pytest.mark.parametrize("awareness", [True, False])
+    def test_briefing_is_listed_only_with_awareness(self, awareness: bool) -> None:
+        from sova.dashboard.navigation import nav_links
+
+        assert ("briefing" in {link.id for link in nav_links("", awareness)}) is awareness
+
+    async def test_the_sidebar_lists_the_definition_in_order(self, client: AsyncClient) -> None:
+        from sova.dashboard.navigation import NAV_PAGES
+
+        expected = [
+            p.path
+            for place in ("main", "more", "bottom")
+            for p in NAV_PAGES
+            if p.sidebar == place and not p.needs_awareness
+        ]
+        assert _sidebar_hrefs((await client.get("/work")).text) == expected
+
+
+# ---------------------------------------------------------------------------
 # Auto-handoff orchestration
 # ---------------------------------------------------------------------------
 
@@ -821,6 +868,12 @@ class TestMultiProject:
         assert 'href="/p/alpha/work"' in resp.text
         assert "window.SOVA_RUN_ACTIONS = {" in resp.text
         assert "sova_csrf=" in resp.headers["set-cookie"]
+
+    async def test_a_project_sidebar_carries_its_prefix(self, multi_client: AsyncClient) -> None:
+        hrefs = _sidebar_hrefs((await multi_client.get("/p/alpha/work")).text)
+        assert "/p/alpha/work" in hrefs
+        assert "/setup" in hrefs
+        assert not any(h in ("/work", "/settings") for h in hrefs)
 
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")

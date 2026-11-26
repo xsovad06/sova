@@ -41,6 +41,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from sova.adapters.priority import Priority
 from sova.config.loader import load_config
 from sova.config.registry import RegistryUnreadableError, has_projects, list_projects
+from sova.dashboard.navigation import NavLink, nav_links
 from sova.dashboard.rate_limit import API_RATE_LIMITER_STATE, ApiRateLimiter, rate_limit_dependency, rate_limit_key
 from sova.dashboard.routers import (
     agents,
@@ -1117,7 +1118,15 @@ def create_app(
 
         return setup_service.get_github_user(_get_ctx_project_dir())
 
+    def _nav_links(prefix: str = "") -> list[NavLink]:
+        """Jinja global: the one navigation definition (sova/dashboard/navigation.py) resolved for this page.
+
+        The sidebar, the phone tab bar and the phone More sheet in base.html all render from it.
+        """
+        return nav_links(prefix, _awareness_nav_enabled())
+
     templates.env.globals["awareness_enabled"] = _awareness_nav_enabled
+    templates.env.globals["nav_links"] = _nav_links
     templates.env.globals["github_user"] = _footer_github_user
     templates.env.globals["priority_icon"] = priority_icon
     templates.env.globals["priorities_json"] = priorities_json
