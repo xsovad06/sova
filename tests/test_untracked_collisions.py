@@ -32,6 +32,7 @@ from tests.conftest import InvariantRepo
 
 SPEC = ".claude/specs/7-thing.md"
 BASELINE = ".sova/test-baseline.json"
+STAMP = ".claude/sova.db.settings-stamp"
 
 
 @pytest.fixture
@@ -373,8 +374,19 @@ class TestIgnoredRuntimePaths:
         assert repo.git("stash", "list") == ""
         assert repo.git("diff", "--cached", "--name-only") == "staged.txt"
 
-    async def test_a_wal_created_after_discovery_stays_out_of_the_stash(self, repo: InvariantRepo) -> None:
-        """The sidecar exclude is a pattern, not the file list scanned earlier, so a later WAL is covered too."""
+    @pytest.mark.parametrize(
+        "sidecar",
+        [
+            "sova.db-wal",
+            # Dot-separated siblings: the config cache's stamp (#1522), and one no exclusion names by itself.
+            "sova.db.settings-stamp",
+            "sova.db.tmp",
+        ],
+    )
+    async def test_a_sidecar_created_after_discovery_stays_out_of_the_stash(
+        self, repo: InvariantRepo, sidecar: str
+    ) -> None:
+        """The sidecar excludes are patterns, not the file list scanned earlier, so a later sidecar is covered too."""
         work = repo.dir
         repo.write(".gitignore", ".claude/sova.db\n")
         repo.land_on_main("chore(docs): ignore the database")
@@ -384,11 +396,37 @@ class TestIgnoredRuntimePaths:
         repo.git("add", "staged.txt")
 
         pathspecs = await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, work)
-        (work / ".claude" / "sova.db-wal").write_text("wal", encoding="utf-8")
+        (work / ".claude" / sidecar).write_text("live", encoding="utf-8")
         repo.git("stash", "--include-untracked", "--", *pathspecs)
 
-        assert (work / ".claude" / "sova.db-wal").read_text(encoding="utf-8") == "wal"
-        assert ":(exclude,glob).claude/sova.db-*" in pathspecs
+        assert (work / ".claude" / sidecar).read_text(encoding="utf-8") == "live"
+        assert repo.git("stash", "show", "--include-untracked", "--name-only") == "staged.txt"
+
+    @pytest.mark.parametrize("stamp_before_probe", [True, False])
+    async def test_an_ignored_settings_stamp_stays_out_of_the_stash(
+        self, repo: InvariantRepo, stamp_before_probe: bool
+    ) -> None:
+        """Under the install rules the stamp is ignored; git must accept the stash whenever the stamp appears (#1522).
+
+        Its first write (`invalidate_config_cache()`) can land between the probe and the stash, so the stamp gets no
+        literal exclude that git would refuse once the file exists.
+        """
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        stamp = work / STAMP
+        if stamp_before_probe:
+            stamp.write_text("live", encoding="utf-8")
+        repo.write("staged.txt", "staged\n")
+        repo.git("add", "staged.txt")
+
+        pathspecs = await runtime_stash_pathspecs(STASH_EXCLUDED_PATHS, work)
+        stamp.write_text("live", encoding="utf-8")
+        repo.git("stash", "--include-untracked", "--", *pathspecs)
+
+        assert stamp.read_text(encoding="utf-8") == "live"
+        assert repo.git("stash", "show", "--include-untracked", "--name-only") == "staged.txt"
+        assert repo.git("diff", "--cached", "--name-only") == ""
+        _assert_runtime_files_untouched(work)
 
     async def test_a_staged_only_tracked_runtime_file_is_refused(self, repo: InvariantRepo) -> None:
         """The callers unstage first, but a failed unstage must not let a staged runtime change into the stash."""
@@ -620,6 +658,7 @@ class TestStagingWithIgnoredRuntimePaths:
             ".claude/agent-control/handoff.json",
             ".claude/sova.db",
             ".claude/sova.db-wal",
+            ".claude/sova.db.settings-stamp",
             ".claude/mcp_secret",
         ):
             repo.write(rel, "live")
@@ -631,7 +670,22 @@ class TestStagingWithIgnoredRuntimePaths:
         assert repo.git("status", "--porcelain", "--untracked-files=all", "--", ".claude/").splitlines() == [
             "?? .claude/mcp_secret",
             "?? .claude/sova.db-wal",
+            "?? .claude/sova.db.settings-stamp",
         ]
+
+    async def test_commit_leaves_out_an_ignored_settings_stamp(self, repo: InvariantRepo) -> None:
+        """The install rules ignore the database and the stamp alike; the commit must not fail on either (#1522)."""
+        work = repo.dir
+        _install_ignore_rules_and_runtime_files(work)
+        repo.write(STAMP, "live")
+        repo.write("feature.py", "x = 1\n")
+
+        await commit("feat(core): work", cwd=work)
+
+        assert _committed(repo) == {"feature.py"}
+        assert (work / STAMP).read_text(encoding="utf-8") == "live"
+        assert repo.git("ls-files", "--", STAMP) == ""
+        _assert_runtime_files_untouched(work)
 
     async def test_commit_leaves_out_a_tracked_runtime_file_under_an_ignored_dir(self, repo: InvariantRepo) -> None:
         """No exclude can keep a leaked, tracked baseline out of `git add -A` once `.sova/` is ignored."""

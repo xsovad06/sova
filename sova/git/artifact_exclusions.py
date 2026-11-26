@@ -51,13 +51,21 @@ def pathspec_exclude(prefix: str) -> str:
 EXCLUDED_PATHSPECS = tuple(pathspec_exclude(prefix) for prefix in sorted(RUNTIME_ARTIFACT_PREFIXES))
 
 
-# SOVA's own runtime files: the database (and its -wal/-shm/-journal siblings), its log, the
+# SOVA's own runtime files: the database (and its -wal/-shm/-journal and .settings-stamp siblings), its log, the
 # agent-control/output dirs, worktrees and the `.sova/` baseline dir. Git-ignored in SOVA's own
 # repository; `sova install` writes the ignorable ones into `.git/info/exclude` for other projects.
 # Prefixes without a trailing `/` are name prefixes (`.claude/sova.db` covers `sova.db-wal` too).
 RUNTIME_STATE_PATHS = (
     SOVA_STATE_DIR,
     ".claude/sova.db",
+    # The config cache's settings stamp (`db_loader.SETTINGS_STAMP_SUFFIX`, a literal: this module stays a leaf, and
+    # tests/test_artifact_exclusions.py checks the two agree). Staging and stashing do not need it: the `sova.db`
+    # prefix exclude, or its `.*` sidecar glob once a project ignores `sova.db`, already covers the stamp, so
+    # `exclude_pathspecs()` emits no pathspec of its own for it. That also keeps an ignored stamp created between the
+    # probe and the command (its first write, by `invalidate_config_cache()`) from making git refuse a literal
+    # exclude. The entry exists for INFO_EXCLUDE_ENTRIES: `sova install` re-run on a project whose hand-written
+    # ignore list names only `sova.db` appends the stamp to `.git/info/exclude` (#1522).
+    ".claude/sova.db.settings-stamp",
     ".claude/sova.log",
     ".claude/agent-control/",
     ".claude/agent-output/",
@@ -86,23 +94,44 @@ def exclude_pathspecs(
     exclude whose literal part is one of them, or lies under one, is dropped, since git refuses the command for it.
     *keep* names files a dropped exclude still has to leave out; each is excluded by its literal path.
     A dropped name-prefix exclude whose directory is not itself ignored (``.claude/sova.db`` ignored, ``.claude/``
-    not) also gets a ``<prefix>-*`` glob exclude, which git accepts and which covers a sidecar (``sova.db-wal``)
-    created after *keep* was listed. *extra* is appended as is (pathspecs with no literal part, which git never
-    refuses, such as ``:(exclude,glob)**/.env``).
+    not) also gets ``<prefix>-*`` and ``<prefix>.*`` glob excludes, which git accepts (neither matches the ignored
+    path itself) and which cover a sidecar (``sova.db-wal``, ``sova.db.settings-stamp``) created after *keep* was
+    listed. *extra* is appended as is (pathspecs with no literal part, which git never refuses, such as
+    ``:(exclude,glob)**/.env``).
+
+    A name prefix that another name prefix in *excluded* already covers through a sidecar separator
+    (``.claude/sova.db.settings-stamp`` under ``.claude/sova.db``) gets no pathspec: the covering prefix's exclude or
+    sidecar globs keep it out, and a literal exclude of its own could be refused if the file appears, ignored, after
+    the probe.
 
     ``:/`` (repo root) rather than ``.``: a bare ``.`` would narrow the command to the cwd subtree.
     """
+    excluded = tuple(prefix for prefix in excluded if not _covered_by_sidecar_prefix(prefix, excluded))
     return (
         ":/",
         *(pathspec_exclude(prefix) for prefix in excluded if not is_under_any(prefix.rstrip("/"), ignored)),
-        *(f":(exclude,glob){prefix}-*" for prefix in excluded if _needs_sidecar_exclude(prefix, ignored)),
+        *(
+            f":(exclude,glob){prefix}{separator}*"
+            for prefix in excluded
+            if _needs_sidecar_exclude(prefix, ignored)
+            for separator in "-."
+        ),
         *(f":(exclude,literal){path}" for path in keep),
         *extra,
     )
 
 
+def _covered_by_sidecar_prefix(prefix: str, excluded: tuple[str, ...]) -> bool:
+    """Whether another name prefix in *excluded* covers *prefix* as a sidecar (``<other>-*`` or ``<other>.*``)."""
+    return any(
+        prefix.startswith((f"{other}-", f"{other}."))
+        for other in excluded
+        if other != prefix and not other.endswith("/")
+    )
+
+
 def _needs_sidecar_exclude(prefix: str, ignored: frozenset[str]) -> bool:
-    """Whether a dropped name-prefix exclude still needs a ``<prefix>-*`` exclude for its not-ignored sidecars."""
+    """Whether a dropped name-prefix exclude still needs sidecar globs (``<prefix>-*``, ``<prefix>.*``)."""
     if prefix.endswith("/") or not is_under_any(prefix, ignored):
         return False
     parent = prefix.rpartition("/")[0]

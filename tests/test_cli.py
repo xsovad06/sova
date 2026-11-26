@@ -913,6 +913,7 @@ class TestExcludeRuntimeFiles:
         lines = exclude.read_text(encoding="utf-8").splitlines()
         assert "/.sova/" in lines
         assert "/.claude/sova.db*" in lines
+        assert "/.claude/sova.db.settings-stamp*" in lines
         assert "/.claude/sova.log*" in lines
         assert "/.claude/agent-control/" in lines
         assert "/.claude/specs/" not in lines
@@ -921,7 +922,8 @@ class TestExcludeRuntimeFiles:
         from sova.cli.commands.project import _exclude_runtime_files
 
         exclude = self._init_repo(tmp_path)
-        exclude.write_text("my-scratch/\n.sova/", encoding="utf-8")  # hand-added, no trailing newline
+        # Hand-added and from an install that predates the stamp entry (#1522), no trailing newline.
+        exclude.write_text("my-scratch/\n/.claude/sova.db*\n.sova/", encoding="utf-8")
 
         await _exclude_runtime_files(tmp_path)
         first = exclude.read_text(encoding="utf-8")
@@ -932,7 +934,8 @@ class TestExcludeRuntimeFiles:
         assert lines[0] == "my-scratch/"
         assert lines.count(".sova/") == 1
         assert "/.sova/" not in lines  # the hand-added unanchored line already covers it
-        assert "/.claude/sova.db*" in lines
+        assert lines.count("/.claude/sova.db*") == 1
+        assert lines.count("/.claude/sova.db.settings-stamp*") == 1
 
     async def test_runtime_files_become_untracked_invisible(self, tmp_path: Path) -> None:
         import subprocess
@@ -964,6 +967,7 @@ class TestExcludeRuntimeFiles:
 
         lines = exclude.read_text(encoding="utf-8").splitlines()
         assert "/services/api/.claude/sova.db*" in lines
+        assert "/services/api/.claude/sova.db.settings-stamp*" in lines
         assert "/services/api/.sova/" in lines
         (project / ".claude").mkdir()
         (project / ".claude" / "sova.db").write_text("x", encoding="utf-8")
